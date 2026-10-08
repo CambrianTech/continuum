@@ -1166,6 +1166,9 @@ public static class RegisteredGsudoFixture {
     foreach ($name in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe')) {
         Set-Content -LiteralPath (Join-Path $target "release\$name") -Value 'candidate'
     }
+    # CI rollback failed to load (0xc0000135) when installer staging omitted its declared CUDA DLLs.
+    Set-Content -LiteralPath (Join-Path $target 'release\runtime-libs.txt') -Value 'fixture-runtime.dll'
+    Set-Content -LiteralPath (Join-Path $target 'release\fixture-runtime.dll') -Value 'runtime candidate'
     $script:liveProcesses = @()
     $script:registeredTask = $null
     function Get-CimInstance { param($ClassName, $ErrorAction) $script:liveProcesses }
@@ -1173,6 +1176,17 @@ public static class RegisteredGsudoFixture {
     $first = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     # Prebuilt handoff bypasses start-server: media must travel with the slot.
     $mediaSlot = Split-Path -Parent $first.artifact
+    if ((Get-FileHash -LiteralPath (Join-Path $mediaSlot 'fixture-runtime.dll')).Hash -ne
+        (Get-FileHash -LiteralPath (Join-Path $target 'release\fixture-runtime.dll')).Hash) { throw 'Declared CI runtime DLL was not staged intact' }
+    Set-Content -LiteralPath (Join-Path $target 'release\runtime-libs.txt') -Value '../escape.dll'
+    $badRuntimeRefused = $false
+    try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $badRuntimeRefused = $_ -match 'Invalid or missing declared core runtime library' }
+    if (-not $badRuntimeRefused) { throw 'Runtime library path traversal was accepted' }
+    Set-Content -LiteralPath (Join-Path $target 'release\runtime-libs.txt') -Value 'absent-runtime.dll'
+    $missingRuntimeRefused = $false
+    try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $missingRuntimeRefused = $_ -match 'Invalid or missing declared core runtime library' }
+    if (-not $missingRuntimeRefused) { throw 'Missing declared runtime library was accepted' }
+    Set-Content -LiteralPath (Join-Path $target 'release\runtime-libs.txt') -Value 'fixture-runtime.dll'
     foreach ($media in @('livekit-bridge.exe', 'start-livekit-windows.ps1')) {
         if (-not (Test-Path -LiteralPath (Join-Path $mediaSlot $media))) { throw "Missing staged media artifact: $media" }
     }
