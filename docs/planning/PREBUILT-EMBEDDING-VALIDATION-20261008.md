@@ -42,7 +42,10 @@ safe capability argv order. Strict lifecycle Clippy passed. Two existing parser
 idioms were corrected in separate commit `815828d55`; no warning suppression or
 baseline increase was used. Both core-server and CLI passed `cargo check`
 (4 minutes 6 seconds, existing warnings). Existing CLI option scenarios were
-extended for the explicit opt-in contract; their execution remains pending.
+extended for the explicit opt-in contract. Their local execution was blocked
+before running by the existing Windows core cdylib link limit: `LNK1140: limit
+exceeded for program database`. No cache was cleared or checks bypassed. The
+fixture must still execute successfully in CI or a supported build environment.
 Independent source review approved the corrected capability negotiation;
 final exact-commit review and CI remain pending.
 No candidate has been run against a real model yet. No production service,
