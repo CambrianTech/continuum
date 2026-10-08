@@ -335,6 +335,25 @@ fn entity_id(base: &BaseEntity) -> Result<Uuid, String> {
 }
 
 impl PendingBatch {
+    /// The immutable request a dispatch sends, also used to recover a native job
+    /// which ended before its adapter wrote any files.
+    pub(crate) fn training_request(&self, persona_id: Uuid, trait_kind: &str, base_model: &str) -> crate::genome::fine_tuning::types::TrainingJobRequest {
+        crate::genome::fine_tuning::types::TrainingJobRequest {
+            persona_id,
+            persona_name: self.persona_name.clone(),
+            base_model: base_model.to_string(),
+            trait_kind: trait_kind.to_string(),
+            resume_from: None,
+            parent: None,
+            dataset: crate::genome::fine_tuning::types::TrainingDataset {
+                examples: self.examples.clone(), source: self.source, validation_split: self.validation_split,
+            },
+            eval_set: self.eval_set.clone(),
+            lora: self.lora.clone(),
+            schedule: self.schedule.clone(),
+            local_artifact_dir: self.local_artifact_dir.clone(),
+        }
+    }
     /// THE fields a bucket pins at first arrival and every later batch must agree on.
     pub(crate) fn policy(&self) -> super::BucketPolicy {
         super::BucketPolicy {
@@ -657,6 +676,71 @@ impl TrainingTriggerState {
             self.buckets.insert(key, current);
         }
         result
+    }
+
+    /// Reconstruct only the exact dispatched input of this canonical job. Engine jobs
+    /// can end before writing request.json; an older submission's directory is not an
+    /// alias for the newer job. Dispatch order and every submission's policy survive.
+    pub(crate) async fn dispatched_request(
+        &self,
+        key: &BucketKey,
+        dispatch: Uuid,
+        job: Uuid,
+    ) -> Result<crate::genome::fine_tuning::types::TrainingJobRequest, String> {
+        self.require_ready()?;
+        let store = self.durable.require()?;
+        let intent = store.dispatches.find_by_id(dispatch).await.map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("job {job} has no durable dispatch {dispatch}"))?;
+        if intent.key() != *key || !matches!(&intent.phase, DispatchPhase::Dispatched { handle, .. } if handle.local_id == job) {
+            return Err(format!("dispatch {dispatch} does not prove ownership of job {job}"));
+        }
+        let mut batch = None;
+        for id in &intent.submission_ids {
+            let row = store.submissions.find_by_id(*id).await.map_err(|e| e.to_string())?
+                .ok_or_else(|| format!("dispatch {dispatch} lost submission {id}"))?;
+            if row.key() != *key || row.is_pending || row.dispatch_id != Some(dispatch) {
+                return Err(format!("submission {id} does not belong to dispatch {dispatch}"));
+            }
+            append_batch(&mut batch, *id, row.batch)?;
+        }
+        let batch = batch.ok_or_else(|| format!("dispatch {dispatch} has no submitted examples"))?;
+        Ok(batch.training_request(key.persona_id, &key.trait_kind, &key.base_model))
+    }
+
+    /// Bridge the old return identity without accepting its examples twice on upgrade.
+    /// A legacy row has no return-purpose tag: payload equality and a `returned` journal
+    /// row cannot distinguish a real return from the old erroneous AlreadyAccepted.
+    /// Only a dispatch receipt proving that row produced THIS job permits a new return.
+    /// Caller holds the bucket gate; this is shared by manual and boot-orphan returns.
+    pub(crate) async fn verify_return_ownership(
+        &self,
+        key: &BucketKey,
+        job: Uuid,
+        returned: Uuid,
+    ) -> Result<(), (&'static str, String)> {
+        let store = self.durable.require().map_err(|e| ("PersistenceUnavailable", e))?;
+        if store.submissions.find_by_id(returned).await
+            .map_err(|e| ("PersistenceFailed", e.to_string()))?.is_some() {
+            return Ok(()); // accept still validates the immutable payload of this replay.
+        }
+        let Some(legacy) = store.submissions.find_by_id(job).await
+            .map_err(|e| ("PersistenceFailed", e.to_string()))? else {
+            return Ok(()); // No old acceptance exists to duplicate.
+        };
+        if legacy.key() == *key && !legacy.is_pending {
+            if let Some(dispatch) = legacy.dispatch_id {
+                if let Some(intent) = store.dispatches.find_by_id(dispatch).await
+                    .map_err(|e| ("PersistenceFailed", e.to_string()))? {
+                    if intent.key() == *key && intent.submission_ids.contains(&job)
+                        && matches!(&intent.phase, DispatchPhase::Dispatched { handle, .. } if handle.local_id == job) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        Err(("RecoveryRequired", format!(
+            "legacy submission {job} may already own this returned batch; no examples appended. Inspect its training_trigger_submissions row and linked training_trigger_dispatches receipt to establish the original job ownership; payload equality or a returned journal entry alone is not proof"
+        )))
     }
 
     /// Caller holds the bucket gate. The independent ID gate prevents a changed
@@ -1362,6 +1446,117 @@ mod tests {
         });
         *state.operation_pause.lock().unwrap() = Some(pause.clone());
         pause
+    }
+
+    // Regression for #4858: changing return identity must neither duplicate a legacy
+    // successful return nor replay the original submission as if it were a return.
+    // One ORM setup covers legacy ambiguity and proven equal/different-payload collisions.
+    #[tokio::test]
+    async fn return_identity_upgrade_requires_original_dispatch_proof() {
+        use crate::commands::training_trigger::submit::{return_request, returned_id};
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let (old, executor) = build_runtime(adapter.clone(), false).await;
+        let artifacts = tempfile::tempdir().unwrap();
+        let board = crate::genome::fine_tuning::TrainingJobBoard::with_ledger(Some(artifacts.path().join("jobs.jsonl")));
+        let mut cases = Vec::new();
+        // 0: old return still pending; 1/2: original submission, equal/different
+        // returned payload; 3: current job has two differently named submissions and
+        // no request directory; 4: old return already dispatched into a NEW job.
+        for scenario in 0..5 {
+            let job = Uuid::new_v4();
+            let submission = if scenario == 3 { Uuid::new_v4() } else { job };
+            let persona = Uuid::new_v4();
+            let original = vec![ex("original", "answer")];
+            let mut params = submit_params(persona, "code", original.clone(), Some(super::super::DEFAULT_MIN_EXAMPLES));
+            params["submissionId"] = serde_json::json!(submission);
+            let result = executor.execute_json("genome/training-trigger/submit", params).await.unwrap();
+            assert_eq!(result["success"], true, "{result}");
+            let key = BucketKey { persona_id: persona, trait_kind: "code".into(), base_model: "synthetic".into() };
+            let store = old.state.durable.require().unwrap();
+            if scenario != 0 {
+                let dispatched_job = if scenario == 4 { Uuid::new_v4() } else { job };
+                let mut submission_ids = vec![submission];
+                if scenario == 3 {
+                    let extra = Uuid::new_v4();
+                    let mut params = submit_params(persona, "code", vec![ex("extra", "answer")], Some(super::super::DEFAULT_MIN_EXAMPLES));
+                    params["submissionId"] = serde_json::json!(extra);
+                    assert_eq!(executor.execute_json("genome/training-trigger/submit", params).await.unwrap()["success"], true);
+                    submission_ids.push(extra);
+                }
+                // Persist the same dispatch ownership that dispatch_pending/finish_dispatch
+                // writes. Merely accepting a batch under the job UUID is NOT this proof.
+                let intent = DispatchIntent {
+                    base: BaseEntity::for_new_record(),
+                    persona_id: persona,
+                    trait_kind: key.trait_kind.clone(),
+                    base_model: key.base_model.clone(),
+                    submission_ids,
+                    phase: DispatchPhase::Dispatched {
+                        handle: JobHandle { provider_id: "fixture".into(), provider_job_id: dispatched_job.to_string(), local_id: dispatched_job },
+                        provider: "fixture".into(),
+                    },
+                    is_active: false,
+                };
+                let dispatch = entity_id(&intent.base).unwrap();
+                store.dispatches.save(dispatch, &intent).await.unwrap();
+                store.assign(&intent).await.unwrap();
+                assert!(old.state.dispatched_request(&key, dispatch, Uuid::new_v4()).await.is_err(), "a submission's dispatch is not a different job's input");
+                if scenario == 3 {
+                    board.register(crate::genome::fine_tuning::job_board::WatchedJob {
+                        trigger_dispatch_id: Some(dispatch),
+                        handle: JobHandle { provider_id: "fixture".into(), provider_job_id: job.to_string(), local_id: job },
+                        persona_id: persona, persona_name: "test-p".into(), base_model: "synthetic".into(), trait_kind: "code".into(),
+                        eval_set: None, signature: None, decision: None,
+                    });
+                    board.claim(job, &crate::genome::fine_tuning::types::TrainingStatus::Failed { error: "refused before training".into() });
+                }
+            }
+            let examples = match scenario {
+                2 => vec![ex("returned-1", "a"), ex("returned-2", "b")],
+                3 => vec![ex("original", "answer"), ex("extra", "answer")],
+                _ => original,
+            };
+            let request: crate::genome::fine_tuning::types::TrainingJobRequest = serde_json::from_value(serde_json::json!({
+                "personaId": persona, "personaName": "test-p", "baseModel": "synthetic", "traitKind": "code",
+                "dataset": { "examples": examples, "source": "operator_curated", "validationSplit": 0.0 }
+            })).unwrap();
+            cases.push((scenario, job, key, request));
+        }
+        old.shutdown().await.unwrap();
+        drop(executor);
+        drop(old);
+        let (next, _executor) = build_runtime(adapter, false).await;
+        for (scenario, job, key, request) in cases {
+            for attempt in 0..2 {
+                let result = if scenario == 3 {
+                    // The canonical job has no request.json, and its two submissions
+                    // have different UUIDs. No historical directory may stand in for it.
+                    crate::commands::training_trigger::return_::return_job(&next.state, &board, artifacts.path(), job).await.unwrap()
+                } else {
+                    return_request(&next.state, request.clone(), job).await.unwrap()
+                };
+                if scenario == 0 || scenario == 4 {
+                    assert_eq!(result.error_kind.as_deref(), Some("RecoveryRequired"), "{result:?}");
+                    assert!(next.state.durable.require().unwrap().submissions.find_by_id(returned_id(job)).await.unwrap().is_none(), "no duplicate legacy return acceptance");
+                } else {
+                    assert!(result.success, "{result:?}");
+                    assert_eq!(next.state.bucket_example_count(key.persona_id, &key.trait_kind, &key.base_model), Some(request.dataset.examples.len()));
+                    {
+                        let pending = next.state.buckets.get(&key).unwrap();
+                        assert_eq!(serde_json::to_value(&pending.examples).unwrap(), serde_json::to_value(&request.dataset.examples).unwrap(), "return preserves the dispatched examples and their order");
+                    }
+                    let acceptance = result.acceptance.unwrap();
+                    assert_eq!(acceptance.submission_id, returned_id(job));
+                    assert_eq!(acceptance.replayed, attempt != 0);
+                }
+            }
+            if scenario == 0 || scenario == 4 {
+                let legacy = next.state.durable.require().unwrap().submissions.find_by_id(job).await.unwrap().unwrap();
+                assert_eq!(legacy.is_pending, scenario == 0);
+                assert_eq!(legacy.batch.examples.len(), 1, "old successful acceptance remains intact");
+            }
+        }
+        next.shutdown().await.unwrap();
     }
 
     // What this catches (278afa6c): an init timeout must not permanently disable

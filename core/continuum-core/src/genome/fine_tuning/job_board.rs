@@ -573,6 +573,21 @@ impl TrainingJobBoard {
         })
     }
 
+    /// Positive durable evidence that this job already produced a training outcome.
+    /// Artifact relocation must not make it eligible for returning its input again.
+    /// False is not proof that a failed job executed zero optimizer steps.
+    pub(crate) fn completed_training(&self, local_id: Uuid) -> bool {
+        let id = local_id.to_string();
+        self.ledger_rows().any(|row| {
+            row.get("event").and_then(|e| e.as_str()) == Some("terminal")
+                && row.get("local_id").and_then(|i| i.as_str()) == Some(id.as_str())
+                && row.get("status").is_some_and(|status| matches!(
+                    serde_json::from_value::<TrainingStatus>(status.clone()),
+                    Ok(TrainingStatus::Completed { .. })
+                ))
+        })
+    }
+
     /// Every parseable row of the ledger, oldest first (none when there is no ledger).
     fn ledger_rows(&self) -> impl Iterator<Item = serde_json::Value> {
         let text = self.ledger.as_ref().and_then(|path| std::fs::read_to_string(path).ok()).unwrap_or_default(); // unwrap_or_default: no ledger file yet = no rows

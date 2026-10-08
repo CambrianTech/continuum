@@ -81,14 +81,25 @@ pub struct SubmitParams {
     pub validation_split: Option<f32>,
 }
 
+/// The submission identity of a returned job's examples: derived from the job, so a second
+/// return is a replay, and never the job's own id. A job the trigger dispatched is registered
+/// under the id of the submission that filled it, so a return keyed by the job's id WAS that
+/// submission: the store answered AlreadyAccepted (nothing appended) or SubmissionConflict
+/// (the returned batch carries the bucket's adopted policy). On the 5090, 2026-10-07, 34 of
+/// Kimi's examples stayed stranded that way, and the same batches had re-failed for two weeks.
+pub(crate) fn returned_id(job: Uuid) -> Uuid {
+    Uuid::new_v5(&job, b"genome/training-trigger/return")
+}
+
 impl SubmitParams {
     /// A job's examples handed back to her bucket: THE one conversion from a job's request
     /// to a submit, carrying the job's own policy (which [`return_request`] replaces with
-    /// the bucket's when the key already holds one). The job's id is the batch identity, so
-    /// a second return of the same job is a replay the bucket recognises, never a copy.
+    /// the bucket's when the key already holds one). The batch identity is [`returned_id`]
+    /// of the job: a second return of the same job is a replay the bucket recognises, never
+    /// a copy, and the return never wears the identity of the submission it came from.
     pub(crate) fn returning(request: crate::genome::fine_tuning::types::TrainingJobRequest, job: Uuid) -> Self {
         Self {
-            submission_id: Some(job),
+            submission_id: Some(returned_id(job)),
             persona_id: request.persona_id,
             persona_name: request.persona_name,
             base_model: request.base_model,
@@ -139,7 +150,7 @@ pub(crate) async fn return_request(
         Some(policy) => params.adopting(policy),
         None => params,
     };
-    submit_batch(state, params).await
+    submit_batch_inner(state, params, Some(job)).await
 }
 
 /// Outcome-as-data extends the legacy envelope with an acceptance receipt.
@@ -281,6 +292,10 @@ crate::action_command! {
 /// One batch into a bucket: THE acceptance path, shared by `submit` and `return` so a
 /// returned job's examples are accepted, deduped and dispatched exactly as any batch is.
 pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitParams) -> Result<SubmitOutcome, CommandError> {    
+    submit_batch_inner(state, p, None).await
+}
+
+async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, returned_job: Option<Uuid>) -> Result<SubmitOutcome, CommandError> {
     if let Err(error) = state.require_ready() {
         return Ok(SubmitOutcome::refused("PersistenceUnavailable", error));
     }
@@ -323,6 +338,11 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
     };
     let submission_id = p.submission_id;
     state.run_owned(key, move |state, key| async move {
+        if let Some(job) = returned_job {
+            if let Err((kind, error)) = state.verify_return_ownership(&key, job, returned_id(job)).await {
+                return SubmitOutcome::refused(kind, error);
+            }
+        }
         // A held bucket is bounded: past MAX_HELD_EXAMPLES a NEW submit is refused and
         // the producer keeps its evidence for a later pass (never silently dropped). A
         // replay of a submission the bucket already holds is recognised first: it is
