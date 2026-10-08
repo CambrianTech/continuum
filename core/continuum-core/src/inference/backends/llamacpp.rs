@@ -46,7 +46,10 @@ pub fn validate_embedding_model(
         &model,
         &["Continuum prebuilt embedding validation.".to_string()],
     )?;
-    let dimensions = vectors.first().map(Vec::len).unwrap_or(0);
+    let dimensions = vectors
+        .first()
+        .ok_or("embedding validation produced no vector")?
+        .len();
     let report = continuum_cli_lifecycle::prebuilt_validation::EmbeddingReport {
         dimensions,
         load_ms,

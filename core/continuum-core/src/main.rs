@@ -218,7 +218,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         {
             println!(
                 "{}",
-                serde_json::to_string(
+                serde_json::to_string( // Child stdout protocol to the parent prebuilt validator.
                     &continuum_cli_lifecycle::prebuilt_validation::Capabilities {
                         build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
                         embedding_probe: 1,
@@ -242,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let report = continuum_core::inference::backends::llamacpp::validate_embedding_model(
             std::path::Path::new(&probe_args[2]),
         )?;
-        println!("{}", serde_json::to_string(&report)?);
+        println!("{}", serde_json::to_string(&report)?); // Child stdout receipt consumed by the parent prebuilt validator.
         return Ok(());
     }
     // `~/.continuum/config.env` is THIS process's to apply, on every boot, before any

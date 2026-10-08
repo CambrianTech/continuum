@@ -48,6 +48,10 @@ exceeded for program database`. No cache was cleared or checks bypassed. The
 fixture must still execute successfully in CI or a supported build environment.
 Independent source review approved the corrected capability negotiation;
 final exact-commit review and CI remain pending.
+The initial CI hygiene run caught two undocumented child-stdout serialization
+boundaries and a new absent-vector default. Both boundaries are now named at
+their encoding sites, and a missing vector returns an explicit validation error.
+All 28 existing source-hygiene tests pass (4.19 seconds), with no baseline change.
 No candidate has been run against a real model yet. No production service,
 persona, cache, model file or credential was altered to validate this source.
 
