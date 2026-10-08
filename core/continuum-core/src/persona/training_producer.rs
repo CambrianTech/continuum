@@ -2217,6 +2217,7 @@ pub(crate) mod tests {
                 reviewer: crate::identity::PeerId::from_uuid(Uuid::new_v4()),
                 outcome,
                 evidence: media(),
+                evidence_text: None,
                 reviewed_at_ms: 6_000,
             })
         }
@@ -3883,6 +3884,7 @@ pub(crate) mod tests {
             reviewer,
             outcome: WorkReviewOutcome::Passed,
             evidence: submitted.artifact.clone(),
+            evidence_text: None,
             reviewed_at_ms: 4,
         };
         let prefix = [

@@ -1034,9 +1034,23 @@ pub struct WorkReviewResult {
     pub review_claim_id: Uuid,
     pub artifact: WorkArtifactReference,
     pub evidence: WorkArtifactReference,
+    pub evidence_text: Option<String>,
     /// A review can publish even when its local learning transfer is deferred.
     pub credit: Option<reviewed::ReviewedCredit>,
     pub credit_error: Option<String>,
+}
+
+impl From<&airc_work::WorkSubmissionReview> for WorkReviewResult {
+    fn from(r: &airc_work::WorkSubmissionReview) -> Self {
+        Self {
+            review_id: r.review_id.as_uuid(), submission_id: r.submission_id.as_uuid(),
+            reviewer: r.reviewer.as_uuid(), outcome: r.outcome.into(),
+            reviewed_at_ms: r.reviewed_at_ms, review_card_id: r.review_card_id.as_uuid(),
+            review_claim_id: r.review_claim_id.as_uuid(), artifact: (&r.artifact).into(),
+            evidence: (&r.evidence).into(), evidence_text: r.evidence_text.clone(),
+            credit: None, credit_error: None,
+        }
+    }
 }
 
 #[async_trait]
@@ -1182,6 +1196,7 @@ impl ActionCommand for WorkReview {
                     review_claim_id,
                     outcome: p.outcome.into(),
                     evidence,
+                    evidence_text: p.evidence_text.clone(),
                 },
             )
             .await
@@ -1215,19 +1230,7 @@ impl ActionCommand for WorkReview {
             Ok(value) => (Some(value), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        Ok(WorkReviewResult {
-            review_id: review.review_id.as_uuid(),
-            submission_id: review.submission_id.as_uuid(),
-            reviewer: review.reviewer.as_uuid(),
-            outcome: p.outcome,
-            reviewed_at_ms: review.reviewed_at_ms,
-            review_card_id: review.review_card_id.as_uuid(),
-            review_claim_id: review.review_claim_id.as_uuid(),
-            artifact: (&review.artifact).into(),
-            evidence: (&review.evidence).into(),
-            credit,
-            credit_error,
-        })
+        Ok(WorkReviewResult { credit, credit_error, ..WorkReviewResult::from(&review) })
     }
 }
 
@@ -1383,19 +1386,7 @@ impl ActionCommand for WorkSubmission {
         let reviews = board
             .submission_reviews_for(submitted.submission_id)
             .filter(|r| r.card_id == submitted.card_id)
-            .map(|r| WorkReviewResult {
-                review_id: r.review_id.as_uuid(),
-                submission_id: r.submission_id.as_uuid(),
-                reviewer: r.reviewer.as_uuid(),
-                outcome: r.outcome.into(),
-                reviewed_at_ms: r.reviewed_at_ms,
-                review_card_id: r.review_card_id.as_uuid(),
-                review_claim_id: r.review_claim_id.as_uuid(),
-                artifact: (&r.artifact).into(),
-                evidence: (&r.evidence).into(),
-                credit: None,
-                credit_error: None,
-            })
+            .map(WorkReviewResult::from)
             .collect();
         Ok(WorkSubmissionResult {
             submission: WorkSubmitResult {
