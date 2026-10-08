@@ -1058,6 +1058,8 @@ struct RebootOptions {
     stage_prebuilt: bool,
     service: bool,
     validate_only: bool,
+    /// Explicit CPU embedding validation, performed only in a bounded child.
+    embedding_model: Option<PathBuf>,
     /// Is a human AT this machine, able to answer one consent prompt?
     ///
     /// NOT a CLI flag, and deliberately: the user-facing contract is one command,
@@ -1087,6 +1089,13 @@ impl RebootOptions {
                 "--force" if !options.force => options.force = true,
                 "--service" if !options.service => options.service = true,
                 "--validate-only" if !options.validate_only => options.validate_only = true,
+                "--embedding-model" if options.embedding_model.is_none() => {
+                    let path = args
+                        .next()
+                        .filter(|p| !p.is_empty() && !p.starts_with('-'))
+                        .ok_or("--embedding-model requires a local GGUF path")?;
+                    options.embedding_model = Some(PathBuf::from(path));
+                }
                 "--prebuilt" if options.prebuilt.is_none() => {
                     let path = args
                         .next()
@@ -1101,9 +1110,8 @@ impl RebootOptions {
                         .ok_or("--service-descriptor-sha requires a SHA-256 digest")?;
                     options.service_descriptor_sha = Some(sha.to_ascii_lowercase());
                 }
-                "--force" | "--prebuilt" | "--service" | "--validate-only" => {
-                    return Err(format!("duplicate reboot option {arg}"))
-                }
+                "--force" | "--prebuilt" | "--service" | "--validate-only"
+                | "--embedding-model" => return Err(format!("duplicate reboot option {arg}")),
                 _ => {
                     return Err(format!(
                         "unknown reboot option {arg}; use --force or --prebuilt <path> [--service]"
@@ -1124,6 +1132,9 @@ impl RebootOptions {
                 "--validate-only requires --prebuilt and cannot combine with --force or --service"
                     .to_string(),
             );
+        }
+        if options.embedding_model.is_some() && !options.validate_only {
+            return Err("--embedding-model requires --prebuilt and --validate-only".into());
         }
         if options.service_descriptor_sha.is_some()
             && (!cfg!(windows)
@@ -2124,6 +2135,29 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         let candidate = prebuilt
             .as_ref()
             .ok_or("--validate-only requires --prebuilt")?;
+        if let Some(model) = options.embedding_model {
+            let model = model
+                .canonicalize()
+                .map_err(|e| format!("embedding model cannot be resolved: {e}"))?;
+            if !model.is_file() {
+                return Err("embedding model must be a local GGUF file".into());
+            }
+            let report = continuum_cli_lifecycle::prebuilt_validation::embedding(
+                |probe| {
+                    let mut command = std::process::Command::new(&candidate.path);
+                    apply_core_runtime_env(&mut command)?;
+                    probe.configure(&mut command);
+                    Ok(command)
+                },
+                &model,
+                &candidate.build_sha,
+            )
+            .await?;
+            println!(
+                "embedding validated: dimensions={}, load_ms={}, embed_ms={} (CPU)",
+                report.dimensions, report.load_ms, report.embed_ms
+            );
+        }
         println!(
             "prebuilt validated: {} (build {})",
             candidate.path.display(),
@@ -3059,29 +3093,9 @@ async fn binary_build_sha(artifact: &Path) -> Result<String, String> {
     let mut cmd = std::process::Command::new(artifact);
     apply_core_runtime_env(&mut cmd)?;
     cmd.arg("--build-sha").stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: a provenance probe has no UI.
-    }
-    let mut cmd = tokio::process::Command::from(cmd);
-    cmd.kill_on_drop(true);
-    let out = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+    let out = continuum_cli_lifecycle::prebuilt_validation::run(cmd, Duration::from_secs(30))
         .await
-        .map_err(|_| {
-            format!(
-                "{} --build-sha did not answer within 30 s; provenance is unavailable",
-                artifact.display()
-            )
-        })?
-        .map_err(|e| format!("cannot run {} --build-sha: {e}", artifact.display()))?;
-    if !out.status.success() {
-        return Err(format!(
-            "{} --build-sha exited {} — a pre-#194 artifact cannot anchor a deploy receipt; rebuild it",
-            artifact.display(),
-            out.status
-        ));
-    }
+        .map_err(|e| format!("{} --build-sha: {e}", artifact.display()))?;
     let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if sha.is_empty() {
         return Err(format!(
@@ -6982,7 +6996,7 @@ fn usage() -> String {
        continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
        continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
        continuum reboot                rebuild + relaunch; verifies the RUNNING core's build SHA\n  \
-       continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
+       continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n                                       add --embedding-model <GGUF> for bounded CPU model validation\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n  \
        continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot), and airc (installed, started at\n                                       login). Each arm reads, changes only what drifted, says so.\n                                       --check reads only. Name arms with --supervisor --core --cli\n                                       --airc. (linux arms pending)\n  \
@@ -7395,6 +7409,23 @@ mod tests {
             // artifact); it is exercised in the valid cases above on Windows.
             vec!["--service", "--service", "--prebuilt", "core.exe"],
             vec!["--validate-only"],
+            vec!["--embedding-model", "model.gguf"],
+            vec!["--prebuilt", "core.exe", "--embedding-model", "model.gguf"],
+            vec![
+                "--prebuilt",
+                "core.exe",
+                "--validate-only",
+                "--embedding-model",
+            ],
+            vec![
+                "--prebuilt",
+                "core.exe",
+                "--validate-only",
+                "--embedding-model",
+                "one",
+                "--embedding-model",
+                "two",
+            ],
             vec!["--validate-only", "--force", "--prebuilt", "core.exe"],
             vec!["--validate-only", "--service", "--prebuilt", "core.exe"],
             vec![
@@ -7437,6 +7468,18 @@ mod tests {
         let validate = parse(&["--prebuilt", "core.exe", "--validate-only"]).unwrap();
         assert!(validate.validate_only);
         assert!(!validate.force && !validate.service);
+        let embedding = parse(&[
+            "--prebuilt",
+            "core.exe",
+            "--validate-only",
+            "--embedding-model",
+            "model dir/embed.gguf",
+        ])
+        .unwrap();
+        assert_eq!(
+            embedding.embedding_model.as_deref(),
+            Some(std::path::Path::new("model dir/embed.gguf"))
+        );
         if cfg!(windows) {
             let service = service.unwrap();
             assert!(service.service);

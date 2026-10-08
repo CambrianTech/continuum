@@ -145,7 +145,7 @@ pub fn cuda_major_minor(version: &str) -> Option<(u32, u32)> {
 /// PURE: the driver's CUDA version from `nvidia-smi`'s banner ("... CUDA Version: 12.4 |").
 pub fn driver_cuda(nvidia_smi_banner: &str) -> Option<(u32, u32)> {
     let after = nvidia_smi_banner.split("CUDA Version:").nth(1)?;
-    cuda_major_minor(after.trim_start().split_whitespace().next()?)
+    cuda_major_minor(after.split_whitespace().next()?)
 }
 
 /// PURE: the lowest compute capability from `nvidia-smi --query-gpu=compute_cap
