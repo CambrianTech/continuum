@@ -321,6 +321,23 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
         } finally { $env:CAMBRIAN_INSTALL_ELEVATION = $savedContext }
         Write-Output 'PASS: AIRC canonical firewall delegation, manifest URL, path/owner preservation and failure propagation'
     }
+    # Regression for cardde2cd06e: fresh native installation must invoke the
+    # existing checksum owner and refuse activation when that prerequisite fails.
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/win-modules.ps1')
+        function Module-Start { }
+        function Module-Done { }
+        $fixtureRepo = Join-Path $scratch 'livekit prerequisite repo'
+        $fixtureScript = Join-Path $fixtureRepo 'tools/scripts/install-livekit-windows.ps1'
+        New-Item -ItemType Directory -Path (Split-Path $fixtureScript) -Force | Out-Null
+        [IO.File]::WriteAllText($fixtureScript, 'exit 0')
+        Mod-LiveKit -RepoRoot $fixtureRepo
+        [IO.File]::WriteAllText($fixtureScript, 'exit 73')
+        $refused = $false
+        try { Mod-LiveKit -RepoRoot $fixtureRepo } catch { $refused = $_.Exception.Message -match 'LiveKit runtime setup failed.*73' }
+        if (-not $refused) { throw 'LiveKit prerequisite failure was hidden' }
+        Write-Output 'PASS: LiveKit delegates to existing runtime installer and propagates prerequisite failure'
+    }
     # PDF runtime recovery: an existing but unloadable decoder must request
     # repair, rather than throwing before Mod-Poppler reaches its install path.
     & {

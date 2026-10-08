@@ -819,6 +819,17 @@ function Mod-Poppler {
     }
 }
 
+function Mod-LiveKit {
+    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    # The existing runtime installer owns version/checksum/download policy.
+    # Invoke it separately because its idempotent success path exits the script.
+    Module-Start 'livekit' 'verifying the published media server runtime (no admin)'
+    $installer = Join-Path $RepoRoot 'tools/scripts/install-livekit-windows.ps1'
+    Invoke-InstallerProcess -OwnProcessTree (Get-Process -Id $PID).Path @('-NoProfile', '-ExecutionPolicy', 'RemoteSigned', '-File', $installer)
+    if ($global:LASTEXITCODE -ne 0) { throw "LiveKit runtime setup failed (exit $global:LASTEXITCODE); the core was not restarted." }
+    Module-Done 'livekit'
+}
+
 function Mod-BuildCore {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
     $core = Join-Path $RepoRoot 'core\continuum-core'
