@@ -235,30 +235,11 @@ jobs:
             set +u; source tools/scripts/lib/windows-build-env.sh; set -u   # dumpbin and CUDA_PATH (no nounset, as in the Build step)
             cp "$target_dir/release/livekit-bridge.exe" tools/scripts/start-livekit-windows.ps1 "$stage/"
             cp -R "$RUNNER_TEMP/published-engine" "$stage/engine"
-            if [ -n "$CUDA_VERSION" ]; then
-              # The CUDA runtime ships INSIDE the archive, beside the exe, where Windows looks
-              # first: a node's launch PATH admits one CUDA tree (windows-build-env.sh), and the
-              # 5090's is 13.x, so a 12.x core relying on PATH died "cublas64_12.dll was not
-              # found" (BigMama, 2026-10-06). The set is the import-table closure of the bins,
-              # so it is exactly what they load.
-              cuda_bin="$(cygpath -u "$CUDA_PATH")/bin"
-              queue=("$stage/continuum-core-server.exe" "$stage/continuum-mcp.exe" "$stage/forge-custodian.exe")
-              while [ ${#queue[@]} -gt 0 ]; do
-                file="${queue[0]}"; queue=("${queue[@]:1}")
-                for dll in $(dumpbin //dependents "$(cygpath -w "$file")" | tr -d '\r' | awk '$1 ~ /\.dll$/ {print $1}'); do
-                  [ -f "$cuda_bin/$dll" ] && [ ! -f "$stage/$dll" ] || continue
-                  cp "$cuda_bin/$dll" "$stage/"; runtime_libs="$runtime_libs $dll"; queue+=("$stage/$dll")
-                done
-              done
-              # nvrtc opens its builtins by name at run time, so no import table names them.
-              case " $runtime_libs " in *" nvrtc64_"*)
-                for builtins in "$cuda_bin"/nvrtc-builtins64_*.dll; do
-                  cp "$builtins" "$stage/"; runtime_libs="$runtime_libs $(basename "$builtins")"
-                done ;;
-              esac
-              [ -n "$runtime_libs" ] || { echo "::error::a CUDA build imports no CUDA runtime DLL from $cuda_bin"; exit 1; }
-              echo "bundled CUDA runtime:$runtime_libs"
-            fi
+            # The same dependency owner used by the engine captures every bin,
+            # including the first CLI and its non-OS VC/OpenMP redistributables.
+            CONTINUUM_PACKAGE_DIR="$(cygpath -w "$stage")" powershell.exe -NoProfile -NonInteractive -Command \
+              '$ErrorActionPreference = "Stop"; . ./tools/scripts/lib/install-common.ps1; . ./tools/scripts/lib/win-modules.ps1; Publish-CoreWindowsRuntime -Directory $env:CONTINUUM_PACKAGE_DIR'
+            runtime_libs="$(tr '\r\n' '  ' < "$stage/runtime-libs.txt")"
           fi
           if [ "$RUNNER_OS" = macOS ]; then
             # A downloaded binary must launch on a Mac that has nothing but macOS: every linked
@@ -308,6 +289,10 @@ jobs:
               manifest["cuda_version"] = cuda_version
               manifest["cuda_compute_cap"] = int(cuda_cap)
               manifest["runtime_libs"] = libs.split()
+              bootstrap = (Path(stage) / "bootstrap-runtime-libs.txt").read_text(encoding="utf-8-sig").split()
+              if not set(bootstrap).issubset(set(manifest["runtime_libs"])):
+                  raise ValueError("CLI bootstrap runtime must be a subset of the packaged application runtime")
+              manifest["bootstrap_runtime_libs"] = bootstrap
               engine = json.loads((Path(stage) / "engine" / "engine-install.json").read_text(encoding="utf-8-sig"))
               if engine["backend"] != "cuda":
                   raise ValueError("NVIDIA artifact must carry its matching CUDA engine")

@@ -22,6 +22,7 @@ if (-not (Test-Path $script:ManifestPs)) {
     throw "manifest projection missing: $script:ManifestPs`n  regenerate it with: cargo run -p manifest-gen"
 }
 . (Join-Path $PSScriptRoot 'windows-engine-receipt.ps1')
+. (Join-Path $PSScriptRoot 'windows-runtime-closure.ps1')
 . (Join-Path $PSScriptRoot 'windows-llvm-receipt.ps1')
 . $script:ManifestPs    # defines $script:ContinuumManifest ([ordered] hashtable)
 
@@ -1122,31 +1123,18 @@ function Mod-LlamaServer {
         }
     }
     Assert-CorePreparedPath -Path $installDir -Expected $installDir
-    $runtimeNames = @()
-    if ($backend -eq 'cuda') { $runtimeNames = @(Get-ChildItem -LiteralPath (Join-Path (Get-CudaToolkitDirectory) 'bin') -File -Filter '*.dll' | ForEach-Object { $_.Name }) }
+    $runtimeDirectories = @(Get-CoreRuntimeDirectories -Cuda:($backend -eq 'cuda'))
+    $runtimeNames = @($runtimeDirectories | ForEach-Object { Get-ChildItem -LiteralPath $_ -File -Filter '*.dll' | ForEach-Object { $_.Name } })
     foreach ($oldDll in @(Get-ChildItem -LiteralPath $installDir -File -Filter '*.dll')) {
         if ($oldDll.Name -notin $runtimeNames) { throw "Unowned application DLL in engine slot: $($oldDll.Name)" }
     }
     Start-CoreEnginePublication -Directory $installDir
     Copy-Item -Force $builtBin $installBin
-    if ($backend -eq 'cuda') {
-        # Pin actual installed toolkit inputs, not a claim of archive provenance.
-        $runtime = Join-Path (Get-CudaToolkitDirectory) 'bin'
-        Assert-CorePreparedPath -Path $runtime -Expected $runtime
-        $dlls = @(Get-ChildItem -LiteralPath $runtime -File -Filter '*.dll')
-        if (-not $dlls.Count) { throw 'CUDA toolkit has no application runtime DLLs.' }
-        foreach ($dll in $dlls) {
-            Assert-CorePreparedPath -Path $dll.FullName -Expected $dll.FullName -File
-            Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $installDir $dll.Name) -Force -ErrorAction Stop
-        }
-    }
     # Use the configured toolchain inspector, not another PATH-selected tool.
     if ($cache -notmatch '(?m)^CMAKE_LINKER:FILEPATH=([^\r\n]+)') { throw 'Configured engine linker is unknown.' }
     $dumpbin = Join-Path (Split-Path $Matches[1] -Parent) 'dumpbin.exe'
     if (-not (Test-Path -LiteralPath $dumpbin -PathType Leaf)) { throw 'Configured engine dependency inspector is missing.' }
-    # Imported platform DLLs remain the explicit Windows/driver contract.
-    Invoke-InstallerProcess 'cmake' @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$dumpbin", "-DENGINE_DIR=$($installDir.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-P', (Join-Path $PSScriptRoot 'verify-engine-imports.cmake')) -OwnProcessTree
-    if ($LASTEXITCODE -ne 0) { throw 'Engine application imports could not be bounded.' }
+    Copy-CoreRuntimeClosure -Directory $installDir -Executables @($installBin) -Inspector $dumpbin -RuntimeDirectories $runtimeDirectories -OutputNames (Join-Path $installDir 'runtime-imports.txt')
     Save-CoreEngineReceipt -Directory $installDir -SourceRevision $sourceRevision -Backend $backend
     Set-Content -Path $stampFile -Value $stampWant -Encoding ASCII
     Module-Done 'llama-server'
