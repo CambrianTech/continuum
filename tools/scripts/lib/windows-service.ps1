@@ -431,7 +431,19 @@ function New-CoreServiceRelease {
     # The CLI this release installs is the one that knows the lane records' contract.
     $engineSlot = Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $TargetDirectory 'release\continuum.exe')
     New-Item -ItemType Directory -Force -Path $slot | Out-Null
-    foreach ($name in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe')) {
+    # CI cores carry declared runtime DLLs beside the binaries. The native deploy
+    # stage honors this same manifest; installer/prepared rollback must do so too.
+    $runtimeNames = @()
+    $runtimeList = Join-Path $TargetDirectory 'release\runtime-libs.txt'
+    if (Test-Path -LiteralPath $runtimeList -PathType Leaf) {
+        $runtimeNames = @(Get-Content -LiteralPath $runtimeList -ErrorAction Stop | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        foreach ($name in $runtimeNames) {
+            if ($name -notmatch '^[A-Za-z0-9_.-]+\.dll$' -or -not (Test-Path -LiteralPath (Join-Path $TargetDirectory ('release\' + $name)) -PathType Leaf)) {
+                throw "Invalid or missing declared core runtime library: $name"
+            }
+        }
+    }
+    foreach ($name in (@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames)) {
         $source = Join-Path $TargetDirectory ('release\' + $name)
         $destination = Join-Path $slot $name
         Copy-Item -LiteralPath $source -Destination $destination -Force -ErrorAction Stop
