@@ -160,45 +160,48 @@ async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&s
 /// The three ways origin can answer "what is your tip for `head`?" and why the split is
 /// load-bearing: only `Absent` licenses a preflight refusal. Anything else that isn't
 /// `Found` is undecidable — network blip, auth prompt, remote gone — and inventing
-/// "not pushed" for it would point at the wrong fix. We read plain `ls-remote`'s OUTPUT,
-/// not its exit code: empty-means-absent held in every measurement on this host (git 2.54).
+/// "not pushed" for it would point at the wrong fix. The decision rule is rc 0 + empty
+/// output = absent, which held in every measurement on this host (git 2.54).
 enum RemoteHead {
-    Found(String), // tip sha on origin
-    Absent,        // rc 0 + empty output — no such ref on origin (measured stable)
+    Found(String), // tip sha on origin, for exactly refs/heads/{head}
+    Absent,        // rc 0 + empty output — no such ref on origin
     Unknown,       // could not ask or cannot tell — defer to `gh`
 }
 
-/// Ask origin for `head`'s tip in one lightweight round-trip. The preflight twin of
-/// `git_quiet`, except it keeps the exit code and reads the output: rc 0 + empty =
-/// absent; non-zero or unparseable = undecidable (defer to `gh`). Missing git → Unknown.
+/// Ask origin for `head`'s tip in one lightweight round-trip, layered on the shared
+/// [`super::git_output`] executor so execution/error policy has a single owner. The query is
+/// the EXACT ref (`refs/heads/{head}`) and only that exact ref name licenses `Found`: ls-remote
+/// patterns match tails, so a bare head would let `topic/feature` answer for an absent
+/// `feature`, misdirecting (or masking) the refusal. rc 0 + empty = absent; non-zero or
+/// unparseable = undecidable → defer to `gh`. Missing git → Unknown.
 async fn remote_head_tip(root: &Path, head: &str) -> RemoteHead {
-    let (root, head) = (root.to_path_buf(), head.to_string());
-    tokio::task::spawn_blocking(move || {
-        let out = match std::process::Command::new("git")
-            .args(["ls-remote", "--heads", "origin", &head])
-            .current_dir(&root)
-            .output()
-        {
-            Ok(o) => o,
-            Err(_) => return RemoteHead::Unknown, // no git on this host → unknown, defer to `gh`
-        };
-        match out.status.code() {
-            Some(0) => {
-                let text = String::from_utf8_lossy(&out.stdout);
-                if text.trim().is_empty() {
-                    RemoteHead::Absent // rc 0 + empty output — origin says "no such ref" (measured stable where the `--exit-code` rc was not)
-                } else {
-                    match text.lines().next().and_then(|l| l.split_whitespace().next()).map(str::to_string) {
-                        Some(s) => RemoteHead::Found(s),
-                        None => RemoteHead::Unknown, // rc 0 but no parseable line — undecidable
-                    }
-                }
-            }
-            _ => RemoteHead::Unknown, // transport/auth/other → cannot decide; defer to gh
-        }
-    })
+    let expected = format!("refs/heads/{head}");
+    let out = match super::git_output(
+        root.to_path_buf(),
+        vec!["ls-remote".into(), "--heads".into(), "origin".into(), expected.clone()],
+    )
     .await
-    .unwrap_or(RemoteHead::Unknown) // the worker panicked — treat as undecidable, defer to gh
+    {
+        Some(o) => o,
+        None => return RemoteHead::Unknown, // no git on this host → defer to `gh`
+    };
+    match out.status.code() {
+        Some(0) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            if text.trim().is_empty() {
+                return RemoteHead::Absent; // rc 0 + empty output — origin says "no such ref" (measured on this host, git 2.54)
+            }
+            let mut fields = text.lines().next().unwrap_or_default().split_whitespace();
+            let sha = fields.next().unwrap_or_default();
+            let refname = fields.next().unwrap_or_default();
+            if !sha.is_empty() && refname == expected {
+                RemoteHead::Found(sha.to_string())
+            } else {
+                RemoteHead::Unknown // origin answered, but not for the exact ref asked — undecidable here
+            }
+        }
+        _ => RemoteHead::Unknown, // transport/auth/other → cannot decide; defer to gh
+    }
 }
 
 #[cfg(test)]
@@ -294,11 +297,51 @@ mod tests {
         branch_preflight(fx.work.path(), Some("main"), Some("feature")).await.expect("pushed + ahead is fine");
     }
 
+    // what this catches: ONLY the colon is fork notation — `owner:branch` lives on someone
+    // else's origin and has no local ref to check, so gh stays the last word there. A SLASH in
+    // a head name is ordinary branch naming, not fork syntax (the old early slash bypass let an
+    // unpushed `feature/foo` through with no refusal at all).
     #[tokio::test]
-    async fn fork_heads_defer_to_gh() {
+    async fn colon_fork_heads_defer_to_gh() {
         let fx = PrFixture::new();
-        branch_preflight(fx.work.path(), Some("main"), Some("someone/branch")).await.expect("slash fork heads are gh's territory");
-        branch_preflight(fx.work.path(), Some("main"), Some("someone:feature")).await.expect("colon fork heads are gh's territory too");
+        branch_preflight(fx.work.path(), Some("main"), Some("someone:feature"))
+            .await
+            .expect("colon fork heads are gh's territory");
+    }
+
+    #[tokio::test]
+    async fn slash_branch_names_get_the_full_push_check() {
+        let fx = PrFixture::new();
+        git(fx.work.path(), &["checkout", "-q", "-b", "feature/foo"]);
+        std::fs::write(fx.work.path().join("b.txt"), "two\n").expect("wip file");
+        git(fx.work.path(), &["add", "b.txt"]);
+        git(fx.work.path(), &["commit", "-q", "-m", "wip"]); // ahead of main, NOT pushed
+        let err = branch_preflight(fx.work.path(), Some("main"), Some("feature/foo"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CommandError::Invalid(_)), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("code/git/push"), "names the fixing verb: {msg}");
+    }
+
+    // what this catches: ls-remote patterns match tails — with only `topic/feature` on origin,
+    // a bare `feature` query answers with topic/feature's tip and preflight compares against
+    // the wrong ref (refusing for the wrong reason, or passing when feature is absent). The
+    // exact-ref query + ref-name validation must land in Absent: "not pushed", naming push.
+    #[tokio::test]
+    async fn unrelated_suffix_branch_does_not_answer_for_the_head() {
+        let fx = PrFixture::new();
+        git(fx.work.path(), &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(fx.work.path().join("b.txt"), "two\n").expect("wip file");
+        git(fx.work.path(), &["add", "b.txt"]);
+        git(fx.work.path(), &["commit", "-q", "-m", "wip"]); // local feature, ahead of main, unpushed
+        git(fx.work.path(), &["push", "-q", "origin", "main:refs/heads/topic/feature"]); // tail-matching ref on origin
+        let err = branch_preflight(fx.work.path(), Some("main"), Some("feature"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, CommandError::Invalid(_)), "{err}");
+        let msg = err.to_string();
+        assert!(msg.contains("not pushed to origin"), "absent stays absent even with a tail-matching ref: {msg}");
     }
 
     #[tokio::test]
@@ -336,8 +379,8 @@ mod tests {
         std::fs::write(fx.work.path().join("b.txt"), "two\n").expect("wip file");
         git(fx.work.path(), &["add", "b.txt"]);
         git(fx.work.path(), &["commit", "-q", "-m", "wip"]);
-        // Point origin at a path that does not exist: ls-remote then fails with a transport
-        // error (exit 128), which is NOT the --exit-code absent-ref exit (1).
+        // Point origin at a path that does not exist: ls-remote then exits non-zero on a
+        // transport failure — preflight cannot call that "absent" and defers to gh.
         git(fx.work.path(), &["remote", "set-url", "origin", "/nonexistent/definitely-not-a-repo"]);
         branch_preflight(fx.work.path(), Some("main"), Some("feature"))
             .await

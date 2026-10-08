@@ -93,7 +93,7 @@ pub(crate) async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, C
 /// both streams) and owns the execution error policy. When we cannot run git at all (missing
 /// binary, spawn failure), it returns None = unknown; a check that cannot decide defers to the
 /// real command instead of inventing a new failure mode. Callers layer their own interpretation.
-pub(crate) async fn git_run(root: PathBuf, args: Vec<String>) -> Option<std::process::Output> {
+pub(crate) async fn git_output(root: PathBuf, args: Vec<String>) -> Option<std::process::Output> {
     tokio::task::spawn_blocking(move || {
         std::process::Command::new("git")
             .args(&args)
@@ -105,9 +105,9 @@ pub(crate) async fn git_run(root: PathBuf, args: Vec<String>) -> Option<std::pro
     .unwrap_or(None) // the worker panicked — treat as undecidable
 }
 
-/// [`git_run`] with the "did it succeed?" interpretation: a non-zero exit returns None (unknown).
+/// [`git_output`] with the "did it succeed?" interpretation: a non-zero exit returns None (unknown).
 pub(crate) async fn git_quiet(root: PathBuf, args: Vec<String>) -> Option<String> {
-    let out = git_run(root, args).await?;
+    let out = git_output(root, args).await?;
     if !out.status.success() {
         return None;
     }
