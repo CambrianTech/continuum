@@ -28,3 +28,17 @@ if ($Check) {
 } else {
     [IO.File]::WriteAllText($entry, $rendered, (New-Object Text.UTF8Encoding($false)))
 }
+
+# The first CLI is not installed yet, so project its canonical build-key inputs
+# into the transport shim rather than maintaining a second policy list.
+$artifactSource = [IO.File]::ReadAllText((Join-Path $root 'core/continuum-cli-lifecycle/src/prebuilt_artifact.rs'))
+$inputBlock = [regex]::Match($artifactSource, '(?s)pub const BUILD_INPUTS:.*?=\s*\[(.*?)\];')
+if (-not $inputBlock.Success) { throw 'Missing canonical prebuilt build inputs.' }
+$inputs = @([regex]::Matches($inputBlock.Groups[1].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+$prebuiltPath = Join-Path $PSScriptRoot 'lib/windows-prebuilt.ps1'
+$prebuiltText = [IO.File]::ReadAllText($prebuiltPath).Replace("`r`n", "`n")
+$projection = '# BEGIN GENERATED PREBUILT INPUTS' + "`n" + '$script:CorePrebuiltInputs = @(' + (($inputs | ForEach-Object { "'$_'" }) -join ', ') + ')' + "`n" + '# END GENERATED PREBUILT INPUTS'
+$projected = [regex]::Replace($prebuiltText, '(?s)# BEGIN GENERATED PREBUILT INPUTS.*?# END GENERATED PREBUILT INPUTS', { $projection })
+if ($Check) {
+    if ($prebuiltText -cne $projected) { throw 'Prebuilt input projection drift: run sync-windows-bootstrap.ps1.' }
+} else { [IO.File]::WriteAllText($prebuiltPath, $projected, (New-Object Text.UTF8Encoding($false))) }

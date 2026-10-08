@@ -115,7 +115,7 @@ try {
         $entryCold = Join-Path $scratch 'payload entry cold'
         New-Item -ItemType Directory -Path $entryLib, $entryProfile -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $entryRepo
-        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-prepared.ps1', 'payload-paths.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-prepared.ps1', 'windows-prebuilt.ps1', 'payload-paths.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $entryLib
         }
         $entryGenerated = Join-Path (Split-Path $entryLib) 'generated'
