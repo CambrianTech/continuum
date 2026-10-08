@@ -91,7 +91,7 @@ crate::action_command! {
 /// defect, not the citizen's slip.
 async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&str>) -> Result<(), CommandError> {
     // `owner/branch` fork heads have no local remote-tracking ref to check — gh's territory.
-    if let Some(h) = head_param.filter(|h| h.contains('/')) {
+    if head_param.is_some_and(|h| h.contains('/')) { // `owner/branch` fork heads defer to gh — see the guard's doc above
         return Ok(());
     }
 
