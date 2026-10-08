@@ -301,6 +301,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & $helperTest
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $cpuTest = Join-Path $env:RUNNER_TEMP 'continuum-cpu-target-test.exe'
+          rustc --edition 2021 --test core/llama/cpu_target.rs -o $cpuTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $cpuTest
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       # The engine-ownership test used to be compiled here by hand:
       #   rustc --edition 2021 --test .../bin/continuum/owned_engines.rs
       # Someone reached for standalone rustc because `cargo test --bin continuum`
