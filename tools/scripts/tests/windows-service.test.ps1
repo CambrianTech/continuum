@@ -11,6 +11,22 @@ $nativeInstallerProcess = ${function:Invoke-InstallerProcess}
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Regression for card68a33e89: no archive member executes before its trusted
+    # release transport identity and hash are checked, independent of GPU policy.
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-prebuilt.ps1')
+        $tip = '0123456789012345678901234567890123456789'
+        $manifest = [pscustomobject]@{ git_sha=$tip; platform='windows-x86_64'; archive='continuum-core-windows-x86_64.tar.gz'; sha256=('a' * 64) }
+        Assert-CoreBootstrapManifest $manifest $tip 'windows-x86_64'
+        foreach ($case in @(@('git_sha','ffffffffffffffffffffffffffffffffffffffff'), @('platform','macos-arm64'), @('archive','../escape.tar.gz'), @('sha256','short'))) {
+            $original = $manifest.($case[0]); $manifest.($case[0]) = $case[1]
+            $refused = $false
+            try { Assert-CoreBootstrapManifest $manifest $tip 'windows-x86_64' } catch { $refused = $true }
+            $manifest.($case[0]) = $original
+            if (-not $refused) { throw "Untrusted bootstrap $($case[0]) was accepted" }
+        }
+    }
+    Write-Output 'PASS: bootstrap refuses wrong revision/platform/path/checksum before execution'
     # what this catches: partial robocopy failure was reported as success, and
     # reruns skipped its existing destination then published an incomplete cache.
     & {
@@ -1600,6 +1616,76 @@ function Mod-LlamaServer {
         if ($descendant -and -not $descendant.HasExited) { $descendant.Kill(); $descendant.WaitForExit(); $descendant.Dispose() }
     }
     Write-Output 'PASS: supervisor reports host exit while a warm descendant remains alive'
+
+    # Published engines use an explicit backend on GPU-less CI and cannot reuse
+    # a native-CPU stamp. Extend this fixture without building an engine.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $engineRepo = Join-Path $scratch 'publisher-repo'
+        $engineOut = Join-Path $scratch 'publisher-engine'
+        New-Item -ItemType Directory -Force (Join-Path $engineRepo 'core\vendor\llama.cpp\tools\server'), $engineOut | Out-Null
+        [IO.File]::WriteAllText((Join-Path $engineRepo 'core\vendor\llama.cpp\tools\server\CMakeLists.txt'), '# fixture')
+        [IO.File]::WriteAllText((Join-Path $engineOut 'llama-server.exe'), 'fixture engine')
+        Save-CoreEngineReceipt -Directory $engineOut -SourceRevision ('a' * 40) -Backend cuda
+        function Get-CoreEngineBackend { throw 'Publisher probed the build host GPU.' }
+        function Set-CudaTargets { throw 'Publisher queried native GPU targets.' }
+        function Get-ManagedPayloadRoot { return (Join-Path $scratch 'publisher-payload') }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            if ($FilePath -ne 'git') { throw 'Publisher reuse unexpectedly ran a build tool.' }
+            $global:LASTEXITCODE = 0
+            if ($ArgumentList -contains '--short') { return 'aaaaaaa' }
+            return ('a' * 40)
+        }
+        function Module-Skip { }
+        function Module-Start { }
+        function Mod-CMake { throw 'fixture: fresh published build required' }
+        $stamp = Join-Path $engineOut '.llama-server.stamp'
+        [IO.File]::WriteAllText($stamp, 'aaaaaaa:cuda:80:portable-v1')
+        Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut -RequireReceipt -PublishedCudaArchitectures 80 -PublishedCpuDefinitions @('-DGGML_NATIVE=OFF')
+        [IO.File]::WriteAllText($stamp, 'aaaaaaa:cuda:80')
+        $refused = $false
+        try { Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut -RequireReceipt -PublishedCudaArchitectures 80 -PublishedCpuDefinitions @('-DGGML_NATIVE=OFF') }
+        catch { $refused = $_ -match 'fresh published build required' }
+        if (-not $refused) { throw 'Publisher reused a native engine stamp.' }
+        foreach ($invalid in @(
+            @{ PublishedCudaArchitectures = '80'; PublishedCpuDefinitions = @('-DGGML_NATIVE=OFF') },
+            @{ PublishedCudaArchitectures = '80'; RequireReceipt = $true },
+            @{ PublishedCudaArchitectures = '80'; RequireReceipt = $true; PublishedCpuDefinitions = @('-DGGML_NATIVE=ON') }
+        )) {
+            $refused = $false
+            try { Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut @invalid }
+            catch { $refused = $_ -match 'Published engine requires' }
+            if (-not $refused) { throw 'Incomplete publisher contract was accepted.' }
+        }
+    }
+    # Exercise the actual CMake import resolver with a deterministic inspector
+    # adapter: only the platform driver may be absent on a GPU-less build host.
+    $cmake = Get-Command cmake -ErrorAction SilentlyContinue
+    $cmakePath = if ($cmake) { $cmake.Source } else { Join-Path $env:USERPROFILE '.continuum\tools\cmake\bin\cmake.exe' }
+    if (-not (Test-Path -LiteralPath $cmakePath)) { throw 'CMake is required for the engine import fixture.' }
+    $imports = Join-Path $scratch 'engine-imports'
+    New-Item -ItemType Directory -Path $imports | Out-Null
+    [IO.File]::WriteAllText((Join-Path $imports 'llama-server.exe'), 'inspector fixture')
+    $inspector = Join-Path $imports 'inspect.cmd'
+    $inspection = "@echo off`r`necho Dump of file fixture`r`necho File Type: EXECUTABLE IMAGE`r`necho   Image has the following dependencies:`r`necho.`r`necho     nvcuda.dll`r`necho.`r`necho   Summary`r`n"
+    [IO.File]::WriteAllText($inspector, $inspection, [Text.Encoding]::ASCII)
+    $importArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($imports.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+    & $cmakePath @importArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Absent platform driver was not accepted on the build host.' }
+    $shadow = Join-Path $imports 'NvCuDa.dll'
+    [IO.File]::WriteAllText($shadow, 'forbidden shadow')
+    $errorLog = Join-Path $imports 'refusal.log'
+    $savedPreference = $ErrorActionPreference
+    try { $ErrorActionPreference = 'Continue'; & $cmakePath @importArgs 2> $errorLog }
+    finally { $ErrorActionPreference = $savedPreference }
+    if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'must not shadow') { throw 'Application driver shadow was accepted.' }
+    Remove-Item -LiteralPath $shadow
+    [IO.File]::WriteAllText($inspector, $inspection.Replace('nvcuda.dll', 'unowned-engine-runtime.dll'), [Text.Encoding]::ASCII)
+    try { $ErrorActionPreference = 'Continue'; & $cmakePath @importArgs 2> $errorLog }
+    finally { $ErrorActionPreference = $savedPreference }
+    if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Unresolved/conflicting engine imports') { throw 'An unrelated unresolved import was accepted.' }
+    Write-Output 'PASS: publisher preserves declared hardware contract and bounds engine imports on GPU-less hosts'
 
     $output = Join-Path $target 'release\continuum-core-server.exe'
     Copy-Item -LiteralPath $child -Destination $output -Force

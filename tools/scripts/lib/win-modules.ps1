@@ -896,10 +896,10 @@ function Get-CoreEngineBackend {
 }
 
 function Get-CoreEngineRequirement {
-    param([Parameter(Mandatory = $true)][string]$RepoRoot)
+    param([Parameter(Mandatory = $true)][string]$RepoRoot, [ValidateSet('cpu', 'cuda')][string]$Backend)
     $revision = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $RepoRoot, 'rev-parse', 'HEAD:core/vendor/llama.cpp') 2>$null)
     if ($LASTEXITCODE -ne 0 -or $revision -cnotmatch '^[0-9a-f]{40}$') { throw 'Cannot resolve the tracked llama.cpp gitlink.' }
-    return [pscustomobject]@{ source_revision = $revision; backend = (Get-CoreEngineBackend) }
+    return [pscustomobject]@{ source_revision = $revision; backend = $(if ($Backend) { $Backend } else { Get-CoreEngineBackend }) }
 }
 
 function Get-CoreEngineDrift {
@@ -928,8 +928,22 @@ function Mod-LlamaServer {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [string]$InstallDirectory = (Join-Path (Get-ManagedPayloadRoot) 'bin'),
-        [switch]$RequireReceipt
+        [switch]$RequireReceipt,
+        # The publisher supplies its existing CUDA floor and the shared Rust CPU
+        # policy; a GPU-less build host must not select the consumer's backend.
+        [string]$PublishedCudaArchitectures,
+        [string[]]$PublishedCpuDefinitions = @()
     )
+
+    $published = -not [string]::IsNullOrEmpty($PublishedCudaArchitectures)
+    if ($published) {
+        if ($PublishedCudaArchitectures -cnotmatch '^[1-9][0-9]*(;[1-9][0-9]*)*$' -or
+            -not $RequireReceipt -or -not $PublishedCpuDefinitions.Count -or
+            $PublishedCpuDefinitions -cnotcontains '-DGGML_NATIVE=OFF' -or
+            @($PublishedCpuDefinitions | Where-Object { $_ -cnotmatch '^-DGGML_[A-Z0-9_]+=OFF$' }).Count) {
+            throw 'Published engine requires explicit CUDA targets, receipt, and shared portable CPU definitions.'
+        }
+    } elseif ($PublishedCpuDefinitions.Count) { throw 'Portable publisher definitions require explicit published CUDA targets.' }
 
     $submodule   = Join-Path $RepoRoot 'core\vendor\llama.cpp'
     $serverCMake = Join-Path $submodule 'tools\server\CMakeLists.txt'
@@ -953,21 +967,22 @@ function Mod-LlamaServer {
 
     $sourceRevision = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', 'HEAD') 2>$null)
     if ($RequireReceipt) {
-        $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+        $requirement = if ($published) { Get-CoreEngineRequirement -RepoRoot $RepoRoot -Backend cuda } else { Get-CoreEngineRequirement -RepoRoot $RepoRoot }
         if ($sourceRevision -cne $requirement.source_revision) { throw 'Checked-out llama.cpp differs from the tracked gitlink; refusing receipt migration.' }
     }
     $head = (Invoke-InstallerProcess -OwnProcessTree 'git' @('-C', $submodule, 'rev-parse', '--short', 'HEAD') 2>$null)
     if (-not $head) { $head = 'unknown' }
 
     # Backend: NVIDIA -> CUDA (matches core/llama/build.rs gating), else CPU.
-    $backend = Get-CoreEngineBackend; $backendDefs = @()
+    $backend = if ($published) { 'cuda' } else { Get-CoreEngineBackend }; $backendDefs = @()
     if ($backend -eq 'cuda') {
         $build = (Get-ManifestModule 'build-core').build
-        $targets = Set-CudaTargets
+        $targets = if ($published) { [pscustomobject]@{ CMake = $PublishedCudaArchitectures } } else { Set-CudaTargets }
         $backendDefs = @('-DGGML_CUDA=ON', "-DCMAKE_CUDA_ARCHITECTURES=$($targets.CMake)")
     }
     $stampWant = "${head}:${backend}"
     if ($backend -eq 'cuda') { $stampWant += ":$($targets.CMake)" }
+    if ($published) { $stampWant += ':portable-v1' }
 
     if ((Test-Path $installBin) -and (Test-Path $stampFile) -and
         ((Get-Content $stampFile -Raw -ErrorAction SilentlyContinue).Trim() -eq $stampWant)) {
@@ -1020,8 +1035,8 @@ function Mod-LlamaServer {
 
     Module-Start 'llama-server' "building llama-server ($backend, llama.cpp@$head) -- the serving-lane child"
     if ($RequireReceipt) {
-        Mod-CMake -ExistingOnly
-        Mod-CUDA -ExistingOnly
+        if ($published) { Mod-CMake } else { Mod-CMake -ExistingOnly }
+        Mod-CUDA -ExistingOnly -BuildHost:$published
     }
     New-Item -ItemType Directory -Force $buildDir, $installDir | Out-Null
 
@@ -1059,6 +1074,8 @@ function Mod-LlamaServer {
         "-DGGML_CUDA=$(@{cpu='OFF';cuda='ON'}[$backend])",
         # Static CRT: a standalone child that needs no VC runtime DLLs on a public box.
         '-DCMAKE_POLICY_DEFAULT_CMP0091=NEW', '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded')
+    if ($published) { $cmakeArgs += $PublishedCpuDefinitions }
+    else { $cmakeArgs += '-DGGML_NATIVE=ON' }
     if ($backend -eq 'cuda') {
         Enter-MsvcEnv                                    # cl.exe on PATH for nvcc host side
         $cmakeArgs += @('-G', 'Ninja', "-DCMAKE_MAKE_PROGRAM=$ninja",
@@ -1093,6 +1110,17 @@ function Mod-LlamaServer {
         if ($cache -notmatch ('(?m)^' + [regex]::Escape($setting) + '\r?$')) { throw "Engine cache violates receipt contract: $setting" }
     }
     if ($cache -notmatch '(?m)^CMAKE_MSVC_RUNTIME_LIBRARY:(STRING|UNINITIALIZED)=MultiThreaded\r?$') { throw 'Engine CRT is not static.' }
+    if ($published) {
+        foreach ($definition in $PublishedCpuDefinitions) {
+            $name = $definition.Substring(2).Split('=')[0]
+            if ($cache -notmatch ('(?m)^' + [regex]::Escape($name) + ':(BOOL|UNINITIALIZED)=OFF\r?$')) {
+                throw "Published engine CPU cache violates shared policy: $name"
+            }
+        }
+        if ($cache -notmatch ('(?m)^CMAKE_CUDA_ARCHITECTURES:(STRING|UNINITIALIZED)=' + [regex]::Escape($PublishedCudaArchitectures) + '\r?$')) {
+            throw 'Published engine CUDA targets differ from the artifact contract.'
+        }
+    }
     Assert-CorePreparedPath -Path $installDir -Expected $installDir
     $runtimeNames = @()
     if ($backend -eq 'cuda') { $runtimeNames = @(Get-ChildItem -LiteralPath (Join-Path (Get-CudaToolkitDirectory) 'bin') -File -Filter '*.dll' | ForEach-Object { $_.Name }) }

@@ -9,6 +9,16 @@ if(NOT IS_ABSOLUTE "${ENGINE_DIR}" OR NOT IS_ABSOLUTE "${SYSTEM_DIR}")
   message(FATAL_ERROR "Engine dependency roots must be absolute")
 endif()
 file(GLOB app_dlls "${ENGINE_DIR}/*.dll")
+# The NVIDIA driver is supplied by the operating system/driver installation,
+# never by an application archive. Refuse shadowing before excluding its import
+# name so GPU-less publishers can verify the same application closure.
+foreach(app_dll IN LISTS app_dlls)
+  cmake_path(GET app_dll FILENAME app_name)
+  string(TOLOWER "${app_name}" app_name)
+  if(app_name STREQUAL "nvcuda.dll")
+    message(FATAL_ERROR "Engine archive must not shadow the platform NVIDIA driver")
+  endif()
+endforeach()
 # The platform's own DLLs are resolved (an app import landing there is allowed) but NOT
 # recursed: their imports are the OS's business, and on some installs they name feature-on-demand
 # DLLs that are simply absent (AzureAttestManager, HvsiFileTrust, PdmUtilities, wpaxholder via
@@ -39,7 +49,7 @@ file(GET_RUNTIME_DEPENDENCIES
   EXECUTABLES "${ENGINE_DIR}/llama-server.exe"
   LIBRARIES ${app_dlls}
   DIRECTORIES "${ENGINE_DIR}" "${SYSTEM_DIR}"
-  PRE_EXCLUDE_REGEXES "[Aa][Pp][Ii]-[Mm][Ss]-.*" "[Ee][Xx][Tt]-[Mm][Ss]-.*"
+  PRE_EXCLUDE_REGEXES "[Aa][Pp][Ii]-[Mm][Ss]-.*" "[Ee][Xx][Tt]-[Mm][Ss]-.*" "^[Nn][Vv][Cc][Uu][Dd][Aa]\\.[Dd][Ll][Ll]$"
   POST_EXCLUDE_REGEXES "^${system_regex}[/\\\\]"
   RESOLVED_DEPENDENCIES_VAR resolved
   UNRESOLVED_DEPENDENCIES_VAR unresolved
