@@ -81,14 +81,25 @@ pub struct SubmitParams {
     pub validation_split: Option<f32>,
 }
 
+/// The submission identity of a returned job's examples: derived from the job, so a second
+/// return is a replay, and never the job's own id. A job the trigger dispatched is registered
+/// under the id of the submission that filled it, so a return keyed by the job's id WAS that
+/// submission: the store answered AlreadyAccepted (nothing appended) or SubmissionConflict
+/// (the returned batch carries the bucket's adopted policy). On the 5090, 2026-10-07, 34 of
+/// Kimi's examples stayed stranded that way, and the same batches had re-failed for two weeks.
+pub(crate) fn returned_id(job: Uuid) -> Uuid {
+    Uuid::new_v5(&job, b"genome/training-trigger/return")
+}
+
 impl SubmitParams {
     /// A job's examples handed back to her bucket: THE one conversion from a job's request
     /// to a submit, carrying the job's own policy (which [`return_request`] replaces with
-    /// the bucket's when the key already holds one). The job's id is the batch identity, so
-    /// a second return of the same job is a replay the bucket recognises, never a copy.
+    /// the bucket's when the key already holds one). The batch identity is [`returned_id`]
+    /// of the job: a second return of the same job is a replay the bucket recognises, never
+    /// a copy, and the return never wears the identity of the submission it came from.
     pub(crate) fn returning(request: crate::genome::fine_tuning::types::TrainingJobRequest, job: Uuid) -> Self {
         Self {
-            submission_id: Some(job),
+            submission_id: Some(returned_id(job)),
             persona_id: request.persona_id,
             persona_name: request.persona_name,
             base_model: request.base_model,

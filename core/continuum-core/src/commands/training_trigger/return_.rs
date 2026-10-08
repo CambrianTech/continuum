@@ -5,8 +5,9 @@
 //! without training a step (killed before it ran, refused at admission, ended by a
 //! restart that nothing resumed), those examples sit in its directory and no fill ever
 //! sees them again. On 2026-10-05 the 5090 stranded about 500 of Kimi's that way (18
-//! jobs). This verb puts them back through the one acceptance path, keyed by the job's
-//! id so a second return of the same job is a replay, never a second copy.
+//! jobs). This verb puts them back through the one acceptance path, under an identity
+//! derived from the job (`returned_id`), so a second return of the same job is a replay,
+//! never a second copy, and never the identity of the submission that filled the job.
 //!
 //! Deliberately a VERB, not automatic on failure: a job that fails deterministically
 //! (out of device memory at its window) would refill, re-dispatch and fail again
@@ -99,7 +100,7 @@ mod tests {
     use crate::genome::fine_tuning::job_board::WatchedJob;
     use crate::genome::fine_tuning::types::{JobHandle, TrainingSource, TrainingStatus};
 
-    // what this catches (the 5090, 2026-10-05): ~500 of Kimi's examples stranded in the
+    // what this catches (the 5090, 2026-10-05; and 2026-10-07, a return wearing its submission's id): ~500 of Kimi's examples stranded in the
     // directories of 18 jobs that ended without training, with no path back to her bucket.
     // A returned job's examples land in her bucket ONCE (a second return is a replay), and
     // a job still open, or one that trained, is refused rather than returned.
@@ -203,6 +204,46 @@ mod tests {
             base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
         };
         assert_eq!(trigger.state.buckets.get(&other_key).map(|b| b.examples.len()), Some(3), "1 produced + 2 returned");
+
+        // regression for the 5090, 2026-10-07 (34 of Kimi's examples): a job the trigger
+        // dispatched is registered under the id of the submission that filled it. The return
+        // keyed its batch by that id, so the store read it as the original submission
+        // (AlreadyAccepted, nothing appended). The return lands under its own identity.
+        let third = Uuid::from_u128(9);
+        let filled_by = Uuid::new_v4();
+        let original = SubmitParams {
+            submission_id: Some(filled_by),
+            persona_id: third,
+            persona_name: "Aris".into(),
+            base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+            trait_kind: "code/owner".into(),
+            examples: vec![ex("o1", "p1")],
+            source: TrainingSource::TeacherSynthesized,
+            eval_set: None,
+            lora: None,
+            schedule: None,
+            local_artifact_dir: None,
+            preferred_provider: None,
+            min_examples: Some(50),
+            validation_split: None,
+        };
+        assert!(submit_batch(&trigger.state, original).await.expect("test: original").success);
+        ended_for(filled_by, third, "Aris");
+        let jd = job_dir_under(&root, "Aris", "code/owner", filled_by);
+        std::fs::create_dir_all(&jd).expect("test: dir");
+        std::fs::write(jd.join("request.json"), serde_json::json!({
+            "personaId": third.to_string(), "personaName": "Aris",
+            "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "traitKind": "code/owner",
+            "dataset": {"examples": [ex("t1", "u1"), ex("t2", "u2")], "source": TrainingSource::TeacherSynthesized, "validationSplit": 0.1}
+        }).to_string()).expect("test: write");
+        let back = return_job(&trigger.state, &board, &root, filled_by).await.expect("test: returned under its own id");
+        assert!(back.success, "{back:?}");
+        let third_key = crate::modules::training_trigger::BucketKey {
+            persona_id: third,
+            trait_kind: "code/owner".into(),
+            base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+        };
+        assert_eq!(trigger.state.buckets.get(&third_key).map(|b| b.examples.len()), Some(3), "1 original + 2 returned, not a replay of the original");
 
         let open = Uuid::new_v4();
         board.register(watched(open));
