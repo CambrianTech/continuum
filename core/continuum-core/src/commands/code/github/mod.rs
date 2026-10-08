@@ -88,6 +88,26 @@ pub(crate) async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, C
     .map_err(|e| CommandError::Internal(format!("gh task panicked: {e}")))?
 }
 
+/// Run one local `git` invocation in `root`, off the runtime worker — the preflight twin of
+/// `run_gh`. A non-zero exit or missing git returns `None` (unknown), never an error: a check
+/// that cannot decide defers to the real command instead of inventing a new failure mode.
+pub(crate) async fn git_quiet(root: PathBuf, args: Vec<String>) -> Option<String> {
+    tokio::task::spawn_blocking(move || {
+        let out = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&root)
+            .output()
+            .ok()?; // no git on this host → unknown, defer to `gh` (which will say so itself)
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
 /// The GitHub-collaboration command objects the code module contributes to the kernel's
 /// typed object map, aggregated with the shared `Arc<CodeState>` (mirrors
 /// [`super::git::command_objects`]).
