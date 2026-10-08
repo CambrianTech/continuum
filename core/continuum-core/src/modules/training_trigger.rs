@@ -71,7 +71,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::genome::fine_tuning::types::{
-    JobHandle, LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingExample,
+    JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample,
     TrainingJobRequest, TrainingSource,
 };
 use crate::runtime::{
@@ -559,23 +559,7 @@ impl TrainingTriggerState {
             .require()
             .map_err(DispatchFailure::Retryable)?;
 
-        let request = TrainingJobRequest {
-            persona_id,
-            persona_name: batch.persona_name.clone(),
-            base_model: base_model.to_string(),
-            trait_kind: trait_kind.to_string(),
-            resume_from: None,
-            parent: None,
-            dataset: TrainingDataset {
-                examples: batch.examples.clone(),
-                source: batch.source,
-                validation_split: batch.validation_split,
-            },
-            eval_set: batch.eval_set.clone(),
-            lora: batch.lora.clone(),
-            schedule: batch.schedule.clone(),
-            local_artifact_dir: batch.local_artifact_dir.clone(),
-        };
+        let request = batch.training_request(persona_id, trait_kind, base_model);
 
         let mut params = serde_json::to_value(&request).map_err(|e| {
             DispatchFailure::Retryable(format!("serialize TrainingJobRequest: {e}"))

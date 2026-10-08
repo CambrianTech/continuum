@@ -150,7 +150,7 @@ pub(crate) async fn return_request(
         Some(policy) => params.adopting(policy),
         None => params,
     };
-    submit_batch(state, params).await
+    submit_batch_inner(state, params, Some(job)).await
 }
 
 /// Outcome-as-data extends the legacy envelope with an acceptance receipt.
@@ -292,6 +292,10 @@ crate::action_command! {
 /// One batch into a bucket: THE acceptance path, shared by `submit` and `return` so a
 /// returned job's examples are accepted, deduped and dispatched exactly as any batch is.
 pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitParams) -> Result<SubmitOutcome, CommandError> {    
+    submit_batch_inner(state, p, None).await
+}
+
+async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, returned_job: Option<Uuid>) -> Result<SubmitOutcome, CommandError> {
     if let Err(error) = state.require_ready() {
         return Ok(SubmitOutcome::refused("PersistenceUnavailable", error));
     }
@@ -334,6 +338,11 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
     };
     let submission_id = p.submission_id;
     state.run_owned(key, move |state, key| async move {
+        if let Some(job) = returned_job {
+            if let Err((kind, error)) = state.verify_return_ownership(&key, job, returned_id(job)).await {
+                return SubmitOutcome::refused(kind, error);
+            }
+        }
         // A held bucket is bounded: past MAX_HELD_EXAMPLES a NEW submit is refused and
         // the producer keeps its evidence for a later pass (never silently dropped). A
         // replay of a submission the bucket already holds is recognised first: it is

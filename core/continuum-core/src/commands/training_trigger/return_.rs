@@ -43,7 +43,7 @@ pub struct ReturnParams {
 crate::action_command! {
     /// Return the examples of a job that ended without training to its persona's bucket.
     /// Refuses a job that is still open (it trains or resumes itself) and one that trained
-    /// (its adapter is its outcome). The job id is the batch identity, so returning the same
+    /// (its adapter is its outcome). A distinct identity derives from the job, so returning the same
     /// job twice is a replay. Returns submit's outcome: appended, held behind a job of hers,
     /// or dispatched if the bucket filled.
     pub struct TrainingTriggerReturn {
@@ -77,19 +77,41 @@ pub(crate) async fn return_job(
             "job {job_id} is still open: it trains, or the trigger resumes it; only an ended job is returned"
         )));
     }
-    let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, job_id);
-    if dir.join("checkpoints").join("LATEST").is_file() || dir.join("adapters").join("adapter_config.json").is_file() {
-        return Err(CommandError::Invalid(format!(
-            "job {job_id} trained (its checkpoint or adapter is in {}): its outcome is that adapter, not its examples",
-            dir.display()
-        )));
+    if board.completed_training(job_id) {
+        return Err(CommandError::Invalid(format!("job {job_id} completed training; its input is not returned")));
     }
-    let request = read_job_request(&dir).map_err(CommandError::NotFound)?;
+    let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, job_id);
+    refuse_trained_job(job_id, &dir)?;
+    let request = if dir.join("request.json").try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
+        read_job_request(&dir).map_err(CommandError::NotFound)?
+    } else {
+        let dispatch = job.trigger_dispatch_id.ok_or_else(|| CommandError::NotFound(format!(
+            "job {job_id} has neither request.json nor a recorded trigger dispatch; cannot recover its input"
+        )))?;
+        let key = crate::modules::training_trigger::BucketKey {
+            persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone(),
+        };
+        state.dispatched_request(&key, dispatch, job_id).await.map_err(CommandError::Invalid)?
+    };
+    if let Some(root) = &request.local_artifact_dir {
+        refuse_trained_job(job_id, &root.join(job_id.to_string()))?;
+    }
     let outcome = return_request(state, request, job_id).await?;
     if outcome.success {
         board.journal_returned(job_id, job_id, &serde_json::json!("genome/training-trigger/return"), 0); // not held by a Took: an operator returned it, named by the verb
     }
     Ok(outcome)
+}
+
+fn refuse_trained_job(job: Uuid, dir: &std::path::Path) -> Result<(), CommandError> {
+    for artifact in ["checkpoints/LATEST", "adapters/adapter_config.json", "adapters/adapter.gguf"] {
+        if dir.join(artifact).try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
+            return Err(CommandError::Invalid(format!(
+                "job {job} has a checkpoint or adapter in {}: its outcome is that adapter, not its examples", dir.display()
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -236,14 +258,17 @@ mod tests {
             "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "traitKind": "code/owner",
             "dataset": {"examples": [ex("t1", "u1"), ex("t2", "u2")], "source": TrainingSource::TeacherSynthesized, "validationSplit": 0.1}
         }).to_string()).expect("test: write");
-        let back = return_job(&trigger.state, &board, &root, filled_by).await.expect("test: returned under its own id");
-        assert!(back.success, "{back:?}");
+        // A legacy row without a dispatch receipt is ambiguous: it may itself be an
+        // earlier successful return. The durable owner's regression covers proven
+        // dispatches with both identical and changed payloads across restart.
+        let back = return_job(&trigger.state, &board, &root, filled_by).await.expect("test: legacy ownership diagnostic");
+        assert_eq!(back.error_kind.as_deref(), Some("RecoveryRequired"), "{back:?}");
         let third_key = crate::modules::training_trigger::BucketKey {
             persona_id: third,
             trait_kind: "code/owner".into(),
             base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
         };
-        assert_eq!(trigger.state.buckets.get(&third_key).map(|b| b.examples.len()), Some(3), "1 original + 2 returned, not a replay of the original");
+        assert_eq!(trigger.state.buckets.get(&third_key).map(|b| b.examples.len()), Some(1), "ambiguous legacy ownership never duplicates examples");
 
         let open = Uuid::new_v4();
         board.register(watched(open));
@@ -253,8 +278,22 @@ mod tests {
         let trained = Uuid::new_v4();
         ended(trained);
         let jd = write_request(trained);
-        std::fs::create_dir_all(jd.join("checkpoints")).expect("test: ck");
-        std::fs::write(jd.join("checkpoints").join("LATEST"), "step-8").expect("test: latest");
-        assert!(matches!(return_job(&trigger.state, &board, &root, trained).await, Err(CommandError::Invalid(_))), "a trained job's outcome is its adapter");
+        for artifact in ["checkpoints/LATEST", "adapters/adapter_config.json", "adapters/adapter.gguf"] {
+            let path = jd.join(artifact);
+            std::fs::create_dir_all(path.parent().expect("test: parent")).expect("test: artifact dir");
+            std::fs::write(&path, "trained").expect("test: artifact");
+            assert!(matches!(return_job(&trigger.state, &board, &root, trained).await, Err(CommandError::Invalid(_))), "a trained job's outcome is its adapter: {artifact}");
+            std::fs::remove_file(path).expect("test: next artifact format");
+        }
+        let completed = Uuid::new_v4();
+        board.register(watched(completed));
+        board.claim(completed, &TrainingStatus::Completed {
+            artifact: crate::genome::fine_tuning::types::TrainingArtifact {
+                model_id: "already-trained".into(), local_path: None,
+                format: crate::genome::fine_tuning::types::ArtifactFormat::ProviderHosted,
+                metrics: Default::default(),
+            },
+        });
+        assert!(matches!(return_job(&trigger.state, &board, &root, completed).await, Err(CommandError::Invalid(_))), "completed receipt refuses even when artifacts are absent");
     }
 }
