@@ -36,3 +36,4 @@ pub mod deploy_provenance;
 pub mod deploy_tracker;
 /// Deploying the core CI built instead of compiling it (card 50ca737e).
 pub mod prebuilt_artifact;
+pub mod prebuilt_validation;
