@@ -89,23 +89,29 @@ pub(crate) async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, C
 }
 
 /// Run one local `git` invocation in `root`, off the runtime worker — the preflight twin of
-/// `run_gh`. A non-zero exit or missing git returns `None` (unknown), never an error: a check
-/// that cannot decide defers to the real command instead of inventing a new failure mode.
-pub(crate) async fn git_quiet(root: PathBuf, args: Vec<String>) -> Option<String> {
+/// `run_gh`. This is the module's single git executor: it preserves the full Output (status and
+/// both streams) and owns the execution error policy. When we cannot run git at all (missing
+/// binary, spawn failure), it returns None = unknown; a check that cannot decide defers to the
+/// real command instead of inventing a new failure mode. Callers layer their own interpretation.
+pub(crate) async fn git_run(root: PathBuf, args: Vec<String>) -> Option<std::process::Output> {
     tokio::task::spawn_blocking(move || {
-        let out = std::process::Command::new("git")
+        std::process::Command::new("git")
             .args(&args)
             .current_dir(&root)
-            .output()
-            .ok()?; // no git on this host → unknown, defer to `gh` (which will say so itself)
-        if !out.status.success() {
-            return None;
-        }
-        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+            .output() // no git on this host → unknown, defer to `gh` (which will say so itself)
+            .ok()
     })
     .await
-    .ok()
-    .flatten()
+    .unwrap_or(None) // the worker panicked — treat as undecidable
+}
+
+/// [`git_run`] with the "did it succeed?" interpretation: a non-zero exit returns None (unknown).
+pub(crate) async fn git_quiet(root: PathBuf, args: Vec<String>) -> Option<String> {
+    let out = git_run(root, args).await?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// The GitHub-collaboration command objects the code module contributes to the kernel's

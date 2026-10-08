@@ -90,9 +90,10 @@ crate::action_command! {
 /// own message: preflight may add refusals, never new failure modes. A confused retry is a tool
 /// defect, not the citizen's slip.
 async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&str>) -> Result<(), CommandError> {
-    // Fork heads in EITHER syntax (`owner/branch`, `owner:branch`) live on someone else's
-    // origin and have no local remote-tracking ref to check — gh's territory.
-    if head_param.is_some_and(|h| h.contains('/') || h.contains(':')) {
+    // Fork heads (`owner:branch`) live on someone else's origin and have no local remote-tracking
+    // ref to check — gh's territory. A SLASH in the head is NOT fork notation: `feature/foo` is an
+    // ordinary local branch and gets the full preflight (the early slash bypass let unpushed ones through).
+    if head_param.is_some_and(|h| h.contains(':')) {
         return Ok(());
     }
 
@@ -160,11 +161,10 @@ async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&s
 /// load-bearing: only `Absent` licenses a preflight refusal. Anything else that isn't
 /// `Found` is undecidable — network blip, auth prompt, remote gone — and inventing
 /// "not pushed" for it would point at the wrong fix. We read plain `ls-remote`'s OUTPUT,
-/// not its exit code: empty-means-absent held in every measurement, while `--exit-code`
-/// rc drifts by git version (measured 2 where the docs say 1).
+/// not its exit code: empty-means-absent held in every measurement on this host (git 2.54).
 enum RemoteHead {
     Found(String), // tip sha on origin
-    Absent,        // plain ls-remote: rc 0 + empty output — no such ref on origin
+    Absent,        // rc 0 + empty output — no such ref on origin (measured stable)
     Unknown,       // could not ask or cannot tell — defer to `gh`
 }
 
