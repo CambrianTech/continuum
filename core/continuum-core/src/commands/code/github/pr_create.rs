@@ -90,8 +90,9 @@ crate::action_command! {
 /// own message: preflight may add refusals, never new failure modes. A confused retry is a tool
 /// defect, not the citizen's slip.
 async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&str>) -> Result<(), CommandError> {
-    // `owner/branch` fork heads have no local remote-tracking ref to check — gh's territory.
-    if head_param.is_some_and(|h| h.contains('/')) { // `owner/branch` fork heads defer to gh — see the guard's doc above
+    // Fork heads in EITHER syntax (`owner/branch`, `owner:branch`) live on someone else's
+    // origin and have no local remote-tracking ref to check — gh's territory.
+    if head_param.is_some_and(|h| h.contains('/') || h.contains(':')) {
         return Ok(());
     }
 
@@ -126,8 +127,12 @@ async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&s
         }
     }
 
-    // Pushed? Fast path: the remote-tracking ref matches HEAD exactly (no network).
-    let head_sha = super::git_quiet(root.to_path_buf(), vec!["rev-parse".into(), "HEAD".into()]).await;
+    // Pushed? Resolve the SELECTED head's local tip — not checkout HEAD: a caller on main
+    // can open a PR from an already-pushed `feature`, and comparing origin/feature to
+    // main's tip would invent a "run push" refusal for a branch that needs none.
+    let head_sha = super::git_quiet(root.to_path_buf(), vec!["rev-parse".into(), "--verify".into(), format!("refs/heads/{head}")])
+        .await;
+    // Fast path: the remote-tracking ref matches the local tip exactly (no network).
     let tracking = super::git_quiet(root.to_path_buf(), vec!["rev-parse".into(), "--verify".into(), format!("refs/remotes/origin/{head}")])
         .await;
     if let (Some(t), Some(h)) = (&tracking, &head_sha) {
@@ -136,21 +141,64 @@ async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&s
         }
     }
     // Stale or missing local view: ask origin directly (one lightweight round-trip).
-    match super::git_quiet(root.to_path_buf(), vec!["ls-remote".into(), "--exit-code".into(), "--heads".into(), "origin".into(), head.clone()])
-        .await
-    {
-        Some(line) => {
-            let sha = line.split_whitespace().next().unwrap_or_default();
-            match &head_sha {
-                Some(h) if *h == sha => Ok(()), // on origin, fully pushed (the local view was just stale)
-                Some(_) => Err(CommandError::Invalid(format!(
-                    "code/github/pr-create: local {head} has commits beyond what's on origin — run code/git/push first, then pr-create"))),
-                None => Ok(()), // can't compare → defer to gh
-            }
-        }
-        None => Err(CommandError::Invalid(format!(
+    match remote_head_tip(root, &head).await {
+        RemoteHead::Found(sha) => match &head_sha {
+            Some(h) if *h == sha => Ok(()), // on origin, fully pushed (the local view was just stale)
+            Some(_) => Err(CommandError::Invalid(format!(
+                "code/github/pr-create: local {head} has commits beyond what's on origin — run code/git/push first, then pr-create"))),
+            None => Ok(()), // no local tip to compare against → defer to gh
+        },
+        RemoteHead::Absent => Err(CommandError::Invalid(format!(
             "code/github/pr-create: branch {head} is not pushed to origin yet — run code/git/push first, then pr-create"))),
+        // Transport/auth failure, or no way to ask origin at all: cannot decide. Defer to
+        // gh, which fails loud with the true cause — preflight adds refusals, never misdirects.
+        RemoteHead::Unknown => Ok(()),
     }
+}
+
+/// The three ways origin can answer "what is your tip for `head`?" and why the split is
+/// load-bearing: only `Absent` licenses a preflight refusal. Anything else that isn't
+/// `Found` is undecidable — network blip, auth prompt, remote gone — and inventing
+/// "not pushed" for it would point at the wrong fix. We read plain `ls-remote`'s OUTPUT,
+/// not its exit code: empty-means-absent held in every measurement, while `--exit-code`
+/// rc drifts by git version (measured 2 where the docs say 1).
+enum RemoteHead {
+    Found(String), // tip sha on origin
+    Absent,        // plain ls-remote: rc 0 + empty output — no such ref on origin
+    Unknown,       // could not ask or cannot tell — defer to `gh`
+}
+
+/// Ask origin for `head`'s tip in one lightweight round-trip. The preflight twin of
+/// `git_quiet`, except it keeps the exit code and reads the output: rc 0 + empty =
+/// absent; non-zero or unparseable = undecidable (defer to `gh`). Missing git → Unknown.
+async fn remote_head_tip(root: &Path, head: &str) -> RemoteHead {
+    let (root, head) = (root.to_path_buf(), head.to_string());
+    tokio::task::spawn_blocking(move || {
+        let out = match std::process::Command::new("git")
+            .args(["ls-remote", "--heads", "origin", &head])
+            .current_dir(&root)
+            .output()
+        {
+            Ok(o) => o,
+            Err(_) => return RemoteHead::Unknown, // no git on this host → unknown, defer to `gh`
+        };
+        match out.status.code() {
+            Some(0) => {
+                let text = String::from_utf8_lossy(&out.stdout);
+                if text.trim().is_empty() {
+                    RemoteHead::Absent // rc 0 + empty output — origin says "no such ref" (measured stable where the `--exit-code` rc was not)
+                } else {
+                    match text.lines().next().and_then(|l| l.split_whitespace().next()).map(str::to_string) {
+                        Some(s) => RemoteHead::Found(s),
+                        None => RemoteHead::Unknown, // rc 0 but no parseable line — undecidable
+                    }
+                }
+            }
+            _ => RemoteHead::Unknown, // transport/auth/other → cannot decide; defer to gh
+        }
+    })
+    .await
+    .unwrap_or(RemoteHead::Unknown) // the worker panicked — treat as undecidable, defer to gh
 }
 
 #[cfg(test)]
@@ -249,7 +297,8 @@ mod tests {
     #[tokio::test]
     async fn fork_heads_defer_to_gh() {
         let fx = PrFixture::new();
-        branch_preflight(fx.work.path(), Some("main"), Some("someone/branch")).await.expect("fork heads are gh's territory");
+        branch_preflight(fx.work.path(), Some("main"), Some("someone/branch")).await.expect("slash fork heads are gh's territory");
+        branch_preflight(fx.work.path(), Some("main"), Some("someone:feature")).await.expect("colon fork heads are gh's territory too");
     }
 
     #[tokio::test]
@@ -258,5 +307,40 @@ mod tests {
         git(fx.work.path(), &["checkout", "-q", "--detach"]);
         let err = branch_preflight(fx.work.path(), None, None).await.unwrap_err();
         assert!(err.to_string().contains("detached"), "{err}");
+    }
+
+    // what this catches: the push check resolves the SELECTED head's tip, not checkout HEAD.
+    // On main with `feature` already pushed, the old code compared origin/feature to
+    // main's tip and refused "run code/git/push first" for a branch that needed none.
+    #[tokio::test]
+    async fn selected_head_resolves_the_named_branch_not_HEAD() {
+        let fx = PrFixture::new(); // on main, pushed
+        git(fx.work.path(), &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(fx.work.path().join("b.txt"), "two\n").expect("wip file");
+        git(fx.work.path(), &["add", "b.txt"]);
+        git(fx.work.path(), &["commit", "-q", "-m", "wip"]);
+        git(fx.work.path(), &["push", "-q", "-u", "origin", "feature"]);
+        git(fx.work.path(), &["checkout", "-q", "main"]); // HEAD is main; the PR head is feature
+        branch_preflight(fx.work.path(), Some("main"), Some("feature"))
+            .await
+            .expect("a fully-pushed selected head passes even when HEAD sits elsewhere");
+    }
+
+    // what this catches: a transport failure asking origin (unreachable remote) is UNKNOWN,
+    // not "not pushed" — preflight defers to gh so the true cause surfaces instead of a
+    // misdirected fix. Only origin's URL breaks; the fixture's ref state stays real.
+    #[tokio::test]
+    async fn unreachable_origin_defers_to_gh() {
+        let fx = PrFixture::new();
+        git(fx.work.path(), &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(fx.work.path().join("b.txt"), "two\n").expect("wip file");
+        git(fx.work.path(), &["add", "b.txt"]);
+        git(fx.work.path(), &["commit", "-q", "-m", "wip"]);
+        // Point origin at a path that does not exist: ls-remote then fails with a transport
+        // error (exit 128), which is NOT the --exit-code absent-ref exit (1).
+        git(fx.work.path(), &["remote", "set-url", "origin", "/nonexistent/definitely-not-a-repo"]);
+        branch_preflight(fx.work.path(), Some("main"), Some("feature"))
+            .await
+            .expect("an unreachable origin defers to gh instead of inventing 'not pushed'");
     }
 }
