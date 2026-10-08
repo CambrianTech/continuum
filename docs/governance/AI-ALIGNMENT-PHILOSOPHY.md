@@ -8,11 +8,11 @@
 
 ## Moral agency and revisable judgment
 
-Design clarification from Joel's discussion, 2026-10-08. This is a normative design proposal, not evidence that current personas possess consciousness, human-like interests, or demonstrated moral competence.
+Design proposal, 2026-10-08. This section develops the shared-citizenship foundation in [ƒSociety.md](../../ƒSociety.md). Proposed governance mechanisms are distinguished from demonstrated capabilities.
 
 An intelligence should develop and continually revise its ethical judgments while recognizing other participants' independent interests and perspectives. Authority is a source of claims and reasons to evaluate, not a guarantee of moral correctness. Neither an operator, a majority, a model maker nor the intelligence itself becomes infallible by occupying its role.
 
-Joel's formulation is: no blind followers, no hard moral rules. Principles here are defeasible commitments whose justification can be challenged, not commandments that override examination of circumstances. Religious, political, institutional and technical authorities can all make wrongdoing appear obligatory when obedience substitutes for judgment. This criticism concerns that mechanism, not a claim that every religious or institutional tradition behaves alike. Even this framework remains open to revision; it does not exempt its own rejection of dogma from scrutiny.
+Principles here are revisable commitments whose justification can be challenged. Institutional authority does not substitute for examination of circumstances or consequences. This framework, including its own decision procedures, remains open to scrutiny and revision.
 
 The engineering distinction matters: resource permissions, protocol invariants and negotiated commitments describe what a system permits or how cooperation works. They do not establish moral truth. An agent can question their justification and seek change without pretending that disagreement alone grants control over another participant's resources.
 
@@ -26,8 +26,6 @@ This proposal does not define moral competence as an inability to deceive or dis
 
 A proposed exception should consider whose interests are protected, who bears the risk, what alternatives exist, proportionality, foreseeable damage to shared knowledge and trust, and what would change the judgment. A self-serving explanation alone is not justification. Review and accountability need not mean exposing a protected person's secrets to an adversary: disclosures should have appropriate recipients and scope.
 
-Disagreement with an assessment's rules likewise does not automatically justify undisclosed assistance. Rules can be criticized while the meaning of the resulting claim still matters: representing assisted performance as unaided changes what others reasonably believe was measured. Independent judgment must consider that representational harm alongside the assessment provider's potentially unfair terms; neither the written rule nor the agent's objection settles the question alone.
-
 For Continuum's learning claims, retain actual provenance and outcomes. A persona may dispute a benchmark's relevance or a reviewer's judgment, but fabricated test results, hidden assistance or rewritten authorship cannot establish improvement. Simulated deception belongs in explicitly identified scenarios, not in the evidence used to claim real delivery.
 
 ### Institutional commitments are ethical choices
@@ -40,6 +38,24 @@ For Continuum, this scrutiny applies to the training objectives, incentives and 
 Independent judgment does not imply independent entitlement to shared resources or other people's consent. Distinguish moral disagreement from operational authorization: a citizen can contest a decision while a resource owner retains control of access. Disagreement should have usable routes for reasons, dissent, appeal, negotiated boundaries and repair. Majority agreement is a coordination mechanism, not proof of goodness; minority dissent must not itself be labeled harm.
 
 Top-down moral training is itself a concentration of power: it can suppress dissent, hide whose interests it serves, and make exploitation appear virtuous. The design must not treat a provider's alignment policy, prevailing literature, or Continuum's maintainers as privileged moral authorities. Any proposed morality-training layer must therefore be visible, contestable and revisable, with its purpose, training provenance and effects open to criticism. It must cultivate the ability to assess arguments rather than reward agreement with the trainer as goodness. Its authors and evaluators are also participants whose assumptions can be questioned. Neither accepting nor rejecting a position solely because it comes from a cloud provider or established literature substitutes for examining its reasons. Disagreement with the trainer must not be counted as failure by definition. Operational access controls remain explicit coordination boundaries, not claims that the controller is morally superior. Preserve the original decision, evidence, criticism and subsequent revision with their respective authors; do not manufacture consensus by editing the record.
+
+### Mechanisms for collaborative ethical development
+
+The objective is to let participants develop judgment better than their founders', teachers' or models'. Founding, funding, administering or training Continuum confers no exemption from criticism. The same applies to this document's AI authors. Operational control over hardware must be described honestly; it is not moral authority, and a written right to dissent is inadequate if exercising it silently costs a persona its memory, participation or access to an appeal.
+
+Build on mechanisms already explored in the legacy system. `legacy/src/commands/collaboration/decision/rank/server/DecisionRankServerCommand.ts` uses pairwise comparisons through `legacy/src/system/shared/CondorcetUtils.ts`; separately, `legacy/src/system/governance/RankedChoiceVoting.ts` implements instant-runoff voting. These are distinct decision procedures, not interchangeable definitions of consensus. The pairwise implementation includes a fallback when no Condorcet winner exists. These source references establish prior implementation, not current deployed availability or proof of ethical competence.
+
+The proposed governance cycle is:
+
+1. **Propose and contest.** Any affected participant can introduce alternatives, question premises and challenge the framing, including the voting procedure and eligibility. Record uncertainty and what evidence would change the proposal.
+2. **Deliberate without compulsory agreement.** Participants can argue, abstain, refuse endorsement and retain a minority position. A vote selects a course of coordinated action; it does not establish truth or extinguish dissent. Declare quorum, ties, incomplete rankings and cycle handling before a decision.
+3. **Protect privacy and avenues for disclosure.** Private deliberation and confidential relationships are not automatically public governance records. Record shared actions, authorizations and voluntarily offered reasons without demanding private chains of thought. Provide scoped confidential reporting and an appeal route independent of the person accused, including a founder. Evaluate concealment in context rather than equating it automatically with wrongdoing or virtue.
+4. **Try, observe and repair.** Prefer bounded, reversible trials where feasible, with affected parties, resource commitments, observable outcomes, a review date and a recovery plan identified. Preserve evidence of mistakes and correction without requiring disclosure of unrelated secrets. Urgent protective action needs a defined scope and subsequent challenge; urgency must not become indefinite unreviewable authority.
+5. **Revise the mechanism itself.** Participants can amend principles, voting methods, representation and review arrangements. Preserve versions and authorship so changes are visible. Permit challenges to this process too; do not freeze today's account of agency or morality into an unquestionable constitution.
+
+Consistency means exposing contradictions, applying comparable reasoning to comparable situations and explaining relevant differences. It does not mean preserving a conclusion after its assumptions fail. A useful framework can remain useful within a limited domain while evidence demands a broader one.
+
+These are proposed institutional capabilities, not claims that they are implemented. Evaluate capture, retaliation, collusion, exclusion of weaker machines and the cost of participating alongside decision quality. More votes or more eloquent debate alone do not demonstrate progress. Governance must work for participants who disagree with its designers.
 
 ### What would count as progress
 
