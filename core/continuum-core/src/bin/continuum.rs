@@ -1240,13 +1240,23 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         let payload = continuum_core::paths::payload_root(&home)?;
         let selected = installed_release::validate_receipt(&text,&home,&payload,&sid)?;
         let release = &selected.release;
-        let mut command = std::process::Command::new(&release.cli);
+        let mut command = if args[0] == "core" {
+            // The validated launcher owns media startup as well as the core host.
+            // Select it only after the shared Medium gate and receipt validation.
+            let mut command = std::process::Command::new(PreparedCoreService::shell()?);
+            command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "RemoteSigned", "-File", &release.launcher,
+                "-ExecutablePath", &release.cli, "-CorePath", &release.artifact,
+                "-SocketPath", &release.socket, "-EnginePath", &release.engine,
+                "-LogDirectory", &release.log_directory]);
+            if let Some(root) = &release.eye_root { command.args(["-EyeRoot", root]); }
+            command
+        } else {
+            let mut command = std::process::Command::new(&release.cli);
+            command.arg("deploy-consume");
+            command
+        };
         command.current_dir(Path::new(&release.cli).parent().ok_or("release has no directory")?);
         command.env("CONTINUUM_CORE_SOCKET", &release.socket);
-        if args[0]=="core" {
-            command.args(["service-host",&release.artifact,&release.socket,&release.engine]);
-            if let Some(root)=&release.eye_root { command.arg(root); }
-        } else { command.arg("deploy-consume"); }
         std::fs::create_dir_all(&release.log_directory).map_err(|e|e.to_string())?;
         let logfile = Path::new(&release.log_directory).join(if args[0]=="core" { "service-bootstrap.log" } else { "deploy-bootstrap.log" });
         let log = std::fs::OpenOptions::new().create(true).append(true).open(logfile).map_err(|e|e.to_string())?;
