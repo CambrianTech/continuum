@@ -15,8 +15,10 @@ try {
     # release transport identity and hash are checked, independent of GPU policy.
     & {
         . (Join-Path $repo 'tools/scripts/lib/windows-prebuilt.ps1')
+        . (Join-Path $repo 'tools/scripts/lib/win-modules.ps1')
+        function Module-Fail { param($Name,$Fix) throw "$Name $Fix" }
         $tip = '0123456789012345678901234567890123456789'
-        $manifest = [pscustomobject]@{ git_sha=$tip; platform='windows-x86_64'; archive='continuum-core-windows-x86_64.tar.gz'; sha256=('a' * 64) }
+        $manifest = [pscustomobject]@{ git_sha=$tip; platform='windows-x86_64'; archive='continuum-core-windows-x86_64.tar.gz'; sha256=('a' * 64); runtime_libs=@('VCOMP140.DLL'); bootstrap_runtime_libs=@('VCOMP140.DLL') }
         Assert-CoreBootstrapManifest $manifest $tip 'windows-x86_64'
         foreach ($case in @(@('git_sha','ffffffffffffffffffffffffffffffffffffffff'), @('platform','macos-arm64'), @('archive','../escape.tar.gz'), @('sha256','short'))) {
             $original = $manifest.($case[0]); $manifest.($case[0]) = $case[1]
@@ -25,6 +27,22 @@ try {
             $manifest.($case[0]) = $original
             if (-not $refused) { throw "Untrusted bootstrap $($case[0]) was accepted" }
         }
+        $transportRoot = Join-Path $scratch 'bootstrap-transport'
+        $package = Join-Path $transportRoot 'continuum-core-windows-x86_64'
+        New-Item -ItemType Directory -Path $package -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $package 'continuum.exe'), 'fixture CLI bytes')
+        [IO.File]::WriteAllText((Join-Path $package 'VCOMP140.DLL'), 'fixture OpenMP runtime')
+        $archive = Join-Path $transportRoot $manifest.archive
+        & tar.exe -czf $archive -C $transportRoot 'continuum-core-windows-x86_64'
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot package bootstrap adapter fixture.' }
+        $manifest.sha256 = (Get-FileHash -LiteralPath $archive).Hash
+        $bootstrap = Join-Path $transportRoot 'selected'
+        $selected = Expand-CoreBootstrap $archive $manifest $bootstrap
+        if ([IO.File]::ReadAllText($selected) -cne 'fixture CLI bytes' -or [IO.File]::ReadAllText((Join-Path $bootstrap 'VCOMP140.DLL')) -cne 'fixture OpenMP runtime') { throw 'Bootstrap did not stage its exact declared runtime.' }
+        $manifest.bootstrap_runtime_libs = @('VCOMP140.DLL','vcomp140.dll')
+        $refused = $false
+        try { Assert-CoreBootstrapManifest $manifest $tip 'windows-x86_64' } catch { $refused = $true }
+        if (-not $refused) { throw 'Case-colliding bootstrap DLLs were accepted.' }
     }
     Write-Output 'PASS: bootstrap refuses wrong revision/platform/path/checksum before execution'
     # what this catches: partial robocopy failure was reported as success, and
@@ -1542,15 +1560,17 @@ function Mod-LlamaServer {
 '@
         $modules.Replace('__MODULES__', (Join-Path $repo 'tools\scripts\lib\win-modules.ps1').Replace("'", "''")) |
             Set-Content -LiteralPath (Join-Path $prepareLib 'win-modules.ps1')
+        Set-Content -LiteralPath (Join-Path $prepareLib 'windows-prebuilt.ps1') -Value "function Get-CorePrebuiltRelease { throw 'fixture reached published fetch without developer tools' }"
         $missingFiles = @{cmake=(Join-Path $cmakeBin 'cmake.exe'); llvm=(Join-Path $llvmBin 'libclang.dll'); cuda=(Join-Path $cudaBin 'nvcc.exe')}
-        foreach ($extra in @('', ' -Update', ' -Grid', ' -ResumePrepared', 'cmake', 'llvm', 'cuda')) {
+        foreach ($extra in @('', ' -Update', ' -Grid', ' -ResumePrepared', 'cmake', 'llvm', 'cuda', 'prebuilt')) {
             $missing = $missingFiles[$extra]
             if ($missing) { $missingBytes = [IO.File]::ReadAllBytes($missing); Remove-Item -LiteralPath $missing }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
             # Same explicit exception capture as the hidden resume fixture.
             $entry = (Join-Path $prepareRepo 'install.ps1').Replace("'", "''")
-            $flags = if ($missing) { '' } else { $extra }
-            $invoke = "try { & '$entry' -PrepareOnly$flags } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $flags = if ($missing -or $extra -eq 'prebuilt') { '' } else { $extra }
+            $developerFlag = if ($extra -eq 'prebuilt') { '' } else { ' -DeveloperBuild' }
+            $invoke = "try { & '$entry' -PrepareOnly$developerFlag$flags } catch { Write-Output `$_.Exception.Message; exit 1 }"
             $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
@@ -1565,7 +1585,9 @@ function Mod-LlamaServer {
                 $stderr = $process.StandardError.ReadToEndAsync()
                 if (-not $process.WaitForExit(120000)) { $process.Kill(); $process.WaitForExit(); throw 'Isolated prepare fixture timed out (120 s)' }
                 $output = $stdout.Result + $stderr.Result
-                if (-not $extra) {
+                if ($extra -eq 'prebuilt') {
+                    if ($process.ExitCode -eq 0 -or $output -notmatch 'fixture reached published fetch without developer tools') { throw "Default preparation did not select published artifacts: $output" }
+                } elseif (-not $extra) {
                     if ($process.ExitCode -ne 0 -or $output -notmatch 'fixture prebuilt validated') { throw "Public preparation failed: $output" }
                 } elseif ($missing) {
                     if ($process.ExitCode -eq 0 -or $output -notmatch 'Preparation requires' -or $output -match 'Unexpected download') { throw "Missing cached toolchain did not fail before provisioning: $output" }
@@ -1685,6 +1707,39 @@ function Mod-LlamaServer {
     try { $ErrorActionPreference = 'Continue'; & $cmakePath @importArgs 2> $errorLog }
     finally { $ErrorActionPreference = $savedPreference }
     if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Unresolved/conflicting engine imports') { throw 'An unrelated unresolved import was accepted.' }
+    # A developer's System32 OpenMP installation is not an OS dependency. The
+    # same resolver must report it for the CLI bootstrap and engine packaging.
+    $platform = Join-Path $scratch 'runtime-platform'
+    New-Item -ItemType Directory -Path $platform | Out-Null
+    [IO.File]::WriteAllText((Join-Path $platform 'vcomp140.dll'), 'platform-installed redist')
+    [IO.File]::WriteAllText($inspector, $inspection.Replace('nvcuda.dll', 'vcomp140.dll'), [Text.Encoding]::ASCII)
+    $runtimeArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($imports.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", "-DRUNTIME_DIRS=$($platform.Replace('\','/'))", '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+    try { $ErrorActionPreference = 'Continue'; & $cmakePath @runtimeArgs 2> $errorLog }
+    finally { $ErrorActionPreference = $savedPreference }
+    if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Redistributable must be bundled|Engine imports outside app/platform roots') { throw 'Unstaged redist was incorrectly treated as Windows.' }
+    Copy-Item -LiteralPath (Join-Path $platform 'vcomp140.dll') -Destination $imports
+    $bootstrapNames = Join-Path $imports 'bootstrap.txt'
+    $captureArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($imports.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-DCAPTURE_IMPORTS=ON', "-DOUTPUT_NAMES=$bootstrapNames", '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+    & $cmakePath @captureArgs
+    if ($LASTEXITCODE -ne 0 -or @(Get-Content $bootstrapNames) -notcontains 'vcomp140.dll') { throw 'CLI runtime closure omitted application-local OpenMP.' }
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-runtime-closure.ps1')
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            if ($FilePath -ne 'cmake') { throw 'Unexpected runtime packaging adapter.' }
+            & $cmakePath @ArgumentList
+        }
+        $freshRuntime = Join-Path $scratch 'fresh-runtime-package'
+        New-Item -ItemType Directory -Path $freshRuntime | Out-Null
+        $freshCli = Join-Path $freshRuntime 'continuum.exe'
+        [IO.File]::WriteAllText($freshCli, 'fixture CLI')
+        $freshNames = Join-Path $freshRuntime 'bootstrap-runtime-libs.txt'
+        Copy-CoreRuntimeClosure -Directory $freshRuntime -Executables @($freshCli) -Inspector $inspector -RuntimeDirectories @($platform) -OutputNames $freshNames
+        if (@(Get-Content $freshNames) -notcontains 'vcomp140.dll' -or
+            (Get-FileHash (Join-Path $freshRuntime 'vcomp140.dll')).Hash -cne (Get-FileHash (Join-Path $platform 'vcomp140.dll')).Hash) {
+            throw 'Runtime publisher did not preserve toolchain OpenMP bytes and bootstrap membership.'
+        }
+    }
     Write-Output 'PASS: publisher preserves declared hardware contract and bounds engine imports on GPU-less hosts'
 
     $output = Join-Path $target 'release\continuum-core-server.exe'

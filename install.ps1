@@ -1,20 +1,18 @@
 # install.ps1 -- Continuum native installer for Windows.
 #
-# ONE approach, every platform: provision the toolchain (modular, idempotent,
-# ONE prompt, auto-updating) -> build native -> run. This is the Windows shim of
-# the same contract Unix implements in tools/scripts/install.sh. Re-running picks
-# up new/updated deps; it asks for elevation AT MOST ONCE (via gsudo's credential
-# cache -- the Windows twin of ensure_sudo_warmed). See
-# docs/infrastructure/INSTALL-ARCHITECTURE.md.
+# Ordinary users consume verified published core and engine artifacts. Toolchain
+# provisioning and source compilation require explicit -DeveloperBuild. Both feed
+# the same validated staging, provision-once supervisor, and guarded handoff owner.
 #
 # Usage:
-#   # Remote one-liner (bootstraps: clones the repo, then builds native):
+#   # Remote one-liner (obtains the installer, then the published native release):
 #   irm https://raw.githubusercontent.com/CambrianTech/continuum/main/install.ps1 | iex
 #
 #   # From a checkout:
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1          # local-only
 #   powershell -ExecutionPolicy Bypass -File .\install.ps1 -Grid    # + GitHub login for grid
 #   powershell -ExecutionPolicy RemoteSigned -File .\install.ps1 -Update # update the selected tracking branch
+#   powershell -ExecutionPolicy RemoteSigned -File .\install.ps1 -DeveloperBuild # contributor source build
 #
 # Docker remains available as a RUNTIME for grid nodes (docker compose up); it is
 # NOT a second install path. COUNTERPART: tools/scripts/install.sh (Unix). A
@@ -243,7 +241,7 @@ function Update-ContinuumCheckout {
 # bootstrapper.
 if (-not $PSScriptRoot) {
     if ($ResumePrepared -or $PrepareOnly) { throw 'Prepared-release operations require a local installer checkout.' }
-    Write-Host '  Continuum installer (bootstrap) -- fetching the repo for a native build ...'
+    Write-Host '  Continuum installer (bootstrap) -- fetching the installer checkout ...'
     if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
         Write-Host '  winget not found. Install App Installer from the Microsoft Store, then re-run.' -ForegroundColor Red
         Write-Host '    https://www.microsoft.com/store/productId/9NBLGGH4NNS1'
@@ -332,6 +330,10 @@ try {
         } finally { Pop-Location }
     }
 
+    if (-not $DeveloperBuild) {
+        # Refuse missing/incompatible publications before provisioning companions.
+        $artifactDirectory = Get-CorePrebuiltRelease -RepoRoot $RepoRoot
+    }
     if (-not $PrepareOnly) {
     # Toolchain. Per-user tools first (rustup -- no prompt); machine-scope tools
     # (VS Build Tools, CMake, LLVM, CUDA, gh) share the SINGLE gsudo UAC.
@@ -368,7 +370,6 @@ try {
         Mod-BuildCore -RepoRoot $RepoRoot
         $release = New-CoreServiceRelease -RepoRoot $RepoRoot
     } else {
-        $artifactDirectory = Get-CorePrebuiltRelease -RepoRoot $RepoRoot
         $release = New-CoreServiceRelease -RepoRoot $RepoRoot -ArtifactDirectory $artifactDirectory
     }
 

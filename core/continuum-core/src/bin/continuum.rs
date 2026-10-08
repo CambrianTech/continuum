@@ -4565,6 +4565,21 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
     prepare_ci_core(repo, tip, platform, None).await
 }
 
+struct CiArtifactPreparation {
+    directory: PathBuf,
+    complete: bool,
+}
+
+impl Drop for CiArtifactPreparation {
+    fn drop(&mut self) {
+        if !self.complete {
+            // This invocation created this fresh UUID directory; failed attempts
+            // cannot accumulate full archives or remove another caller's candidate.
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+}
+
 /// The first-install transport supplies a hash-checked archive; the existing consumer
 /// performs the same authoritative compatibility and payload preparation as an update.
 async fn prepare_prebuilt(args: Vec<String>) -> Result<(), String> {
@@ -4631,7 +4646,9 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
     }
     let root = PathBuf::from(home_dir()?).join(".continuum/cache/artifacts");
     let dir = root.join(format!("{}-{}", &tip[..12], uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    std::fs::create_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+    std::fs::create_dir(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let mut preparation = CiArtifactPreparation { directory: dir.clone(), complete: false };
     // Stream to disk while hashing: the archive is ~200 MB, and the weak nodes are the ones
     // that need this path most.
     let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
@@ -4694,6 +4711,7 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
             .map_err(|e| format!("cannot record the runtime libraries beside {}: {e}", core.display()))?;
     }
     deploy_note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
+    preparation.complete = true;
     prune_ci_cores(&root, &dir);
     Ok(Some(core))
 }

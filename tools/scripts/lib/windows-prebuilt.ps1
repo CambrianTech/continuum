@@ -37,6 +37,42 @@ function Assert-CoreBootstrapManifest {
     if ($Manifest.git_sha -cne $Tip -or $Manifest.platform -cne $Platform -or
         $Manifest.archive -cne "continuum-core-$Platform.tar.gz" -or
         $Manifest.sha256 -cnotmatch '^[a-fA-F0-9]{64}$') { throw 'Invalid published bootstrap transport identity.' }
+    if ('bootstrap_runtime_libs' -notin $Manifest.PSObject.Properties.Name) { throw 'Publication does not declare its bootstrap runtime closure.' }
+    $names = @($Manifest.bootstrap_runtime_libs)
+    $unique = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    if ($names.Count -gt 128) { throw 'Invalid bootstrap runtime closure.' }
+    foreach ($name in $names) {
+        if (-not $unique.Add($name) -or $name -cnotmatch '^[A-Za-z0-9_.-]+\.[dD][lL][lL]$' -or $name -notin @($Manifest.runtime_libs)) { throw 'Unsafe or undeclared bootstrap runtime member.' }
+    }
+}
+
+function Expand-CoreBootstrap {
+    param([string]$Archive, $Manifest, [string]$Directory)
+    $pin = [IO.File]::Open($Archive, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        Assert-Sha256 -Path $Archive -Expected $Manifest.sha256 -Name 'published release'
+        $prefix = "continuum-core-$($Manifest.platform)/"
+        $names = @('continuum.exe') + @($Manifest.bootstrap_runtime_libs)
+        $selected = @($names | ForEach-Object { $prefix + $_ })
+        $members = @(& tar.exe -tzf $Archive)
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect bootstrap archive.' }
+        foreach ($member in $selected) {
+            if (@($members | Where-Object { $_ -ieq $member }).Count -ne 1 -or $member -cnotin $members) { throw 'Bootstrap archive contains a missing or duplicate member.' }
+        }
+        $entries = @(& tar.exe -tvzf $Archive @selected)
+        if ($LASTEXITCODE -ne 0 -or $entries.Count -ne $selected.Count -or @($entries | Where-Object { -not $_.StartsWith('-') }).Count) { throw 'Bootstrap members must be regular archive files.' }
+        if (Test-Path -LiteralPath $Directory) { throw 'Bootstrap extraction destination must be new.' }
+        New-Item -ItemType Directory -Path $Directory -ErrorAction Stop | Out-Null
+        # Exact regular members only; strip the one fixed publisher directory.
+        Invoke-InstallerProcess 'tar.exe' (@('-xzf', $Archive, '--strip-components=1', '-C', $Directory) + $selected) -OwnProcessTree
+        if ($LASTEXITCODE -ne 0) { throw 'Bootstrap extraction failed.' }
+        foreach ($name in $names) {
+            $file = Join-Path $Directory $name
+            Assert-CorePreparedPath -Path $file -Expected $file -File
+            if ((Get-Item -LiteralPath $file).Length -eq 0) { throw 'Bootstrap member is empty.' }
+        }
+        return (Join-Path $Directory 'continuum.exe')
+    } finally { $pin.Dispose() }
 }
 
 function Get-CorePrebuiltRelease {
@@ -50,6 +86,7 @@ function Get-CorePrebuiltRelease {
     $base = 'https://github.com/CambrianTech/continuum/releases/download/canary-' + $tip.Substring(0, 12)
     $download = Join-Path $env:USERPROFILE ('.continuum/cache/bootstrap/' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $download -Force | Out-Null
+    try {
     $manifestPath = Join-Path $download "continuum-core-$platform.json"
     Write-Step "Downloading published release $($tip.Substring(0, 12)); no developer toolchain is required."
     Save-InstallerSmallFile -Uri "$base/continuum-core-$platform.json" -OutFile $manifestPath
@@ -59,38 +96,19 @@ function Get-CorePrebuiltRelease {
     Assert-CoreBootstrapManifest -Manifest $manifest -Tip $tip -Platform $platform
     $archive = Join-Path $download $manifest.archive
     Save-CorePrebuiltArchive -Uri "$base/$($manifest.archive)" -OutFile $archive
-    Assert-Sha256 -Path $archive -Expected $manifest.sha256 -Name 'published release'
-    $members = @(& tar.exe -tzf $archive)
-    if ($LASTEXITCODE -ne 0 -or @($members | Where-Object { $_ -ceq "continuum-core-$platform/continuum.exe" }).Count -ne 1) {
-        throw 'Published archive must contain exactly one bootstrap CLI.'
-    }
-    $cliEntry = @(& tar.exe -tvzf $archive "continuum-core-$platform/continuum.exe")
-    if ($LASTEXITCODE -ne 0 -or $cliEntry.Count -ne 1 -or -not $cliEntry[0].StartsWith('-')) { throw 'Bootstrap CLI must be a regular archive file.' }
-    # Read one exact member as bytes, never extract archive-controlled paths or links.
-    $cli = Join-Path $download 'continuum.exe'
-    $start = New-Object Diagnostics.ProcessStartInfo
-    $start.FileName = (Get-Command tar.exe -CommandType Application -ErrorAction Stop).Source
-    $start.WorkingDirectory = $download
-    $start.Arguments = "-xOf $($manifest.archive) continuum-core-$platform/continuum.exe"
-    $start.UseShellExecute = $false; $start.CreateNoWindow = $true
-    $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
-    $process = New-Object Diagnostics.Process
-    $process.StartInfo = $start
-    $output = [IO.File]::Create($cli)
-    try {
-        if (-not $process.Start()) { throw 'Cannot extract the published bootstrap CLI.' }
-        $copy = $process.StandardOutput.BaseStream.CopyToAsync($output)
-        $errors = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(180000)) { $process.Kill(); throw 'Bootstrap extraction timed out.' }
-        $copy.GetAwaiter().GetResult()
-        if ($process.ExitCode -ne 0) { throw "Bootstrap extraction failed: $($errors.GetAwaiter().GetResult())" }
-    } finally { $output.Dispose(); $process.Dispose() }
-    if ((Get-Item -LiteralPath $cli).Length -eq 0) { throw 'Published archive lacks a bootstrap CLI.' }
-    $prepared = @(Invoke-InstallerProcess $cli @('prepare-prebuilt', $RepoRoot, $download))
+    $cli = Expand-CoreBootstrap -Archive $archive -Manifest $manifest -Directory (Join-Path $download 'bootstrap')
+    $prepared = @(Invoke-InstallerProcess $cli @('prepare-prebuilt', $RepoRoot, $download) -OwnProcessTree)
     if ($LASTEXITCODE -ne 0) { throw 'Published release preparation refused; no source build will be attempted.' }
     $result = ($prepared -join "`n") | ConvertFrom-Json
     if ($result.git_sha -cne $tip -or -not (Test-Path -LiteralPath $result.core -PathType Leaf)) { throw 'Invalid prepared artifact result.' }
     return (Split-Path $result.core -Parent)
+    } finally {
+        $cacheRoot = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.continuum/cache/bootstrap')).TrimEnd('\') + '\'
+        $owned = [IO.Path]::GetFullPath($download)
+        if ($owned.StartsWith($cacheRoot, [StringComparison]::OrdinalIgnoreCase) -and (Split-Path $owned -Leaf) -cmatch '^[a-f0-9]{32}$') {
+            Remove-Item -LiteralPath $owned -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Copy-CorePublishedEngine {
