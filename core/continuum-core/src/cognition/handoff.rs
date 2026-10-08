@@ -447,7 +447,7 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
                 card.title.trim(),
                 card.state
             ));
-            if let Some(sub) = card.submissions.last() {
+            if let Some(sub) = crate::modules::work::submission::latest_submission(card) {
                 out.push_str(&format!(
                     "\n  Latest submission on it: {}, made {} (re-fetch by id; do not re-make it).",
                     sub.submission_id.as_uuid(),
@@ -675,6 +675,33 @@ mod tests {
         );
         assert_eq!(super::ago_phrase(0, 3 * 60 * 60_000), "~3 h ago (at 1970-01-01 00:00Z)");
         assert!(line.contains("holding is UNVERIFIED until the board answers"), "{line}");
+        // Regression f428279d: Kimi woke with the oldest candidate called "latest".
+        // AIRC orders by accepted transcript events, not publisher clocks. Exercise the
+        // same selector used by review consumers with the newer event's clock behind.
+        assert!(!line.contains("Latest submission on it"), "an empty card invents no candidate");
+        let mut h = h;
+        let held = h.card.as_mut().expect("held card");
+        let newer = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::from_uuid(Uuid::from_u128(201)),
+            card_id: held.card_id,
+            claim_id: held.claim_id.expect("claim"),
+            instance: "card".into(),
+            base_sha: airc_work::GitObjectId::new("a".repeat(40)).expect("base"),
+            artifact: airc_blobs::MediaRef {
+                hash: airc_blobs::ContentHash::from_bytes(b"corrected patch"),
+                size_bytes: 15,
+                mime: Some("text/x-patch".into()),
+            },
+            publisher: held.owner.expect("owner"),
+            submitted_at_ms: 1_000,
+        };
+        let mut older = newer.clone();
+        older.submission_id = airc_work::SubmissionId::from_uuid(Uuid::from_u128(202));
+        older.submitted_at_ms = 1_500;
+        held.submissions = vec![newer.clone(), older.clone()];
+        let line = render_on_wake(&h, "abc", 2_000);
+        assert!(line.contains(&format!("Latest submission on it: {},", newer.submission_id)), "{line}");
+        assert!(!line.contains(&older.submission_id.to_string()), "the obsolete candidate must not be named latest: {line}");
     }
 
     // what this catches (Kimi's #3 and #5): a deploy that did not land is SAID, a landed one
