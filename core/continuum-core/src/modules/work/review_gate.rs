@@ -84,7 +84,7 @@ pub(crate) async fn room_review(airc: &std::sync::Arc<Airc>, card_id: WorkCardId
     let (room, card) = super::card_in_subscribed_rooms(airc, card_id).await?;
     let policy = room_policy(airc, &room).await?;
     let board = airc.work_board_in(&room).await.ok()?;
-    let latest = card.submissions.first();
+    let latest = super::submission::latest_submission(&card);
     let author = latest.map(|s| s.publisher.as_uuid()).or(card.owner.map(|o| o.as_uuid()));
     let reviews: Vec<ReviewFact> = match latest {
         Some(sub) => board

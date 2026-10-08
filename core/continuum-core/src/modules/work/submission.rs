@@ -6,6 +6,12 @@ use crate::persona::training_producer::reviewed::{self, SubmissionSelection};
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
 use continuum_client::Connection;
 
+/// Latest accepted candidate in the board's transcript order. AIRC projects submissions
+/// newest first; publisher wall clocks do not define recency. Keep handoff and review
+/// consumers on this contract so a resumed citizen sees the candidate being reviewed.
+pub(crate) fn latest_submission(card: &airc_lib::WorkCard) -> Option<&airc_work::WorkSubmission> {
+    card.submissions.first()
+}
 /// How a room is NAMED in a refusal (Kimi's `work/submit`, 2026-09-21).
 ///
 /// "card 31c241e2 is absent from this room" is TRUE and USELESS: she asked for one room
@@ -1139,10 +1145,7 @@ impl ActionCommand for WorkReview {
                 .iter()
                 .find(|s| s.submission_id.as_uuid() == id)
                 .ok_or_else(|| CommandError::Invalid(format!("card {card_id} has no submission {id}")))?,
-            None => parent
-                .submissions
-                .iter()
-                .max_by_key(|s| s.submitted_at_ms)
+            None => latest_submission(parent)
                 .ok_or_else(|| {
                     CommandError::Invalid(format!(
                         "card {card_id} has no submission to review yet — the holder submits first (work/submit)"
