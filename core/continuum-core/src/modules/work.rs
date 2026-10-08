@@ -558,13 +558,6 @@ async fn board_horizon_for_card(
     Ok(horizon)
 }
 
-/// The readable half of [`board_horizon`], for walks that only need boards.
-pub(crate) async fn subscribed_boards(
-    airc: &Arc<Airc>,
-) -> Result<Vec<(airc_lib::Room, airc_lib::WorkBoardProjection)>, airc_lib::AircError> {
-    board_horizon(airc).await.map(|h| h.boards)
-}
-
 /// Locate `card_id`'s room, switch the caller's current room there, and retry the
 /// claim once.
 ///
