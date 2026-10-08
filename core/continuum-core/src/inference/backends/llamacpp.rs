@@ -27,6 +27,86 @@ use super::llamacpp_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, T
 use super::SamplingConfig;
 use crate::runtime;
 
+/// Explicit prebuilt validation, with no scheduler, persona, network or persistence.
+/// CPU-only loading deliberately exercises the instructions required by every host.
+pub fn validate_embedding_model(
+    path: &Path,
+) -> Result<continuum_cli_lifecycle::prebuilt_validation::EmbeddingReport, String> {
+    let started = Instant::now();
+    let model = Model::load(
+        path,
+        ModelParams {
+            n_gpu_layers: 0,
+            use_mmap: true,
+        },
+    )?;
+    let load_ms = started.elapsed().as_millis() as u64;
+    let started = Instant::now();
+    let vectors = embed_model(
+        &model,
+        &["Continuum prebuilt embedding validation.".to_string()],
+    )?;
+    let dimensions = vectors.first().map(Vec::len).unwrap_or(0);
+    let report = continuum_cli_lifecycle::prebuilt_validation::EmbeddingReport {
+        dimensions,
+        load_ms,
+        embed_ms: started.elapsed().as_millis() as u64,
+    };
+    report.validate()?;
+    Ok(report)
+}
+
+// Both the production backend and the explicit validation process use this owner.
+fn embed_model(model: &Model, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
+    if texts.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Embedding is single-batch and non-causal: ALL of a text's tokens are
+    // decoded together in one `llama_decode`, so `n_tokens <= n_batch` is a
+    // hard llama.cpp invariant — violating it is `GGML_ASSERT(... <=
+    // cparams.n_batch)` → `ggml_abort` → SIGABRT, which kills the whole
+    // process (C abort, uncatchable by Rust unwinding). A persona admitting
+    // a long engram / doctrine chunk at spawn was exactly long enough to
+    // trip it. Two-part fix: (1) size the embedding context's batch to a
+    // fixed ceiling so it's never the default, and (2) TRUNCATE any input
+    // past that ceiling — retrieval embedders cap their context anyway, so
+    // clamping a pathologically long input is the correct degrade, never a
+    // crash. Ceiling stays modest: this context is rebuilt per call, and
+    // `n_ubatch` drives the compute-buffer size (~quadratic in attention).
+    // context-budget-exempt: the EMBEDDING model's own architectural input limit (embeddings truncate by design); a property of that model, not a policy we chose
+    const EMBED_MAX_TOKENS: usize = 2048;
+    let mut ctx = model.new_context(llama::ContextParams {
+        embeddings: true,
+        // Qwen3-Embedding family is last-token pooled. Thread from config
+        // when other embedders join the grid.
+        pooling_type: llama::PoolingType::Last,
+        // Explicit, not the default: KV + batch + ubatch all sized to the
+        // ceiling so any input up to EMBED_MAX_TOKENS decodes in one batch.
+        n_ctx: EMBED_MAX_TOKENS as u32,
+        n_batch: EMBED_MAX_TOKENS as u32,
+        n_ubatch: EMBED_MAX_TOKENS as u32,
+        ..Default::default()
+    })?;
+    let mut out = Vec::with_capacity(texts.len());
+    for text in texts {
+        // Independent embedding per text — clear the KV so text N's pooled
+        // vector doesn't include text N-1's sequence.
+        ctx.memory_clear(true);
+        let mut tokens = model.tokenize(text, true, false)?;
+        if tokens.is_empty() {
+            return Err(format!("embed: input tokenized to empty: {text:?}"));
+        }
+        // Clamp to the batch ceiling. Last-token pooling reads the final
+        // kept token, so we keep the head (the standard truncation for an
+        // over-length document) rather than crash on the full sequence.
+        if tokens.len() > EMBED_MAX_TOKENS {
+            tokens.truncate(EMBED_MAX_TOKENS);
+        }
+        out.push(ctx.embed(&tokens)?);
+    }
+    Ok(out)
+}
+
 /// Configuration for loading a model.
 #[derive(Debug, Clone)]
 pub struct LlamaCppConfig {
@@ -427,53 +507,7 @@ impl LlamaCppBackend {
     /// model; this just runs it. Runtime-validated by an `#[ignore]` real-model
     /// test once the embedding GGUF is on disk; cargo-checked without it.
     pub fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, String> {
-        if texts.is_empty() {
-            return Ok(Vec::new());
-        }
-        // Embedding is single-batch and non-causal: ALL of a text's tokens are
-        // decoded together in one `llama_decode`, so `n_tokens <= n_batch` is a
-        // hard llama.cpp invariant — violating it is `GGML_ASSERT(... <=
-        // cparams.n_batch)` → `ggml_abort` → SIGABRT, which kills the whole
-        // process (C abort, uncatchable by Rust unwinding). A persona admitting
-        // a long engram / doctrine chunk at spawn was exactly long enough to
-        // trip it. Two-part fix: (1) size the embedding context's batch to a
-        // fixed ceiling so it's never the default, and (2) TRUNCATE any input
-        // past that ceiling — retrieval embedders cap their context anyway, so
-        // clamping a pathologically long input is the correct degrade, never a
-        // crash. Ceiling stays modest: this context is rebuilt per call, and
-        // `n_ubatch` drives the compute-buffer size (~quadratic in attention).
-        // context-budget-exempt: the EMBEDDING model's own architectural input limit (embeddings truncate by design); a property of that model, not a policy we chose
-        const EMBED_MAX_TOKENS: usize = 2048;
-        let mut ctx = self.model.new_context(llama::ContextParams {
-            embeddings: true,
-            // Qwen3-Embedding family is last-token pooled. Thread from config
-            // when other embedders join the grid.
-            pooling_type: llama::PoolingType::Last,
-            // Explicit, not the default: KV + batch + ubatch all sized to the
-            // ceiling so any input up to EMBED_MAX_TOKENS decodes in one batch.
-            n_ctx: EMBED_MAX_TOKENS as u32,
-            n_batch: EMBED_MAX_TOKENS as u32,
-            n_ubatch: EMBED_MAX_TOKENS as u32,
-            ..Default::default()
-        })?;
-        let mut out = Vec::with_capacity(texts.len());
-        for text in texts {
-            // Independent embedding per text — clear the KV so text N's pooled
-            // vector doesn't include text N-1's sequence.
-            ctx.memory_clear(true);
-            let mut tokens = self.model.tokenize(text, true, false)?;
-            if tokens.is_empty() {
-                return Err(format!("embed: input tokenized to empty: {text:?}"));
-            }
-            // Clamp to the batch ceiling. Last-token pooling reads the final
-            // kept token, so we keep the head (the standard truncation for an
-            // over-length document) rather than crash on the full sequence.
-            if tokens.len() > EMBED_MAX_TOKENS {
-                tokens.truncate(EMBED_MAX_TOKENS);
-            }
-            out.push(ctx.embed(&tokens)?);
-        }
-        Ok(out)
+        embed_model(&self.model, texts)
     }
 
     /// Lazily load the multimodal projector. Returns Err when
@@ -655,18 +689,12 @@ impl LlamaCppBackend {
             logits_last: true,
         };
         let eval_result = match kind {
-            llama::MediaKind::Image => mtmd.eval_image(
-                &mut ctx,
-                prompt_with_marker,
-                media_bytes,
-                &eval_params,
-            ),
-            llama::MediaKind::Audio => mtmd.eval_audio(
-                &mut ctx,
-                prompt_with_marker,
-                media_bytes,
-                &eval_params,
-            ),
+            llama::MediaKind::Image => {
+                mtmd.eval_image(&mut ctx, prompt_with_marker, media_bytes, &eval_params)
+            }
+            llama::MediaKind::Audio => {
+                mtmd.eval_audio(&mut ctx, prompt_with_marker, media_bytes, &eval_params)
+            }
         };
         let n_past = eval_result.map_err(|e| format!("mtmd eval ({:?}) failed: {e}", kind))?;
         log.info(&format!(

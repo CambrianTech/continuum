@@ -209,6 +209,42 @@ fn boot_mode_description(mode: continuum_core::runtime::BootMode) -> &'static st
 // `libloading::Library::new("libonnxruntime.dylib")` dlopen probe.
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Explicit validation is a short-lived child of the prebuilt validator.
+    // Dispatch before config, Tokio, tracing, sockets, personas or persistence.
+    let probe_args: Vec<_> = std::env::args_os().collect();
+    if probe_args.get(1).is_some_and(|arg| arg == "--build-sha") {
+        if probe_args.len() == 3
+            && probe_args[2] == continuum_cli_lifecycle::prebuilt_validation::CAPABILITIES_FLAG
+        {
+            println!(
+                "{}",
+                serde_json::to_string(
+                    &continuum_cli_lifecycle::prebuilt_validation::Capabilities {
+                        build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
+                        embedding_probe: 1,
+                    }
+                )?
+            );
+        } else if probe_args.len() == 2 {
+            println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
+        } else {
+            return Err("invalid --build-sha validation arguments".into());
+        }
+        return Ok(());
+    }
+    if probe_args
+        .get(1)
+        .is_some_and(|arg| arg == continuum_cli_lifecycle::prebuilt_validation::EMBEDDING_FLAG)
+    {
+        if probe_args.len() != 3 {
+            return Err("embedding validation requires exactly one local GGUF path".into());
+        }
+        let report = continuum_core::inference::backends::llamacpp::validate_embedding_model(
+            std::path::Path::new(&probe_args[2]),
+        )?;
+        println!("{}", serde_json::to_string(&report)?);
+        return Ok(());
+    }
     // `~/.continuum/config.env` is THIS process's to apply, on every boot, before any
     // thread exists (`set_var` must not race a reader). A launcher that applied it to the
     // child froze it into a supervisor's plist/task at install time; the core owning it
@@ -226,16 +262,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     let boot_entry = std::time::Instant::now();
     continuum_core::runtime::boot_clock::mark();
-    // Deploy-verification (#194). `continuum-core-server --build-sha` prints the git commit
-    // THIS binary was built from and exits immediately (before any tracing/socket/side-effect),
-    // so `continuum reboot` can prove the running core is the freshly-built one — not a stale cached
-    // binary that answered on the same socket and reported success. A reboot that silently runs
-    // old code is a lie; this makes it impossible.
-    if std::env::args().nth(1).as_deref() == Some("--build-sha") {
-        println!("{}", env!("CONTINUUM_BUILD_GIT_SHA"));
-        return Ok(());
-    }
-
     // Raise our own fd ceiling BEFORE opening any socket or file sink. The core is the
     // grid's hub — it opens many airc unix sockets and sqlite handles by design — and a
     // low inherited RLIMIT_NOFILE wedges it on ORDINARY load: 2026-09-17 the M5 inherited
