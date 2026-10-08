@@ -225,8 +225,18 @@ function Install-CoreSupervisorBootstrap {
     $expected = Get-CoreSupervisorBootstrap -UserSid $Plan.userSid
     if ($Plan.cli -cne $expected -or $Plan.shell -cne $expected) { throw 'Bootstrap destination differs from its protected installation boundary.' }
     Assert-CorePreparedPath -Path $expected -Expected $expected
+    if (Test-Path -LiteralPath $expected) {
+        # The bootstrap is a stable authority boundary, not a rotating payload.
+        # Repairing task drift must not replace DLLs under its running image.
+        Assert-CoreSupervisorBootstrap -Path $expected -UserSid $Plan.userSid
+        $protocol = (Invoke-InstallerProcess $expected @('installed-service', '--protocol') | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $protocol -cne '2') { throw 'Existing protected bootstrap has an incompatible protocol.' }
+        return
+    }
     $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
-    $directory = Split-Path $expected -Parent
+    $finalDirectory = Split-Path $expected -Parent
+    $stagingName = 'supervisor.prepare-' + [guid]::NewGuid().ToString('N')
+    $directory = Join-Path (Split-Path $finalDirectory -Parent) $stagingName
     $acl = [Security.AccessControl.DirectorySecurity]::new()
     $acl.SetAccessRuleProtection($true, $false)
     $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
@@ -237,7 +247,7 @@ function Install-CoreSupervisorBootstrap {
     $acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
         [Security.Principal.SecurityIdentifier]::new($Plan.userSid), 'ReadAndExecute', 'ContainerInherit,ObjectInherit', 'None', 'Allow'))
     $cursor = $programFiles
-    foreach ($component in @('Continuum', $Plan.userSid, 'supervisor')) {
+    foreach ($component in @('Continuum', $Plan.userSid, $stagingName)) {
         $cursor = Join-Path $cursor $component
         if (-not (Test-Path -LiteralPath $cursor)) { [IO.Directory]::CreateDirectory($cursor) | Out-Null }
         Assert-CorePreparedPath -Path $cursor -Expected $cursor
@@ -277,13 +287,23 @@ function Install-CoreSupervisorBootstrap {
     Assert-CorePreparedPath -Path $manifestPath -Expected $manifestPath
     [IO.File]::WriteAllText($manifestPath, ($files | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
     Set-Acl -LiteralPath (Join-Path $directory 'bootstrap-hashes.json') -AclObject $fileAcl -ErrorAction Stop
+    Assert-CoreSupervisorBootstrap -Path (Join-Path $directory 'continuum.exe') -UserSid $Plan.userSid -Staged
+    # No task references the staged path. A failed copy/verification leaves the
+    # fixed target untouched; only a fully verified closure becomes executable.
+    if (Test-Path -LiteralPath $finalDirectory) { throw 'Bootstrap target appeared during preparation; protected selection was preserved.' }
+    [IO.Directory]::Move($directory, $finalDirectory)
     Assert-CoreSupervisorBootstrap -Path $expected -UserSid $Plan.userSid
 }
 
 function Assert-CoreSupervisorBootstrap {
     param([string]$Path = (Get-CoreSupervisorBootstrap),
-        [string]$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
-    if ($Path -cne (Get-CoreSupervisorBootstrap -UserSid $UserSid)) { throw 'Unexpected supervisor bootstrap path.' }
+        [string]$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value), [switch]$Staged)
+    $expected = Get-CoreSupervisorBootstrap -UserSid $UserSid
+    if ($Staged) {
+        if ((Split-Path $Path -Leaf) -cne 'continuum.exe' -or
+            (Split-Path (Split-Path $Path -Parent) -Leaf) -notmatch '^supervisor\.prepare-[0-9a-f]{32}$' -or
+            (Split-Path (Split-Path $Path -Parent) -Parent) -cne (Split-Path (Split-Path $expected -Parent) -Parent)) { throw 'Unexpected staged bootstrap path.' }
+    } elseif ($Path -cne $expected) { throw 'Unexpected supervisor bootstrap path.' }
     Assert-CorePreparedPath -Path $Path -Expected $Path -File
     $directory = Split-Path $Path -Parent
     $manifest = Join-Path $directory 'bootstrap-hashes.json'

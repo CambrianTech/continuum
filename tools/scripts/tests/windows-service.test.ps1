@@ -585,6 +585,18 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
     try { Get-CoreSupervisorBootstrap -UserSid '..\outside' | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw 'Bootstrap principal escaped its protected path' }
     Write-Output 'PASS: bootstrap boundary rejects caller delete-child authority'
+    & {
+        $fixed = Join-Path $scratch 'protected-bootstrap.exe'
+        Set-Content -LiteralPath $fixed -Value 'existing protected image'
+        function Get-CoreSupervisorBootstrap { param($UserSid) $fixed }
+        $script:bootstrapVerifications = 0
+        function Assert-CoreSupervisorBootstrap { param($Path,$UserSid) $script:bootstrapVerifications++ }
+        function Invoke-InstallerProcess { param($Executable,$Arguments) if ($Executable -ne $fixed -or ($Arguments -join ' ') -ne 'installed-service --protocol') { throw 'Unexpected bootstrap probe' }; $global:LASTEXITCODE=0; '2' }
+        function Copy-Item { throw 'Task reprovisioning attempted to replace the protected bootstrap' }
+        Install-CoreSupervisorBootstrap -Plan ([pscustomobject]@{cli=$fixed;shell=$fixed;userSid=$identity.User.Value;bootstrapSource='missing candidate';bootstrapHashes=@{}})
+        if ($script:bootstrapVerifications -ne 1 -or (Get-Content -LiteralPath $fixed -Raw).Trim() -ne 'existing protected image') { throw 'Existing bootstrap was not verified/reused intact' }
+    }
+    Write-Output 'PASS: task reprovisioning reuses the verified stable bootstrap without replacing loader files'
     # Regression for 72920541: retrying registration must select exact prepared
     # files, never treat an unchecked descriptor as a source-build cache hit.
     & {
