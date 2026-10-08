@@ -387,9 +387,10 @@ pub(crate) async fn card_in_subscribed_rooms(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
 ) -> Option<(airc_lib::Room, airc_lib::WorkCard)> {
-    subscribed_boards(airc)
+    board_horizon_for_card(airc, Some(card_id))
         .await
         .ok()?
+        .boards
         .into_iter()
         .find_map(|(room, board)| {
             board
@@ -524,6 +525,18 @@ fn not_found_in(
 }
 
 pub(crate) async fn board_horizon(airc: &Arc<Airc>) -> Result<BoardHorizon, airc_lib::AircError> {
+    board_horizon_for_card(airc, None).await
+}
+
+/// A fully identified card needs only its first containing board, as the existing
+/// resolver's first match does. Prefixes need the complete horizon to detect ambiguity.
+/// Keep one walk and one read-failure policy for both; unrelated later rooms must not
+/// delay an already located card (44c5612e: Intel work/get took 121–161 seconds while
+/// its containing board read in under one second).
+async fn board_horizon_for_card(
+    airc: &Arc<Airc>,
+    card_id: Option<WorkCardId>,
+) -> Result<BoardHorizon, airc_lib::AircError> {
     let set = airc.subscription_set().await?;
     let mut horizon = BoardHorizon {
         boards: Vec::new(),
@@ -532,7 +545,13 @@ pub(crate) async fn board_horizon(airc: &Arc<Airc>) -> Result<BoardHorizon, airc
     for sub in set.all() {
         let room = sub.as_room();
         match airc.work_board_in(&room).await {
-            Ok(board) => horizon.boards.push((room, board)),
+            Ok(board) => {
+                let found = card_id.is_some_and(|id| board.card(id).is_some());
+                horizon.boards.push((room, board));
+                if found {
+                    break;
+                }
+            }
             Err(e) => horizon.unreadable.push((room.name, e.to_string())),
         }
     }
@@ -3487,7 +3506,11 @@ impl WorkGet {
         requested: &str,
         reader: Uuid,
     ) -> Result<WorkGetResult, CommandError> {
-        let horizon = board_horizon(airc)
+        let exact = match crate::id_resolve::normalize(requested) {
+            crate::id_resolve::IdMatch::Full(id) => Some(WorkCardId::from_uuid(id)),
+            _ => None,
+        };
+        let horizon = board_horizon_for_card(airc, exact)
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
         let card_id = resolve_card_id_in_boards(&horizon, requested)?;
@@ -4614,6 +4637,18 @@ mod tests {
         // Regression: a stale owner must not look like live contention in work/get.
         // Use the real board shape and the shared projection's clock, not a sleep.
         let horizon = board_horizon(&airc).await.expect("subscribed boards");
+        // Regression44c5612e: a known UUID must not read unrelated later rooms;
+        // prefix resolution still uses the complete horizon above.
+        let (first_room, first_board) = horizon.boards.first().expect("first subscribed board");
+        let first_card = if first_board.card(card).is_some() { card } else { local_card };
+        assert!(first_board.card(first_card).is_some());
+        assert!(horizon.boards.len() > 1);
+        let located = board_horizon_for_card(&airc, Some(first_card)).await.expect("exact card horizon");
+        assert_eq!(located.boards.len(), 1, "stop at the containing board");
+        assert_eq!(located.boards[0].0.channel, first_room.channel);
+        let missing = board_horizon_for_card(&airc, Some(WorkCardId::from_uuid(Uuid::new_v4())))
+            .await.expect("missing exact card horizon");
+        assert_eq!(missing.boards.len(), horizon.boards.len(), "a miss still searches every subscribed room");
         let boards = &horizon.boards;
         let (room, source) = boards
             .iter()
