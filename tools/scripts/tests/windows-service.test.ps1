@@ -326,6 +326,13 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
         $script:refuseBrowserRegistration = $true
         function Get-ScheduledTask { $script:browserTask }
         function Clear-Elevation { }
+        function New-CoreServiceRelease {
+            param($RepoRoot, $ArtifactDirectory, $EnginePath)
+            if ($ArtifactDirectory -ne $scratch -or $EnginePath -ne 'kept-engine') { throw 'Browser migration lost its installed source or engine.' }
+            $staged = $legacy | ConvertTo-Json | ConvertFrom-Json
+            $staged | Add-Member NoteProperty eyeRoot $RepoRoot
+            return $staged
+        }
         function Register-CoreServiceRelease {
             param($Release, $RepoRoot, $WorkingDirectory)
             # A real installed core can precede checkout HEAD. Metadata migration
@@ -566,6 +573,18 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         if (Test-CoreTaskUser -UserId $owner -ExpectedSid $identity.User.Value) { throw "Different/unresolved task owner was accepted: $owner" }
     }
     Write-Output 'PASS: scheduler SID/account-name identities compare equally; different/unresolved owners fail closed'
+    $bootstrapAcl = [Security.AccessControl.DirectorySecurity]::new()
+    $bootstrapAcl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    $bootstrapAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity.User, 'ReadAndExecute', 'Allow'))
+    Assert-CoreBootstrapAccess -Security $bootstrapAcl
+    $bootstrapAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($identity.User, 'DeleteSubdirectoriesAndFiles', 'Allow'))
+    $refused = $false
+    try { Assert-CoreBootstrapAccess -Security $bootstrapAcl } catch { $refused = $_ -match 'writable' }
+    if (-not $refused) { throw 'Delete-child access can replace the protected bootstrap' }
+    $refused = $false
+    try { Get-CoreSupervisorBootstrap -UserSid '..\outside' | Out-Null } catch { $refused = $true }
+    if (-not $refused) { throw 'Bootstrap principal escaped its protected path' }
+    Write-Output 'PASS: bootstrap boundary rejects caller delete-child authority'
     # Regression for 72920541: retrying registration must select exact prepared
     # files, never treat an unchecked descriptor as a source-build cache hit.
     & {
@@ -623,6 +642,52 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $refused = $false
         try { Assert-CorePreparedRelease -Release $withEye -InstallRoot $resumeRoot } catch { $refused = $_ -match 'eyeRoot must be absolute' }
         if (-not $refused) { throw 'Relative browser root was accepted' }
+        # One preparation owner supplies both pending and committed receipts.
+        # Two release selections and a failed-selection rollback leave the fixed
+        # scheduler registration untouched; pending preparation cannot select boot.
+        $dll = Join-Path $serviceSlot 'fixture-runtime.dll'
+        Set-Content -LiteralPath $dll -Value 'runtime bytes'
+        Set-Content -LiteralPath (Join-Path $serviceSlot 'runtime-libs.txt') -Value 'fixture-runtime.dll'
+        $firstSelection = Initialize-CoreActiveSelection -Task $script:resumeTask -Release $release -InstallRoot $resumeRoot
+        if ($firstSelection -or (Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active).artifact -ne $release.artifact) { throw 'Legacy migration did not preserve its original selection' }
+        $secondSlot = Join-Path $payload 'bin\service-b'
+        New-Item -ItemType Directory -Path $secondSlot | Out-Null
+        $second = $release | ConvertTo-Json | ConvertFrom-Json
+        foreach ($field in @('artifact', 'cli', 'launcher')) {
+            $second.$field = Join-Path $secondSlot (Split-Path $release.$field -Leaf)
+            Copy-Item -LiteralPath $release.$field -Destination $second.$field
+        }
+        foreach ($name in @('runtime-libs.txt', 'fixture-runtime.dll')) { Copy-Item -LiteralPath (Join-Path $serviceSlot $name) -Destination (Join-Path $secondSlot $name) }
+        Save-CorePreparedRelease -Release $second -InstallRoot $resumeRoot
+        if ((Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active).artifact -ne $release.artifact) { throw 'Preparation changed active selection' }
+        Save-CorePreparedRelease -Release $second -InstallRoot $resumeRoot -Selection Active
+        $legacyTask = $script:resumeTask
+        $activePath = Join-Path $resumeRoot 'install-active.json'
+        $script:resumeTask = [pscustomobject]@{ Principal = $legacyTask.Principal;
+            Description = ([ordered]@{schema=2;activeRelease=$activePath;bootstrap=(Get-CoreSupervisorBootstrap)} | ConvertTo-Json -Compress);
+            Actions = @([pscustomobject]@{ Execute=(Get-CoreSupervisorBootstrap); WorkingDirectory=(Split-Path (Get-CoreSupervisorBootstrap) -Parent); Arguments=('installed-service core "{0}"' -f $activePath) }) }
+        $fixedDescription = $script:resumeTask.Description
+        if ((Get-CoreRegisteredRelease -Task $script:resumeTask -InstallRoot $resumeRoot).artifact -ne $second.artifact) { throw 'Fixed supervisor did not resolve second release' }
+        Set-Content -LiteralPath (Join-Path $secondSlot 'fixture-runtime.dll') -Value 'tampered runtime'
+        $refused = $false
+        try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'changed since preparation' }
+        if (-not $refused) { throw 'Changed runtime DLL was accepted' }
+        Copy-Item -LiteralPath $dll -Destination (Join-Path $secondSlot 'fixture-runtime.dll') -Force
+        $refused = $false
+        try { Restore-CoreActiveRelease -ExpectedDescription '{}' -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'newer selection' }
+        if (-not $refused) { throw 'Rollback overwrote a different active selection' }
+        $restored = Restore-CoreActiveRelease -ExpectedDescription ($second | ConvertTo-Json -Compress) -InstallRoot $resumeRoot
+        if ($restored.artifact -ne $release.artifact -or $script:resumeTask.Description -cne $fixedDescription) { throw 'Rollback changed supervisor registration or selected wrong release' }
+        Clear-CorePreparedSelectionForSlot -InstallRoot $resumeRoot -Slot $secondSlot
+        if (Test-Path -LiteralPath $receiptPath) { throw 'Reused inactive slot retained a stale pending receipt' }
+        Remove-Item -LiteralPath $activePath
+        $refused = $false
+        try { Get-CoreRegisteredRelease -Task $script:resumeTask -InstallRoot $resumeRoot | Out-Null } catch { $refused = $true }
+        if (-not $refused) { throw 'Missing active receipt fell back to legacy selection' }
+        $script:resumeTask = $legacyTask
+        Get-ChildItem -LiteralPath $secondSlot -File | ForEach-Object { [IO.File]::Delete($_.FullName) }
+        [IO.Directory]::Delete($secondSlot)
+        Write-Output 'PASS: active/pending separation, two selections, DLL integrity, compare-and-restore and stale pending invalidation'
         $redirect = Join-Path $payload 'bin\service-b'
         New-Item -ItemType Junction -Path $redirect -Target $serviceSlot | Out-Null
         try {
@@ -765,59 +830,16 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
     }
     $updateAce = ([Security.AccessControl.RawSecurityDescriptor]::new($updateAcl)).DiscretionaryAcl[3]
     if (($updateAce.AccessMask -band 0xD0000) -ne 0) { throw 'Update grant acquired delete or ACL/owner privileges' }
-    & {
-        $actions = [pscustomobject]@{ Count = 1; Entry = [pscustomobject]@{ Path = 'old'; Arguments = 'old' } }
-        $actions | Add-Member ScriptMethod Clear { $this.Count = 0 }
-        $actions | Add-Member ScriptMethod Create { param($kind) if ($kind -ne 0) { throw 'Expected exec action' }; $this.Count = 1; $this.Entry }
-        $actions | Add-Member ScriptMethod Item { param($index) $this.Entry }
-        $definition = [pscustomobject]@{
-            Actions = $actions
-            Principal = [pscustomobject]@{ UserId = $callerSid; LogonType = 2; RunLevel = 0 }
-            RegistrationInfo = [pscustomobject]@{ Description = 'old' }
-            Triggers = 'existing boot trigger'; Settings = 'existing policy'
-        }
-        $task = [pscustomobject]@{ Definition = $definition; Sddl = $updateAcl }
-        $task | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
-        $folder = [pscustomobject]@{ Task = $task; Writes = 0; Save = $true }
-        $folder | Add-Member ScriptMethod GetTask { param($name) $this.Task }
-        $folder | Add-Member ScriptMethod RegisterTaskDefinition {
-            param($name,$value,$flags,$sid,$password,$logon,$sddl)
-            if ($flags -ne 20 -or $password -or $sddl -or $logon -ne 2 -or
-                $sid -ne $this.Task.Definition.Principal.UserId) { throw 'Update changed security boundary' }
-            $this.Writes++
-            if (-not $this.Save) { $value.Actions.Entry.Path = 'provider ignored update' }
-        }
-        Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'new-cli' -Arguments 'new args' -Description 'new receipt'
-        if ($folder.Writes -ne 1 -or $definition.Triggers -ne 'existing boot trigger' -or
-            $definition.Settings -ne 'existing policy' -or $task.Sddl -cne $updateAcl) { throw 'Release update altered task policy' }
-        $task.Sddl = $repaired
-        $refused = $false
-        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'no' -Arguments 'no' }
-        catch { $refused = $_ -match 'not an updateable' }
-        if (-not $refused -or $folder.Writes -ne 1) { throw 'Read-only task was written' }
-        $task.Sddl = $updateAcl
-        $definition.Principal.RunLevel = 1
-        $refused = $false
-        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'no' -Arguments 'no' }
-        catch { $refused = $_ -match 'not an updateable' }
-        if (-not $refused -or $folder.Writes -ne 1) { throw 'Elevated task was written' }
-        $definition.Principal.RunLevel = 0
-        $folder.Save = $false
-        $refused = $false
-        try { Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $callerSid -Executable 'new' -Arguments 'new' }
-        catch { $refused = $_ -match 'did not retain' }
-        if (-not $refused) { throw 'Lost update was reported successful' }
-    }
-    Write-Output 'PASS: repeated task update preserves policy/ACL, rejects insufficient rights/elevated principal, and verifies saved action'
-
-
     # Run the real registrar with only scheduler boundaries replaced. A provider
     # that ignores SetSecurityDescriptor must fail its reread, never claim success.
     & {
-        $script:aclTask = [pscustomobject]@{ Sddl = $acl; Save = $true }
+        $script:aclTask = [pscustomobject]@{ Sddl = $acl; Save = $true; Xml = 'original task XML' }
         $script:aclTask | Add-Member ScriptMethod GetSecurityDescriptor { param($flags) $this.Sddl }
         $script:aclTask | Add-Member ScriptMethod SetSecurityDescriptor { param($value, $flags) if ($this.Save) { $this.Sddl = $value } }
-        $folder = [pscustomobject]@{}
+        $folder = [pscustomobject]@{ Restored = @() }
+        $folder | Add-Member ScriptMethod RegisterTask { param($name,$xml,$flags,$sid,$password,$logon,$sddl)
+            if ($xml -cne 'original task XML' -or $flags -ne 6 -or $logon -ne 2) { throw 'Rollback changed task contract' }
+            $this.Restored += $name }
         $script:aclDeployTask = $null
         $folder | Add-Member ScriptMethod GetTask { param($name) if ($name -eq 'ContinuumDeploy' -and $script:aclDeployTask) { $script:aclDeployTask } else { $script:aclTask } }
         $script:aclScheduler = [pscustomobject]@{ Folder = $folder }
@@ -828,9 +850,12 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         function New-ScheduledTaskAction { [pscustomobject]@{} }
         function New-ScheduledTaskPrincipal { [pscustomobject]@{} }
         function New-ScheduledTaskTrigger { [pscustomobject]@{} }
-        function New-ScheduledTaskSettingsSet { [pscustomobject]@{} }
+        function New-ScheduledTaskSettingsSet { [pscustomobject]@{Enabled=$true} }
         $script:aclRegistrations = 0
-        function Register-ScheduledTask { $script:aclRegistrations++ }
+        $script:failDeployProvision = $false
+        function Register-ScheduledTask { param($TaskName)
+            $script:aclRegistrations++
+            if ($script:failDeployProvision -and $TaskName -eq 'ContinuumDeploy') { throw 'fixture second registration failed' } }
         $planPath = Join-Path $scratch 'acl-plan.json'
         @{ userSid = $callerSid; shell = 'fixture'; arguments = 'fixture'; description = 'fixture'; cli = 'fixture' } |
             ConvertTo-Json | Set-Content -LiteralPath $planPath -Encoding UTF8
@@ -840,6 +865,11 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         if ($script:aclRegistrations -ne 2 -or -not (Test-CoreServiceCallerAccess -Sddl $script:aclTask.Sddl -UserSid $callerSid)) {
             throw 'Registrar did not register both tasks and persist/verify the caller grant'
         }
+        $script:failDeployProvision = $true
+        $refused = $false
+        try { . (Join-Path $repo 'tools\scripts\register-core-service.ps1') -PlanPath $planPath } catch { $refused = $_ -match 'fixture second registration failed' }
+        if (-not $refused -or $folder.Restored.Count -ne 2 -or 'ContinuumCore' -notin $folder.Restored -or 'ContinuumDeploy' -notin $folder.Restored) { throw 'Partial supervisor provisioning did not restore both prior tasks' }
+        $script:failDeployProvision = $false
         $script:aclTask.Sddl = $acl
         $script:aclTask.Save = $false
         $refused = $false
