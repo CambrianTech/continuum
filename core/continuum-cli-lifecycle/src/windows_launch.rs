@@ -6,10 +6,10 @@
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io;
-use std::os::windows::ffi::OsStrExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::os::windows::process::ExitStatusExt;
 use std::process::{Command, ExitStatus};
@@ -166,6 +166,35 @@ pub fn spawn_logged(
     spawn_logged_in_jobs(command, stdout, stderr, flags, &[], None)
 }
 
+// Resolve identity first, then use ordinary Win32 drive/UNC spelling at the
+// process boundary. .NET Framework PowerShell fails during ServicePointManager
+// initialization when its executable path uses canonicalize's extended prefix.
+fn process_image_path(program: &OsStr) -> io::Result<std::path::PathBuf> {
+    let canonical = std::fs::canonicalize(program)?;
+    let encoded: Vec<u16> = canonical.as_os_str().encode_wide().collect();
+    let prefix: Vec<u16> = r"\\?\".encode_utf16().collect();
+    let unc: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
+    let ordinary = if encoded.starts_with(&unc) {
+        let mut result: Vec<u16> = r"\\".encode_utf16().collect();
+        result.extend_from_slice(&encoded[unc.len()..]);
+        std::path::PathBuf::from(OsString::from_wide(&result))
+    } else if encoded.starts_with(&prefix)
+        && encoded.get(5) == Some(&(b':' as u16))
+        && encoded.get(6) == Some(&0x5c)
+    {
+        std::path::PathBuf::from(OsString::from_wide(&encoded[prefix.len()..]))
+    } else {
+        return Ok(canonical);
+    };
+    // Ordinary spelling must not redirect unusual extended-path names.
+    if !same_file::is_same_file(&canonical, &ordinary)? {
+        return Err(io::Error::other(
+            "process image spelling changed file identity",
+        ));
+    }
+    Ok(ordinary)
+}
+
 fn spawn_logged_in_jobs(
     command: &Command,
     stdout: &File,
@@ -174,7 +203,7 @@ fn spawn_logged_in_jobs(
     jobs: &[HANDLE],
     stdin: Option<&File>,
 ) -> io::Result<LaunchedCore> {
-    let executable = std::fs::canonicalize(command.get_program())?;
+    let executable = process_image_path(command.get_program())?;
     let mut application = wide(executable.as_os_str())?;
     application.push(0);
     let mut arguments = Vec::new();
@@ -565,6 +594,38 @@ mod tests {
     #[test]
     fn owned_tree_drop_ends_worker_and_descendant() {
         let root = tempfile::tempdir().unwrap();
+        // Actual public supervisor failure: resolving PowerShell to an extended
+        // path caused exit -65536 before its script or our core could start.
+        let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let shell_log_path = root.path().join("powershell.log");
+        let shell_log = File::create(&shell_log_path).unwrap();
+        let mut shell_command = Command::new(shell.canonicalize().unwrap());
+        shell_command.args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "[System.Net.ServicePointManager]::SecurityProtocol; exit 0",
+        ]);
+        let mut shell_tree =
+            spawn_owned_logged(&shell_command, &shell_log, &shell_log, CREATE_NO_WINDOW).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = shell_tree.try_wait().unwrap() {
+                break status;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "PowerShell initialization timed out"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        assert!(
+            status.success(),
+            "PowerShell initialization failed: {}",
+            std::fs::read_to_string(&shell_log_path).unwrap()
+        );
+        drop(shell_tree);
         let log = File::create(root.path().join("tree.log")).unwrap();
         let mut command = Command::new(std::env::current_exe().unwrap());
         command
