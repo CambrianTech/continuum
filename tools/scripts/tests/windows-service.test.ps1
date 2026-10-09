@@ -474,6 +474,49 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
     $refused = $false
     try { Get-CoreEngineReceipt -Directory $engineCopy | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw 'Missing runtime file was accepted.' }
+    # Public PrepareOnly formerly overlaid an idle slot, leaving five old DLLs
+    # outside the publisher receipt. Retry must repair precisely that namespace.
+    $obsolete = @('curand64_10.dll', 'nvblas64_12.dll', 'nvrtc-builtins64_129.dll', 'nvrtc64_120_0.alt.dll', 'nvrtc64_120_0.dll')
+    foreach ($leaf in $obsolete) { [IO.File]::WriteAllText((Join-Path $engineCopy $leaf), 'obsolete') }
+    [IO.File]::WriteAllText((Join-Path $engineCopy 'operator-note.txt'), 'retain')
+    $held = [IO.File]::Open((Join-Path $engineCopy $obsolete[0]), 'Open', 'Read', 'None')
+    try {
+        $refused = $false
+        try { Copy-CoreEnginePublication -SourceDirectory $engineFixture -Directory $engineCopy } catch { $refused = $true }
+        if (-not $refused -or (Test-Path -LiteralPath (Join-Path $engineCopy 'engine-install.pending'))) { throw 'Busy slot was mutated before publication preflight.' }
+    } finally { $held.Dispose() }
+    & {
+        function Copy-Item {
+            param($LiteralPath, $Destination, [switch]$Force, $ErrorAction)
+            if ($LiteralPath -like '*.exe') { throw 'Injected interrupted engine copy' }
+            Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force -ErrorAction Stop
+        }
+        $refused = $false
+        try { Copy-CoreEnginePublication -SourceDirectory $engineFixture -Directory $engineCopy } catch { $refused = $_ -match 'Injected interrupted' }
+        if (-not $refused) { throw 'Interrupted copy fixture did not execute.' }
+    }
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineCopy | Out-Null } catch { $refused = $_ -match 'publication is incomplete' }
+    if (-not $refused) { throw 'Interrupted replacement admitted its previous receipt.' }
+    Copy-CoreEnginePublication -SourceDirectory $engineFixture -Directory $engineCopy
+    $repaired = Get-CoreEngineReceipt -Directory $engineCopy
+    if (@($repaired.files.PSObject.Properties).Count -ne 2 -or
+        (Get-Content -LiteralPath (Join-Path $engineCopy 'operator-note.txt') -Raw) -ne 'retain') { throw 'Retry did not replace exactly the application namespace.' }
+    foreach ($leaf in $obsolete) { if (Test-Path -LiteralPath (Join-Path $engineCopy $leaf)) { throw 'Obsolete runtime survived publication.' } }
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-prebuilt.ps1')
+        function git { $global:LASTEXITCODE = 0; 'a' * 40 }
+        function Get-ScheduledTask { $null }
+        function Select-CoreEngineSlot { $engineCopy }
+        $artifact = Join-Path $scratch 'published engine artifact'
+        New-Item -ItemType Directory -Path $artifact | Out-Null
+        Microsoft.PowerShell.Management\Copy-Item -LiteralPath $engineFixture -Destination (Join-Path $artifact 'engine') -Recurse
+        $refused = $false
+        try { Copy-CorePublishedEngine -RepoRoot $repo -ArtifactDirectory $artifact -InstallDirectory (Join-Path $scratch 'wrong slot') } catch { $refused = $_ -match 'no longer idle' }
+        if (-not $refused -or (Test-Path -LiteralPath (Join-Path $scratch 'wrong slot'))) { throw 'Public engine copy ignored a changed idle-slot selection.' }
+        Copy-CorePublishedEngine -RepoRoot $repo -ArtifactDirectory $artifact -InstallDirectory $engineCopy
+        Get-CoreEngineReceipt -Directory $engineCopy | Out-Null
+    }
     Write-Output 'PASS: engine receipt pins application bytes, membership and copied-slot inputs'
     # Receipt migration must use the existing source/slot owners even when the
     # source SHA and legacy stamp are already current. No compiler is invoked.
