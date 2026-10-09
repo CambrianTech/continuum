@@ -232,12 +232,26 @@ function Invoke-CoreEnginePromote {
 function Prepare-CoreServiceEngine {
     param([Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$Description,
-        [Parameter(Mandatory = $true)][string]$ReceiptPath)
+        [Parameter(Mandatory = $true)][string]$ReceiptPath, [switch]$PrebuiltOnly)
     # The calling reboot holds install.lock across preparation and handoff.
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
     if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed before engine preparation.' }
     $release = $Description | ConvertFrom-Json -ErrorAction Stop
     $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+    if ($PrebuiltOnly) {
+        # An explicit published handoff can only promote its registered verified
+        # payload. Drift is a preparation failure, never permission to compile.
+        $built = Split-Path $release.engine
+        $drift = Get-CoreEngineDrift -Directory $built -Requirement $requirement
+        if ($drift) { throw $drift }
+        $engineReceipt = Get-CoreEngineReceipt -Directory $built
+        Get-CorePublishedEngineStamp -Directory $built -Receipt $engineReceipt | Out-Null
+        if (-not (Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $built)) { throw 'Prepared CLI cannot promote the published engine.' }
+        $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+        if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
+        [IO.File]::WriteAllText($ReceiptPath, $release.engine, (New-Object Text.UTF8Encoding $false))
+        return
+    }
     # A slot that ALREADY holds the pinned engine is promoted as is (card 6d5bacab): a build whose
     # promotion never happened (the 5090's cancelled install left engine-c built and verified while
     # current stayed engine-b). Promotion overwrites nothing, so it needs no proof that the slot is
@@ -451,15 +465,24 @@ function Register-CoreServiceRelease {
     if ($PersistPreparedReceipt -or $PrepareOnly) { Save-CorePreparedRelease -Release $Release }
     if ($PrepareOnly) { return }
     $protocol = (Invoke-InstallerProcess $Release.cli @('installed-service', '--protocol') | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $protocol -cne '2') { throw 'Candidate CLI cannot consume provisioned supervisor schema 2; registration and active release were preserved.' }
+    if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Candidate CLI lacks supervisor protocol 3; registration and active release were preserved.' }
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $bootstrap = Get-CoreSupervisorBootstrap
+    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
+    $bootstrap = Get-CoreSupervisorBootstrap -Generation (Get-FileHash -LiteralPath $Release.cli -Algorithm SHA256).Hash.ToLowerInvariant()
+    # Reuse a verified compatible authority; only an incompatible generation
+    # requires a new protected sibling and normal elevated registration.
+    if ($task -and (Test-CoreProvisionedTask -Task $task)) {
+        $priorBootstrap = ($task.Description | ConvertFrom-Json).bootstrap
+        Assert-CoreSupervisorBootstrap -Path $priorBootstrap
+        $priorProtocol = (Invoke-InstallerProcess $priorBootstrap @('installed-service', '--protocol') | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect installed bootstrap capability.' }
+        if ($priorProtocol -ceq '3') { $bootstrap = $priorBootstrap }
+    }
     $activePath = Join-Path $env:USERPROFILE '.continuum\install-active.json'
     $arguments = 'installed-service core "{0}"' -f $activePath
     $deployArguments = 'installed-service deploy "{0}"' -f $activePath
     $description = [ordered]@{ schema = 2; activeRelease = $activePath; bootstrap = $bootstrap } | ConvertTo-Json -Compress
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     $deploy = Get-ScheduledTask -TaskName ContinuumDeploy -TaskPath '\' -ErrorAction SilentlyContinue
     $canRun = $false
     if ($task) {
