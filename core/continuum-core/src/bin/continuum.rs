@@ -1222,7 +1222,7 @@ async fn require_service_medium() -> Result<Option<i32>, String> {
 /// Fixed protected task action: verify normal-user integrity BEFORE reading the
 /// caller-owned selection. Core and deploy share this boundary and receipt owner.
 async fn installed_service(args: Vec<String>) -> Result<i32, String> {
-    if args == ["--protocol"] { println!("2"); return Ok(0); }
+    if args == ["--protocol"] { println!("{}", continuum_cli_lifecycle::installed_release::SUPERVISOR_PROTOCOL_VERSION); return Ok(0); }
     #[cfg(not(windows))]
     { let _ = args; Err("installed-service is supported only on Windows".into()) }
     #[cfg(windows)]
@@ -1440,6 +1440,7 @@ impl CoreServiceTask {
 
     fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
         let description = self.runtime_paths_resolve()?;
+        if self.installed.is_some() { description.installer_root()?; }
         let resolve = resolve_service_path;
         if !self.enabled
             || resolve(&description.artifact)? != candidate.path
@@ -1504,12 +1505,30 @@ impl CoreServiceTask {
 struct PreparedCoreService {
     #[cfg(windows)]
     task: CoreServiceTask,
+    #[cfg(windows)]
+    engine_selection: Option<continuum_core::inference::engine_slots::HandoffSelection>,
     /// macOS: the launchd job that owns the core and the slot its plist execs (a1bd8b58).
     #[cfg(target_os = "macos")]
     job: launchd::live::Job,
 }
 
 impl PreparedCoreService {
+    #[cfg(windows)]
+    async fn unwind_engine_promotion(&self, failed: String) -> String {
+        let Some(selection) = &self.engine_selection else { return failed; };
+        match Self::query().await {
+            Ok(current) if current.description == self.task.description => match selection.restore() {
+                Ok(()) => failed,
+                Err(reason) => format!("{failed}; engine recovery refused: {reason}"),
+            },
+            _ => format!("{failed}; preserved changed or uninspectable supervisor selection"),
+        }
+    }
+
+    #[cfg(windows)]
+    async fn installer_root() -> Result<PathBuf, String> {
+        Self::query().await?.runtime_paths_resolve()?.installer_root()
+    }
     #[cfg(windows)]
     async fn browser_release(repo: &Path, check: bool) -> Result<String, String> {
         let repo = repo.to_string_lossy().replace('\'', "''");
@@ -1535,8 +1554,7 @@ impl PreparedCoreService {
     #[cfg(windows)]
     async fn engine_drift(repo: &Path) -> Result<String, String> {
         let task = Self::query().await?;
-        let description: CoreServiceDescription = serde_json::from_str(&task.description)
-            .map_err(|e| format!("installed service descriptor: {e}"))?;
+        let description = task.runtime_paths_resolve()?;
         // The engine the core RUNS: the slot `current` names (card d5584dfc), else, before any
         // slot is recorded, the one the release registered.
         let directory = match continuum_core::inference::engine_slots::active_engine_dir()? {
@@ -1554,19 +1572,21 @@ impl PreparedCoreService {
     }
 
     #[cfg(windows)]
-    async fn prepare_engine(repo: &Path) -> Result<Option<(String, PathBuf)>, String> {
-        if Self::engine_drift(repo).await?.is_empty() {
+    async fn prepare_engine(repo: &Path, prebuilt_only: bool) -> Result<Option<(String, PathBuf)>, String> {
+        if !prebuilt_only && Self::engine_drift(repo).await?.is_empty() {
             return Ok(None);
         }
-        warm_build_allowed(available_memory_bytes(), locate_start_script().ok())?;
+        if !prebuilt_only { warm_build_allowed(available_memory_bytes(), locate_start_script().ok())?; }
         let original = Self::query().await?.description;
         let receipt = WarmBuildReceipt::create()?;
         let repo_arg = repo.to_string_lossy().replace('\'', "''");
-        let cuda = build_env_cuda(repo)?;
+        let environment = if prebuilt_only { String::new() } else {
+            let cuda = build_env_cuda(repo)?;
+            format!("$env:CUDA_PATH='{}'; $env:NVCC_PREPEND_FLAGS='{}';", cuda.cuda_path.replace('\'', "''"), cuda.nvcc_prepend_flags.replace('\'', "''"))
+        };
+        let mode = if prebuilt_only { " -PrebuiltOnly" } else { "" };
         let script = format!(
-            "$ErrorActionPreference='Stop'; $env:CUDA_PATH='{}'; $env:NVCC_PREPEND_FLAGS='{}'; . '{repo_arg}/tools/scripts/lib/install-common.ps1'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Prepare-CoreServiceEngine -RepoRoot '{repo_arg}' -Description '{}' -ReceiptPath '{}'",
-            cuda.cuda_path.replace('\'', "''"),
-            cuda.nvcc_prepend_flags.replace('\'', "''"),
+            "$ErrorActionPreference='Stop'; {environment} . '{repo_arg}/tools/scripts/lib/install-common.ps1'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Prepare-CoreServiceEngine -RepoRoot '{repo_arg}' -Description '{}' -ReceiptPath '{}'{mode}",
             original.replace('\'', "''"), receipt.0.to_string_lossy().replace('\'', "''")
         );
         Self::run_installer_script(&script)?;
@@ -1643,7 +1663,7 @@ impl PreparedCoreService {
             let sha = binary_build_sha(&path).await?;
             let candidate = PrebuiltCore::from_report(path, sha, None)?;
             task.validate(&candidate, socket, &Self::shell()?)?;
-            Ok(Some((Self { task }, candidate)))
+            Ok(Some((Self { task, engine_selection: None }, candidate)))
         }
     }
 
@@ -1735,7 +1755,7 @@ impl PreparedCoreService {
         {
             let task = Self::query().await?;
             task.validate(candidate, socket, &Self::shell()?)?;
-            Ok(Self { task })
+            Ok(Self { task, engine_selection: None })
         }
     }
 
@@ -1866,14 +1886,17 @@ impl PreparedCoreService {
                     if current.state == "Running" || current.description != self.task.description {
                         return Err(format!("{failed}; preserved running or concurrently changed supervisor"));
                     }
+                    if let Some(selection) = &self.engine_selection {
+                        selection.restore().map_err(|e| format!("{failed}; engine recovery refused: {e}"))?;
+                    }
                     // The caller still holds the install lease. Restoration validates
                     // the prior payload and refuses a changed active selection.
-                    let repo = tracked_repo_dir()?;
+                    let repo = self.task.runtime_paths_resolve()?.installer_root()?;
                     let root = repo.to_string_lossy().replace('\'', "''");
                     let expected = self.task.description.replace('\'', "''");
                     Self::run_installer_script(&format!("$ErrorActionPreference='Stop'; . '{root}/tools/scripts/lib/install-common.ps1'; . '{root}/tools/scripts/lib/windows-service.ps1'; Restore-CoreActiveRelease -ExpectedDescription '{expected}' | Out-Null"))
                         .map_err(|e|format!("{failed}; previous release recovery refused: {e}"))?;
-                    let restored = Self { task:Self::query().await? };
+                    let restored = Self { task:Self::query().await?, engine_selection: None };
                     let release = restored.task.runtime_paths_resolve()?;
                     restored.launch_windows_once(wait_for_death).await
                         .map_err(|e|format!("{failed}; previous release also failed: {e}"))?;
@@ -2343,14 +2366,17 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     // there to answer), and an engine that does not build never fails the core deploy: the lanes
     // keep the engine they have. `install` takes the attended path below.
     #[cfg(windows)]
-    if options.service && !options.require_engine_receipt {
-        match std::env::current_dir() {
-            Ok(repo) => match PreparedCoreService::prepare_engine(&repo).await {
+    // Published/prepared handoffs carry their verified engine closure. Never enter
+    // the source-building engine refresh path for an explicit prebuilt artifact.
+    // Attended developer installs retain their explicit receipt path below.
+    if options.service && prebuilt.is_none() && !options.require_engine_receipt {
+        match PreparedCoreService::installer_root().await {
+            Ok(repo) => match PreparedCoreService::prepare_engine(&repo, false).await {
                 Ok(Some((_, engine))) => deploy_note(&format!("▶ verified engine slot promoted ({}); the next core converges its lanes onto it", engine.display())),
                 Ok(None) => {}
                 Err(e) => deploy_note(&format!("⚠ engine not updated this deploy ({e}); the core deploys on the engine it has")),
             },
-            Err(e) => deploy_note(&format!("⚠ engine not updated this deploy (no working directory: {e})")),
+            Err(e) => deploy_note(&format!("⚠ engine not updated this deploy (installer root unavailable: {e})")),
         }
     }
     #[cfg(windows)]
@@ -2361,7 +2387,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     };
     #[cfg(windows)]
     let prepared_engine = match prepared_engine {
-        Some(repo) => PreparedCoreService::prepare_engine(&repo)
+        Some(repo) => PreparedCoreService::prepare_engine(&repo, false)
             .await?
             .map(|prepared| (repo, prepared)),
         None => None,
@@ -2475,7 +2501,30 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             prebuilt = Some(staged);
         }
     }
-    let _ = stop_with_authority(true, options.operator_present).await?;
+    #[cfg(windows)]
+    if options.service && !requested_source_build && !options.require_engine_receipt {
+        // Staging above may have selected a new release. Promote only that
+        // registered published engine, before stopping any serving generation.
+        let selected = service.as_mut().ok_or("published handoff has no prepared supervisor")?;
+        let release = selected.task.runtime_paths_resolve()?;
+        let repo = release.installer_root()?;
+        let home = continuum_core::paths::continuum_home()?;
+        let root = continuum_core::inference::engine_slots::root(&home)?;
+        let selection = continuum_core::inference::engine_slots::HandoffSelection::capture(&root, Path::new(&release.engine))?;
+        selected.engine_selection = Some(selection);
+        let promotion = async {
+            let promoted = PreparedCoreService::prepare_engine(&repo, true).await?
+                .ok_or("published engine promotion returned no receipt")?;
+            if promoted.0 != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
+            selected.engine_selection.as_ref().ok_or("missing captured engine selection")?.confirm()
+        }.await;
+        if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await); }
+    }
+    if let Err(failed) = stop_with_authority(true, options.operator_present).await {
+        #[cfg(windows)]
+        if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await); }
+        return Err(failed);
+    }
     // macOS retains its existing post-stop slot replacement contract.
     #[cfg(not(windows))]
     if options.service && service.is_none() {

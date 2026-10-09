@@ -225,10 +225,19 @@ function Get-CoreRegisteredRelease {
 }
 
 function Get-CoreSupervisorBootstrap {
-    param([string]$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
+    param([string]$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value), [string]$Generation = '')
     $canonical = [Security.Principal.SecurityIdentifier]::new($UserSid).Value
     if ($canonical -cne $UserSid) { throw 'Supervisor principal is not a canonical SID.' }
-    return Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) "Continuum\$UserSid\supervisor\continuum.exe"
+    if ($Generation -and $Generation -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid protected bootstrap generation.' }
+    $directory = if ($Generation) { 'supervisor-' + $Generation } else { 'supervisor' }
+    return Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) "Continuum\$UserSid\$directory\continuum.exe"
+}
+
+function Assert-CoreSupervisorLocation {
+    param([string]$Path, [string]$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
+    $name = Split-Path (Split-Path $Path -Parent) -Leaf
+    $generation = if ($name -ceq 'supervisor') { '' } elseif ($name -cmatch '^supervisor-([0-9a-f]{64})$') { $Matches[1] } else { throw 'Unknown protected bootstrap generation.' }
+    if ($Path -cne (Get-CoreSupervisorBootstrap -UserSid $UserSid -Generation $generation)) { throw 'Unexpected supervisor bootstrap path.' }
 }
 
 # Called only by the installer registrar under its initial consent. Executable
@@ -236,7 +245,8 @@ function Get-CoreSupervisorBootstrap {
 # bootstrap and its DLL closure must therefore never be caller-writable.
 function Install-CoreSupervisorBootstrap {
     param($Plan)
-    $expected = Get-CoreSupervisorBootstrap -UserSid $Plan.userSid
+    $expected = $Plan.cli
+    Assert-CoreSupervisorLocation -Path $expected -UserSid $Plan.userSid
     if ($Plan.cli -cne $expected -or $Plan.shell -cne $expected) { throw 'Bootstrap destination differs from its protected installation boundary.' }
     Assert-CorePreparedPath -Path $expected -Expected $expected
     if (Test-Path -LiteralPath $expected) {
@@ -244,9 +254,10 @@ function Install-CoreSupervisorBootstrap {
         # Repairing task drift must not replace DLLs under its running image.
         Assert-CoreSupervisorBootstrap -Path $expected -UserSid $Plan.userSid
         $protocol = (Invoke-InstallerProcess $expected @('installed-service', '--protocol') | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $protocol -cne '2') { throw 'Existing protected bootstrap has an incompatible protocol.' }
+        if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Existing protected bootstrap has an incompatible protocol.' }
         return
     }
+    if ($expected -cne (Get-CoreSupervisorBootstrap -UserSid $Plan.userSid -Generation ([string]$Plan.bootstrapHashes.cli).ToLowerInvariant())) { throw 'New bootstrap generation differs from candidate identity.' }
     $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
     $finalDirectory = Split-Path $expected -Parent
     $stagingName = 'supervisor.prepare-' + [guid]::NewGuid().ToString('N')
@@ -317,7 +328,7 @@ function Assert-CoreSupervisorBootstrap {
         if ((Split-Path $Path -Leaf) -cne 'continuum.exe' -or
             (Split-Path (Split-Path $Path -Parent) -Leaf) -notmatch '^supervisor\.prepare-[0-9a-f]{32}$' -or
             (Split-Path (Split-Path $Path -Parent) -Parent) -cne (Split-Path (Split-Path $expected -Parent) -Parent)) { throw 'Unexpected staged bootstrap path.' }
-    } elseif ($Path -cne $expected) { throw 'Unexpected supervisor bootstrap path.' }
+    } else { Assert-CoreSupervisorLocation -Path $Path -UserSid $UserSid }
     Assert-CorePreparedPath -Path $Path -Expected $Path -File
     $directory = Split-Path $Path -Parent
     $manifest = Join-Path $directory 'bootstrap-hashes.json'
@@ -325,6 +336,8 @@ function Assert-CoreSupervisorBootstrap {
     if ((Get-Item -LiteralPath $manifest -ErrorAction Stop).Length -gt 65536) { throw 'Bootstrap integrity receipt is oversized.' }
     $hashes = Get-Content -LiteralPath $manifest -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
     if (-not $hashes.'continuum.exe') { throw 'Bootstrap integrity receipt has no executable.' }
+    $generationName = Split-Path $directory -Leaf
+    if (-not $Staged -and $generationName -cmatch '^supervisor-([0-9a-f]{64})$' -and $Matches[1] -cne ([string]$hashes.'continuum.exe').ToLowerInvariant()) { throw 'Protected bootstrap generation identity differs from its manifest.' }
     foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
         if ($item.PSIsContainer -or ($item.Name -ne 'bootstrap-hashes.json' -and $item.Name -notin @($hashes.PSObject.Properties.Name))) {
             throw 'Protected bootstrap directory contains undeclared content.'
@@ -366,8 +379,8 @@ function Test-CoreProvisionedTask {
     try {
         if ($d.schema -ne 2) { return $false }
         if (@($d.PSObject.Properties).Count -ne 3 -or
-            $d.activeRelease -cne (Join-Path $InstallRoot 'install-active.json') -or
-            $d.bootstrap -cne (Get-CoreSupervisorBootstrap)) { throw 'Supervisor provision descriptor differs from the installed boundary.' }
+            $d.activeRelease -cne (Join-Path $InstallRoot 'install-active.json')) { throw 'Supervisor provision descriptor differs from the installed boundary.' }
+        Assert-CoreSupervisorLocation -Path $d.bootstrap
         $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         if (-not (Test-CoreTaskUser -UserId $Task.Principal.UserId -ExpectedSid $sid) -or
             @($Task.Actions).Count -ne 1 -or $Task.Actions[0].Execute -cne $d.bootstrap -or

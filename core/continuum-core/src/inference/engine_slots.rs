@@ -343,6 +343,59 @@ pub fn rollback(root: &Path, failed: &str) -> Result<&'static str, String> {
     Ok(back)
 }
 
+/// The actual selection before a supervised core handoff. The caller holds the
+/// deployment authority throughout capture, promotion and recovery. A release's
+/// descriptor is not the selection: an earlier engine convergence may have moved it.
+pub struct HandoffSelection {
+    root: PathBuf,
+    promoted: &'static str,
+    prior: Option<&'static str>,
+}
+
+impl HandoffSelection {
+    pub fn capture(root: &Path, candidate: &Path) -> Result<Self, String> {
+        let promoted = slot_of(root, candidate).ok_or("handoff engine is not a managed slot")?;
+        let prior = match std::fs::read_to_string(root.join(CURRENT_FILE)) {
+            Ok(value) => Some(known(value.trim())?),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("read prior engine selection: {error}")),
+        };
+        Ok(Self { root: root.to_owned(), promoted, prior })
+    }
+
+    pub fn confirm(&self) -> Result<(), String> {
+        if current_slot(&self.root) != Some(self.promoted) {
+            return Err("engine selection changed during handoff promotion".into());
+        }
+        Ok(())
+    }
+
+    /// Restore before starting the previous core, whose reader may not understand
+    /// the new engine receipt. Normal launch-failure rollback deliberately refuses
+    /// during deployment; this caller already owns that authority.
+    pub fn restore(&self) -> Result<(), String> {
+        // Preparation can refuse before promotion, or a previous recovery may
+        // already have restored this exact selection. Neither changes a pointer.
+        if current_slot(&self.root) == self.prior { return Ok(()); }
+        self.confirm()?;
+        match self.prior {
+            Some(prior) => {
+                if previous_slot(&self.root) != Some(prior) {
+                    return Err("previous engine changed during handoff; recovery refused".into());
+                }
+                rollback(&self.root, self.promoted)?;
+            }
+            None => {
+                // A first installation had no selection; do not invent one from
+                // a stale release descriptor or an unrelated previous pointer.
+                std::fs::remove_file(self.root.join(CURRENT_FILE))
+                    .map_err(|error| format!("restore absent engine selection: {error}"))?;
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Record the engine a Windows service registration names as `current`: the service-host's
 /// replacement for injecting `LLAMA_SERVER_BIN` (which the core must read as an operator's pin,
 /// so Windows never converged). On Windows the registered release IS the promotion
@@ -487,10 +540,31 @@ mod tests {
         std::fs::write(root.join("engine-b").join(STAMP_FILE), "old000:cuda\n").unwrap();
         assert!(promote(root, "engine-b", "abc123:cuda").is_err(), "stamp is not the pin built");
         engine(root, "engine-a", "aaa000:cuda");
+        let fresh = HandoffSelection::capture(root, &slot_bin(root, "engine-a")).expect("capture absent selection");
+        fresh.restore().expect("preparation refused before promotion");
         promote(root, "engine-a", "aaa000:cuda").expect("first install promotes");
+        fresh.restore().expect("failed first handoff restores absence");
+        assert_eq!(current_slot(root), None);
+        promote(root, "engine-a", "aaa000:cuda").expect("retry first install");
         assert!(rollback(root, "engine-a").is_err(), "nothing recorded to roll back to");
         engine(root, "engine-b", "abc123:cuda");
+        // A core rollback must restore its actual prior engine before the old
+        // reader encounters the newly published stamp-bearing receipt.
+        let handoff = HandoffSelection::capture(root, &slot_bin(root, "engine-b")).expect("capture actual prior engine");
         promote(root, "engine-b", "abc123:cuda").expect("verified slot promotes");
+        handoff.confirm().expect("promotion receipt");
+        handoff.restore().expect("core failure restores actual prior engine");
+        handoff.restore().expect("repeated recovery preserves restored selection");
+        assert_eq!(resolve(root, None, current_slot(root)), Resolved::Slot("engine-a"));
+        promote(root, "engine-b", "abc123:cuda").expect("retry promotion");
+        engine(root, "engine-c", "ccc000:cuda");
+        promote(root, "engine-c", "ccc000:cuda").expect("newer independent selection");
+        assert!(handoff.restore().is_err(), "never undo a newer selection");
+        assert_eq!(current_slot(root), Some("engine-c"));
+        rollback(root, "engine-c").expect("restore fixture selection");
+        assert!(handoff.restore().is_err(), "matching current is insufficient when prior selection changed");
+        promote(root, "engine-a", "aaa000:cuda").expect("reset actual prior");
+        promote(root, "engine-b", "abc123:cuda").expect("reset promotion");
         assert_eq!((current_slot(root), previous_slot(root)), (Some("engine-b"), Some("engine-a")));
         assert!(rollback(root, "engine-a").is_err(), "a stale failure report for a slot no longer current");
         assert_eq!(current_slot(root), Some("engine-b"), "the newer promotion stands");
@@ -502,6 +576,7 @@ mod tests {
         assert!(promote(root, "engine-z", "abc123:cuda").is_err(), "not a slot");
         std::fs::write(root.join(CURRENT_FILE), "../elsewhere\n").unwrap();
         assert_eq!(current_slot(root), None, "current naming anything but a slot is no slot");
+        assert!(HandoffSelection::capture(root, &slot_bin(root, "engine-a")).is_err(), "corrupt prior selection is not an absent selection");
     }
 
     // what this catches: the engine resolved from the wrong place. Every override is the

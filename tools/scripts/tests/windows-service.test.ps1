@@ -444,6 +444,7 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
     $refused = $false
     try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'publication is incomplete' }
     if (-not $refused) { throw 'Incomplete fresh engine publication looked legacy.' }
+    [IO.File]::WriteAllText((Join-Path $engineFixture '.llama-server.stamp'), 'aaaaaaaaa:cuda:80:portable-v1')
     Save-CoreEngineReceipt -Directory $engineFixture -SourceRevision ('a' * 40) -Backend cuda
     Get-CoreEngineReceipt -Directory $engineFixture | Out-Null
     $newCandidate = Join-Path $engineFixture 'ggml-cuda-new.dll'
@@ -477,6 +478,7 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
     # Public PrepareOnly formerly overlaid an idle slot, leaving five old DLLs
     # outside the publisher receipt. Retry must repair precisely that namespace.
     $obsolete = @('curand64_10.dll', 'nvblas64_12.dll', 'nvrtc-builtins64_129.dll', 'nvrtc64_120_0.alt.dll', 'nvrtc64_120_0.dll')
+    [IO.File]::WriteAllText((Join-Path $engineCopy '.llama-server.stamp'), '2d4d63bbb:cuda:120')
     foreach ($leaf in $obsolete) { [IO.File]::WriteAllText((Join-Path $engineCopy $leaf), 'obsolete') }
     [IO.File]::WriteAllText((Join-Path $engineCopy 'operator-note.txt'), 'retain')
     $held = [IO.File]::Open((Join-Path $engineCopy $obsolete[0]), 'Open', 'Read', 'None')
@@ -499,8 +501,9 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
     try { Get-CoreEngineReceipt -Directory $engineCopy | Out-Null } catch { $refused = $_ -match 'publication is incomplete' }
     if (-not $refused) { throw 'Interrupted replacement admitted its previous receipt.' }
     Copy-CoreEnginePublication -SourceDirectory $engineFixture -Directory $engineCopy
+    if ((Get-Content -LiteralPath (Join-Path $engineCopy '.llama-server.stamp') -Raw) -ne 'aaaaaaaaa:cuda:80:portable-v1') { throw 'Published engine retained an obsolete convergence stamp.' }
     $repaired = Get-CoreEngineReceipt -Directory $engineCopy
-    if (@($repaired.files.PSObject.Properties).Count -ne 2 -or
+    if (@($repaired.files.PSObject.Properties).Count -ne 3 -or
         (Get-Content -LiteralPath (Join-Path $engineCopy 'operator-note.txt') -Raw) -ne 'retain') { throw 'Retry did not replace exactly the application namespace.' }
     foreach ($leaf in $obsolete) { if (Test-Path -LiteralPath (Join-Path $engineCopy $leaf)) { throw 'Obsolete runtime survived publication.' } }
     & {
@@ -694,14 +697,23 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
     $refused = $false
     try { Get-CoreSupervisorBootstrap -UserSid '..\outside' | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw 'Bootstrap principal escaped its protected path' }
+    $legacyBootstrap = Get-CoreSupervisorBootstrap
+    $generationBootstrap = Get-CoreSupervisorBootstrap -Generation ('a' * 64)
+    Assert-CoreSupervisorLocation -Path $legacyBootstrap
+    Assert-CoreSupervisorLocation -Path $generationBootstrap
+    if ($legacyBootstrap -eq $generationBootstrap) { throw 'Bootstrap upgrade would overwrite its legacy authority.' }
+    $refused = $false
+    try { Assert-CoreSupervisorLocation -Path ($generationBootstrap.Replace(('a' * 64),'arbitrary')) } catch { $refused=$true }
+    if (-not $refused) { throw 'Unbound bootstrap generation was accepted.' }
     Write-Output 'PASS: bootstrap boundary rejects caller delete-child authority'
     & {
         $fixed = Join-Path $scratch 'protected-bootstrap.exe'
         Set-Content -LiteralPath $fixed -Value 'existing protected image'
         function Get-CoreSupervisorBootstrap { param($UserSid) $fixed }
+        function Assert-CoreSupervisorLocation { param($Path,$UserSid) if ($Path -ne $fixed) { throw 'Wrong bootstrap path' } }
         $script:bootstrapVerifications = 0
         function Assert-CoreSupervisorBootstrap { param($Path,$UserSid) $script:bootstrapVerifications++ }
-        function Invoke-InstallerProcess { param($Executable,$Arguments) if ($Executable -ne $fixed -or ($Arguments -join ' ') -ne 'installed-service --protocol') { throw 'Unexpected bootstrap probe' }; $global:LASTEXITCODE=0; '2' }
+        function Invoke-InstallerProcess { param($Executable,$Arguments) if ($Executable -ne $fixed -or ($Arguments -join ' ') -ne 'installed-service --protocol') { throw 'Unexpected bootstrap probe' }; $global:LASTEXITCODE=0; '3' }
         function Copy-Item { throw 'Task reprovisioning attempted to replace the protected bootstrap' }
         Install-CoreSupervisorBootstrap -Plan ([pscustomobject]@{cli=$fixed;shell=$fixed;userSid=$identity.User.Value;bootstrapSource='missing candidate';bootstrapHashes=@{}})
         if ($script:bootstrapVerifications -ne 1 -or (Get-Content -LiteralPath $fixed -Raw).Trim() -ne 'existing protected image') { throw 'Existing bootstrap was not verified/reused intact' }
@@ -790,6 +802,12 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
             Actions = @([pscustomobject]@{ Execute=(Get-CoreSupervisorBootstrap); WorkingDirectory=(Split-Path (Get-CoreSupervisorBootstrap) -Parent); Arguments=('installed-service core "{0}"' -f $activePath) }) }
         $fixedDescription = $script:resumeTask.Description
         if ((Get-CoreRegisteredRelease -Task $script:resumeTask -InstallRoot $resumeRoot).artifact -ne $second.artifact) { throw 'Fixed supervisor did not resolve second release' }
+        $upgradedBootstrap = Get-CoreSupervisorBootstrap -Generation ('a' * 64)
+        $script:resumeTask.Description = ([ordered]@{schema=2;activeRelease=$activePath;bootstrap=$upgradedBootstrap} | ConvertTo-Json -Compress)
+        $script:resumeTask.Actions[0].Execute = $upgradedBootstrap
+        $script:resumeTask.Actions[0].WorkingDirectory = Split-Path $upgradedBootstrap -Parent
+        if ((Get-CoreRegisteredRelease -Task $script:resumeTask -InstallRoot $resumeRoot).artifact -ne $second.artifact) { throw 'Bootstrap generation migration changed the active release.' }
+        $fixedDescription = $script:resumeTask.Description
         Set-Content -LiteralPath (Join-Path $secondSlot 'fixture-runtime.dll') -Value 'tampered runtime'
         $refused = $false
         try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'changed since preparation' }
@@ -1513,6 +1531,24 @@ exit 64
             $refused = $false
             try { Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt } catch { $refused = $_ -match 'changed during engine preparation' }
             if (-not $refused) { throw 'A release changed mid-preparation was handed off' }
+            # Explicit published handoff never reaches selection/source building,
+            # including drift and unsupported promotion failures.
+            $script:changeTaskAfter = $false; $script:matching = 'engine-c'; $script:promoteResult = $true
+            $publishedSlot = Join-Path $bin 'engine-c'
+            [IO.File]::WriteAllText((Join-Path $publishedSlot '.llama-server.stamp'), 'aaaaaaaaa:cuda:80:portable-v1')
+            Save-CoreEngineReceipt -Directory $publishedSlot -SourceRevision ('a' * 40) -Backend cuda
+            $script:releaseJson = (@{ cli=(Join-Path $scratch 'fake-cli.exe'); engine=(Join-Path $publishedSlot 'llama-server.exe') } | ConvertTo-Json -Compress)
+            $script:selected = $false
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt -PrebuiltOnly
+            if ($script:selected -or $script:promoted -ne 'engine-c') { throw 'Published handoff took a developer path.' }
+            foreach ($failure in @('drift','stamp','promote')) {
+                $script:matching = if ($failure -eq 'drift') { 'none' } else { 'engine-c' }
+                $script:promoteResult = $failure -ne 'promote'
+                [IO.File]::WriteAllText((Join-Path $publishedSlot '.llama-server.stamp'), $(if ($failure -eq 'stamp') { 'bbbbbbbbb:cuda' } else { 'aaaaaaaaa:cuda:80:portable-v1' }))
+                $refused = $false
+                try { Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt -PrebuiltOnly } catch { $refused = $true }
+                if (-not $refused -or $script:selected) { throw 'Invalid published engine reached source fallback.' }
+            }
         } finally { $env:USERPROFILE = $savedProfile }
     }
     Write-Output 'PASS: a slot already at the pin is promoted without a build, and every other case takes its own road'
@@ -1686,6 +1722,16 @@ function Mod-LlamaServer {
         if ($script:resumedArtifact -ne $prepared.artifact) { throw 'Resume did not consume the new preparation receipt' }
     }
     Write-Output 'PASS: public prepare stages/validates/resumes without provisioning, elevation, handoff, or registered-slot overwrite'
+    # The installed CLI's cwd is its DLL slot. A fresh shell must load recovery
+    # from the registered installer checkout rather than that binary directory.
+    $moduleRoot = $repo.Replace("'", "''")
+    $priorTracked = $env:CONTINUUM_TRACK_REPO_DIR
+    $env:CONTINUUM_TRACK_REPO_DIR = $scratch
+    Push-Location $scratch
+    try {
+        $commands = & (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -NoProfile -NonInteractive -Command "`$ErrorActionPreference='Stop'; . '$moduleRoot/tools/scripts/lib/install-common.ps1'; . '$moduleRoot/tools/scripts/lib/windows-service.ps1'; Get-Command Restore-CoreActiveRelease,Prepare-CoreServiceEngine | ForEach-Object Name"
+        if ($LASTEXITCODE -ne 0 -or 'Restore-CoreActiveRelease' -notin $commands -or 'Prepare-CoreServiceEngine' -notin $commands) { throw 'Installed-path shell lost engine or recovery module imports.' }
+    } finally { Pop-Location; $env:CONTINUUM_TRACK_REPO_DIR = $priorTracked }
     $logs = Join-Path $scratch 'logs'
     New-Item -ItemType Directory -Path $logs | Out-Null
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'

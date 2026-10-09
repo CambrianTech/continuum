@@ -243,7 +243,10 @@ impl EngineInstallReceipt {
                 .into_string()
                 .map_err(|_| "non-UTF8 engine candidate")?
                 .to_ascii_lowercase();
-            if name == "llama-server.exe" || name.ends_with(".dll") {
+            if name == "llama-server.exe"
+                || name.ends_with(".dll")
+                || (name == ".llama-server.stamp" && r.files.contains_key(&name))
+            {
                 unredirected(&entry.path())?;
                 if !entry
                     .file_type()
@@ -350,6 +353,8 @@ mod tests {
         let dll = directory.join("cublas64_12.dll");
         std::fs::write(&program, b"engine").unwrap();
         std::fs::write(&dll, b"before").unwrap();
+        let stamp = directory.join(".llama-server.stamp");
+        std::fs::write(&stamp, b"012345678:cuda:80:portable-v1").unwrap();
         assert!(
             EngineInstallReceipt::load(program.to_str().unwrap(), &|| false)
                 .unwrap()
@@ -362,8 +367,25 @@ mod tests {
             "backend": "cuda", "build_contract": "static-local-backends-v1",
             "runtime_origin": "installed-toolkit-bin-snapshot",
             "platform_contract": "windows-system32-nvidia-driver-v1",
-            "files": {"llama-server.exe": hash(&program, &|| Ok(()), &mut 1024).unwrap().0, "cublas64_12.dll": hash(&dll, &|| Ok(()), &mut 1024).unwrap().0}
+            "files": {"llama-server.exe": hash(&program, &|| Ok(()), &mut 1024).unwrap().0, "cublas64_12.dll": hash(&dll, &|| Ok(()), &mut 1024).unwrap().0, ".llama-server.stamp": hash(&stamp, &|| Ok(()), &mut 1024).unwrap().0}
         });
+        let mut legacy_receipt = receipt.clone();
+        legacy_receipt["files"]
+            .as_object_mut()
+            .unwrap()
+            .remove(".llama-server.stamp");
+        std::fs::write(&path, serde_json::to_vec(&legacy_receipt).unwrap()).unwrap();
+        assert!(
+            EngineInstallReceipt::read(
+                program.clone(),
+                directory.clone(),
+                system.clone(),
+                &path,
+                &|| false
+            )
+            .is_ok(),
+            "existing receipts retain their original input contract"
+        );
         std::fs::write(&path, serde_json::to_vec(&receipt).unwrap()).unwrap();
         let captured = EngineInstallReceipt::read(
             program.clone(),
@@ -434,6 +456,12 @@ mod tests {
             "retained owner keeps input pinned"
         );
         drop(retained);
+        std::fs::write(&stamp, b"999999999:cuda:80:portable-v1").unwrap();
+        assert!(
+            captured.verify(&|| false).is_err(),
+            "convergence identity is part of the pinned payload"
+        );
+        std::fs::write(&stamp, b"012345678:cuda:80:portable-v1").unwrap();
         // The original content identity remains useful after ownership ends.
         std::fs::write(&dll, b"after!").unwrap();
         assert!(
