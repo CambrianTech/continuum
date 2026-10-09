@@ -28,3 +28,15 @@ No duplicate implementation remains. A fresh isolated PowerShell runspace in the
 existing service fixture loads only win-modules and validates a scratch engine
 receipt. Full Windows PowerShell5.1 fixture passed35groups. Actual artifact
 republication remains pending; this did not rebuild native code or install live.
+
+TLS packaging follow-up: CMake selected OpenSSL under Program Files/OpenSSL,
+but the runtime search roots included only VC and CUDA. The shared runtime owner
+now also reads the engine's configured OPENSSL_INCLUDE_DIR and admits the bin
+folder from that same installation; no PATH replacement, TLS disabling, or
+import exclusion is used. Dynamic imports still fail closed if unavailable.
+The existing PowerShell fixture covers configured-package discovery and actual
+CMake capture/hash verification for libssl and libcrypto. Full PS5 fixture35groups
+passed. A separate quick real-PE check used installed Git OpenSSL with the real
+MSVC dumpbin and CMake: shared Copy-CoreRuntimeClosure captured both TLS DLLs and
+verified their staged dependency graph. Native engine rebuild/publication remains
+pending; no serving state changed.
