@@ -1783,6 +1783,9 @@ function Mod-LlamaServer {
         foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
             [IO.File]::WriteAllText((Join-Path $tlsBin $name), ('selected TLS '+$name))
         }
+        # Regression: an external TLS DLL imports VC runtimes that also exist in System32.
+        $vcNames = @(Get-Content (Join-Path $repo 'tools/scripts/lib/windows-runtime-redistributables.txt'))
+        foreach ($name in $vcNames) { [IO.File]::WriteAllText((Join-Path $redist ('x64/Microsoft.VC999.CRT/'+$name)), ('selected VC '+$name)) }
         $savedRedist = $env:VCToolsRedistDir
         try {
             $env:VCToolsRedistDir = $redist
@@ -1792,13 +1795,36 @@ function Mod-LlamaServer {
             New-Item -ItemType Directory -Path $tlsStage | Out-Null
             $tlsExe = Join-Path $tlsStage 'llama-server.exe'
             [IO.File]::WriteAllText($tlsExe, 'TLS engine fixture')
-            [IO.File]::WriteAllText($inspector, $inspection.Replace('nvcuda.dll', "libssl-3-x64.dll`r`necho     libcrypto-3-x64.dll"), [Text.Encoding]::ASCII)
+            $tlsInspection = $inspection.Replace('nvcuda.dll', "libssl-3-x64.dll`r`necho     libcrypto-3-x64.dll")
+            $vcInspection = $inspection.Replace('nvcuda.dll', ($vcNames -join "`r`necho     "))
+            [IO.File]::WriteAllText($inspector, ("@echo off`r`nif /I `%~nx2`==libssl-3-x64.dll goto vc`r`nif /I `%~nx2`==libcrypto-3-x64.dll goto vc`r`n"+$tlsInspection+"exit /b 0`r`n:vc`r`n"+$vcInspection), [Text.Encoding]::ASCII)
             function Invoke-InstallerProcess { param($FilePath,$ArgumentList,[switch]$OwnProcessTree) & $cmakePath @ArgumentList }
             $tlsNames = Join-Path $tlsStage 'runtime-imports.txt'
             Copy-CoreRuntimeClosure -Directory $tlsStage -Executables @($tlsExe) -Inspector $inspector -RuntimeDirectories $roots -OutputNames $tlsNames
             foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
                 if (@(Get-Content $tlsNames) -notcontains $name -or (Get-FileHash (Join-Path $tlsStage $name)).Hash -cne (Get-FileHash (Join-Path $tlsBin $name)).Hash) { throw 'TLS runtime was not captured and hashed from the configured package.' }
             }
+            foreach ($name in $vcNames) {
+                if (@(Get-Content $tlsNames) -notcontains $name -or
+                    (Get-FileHash (Join-Path $tlsStage $name)).Hash -cne (Get-FileHash (Join-Path $redist ('x64/Microsoft.VC999.CRT/'+$name))).Hash) {
+                    throw 'Transitive VC runtime omitted or inherited from the developer machine.'
+                }
+            }
+            # Force discovery through the external DLL again, without the PS
+            # staging step repairing the deliberately damaged staged runtime.
+            foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) { Remove-Item -LiteralPath (Join-Path $tlsStage $name) }
+            $damaged = Join-Path $tlsStage 'vcruntime140.dll'
+            [IO.File]::WriteAllText($damaged, 'wrong runtime bytes')
+            $tlsArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($tlsStage.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", "-DRUNTIME_DIRS=$(($roots | ForEach-Object { $_.Replace('\','/') }) -join ';')", '-DCAPTURE_IMPORTS=ON', '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+            try { $ErrorActionPreference = 'Continue'; & $cmakePath @tlsArgs 2> $errorLog }
+            finally { $ErrorActionPreference = $savedPreference }
+            if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Staged redistributable differs') { throw 'Capture accepted a mismatched staged VC runtime.' }
+            # Prior dependencies may have been copied before the refusal.
+            foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) { Remove-Item -LiteralPath (Join-Path $tlsStage $name) -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $damaged
+            try { $ErrorActionPreference = 'Continue'; & $cmakePath @tlsArgs 2> $errorLog }
+            finally { $ErrorActionPreference = $savedPreference }
+            if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Redistributable must be bundled') { throw 'Capture inherited a missing VC runtime from Windows.' }
         } finally { $env:VCToolsRedistDir = $savedRedist }
     }
     Write-Output 'PASS: publisher preserves declared hardware contract and bounds engine imports on GPU-less hosts'
