@@ -240,6 +240,8 @@ jobs:
             CONTINUUM_PACKAGE_DIR="$(cygpath -w "$stage")" powershell.exe -NoProfile -NonInteractive -Command \
               '$ErrorActionPreference = "Stop"; . ./tools/scripts/lib/install-common.ps1; . ./tools/scripts/lib/win-modules.ps1; Publish-CoreWindowsRuntime -Directory $env:CONTINUUM_PACKAGE_DIR'
             runtime_libs="$(tr '\r\n' '  ' < "$stage/runtime-libs.txt")"
+            powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File \
+              tools/scripts/tests/windows-process.test.ps1 -PrebuiltCli "$(cygpath -w "$stage/continuum.exe")"
           fi
           if [ "$RUNNER_OS" = macOS ]; then
             # A downloaded binary must launch on a Mac that has nothing but macOS: every linked
