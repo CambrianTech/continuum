@@ -33,7 +33,11 @@ try {
         $bins = @('continuum-core-server','continuum','continuum-mcp','forge-custodian')
         foreach ($bin in $bins) { [IO.File]::WriteAllText((Join-Path $payload "$bin.exe"), 'archive fixture; never executed') }
         $archive = Join-Path $download 'continuum-core-windows-x86_64.tar.gz'
-        & tar.exe -czf $archive -C $download 'continuum-core-windows-x86_64'
+        # GNU tar interprets C: as a remote host. Match the production tar_on
+        # boundary: archive basename and members are relative to its directory.
+        Push-Location $download
+        try { & tar.exe -czf (Split-Path $archive -Leaf) 'continuum-core-windows-x86_64' }
+        finally { Pop-Location }
         if ($LASTEXITCODE -ne 0) { throw 'Cannot create prebuilt fixture archive.' }
         $manifest = @{platform='windows-x86_64'; git_sha=$tip; features=''; archive=(Split-Path $archive -Leaf); sha256=(Get-FileHash $archive).Hash.ToLowerInvariant(); bins=$bins; runtime_libs=@(); engine=@{source_revision=$fork;backend='cuda';relative_path='engine'}}
         $manifestPath = Join-Path $download 'continuum-core-windows-x86_64.json'

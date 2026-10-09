@@ -26,3 +26,12 @@ actual scenario must pass before corrected release/adoption is claimed.
 Existing artifact policy includes core/ and tools/scripts/lib/, so this repair
 requires a matching publication. It does not relabel5a177 or privately filter its
 output. No UAC, active receipt, installed runtime or persona state changed.
+
+Publisher fixture portability follow-up: Git's GNU tar interpreted the fixture's
+absolute Windows archive path as a remote host. The existing fixture now uses
+the production tar_on convention: change to the archive directory, pass only
+its basename and relative members, restore the working directory in finally.
+Both actual Git GNU tar and Windows System32 tar locally created/extracted the
+fixture archive and reached the known released5a177 JSON failure. JSON and
+checksum assertions are unchanged; corrected-candidate publisher success remains
+pending. Raw logs:20261009-prepare-json-tar-gnu.log and -native.log.
