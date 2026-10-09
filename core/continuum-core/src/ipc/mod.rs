@@ -2211,7 +2211,7 @@ pub fn start_server(
         shell_sessions.clone(),
         rt_handle.clone(),
     ));
-    runtime.register(Arc::new(CodeModule::new(code_state)));
+    runtime.register(Arc::new(CodeModule::new(code_state.clone())));
 
     // Phase 4: DataModule (database-agnostic storage via ORM adapters)
     // DB path is passed per-request from TypeScript - NO defaults
@@ -3606,7 +3606,7 @@ pub fn start_server(
     // VisionModule: Content-addressed cache + event notification for vision descriptions
     // Provides vision/description-get, vision/description-put, vision/description-status,
     // vision/cache-stats, vision/cache-warm, vision/cache-evict
-    runtime.register(Arc::new(VisionModule::new()));
+    runtime.register(Arc::new(VisionModule::new(code_state.clone())));
 
     // GridModule: inter-node transport + routing (Tailscale, Reticulum)
     let grid_dir = dirs::home_dir()

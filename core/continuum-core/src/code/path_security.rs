@@ -25,13 +25,18 @@ pub struct PathSecurity {
 }
 
 /// How far a read may reach.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReadScope {
     /// The workspace and its read-only roots — every caller.
     Sandbox,
-    /// Also any absolute path the OS user can read — only for a caller whose trust already
-    /// admits arbitrary execution (`code/shell`). Writes never widen.
+    /// Also any absolute path the OS user can read — the OPERATOR only: the core runs as
+    /// the operator, and the operator's reads are the operator's. Writes never widen.
     Host,
+    /// Also any absolute path inside the caller's confinement (card d598c806): a citizen
+    /// whose trust admits `code/shell` reads what her shell can read — her workspace,
+    /// her citizen directory, the toolchains, the temp dir — and nothing the kernel
+    /// would have refused her child. ONE policy for the shell and the file verbs.
+    Confined(super::confinement::AllowList),
 }
 
 /// Errors that can occur during path validation.
@@ -410,13 +415,24 @@ impl PathSecurity {
     /// sandbox's verdict stands for every relative path and for every `Sandbox` caller.
     pub fn validate_read_in(&self, path: &str, scope: ReadScope) -> Result<PathBuf, PathSecurityError> {
         let sandboxed = self.validate_read(path);
-        if sandboxed.is_ok() || scope == ReadScope::Sandbox {
+        if sandboxed.is_ok() {
             return sandboxed;
         }
         let host = Path::new(path);
-        match host.is_absolute().then(|| host.canonicalize()) {
-            Some(Ok(canonical)) => Ok(canonical),
-            _ => sandboxed,
+        let canonical = match (&scope, host.is_absolute().then(|| host.canonicalize())) {
+            (ReadScope::Sandbox, _) | (_, None) | (_, Some(Err(_))) => return sandboxed,
+            (_, Some(Ok(canonical))) => canonical,
+        };
+        match scope {
+            ReadScope::Host => Ok(canonical),
+            ReadScope::Confined(list) if list.permits_read(&canonical) => Ok(canonical),
+            // Outside her roots: the sandbox's verdict names the workspace she escaped, the
+            // same refusal her shell would have met at the kernel.
+            ReadScope::Confined(_) => Err(PathSecurityError::TraversalBlocked {
+                path: path.to_string(),
+                workspace: self.workspace_root.display().to_string(),
+            }),
+            ReadScope::Sandbox => sandboxed,
         }
     }
 
@@ -788,6 +804,36 @@ mod tests {
         assert_eq!(security.validate_read_in(&abs, ReadScope::Host).unwrap(), file.canonicalize().unwrap());
         assert!(security.validate_read_in("../../etc/passwd", ReadScope::Host).is_err());
         assert!(security.validate_write(&abs).is_err(), "writes never widen");
+    }
+
+    // what this catches (card d598c806): a citizen whose shell is confined reading, by
+    // path, what her shell cannot: Confined scope reads an absolute path inside her roots
+    // and refuses one outside them BY NAME (a security refusal naming the workspace, not
+    // an ENOENT), while a relative traversal never widens.
+    #[test]
+    fn confined_scope_reads_her_roots_and_refuses_the_operators_by_name() {
+        use crate::code::confinement::AllowList;
+        let (_dir, security) = setup_workspace();
+        let hers = tempfile::tempdir().unwrap();
+        let theirs = tempfile::tempdir().unwrap();
+        let mine = hers.path().join("notes.txt");
+        let yours = theirs.path().join("resume.txt");
+        fs::write(&mine, "mine").unwrap();
+        fs::write(&yours, "yours").unwrap();
+        let list = AllowList {
+            write: vec![hers.path().canonicalize().unwrap()],
+            read: vec![],
+            deny: vec![],
+        };
+        let scope = ReadScope::Confined(list);
+        let mine_s = mine.to_string_lossy().to_string();
+        let yours_s = yours.to_string_lossy().to_string();
+        assert_eq!(security.validate_read_in(&mine_s, scope.clone()).unwrap(), mine.canonicalize().unwrap());
+        match security.validate_read_in(&yours_s, scope.clone()) {
+            Err(PathSecurityError::TraversalBlocked { path, .. }) => assert_eq!(path, yours_s),
+            other => panic!("the operator's file must be refused by name, got {other:?}"),
+        }
+        assert!(security.validate_read_in("../../etc/passwd", scope).is_err(), "a traversal never widens");
     }
 
     #[test]

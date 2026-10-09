@@ -101,11 +101,15 @@ pub(crate) async fn run_cargo(
     root: &Path,
     args: &[String],
     timeout: Duration,
+    confinement: Option<&crate::code::confinement::Confinement>,
+    who: &str,
 ) -> Result<CargoRun, CommandError> {
     let started = Instant::now();
-    let mut cmd = tokio::process::Command::new("cargo");
-    cmd.args(args)
-        .current_dir(root)
+    let args: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+    // A citizen's cargo is confined like her shell (card d598c806): the toolchain and
+    // the shared target cache are in her roots, the operator's files are not.
+    let mut cmd = crate::code::confinement::command_for(confinement, who, Path::new("cargo"), &args);
+    cmd.current_dir(root)
         .env("CARGO_TERM_COLOR", "never")
         .kill_on_drop(true);
     if let Some(target) = shared_target_dir() {

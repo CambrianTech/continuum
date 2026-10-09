@@ -32,9 +32,10 @@ pub mod description_status;
 pub fn command_objects(
     cache: Arc<VisionCache>,
     executor_slot: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
+    code: Arc<crate::modules::code::CodeState>,
 ) -> Vec<Arc<dyn DynCommand>> {
     vec![
-        Arc::new(look::VisionLook { executor_slot }),
+        Arc::new(look::VisionLook { executor_slot, code }),
         Arc::new(description_get::VisionDescriptionGet {
             cache: cache.clone(),
         }),
@@ -81,11 +82,16 @@ mod tests {
 
     // what this catches: command_objects assembles all seven verbs — a dropped entry
     // would silently remove a vision command from the registry.
-    #[test]
-    fn command_objects_assembles_all_seven() {
+    #[tokio::test]
+    async fn command_objects_assembles_all_seven() {
         let cache = Arc::new(VisionCache::new());
         let slot = Arc::new(crate::runtime::LateBound::new("vision executor"));
-        let objs = command_objects(cache, slot);
+        let code = Arc::new(crate::modules::code::CodeState::new(
+            Arc::new(dashmap::DashMap::new()),
+            Arc::new(dashmap::DashMap::new()),
+            tokio::runtime::Handle::current(),
+        ));
+        let objs = command_objects(cache, slot, code);
         assert_eq!(objs.len(), 7);
     }
 }

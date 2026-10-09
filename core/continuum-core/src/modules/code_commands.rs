@@ -65,17 +65,44 @@ fn engine_err(e: crate::code::file_engine::FileEngineError) -> CommandError {
     }
 }
 
-/// How far THIS caller's reads may reach: the host, when her trust already admits
-/// `code/shell` (a read sandbox cannot contain a caller who may run `cat`, so it only cost
-/// her turns: Kimi, 2026-10-06); the sandbox for everyone else. Asked through the gate's
-/// own resolvers, so the read scope can never be wider than the shell grant.
-fn read_scope_of(ctx: &Ctx) -> crate::code::path_security::ReadScope {
+/// How far THIS caller's reads may reach: the host for the operator; her CONFINEMENT
+/// when her trust admits `code/shell` (a read sandbox cannot contain a caller who may
+/// run `cat`, so it only cost her turns: Kimi, 2026-10-06 — but her `cat` is now held
+/// to the same roots, card d598c806, so the reads are too); the sandbox for everyone
+/// else. Asked through the gate's own resolvers, so the read scope can never be wider
+/// than the shell grant.
+fn read_scope_of(ctx: &Ctx, workspace: &std::path::Path) -> crate::code::path_security::ReadScope {
+    use crate::code::path_security::ReadScope;
     let trust = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref());
-    if crate::modules::grid::acl::is_command_authorized("code/shell", trust) {
-        crate::code::path_security::ReadScope::Host
-    } else {
-        crate::code::path_security::ReadScope::Sandbox
+    if !crate::modules::grid::acl::is_command_authorized("code/shell", trust) {
+        return ReadScope::Sandbox;
     }
+    match confinement_of(ctx, workspace) {
+        None => ReadScope::Host,
+        Some(confinement) => ReadScope::Confined(confinement.materialize()),
+    }
+}
+
+/// THE one resolver for a verb that takes a path from its caller and reads the file
+/// itself (`vision/look`, and any later one): the caller's engine, the caller's read
+/// scope, the engine's own security. Returns the absolute canonical path, or the same
+/// refusal `code/read` gives — named, correctable, never a bare I/O error.
+pub(crate) async fn resolve_readable_path(
+    state: &CodeState,
+    ctx: &Ctx,
+    path: &str,
+) -> Result<std::path::PathBuf, CommandError> {
+    let who = caller_id(ctx);
+    ensure_engine(state, &who).await?;
+    let engine = state
+        .file_engines
+        .get(&who)
+        .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
+    let scope = read_scope_of(ctx, &engine.workspace_root());
+    engine
+        .security()
+        .validate_read_in(path, scope)
+        .map_err(|e| engine_err(crate::code::file_engine::FileEngineError::from(e)))
 }
 
 /// The persona/owner this tool call acts AS — the authenticated caller identity
@@ -548,7 +575,9 @@ static LAST_CARD_ROOT: std::sync::LazyLock<
 /// caller retains handles and configured cwd/env. Each command starts a fresh
 /// shell process: shell `cd`, assignments, exports and options do not flow back
 /// into this registry or into later calls.
-async fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> {
+async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<(), CommandError> {
+    let who = caller_id(ctx);
+    let who = who.as_str();
     // The ENGINE decides the root and evicts a shell whose root moved (a held card
     // claimed after the shell was opened) — so it runs first; a shell that survives
     // it is current. Checking the shell first let a pre-claim `code/shell` pin the
@@ -563,10 +592,27 @@ async fn ensure_shell(state: &CodeState, who: &str) -> Result<(), CommandError> 
         .map(|e| e.workspace_root())
         .ok_or_else(|| CommandError::Internal("engine vanished after provisioning".into()))?;
     let session_id = uuid::Uuid::new_v4().to_string();
-    let shell = ShellSession::new(&session_id, who, &root)
+    let mut shell = ShellSession::new(&session_id, who, &root)
         .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
+    // A citizen's shell is confined to her roots (card d598c806); the operator's is the
+    // operator's. Decided by the SAME trust the gate saw, never by a params field.
+    if let Some(confinement) = confinement_of(ctx, &root) {
+        shell.confine(confinement);
+    }
     state.shell_sessions.entry(who.to_string()).or_insert(shell);
     Ok(())
+}
+
+/// The confinement this caller's children and reads are held to: `None` for the
+/// operator (the core runs as the operator; the operator's hands are unconfined),
+/// `Some` for every citizen and peer, rooted at `workspace` (her engine root).
+pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::code::confinement::Confinement> {
+    let trust = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref());
+    if trust == crate::modules::grid::node::TrustLevel::Owner {
+        return None;
+    }
+    let home = crate::paths::home_dir()?;
+    Some(crate::code::confinement::Confinement::for_caller(&home, &caller_id(ctx), workspace))
 }
 
 /// How long `code/shell` waits INLINE for completion before handing back a handle
@@ -625,7 +671,7 @@ impl ActionCommand for CodeRead {
     async fn run(&self, ctx: &Ctx, p: CodeReadParams) -> Result<ReadResult, CommandError> {
         let engine = engine!(self, ctx);
         engine
-            .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(ctx))
+            .read_in(&p.file_path, p.start_line, p.end_line, read_scope_of(ctx, &engine.workspace_root()))
             .map_err(engine_err)
     }
 }
@@ -1417,7 +1463,7 @@ impl ActionCommand for CodeShell {
         p: CodeShellParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
         let who = caller_id(ctx);
-        ensure_shell(&self.state, &who).await?;
+        ensure_shell(&self.state, ctx).await?;
 
         // Start the command while briefly holding the shell entry, then DROP the
         // DashMap ref before awaiting — never hold a lock across `.await` (the
@@ -1829,7 +1875,7 @@ impl ActionCommand for CodeCreateWorkspace {
         self.state
             .re_root_shell(&who, std::path::Path::new(&p.workspace_root));
         if !p.path_prepend.is_empty() {
-            ensure_shell(&self.state, &who).await?;
+            ensure_shell(&self.state, ctx).await?;
             if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
                 let prepend = p.path_prepend.join(":");
                 // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
@@ -2009,6 +2055,26 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card d598c806): the operator's hands confined (the core runs
+    // as the operator; confining him would break every operator tool), or a citizen's
+    // NOT confined. The decision is the gate's trust, never a params field.
+    #[test]
+    fn a_citizen_is_confined_to_her_workspace_and_the_operator_is_not() {
+        let ws = tempfile::tempdir().expect("test: ws");
+        assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
+        let persona = uuid::Uuid::from_u128(0xC1);
+        let ctx = Ctx {
+            caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+            ..Ctx::default()
+        };
+        let confined = confinement_of(&ctx, ws.path()).expect("a citizen is confined");
+        assert_eq!(confined.workspace(), ws.path());
+        let list = confined.materialize();
+        assert!(list.write.contains(&ws.path().canonicalize().expect("test: canonical")), "her workspace is hers to write");
+        let home = crate::paths::home_dir().expect("test: home");
+        assert!(list.write.iter().any(|w| w.ends_with(format!(".continuum/citizens/peers/{persona}")) || !home.join(".continuum/citizens/peers").join(persona.to_string()).exists()), "her citizen dir, when it exists");
+    }
 
     // what this catches (Kimi, 2026-10-05): a write outside her workspace, a missing file
     // and a failed edit each refused as "[internal]", which reads as the substrate breaking

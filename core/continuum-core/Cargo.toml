@@ -286,6 +286,11 @@ mio = { version = "1.2.3", default-features = false }
 
 # Metal API — GPU detection (VRAM), compute shaders (RGBA→NV12 on GPU)
 # Version 0.32 matches wgpu-hal 27 (Bevy 0.18) for type compatibility
+[target.'cfg(target_os = "linux")'.dependencies]
+# A citizen's child processes are confined in-kernel (code/confinement.rs): landlock
+# needs no helper binary, so a fresh clone confines on first boot.
+landlock = "0.4"
+
 [target.'cfg(target_os = "macos")'.dependencies]
 metal = "0.32"
 objc = "0.2"    # Objective-C runtime — for Metal APIs not wrapped by metal crate

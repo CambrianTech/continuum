@@ -93,7 +93,8 @@ crate::action_command! {
             args.push(features.clone());
         }
 
-        let run = run_cargo(&root, &args, timeout).await?;
+        let confinement = crate::modules::code_commands::confinement_of(ctx, &root);
+        let run = run_cargo(&root, &args, timeout, confinement.as_ref(), &crate::modules::code_commands::caller_id(ctx)).await?;
         let diagnostics = parse_diagnostics(&run.stdout);
         let errors = diagnostics.iter().filter(|d| d.level == "error").count() as u32;
         let warnings = diagnostics.iter().filter(|d| d.level == "warning").count() as u32;
