@@ -1405,7 +1405,7 @@ public static class RegisteredGsudoFixture {
         $nativeReconcile = ${function:Invoke-CoreLegacyMediaReconciliation}
         $mediaImage = Join-Path (Split-Path $second.artifact) 'livekit-bridge.exe'
         $busyBridge = [IO.File]::Open($mediaImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
-        $calls = 0; $changeRegistration = $false
+        $changeRegistration = $false; $changeReceipt = $false
         function Invoke-CoreLegacyMediaReconciliation {
             param($Image,$InstallRoot,[switch]$AllowElevation)
             if (-not $AllowElevation) { & $nativeReconcile -Image $Image -InstallRoot $InstallRoot; return }
@@ -1413,6 +1413,7 @@ public static class RegisteredGsudoFixture {
             $script:mediaReconcileCalls++
             $busyBridge.Dispose()
             if ($changeRegistration) { $script:registeredTask = [pscustomobject]@{ Description='new registration' } }
+            if ($changeReceipt) { $script:mediaRegisteredRelease = $second }
         }
         $script:mediaReconcileCalls = 0
         try {
@@ -1428,6 +1429,21 @@ public static class RegisteredGsudoFixture {
             try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target -ReconcileLegacyMedia | Out-Null }
             catch { if ($_ -notmatch 'Registered release changed') { throw }; $refused=$true }
             if (-not $refused -or (Get-FileHash -LiteralPath $second.artifact).Hash -ne $before) { throw 'Stale registration changed candidate files.' }
+            # Protocol2/3 task envelopes stay fixed while install-active.json
+            # changes underneath them. Recheck the resolved release too.
+            $nativeRegistered = ${function:Get-CoreRegisteredRelease}
+            function Get-CoreRegisteredRelease {
+                param($Task,$InstallRoot)
+                if ($Task.Description -eq 'fixed schema2 envelope') { return $script:mediaRegisteredRelease }
+                & $nativeRegistered -Task $Task -InstallRoot $InstallRoot
+            }
+            $script:registeredTask = [pscustomobject]@{ Description='fixed schema2 envelope' }
+            $script:mediaRegisteredRelease = $first
+            $changeRegistration=$false; $changeReceipt=$true; $refused=$false
+            $busyBridge=[IO.File]::Open($mediaImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target -ReconcileLegacyMedia | Out-Null }
+            catch { if ($_ -notmatch 'Registered release changed') { throw }; $refused=$true }
+            if (-not $refused -or (Get-FileHash -LiteralPath $second.artifact).Hash -ne $before) { throw 'Stable envelope concealed changed active release.' }
         } finally {
             $busyBridge.Dispose()
             $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }

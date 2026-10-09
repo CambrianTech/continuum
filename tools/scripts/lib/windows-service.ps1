@@ -384,6 +384,7 @@ function New-CoreServiceRelease {
     if ($unknownImages -and -not $descriptor.artifact) {
         throw 'Cannot inspect all live Continuum image paths and no registered release protects startup files.'
     }
+    $registeredReleaseSnapshot = $descriptor | ConvertTo-Json -Compress
     $slot = $null
     $mediaBlocked = @()
     $serviceFiles = @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1')
@@ -417,6 +418,10 @@ function New-CoreServiceRelease {
         Invoke-CoreLegacyMediaReconciliation -Image (Join-Path $candidate 'livekit-bridge.exe') -InstallRoot $InstallRoot -AllowElevation:$ReconcileLegacyMedia
         $currentTask = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
         if ($currentTask.Description -cne $registered.Description) {
+            throw 'Registered release changed during legacy media reconciliation; candidate files were preserved.'
+        }
+        $currentRelease = if ($currentTask) { Get-CoreRegisteredRelease -Task $currentTask -InstallRoot $InstallRoot } else { $null }
+        if (($currentRelease | ConvertTo-Json -Compress) -cne $registeredReleaseSnapshot) {
             throw 'Registered release changed during legacy media reconciliation; candidate files were preserved.'
         }
         # Recheck every image lock after graceful exit; Copy-Item retains OS
