@@ -3792,7 +3792,7 @@ pub(crate) mod tests {
         let persona = Uuid::new_v4();
         use crate::cognition::dream_consolidation::tests::{
             episodic,
-            region::{drain, region_over, seeded_admission},
+            region::{drain, region_over_with_store, seeded_admission},
         };
         use crate::runtime::brain_region::{BrainRegion, RegionContext};
         let admission = seeded_admission(
@@ -3806,12 +3806,14 @@ pub(crate) mod tests {
                 })
                 .collect::<Vec<_>>(),
         );
-        let dream = region_over(persona, admission.clone());
         let owner = airc_core::PeerId::from_uuid(persona);
         let reviewer = airc_core::PeerId::new();
         let card_id = airc_work::WorkCardId::new();
         let room = Uuid::new_v4();
         let name = "reviewed-project-work";
+        let store =
+            reviewed::boundaries::ReviewBoundaryStore::new(executor.clone(), name.into(), persona);
+        let dream = region_over_with_store(persona, admission.clone(), Some(store.clone()));
         let receipts = vec![served_receipt("reviewed-request", "actual-model")];
         let (mut capture, selected) = stage_settlement_fixture(
             executor.clone(),
@@ -4176,6 +4178,55 @@ pub(crate) mod tests {
             State::Accepted,
             "another review can inspect the accepted submission without owning its boundary"
         );
+        // The original owner dies after durable acceptance, before its pending
+        // notification is consumed. No AIRC replay or second submission follows.
+        drop(dream);
+        let reopened_store =
+            reviewed::boundaries::ReviewBoundaryStore::new(data_runtime(), name.into(), persona);
+        let page = reopened_store.page(None, 1).await.unwrap();
+        assert_eq!(page.pending, vec![selection.submission_id]);
+        assert_eq!(page.next, Some(selection.submission_id.to_string()));
+        assert!(reopened_store
+            .page(page.next, 1)
+            .await
+            .unwrap()
+            .pending
+            .is_empty());
+        // A malformed earlier acceptance cannot permanently hide later valid IDs.
+        // Keep it in the same real ORM store; recovery never regrades or deletes it.
+        let mut malformed = reviewed::read_one::<_, reviewed::CreditReviewAcceptance>(
+            &data,
+            name,
+            &selection.submission_id.to_string(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        malformed.id = Uuid::nil();
+        data.commands().execute_value("data/batch", json!({
+            "dbPath": format!("@persona:{name}"),
+            "operations": [{"operationType": "create", "collection": reviewed::CreditReviewAcceptance::COLLECTION,
+                "id": malformed.id.to_string(), "data": malformed}],
+        })).await.unwrap();
+        let skipped = reopened_store.page(None, 1).await.unwrap();
+        assert!(skipped.pending.is_empty());
+        assert_eq!(skipped.next, Some(Uuid::nil().to_string()));
+        assert_eq!(
+            reopened_store.page(skipped.next, 1).await.unwrap().pending,
+            vec![selection.submission_id]
+        );
+        let wrong_owner = reviewed::boundaries::ReviewBoundaryStore::new(
+            data_runtime(),
+            name.into(),
+            Uuid::new_v4(),
+        );
+        assert!(wrong_owner
+            .finish(&[selection.submission_id], 0)
+            .await
+            .is_err());
+        let dream =
+            region_over_with_store(persona, admission.clone(), Some(reopened_store.clone()));
+        assert!(!dream.review_boundary_pending(persona, selection.submission_id));
         dream.tick(&RegionContext::for_persona(0, persona)).await;
         drain(&dream).await;
         assert!(!dream.review_boundary_pending(persona, selection.submission_id));
@@ -4187,9 +4238,24 @@ pub(crate) mod tests {
                 .count(),
             1
         );
-        // Replaying the durable acceptance into a fresh owner restores the request;
-        // automatic acceptance rescan after boot belongs to retained-credit retry.
-        let restarted = region_over(persona, admission);
+        let completed = reviewed::read_one::<_, reviewed::boundaries::ProcessedReviewBoundary>(
+            &data,
+            name,
+            &selection.submission_id.to_string(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(completed.persona_id, persona);
+        assert_eq!(completed.review_id, pass.review_id.as_uuid());
+        assert_eq!(completed.eligible_clusters, 1);
+        assert!(reopened_store
+            .page(Some(Uuid::nil().to_string()), 1)
+            .await
+            .unwrap()
+            .pending
+            .is_empty());
+        let restarted = region_over_with_store(persona, admission, Some(reopened_store));
         reviewed::consume_review_with_boundary(
             &refused_conn,
             name,
@@ -4216,7 +4282,10 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert!(restarted.review_boundary_pending(persona, selection.submission_id));
+        assert!(
+            !restarted.review_boundary_pending(persona, selection.submission_id),
+            "durable completion suppresses exact replay after another restart"
+        );
         assert_eq!(
             stored_credit_rows(&data, name).await.len(),
             1,

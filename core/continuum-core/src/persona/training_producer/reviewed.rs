@@ -6,11 +6,13 @@
 //! Reservations survive refusal and transfer: deleting them would permit training
 //! the same generations again through a later artifact or the legacy grader.
 //! Accepted exact-review replay also notifies the existing dream owner. Its bounded
-//! scheduling cache is not durable completion: boot-time acceptance rescan remains
-//! the retained-credit retry seam (a346); acceptance is never a training/adoption claim.
+//! scheduling cache is backed by ORM acceptance recovery and processed-boundary
+//! receipts; neither acceptance nor consolidation is a training/adoption claim.
 
 use super::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+pub mod boundaries;
 
 /// Reuse the resident work bridge for remote and local review events. Header
 /// filtering keeps ordinary chat and other work events off the storage path.
@@ -453,6 +455,7 @@ pub async fn ensure_storage<T: Transport>(
         CreditGenerationReservation::COLLECTION,
         CreditReviewDecision::COLLECTION,
         CreditReviewAcceptance::COLLECTION,
+        boundaries::ProcessedReviewBoundary::COLLECTION,
     ] {
         let result = conn
             .commands()
@@ -515,7 +518,9 @@ pub(super) async fn consume_review_with_boundary<T: Transport>(
                 .ok_or(CreditBindingError::WrongSelection)?
                 .submission_id
                 .as_uuid();
-            dream.request_reviewed_boundary(persona_id, submission_id);
+            if !boundaries::is_processed(conn, persona_name, persona_id, submission_id).await? {
+                dream.request_reviewed_boundary(persona_id, submission_id);
+            }
         }
     }
     Ok(credit)
