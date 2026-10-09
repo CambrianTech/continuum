@@ -9,6 +9,19 @@ if(NOT IS_ABSOLUTE "${ENGINE_DIR}" OR NOT IS_ABSOLUTE "${SYSTEM_DIR}")
   message(FATAL_ERROR "Engine dependency roots must be absolute")
 endif()
 file(GLOB app_dlls "${ENGINE_DIR}/*.dll")
+# The NVIDIA driver is supplied by the operating system/driver installation,
+# never by an application archive. Refuse shadowing before excluding its import
+# name so GPU-less publishers can verify the same application closure.
+foreach(app_dll IN LISTS app_dlls)
+  if(IS_SYMLINK "${app_dll}")
+    message(FATAL_ERROR "Application runtime is a symlink: ${app_dll}")
+  endif()
+  cmake_path(GET app_dll FILENAME app_name)
+  string(TOLOWER "${app_name}" app_name)
+  if(app_name STREQUAL "nvcuda.dll")
+    message(FATAL_ERROR "Engine archive must not shadow the platform NVIDIA driver")
+  endif()
+endforeach()
 # The platform's own DLLs are resolved (an app import landing there is allowed) but NOT
 # recursed: their imports are the OS's business, and on some installs they name feature-on-demand
 # DLLs that are simply absent (AzureAttestManager, HvsiFileTrust, PdmUtilities, wpaxholder via
@@ -35,24 +48,113 @@ foreach(i RANGE 0 ${system_last})
 endforeach()
 set(CMAKE_GET_RUNTIME_DEPENDENCIES_PLATFORM "windows+pe")
 set(CMAKE_GET_RUNTIME_DEPENDENCIES_TOOL "dumpbin")
+if(NOT DEFINED EXECUTABLES)
+  set(EXECUTABLES "${ENGINE_DIR}/llama-server.exe")
+endif()
+# VC/OpenMP redistributables are application dependencies even when a developer
+# machine has installed them in System32. These names must never inherit the OS
+# exclusion below. The caller stages their toolchain-owned copies first.
+file(STRINGS "${CMAKE_CURRENT_LIST_DIR}/windows-runtime-redistributables.txt" vc_names)
+set(vc_patterns "")
+foreach(name IN LISTS vc_names)
+  set(pattern "")
+  string(LENGTH "${name}" size)
+  math(EXPR last "${size} - 1")
+  foreach(index RANGE 0 ${last})
+    string(SUBSTRING "${name}" ${index} 1 ch)
+    string(TOUPPER "${ch}" upper)
+    string(TOLOWER "${ch}" lower)
+    if(ch STREQUAL ".")
+      string(APPEND pattern "[.]")
+    else()
+      string(APPEND pattern "[${upper}${lower}]")
+    endif()
+  endforeach()
+  list(APPEND vc_patterns "${pattern}")
+endforeach()
+list(JOIN vc_patterns "|" vc_runtime_regex)
+set(vc_runtime_regex "[/\\\\](${vc_runtime_regex})$")
+if(CAPTURE_IMPORTS)
+  # A bootstrap receipt describes this executable's closure, not every DLL
+  # already present beside it from a different executable in the same package.
+  set(app_dlls "")
+endif()
 file(GET_RUNTIME_DEPENDENCIES
-  EXECUTABLES "${ENGINE_DIR}/llama-server.exe"
+  EXECUTABLES ${EXECUTABLES}
   LIBRARIES ${app_dlls}
-  DIRECTORIES "${ENGINE_DIR}" "${SYSTEM_DIR}"
-  PRE_EXCLUDE_REGEXES "[Aa][Pp][Ii]-[Mm][Ss]-.*" "[Ee][Xx][Tt]-[Mm][Ss]-.*"
+  DIRECTORIES "${ENGINE_DIR}" ${RUNTIME_DIRS} "${SYSTEM_DIR}"
+  PRE_EXCLUDE_REGEXES "[Aa][Pp][Ii]-[Mm][Ss]-.*" "[Ee][Xx][Tt]-[Mm][Ss]-.*" "^[Nn][Vv][Cc][Uu][Dd][Aa]\\.[Dd][Ll][Ll]$"
   POST_EXCLUDE_REGEXES "^${system_regex}[/\\\\]"
+  POST_INCLUDE_REGEXES "${vc_runtime_regex}"
   RESOLVED_DEPENDENCIES_VAR resolved
   UNRESOLVED_DEPENDENCIES_VAR unresolved
   CONFLICTING_DEPENDENCIES_PREFIX conflicting)
 if(unresolved OR conflicting_FILENAMES)
   message(FATAL_ERROR "Unresolved/conflicting engine imports: ${unresolved};${conflicting_FILENAMES}")
 endif()
+set(application_names "")
 foreach(dependency IN LISTS resolved)
   cmake_path(GET dependency PARENT_PATH parent)
   string(TOLOWER "${parent}" parent)
   string(TOLOWER "${ENGINE_DIR}" app)
   string(TOLOWER "${SYSTEM_DIR}" system)
-  if(NOT parent STREQUAL app AND NOT parent STREQUAL system)
+  cmake_path(GET dependency FILENAME name)
+  if(parent STREQUAL system AND dependency MATCHES "${vc_runtime_regex}")
+    # During discovery an external TLS/CUDA DLL is still outside the app. CMake
+    # searches that DLL's directory and System32 before DIRECTORIES, even when
+    # the selected toolchain runtime has already been staged beside the EXE.
+    # Bind this import to that verified copy; NEVER copy the System32 result.
+    # The second, app-local verification pass retains the strict refusal below.
+    set(staged "${ENGINE_DIR}/${name}")
+    if(NOT CAPTURE_IMPORTS OR NOT EXISTS "${staged}" OR IS_SYMLINK "${staged}")
+      message(FATAL_ERROR "Redistributable must be bundled, not inherited from System32: ${name}")
+    endif()
+    set(sources "")
+    foreach(root IN LISTS RUNTIME_DIRS)
+      if(EXISTS "${root}/${name}" AND NOT IS_SYMLINK "${root}/${name}")
+        list(APPEND sources "${root}/${name}")
+      endif()
+    endforeach()
+    list(LENGTH sources source_count)
+    if(NOT source_count EQUAL 1)
+      message(FATAL_ERROR "Redistributable has no unique selected runtime source: ${name}")
+    endif()
+    list(GET sources 0 source)
+    file(SHA256 "${source}" source_hash)
+    file(SHA256 "${staged}" staged_hash)
+    if(NOT source_hash STREQUAL staged_hash)
+      message(FATAL_ERROR "Staged redistributable differs from selected runtime: ${name}")
+    endif()
+    list(APPEND application_names "${name}")
+    continue()
+  endif()
+  set(allowed_runtime FALSE)
+  foreach(root IN LISTS RUNTIME_DIRS)
+    string(TOLOWER "${root}" root_key)
+    if(parent STREQUAL root_key)
+      set(allowed_runtime TRUE)
+    endif()
+  endforeach()
+  if(CAPTURE_IMPORTS AND allowed_runtime)
+    if(IS_SYMLINK "${dependency}")
+      message(FATAL_ERROR "Runtime input is a symlink: ${dependency}")
+    endif()
+    file(COPY_FILE "${dependency}" "${ENGINE_DIR}/${name}" ONLY_IF_DIFFERENT)
+    file(SHA256 "${dependency}" source_hash)
+    file(SHA256 "${ENGINE_DIR}/${name}" staged_hash)
+    if(NOT source_hash STREQUAL staged_hash)
+      message(FATAL_ERROR "Runtime changed while copying: ${name}")
+    endif()
+    list(APPEND application_names "${name}")
+  elseif(parent STREQUAL app)
+    list(APPEND application_names "${name}")
+  elseif(NOT parent STREQUAL system)
     message(FATAL_ERROR "Engine imports outside app/platform roots: ${dependency}")
   endif()
 endforeach()
+if(DEFINED OUTPUT_NAMES)
+  list(REMOVE_DUPLICATES application_names)
+  list(SORT application_names)
+  string(REPLACE ";" "\n" contents "${application_names}")
+  file(WRITE "${OUTPUT_NAMES}" "${contents}\n")
+endif()

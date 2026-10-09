@@ -8,19 +8,6 @@ if (-not (Get-Command Invoke-InstallerProcess -CommandType Function -ErrorAction
 }
 # Native installer lifecycle. Two installed slots bound disk usage and keep
 # running images out of Cargo's output directory. Never overwrite an active slot.
-function ConvertTo-CoreImagePath {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    # Windows process inspection can report the same image with an extended
-    # path prefix while installer paths use the ordinary drive/UNC spelling.
-    $normalized = $Path.Replace('/', '\')
-    if ($normalized.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
-        $normalized = '\\' + $normalized.Substring(8)
-    } elseif ($normalized.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
-        $normalized = $normalized.Substring(4)
-    }
-    return [IO.Path]::GetFullPath($normalized)
-}
-
 function Test-CoreTaskUser {
     param([string]$UserId, [string]$ExpectedSid)
     if (-not $UserId) { return $false }

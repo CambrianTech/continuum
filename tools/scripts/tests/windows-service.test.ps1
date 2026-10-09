@@ -11,6 +11,56 @@ $nativeInstallerProcess = ${function:Invoke-InstallerProcess}
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Publisher imports win-modules alone. A fresh runspace must not inherit the
+    # service module that used to accidentally supply receipt path normalization.
+    $isolatedEngine = Join-Path $scratch 'isolated-engine'
+    New-Item -ItemType Directory -Path $isolatedEngine | Out-Null
+    [IO.File]::WriteAllText((Join-Path $isolatedEngine 'llama-server.exe'), 'engine fixture')
+    $isolated = [PowerShell]::Create()
+    try {
+        [void]$isolated.AddScript({ param($module, $directory)
+            . $module
+            $files = Get-CoreEngineFiles -Directory $directory
+            if (-not $files.Contains('llama-server.exe')) { throw 'Standalone publisher lost its engine receipt.' }
+        }).AddArgument((Join-Path $repo 'tools/scripts/lib/win-modules.ps1')).AddArgument($isolatedEngine)
+        $null = $isolated.Invoke()
+        if ($isolated.HadErrors) { throw ($isolated.Streams.Error | Out-String) }
+    } finally { $isolated.Dispose() }
+    Write-Output 'PASS: isolated publisher imports its complete engine receipt dependency'
+    # Regression for card68a33e89: no archive member executes before its trusted
+    # release transport identity and hash are checked, independent of GPU policy.
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-prebuilt.ps1')
+        . (Join-Path $repo 'tools/scripts/lib/win-modules.ps1')
+        function Module-Fail { param($Name,$Fix) throw "$Name $Fix" }
+        $tip = '0123456789012345678901234567890123456789'
+        $manifest = [pscustomobject]@{ git_sha=$tip; platform='windows-x86_64'; archive='continuum-core-windows-x86_64.tar.gz'; sha256=('a' * 64); runtime_libs=@('VCOMP140.DLL'); bootstrap_runtime_libs=@('VCOMP140.DLL') }
+        Assert-CoreBootstrapManifest $manifest $tip 'windows-x86_64'
+        foreach ($case in @(@('git_sha','ffffffffffffffffffffffffffffffffffffffff'), @('platform','macos-arm64'), @('archive','../escape.tar.gz'), @('sha256','short'))) {
+            $original = $manifest.($case[0]); $manifest.($case[0]) = $case[1]
+            $refused = $false
+            try { Assert-CoreBootstrapManifest $manifest $tip 'windows-x86_64' } catch { $refused = $true }
+            $manifest.($case[0]) = $original
+            if (-not $refused) { throw "Untrusted bootstrap $($case[0]) was accepted" }
+        }
+        $transportRoot = Join-Path $scratch 'bootstrap-transport'
+        $package = Join-Path $transportRoot 'continuum-core-windows-x86_64'
+        New-Item -ItemType Directory -Path $package -Force | Out-Null
+        [IO.File]::WriteAllText((Join-Path $package 'continuum.exe'), 'fixture CLI bytes')
+        [IO.File]::WriteAllText((Join-Path $package 'VCOMP140.DLL'), 'fixture OpenMP runtime')
+        $archive = Join-Path $transportRoot $manifest.archive
+        & tar.exe -czf $archive -C $transportRoot 'continuum-core-windows-x86_64'
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot package bootstrap adapter fixture.' }
+        $manifest.sha256 = (Get-FileHash -LiteralPath $archive).Hash
+        $bootstrap = Join-Path $transportRoot 'selected'
+        $selected = Expand-CoreBootstrap $archive $manifest $bootstrap
+        if ([IO.File]::ReadAllText($selected) -cne 'fixture CLI bytes' -or [IO.File]::ReadAllText((Join-Path $bootstrap 'VCOMP140.DLL')) -cne 'fixture OpenMP runtime') { throw 'Bootstrap did not stage its exact declared runtime.' }
+        $manifest.bootstrap_runtime_libs = @('VCOMP140.DLL','vcomp140.dll')
+        $refused = $false
+        try { Assert-CoreBootstrapManifest $manifest $tip 'windows-x86_64' } catch { $refused = $true }
+        if (-not $refused) { throw 'Case-colliding bootstrap DLLs were accepted.' }
+    }
+    Write-Output 'PASS: bootstrap refuses wrong revision/platform/path/checksum before execution'
     # what this catches: partial robocopy failure was reported as success, and
     # reruns skipped its existing destination then published an incomplete cache.
     & {
@@ -99,7 +149,7 @@ try {
         $entryCold = Join-Path $scratch 'payload entry cold'
         New-Item -ItemType Directory -Path $entryLib, $entryProfile -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $entryRepo
-        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-prepared.ps1', 'payload-paths.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-prepared.ps1', 'windows-prebuilt.ps1', 'payload-paths.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $entryLib
         }
         $entryGenerated = Join-Path (Split-Path $entryLib) 'generated'
@@ -1526,15 +1576,17 @@ function Mod-LlamaServer {
 '@
         $modules.Replace('__MODULES__', (Join-Path $repo 'tools\scripts\lib\win-modules.ps1').Replace("'", "''")) |
             Set-Content -LiteralPath (Join-Path $prepareLib 'win-modules.ps1')
+        Set-Content -LiteralPath (Join-Path $prepareLib 'windows-prebuilt.ps1') -Value "function Get-CorePrebuiltRelease { throw 'fixture reached published fetch without developer tools' }"
         $missingFiles = @{cmake=(Join-Path $cmakeBin 'cmake.exe'); llvm=(Join-Path $llvmBin 'libclang.dll'); cuda=(Join-Path $cudaBin 'nvcc.exe')}
-        foreach ($extra in @('', ' -Update', ' -Grid', ' -ResumePrepared', 'cmake', 'llvm', 'cuda')) {
+        foreach ($extra in @('', ' -Update', ' -Grid', ' -ResumePrepared', 'cmake', 'llvm', 'cuda', 'prebuilt')) {
             $missing = $missingFiles[$extra]
             if ($missing) { $missingBytes = [IO.File]::ReadAllBytes($missing); Remove-Item -LiteralPath $missing }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
             # Same explicit exception capture as the hidden resume fixture.
             $entry = (Join-Path $prepareRepo 'install.ps1').Replace("'", "''")
-            $flags = if ($missing) { '' } else { $extra }
-            $invoke = "try { & '$entry' -PrepareOnly$flags } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $flags = if ($missing -or $extra -eq 'prebuilt') { '' } else { $extra }
+            $developerFlag = if ($extra -eq 'prebuilt') { '' } else { ' -DeveloperBuild' }
+            $invoke = "try { & '$entry' -PrepareOnly$developerFlag$flags } catch { Write-Output `$_.Exception.Message; exit 1 }"
             $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
@@ -1549,7 +1601,9 @@ function Mod-LlamaServer {
                 $stderr = $process.StandardError.ReadToEndAsync()
                 if (-not $process.WaitForExit(120000)) { $process.Kill(); $process.WaitForExit(); throw 'Isolated prepare fixture timed out (120 s)' }
                 $output = $stdout.Result + $stderr.Result
-                if (-not $extra) {
+                if ($extra -eq 'prebuilt') {
+                    if ($process.ExitCode -eq 0 -or $output -notmatch 'fixture reached published fetch without developer tools') { throw "Default preparation did not select published artifacts: $output" }
+                } elseif (-not $extra) {
                     if ($process.ExitCode -ne 0 -or $output -notmatch 'fixture prebuilt validated') { throw "Public preparation failed: $output" }
                 } elseif ($missing) {
                     if ($process.ExitCode -eq 0 -or $output -notmatch 'Preparation requires' -or $output -match 'Unexpected download') { throw "Missing cached toolchain did not fail before provisioning: $output" }
@@ -1600,6 +1654,163 @@ function Mod-LlamaServer {
         if ($descendant -and -not $descendant.HasExited) { $descendant.Kill(); $descendant.WaitForExit(); $descendant.Dispose() }
     }
     Write-Output 'PASS: supervisor reports host exit while a warm descendant remains alive'
+
+    # Published engines use an explicit backend on GPU-less CI and cannot reuse
+    # a native-CPU stamp. Extend this fixture without building an engine.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $engineRepo = Join-Path $scratch 'publisher-repo'
+        $engineOut = Join-Path $scratch 'publisher-engine'
+        New-Item -ItemType Directory -Force (Join-Path $engineRepo 'core\vendor\llama.cpp\tools\server'), $engineOut | Out-Null
+        [IO.File]::WriteAllText((Join-Path $engineRepo 'core\vendor\llama.cpp\tools\server\CMakeLists.txt'), '# fixture')
+        [IO.File]::WriteAllText((Join-Path $engineOut 'llama-server.exe'), 'fixture engine')
+        Save-CoreEngineReceipt -Directory $engineOut -SourceRevision ('a' * 40) -Backend cuda
+        function Get-CoreEngineBackend { throw 'Publisher probed the build host GPU.' }
+        function Set-CudaTargets { throw 'Publisher queried native GPU targets.' }
+        function Get-ManagedPayloadRoot { return (Join-Path $scratch 'publisher-payload') }
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            if ($FilePath -ne 'git') { throw 'Publisher reuse unexpectedly ran a build tool.' }
+            $global:LASTEXITCODE = 0
+            if ($ArgumentList -contains '--short') { return 'aaaaaaa' }
+            return ('a' * 40)
+        }
+        function Module-Skip { }
+        function Module-Start { }
+        function Mod-CMake { throw 'fixture: fresh published build required' }
+        $stamp = Join-Path $engineOut '.llama-server.stamp'
+        [IO.File]::WriteAllText($stamp, 'aaaaaaa:cuda:80:portable-v1')
+        Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut -RequireReceipt -PublishedCudaArchitectures 80 -PublishedCpuDefinitions @('-DGGML_NATIVE=OFF')
+        [IO.File]::WriteAllText($stamp, 'aaaaaaa:cuda:80')
+        $refused = $false
+        try { Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut -RequireReceipt -PublishedCudaArchitectures 80 -PublishedCpuDefinitions @('-DGGML_NATIVE=OFF') }
+        catch { $refused = $_ -match 'fresh published build required' }
+        if (-not $refused) { throw 'Publisher reused a native engine stamp.' }
+        foreach ($invalid in @(
+            @{ PublishedCudaArchitectures = '80'; PublishedCpuDefinitions = @('-DGGML_NATIVE=OFF') },
+            @{ PublishedCudaArchitectures = '80'; RequireReceipt = $true },
+            @{ PublishedCudaArchitectures = '80'; RequireReceipt = $true; PublishedCpuDefinitions = @('-DGGML_NATIVE=ON') }
+        )) {
+            $refused = $false
+            try { Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut @invalid }
+            catch { $refused = $_ -match 'Published engine requires' }
+            if (-not $refused) { throw 'Incomplete publisher contract was accepted.' }
+        }
+    }
+    # Exercise the actual CMake import resolver with a deterministic inspector
+    # adapter: only the platform driver may be absent on a GPU-less build host.
+    $cmake = Get-Command cmake -ErrorAction SilentlyContinue
+    $cmakePath = if ($cmake) { $cmake.Source } else { Join-Path $env:USERPROFILE '.continuum\tools\cmake\bin\cmake.exe' }
+    if (-not (Test-Path -LiteralPath $cmakePath)) { throw 'CMake is required for the engine import fixture.' }
+    $imports = Join-Path $scratch 'engine-imports'
+    New-Item -ItemType Directory -Path $imports | Out-Null
+    [IO.File]::WriteAllText((Join-Path $imports 'llama-server.exe'), 'inspector fixture')
+    $inspector = Join-Path $imports 'inspect.cmd'
+    $inspection = "@echo off`r`necho Dump of file fixture`r`necho File Type: EXECUTABLE IMAGE`r`necho   Image has the following dependencies:`r`necho.`r`necho     nvcuda.dll`r`necho.`r`necho   Summary`r`n"
+    [IO.File]::WriteAllText($inspector, $inspection, [Text.Encoding]::ASCII)
+    $importArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($imports.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+    & $cmakePath @importArgs
+    if ($LASTEXITCODE -ne 0) { throw 'Absent platform driver was not accepted on the build host.' }
+    $shadow = Join-Path $imports 'NvCuDa.dll'
+    [IO.File]::WriteAllText($shadow, 'forbidden shadow')
+    $errorLog = Join-Path $imports 'refusal.log'
+    $savedPreference = $ErrorActionPreference
+    try { $ErrorActionPreference = 'Continue'; & $cmakePath @importArgs 2> $errorLog }
+    finally { $ErrorActionPreference = $savedPreference }
+    if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'must not shadow') { throw 'Application driver shadow was accepted.' }
+    Remove-Item -LiteralPath $shadow
+    [IO.File]::WriteAllText($inspector, $inspection.Replace('nvcuda.dll', 'unowned-engine-runtime.dll'), [Text.Encoding]::ASCII)
+    try { $ErrorActionPreference = 'Continue'; & $cmakePath @importArgs 2> $errorLog }
+    finally { $ErrorActionPreference = $savedPreference }
+    if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Unresolved/conflicting engine imports') { throw 'An unrelated unresolved import was accepted.' }
+    # A developer's System32 OpenMP installation is not an OS dependency. The
+    # same resolver must report it for the CLI bootstrap and engine packaging.
+    $platform = Join-Path $scratch 'runtime-platform'
+    New-Item -ItemType Directory -Path $platform | Out-Null
+    [IO.File]::WriteAllText((Join-Path $platform 'vcomp140.dll'), 'platform-installed redist')
+    [IO.File]::WriteAllText($inspector, $inspection.Replace('nvcuda.dll', 'vcomp140.dll'), [Text.Encoding]::ASCII)
+    $runtimeArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($imports.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", "-DRUNTIME_DIRS=$($platform.Replace('\','/'))", '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+    try { $ErrorActionPreference = 'Continue'; & $cmakePath @runtimeArgs 2> $errorLog }
+    finally { $ErrorActionPreference = $savedPreference }
+    if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Redistributable must be bundled|Engine imports outside app/platform roots') { throw 'Unstaged redist was incorrectly treated as Windows.' }
+    Copy-Item -LiteralPath (Join-Path $platform 'vcomp140.dll') -Destination $imports
+    $bootstrapNames = Join-Path $imports 'bootstrap.txt'
+    $captureArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($imports.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", '-DCAPTURE_IMPORTS=ON', "-DOUTPUT_NAMES=$bootstrapNames", '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+    & $cmakePath @captureArgs
+    if ($LASTEXITCODE -ne 0 -or @(Get-Content $bootstrapNames) -notcontains 'vcomp140.dll') { throw 'CLI runtime closure omitted application-local OpenMP.' }
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-runtime-closure.ps1')
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList, [switch]$OwnProcessTree)
+            if ($FilePath -ne 'cmake') { throw 'Unexpected runtime packaging adapter.' }
+            & $cmakePath @ArgumentList
+        }
+        $freshRuntime = Join-Path $scratch 'fresh-runtime-package'
+        New-Item -ItemType Directory -Path $freshRuntime | Out-Null
+        $freshCli = Join-Path $freshRuntime 'continuum.exe'
+        [IO.File]::WriteAllText($freshCli, 'fixture CLI')
+        $freshNames = Join-Path $freshRuntime 'bootstrap-runtime-libs.txt'
+        Copy-CoreRuntimeClosure -Directory $freshRuntime -Executables @($freshCli) -Inspector $inspector -RuntimeDirectories @($platform) -OutputNames $freshNames
+        if (@(Get-Content $freshNames) -notcontains 'vcomp140.dll' -or
+            (Get-FileHash (Join-Path $freshRuntime 'vcomp140.dll')).Hash -cne (Get-FileHash (Join-Path $platform 'vcomp140.dll')).Hash) {
+            throw 'Runtime publisher did not preserve toolchain OpenMP bytes and bootstrap membership.'
+        }
+    }
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-runtime-closure.ps1')
+        $openssl = Join-Path $scratch 'configured OpenSSL'
+        $include = Join-Path $openssl 'include'
+        $tlsBin = Join-Path $openssl 'bin'
+        $redist = Join-Path $scratch 'selected-redist'
+        New-Item -ItemType Directory -Force -Path $include,$tlsBin,(Join-Path $redist 'x64/Microsoft.VC999.CRT') | Out-Null
+        foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
+            [IO.File]::WriteAllText((Join-Path $tlsBin $name), ('selected TLS '+$name))
+        }
+        # Regression: an external TLS DLL imports VC runtimes that also exist in System32.
+        $vcNames = @(Get-Content (Join-Path $repo 'tools/scripts/lib/windows-runtime-redistributables.txt'))
+        foreach ($name in $vcNames) { [IO.File]::WriteAllText((Join-Path $redist ('x64/Microsoft.VC999.CRT/'+$name)), ('selected VC '+$name)) }
+        $savedRedist = $env:VCToolsRedistDir
+        try {
+            $env:VCToolsRedistDir = $redist
+            $roots = @(Get-CoreRuntimeDirectories -CMakeCache ("OPENSSL_INCLUDE_DIR:PATH="+$include+"`n"))
+            if ($roots -notcontains $tlsBin) { throw 'Configured TLS runtime directory was omitted.' }
+            $tlsStage = Join-Path $scratch 'tls-stage'
+            New-Item -ItemType Directory -Path $tlsStage | Out-Null
+            $tlsExe = Join-Path $tlsStage 'llama-server.exe'
+            [IO.File]::WriteAllText($tlsExe, 'TLS engine fixture')
+            $tlsInspection = $inspection.Replace('nvcuda.dll', "libssl-3-x64.dll`r`necho     libcrypto-3-x64.dll")
+            $vcInspection = $inspection.Replace('nvcuda.dll', ($vcNames -join "`r`necho     "))
+            [IO.File]::WriteAllText($inspector, ("@echo off`r`nif /I `%~nx2`==libssl-3-x64.dll goto vc`r`nif /I `%~nx2`==libcrypto-3-x64.dll goto vc`r`n"+$tlsInspection+"exit /b 0`r`n:vc`r`n"+$vcInspection), [Text.Encoding]::ASCII)
+            function Invoke-InstallerProcess { param($FilePath,$ArgumentList,[switch]$OwnProcessTree) & $cmakePath @ArgumentList }
+            $tlsNames = Join-Path $tlsStage 'runtime-imports.txt'
+            Copy-CoreRuntimeClosure -Directory $tlsStage -Executables @($tlsExe) -Inspector $inspector -RuntimeDirectories $roots -OutputNames $tlsNames
+            foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
+                if (@(Get-Content $tlsNames) -notcontains $name -or (Get-FileHash (Join-Path $tlsStage $name)).Hash -cne (Get-FileHash (Join-Path $tlsBin $name)).Hash) { throw 'TLS runtime was not captured and hashed from the configured package.' }
+            }
+            foreach ($name in $vcNames) {
+                if (@(Get-Content $tlsNames) -notcontains $name -or
+                    (Get-FileHash (Join-Path $tlsStage $name)).Hash -cne (Get-FileHash (Join-Path $redist ('x64/Microsoft.VC999.CRT/'+$name))).Hash) {
+                    throw 'Transitive VC runtime omitted or inherited from the developer machine.'
+                }
+            }
+            # Force discovery through the external DLL again, without the PS
+            # staging step repairing the deliberately damaged staged runtime.
+            foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) { Remove-Item -LiteralPath (Join-Path $tlsStage $name) }
+            $damaged = Join-Path $tlsStage 'vcruntime140.dll'
+            [IO.File]::WriteAllText($damaged, 'wrong runtime bytes')
+            $tlsArgs = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$inspector", "-DENGINE_DIR=$($tlsStage.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))", "-DRUNTIME_DIRS=$(($roots | ForEach-Object { $_.Replace('\','/') }) -join ';')", '-DCAPTURE_IMPORTS=ON', '-P', (Join-Path $repo 'tools/scripts/lib/verify-engine-imports.cmake'))
+            try { $ErrorActionPreference = 'Continue'; & $cmakePath @tlsArgs 2> $errorLog }
+            finally { $ErrorActionPreference = $savedPreference }
+            if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Staged redistributable differs') { throw 'Capture accepted a mismatched staged VC runtime.' }
+            # Prior dependencies may have been copied before the refusal.
+            foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) { Remove-Item -LiteralPath (Join-Path $tlsStage $name) -ErrorAction SilentlyContinue }
+            Remove-Item -LiteralPath $damaged
+            try { $ErrorActionPreference = 'Continue'; & $cmakePath @tlsArgs 2> $errorLog }
+            finally { $ErrorActionPreference = $savedPreference }
+            if ($LASTEXITCODE -eq 0 -or (Get-Content $errorLog -Raw) -notmatch 'Redistributable must be bundled') { throw 'Capture inherited a missing VC runtime from Windows.' }
+        } finally { $env:VCToolsRedistDir = $savedRedist }
+    }
+    Write-Output 'PASS: publisher preserves declared hardware contract and bounds engine imports on GPU-less hosts'
 
     $output = Join-Path $target 'release\continuum-core-server.exe'
     Copy-Item -LiteralPath $child -Destination $output -Force

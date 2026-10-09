@@ -187,6 +187,9 @@ async fn run() -> Result<(), CliError> {
         let code = installed_service(args.collect()).await?;
         std::process::exit(code);
     }
+    if first == "prepare-prebuilt" {
+        return prepare_prebuilt(args.collect()).await.map_err(CliError::Command);
+    }
     if first == "service-host" {
         let code = service_host(args.collect()).await?;
         std::process::exit(code);
@@ -1687,9 +1690,14 @@ impl PreparedCoreService {
             let existing = Self::query().await?.runtime_paths_resolve()?;
             let receipt = WarmBuildReceipt::create()?;
             let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
+            let engine_stage = if source.join("engine/engine-install.json").is_file() {
+                format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}'; Copy-CorePublishedEngine -RepoRoot '{repo}' -ArtifactDirectory '{source}' -InstallDirectory (Split-Path $r.engine)", repo=quote(&repo), source=quote(source))
+            } else {
+                format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}' -EnginePath '{engine}'", repo=quote(&repo), source=quote(source), engine=quote(Path::new(&existing.engine)))
+            };
             let script = format!(
-                "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; $env:CONTINUUM_CORE_SOCKET='{socket}'; $r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}' -EnginePath '{engine}'; Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' -WorkingDirectory (Split-Path $r.artifact); [IO.File]::WriteAllText('{receipt}', $r.artifact)",
-                repo=quote(&repo), source=quote(source), engine=quote(Path::new(&existing.engine)), socket=socket.replace('\'', "''"), receipt=quote(&receipt.0),
+                "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; . '{repo}/tools/scripts/lib/windows-prebuilt.ps1'; $env:CONTINUUM_CORE_SOCKET='{socket}'; {engine_stage}; Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' -WorkingDirectory (Split-Path $r.artifact); [IO.File]::WriteAllText('{receipt}', $r.artifact)",
+                repo=quote(&repo), socket=socket.replace('\'', "''"), receipt=quote(&receipt.0),
             );
             Self::run_installer_script(&script)?;
             let staged_path=receipt.artifact()?;
@@ -4554,6 +4562,42 @@ async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
 /// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
 /// published is not THE build for this node, or does not match its checksum.
 async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
+    prepare_ci_core(repo, tip, platform, None).await
+}
+
+struct CiArtifactPreparation {
+    directory: PathBuf,
+    complete: bool,
+}
+
+impl Drop for CiArtifactPreparation {
+    fn drop(&mut self) {
+        if !self.complete {
+            // This invocation created this fresh UUID directory; failed attempts
+            // cannot accumulate full archives or remove another caller's candidate.
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+}
+
+/// The first-install transport supplies a hash-checked archive; the existing consumer
+/// performs the same authoritative compatibility and payload preparation as an update.
+async fn prepare_prebuilt(args: Vec<String>) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err("prepare-prebuilt requires <checkout> <download-directory>".into());
+    }
+    let repo = Path::new(&args[0]);
+    let head = git_in(repo, &["rev-parse", "HEAD"])?;
+    let (tip, _) = prebuilt_checkout_build_key(repo, None, head.trim());
+    let platform = continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or("No compatible prebuilt is published for this platform")?;
+    let core = prepare_ci_core(repo, &tip, platform, Some(Path::new(&args[1])))
+        .await?.ok_or("The requested prebuilt is not published")?;
+    println!("{}", serde_json::json!({"core": core, "git_sha": tip}));
+    Ok(())
+}
+
+async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Option<&Path>) -> Result<Option<PathBuf>, String> {
     use continuum_cli_lifecycle::prebuilt_artifact::{gpu_verdict, manifest_url, manifest_verdict, ArtifactManifest};
     use sha2::{Digest, Sha256};
     use std::io::Write;
@@ -4563,16 +4607,23 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
         .timeout(Duration::from_secs(1800))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
+    let manifest: ArtifactManifest = if let Some(source) = downloaded {
+        let bytes = std::fs::read(source.join(format!("continuum-core-{platform}.json")))
+            .map_err(|e| format!("reading downloaded manifest: {e}"))?;
+        if bytes.len() > 65536 { return Err("Downloaded manifest exceeds 64 KiB".into()); }
+        serde_json::from_slice(&bytes).map_err(|e| format!("reading downloaded manifest: {e}"))?
+    } else {
     let resp = client.get(&url).send().await.map_err(|e| format!("fetching {url}: {e}"))?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    let manifest: ArtifactManifest = resp
+    resp
         .error_for_status()
         .map_err(|e| format!("fetching {url}: {e}"))?
         .json()
         .await
-        .map_err(|e| format!("reading {url}: {e}"))?;
+        .map_err(|e| format!("reading {url}: {e}"))?
+    };
     manifest_verdict(&manifest, tip, platform, &local_core_features(repo)?)?;
     // A CUDA build carries its runtime, and the node's driver and GPUs must be able to run it
     // (card cb587931): read only when the artifact names CUDA, so a Mac never probes.
@@ -4589,25 +4640,42 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
     if manifest.archive.contains(['/', '\\']) || manifest.archive.contains("..") {
         return Err(format!("archive name `{}` is not a plain file name", manifest.archive));
     }
+    if downloaded.is_some() {
+        let expected = git_in(repo, &["rev-parse", "HEAD:core/vendor/llama.cpp"])?;
+        continuum_cli_lifecycle::prebuilt_artifact::fresh_engine_verdict(&manifest, expected.trim())?;
+    }
     let root = PathBuf::from(home_dir()?).join(".continuum/cache/artifacts");
-    let dir = root.join(&tip[..12]);
-    let _ = std::fs::remove_dir_all(&dir); // a half-written earlier attempt is not reused
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let dir = root.join(format!("{}-{}", &tip[..12], uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+    std::fs::create_dir(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let mut preparation = CiArtifactPreparation { directory: dir.clone(), complete: false };
     // Stream to disk while hashing: the archive is ~200 MB, and the weak nodes are the ones
     // that need this path most.
     let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
+    let archive = dir.join(&manifest.archive);
+    let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    let mut hasher = Sha256::new();
+    if let Some(source) = downloaded {
+        use std::io::Read;
+        let mut input = std::fs::File::open(source.join(&manifest.archive)).map_err(|e| format!("reading downloaded archive: {e}"))?;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let count = input.read(&mut buffer).map_err(|e| format!("reading downloaded archive: {e}"))?;
+            if count == 0 { break; }
+            hasher.update(&buffer[..count]);
+            file.write_all(&buffer[..count]).map_err(|e| format!("staging archive: {e}"))?;
+        }
+    } else {
     let mut resp = client
         .get(&archive_url)
         .send()
         .await
         .and_then(|r| r.error_for_status())
         .map_err(|e| format!("fetching {archive_url}: {e}"))?;
-    let archive = dir.join(&manifest.archive);
-    let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
-    let mut hasher = Sha256::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
         hasher.update(&chunk);
         file.write_all(&chunk).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    }
     }
     drop(file);
     let digest = format!("{:x}", hasher.finalize());
@@ -4616,6 +4684,10 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
     }
     // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
     // GNU tar never reads the drive letter as a host (Fable on #4834).
+    let members = continuum_core::shell_portable::tar_on(&archive, "-tzf")?.output().map_err(|e| format!("listing archive: {e}"))?;
+    let details = continuum_core::shell_portable::tar_on(&archive, "-tvzf")?.output().map_err(|e| format!("listing archive types: {e}"))?;
+    if !members.status.success() || !details.status.success() { return Err("Cannot inspect published archive before extraction".into()); }
+    continuum_cli_lifecycle::prebuilt_artifact::archive_members_verdict(&String::from_utf8_lossy(&members.stdout), &String::from_utf8_lossy(&details.stdout), platform)?;
     let status = continuum_core::shell_portable::tar_on(&archive, "-xzf")?
         .status()
         .map_err(|e| format!("tar: {e}"))?;
@@ -4639,6 +4711,7 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
             .map_err(|e| format!("cannot record the runtime libraries beside {}: {e}", core.display()))?;
     }
     deploy_note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
+    preparation.complete = true;
     prune_ci_cores(&root, &dir);
     Ok(Some(core))
 }
@@ -4647,9 +4720,17 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
 /// core, and the engine is rebuilt only when its stamp says the vendored fork moved
 /// (`install-llama-server.sh` is a no-op otherwise).
 fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    if !core.parent().is_some_and(|dir| dir.join("engine/engine-install.json").is_file()) {
+        return Err("Published Windows release lacks its engine companion; no source build will be attempted".into());
+    }
     let built_cli = core.with_file_name(install_cli::cli_file_name("continuum"));
     let cli = install_cli::cli_dir(Path::new(&home_dir()?)).join(install_cli::cli_file_name("continuum"));
     install_cli::copy_with_retry(&built_cli, &cli, Duration::from_secs(10))?;
+    #[cfg(windows)]
+    { let _ = repo; Ok(()) }
+    #[cfg(not(windows))]
+    {
     let status = std::process::Command::new(locate_bash()?)
         .arg(repo.join("tools/scripts/install-llama-server.sh"))
         .current_dir(repo)
@@ -4659,6 +4740,7 @@ fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
         return Err("install-llama-server.sh failed; the engine would not match the core".into());
     }
     Ok(())
+    }
 }
 
 /// The core feature set this node's HARDWARE runs, from the ONE mapping CI also builds

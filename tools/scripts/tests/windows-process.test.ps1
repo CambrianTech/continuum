@@ -307,6 +307,10 @@ exit $Code
     $fixtureScripts = Join-Path $fixtureRepo 'tools\scripts'
     New-Item -ItemType Directory -Path (Join-Path $fixtureScripts 'lib') -Force | Out-Null
     Copy-Item -LiteralPath "$PSScriptRoot/../lib/windows-elevation.ps1" -Destination (Join-Path $fixtureScripts 'lib')
+    Copy-Item -LiteralPath "$PSScriptRoot/../lib/windows-prebuilt.ps1" -Destination (Join-Path $fixtureScripts 'lib')
+    $fixtureArtifactSource = Join-Path $fixtureRepo 'core/continuum-cli-lifecycle/src/prebuilt_artifact.rs'
+    New-Item -ItemType Directory -Path (Split-Path $fixtureArtifactSource) -Force | Out-Null
+    Copy-Item -LiteralPath "$PSScriptRoot/../../../core/continuum-cli-lifecycle/src/prebuilt_artifact.rs" -Destination $fixtureArtifactSource
     Copy-Item -LiteralPath "$PSScriptRoot/../sync-windows-bootstrap.ps1" -Destination $fixtureScripts
     $fixtureEntry = Join-Path $fixtureRepo 'install.ps1'
     Copy-Item -LiteralPath "$PSScriptRoot/../../../install.ps1" -Destination $fixtureEntry
@@ -317,7 +321,13 @@ exit $Code
     [IO.File]::WriteAllText($fixtureEntry, $changed)
     Invoke-InstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" $checkArgs 2>&1 | Out-Null
     if ($LASTEXITCODE -eq 0) { throw 'Divergent bootstrap launcher passed drift check.' }
-    Write-Host 'PASS: bootstrap drift check accepts canonical source and rejects changed launcher.'
+    Copy-Item -LiteralPath "$PSScriptRoot/../../../install.ps1" -Destination $fixtureEntry
+    $fixturePrebuilt = Join-Path $fixtureScripts 'lib/windows-prebuilt.ps1'
+    $changed = [IO.File]::ReadAllText($fixturePrebuilt).Replace("'Cargo.lock'", "'wrong-build-input'")
+    [IO.File]::WriteAllText($fixturePrebuilt, $changed)
+    Invoke-InstallerProcess "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" $checkArgs 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { throw 'Divergent prebuilt input projection passed drift check.' }
+    Write-Host 'PASS: bootstrap drift check accepts canonical source and rejects changed launcher or prebuilt inputs.'
 } finally {
     # Only this test's newly-created, resolved scratch directory is removed.
     $resolved = [IO.Path]::GetFullPath($scratch)
