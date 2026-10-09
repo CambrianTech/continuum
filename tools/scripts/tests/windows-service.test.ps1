@@ -11,6 +11,22 @@ $nativeInstallerProcess = ${function:Invoke-InstallerProcess}
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Publisher imports win-modules alone. A fresh runspace must not inherit the
+    # service module that used to accidentally supply receipt path normalization.
+    $isolatedEngine = Join-Path $scratch 'isolated-engine'
+    New-Item -ItemType Directory -Path $isolatedEngine | Out-Null
+    [IO.File]::WriteAllText((Join-Path $isolatedEngine 'llama-server.exe'), 'engine fixture')
+    $isolated = [PowerShell]::Create()
+    try {
+        [void]$isolated.AddScript({ param($module, $directory)
+            . $module
+            $files = Get-CoreEngineFiles -Directory $directory
+            if (-not $files.Contains('llama-server.exe')) { throw 'Standalone publisher lost its engine receipt.' }
+        }).AddArgument((Join-Path $repo 'tools/scripts/lib/win-modules.ps1')).AddArgument($isolatedEngine)
+        $null = $isolated.Invoke()
+        if ($isolated.HadErrors) { throw ($isolated.Streams.Error | Out-String) }
+    } finally { $isolated.Dispose() }
+    Write-Output 'PASS: isolated publisher imports its complete engine receipt dependency'
     # Regression for card68a33e89: no archive member executes before its trusted
     # release transport identity and hash are checked, independent of GPU policy.
     & {

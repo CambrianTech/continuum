@@ -1,4 +1,18 @@
 . (Join-Path $PSScriptRoot 'payload-paths.ps1')
+# Canonical image spelling shared by prepared receipts and service inspection.
+function ConvertTo-CoreImagePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    # Windows process inspection can report the same image with an extended
+    # path prefix while installer paths use the ordinary drive/UNC spelling.
+    $normalized = $Path.Replace('/', '\')
+    if ($normalized.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
+        $normalized = '\\' + $normalized.Substring(8)
+    } elseif ($normalized.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
+        $normalized = $normalized.Substring(4)
+    }
+    return [IO.Path]::GetFullPath($normalized)
+}
+
 # Explicit prepared-release deployment, not a source/config cache hit.
 # Receipts capture artifact integrity at preparation, never historical build inputs.
 function Assert-CorePreparedPath {

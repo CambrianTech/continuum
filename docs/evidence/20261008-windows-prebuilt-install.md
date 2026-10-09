@@ -17,3 +17,14 @@ The named shared runtime closure owner replaces approximately 26 lines of workfl
 A separate full fresh-host dependency remains: Mod-Airc invokes the AIRC public installer, whose current no-argument path still builds from source. That shared AIRC installer needs its own supported prebuilt preparation before the complete dependency chain can be called source-free. This patch makes no such complete-chain claim. The existing LiveKit download helper is also not currently wired into the fresh native installer; multimodal readiness is not demonstrated here.
 
 CI job113579104054 exposed a missing dependency in the existing process fixture's miniature repository: the expanded bootstrap generator now also reads the canonical artifact inputs and their PowerShell projection. The fixture now copies those real source files and checks prebuilt-input drift as well as launcher drift. The full Windows PowerShell 5.1 process fixture passed after this correction (7.3 seconds); no generator or runtime behavior was weakened.
+
+Packaging follow-up: the actual Windows publisher compiled its engine, then
+failed because windows-engine-receipt imported windows-prepared, whose path
+validation relied on ConvertTo-CoreImagePath defined only in windows-service.
+Normal service fixtures had preloaded that unrelated module and masked the gap.
+The existing normalization implementation now belongs to windows-prepared;
+service and engine receipt consumers both reach it through their current imports.
+No duplicate implementation remains. A fresh isolated PowerShell runspace in the
+existing service fixture loads only win-modules and validates a scratch engine
+receipt. Full Windows PowerShell5.1 fixture passed35groups. Actual artifact
+republication remains pending; this did not rebuild native code or install live.
