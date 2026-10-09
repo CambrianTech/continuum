@@ -61,8 +61,7 @@ use continuum_cli_lifecycle::launchd;
 mod elevated_teardown;
 // The service host's one drop of privilege (S4U ignores RunLevel); Windows-only like its caller.
 #[cfg(windows)]
-#[path = "continuum/unelevated_service.rs"]
-mod unelevated_service;
+use continuum_cli_lifecycle::unelevated_service;
 use continuum_cli_lifecycle::elevated_teardown::StopOptions;
 
 #[derive(Debug, thiserror::Error)]
@@ -183,6 +182,13 @@ async fn run() -> Result<(), CliError> {
             }
             Err(e) => return Err(CliError::Command(e.to_string())),
         }
+    }
+    if first == "installed-service" {
+        let code = installed_service(args.collect()).await?;
+        std::process::exit(code);
+    }
+    if first == "prepare-prebuilt" {
+        return prepare_prebuilt(args.collect()).await.map_err(CliError::Command);
     }
     if first == "service-host" {
         let code = service_host(args.collect()).await?;
@@ -1055,6 +1061,8 @@ struct RebootOptions {
     stage_prebuilt: bool,
     service: bool,
     validate_only: bool,
+    /// Explicit CPU embedding validation, performed only in a bounded child.
+    embedding_model: Option<PathBuf>,
     /// Is a human AT this machine, able to answer one consent prompt?
     ///
     /// NOT a CLI flag, and deliberately: the user-facing contract is one command,
@@ -1084,6 +1092,13 @@ impl RebootOptions {
                 "--force" if !options.force => options.force = true,
                 "--service" if !options.service => options.service = true,
                 "--validate-only" if !options.validate_only => options.validate_only = true,
+                "--embedding-model" if options.embedding_model.is_none() => {
+                    let path = args
+                        .next()
+                        .filter(|p| !p.is_empty() && !p.starts_with('-'))
+                        .ok_or("--embedding-model requires a local GGUF path")?;
+                    options.embedding_model = Some(PathBuf::from(path));
+                }
                 "--prebuilt" if options.prebuilt.is_none() => {
                     let path = args
                         .next()
@@ -1098,9 +1113,8 @@ impl RebootOptions {
                         .ok_or("--service-descriptor-sha requires a SHA-256 digest")?;
                     options.service_descriptor_sha = Some(sha.to_ascii_lowercase());
                 }
-                "--force" | "--prebuilt" | "--service" | "--validate-only" => {
-                    return Err(format!("duplicate reboot option {arg}"))
-                }
+                "--force" | "--prebuilt" | "--service" | "--validate-only"
+                | "--embedding-model" => return Err(format!("duplicate reboot option {arg}")),
                 _ => {
                     return Err(format!(
                         "unknown reboot option {arg}; use --force or --prebuilt <path> [--service]"
@@ -1121,6 +1135,9 @@ impl RebootOptions {
                 "--validate-only requires --prebuilt and cannot combine with --force or --service"
                     .to_string(),
             );
+        }
+        if options.embedding_model.is_some() && !options.validate_only {
+            return Err("--embedding-model requires --prebuilt and --validate-only".into());
         }
         if options.service_descriptor_sha.is_some()
             && (!cfg!(windows)
@@ -1190,6 +1207,72 @@ impl PrebuiltCore {
 /// ([`continuum_core::inference::llama_server::warm_build_jobs_for_memory`]).
 const WARM_BUILD_MIN_FREE_BYTES: u64 = continuum_core::inference::llama_server::WARM_BUILD_MIN_FREE_BYTES;
 
+/// A marker avoids a relaunch loop; it never substitutes for a token query.
+#[cfg(windows)]
+async fn require_service_medium() -> Result<Option<i32>, String> {
+    if !continuum_cli_lifecycle::installed_release::needs_medium_relaunch(
+        unelevated_service::token_integrity(),
+        std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some(),
+    )? { return Ok(None); }
+    let code = tokio::task::spawn_blocking(unelevated_service::relaunch_unelevated)
+        .await.map_err(|e| format!("service privilege drop failed: {e}"))??;
+    Ok(Some(code))
+}
+
+/// Fixed protected task action: verify normal-user integrity BEFORE reading the
+/// caller-owned selection. Core and deploy share this boundary and receipt owner.
+async fn installed_service(args: Vec<String>) -> Result<i32, String> {
+    if args == ["--protocol"] { println!("2"); return Ok(0); }
+    #[cfg(not(windows))]
+    { let _ = args; Err("installed-service is supported only on Windows".into()) }
+    #[cfg(windows)]
+    {
+        use continuum_cli_lifecycle::installed_release;
+        if args.len()!=2 || !matches!(args[0].as_str(), "core"|"deploy") {
+            return Err("installed-service requires core|deploy <active-receipt>".into());
+        }
+        if let Some(code) = require_service_medium().await? { return Ok(code); }
+        let home = PathBuf::from(home_dir()?).join(".continuum");
+        let sid = supervisor_install::caller_sid().await?;
+        let program_files = PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);
+        let executable = std::env::current_exe().map_err(|e|e.to_string())?;
+        let envelope = installed_release::Envelope { schema:2, active_release:args[1].clone(), bootstrap:executable.to_string_lossy().into_owned() };
+        envelope.validate(&home,&program_files,&sid)?;
+        let path = Path::new(&envelope.active_release);
+        let text = installed_release::read_receipt(path)?;
+        let payload = continuum_core::paths::payload_root(&home)?;
+        let selected = installed_release::validate_receipt(&text,&home,&payload,&sid)?;
+        let release = &selected.release;
+        let mut command = if args[0] == "core" {
+            // The validated launcher owns media startup as well as the core host.
+            // Select it only after the shared Medium gate and receipt validation.
+            let mut command = std::process::Command::new(PreparedCoreService::shell()?);
+            command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "RemoteSigned", "-File", &release.launcher,
+                "-ExecutablePath", &release.cli, "-CorePath", &release.artifact,
+                "-SocketPath", &release.socket, "-EnginePath", &release.engine,
+                "-LogDirectory", &release.log_directory]);
+            if let Some(root) = &release.eye_root { command.args(["-EyeRoot", root]); }
+            command
+        } else {
+            let mut command = std::process::Command::new(&release.cli);
+            command.arg("deploy-consume");
+            command
+        };
+        command.current_dir(Path::new(&release.cli).parent().ok_or("release has no directory")?);
+        command.env("CONTINUUM_CORE_SOCKET", &release.socket);
+        std::fs::create_dir_all(&release.log_directory).map_err(|e|e.to_string())?;
+        let logfile = Path::new(&release.log_directory).join(if args[0]=="core" { "service-bootstrap.log" } else { "deploy-bootstrap.log" });
+        let log = std::fs::OpenOptions::new().create(true).append(true).open(logfile).map_err(|e|e.to_string())?;
+        // Atomic selection may advance after this final read; pins guarantee this
+        // selected generation remains valid. The installing parent checks its SHA.
+        if installed_release::read_receipt(path)? != text { return Err("active release changed during supervisor selection".into()); }
+        let tree = continuum_cli_lifecycle::windows_launch::spawn_owned_logged(&command,&log,&log,0x0800_0000).map_err(|e|e.to_string())?;
+        let status = tree.wait().await.map_err(|e|e.to_string())?;
+        drop(selected);
+        Ok(status.code().unwrap_or(1)) // No normal exit code means the supervised child failed.
+    }
+}
+
 /// The scheduler owns this foreground host and its core as one process tree.
 /// Runtime DLL/config resolution is the same as every other native CLI launch.
 async fn service_host(args: Vec<String>) -> Result<i32, String> {
@@ -1204,34 +1287,7 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
         if !(3..=4).contains(&args.len()) || args.iter().any(|arg| arg.is_empty()) {
             return Err("service-host requires <core-path> <socket> <engine-path> [eye-root]".to_string());
         }
-        // The core runs with its user's hands, not an administrator's (S4U ignores the
-        // task's RunLevel; see unelevated_service). If the drop itself fails, the host
-        // runs as it did before and says so: that is today's state, reported, not a
-        // success claimed.
-        // An unreadable token never stops the node: the core launches as before, and the
-        // line says the drop was not attempted (Cormac's review of #4739).
-        let elevated = match unelevated_service::token_is_elevated() {
-            Ok(elevated) => elevated,
-            Err(why) => {
-                eprintln!(
-                    "service-host: token elevation UNREADABLE ({why}); launching the core without the unelevated relaunch"
-                );
-                false
-            }
-        };
-        if unelevated_service::must_relaunch(elevated, std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some()) {
-            match tokio::task::spawn_blocking(unelevated_service::relaunch_unelevated).await {
-                Ok(Ok(code)) => return Ok(code),
-                Ok(Err(why)) => eprintln!(
-                    "service-host: ELEVATED — could not relaunch as the normal user ({why}); the core and every citizen shell run with Administrator's token"
-                ),
-                Err(join) => eprintln!(
-                    "service-host: ELEVATED — the unelevated relaunch did not complete ({join}); the core runs with Administrator's token"
-                ),
-            }
-        } else if elevated {
-            eprintln!("service-host: ELEVATED although relaunched as the normal user; the token still reads elevated");
-        }
+        if let Some(code) = require_service_medium().await? { return Ok(code); }
         let mut command = direct_core_command(Path::new(&args[0]), &args[1]);
         apply_core_runtime_env(&mut command)?;
         // The engine the core runs is the slot `current` names, never an injected
@@ -1321,18 +1377,7 @@ async fn service_host(args: Vec<String>) -> Result<i32, String> {
 }
 
 #[cfg(any(windows, test))]
-#[derive(Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-struct CoreServiceDescription {
-    artifact: String,
-    socket: String,
-    launcher: String,
-    cli: String,
-    engine: String,
-    log_directory: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    eye_root: Option<String>,
-}
+use continuum_cli_lifecycle::installed_release::Release as CoreServiceDescription;
 
 #[cfg(any(windows, test))]
 #[derive(Debug, serde::Deserialize, PartialEq, Eq)]
@@ -1343,6 +1388,10 @@ struct CoreServiceTask {
     arguments: String,
     enabled: bool,
     state: String,
+    #[serde(default)]
+    working_directory: String,
+    #[serde(skip)]
+    installed: Option<continuum_cli_lifecycle::installed_release::Envelope>,
 }
 
 /// A path the ContinuumCore descriptor names, absolute and resolved, or why not.
@@ -1395,7 +1444,7 @@ impl CoreServiceTask {
         if !self.enabled
             || resolve(&description.artifact)? != candidate.path
             || description.socket != socket
-            || resolve(&self.command)? != shell.canonicalize().map_err(|e| e.to_string())?
+            || (self.installed.is_none() && resolve(&self.command)? != shell.canonicalize().map_err(|e| e.to_string())?)
         {
             return Err("ContinuumCore does not select the requested artifact/socket or is disabled; rerun the installer".to_string());
         }
@@ -1441,7 +1490,11 @@ impl CoreServiceTask {
             }
             expected.push_str(&format!(" -EyeRoot \"{root}\""));
         }
-        if self.arguments != expected {
+        if let Some(envelope) = &self.installed {
+            if resolve(&self.command)? != resolve(&envelope.bootstrap)? || self.arguments != envelope.arguments("core") {
+                return Err("ContinuumCore stable bootstrap action differs".into());
+            }
+        } else if self.arguments != expected {
             return Err("ContinuumCore action differs from its artifact descriptor; rerun the installer before reboot".to_string());
         }
         Ok(())
@@ -1630,90 +1683,27 @@ impl PreparedCoreService {
         }
         #[cfg(windows)]
         {
-            let task = Self::query().await?;
-            let description: CoreServiceDescription = serde_json::from_str(&task.description)
-                .map_err(|e| format!("ContinuumCore is not prepared by the current installer: {e}; rerun the installer"))?;
-            let slot_core = PathBuf::from(&description.artifact);
-            let slot_cli = PathBuf::from(&description.cli);
-            let built_cli = built
-                .path
-                .with_file_name("continuum.exe");
-            // The native launcher needs these beside the installed core. This
-            // handoff bypasses New-CoreServiceRelease in the PowerShell installer.
-            let media_files = ["livekit-bridge.exe", "start-livekit-windows.ps1"];
-            for name in media_files {
-                let source = built.path.with_file_name(name);
-                if !source.is_file() {
-                    return Err(format!("warm media artifact missing: {}; rerun continuum install", source.display()));
-                }
-            }
-            let move_aside_and_copy = |from: &Path, to: &Path| -> Result<(), String> {
-                if to.exists() {
-                    let prev = park_previous_artifact(to)?;
-                    std::fs::rename(to, &prev)
-                        .map_err(|e| format!("cannot move {} aside: {e}", to.display()))?;
-                }
-                std::fs::copy(from, to)
-                    .map(|_| ())
-                    .map_err(|e| format!("cannot stage {} into {}: {e}", from.display(), to.display()))
-            };
-            move_aside_and_copy(&built.path, &slot_core)?;
-            // A CI core carries its CUDA runtime beside it (card cb587931): the DLLs its
-            // manifest listed, recorded by fetch_ci_core, go beside the staged core too, so
-            // launch never depends on which CUDA tree is on PATH. A warm build has no list.
-            let listed = built.path.with_file_name(RUNTIME_LIBS_FILE);
-            if listed.is_file() {
-                let names = std::fs::read_to_string(&listed)
-                    .map_err(|e| format!("cannot read {}: {e}", listed.display()))?;
-                for name in names.lines().map(str::trim).filter(|n| !n.is_empty()) {
-                    let source = built.path.with_file_name(name);
-                    if !source.is_file() {
-                        return Err(format!("runtime library {} is missing beside the CI core", source.display()));
-                    }
-                    // parked as `<name>.prev.exe` by park_previous_artifact: a DLL, despite the name
-                    move_aside_and_copy(&source, &slot_core.with_file_name(name))?;
-                }
-            }
-            for name in media_files {
-                move_aside_and_copy(&built.path.with_file_name(name), &slot_core.with_file_name(name))?;
-            }
-            if built_cli.is_file() {
-                // The CLI beside the artifact is only this build's when it says so: a skipped
-                // CLI build leaves an OLDER one there, and staging it rolled every PATH copy
-                // back (install's CLI arm follows the slot).
-                match binary_build_sha(&built_cli).await {
-                    Ok(sha) if sha_matches(&sha, &built.build_sha) => {
-                        move_aside_and_copy(&built_cli, &slot_cli)?;
-                    }
-                    Ok(sha) => println!(
-                        "⚠ the CLI beside the warm artifact is build {sha}, not {} — not staged; the slot's CLI stays as it was",
-                        built.build_sha
-                    ),
-                    Err(e) => println!("⚠ the CLI beside the warm artifact cannot state its build ({e}) — not staged; the slot's CLI stays as it was"),
-                }
+            // One staging owner: preserve the active slot, carry the declared DLL
+            // closure, and atomically select the validated inactive release.
+            let repo = tracked_repo_dir()?;
+            let source = built.path.parent().ok_or("prebuilt artifact has no directory")?;
+            let existing = Self::query().await?.runtime_paths_resolve()?;
+            let receipt = WarmBuildReceipt::create()?;
+            let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
+            let engine_stage = if source.join("engine/engine-install.json").is_file() {
+                format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}'; Copy-CorePublishedEngine -RepoRoot '{repo}' -ArtifactDirectory '{source}' -InstallDirectory (Split-Path $r.engine)", repo=quote(&repo), source=quote(source))
             } else {
-                println!(
-                    "⚠ no CLI beside the warm artifact ({}) — the slot's CLI stays as it was",
-                    built_cli.display()
-                );
-            }
-            let staged_path = slot_core
-                .canonicalize()
-                .map_err(|e| format!("staged artifact cannot be resolved: {e}"))?;
-            let sha = binary_build_sha(&staged_path).await?;
-            if sha != built.build_sha {
-                return Err(format!(
-                    "staged artifact reports build {sha}, the warm build was {} — refusing the handoff",
-                    built.build_sha
-                ));
-            }
-            println!(
-                "✓ staged build {} into the supervisor's slot: {}",
-                built.build_sha,
-                staged_path.display()
+                format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}' -EnginePath '{engine}'", repo=quote(&repo), source=quote(source), engine=quote(Path::new(&existing.engine)))
+            };
+            let script = format!(
+                "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; . '{repo}/tools/scripts/lib/windows-prebuilt.ps1'; $env:CONTINUUM_CORE_SOCKET='{socket}'; {engine_stage}; Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' -WorkingDirectory (Split-Path $r.artifact); [IO.File]::WriteAllText('{receipt}', $r.artifact)",
+                repo=quote(&repo), socket=socket.replace('\'', "''"), receipt=quote(&receipt.0),
             );
-            let _ = socket;
-            PrebuiltCore::from_report(staged_path, sha, None)
+            Self::run_installer_script(&script)?;
+            let staged_path=receipt.artifact()?;
+            let sha=binary_build_sha(&staged_path).await?;
+            if !sha_matches(&sha,&built.build_sha) { return Err("staged core revision differs from validated prebuilt".into()); }
+            PrebuiltCore::from_report(staged_path,sha,None)
         }
     }
 
@@ -1772,9 +1762,30 @@ impl PreparedCoreService {
     #[cfg(windows)]
     async fn query_optional() -> Result<Option<CoreServiceTask>, String> {
         let json = Self::powershell(
-            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $t=Get-ScheduledTask | Where-Object { $_.TaskName -eq 'ContinuumCore' -and $_.TaskPath -eq '\\' }; if ($null -eq $t) { 'null'; exit 0 }; if (@($t.Actions).Count -ne 1) { throw 'Expected one core action' }; [pscustomobject]@{description=$t.Description; command=$t.Actions[0].Execute; arguments=$t.Actions[0].Arguments; enabled=[bool]$t.Settings.Enabled; state=[string]$t.State} | ConvertTo-Json -Compress",
+            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $t=Get-ScheduledTask | Where-Object { $_.TaskName -eq 'ContinuumCore' -and $_.TaskPath -eq '\\' }; if ($null -eq $t) { 'null'; exit 0 }; if (@($t.Actions).Count -ne 1) { throw 'Expected one core action' }; [pscustomobject]@{description=$t.Description; command=$t.Actions[0].Execute; arguments=$t.Actions[0].Arguments; workingDirectory=$t.Actions[0].WorkingDirectory; enabled=[bool]$t.Settings.Enabled; state=[string]$t.State} | ConvertTo-Json -Compress",
         ).await?;
-        serde_json::from_str(&json).map_err(|e| format!("cannot read ContinuumCore task: {e}"))
+        let mut task: Option<CoreServiceTask> = serde_json::from_str(&json).map_err(|e| format!("cannot read ContinuumCore task: {e}"))?;
+        if let Some(task) = &mut task {
+            if let Some(envelope) = continuum_cli_lifecycle::installed_release::envelope(&task.description)? {
+                let home = PathBuf::from(home_dir()?).join(".continuum");
+                let sid = supervisor_install::caller_sid().await?;
+                let program_files = PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);
+                envelope.validate(&home, &program_files, &sid)?;
+                if task.command.to_lowercase() != envelope.bootstrap.to_lowercase() || task.arguments != envelope.arguments("core") || Path::new(&task.working_directory) != Path::new(&envelope.bootstrap).parent().ok_or("bootstrap has no directory")? {
+                    return Err("ContinuumCore stable task action differs from its envelope".into());
+                }
+                let text = continuum_cli_lifecycle::installed_release::read_receipt(Path::new(&envelope.active_release))?;
+                let payload = continuum_core::paths::payload_root(&home)?;
+                let _resolved = continuum_cli_lifecycle::installed_release::resolve_receipt(&text,&home,&payload,&sid)?;
+                // Preserve PowerShell's descriptor field ordering for the existing SHA handoff.
+                // This serializes the SAME validated bytes, never a second racy file read.
+                use base64::Engine;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes()); // Active receipt bytes cross the PowerShell process boundary without argument quoting ambiguity.
+                task.description = Self::powershell(&format!("$r=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}')) | ConvertFrom-Json; $r.release | ConvertTo-Json -Compress")).await?;
+                task.installed = Some(envelope);
+            }
+        }
+        Ok(task)
     }
 
     async fn launch(self, wait_for_death: &[i32]) -> Result<u64, String> {
@@ -1847,6 +1858,36 @@ impl PreparedCoreService {
         }
         #[cfg(windows)]
         {
+            match self.launch_windows_once(wait_for_death).await {
+                Ok(elapsed) => Ok(elapsed),
+                Err(failed) => {
+                    if self.task.installed.is_none() || core_is_up().await { return Err(failed); }
+                    let current = Self::query().await?;
+                    if current.state == "Running" || current.description != self.task.description {
+                        return Err(format!("{failed}; preserved running or concurrently changed supervisor"));
+                    }
+                    // The caller still holds the install lease. Restoration validates
+                    // the prior payload and refuses a changed active selection.
+                    let repo = tracked_repo_dir()?;
+                    let root = repo.to_string_lossy().replace('\'', "''");
+                    let expected = self.task.description.replace('\'', "''");
+                    Self::run_installer_script(&format!("$ErrorActionPreference='Stop'; . '{root}/tools/scripts/lib/install-common.ps1'; . '{root}/tools/scripts/lib/windows-service.ps1'; Restore-CoreActiveRelease -ExpectedDescription '{expected}' | Out-Null"))
+                        .map_err(|e|format!("{failed}; previous release recovery refused: {e}"))?;
+                    let restored = Self { task:Self::query().await? };
+                    let release = restored.task.runtime_paths_resolve()?;
+                    restored.launch_windows_once(wait_for_death).await
+                        .map_err(|e|format!("{failed}; previous release also failed: {e}"))?;
+                    let sha = restored_build_identity(Path::new(&release.artifact)).await
+                        .map_err(|e|format!("{failed}; restored service identity unproven: {e}"))?;
+                    Err(format!("{failed}; recovered previous installed build {sha} under the same supervisor; candidate was not adopted"))
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    async fn launch_windows_once(&self, wait_for_death: &[i32]) -> Result<u64,String> {
+
             let started = std::time::Instant::now();
             // A task may still be finishing its foreground host after the core
             // exits. IgnoreNew would silently swallow our start in that window.
@@ -1889,7 +1930,6 @@ impl PreparedCoreService {
                     return Err("ContinuumCore task stopped before the core answered; inspect its task result and service logs".to_string());
                 }
             }
-        }
     }
 }
 
@@ -2113,6 +2153,29 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         let candidate = prebuilt
             .as_ref()
             .ok_or("--validate-only requires --prebuilt")?;
+        if let Some(model) = options.embedding_model {
+            let model = model
+                .canonicalize()
+                .map_err(|e| format!("embedding model cannot be resolved: {e}"))?;
+            if !model.is_file() {
+                return Err("embedding model must be a local GGUF file".into());
+            }
+            let report = continuum_cli_lifecycle::prebuilt_validation::embedding(
+                |probe| {
+                    let mut command = std::process::Command::new(&candidate.path);
+                    apply_core_runtime_env(&mut command)?;
+                    probe.configure(&mut command);
+                    Ok(command)
+                },
+                &model,
+                &candidate.build_sha,
+            )
+            .await?;
+            println!(
+                "embedding validated: dimensions={}, load_ms={}, embed_ms={} (CPU)",
+                report.dimensions, report.load_ms, report.embed_ms
+            );
+        }
         println!(
             "prebuilt validated: {} (build {})",
             candidate.path.display(),
@@ -2338,12 +2401,10 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 // 05:1xZ, the 5090's first unattended deploy: a 1,145 s build, validated,
                 // then refused at the door. Every hand deploy had done this copy by hand.
                 //
-                // THE COPY ITSELF NOW HAPPENS AFTER THE STOP — see below. It used to run
-                // here, which made the recovery unreachable on exactly the node that needs
-                // it (Astra, 2026-09-22): a core still running from `.prev.exe` occupies
-                // the one parking space, the move-aside fails, and `reboot` returns before
-                // it ever gets to the stop that would have freed the name. You cannot free
-                // a slot a process is executing from; the teardown has to come first.
+                // Windows uses an inactive slot, so staging and provisioning can
+                // finish while the current core serves. macOS retains its existing
+                // post-stop slot replacement below.
+
             }
             Err(why) => {
                 if options.service {
@@ -2404,22 +2465,19 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             service = Some(PreparedCoreService::prepare(candidate, &socket).await?);
         }
     }
-    // The staged hand-off re-validates the release only after the stop; what staging does
-    // not write (the engine and log paths the release names) must be checked while the
-    // running core can still keep serving.
+    // Inactive Windows staging/provisioning may fail. Complete it before drain,
+    // keeping the serving generation intact on any copy, hash or consent error.
     #[cfg(windows)]
-    if options.service && service.is_none() && prebuilt.is_some() {
-        PreparedCoreService::query()
-            .await?
-            .runtime_paths_resolve()
-            .map_err(|e| format!("{e}; the running core was left serving"))?;
+    if options.service && service.is_none() {
+        if let Some(built) = prebuilt.take() {
+            let staged = PreparedCoreService::stage(&built, &socket).await?;
+            service = Some(PreparedCoreService::prepare(&staged, &socket).await?);
+            prebuilt = Some(staged);
+        }
     }
     let _ = stop_with_authority(true, options.operator_present).await?;
-    // NOW the slot is free. Staging writes the artifact the supervisor is bound to and
-    // prepares the handoff; the validation that decides whether the core should have been
-    // stopped at all already happened in `prepare_warm_build` above, so nothing is taken
-    // down for an artifact that was never good. What moved is only the COPY, and only to
-    // the side of the stop where the file it must overwrite is no longer executing.
+    // macOS retains its existing post-stop slot replacement contract.
+    #[cfg(not(windows))]
     if options.service && service.is_none() {
         if let Some(built) = prebuilt.take() {
             let staged = PreparedCoreService::stage(&built, &socket).await?;
@@ -2494,7 +2552,7 @@ const CLI_BUILD_SHA: &str = env!("CONTINUUM_BUILD_GIT_SHA");
 
 /// The build a rollback put back, proven: the restored slot binary's embedded SHA must be
 /// the one the answering core reports. `Ok(sha)` only when they match.
-#[cfg(target_os = "macos")]
+#[cfg(any(windows, target_os = "macos"))]
 async fn restored_build_identity(slot: &Path) -> Result<String, String> {
     let expected = binary_build_sha(slot).await?;
     let actual = running_core_build_sha("restore-verify").await?.unwrap_or_default(); // unwrap_or_default: an absent sha is the mismatch the check below names
@@ -3053,29 +3111,9 @@ async fn binary_build_sha(artifact: &Path) -> Result<String, String> {
     let mut cmd = std::process::Command::new(artifact);
     apply_core_runtime_env(&mut cmd)?;
     cmd.arg("--build-sha").stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: a provenance probe has no UI.
-    }
-    let mut cmd = tokio::process::Command::from(cmd);
-    cmd.kill_on_drop(true);
-    let out = tokio::time::timeout(Duration::from_secs(30), cmd.output())
+    let out = continuum_cli_lifecycle::prebuilt_validation::run(cmd, Duration::from_secs(30))
         .await
-        .map_err(|_| {
-            format!(
-                "{} --build-sha did not answer within 30 s; provenance is unavailable",
-                artifact.display()
-            )
-        })?
-        .map_err(|e| format!("cannot run {} --build-sha: {e}", artifact.display()))?;
-    if !out.status.success() {
-        return Err(format!(
-            "{} --build-sha exited {} — a pre-#194 artifact cannot anchor a deploy receipt; rebuild it",
-            artifact.display(),
-            out.status
-        ));
-    }
+        .map_err(|e| format!("{} --build-sha: {e}", artifact.display()))?;
     let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if sha.is_empty() {
         return Err(format!(
@@ -3704,7 +3742,8 @@ async fn install_cli(check: bool) -> Result<supervisor_install::ArmReport, Strin
         println!("  cli: no installed release (no ContinuumCore task) — nothing to follow yet");
         return Ok(ArmReport::read_only(1));
     }
-    let slot_cli = PathBuf::from(installed_cli_from_descriptor(&core.description)?);
+    let selected = PreparedCoreService::query().await?;
+    let slot_cli = PathBuf::from(installed_cli_from_descriptor(&selected.description)?);
     let dir = install_cli::cli_dir(Path::new(&home_dir()?));
     let user_path = supervisor_install::powershell(
         "[Environment]::GetEnvironmentVariable('PATH','User')",
@@ -4145,6 +4184,17 @@ fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
 /// Say it on stdout AND in the log, stamped.
 fn deploy_note(line: &str) {
     println!("{line}");
+    record_deploy_note(line);
+}
+
+/// Protocol commands reserve stdout for their result; progress remains visible
+/// on stderr and in the same deployment log as interactive consumption.
+fn prepare_note(line: &str) {
+    eprintln!("{line}");
+    record_deploy_note(line);
+}
+
+fn record_deploy_note(line: &str) {
     if let Some(mut f) = deploy_log_file() {
         use std::io::Write;
         let stamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
@@ -4288,9 +4338,8 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 std::env::set_current_dir(&repo)
                     .map_err(|e| format!("deploy-consume: cannot enter {}: {e}", repo.display()))?;
                 let service = consumer_uses_service(std::env::consts::OS);
-                // Take the core CI built for this tip instead of compiling it here (card
-                // 50ca737e). `None` means CI cannot deliver for this node, said in the log,
-                // and the reboot's warm build compiles as before.
+                // Only a verified CI artifact reaches the handoff. Missing or rejected
+                // artifacts refuse this attempt before touching the running core.
                 // CI publishes a core for the commit that last touched a build input; a
                 // docs-only tip is served by that commit's core (card 9080ffb0).
                 // Not only the tip's core: the newest one CI has PUBLISHED since the running
@@ -4321,26 +4370,23 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         // CI's core for this pass: an older published one, or the build-key
                         // commit's core serving a docs-only tip (card 9080ffb0).
                         deployed = key.clone();
-                        Some(core)
+                        core
                     }
-                    CiCore::CompileHere => None,
+                    CiCore::Refused(why) => return Err(why),
                     CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
                 };
-                if let Some(core) = &prebuilt {
-                    install_ci_companions(&repo, core)?;
-                }
+                install_ci_companions(&repo, &prebuilt)?;
                 deploy_note(&format!(
-                    "▶ deploy-consume: {} — reboot into {deployed}{}{}",
+                    "▶ deploy-consume: {} — reboot into {deployed}{} --prebuilt (the CI build)",
                     repo.display(),
-                    if service { " --service" } else { "" },
-                    if prebuilt.is_some() { " --prebuilt (the CI build)" } else { "" }
+                    if service { " --service" } else { "" }
                 ));
                 // A downloaded core lives in the artifact cache; launchd execs only its slot,
                 // so it is STAGED into the slot after the stop, like a warm build's artifact.
-                let stage_prebuilt = prebuilt.is_some();
+                let stage_prebuilt = true;
                 // install_ci_companions above already put this core's CLI on PATH.
-                let cli_installed = prebuilt.is_some();
-                reboot(RebootOptions { service, prebuilt, stage_prebuilt, cli_installed, ..Default::default() }).await?;
+                let cli_installed = true;
+                reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await?;
                 Ok(PassEnd::Done)
             }
             .await;
@@ -4370,8 +4416,9 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
 /// is, this WAITS, in this detached consumer, rather than returning: the actuator
 /// re-launches a consumer only after the request is stranded (1.5x the last deploy time),
 /// so a "come back later" would idle the node for hours and spend an actuation. The CI
-/// budget is the tip's. `CompileHere` = CI cannot deliver for this node; the reason is
-/// logged. `Superseded` = the request (`request_path`) no longer names `requested_tip`:
+/// budget is the tip's. `Refused` leaves the running core intact: an unavailable or
+/// invalid artifact never authorizes a source build. `Superseded` = the request
+/// (`request_path`) no longer names `requested_tip`:
 /// the caller lists candidates again against the new tip.
 async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
     use continuum_cli_lifecycle::prebuilt_artifact::{newest_published, platform_key, when_artifact_missing, MissingArtifact};
@@ -4405,8 +4452,8 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                         Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
                         // published a moment ago and gone now: the next tick asks again
                         Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
-                        Err(why) if key == newest.as_str() => MissingArtifact::BuildFromSource(format!(
-                            "the CI build for {key} was refused: {why}; compiling here"
+                        Err(why) if key == newest.as_str() => MissingArtifact::Refuse(format!(
+                            "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
                         )),
                         // an older core refused: keep waiting for the tip's, within its budget
                         Err(why) => {
@@ -4437,9 +4484,9 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                     }
                 }
             }
-            MissingArtifact::BuildFromSource(why) => {
+            MissingArtifact::Refuse(why) => {
                 deploy_note(&format!("deploy-consume: {why}"));
-                return CiCore::CompileHere;
+                return CiCore::Refused(why);
             }
         }
     }
@@ -4493,7 +4540,7 @@ async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
 enum CiCore {
     /// The extracted core, and the build key it is (the tip's, or an older published one).
     Built { core: PathBuf, key: String },
-    CompileHere,
+    Refused(String),
     Superseded(String),
 }
 
@@ -4526,6 +4573,42 @@ async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
 /// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
 /// published is not THE build for this node, or does not match its checksum.
 async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
+    prepare_ci_core(repo, tip, platform, None, deploy_note).await
+}
+
+struct CiArtifactPreparation {
+    directory: PathBuf,
+    complete: bool,
+}
+
+impl Drop for CiArtifactPreparation {
+    fn drop(&mut self) {
+        if !self.complete {
+            // This invocation created this fresh UUID directory; failed attempts
+            // cannot accumulate full archives or remove another caller's candidate.
+            let _ = std::fs::remove_dir_all(&self.directory);
+        }
+    }
+}
+
+/// The first-install transport supplies a hash-checked archive; the existing consumer
+/// performs the same authoritative compatibility and payload preparation as an update.
+async fn prepare_prebuilt(args: Vec<String>) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err("prepare-prebuilt requires <checkout> <download-directory>".into());
+    }
+    let repo = Path::new(&args[0]);
+    let head = git_in(repo, &["rev-parse", "HEAD"])?;
+    let (tip, _) = prebuilt_checkout_build_key(repo, None, head.trim());
+    let platform = continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or("No compatible prebuilt is published for this platform")?;
+    let core = prepare_ci_core(repo, &tip, platform, Some(Path::new(&args[1])), prepare_note)
+        .await?.ok_or("The requested prebuilt is not published")?;
+    println!("{}", serde_json::json!({"core": core, "git_sha": tip}));
+    Ok(())
+}
+
+async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Option<&Path>, note: fn(&str)) -> Result<Option<PathBuf>, String> {
     use continuum_cli_lifecycle::prebuilt_artifact::{gpu_verdict, manifest_url, manifest_verdict, ArtifactManifest};
     use sha2::{Digest, Sha256};
     use std::io::Write;
@@ -4535,16 +4618,23 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
         .timeout(Duration::from_secs(1800))
         .build()
         .map_err(|e| format!("http client: {e}"))?;
+    let manifest: ArtifactManifest = if let Some(source) = downloaded {
+        let bytes = std::fs::read(source.join(format!("continuum-core-{platform}.json")))
+            .map_err(|e| format!("reading downloaded manifest: {e}"))?;
+        if bytes.len() > 65536 { return Err("Downloaded manifest exceeds 64 KiB".into()); }
+        serde_json::from_slice(&bytes).map_err(|e| format!("reading downloaded manifest: {e}"))?
+    } else {
     let resp = client.get(&url).send().await.map_err(|e| format!("fetching {url}: {e}"))?;
     if resp.status() == reqwest::StatusCode::NOT_FOUND {
         return Ok(None);
     }
-    let manifest: ArtifactManifest = resp
+    resp
         .error_for_status()
         .map_err(|e| format!("fetching {url}: {e}"))?
         .json()
         .await
-        .map_err(|e| format!("reading {url}: {e}"))?;
+        .map_err(|e| format!("reading {url}: {e}"))?
+    };
     manifest_verdict(&manifest, tip, platform, &local_core_features(repo)?)?;
     // A CUDA build carries its runtime, and the node's driver and GPUs must be able to run it
     // (card cb587931): read only when the artifact names CUDA, so a Mac never probes.
@@ -4561,25 +4651,42 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
     if manifest.archive.contains(['/', '\\']) || manifest.archive.contains("..") {
         return Err(format!("archive name `{}` is not a plain file name", manifest.archive));
     }
+    if downloaded.is_some() {
+        let expected = git_in(repo, &["rev-parse", "HEAD:core/vendor/llama.cpp"])?;
+        continuum_cli_lifecycle::prebuilt_artifact::fresh_engine_verdict(&manifest, expected.trim())?;
+    }
     let root = PathBuf::from(home_dir()?).join(".continuum/cache/artifacts");
-    let dir = root.join(&tip[..12]);
-    let _ = std::fs::remove_dir_all(&dir); // a half-written earlier attempt is not reused
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let dir = root.join(format!("{}-{}", &tip[..12], uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
+    std::fs::create_dir(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let mut preparation = CiArtifactPreparation { directory: dir.clone(), complete: false };
     // Stream to disk while hashing: the archive is ~200 MB, and the weak nodes are the ones
     // that need this path most.
     let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
+    let archive = dir.join(&manifest.archive);
+    let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    let mut hasher = Sha256::new();
+    if let Some(source) = downloaded {
+        use std::io::Read;
+        let mut input = std::fs::File::open(source.join(&manifest.archive)).map_err(|e| format!("reading downloaded archive: {e}"))?;
+        let mut buffer = [0u8; 65536];
+        loop {
+            let count = input.read(&mut buffer).map_err(|e| format!("reading downloaded archive: {e}"))?;
+            if count == 0 { break; }
+            hasher.update(&buffer[..count]);
+            file.write_all(&buffer[..count]).map_err(|e| format!("staging archive: {e}"))?;
+        }
+    } else {
     let mut resp = client
         .get(&archive_url)
         .send()
         .await
         .and_then(|r| r.error_for_status())
         .map_err(|e| format!("fetching {archive_url}: {e}"))?;
-    let archive = dir.join(&manifest.archive);
-    let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
-    let mut hasher = Sha256::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
         hasher.update(&chunk);
         file.write_all(&chunk).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    }
     }
     drop(file);
     let digest = format!("{:x}", hasher.finalize());
@@ -4588,6 +4695,10 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
     }
     // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
     // GNU tar never reads the drive letter as a host (Fable on #4834).
+    let members = continuum_core::shell_portable::tar_on(&archive, "-tzf")?.output().map_err(|e| format!("listing archive: {e}"))?;
+    let details = continuum_core::shell_portable::tar_on(&archive, "-tvzf")?.output().map_err(|e| format!("listing archive types: {e}"))?;
+    if !members.status.success() || !details.status.success() { return Err("Cannot inspect published archive before extraction".into()); }
+    continuum_cli_lifecycle::prebuilt_artifact::archive_members_verdict(&String::from_utf8_lossy(&members.stdout), &String::from_utf8_lossy(&details.stdout), platform)?;
     let status = continuum_core::shell_portable::tar_on(&archive, "-xzf")?
         .status()
         .map_err(|e| format!("tar: {e}"))?;
@@ -4610,7 +4721,8 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
         std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), manifest.runtime_libs.join("\n"))
             .map_err(|e| format!("cannot record the runtime libraries beside {}: {e}", core.display()))?;
     }
-    deploy_note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
+    note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
+    preparation.complete = true;
     prune_ci_cores(&root, &dir);
     Ok(Some(core))
 }
@@ -4619,9 +4731,17 @@ async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<
 /// core, and the engine is rebuilt only when its stamp says the vendored fork moved
 /// (`install-llama-server.sh` is a no-op otherwise).
 fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    if !core.parent().is_some_and(|dir| dir.join("engine/engine-install.json").is_file()) {
+        return Err("Published Windows release lacks its engine companion; no source build will be attempted".into());
+    }
     let built_cli = core.with_file_name(install_cli::cli_file_name("continuum"));
     let cli = install_cli::cli_dir(Path::new(&home_dir()?)).join(install_cli::cli_file_name("continuum"));
     install_cli::copy_with_retry(&built_cli, &cli, Duration::from_secs(10))?;
+    #[cfg(windows)]
+    { let _ = repo; Ok(()) }
+    #[cfg(not(windows))]
+    {
     let status = std::process::Command::new(locate_bash()?)
         .arg(repo.join("tools/scripts/install-llama-server.sh"))
         .current_dir(repo)
@@ -4631,6 +4751,7 @@ fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
         return Err("install-llama-server.sh failed; the engine would not match the core".into());
     }
     Ok(())
+    }
 }
 
 /// The core feature set this node's HARDWARE runs, from the ONE mapping CI also builds
@@ -6978,7 +7099,7 @@ fn usage() -> String {
        continuum start                 build + run the headless Rust core (detached), wait until ready;\n                                       refuses if a core is running but not answering (a second core on\n                                       one socket makes results non-deterministic)\n  \
        continuum start --force         reclaim those unresponsive core(s) first, then start\n  \
        continuum reboot                rebuild + relaunch; verifies the RUNNING core's build SHA\n  \
-       continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n  \
+       continuum reboot --prebuilt <path> [--service | --validate-only]\n                                       validate and launch that core without rebuilding; retains cwd\n                                       and matches checkout HEAD when run in a repository\n                                       Windows --service uses the installer's prepared task;\n                                       --validate-only checks without stopping or launching\n                                       add --embedding-model <GGUF> for bounded CPU model validation\n  \
        continuum stop                  stop the running core\n  \
        continuum deploy-verify         prove the running core's build SHA matches the deployed source\n  \
        continuum install [--check]     converge this machine: the OS supervisor (Windows: S4U at boot +\n                                       the deploy consumer, one elevation; macOS: the system LaunchDaemon,\n                                       sudo once, --user = the agent), the core (build HEAD, stage, hand\n                                       off when the running build is not HEAD), the CLI on PATH\n                                       (continuum + uu follow the slot), and airc (installed, started at\n                                       login). Each arm reads, changes only what drifted, says so.\n                                       --check reads only. Name arms with --supervisor --core --cli\n                                       --airc. (linux arms pending)\n  \
@@ -7008,91 +7129,8 @@ fn usage() -> String {
         .to_string()
 }
 
-/// Free `.prev.exe`, the single parking space beside a slot artifact, and return it.
-///
-/// The stop that precedes staging frees the space only for the CORE. A media process the
-/// stop leaves running (livekit-bridge) can still execute from its `.prev.exe`, and Windows
-/// will not delete a running image. Measured 2026-10-05 on the 5090: livekit-bridge pid
-/// 25696 ran from its `.prev`, staging refused AFTER the core had stopped, and the node sat
-/// with no core for twenty minutes until the file was renamed by hand (a second
-/// `orphan-27732` from the same failure was already beside it). A running image CAN be
-/// renamed, so an occupied `.prev` is parked under a unique `.orphan-<ms>.exe` name, and
-/// orphans whose process has since exited are deleted here, so they never accumulate.
-/// The error still names the path that refused and the OS's words when even the rename
-/// fails (2026-09-22: a refusal reported against the wrong file cost an hour).
-#[cfg(any(windows, test))] // staged only by the Windows slot handoff; tested everywhere
-fn park_previous_artifact(to: &Path) -> Result<PathBuf, String> {
-    let prev = to.with_extension("prev.exe");
-    let stem = to.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let orphan_prefix = format!("{stem}.orphan-");
-    if let Some(dir) = to.parent() {
-        if let Ok(entries) = std::fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().into_owned();
-                if name.starts_with(&orphan_prefix) && name.ends_with(".exe") {
-                    // An orphan still executing refuses; it is deleted on a later stage.
-                    let _ = std::fs::remove_file(entry.path()); // a held orphan is expected, not an error
-                }
-            }
-        }
-    }
-    let Err(removal) = std::fs::remove_file(&prev) else {
-        return Ok(prev);
-    };
-    if !prev.exists() {
-        return Ok(prev);
-    }
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or_default();
-    let orphan = to.with_extension(format!("orphan-{stamp}.exe"));
-    std::fs::rename(&prev, &orphan).map_err(|e| {
-        format!(
-            "the previous artifact at {} could not be removed ({removal}) nor parked as {} ({e}); \
-             staging cannot move the current artifact aside onto an occupied name",
-            prev.display(),
-            orphan.display()
-        )
-    })?;
-    Ok(prev)
-}
-
 #[cfg(test)]
 mod tests {
-    // what this catches (2026-10-05, the 5090): staging refusing AFTER the core stopped
-    // because a still-running livekit-bridge held `.prev.exe`, the single parking space,
-    // so the node sat with no core. A `.prev` that cannot be deleted is parked as an
-    // orphan, the space is free, and an orphan whose process has exited is swept on the
-    // next stage. A directory stands in for a running image: it refuses `remove_file` on
-    // every platform and still renames.
-    #[test]
-    fn an_occupied_prev_is_parked_as_an_orphan_and_swept_once_free() {
-        let dir = tempfile::tempdir().expect("test: tempdir");
-        let current = dir.path().join("livekit-bridge.exe");
-        std::fs::write(&current, b"current").expect("test: current");
-        let prev = dir.path().join("livekit-bridge.prev.exe");
-        std::fs::create_dir(&prev).expect("test: an undeletable prev");
-        let stale = dir.path().join("livekit-bridge.orphan-1.exe");
-        std::fs::write(&stale, b"exited").expect("test: a free orphan");
-        let other = dir.path().join("continuum.orphan-1.exe");
-        std::fs::write(&other, b"not ours").expect("test: another artifact's orphan");
-
-        let parked = super::park_previous_artifact(&current).expect("the space is freed");
-        assert_eq!(parked, prev);
-        assert!(!prev.exists(), "the parking space is empty");
-        assert!(!stale.exists(), "an orphan whose process exited is swept");
-        assert!(other.exists(), "another artifact's orphans are not this one's to sweep");
-        let orphans: Vec<_> = std::fs::read_dir(dir.path())
-            .expect("test: read")
-            .flatten()
-            .map(|e| e.file_name().to_string_lossy().into_owned())
-            .filter(|n| n.starts_with("livekit-bridge.orphan-"))
-            .collect();
-        assert_eq!(orphans.len(), 1, "the occupied prev now lives as one orphan: {orphans:?}");
-        std::fs::rename(&current, &parked).expect("the current artifact moves aside");
-    }
-
     // what this catches (M5, 2026-09-26): the start/reboot receipt promised "the web build
     // lands in the background" on eight consecutive supervised deploys while no dist was
     // configured and none was being built. An unconfigured desktop must be NAMED, with the
@@ -7474,6 +7512,23 @@ mod tests {
             // artifact); it is exercised in the valid cases above on Windows.
             vec!["--service", "--service", "--prebuilt", "core.exe"],
             vec!["--validate-only"],
+            vec!["--embedding-model", "model.gguf"],
+            vec!["--prebuilt", "core.exe", "--embedding-model", "model.gguf"],
+            vec![
+                "--prebuilt",
+                "core.exe",
+                "--validate-only",
+                "--embedding-model",
+            ],
+            vec![
+                "--prebuilt",
+                "core.exe",
+                "--validate-only",
+                "--embedding-model",
+                "one",
+                "--embedding-model",
+                "two",
+            ],
             vec!["--validate-only", "--force", "--prebuilt", "core.exe"],
             vec!["--validate-only", "--service", "--prebuilt", "core.exe"],
             vec![
@@ -7516,6 +7571,18 @@ mod tests {
         let validate = parse(&["--prebuilt", "core.exe", "--validate-only"]).unwrap();
         assert!(validate.validate_only);
         assert!(!validate.force && !validate.service);
+        let embedding = parse(&[
+            "--prebuilt",
+            "core.exe",
+            "--validate-only",
+            "--embedding-model",
+            "model dir/embed.gguf",
+        ])
+        .unwrap();
+        assert_eq!(
+            embedding.embedding_model.as_deref(),
+            Some(std::path::Path::new("model dir/embed.gguf"))
+        );
         if cfg!(windows) {
             let service = service.unwrap();
             assert!(service.service);
@@ -7568,6 +7635,8 @@ mod tests {
             launcher.display(), cli.display(), artifact.display(), socket, engine.display(), directory.display(),
         );
         let mut task = super::CoreServiceTask {
+            installed: None,
+            working_directory: String::new(),
             description: description.to_string(),
             command: shell.display().to_string(),
             arguments: arguments.clone(),

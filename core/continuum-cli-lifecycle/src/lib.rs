@@ -24,6 +24,7 @@ pub mod launchd;
 pub mod owned_engines;
 pub mod process;
 pub mod supervisor_install;
+pub mod installed_release;
 
 /// Windows process launch and ownership. Imports `std::os::windows` and
 /// `windows_sys`, so it exists only on Windows.
@@ -36,3 +37,9 @@ pub mod deploy_provenance;
 pub mod deploy_tracker;
 /// Deploying the core CI built instead of compiling it (card 50ca737e).
 pub mod prebuilt_artifact;
+
+
+#[cfg(windows)]
+pub mod unelevated_service;
+
+pub mod prebuilt_validation;

@@ -12,6 +12,7 @@
 use std::env;
 use std::path::PathBuf;
 
+mod cpu_target;
 mod msvc_cache;
 
 fn main() {
@@ -32,6 +33,8 @@ fn main() {
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=msvc_cache.rs");
+    println!("cargo:rerun-if-changed=cpu_target.rs");
+    println!("cargo:rerun-if-env-changed={}", cpu_target::PORTABLE_ENV);
 
     let mut cfg = cmake::Config::new(&submodule);
     cfg.define("LLAMA_BUILD_EXAMPLES", "OFF")
@@ -86,6 +89,10 @@ fn main() {
     // Used to pick the right C++ runtime + OpenMP libs below: MSVC has no
     // GCC-world `stdc++`/`gomp`.
     let target_env = env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
+    let portable_cpu = env::var(cpu_target::PORTABLE_ENV).as_deref() == Ok("1");
+    for (name, value) in cpu_target::definitions(&target_arch, portable_cpu) {
+        cfg.define(name, value);
+    }
 
     // windows-msvc: llama.cpp's C/C++ runtime MUST match whatever CRT the final
     // Rust link uses — a mismatch is a hard LNK2038 "RuntimeLibrary mismatch" (or,

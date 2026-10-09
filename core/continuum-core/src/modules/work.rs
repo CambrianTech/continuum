@@ -387,9 +387,10 @@ pub(crate) async fn card_in_subscribed_rooms(
     airc: &Arc<Airc>,
     card_id: WorkCardId,
 ) -> Option<(airc_lib::Room, airc_lib::WorkCard)> {
-    subscribed_boards(airc)
+    board_horizon_for_card(airc, Some(card_id))
         .await
         .ok()?
+        .boards
         .into_iter()
         .find_map(|(room, board)| {
             board
@@ -524,6 +525,18 @@ fn not_found_in(
 }
 
 pub(crate) async fn board_horizon(airc: &Arc<Airc>) -> Result<BoardHorizon, airc_lib::AircError> {
+    board_horizon_for_card(airc, None).await
+}
+
+/// A fully identified card needs only its first containing board, as the existing
+/// resolver's first match does. Prefixes need the complete horizon to detect ambiguity.
+/// Keep one walk and one read-failure policy for both; unrelated later rooms must not
+/// delay an already located card (44c5612e: Intel work/get took 121–161 seconds while
+/// its containing board read in under one second).
+async fn board_horizon_for_card(
+    airc: &Arc<Airc>,
+    card_id: Option<WorkCardId>,
+) -> Result<BoardHorizon, airc_lib::AircError> {
     let set = airc.subscription_set().await?;
     let mut horizon = BoardHorizon {
         boards: Vec::new(),
@@ -532,18 +545,17 @@ pub(crate) async fn board_horizon(airc: &Arc<Airc>) -> Result<BoardHorizon, airc
     for sub in set.all() {
         let room = sub.as_room();
         match airc.work_board_in(&room).await {
-            Ok(board) => horizon.boards.push((room, board)),
+            Ok(board) => {
+                let found = card_id.is_some_and(|id| board.card(id).is_some());
+                horizon.boards.push((room, board));
+                if found {
+                    break;
+                }
+            }
             Err(e) => horizon.unreadable.push((room.name, e.to_string())),
         }
     }
     Ok(horizon)
-}
-
-/// The readable half of [`board_horizon`], for walks that only need boards.
-pub(crate) async fn subscribed_boards(
-    airc: &Arc<Airc>,
-) -> Result<Vec<(airc_lib::Room, airc_lib::WorkBoardProjection)>, airc_lib::AircError> {
-    board_horizon(airc).await.map(|h| h.boards)
 }
 
 /// Locate `card_id`'s room, switch the caller's current room there, and retry the
@@ -3437,6 +3449,9 @@ pub struct WorkGetParams {
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkGetResult {
+    /// Signed reviews of this card (or the linked parent for a review card).
+    /// Legacy evidence_text=None means the evidence bytes were not published.
+    pub reviews: Vec<submission::WorkReviewResult>,
     pub id: String,
     /// The board that supplied this receipt; never the caller's current focus.
     #[ts(type = "string")]
@@ -3484,14 +3499,18 @@ impl WorkGet {
         requested: &str,
         reader: Uuid,
     ) -> Result<WorkGetResult, CommandError> {
-        let horizon = board_horizon(airc)
+        let exact = match crate::id_resolve::normalize(requested) {
+            crate::id_resolve::IdMatch::Full(id) => Some(WorkCardId::from_uuid(id)),
+            _ => None,
+        };
+        let horizon = board_horizon_for_card(airc, exact)
             .await
             .map_err(|e| CommandError::Internal(format!("board read: {e}")))?;
         let card_id = resolve_card_id_in_boards(&horizon, requested)?;
-        let (room, card) = horizon
+        let (room, board, card) = horizon
             .boards
             .iter()
-            .find_map(|(room, board)| board.card(card_id).map(|c| (room, c)))
+            .find_map(|(room, board)| board.card(card_id).map(|c| (room, board, c)))
             .ok_or_else(|| horizon.not_found("card", requested))?;
         use crate::experience::ledger::LedgerStore as _;
         // Best effort: an unreadable ledger is an absence on the card, never a refusal of
@@ -3500,13 +3519,13 @@ impl WorkGet {
             .read(room, card_id.as_uuid())
             .await
             .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
-        Ok(Self::receipt(
-            room,
-            card,
-            ledger,
-            crate::modules::chat::now_ms(),
-            reader,
-        ))
+        let mut receipt = Self::receipt(room, card, ledger, crate::modules::chat::now_ms(), reader);
+        let parent = card.reviews.and_then(|id| board.card(id)).unwrap_or(card);
+        receipt.reviews = parent.submissions.iter()
+            .flat_map(|s| board.submission_reviews_for(s.submission_id))
+            .filter(|r| r.card_id == parent.card_id)
+            .map(submission::WorkReviewResult::from).collect();
+        Ok(receipt)
     }
 
     fn receipt(
@@ -3523,6 +3542,7 @@ impl WorkGet {
             &crate::persona::card_holder::NoNames,
         );
         WorkGetResult {
+            reviews: Vec::new(),
             id: short8(card.card_id.as_uuid()),
             room_id: room.channel,
             room: room.name.clone(),
@@ -3550,7 +3570,7 @@ impl ActionCommand for WorkGet {
     const NATIVE: bool = true; // core room workflow — re-reading a card's spec mid-task must not require asking the room
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
-        "Read one work card in full (read-only): title, body (the task's requirements), state, \
+        "Read one work card in full (read-only), including signed review verdicts and published evidence_text (null on legacy hash-only reviews): title, body (the task's requirements), state, \
          board room, claimability, lease expiry/heartbeat, owner and claim id. Accepts a full or short id from any room you belong to, without \
          changing your current room. This is how you re-check a spec mid-task.";
     type Params = WorkGetParams;
@@ -4610,6 +4630,18 @@ mod tests {
         // Regression: a stale owner must not look like live contention in work/get.
         // Use the real board shape and the shared projection's clock, not a sleep.
         let horizon = board_horizon(&airc).await.expect("subscribed boards");
+        // Regression44c5612e: a known UUID must not read unrelated later rooms;
+        // prefix resolution still uses the complete horizon above.
+        let (first_room, first_board) = horizon.boards.first().expect("first subscribed board");
+        let first_card = if first_board.card(card).is_some() { card } else { local_card };
+        assert!(first_board.card(first_card).is_some());
+        assert!(horizon.boards.len() > 1);
+        let located = board_horizon_for_card(&airc, Some(first_card)).await.expect("exact card horizon");
+        assert_eq!(located.boards.len(), 1, "stop at the containing board");
+        assert_eq!(located.boards[0].0.channel, first_room.channel);
+        let missing = board_horizon_for_card(&airc, Some(WorkCardId::from_uuid(Uuid::new_v4())))
+            .await.expect("missing exact card horizon");
+        assert_eq!(missing.boards.len(), horizon.boards.len(), "a miss still searches every subscribed room");
         let boards = &horizon.boards;
         let (room, source) = boards
             .iter()
@@ -4678,6 +4710,38 @@ mod tests {
             before,
             "successful and unknown-card reads must preserve subscriptions and focus"
         );
+        // Regression9f1de8dd: an author can read exact signed review words without
+        // holding a reviewer claim or calling the verdict-publishing verb.
+        let claim = airc.claim_work_card(ClaimWorkCard { card_id: local_card, ttl_ms: 600_000 }).await.unwrap();
+        let artifact = airc_work::SubmissionArtifact {
+            hash: airc_blobs::ContentHash::from_bytes(b"patch"), size_bytes: 5, mime: Some("text/x-patch".into()),
+        };
+        let submitted = airc.submit_work_in(&current_room, airc_lib::SubmitWork {
+            submission_id: airc_work::SubmissionId::new(), card_id: local_card, claim_id: claim,
+            instance: "ordinary".into(), base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            artifact: artifact.clone(),
+        }).await.unwrap();
+        let review_card = airc.create_work_card(CreateWorkCard::new(
+            RepoId::new("github.com/CambrianTech/continuum").unwrap(), "review", Priority::P2,
+        ).reviewing(local_card)).await.unwrap();
+        let review_claim = airc.claim_work_card(ClaimWorkCard { card_id: review_card, ttl_ms: 600_000 }).await.unwrap();
+        let words = "Resolve the selected branch, not checkout HEAD.";
+        let review = airc.review_work_submission_in(&current_room, airc_lib::ReviewWorkSubmission {
+            review_id: airc_work::WorkReviewId::new(), card_id: local_card,
+            submission_id: submitted.submission_id, artifact,
+            review_card_id: review_card, review_claim_id: review_claim,
+            outcome: airc_work::WorkReviewOutcome::Failed,
+            evidence: airc_work::SubmissionArtifact { hash: airc_blobs::ContentHash::from_bytes(words.as_bytes()), size_bytes: words.len() as u64, mime: Some("text/plain".into()) },
+            evidence_text: Some(words.into()),
+        }).await.unwrap();
+        for target in [local_card, review_card] {
+            let read = WorkGet::read_card(&airc, &target.to_string(), Uuid::nil()).await.unwrap();
+            assert_eq!(read.reviews.len(), 1);
+            assert_eq!(read.reviews[0].review_id, review.review_id.as_uuid());
+            assert_eq!(read.reviews[0].reviewer, review.reviewer.as_uuid());
+            assert_eq!(read.reviews[0].evidence_text.as_deref(), Some(words));
+        }
+
     }
 
     // what this catches: a done that carries nothing (clean tree, HEAD at the

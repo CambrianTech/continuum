@@ -32,10 +32,8 @@ on:
   # package, never publish). Ordinary core PRs don't pay two macOS builds; the push does.
   pull_request:
     paths:
-      - 'tools/scripts/lib/core-features.sh'
+      - 'tools/scripts/lib/**'
       - 'tools/scripts/shared/cargo-features.sh'
-      - 'tools/scripts/lib/windows-build-env.sh'
-      - 'tools/scripts/lib/cuda-targets.sh'
       - '.github/workflows/core-binaries.yml'
   push:
     branches: [canary]
@@ -46,10 +44,8 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
-      - 'tools/scripts/lib/core-features.sh'
+      - 'tools/scripts/lib/**'
       - 'tools/scripts/shared/cargo-features.sh'
-      - 'tools/scripts/lib/windows-build-env.sh'
-      - 'tools/scripts/lib/cuda-targets.sh'
       - 'tools/scripts/start-livekit-windows.ps1'
       - 'tools/scripts/generated/manifest.windows.ps1'
       - '.github/workflows/core-binaries.yml'
@@ -149,6 +145,10 @@ jobs:
 
       - name: Build
         shell: bash
+        env:
+          # Published x86 binaries must run beyond this runner's CPU. The shared
+          # llama build owner pins baseline instructions, including reused caches.
+          CONTINUUM_PORTABLE_CPU: "1"
         run: |
           set -euo pipefail
           if [ "$RUNNER_OS" = Windows ]; then
@@ -194,6 +194,27 @@ jobs:
             cargo build --manifest-path core/livekit-bridge/Cargo.toml --bin livekit-bridge --release
           fi
 
+      - name: Build the receipted inference engine (Windows NVIDIA)
+        if: runner.os == 'Windows'
+        shell: powershell
+        env:
+          CONTINUUM_PORTABLE_CPU: "1"
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ProgressPreference = 'SilentlyContinue'
+          if (-not $env:CUDA_VERSION -or -not $env:CUDA_COMPUTE_CAP) { throw 'Published NVIDIA engine requires the core CUDA contract.' }
+          . ./tools/scripts/lib/install-common.ps1
+          . ./tools/scripts/lib/win-modules.ps1
+          $policy = Join-Path $env:RUNNER_TEMP 'cpu-target-policy.exe'
+          rustc --edition 2021 core/llama/cpu_target_cli.rs -o $policy
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot prepare shared CPU build policy.' }
+          $definitions = @(& $policy)
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot read shared CPU build policy.' }
+          $engine = Join-Path $env:RUNNER_TEMP 'published-engine'
+          Mod-LlamaServer -RepoRoot $PWD.Path -InstallDirectory $engine -RequireReceipt `
+            -PublishedCudaArchitectures $env:CUDA_COMPUTE_CAP -PublishedCpuDefinitions $definitions
+          Get-CoreEngineReceipt -Directory $engine | Out-Null
+
       - name: Package
         id: package
         shell: bash
@@ -213,30 +234,14 @@ jobs:
           if [ "$RUNNER_OS" = Windows ]; then
             set +u; source tools/scripts/lib/windows-build-env.sh; set -u   # dumpbin and CUDA_PATH (no nounset, as in the Build step)
             cp "$target_dir/release/livekit-bridge.exe" tools/scripts/start-livekit-windows.ps1 "$stage/"
-            if [ -n "$CUDA_VERSION" ]; then
-              # The CUDA runtime ships INSIDE the archive, beside the exe, where Windows looks
-              # first: a node's launch PATH admits one CUDA tree (windows-build-env.sh), and the
-              # 5090's is 13.x, so a 12.x core relying on PATH died "cublas64_12.dll was not
-              # found" (BigMama, 2026-10-06). The set is the import-table closure of the bins,
-              # so it is exactly what they load.
-              cuda_bin="$(cygpath -u "$CUDA_PATH")/bin"
-              queue=("$stage/continuum-core-server.exe" "$stage/continuum-mcp.exe" "$stage/forge-custodian.exe")
-              while [ ${#queue[@]} -gt 0 ]; do
-                file="${queue[0]}"; queue=("${queue[@]:1}")
-                for dll in $(dumpbin //dependents "$(cygpath -w "$file")" | tr -d '\r' | awk '$1 ~ /\.dll$/ {print $1}'); do
-                  [ -f "$cuda_bin/$dll" ] && [ ! -f "$stage/$dll" ] || continue
-                  cp "$cuda_bin/$dll" "$stage/"; runtime_libs="$runtime_libs $dll"; queue+=("$stage/$dll")
-                done
-              done
-              # nvrtc opens its builtins by name at run time, so no import table names them.
-              case " $runtime_libs " in *" nvrtc64_"*)
-                for builtins in "$cuda_bin"/nvrtc-builtins64_*.dll; do
-                  cp "$builtins" "$stage/"; runtime_libs="$runtime_libs $(basename "$builtins")"
-                done ;;
-              esac
-              [ -n "$runtime_libs" ] || { echo "::error::a CUDA build imports no CUDA runtime DLL from $cuda_bin"; exit 1; }
-              echo "bundled CUDA runtime:$runtime_libs"
-            fi
+            cp -R "$RUNNER_TEMP/published-engine" "$stage/engine"
+            # The same dependency owner used by the engine captures every bin,
+            # including the first CLI and its non-OS VC/OpenMP redistributables.
+            CONTINUUM_PACKAGE_DIR="$(cygpath -w "$stage")" powershell.exe -NoProfile -NonInteractive -Command \
+              '$ErrorActionPreference = "Stop"; . ./tools/scripts/lib/install-common.ps1; . ./tools/scripts/lib/win-modules.ps1; Publish-CoreWindowsRuntime -Directory $env:CONTINUUM_PACKAGE_DIR'
+            runtime_libs="$(tr '\r\n' '  ' < "$stage/runtime-libs.txt")"
+            powershell.exe -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File \
+              tools/scripts/tests/windows-process.test.ps1 -PrebuiltCli "$(cygpath -w "$stage/continuum.exe")"
           fi
           if [ "$RUNNER_OS" = macOS ]; then
             # A downloaded binary must launch on a Mac that has nothing but macOS: every linked
@@ -265,9 +270,10 @@ jobs:
           # (D:\a\_temp) in a literal would read `\a` as an escape.
           "$py" - "$RUNNER_TEMP/$name.json" "$RUNNER_TEMP/$name.tar.gz.sha256" "${{ matrix.platform }}" \
             "${{ matrix.uname }}" "$GITHUB_SHA" "$CONTINUUM_FEATURES" "$name.tar.gz" \
-            "$CUDA_VERSION" "${CUDA_COMPUTE_CAP:-}" "$runtime_libs" <<'EOF'
+            "$CUDA_VERSION" "${CUDA_COMPUTE_CAP:-}" "$runtime_libs" "$stage" <<'EOF'
           import json, sys
-          out, sums, platform, uname, sha, features, archive, cuda_version, cuda_cap, libs = sys.argv[1:]
+          from pathlib import Path
+          out, sums, platform, uname, sha, features, archive, cuda_version, cuda_cap, libs, stage = sys.argv[1:]
           manifest = {
               "platform": platform,
               "uname": uname,
@@ -285,6 +291,14 @@ jobs:
               manifest["cuda_version"] = cuda_version
               manifest["cuda_compute_cap"] = int(cuda_cap)
               manifest["runtime_libs"] = libs.split()
+              bootstrap = (Path(stage) / "bootstrap-runtime-libs.txt").read_text(encoding="utf-8-sig").split()
+              if not set(bootstrap).issubset(set(manifest["runtime_libs"])):
+                  raise ValueError("CLI bootstrap runtime must be a subset of the packaged application runtime")
+              manifest["bootstrap_runtime_libs"] = bootstrap
+              engine = json.loads((Path(stage) / "engine" / "engine-install.json").read_text(encoding="utf-8-sig"))
+              if engine["backend"] != "cuda":
+                  raise ValueError("NVIDIA artifact must carry its matching CUDA engine")
+              manifest["engine"] = {"source_revision": engine["source_revision"], "backend": engine["backend"], "relative_path": "engine"}
           json.dump(manifest, open(out, "w"), indent=2)
           EOF
           ls -la "$RUNNER_TEMP/$name".*

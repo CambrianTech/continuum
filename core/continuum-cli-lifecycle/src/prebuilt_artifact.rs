@@ -33,17 +33,15 @@ pub const REQUIRED_BINS: [&str; 4] = [
 /// running build is not a deploy: the node keeps its core, and CI built nothing for it.
 /// `core-binaries.yml`'s push `paths` must cover every entry (pinned by a test below), or a
 /// change here would ship with no artifact behind it.
-pub const BUILD_INPUTS: [&str; 10] = [
+pub const BUILD_INPUTS: [&str; 8] = [
     "core/",
     "Cargo.toml",
     "Cargo.lock",
     "rust-toolchain.toml",
-    "tools/scripts/lib/core-features.sh",
+    "tools/scripts/lib/",
     "tools/scripts/shared/cargo-features.sh",
     // The Windows build's environment, GPU floor, packaged sidecar script, and pinned CUDA
     // version (Mod-CUDA reads the projection).
-    "tools/scripts/lib/windows-build-env.sh",
-    "tools/scripts/lib/cuda-targets.sh",
     "tools/scripts/start-livekit-windows.ps1",
     "tools/scripts/generated/manifest.windows.ps1",
 ];
@@ -66,9 +64,9 @@ pub fn build_key_log_args(tip: &str) -> Vec<String> {
     args
 }
 
-/// How long a consumer waits for CI to publish a tip before compiling it itself. The
+/// How long a consumer waits for CI to publish a tip before reporting a refusal. The
 /// workflow's timeout is 150 min; the measured cold builds were 58 min (arm64) and 73 min
-/// (x86_64), 2026-10-03. Past this, waiting longer only keeps the node on an old build.
+/// (x86_64), 2026-10-03. Expiry never authorizes compilation on a user node.
 pub const CI_PUBLISH_BUDGET_SECS: u64 = 180 * 60;
 
 /// This node's platform key in CI's matrix, or `None` where no leg publishes yet.
@@ -117,6 +115,70 @@ pub struct ArtifactManifest {
     /// launch never depends on which CUDA tree is on PATH.
     #[serde(default)]
     pub runtime_libs: Vec<String>,
+    /// Optional for older core-only publications. Fresh installs require this complete
+    /// companion; its existing engine receipt owns per-file integrity and provenance.
+    #[serde(default)]
+    pub engine: Option<EngineArtifact>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct EngineArtifact {
+    pub source_revision: String,
+    pub backend: String,
+    pub relative_path: String,
+}
+
+/// Fresh installations need the published serving companion, not a locally built
+/// engine or an unrelated binary inherited from a developer's machine.
+pub fn fresh_engine_verdict(
+    manifest: &ArtifactManifest,
+    expected_revision: &str,
+) -> Result<(), String> {
+    let engine = manifest.engine.as_ref().ok_or(
+        "This core-only publication cannot serve a fresh install; publish its engine companion",
+    )?;
+    if manifest.platform != "windows-x86_64"
+        || engine.relative_path != "engine"
+        || engine.backend != "cuda"
+    {
+        return Err("Unsupported published engine companion".into());
+    }
+    if engine.source_revision.len() != 40
+        || !engine
+            .source_revision
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit())
+        || engine.source_revision != expected_revision
+    {
+        return Err("Published engine revision differs from the checkout".into());
+    }
+    Ok(())
+}
+
+/// Both network updates and first-install transports use the same extraction boundary.
+pub fn archive_members_verdict(names: &str, details: &str, platform: &str) -> Result<(), String> {
+    let root = format!("continuum-core-{platform}");
+    let mut seen = std::collections::BTreeSet::new();
+    for name in names.lines() {
+        let name = name.trim_end_matches('/');
+        if seen.len() >= 10000
+            || name.contains(['\\', ':'])
+            || (name != root && !name.starts_with(&format!("{root}/")))
+            || name
+                .split('/')
+                .any(|p| p.is_empty() || p == "." || p == "..")
+            || !seen.insert(name.to_ascii_lowercase())
+        {
+            return Err("Archive contains an unsafe or duplicate member".into());
+        }
+    }
+    if seen.is_empty()
+        || details.lines().count() != seen.len()
+        || details.lines().any(|line| !line.starts_with(['-', 'd']))
+    {
+        return Err("Archive contains a link or unsupported member type".into());
+    }
+    Ok(())
 }
 
 /// What this node's NVIDIA driver and GPUs can run, read from `nvidia-smi`. `None` fields
@@ -136,7 +198,11 @@ pub fn cuda_major_minor(version: &str) -> Option<(u32, u32)> {
     let mut parts = version.trim().split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = match parts.next() {
-        Some(minor) => minor.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok()?,
+        Some(minor) => minor
+            .split(|c: char| !c.is_ascii_digit())
+            .next()?
+            .parse()
+            .ok()?,
         None => 0,
     };
     Some((major, minor))
@@ -145,7 +211,7 @@ pub fn cuda_major_minor(version: &str) -> Option<(u32, u32)> {
 /// PURE: the driver's CUDA version from `nvidia-smi`'s banner ("... CUDA Version: 12.4 |").
 pub fn driver_cuda(nvidia_smi_banner: &str) -> Option<(u32, u32)> {
     let after = nvidia_smi_banner.split("CUDA Version:").nth(1)?;
-    cuda_major_minor(after.trim_start().split_whitespace().next()?)
+    cuda_major_minor(after.split_whitespace().next()?)
 }
 
 /// PURE: the lowest compute capability from `nvidia-smi --query-gpu=compute_cap
@@ -167,8 +233,9 @@ pub fn gpu_verdict(manifest: &ArtifactManifest, node: &NodeGpu) -> Result<(), St
     let Some(version) = manifest.cuda_version.as_deref() else {
         return Ok(());
     };
-    let needed = cuda_major_minor(version)
-        .ok_or_else(|| format!("artifact names CUDA `{version}`, which is not a major.minor version"))?;
+    let needed = cuda_major_minor(version).ok_or_else(|| {
+        format!("artifact names CUDA `{version}`, which is not a major.minor version")
+    })?;
     match node.driver_cuda {
         None => {
             return Err(format!(
@@ -294,23 +361,23 @@ pub fn newest_published<'a>(candidates: &'a [String], published: &[bool]) -> Opt
 pub enum MissingArtifact {
     /// CI is still inside its budget: try again next tick, without spending an attempt.
     Wait(String),
-    /// Compile on the node, saying why.
-    BuildFromSource(String),
+    /// End this attempt without changing the running installation.
+    Refuse(String),
 }
 
 /// `platform` is [`platform_key`]'s answer; `tip_age_secs` is how long ago the tip landed.
 pub fn when_artifact_missing(platform: Option<&str>, tip_age_secs: u64) -> MissingArtifact {
     match platform {
-        None => MissingArtifact::BuildFromSource(
-            "CI publishes no build for this platform yet; compiling here".into(),
+        None => MissingArtifact::Refuse(
+            "CI publishes no build for this platform yet; publish a compatible prebuilt artifact before retrying; running core preserved".into(),
         ),
         Some(p) if tip_age_secs < CI_PUBLISH_BUDGET_SECS => MissingArtifact::Wait(format!(
             "CI has not published {p} for this tip yet ({} of {} min); waiting for it",
             tip_age_secs / 60,
             CI_PUBLISH_BUDGET_SECS / 60
         )),
-        Some(p) => MissingArtifact::BuildFromSource(format!(
-            "CI published no {p} build within {} min of the tip; compiling here",
+        Some(p) => MissingArtifact::Refuse(format!(
+            "CI published no {p} build within {} min of the tip; repair or publish the prebuilt artifact before retrying; running core preserved",
             CI_PUBLISH_BUDGET_SECS / 60
         )),
     }
@@ -339,10 +406,25 @@ mod tests {
     #[test]
     fn a_moved_request_ends_the_wait_and_the_same_tip_does_not() {
         let waiting = "b852873662ecbeff1004f13b4fe929b9012ac2d6";
-        assert_eq!(request_superseded(waiting, Some("3d81d1b09abc")), Some("3d81d1b09abc".into()));
-        assert_eq!(request_superseded(waiting, Some("b85287366")), None, "the same tip, short");
-        assert_eq!(request_superseded(waiting, Some(waiting)), None, "the same tip, long");
-        assert_eq!(request_superseded(waiting, None), None, "no request = nothing newer asked for");
+        assert_eq!(
+            request_superseded(waiting, Some("3d81d1b09abc")),
+            Some("3d81d1b09abc".into())
+        );
+        assert_eq!(
+            request_superseded(waiting, Some("b85287366")),
+            None,
+            "the same tip, short"
+        );
+        assert_eq!(
+            request_superseded(waiting, Some(waiting)),
+            None,
+            "the same tip, long"
+        );
+        assert_eq!(
+            request_superseded(waiting, None),
+            None,
+            "no request = nothing newer asked for"
+        );
     }
 
     const TIP: &str = "54cbe937f0123456789abcdef0123456789abcde";
@@ -358,6 +440,7 @@ mod tests {
             cuda_version: None,
             cuda_compute_cap: None,
             runtime_libs: Vec::new(),
+            engine: None,
         }
     }
 
@@ -373,23 +456,50 @@ mod tests {
         assert_eq!(lowest_compute_cap(""), None);
 
         let cpu = manifest();
-        assert!(gpu_verdict(&cpu, &NodeGpu::default()).is_ok(), "no CUDA, nothing to check");
+        assert!(
+            gpu_verdict(&cpu, &NodeGpu::default()).is_ok(),
+            "no CUDA, nothing to check"
+        );
 
         let mut cuda = manifest();
         cuda.cuda_version = Some("12.9".into());
         cuda.cuda_compute_cap = Some(80);
-        let the_5090 = NodeGpu { driver_cuda: Some((13, 0)), lowest_compute_cap: Some(120) };
+        let the_5090 = NodeGpu {
+            driver_cuda: Some((13, 0)),
+            lowest_compute_cap: Some(120),
+        };
         assert!(gpu_verdict(&cuda, &the_5090).is_ok());
-        let old_driver = NodeGpu { driver_cuda: Some((11, 8)), ..the_5090.clone() };
-        assert!(gpu_verdict(&cuda, &old_driver).unwrap_err().contains("update the NVIDIA driver"));
+        let old_driver = NodeGpu {
+            driver_cuda: Some((11, 8)),
+            ..the_5090.clone()
+        };
+        assert!(gpu_verdict(&cuda, &old_driver)
+            .unwrap_err()
+            .contains("update the NVIDIA driver"));
         // the same major is not enough: PTX from nvcc 12.9 does not JIT on a 12.4 driver
-        let older_minor = NodeGpu { driver_cuda: Some((12, 4)), ..the_5090.clone() };
-        assert!(gpu_verdict(&cuda, &older_minor).unwrap_err().contains("supports CUDA 12.4"));
-        let same = NodeGpu { driver_cuda: Some((12, 9)), ..the_5090.clone() };
+        let older_minor = NodeGpu {
+            driver_cuda: Some((12, 4)),
+            ..the_5090.clone()
+        };
+        assert!(gpu_verdict(&cuda, &older_minor)
+            .unwrap_err()
+            .contains("supports CUDA 12.4"));
+        let same = NodeGpu {
+            driver_cuda: Some((12, 9)),
+            ..the_5090.clone()
+        };
         assert!(gpu_verdict(&cuda, &same).is_ok());
-        let old_gpu = NodeGpu { lowest_compute_cap: Some(75), ..the_5090.clone() };
-        assert!(gpu_verdict(&cuda, &old_gpu).unwrap_err().contains("a GPU at 75"));
-        assert!(gpu_verdict(&cuda, &NodeGpu::default()).is_err(), "unreadable is refused");
+        let old_gpu = NodeGpu {
+            lowest_compute_cap: Some(75),
+            ..the_5090.clone()
+        };
+        assert!(gpu_verdict(&cuda, &old_gpu)
+            .unwrap_err()
+            .contains("a GPU at 75"));
+        assert!(
+            gpu_verdict(&cuda, &NodeGpu::default()).is_err(),
+            "unreadable is refused"
+        );
     }
 
     // what this catches: a node taking a build that is not the program it would compile —
@@ -432,6 +542,39 @@ mod tests {
             manifest_verdict(&partial, TIP, "macos-x86_64", local).is_err(),
             "a sibling bin is missing"
         );
+        // Regression for card68a33e89: a fresh user's missing engine must never
+        // select a developer-toolchain fallback or a different fork revision.
+        let mut fresh = manifest();
+        fresh.platform = "windows-x86_64".into();
+        assert!(fresh_engine_verdict(&fresh, TIP).is_err());
+        fresh.engine = Some(EngineArtifact {
+            source_revision: TIP.into(),
+            backend: "cuda".into(),
+            relative_path: "engine".into(),
+        });
+        assert_eq!(fresh_engine_verdict(&fresh, TIP), Ok(()));
+        assert!(fresh_engine_verdict(&fresh, &TIP.replace('5', "6")).is_err());
+        fresh.engine.as_mut().unwrap().relative_path = "../engine".into();
+        assert!(fresh_engine_verdict(&fresh, TIP).is_err());
+        assert!(archive_members_verdict(
+            "continuum-core-windows-x86_64/continuum.exe\n",
+            "-rw file\n",
+            "windows-x86_64"
+        )
+        .is_ok());
+        for names in [
+            "../escape",
+            "continuum-core-windows-x86_64/../escape",
+            "continuum-core-windows-x86_64/cli\ncontinuum-core-windows-x86_64/CLI",
+        ] {
+            assert!(archive_members_verdict(names, "-rw file\n", "windows-x86_64").is_err());
+        }
+        assert!(archive_members_verdict(
+            "continuum-core-windows-x86_64/cli",
+            "lrw link",
+            "windows-x86_64"
+        )
+        .is_err());
     }
 
     // what this catches: a docs-only tip forcing every node to rebuild (and CI to build) a
@@ -476,8 +619,8 @@ mod tests {
         }
     }
 
-    // what this catches: a consumer compiling for hours while CI's artifact is minutes away,
-    // or waiting forever for a platform CI never builds.
+    // what this catches (f4571736): user nodes must never fall back to compiling when
+    // CI is late or does not support their platform. Explicit developer builds are separate.
     #[test]
     fn a_missing_artifact_waits_only_while_ci_can_still_deliver() {
         assert!(matches!(
@@ -486,11 +629,11 @@ mod tests {
         ));
         assert!(matches!(
             when_artifact_missing(Some("macos-x86_64"), CI_PUBLISH_BUDGET_SECS),
-            MissingArtifact::BuildFromSource(_)
+            MissingArtifact::Refuse(_)
         ));
         assert!(matches!(
             when_artifact_missing(None, 0),
-            MissingArtifact::BuildFromSource(_)
+            MissingArtifact::Refuse(_)
         ));
         assert_eq!(platform_key("macos", "x86_64"), Some("macos-x86_64"));
         assert_eq!(platform_key("windows", "x86_64"), Some("windows-x86_64"));
@@ -520,9 +663,13 @@ mod tests {
     // consumer only ever waited on the tip. The newest PUBLISHED candidate is the deploy.
     #[test]
     fn the_newest_published_build_is_deployed_not_only_the_tip() {
-        let candidates: Vec<String> =
-            ["e428cbd50", "5dbfadbca", "8de501e35"].map(String::from).to_vec();
-        assert_eq!(newest_published(&candidates, &[false, false, true]), Some("8de501e35"));
+        let candidates: Vec<String> = ["e428cbd50", "5dbfadbca", "8de501e35"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            newest_published(&candidates, &[false, false, true]),
+            Some("8de501e35")
+        );
         assert_eq!(
             newest_published(&candidates, &[false, true, true]),
             Some("5dbfadbca"),
@@ -533,9 +680,16 @@ mod tests {
             Some("e428cbd50"),
             "the tip, when it is out"
         );
-        assert_eq!(newest_published(&candidates, &[false, false, false]), None, "none out: wait");
+        assert_eq!(
+            newest_published(&candidates, &[false, false, false]),
+            None,
+            "none out: wait"
+        );
         let args = candidate_keys_log_args("5b496e307", "e428cbd50");
-        assert!(args.contains(&"5b496e307..e428cbd50".to_string()), "newer than the running core only");
+        assert!(
+            args.contains(&"5b496e307..e428cbd50".to_string()),
+            "newer than the running core only"
+        );
         assert!(args.contains(&format!("-{DEPLOY_CANDIDATE_LIMIT}")));
         assert!(
             args.iter().skip_while(|a| *a != "--").any(|a| a == "core/"),

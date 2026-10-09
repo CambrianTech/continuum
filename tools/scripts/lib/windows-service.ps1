@@ -1,4 +1,5 @@
 . (Join-Path $PSScriptRoot 'payload-paths.ps1')
+. (Join-Path $PSScriptRoot 'windows-prepared.ps1')
 # The CLI also loads this file in a fresh PowerShell for slot preparation.
 # Reuse the shared native launcher there without resetting an outer installer's
 # already-loaded elevation ownership state.
@@ -7,19 +8,6 @@ if (-not (Get-Command Invoke-InstallerProcess -CommandType Function -ErrorAction
 }
 # Native installer lifecycle. Two installed slots bound disk usage and keep
 # running images out of Cargo's output directory. Never overwrite an active slot.
-function ConvertTo-CoreImagePath {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    # Windows process inspection can report the same image with an extended
-    # path prefix while installer paths use the ordinary drive/UNC spelling.
-    $normalized = $Path.Replace('/', '\')
-    if ($normalized.StartsWith('\\?\UNC\', [StringComparison]::OrdinalIgnoreCase)) {
-        $normalized = '\\' + $normalized.Substring(8)
-    } elseif ($normalized.StartsWith('\\?\', [StringComparison]::OrdinalIgnoreCase)) {
-        $normalized = $normalized.Substring(4)
-    }
-    return [IO.Path]::GetFullPath($normalized)
-}
-
 function Test-CoreTaskUser {
     param([string]$UserId, [string]$ExpectedSid)
     if (-not $UserId) { return $false }
@@ -97,35 +85,6 @@ function Grant-CoreServiceCallerAccess {
         }
     }
     return $security.GetSddlForm([Security.AccessControl.AccessControlSections]::Access)
-}
-
-# Update an existing task only; never change its principal, trigger, policy or ACL.
-# TASK_UPDATE | TASK_DONT_ADD_PRINCIPAL_ACE avoids implicit DACL changes that
-# would require WriteDAC. The caller's file-write grant is enough for this path.
-function Update-CoreServiceTaskAction {
-    param($Folder, [string]$Name, [string]$UserSid, [string]$Executable,
-        [string]$Arguments, [string]$Description)
-    $task = $Folder.GetTask($Name)
-    $definition = $task.Definition
-    if (-not (Test-CoreTaskUser -UserId $definition.Principal.UserId -ExpectedSid $UserSid) -or
-        $definition.Principal.LogonType -ne 2 -or $definition.Principal.RunLevel -ne 0 -or
-        -not (Test-CoreServiceCallerAccess -Sddl $task.GetSecurityDescriptor(4) -UserSid $UserSid -Update)) {
-        throw "Task $Name is not an updateable Limited/S4U task for this caller."
-    }
-    $definition.Actions.Clear()
-    $action = $definition.Actions.Create(0)
-    $action.Path = $Executable
-    $action.Arguments = $Arguments
-    if ($Description) { $definition.RegistrationInfo.Description = $Description }
-    $null = $Folder.RegisterTaskDefinition($Name, $definition, 20, $UserSid, $null, 2, $null)
-    $saved = $Folder.GetTask($Name).Definition
-    if (-not (Test-CoreTaskUser -UserId $saved.Principal.UserId -ExpectedSid $UserSid) -or
-        $saved.Principal.LogonType -ne 2 -or $saved.Principal.RunLevel -ne 0 -or
-        $saved.Actions.Count -ne 1 -or $saved.Actions.Item(1).Path -ne $Executable -or
-        $saved.Actions.Item(1).Arguments -ne $Arguments -or
-        ($Description -and $saved.RegistrationInfo.Description -cne $Description)) {
-        throw "Task $Name did not retain the prepared release action."
-    }
 }
 
 function Protect-CoreBuildOutput {
@@ -276,7 +235,7 @@ function Prepare-CoreServiceEngine {
         [Parameter(Mandatory = $true)][string]$ReceiptPath)
     # The calling reboot holds install.lock across preparation and handoff.
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
-    if ($task.Description -cne $Description) { throw 'Installed release changed before engine preparation.' }
+    if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed before engine preparation.' }
     $release = $Description | ConvertFrom-Json -ErrorAction Stop
     $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
     # A slot that ALREADY holds the pinned engine is promoted as is (card 6d5bacab): a build whose
@@ -293,7 +252,7 @@ function Prepare-CoreServiceEngine {
         if (Get-CoreEngineDrift -Directory $built -Requirement $requirement) { continue }
         if (Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot $installRoot -Slot $built) {
             $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
-            if ($task.Description -cne $Description) { throw 'Installed release changed during engine preparation.' }
+            if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
             [IO.File]::WriteAllText($ReceiptPath, (Join-Path $built 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
             return
         }
@@ -315,7 +274,7 @@ function Prepare-CoreServiceEngine {
     $drift = Get-CoreEngineDrift -Directory $slot -Requirement $requirement
     if ($drift) { throw $drift }
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
-    if ($task.Description -cne $Description) { throw 'Installed release changed during engine preparation.' }
+    if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
     # The verified slot becomes the engine by the core's own verb, for install and unattended
     # deploy alike (card d5584dfc); install still registers it as the release's bootstrap engine.
     $null = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
@@ -327,13 +286,13 @@ function Get-CoreBrowserReleaseDrift {
     $task = $null
     if (-not $Release) {
         $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
-        $Release = $task.Description | ConvertFrom-Json -ErrorAction Stop
+        $Release = Get-CoreRegisteredRelease -Task $task
     }
     $root = [IO.Path]::GetFullPath($RepoRoot)
     if (-not [string]::Equals($Release.eyeRoot, $root, [StringComparison]::OrdinalIgnoreCase)) {
         return 'browser asset root is not registered'
     }
-    if ($task -and (@($task.Actions).Count -ne 1 -or
+    if ($task -and -not (Test-CoreProvisionedTask -Task $task) -and (@($task.Actions).Count -ne 1 -or
         $task.Actions[0].Arguments.IndexOf((' -EyeRoot "{0}"' -f $root), [StringComparison]::OrdinalIgnoreCase) -lt 0)) {
         return 'startup action does not pass the browser asset root'
     }
@@ -348,18 +307,17 @@ function Get-CoreBrowserReleaseDrift {
 function Update-CoreBrowserRelease {
     param([Parameter(Mandatory = $true)][string]$RepoRoot)
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
-    $release = $task.Description | ConvertFrom-Json -ErrorAction Stop
+    $release = Get-CoreRegisteredRelease -Task $task
+    $selected = $release | ConvertTo-Json -Compress
     if (-not (Get-CoreBrowserReleaseDrift -RepoRoot $RepoRoot)) { return }
-    # The install lease is held by the caller. This launcher remains compatible
-    # with the old argument list while the old supervisor continues serving.
+    # Never rewrite a live, integrity-bound launcher. The same staging owner
+    # prepares an inactive generation even for browser metadata migration.
     $root = [IO.Path]::GetFullPath($RepoRoot)
-    $source = Join-Path $root 'tools\scripts\run-service-hidden.ps1'
-    Copy-Item -LiteralPath $source -Destination $release.launcher -Force -ErrorAction Stop
-    $release | Add-Member -NotePropertyName eyeRoot -NotePropertyValue $root -Force
+    $release = New-CoreServiceRelease -RepoRoot $root -ArtifactDirectory (Split-Path $release.artifact -Parent) -EnginePath $release.engine
     if ((Get-CoreBrowserReleaseDrift -RepoRoot $root -Release $release)) {
         throw 'Browser launcher copy did not verify; core handoff refused.'
     }
-    if ((Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop).Description -cne $task.Description) {
+    if ((Get-CoreRegisteredRelease -Task (Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop) | ConvertTo-Json -Compress) -cne $selected) {
         throw 'Installed release changed during browser migration; core handoff refused.'
     }
     # This operation preserves the installed binaries and only migrates browser
@@ -377,8 +335,11 @@ function New-CoreServiceRelease {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
         [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'),
-        [string]$TargetDirectory = $env:CARGO_TARGET_DIR
+        [string]$TargetDirectory = $env:CARGO_TARGET_DIR,
+        [string]$ArtifactDirectory,
+        [string]$EnginePath
     )
+    if (-not $ArtifactDirectory) { $ArtifactDirectory = Join-Path $TargetDirectory 'release' }
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $liveProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.Name -in @('continuum.exe', 'continuum-core-server.exe') })
@@ -388,8 +349,9 @@ function New-CoreServiceRelease {
     $registered = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     if ($registered) {
         $descriptor = $null
-        try { $descriptor = $registered.Description | ConvertFrom-Json -ErrorAction Stop }
+        try { $descriptor = Get-CoreRegisteredRelease -Task $registered -InstallRoot $InstallRoot }
         catch {
+            if (Test-CoreProvisionedTask -Task $registered) { throw }
             # Legacy Bash tasks launch the canonical bin/core-service.sh, outside
             # these slots. They can migrate without deleting their old files.
             if (($registered.Actions.Arguments -join ' ') -match 'service-[ab][\\/]') {
@@ -429,10 +391,24 @@ function New-CoreServiceRelease {
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
     # The CLI this release installs is the one that knows the lane records' contract.
-    $engineSlot = Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $TargetDirectory 'release\continuum.exe')
+    $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent } else { Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe') }
+    Clear-CorePreparedSelectionForSlot -InstallRoot $InstallRoot -Slot $slot
     New-Item -ItemType Directory -Force -Path $slot | Out-Null
-    foreach ($name in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe')) {
-        $source = Join-Path $TargetDirectory ('release\' + $name)
+    # CI cores carry declared runtime DLLs beside the binaries. The native deploy
+    # stage honors this same manifest; installer/prepared rollback must do so too.
+    $runtimeNames = @()
+    $runtimeList = Join-Path $ArtifactDirectory 'runtime-libs.txt'
+    if (Test-Path -LiteralPath $runtimeList -PathType Leaf) {
+        $runtimeNames = @(Get-Content -LiteralPath $runtimeList -ErrorAction Stop | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        foreach ($name in $runtimeNames) {
+            if ($name -notmatch '^[A-Za-z0-9_.-]+\.dll$' -or -not (Test-Path -LiteralPath (Join-Path $ArtifactDirectory $name) -PathType Leaf)) {
+                throw "Invalid or missing declared core runtime library: $name"
+            }
+        }
+        $runtimeNames += 'runtime-libs.txt'
+    }
+    foreach ($name in (@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames)) {
+        $source = Join-Path $ArtifactDirectory $name
         $destination = Join-Path $slot $name
         Copy-Item -LiteralPath $source -Destination $destination -Force -ErrorAction Stop
         if ((Get-FileHash -LiteralPath $source).Hash -ne (Get-FileHash -LiteralPath $destination).Hash) {
@@ -474,12 +450,17 @@ function Register-CoreServiceRelease {
     } finally { Pop-Location }
     if ($PersistPreparedReceipt -or $PrepareOnly) { Save-CorePreparedRelease -Release $Release }
     if ($PrepareOnly) { return }
+    $protocol = (Invoke-InstallerProcess $Release.cli @('installed-service', '--protocol') | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $protocol -cne '2') { throw 'Candidate CLI cannot consume provisioned supervisor schema 2; registration and active release were preserved.' }
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File "{0}" -ExecutablePath "{1}" -CorePath "{2}" -SocketPath "{3}" -EnginePath "{4}" -LogDirectory "{5}"' -f $Release.launcher, $Release.cli, $Release.artifact, $Release.socket, $Release.engine, $Release.logDirectory
-    if ($Release.eyeRoot) { $arguments += ' -EyeRoot "{0}"' -f $Release.eyeRoot }
-    $description = $Release | ConvertTo-Json -Compress
+    $bootstrap = Get-CoreSupervisorBootstrap
+    $activePath = Join-Path $env:USERPROFILE '.continuum\install-active.json'
+    $arguments = 'installed-service core "{0}"' -f $activePath
+    $deployArguments = 'installed-service deploy "{0}"' -f $activePath
+    $description = [ordered]@{ schema = 2; activeRelease = $activePath; bootstrap = $bootstrap } | ConvertTo-Json -Compress
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
+    $deploy = Get-ScheduledTask -TaskName ContinuumDeploy -TaskPath '\' -ErrorAction SilentlyContinue
     $canRun = $false
     if ($task) {
         $scheduler = New-Object -ComObject 'Schedule.Service'
@@ -488,50 +469,64 @@ function Register-CoreServiceRelease {
             $scheduler.GetFolder('\').GetTask('ContinuumCore').GetSecurityDescriptor(4))
     }
     $compatibleTask = $task -and $canRun -and $task.Actions.Count -eq 1 -and
-        $task.Actions[0].Execute -eq $shell -and
+        $task.Actions[0].Execute -eq $bootstrap -and
+        $task.Actions[0].WorkingDirectory -eq (Split-Path $bootstrap -Parent) -and
         (Test-CoreTaskUser -UserId $task.Principal.UserId -ExpectedSid $userSid) -and $task.Principal.LogonType -eq 'S4U' -and
-        $task.Principal.RunLevel -eq 'Limited' -and $task.Settings.Enabled -and
+        $task.Principal.RunLevel -eq 'Limited' -and
         $task.Settings.RestartCount -eq 999 -and $task.Settings.RestartInterval -eq 'PT1M' -and
         $task.Settings.ExecutionTimeLimit -eq 'PT0S' -and $task.Settings.MultipleInstances -eq 'IgnoreNew' -and
         $task.Settings.StartWhenAvailable -and -not $task.Settings.DisallowStartIfOnBatteries -and
         -not $task.Settings.StopIfGoingOnBatteries -and @($task.Triggers).Count -eq 1 -and
         $task.Triggers[0].CimClass.CimClassName -eq 'MSFT_TaskBootTrigger' -and $task.Triggers[0].Enabled
+    $provisioned = $false
     if ($compatibleTask -and $task.Description -eq $description -and $task.Actions[0].Arguments -eq $arguments) {
-        Module-Skip 'service' 'prepared startup task already matches this release'
-        return
-    }
-    $canUpdate = $false
-    if ($compatibleTask) {
         $folder = $scheduler.GetFolder('\')
-        $deploy = Get-ScheduledTask -TaskName ContinuumDeploy -TaskPath '\' -ErrorAction SilentlyContinue
-        $canUpdate = $deploy -and
+        $provisioned = $deploy -and @($deploy.Actions).Count -eq 1 -and
+            $deploy.Actions[0].Execute -eq $bootstrap -and $deploy.Actions[0].Arguments -eq $deployArguments -and
+            $deploy.Actions[0].WorkingDirectory -eq (Split-Path $bootstrap -Parent) -and
             (Test-CoreTaskUser -UserId $deploy.Principal.UserId -ExpectedSid $userSid) -and
             $deploy.Principal.LogonType -eq 'S4U' -and $deploy.Principal.RunLevel -eq 'Limited' -and
-            (Test-CoreServiceCallerAccess -Sddl ($folder.GetTask('ContinuumCore').GetSecurityDescriptor(4)) -UserSid $userSid -Update) -and
-            (Test-CoreServiceCallerAccess -Sddl ($folder.GetTask('ContinuumDeploy').GetSecurityDescriptor(4)) -UserSid $userSid -Update)
+            (Test-CoreServiceCallerAccess -Sddl ($folder.GetTask('ContinuumCore').GetSecurityDescriptor(4)) -UserSid $userSid) -and
+            (Test-CoreServiceCallerAccess -Sddl ($folder.GetTask('ContinuumDeploy').GetSecurityDescriptor(4)) -UserSid $userSid)
     }
+    if ($provisioned) {
+        Assert-CoreSupervisorBootstrap -Path $bootstrap -UserSid $userSid
+        Save-CorePreparedRelease -Release $Release -Selection Active
+        Module-Skip 'service' 'fixed supervisor retained; verified active release committed without elevation'
+        return
+    }
+    # First migration must never install a fixed action pointing at nothing.
+    # Publish the SAME legacy selection first; only after both task contracts
+    # verify may the candidate replace it. A mid-migration reboot still selects
+    # the prior installed release, and the first update has a real rollback.
+    $seededFirstInstall = Initialize-CoreActiveSelection -Task $task -Release $Release
     New-Item -ItemType Directory -Force -Path $Release.logDirectory | Out-Null
     $planPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
-        @{ shell = $shell; arguments = $arguments; description = $description; userSid = $userSid; cli = $Release.cli } |
-            ConvertTo-Json | Set-Content -LiteralPath $planPath -Encoding UTF8
+        @{ shell = $bootstrap; arguments = $arguments; description = $description; userSid = $userSid;
+            cli = $bootstrap; deployArguments = $deployArguments; bootstrapSource = $Release.cli;
+            bootstrapHashes = (Get-CoreReleaseHashes -Release $Release);
+            coreEnabled = $(if ($task) { [bool]$task.Settings.Enabled } else { $true });
+            deployEnabled = $(if ($deploy) { [bool]$deploy.Settings.Enabled } else { $true }) } |
+            ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $planPath -Encoding UTF8
         # Elevate registration only, with the caller's SID explicit. The core and
         # build stay unelevated. Registration deliberately does not start a core.
-        if ($canUpdate) {
-            Update-CoreServiceTaskAction -Folder $folder -Name ContinuumDeploy -UserSid $userSid -Executable $Release.cli -Arguments 'deploy-consume'
-            Update-CoreServiceTaskAction -Folder $folder -Name ContinuumCore -UserSid $userSid -Executable $shell -Arguments $arguments -Description $description
-        } else {
-            Invoke-Elevated -Reason 'registering the ContinuumCore startup task (before core handoff)' -CommandLine @($shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
-                (Join-Path $RepoRoot 'tools\scripts\register-core-service.ps1'), '-PlanPath', $planPath)
-            if ($LASTEXITCODE -ne 0) { throw 'Startup registration failed; the running core has not been stopped.' }
+        Invoke-Elevated -Reason 'provisioning fixed Continuum supervision once (routine release updates remain unelevated)' -CommandLine @($shell, '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'RemoteSigned', '-File',
+                (Join-Path $RepoRoot 'tools\scripts\register-core-service.ps1'), '-PlanPath', $planPath,
+                '-PlanSha', (Get-FileHash -LiteralPath $planPath -Algorithm SHA256).Hash.ToLowerInvariant())
+        if ($LASTEXITCODE -ne 0) {
+            if ($seededFirstInstall) { Remove-Item -LiteralPath $activePath -ErrorAction Stop }
+            throw 'Startup registration failed; the running core has not been stopped.'
         }
     } finally {
         Remove-Item -LiteralPath $planPath -ErrorAction SilentlyContinue
     }
     $verified = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
     if ($verified.Description -ne $description -or @($verified.Actions).Count -ne 1 -or
-        $verified.Actions[0].Execute -ne $shell -or $verified.Actions[0].Arguments -ne $arguments -or
-        -not (Test-CoreTaskUser -UserId $verified.Principal.UserId -ExpectedSid $userSid) -or -not $verified.Settings.Enabled -or
+        $verified.Actions[0].Execute -ne $bootstrap -or $verified.Actions[0].Arguments -ne $arguments -or
+        $verified.Actions[0].WorkingDirectory -ne (Split-Path $bootstrap -Parent) -or
+        -not (Test-CoreTaskUser -UserId $verified.Principal.UserId -ExpectedSid $userSid) -or
+        ($task -and $verified.Settings.Enabled -ne $task.Settings.Enabled) -or
         $verified.Principal.LogonType -ne 'S4U' -or @($verified.Triggers).Count -ne 1 -or
         $verified.Triggers[0].CimClass.CimClassName -ne 'MSFT_TaskBootTrigger') {
         throw 'Startup registration did not match the prepared release (session-independent S4U at boot is required); refusing handoff.'
@@ -542,6 +537,18 @@ function Register-CoreServiceRelease {
         $scheduler.GetFolder('\').GetTask('ContinuumCore').GetSecurityDescriptor(4)))) {
         throw 'Startup task was registered but caller read/execute was not verified; refusing handoff.'
     }
+    $verifiedDeploy = Get-ScheduledTask -TaskName ContinuumDeploy -TaskPath '\' -ErrorAction Stop
+    if (@($verifiedDeploy.Actions).Count -ne 1 -or $verifiedDeploy.Actions[0].Execute -cne $bootstrap -or
+        $verifiedDeploy.Actions[0].Arguments -cne $deployArguments -or
+        $verifiedDeploy.Actions[0].WorkingDirectory -cne (Split-Path $bootstrap -Parent) -or
+        -not (Test-CoreTaskUser -UserId $verifiedDeploy.Principal.UserId -ExpectedSid $userSid) -or
+        $verifiedDeploy.Principal.LogonType -ne 'S4U' -or $verifiedDeploy.Principal.RunLevel -ne 'Limited' -or
+        ($deploy -and $verifiedDeploy.Settings.Enabled -ne $deploy.Settings.Enabled) -or
+        -not (Test-CoreServiceCallerAccess -UserSid $userSid -Sddl ($scheduler.GetFolder('\').GetTask('ContinuumDeploy').GetSecurityDescriptor(4)))) {
+        throw 'Deploy supervisor contract did not verify; active release was preserved.'
+    }
+    Assert-CoreSupervisorBootstrap -Path $bootstrap -UserSid $userSid
+    Save-CorePreparedRelease -Release $Release -Selection Active
     Module-Done 'service'
 }
 
@@ -582,7 +589,7 @@ function Invoke-CoreServiceRelease {
     $tailLease = [IO.File]::Open($leasePath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     try {
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
-    if ($task.Description -cne ($Release | ConvertTo-Json -Compress)) { throw 'Installed release changed after handoff; public CLI was preserved.' }
+    if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne ($Release | ConvertTo-Json -Compress)) { throw 'Installed release changed after handoff; public CLI was preserved.' }
     if ($task.State -ne 'Running') { throw 'The core answered, but its prepared supervisor is not running.' }
     # Other terminals can briefly have the old CLI image open on Windows.
     # Retry file contention without terminating those user commands.

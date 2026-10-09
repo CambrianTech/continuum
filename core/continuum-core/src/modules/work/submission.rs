@@ -6,6 +6,12 @@ use crate::persona::training_producer::reviewed::{self, SubmissionSelection};
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
 use continuum_client::Connection;
 
+/// Latest accepted candidate in the board's transcript order. AIRC projects submissions
+/// newest first; publisher wall clocks do not define recency. Keep handoff and review
+/// consumers on this contract so a resumed citizen sees the candidate being reviewed.
+pub(crate) fn latest_submission(card: &airc_lib::WorkCard) -> Option<&airc_work::WorkSubmission> {
+    card.submissions.first()
+}
 /// How a room is NAMED in a refusal (Kimi's `work/submit`, 2026-09-21).
 ///
 /// "card 31c241e2 is absent from this room" is TRUE and USELESS: she asked for one room
@@ -1034,9 +1040,23 @@ pub struct WorkReviewResult {
     pub review_claim_id: Uuid,
     pub artifact: WorkArtifactReference,
     pub evidence: WorkArtifactReference,
+    pub evidence_text: Option<String>,
     /// A review can publish even when its local learning transfer is deferred.
     pub credit: Option<reviewed::ReviewedCredit>,
     pub credit_error: Option<String>,
+}
+
+impl From<&airc_work::WorkSubmissionReview> for WorkReviewResult {
+    fn from(r: &airc_work::WorkSubmissionReview) -> Self {
+        Self {
+            review_id: r.review_id.as_uuid(), submission_id: r.submission_id.as_uuid(),
+            reviewer: r.reviewer.as_uuid(), outcome: r.outcome.into(),
+            reviewed_at_ms: r.reviewed_at_ms, review_card_id: r.review_card_id.as_uuid(),
+            review_claim_id: r.review_claim_id.as_uuid(), artifact: (&r.artifact).into(),
+            evidence: (&r.evidence).into(), evidence_text: r.evidence_text.clone(),
+            credit: None, credit_error: None,
+        }
+    }
 }
 
 #[async_trait]
@@ -1125,10 +1145,7 @@ impl ActionCommand for WorkReview {
                 .iter()
                 .find(|s| s.submission_id.as_uuid() == id)
                 .ok_or_else(|| CommandError::Invalid(format!("card {card_id} has no submission {id}")))?,
-            None => parent
-                .submissions
-                .iter()
-                .max_by_key(|s| s.submitted_at_ms)
+            None => latest_submission(parent)
                 .ok_or_else(|| {
                     CommandError::Invalid(format!(
                         "card {card_id} has no submission to review yet — the holder submits first (work/submit)"
@@ -1182,6 +1199,7 @@ impl ActionCommand for WorkReview {
                     review_claim_id,
                     outcome: p.outcome.into(),
                     evidence,
+                    evidence_text: p.evidence_text.clone(),
                 },
             )
             .await
@@ -1215,19 +1233,7 @@ impl ActionCommand for WorkReview {
             Ok(value) => (Some(value), None),
             Err(error) => (None, Some(error.to_string())),
         };
-        Ok(WorkReviewResult {
-            review_id: review.review_id.as_uuid(),
-            submission_id: review.submission_id.as_uuid(),
-            reviewer: review.reviewer.as_uuid(),
-            outcome: p.outcome,
-            reviewed_at_ms: review.reviewed_at_ms,
-            review_card_id: review.review_card_id.as_uuid(),
-            review_claim_id: review.review_claim_id.as_uuid(),
-            artifact: (&review.artifact).into(),
-            evidence: (&review.evidence).into(),
-            credit,
-            credit_error,
-        })
+        Ok(WorkReviewResult { credit, credit_error, ..WorkReviewResult::from(&review) })
     }
 }
 
@@ -1383,19 +1389,7 @@ impl ActionCommand for WorkSubmission {
         let reviews = board
             .submission_reviews_for(submitted.submission_id)
             .filter(|r| r.card_id == submitted.card_id)
-            .map(|r| WorkReviewResult {
-                review_id: r.review_id.as_uuid(),
-                submission_id: r.submission_id.as_uuid(),
-                reviewer: r.reviewer.as_uuid(),
-                outcome: r.outcome.into(),
-                reviewed_at_ms: r.reviewed_at_ms,
-                review_card_id: r.review_card_id.as_uuid(),
-                review_claim_id: r.review_claim_id.as_uuid(),
-                artifact: (&r.artifact).into(),
-                evidence: (&r.evidence).into(),
-                credit: None,
-                credit_error: None,
-            })
+            .map(WorkReviewResult::from)
             .collect();
         Ok(WorkSubmissionResult {
             submission: WorkSubmitResult {

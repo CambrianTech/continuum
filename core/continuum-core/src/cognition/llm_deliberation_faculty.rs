@@ -2401,12 +2401,13 @@ impl LlmDeliberationFaculty {
     /// node's, read through the same ladder the decode side landed (#4283) — fresh, else
     /// stale, else the box's most conservative measured rate, and only with nothing ever
     /// measured a named floor ([`crate::inference::prefill_rate::latency_fill_cap`]).
-    /// Associated, not `&self`: the cap is a property of the BOX, not of the persona.
-    fn latency_fill_cap() -> (usize, crate::inference::prefill_rate::MeasuredRate) {
-        let rate = crate::inference::llama_server::current_serving()
-            .active_model
-            .map(|model| crate::inference::prefill_rate::measured_rate_for(&model))
-            .unwrap_or(crate::inference::prefill_rate::MeasuredRate::UNKNOWN); // unwrap_or: nothing served on this box = nothing measured; the named floor governs and the probe says so
+    /// Use the captured request binding: a degraded serving snapshot may temporarily
+    /// clear active_model while this same model still owns the pending turn.
+    fn latency_fill_cap(
+        model: Option<&str>,
+        rate_for: impl FnOnce(&str) -> crate::inference::prefill_rate::MeasuredRate,
+    ) -> (usize, crate::inference::prefill_rate::MeasuredRate) {
+        let rate = model.map(rate_for).unwrap_or(crate::inference::prefill_rate::MeasuredRate::UNKNOWN); // No bound model means no attributable rate; retain the existing unmeasured allowance.
         (
             crate::inference::prefill_rate::latency_fill_cap(PREFILL_TARGET_SECONDS, rate),
             rate,
@@ -2441,7 +2442,7 @@ impl LlmDeliberationFaculty {
         // model come from the same atomic snapshot (no torn read across a re-home).
         let binding = self.binding.load();
         let (window, calibration) = self.prompt_fit(&binding);
-        self.prompt_view_with_feedback(ws, window, calibration)
+        self.prompt_view_with_feedback(ws, window, calibration, binding.model.as_deref())
     }
 
     fn prompt_fit(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
@@ -2455,7 +2456,7 @@ impl LlmDeliberationFaculty {
     /// Fixture view against an explicit window, without a prior provider observation.
     #[cfg(test)]
     fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
-        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default())
+        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default(), self.binding.load().model.as_deref())
     }
 
     /// Every reply carries the engine's own count of the prompt it was sent: retain that
@@ -2499,8 +2500,9 @@ impl LlmDeliberationFaculty {
         ws: &Workspace,
         context_window: u32,
         calibration: PromptCalibration,
+        model: Option<&str>,
     ) -> DeliberationPromptView {
-        self.prompt_view_with_visual_feedback(ws, context_window, calibration, None)
+        self.prompt_view_with_visual_feedback(ws, context_window, calibration, None, model)
     }
 
     fn prompt_view_with_visual_feedback(
@@ -2509,6 +2511,7 @@ impl LlmDeliberationFaculty {
         context_window: u32,
         calibration: PromptCalibration,
         visual: Option<&ActiveVisualFeedback>,
+        model: Option<&str>,
     ) -> DeliberationPromptView {
         // Desired reply room from the existing measured-reserve policy. Below,
         // it yields to the current payload's measured floor; that planned value
@@ -2720,7 +2723,9 @@ impl LlmDeliberationFaculty {
         // remaining headroom stays available to everything that earns depth —
         // grounding, the pinned act result, working memory — and to reply
         // reserve; it is RESERVE, not default fill.
-        let (derived_fill_cap, fill_rate) = Self::latency_fill_cap();
+        let (derived_fill_cap, fill_rate) = Self::latency_fill_cap(
+            model, crate::inference::prefill_rate::measured_rate_for,
+        );
         // A LATENCY BUDGET MAY NOT BUY ITSELF A REPEATED ACT. The cap exists to bound
         // time-to-first-token; clipping away her own last move and its result costs a
         // WHOLE EXTRA TURN when she re-issues it, so the cap is floored at what that
@@ -4713,7 +4718,7 @@ impl LlmDeliberationFaculty {
         // attempt. The immutable workspace and captured model route stay fixed.
         let (view, resp) = loop {
             let view = self.prompt_view_with_visual_feedback(
-                ws, fit_window, calibration, visual.as_ref(),
+                ws, fit_window, calibration, visual.as_ref(), binding.model.as_deref(),
             );
             if let Some(error) = view.capacity_error {
                 crate::probe!(
@@ -8238,6 +8243,7 @@ mod tests {
                 8192,
                 PromptCalibration::default(),
                 Some(&visual),
+                binding.model.as_deref(),
             );
             assert!(seen.capacity_error.is_none());
             assert_ne!(seen.input_identity, view.input_identity);
@@ -8268,7 +8274,7 @@ mod tests {
             let missing = faculty.active_visual_feedback_at(&binding, home.path().join("absent-images"))
                 .await.unwrap().unwrap();
             assert!(matches!(&missing.parts[0].1, ContentPart::Text { text } if text.contains("No pixels attached")));
-            let failed = faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&missing));
+            let failed = faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&missing), binding.model.as_deref());
             assert_ne!(failed.input_identity, seen.input_identity);
             assert!(failed.user_text().contains("capture or inspect the image again"));
             wm.set_scope(Some("another-workspace".into()));
@@ -8277,6 +8283,7 @@ mod tests {
                 8192,
                 PromptCalibration::default(),
                 Some(&visual),
+                binding.model.as_deref(),
             );
             assert!(scoped
                 .messages
@@ -9094,6 +9101,20 @@ mod tests {
         // consequence, and her own last move is the LAST thing to go.
         #[test]
         fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
+            // card e370a673: a degraded serving snapshot must not erase the
+            // captured request model's measured fill allowance on a retry.
+            use crate::inference::prefill_rate::{MeasuredRate, RateSource};
+            let measured = MeasuredRate { tps: Some(28.4), source: RateSource::Fresh };
+            let (cap, retained) = LlmDeliberationFaculty::latency_fill_cap(Some("bound-model"), |model| {
+                assert_eq!(model, "bound-model", "look up the request binding, not current serving readiness");
+                measured
+            });
+            assert_eq!(retained, measured);
+            assert_eq!(cap, (PREFILL_TARGET_SECONDS as f64 * 28.4).floor() as usize);
+            let (_, unbound) = LlmDeliberationFaculty::latency_fill_cap(None, |_| {
+                panic!("an absent request model must not borrow another active model's rate")
+            });
+            assert_eq!(unbound, MeasuredRate::UNKNOWN);
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let mut history: Vec<ChatMessage> = (0..40)

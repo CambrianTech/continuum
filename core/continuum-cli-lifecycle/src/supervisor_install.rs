@@ -91,13 +91,22 @@ impl TaskSpec {
     /// The supervisor: the installer's launcher line, S4U at boot, relaunched a
     /// minute after any exit, forever.
     pub fn core(plan: &SupervisorPlan) -> Self {
+        let installed = crate::installed_release::envelope(&plan.description);
         Self {
             name: CORE_TASK,
             description: plan.description.clone(),
             user_sid: plan.user_sid.clone(),
             trigger: Trigger::Boot,
-            command: plan.shell.clone(),
-            arguments: plan.arguments.clone(),
+            command: match &installed {
+                Ok(Some(e)) => e.bootstrap.clone(),
+                Ok(None) => plan.shell.clone(),
+                Err(_) => String::new(),
+            },
+            arguments: match installed {
+                Ok(Some(e)) => e.arguments("core"),
+                Ok(None) => plan.arguments.clone(),
+                Err(_) => String::new(),
+            },
             execution_time_limit: "PT0S",
             restart_on_failure: Some(("PT1M", 999)),
         }
@@ -105,13 +114,16 @@ impl TaskSpec {
 
     /// The deploy consumer: the installed CLI, S4U, every ten minutes from `start`.
     pub fn deploy(plan: &SupervisorPlan, start: String) -> Self {
+        // Only validated plans reach the production drift observer. Malformed
+        // envelopes remain invalid actions instead of becoming legacy execution.
+        let installed = crate::installed_release::envelope(&plan.description);
         Self {
             name: DEPLOY_TASK,
             description: "Continuum deploy consumer: turns a DeployRequest from the Rust tracker into reboot --service. Registered by `continuum install`; session-independent.".to_string(),
             user_sid: plan.user_sid.clone(),
             trigger: Trigger::Every { minutes: DEPLOY_EVERY_MIN, start },
-            command: plan.cli.clone(),
-            arguments: "deploy-consume".to_string(),
+            command: match &installed { Ok(Some(e)) => e.bootstrap.clone(), Ok(None) => plan.cli.clone(), Err(_) => String::new() },
+            arguments: match installed { Ok(Some(e)) => e.arguments("deploy"), Ok(None) => "deploy-consume".to_string(), Err(_) => String::new() },
             execution_time_limit: DEPLOY_TIME_LIMIT,
             restart_on_failure: None,
         }
@@ -194,6 +206,8 @@ pub struct TaskReport {
     pub command: String,
     #[serde(default)]
     pub arguments: String,
+    #[serde(default)]
+    pub working_directory: String,
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
@@ -290,6 +304,15 @@ fn drift_of(report: &TaskReport, spec: &TaskSpec, trigger_class: &str) -> Vec<Dr
         || report.arguments != spec.arguments
     {
         out.push(Drift::Action);
+    }
+    if spec.arguments.starts_with("installed-service ") {
+        let parent = spec
+            .command
+            .rsplit_once(['/', '\\'])
+            .map(|(parent, _)| parent);
+        if parent.is_none_or(|p| !same_path(p, &report.working_directory)) {
+            out.push(Drift::Action);
+        }
     }
     if !report.enabled {
         out.push(Drift::Disabled);
@@ -655,7 +678,7 @@ pub async fn task_report(name: &str) -> Result<TaskReport, String> {
          try {{ if ($u -match '^S-1-') {{ $sid=$u }} else {{ $sid=(New-Object System.Security.Principal.NTAccount($u)).Translate([System.Security.Principal.SecurityIdentifier]).Value }} }} catch {{ $sid='' }}; \
          $a=@($t.Actions); \
          [pscustomobject]@{{present=$true; description=[string]$t.Description; command=$(if ($a.Count -ge 1) {{ [string]$a[0].Execute }} else {{ '' }}); \
-         arguments=$(if ($a.Count -ge 1) {{ [string]$a[0].Arguments }} else {{ '' }}); enabled=[bool]$t.Settings.Enabled; state=[string]$t.State; \
+         arguments=$(if ($a.Count -ge 1) {{ [string]$a[0].Arguments }} else {{ '' }}); workingDirectory=$(if ($a.Count -ge 1) {{ [string]$a[0].WorkingDirectory }} else {{ '' }}); enabled=[bool]$t.Settings.Enabled; state=[string]$t.State; \
          logonType=[string]$t.Principal.LogonType; runLevel=[string]$t.Principal.RunLevel; userSid=$sid; \
          triggers=[string[]]@($t.Triggers | ForEach-Object {{ $_.CimClass.CimClassName }}); actions=$a.Count; sddl=$sd}} | ConvertTo-Json -Compress"
     );
@@ -664,19 +687,12 @@ pub async fn task_report(name: &str) -> Result<TaskReport, String> {
 }
 
 #[cfg(windows)]
-async fn caller_sid() -> Result<String, String> {
+pub async fn caller_sid() -> Result<String, String> {
     powershell(
         "[Security.Principal.WindowsIdentity]::GetCurrent().User.Value",
         std::time::Duration::from_secs(30),
     )
     .await
-}
-
-/// The receipt the elevated child leaves beside the plan: the parent reads THIS,
-/// never the child's console (an elevated child's stdout is a window that closes).
-#[cfg(windows)]
-fn receipt_path(plan: &Path) -> PathBuf {
-    plan.with_extension("receipt.txt")
 }
 
 /// The unelevated verb: read both tasks, judge drift, elevate once if needed,
@@ -685,7 +701,7 @@ fn receipt_path(plan: &Path) -> PathBuf {
 #[cfg(windows)]
 pub async fn install_supervisor(
     check_only: bool,
-    descriptor_cli: impl Fn(&str) -> Result<String, String>,
+    _descriptor_cli: impl Fn(&str) -> Result<String, String>,
 ) -> Result<ArmReport, String> {
     let core = task_report(CORE_TASK).await?;
     if !core.present {
@@ -695,12 +711,21 @@ pub async fn install_supervisor(
              which stages the release and registers it; `continuum install` converges an installed machine."
         ));
     }
-    let cli = descriptor_cli(&core.description)?;
+    let sid = caller_sid().await?;
+    let cli = match crate::installed_release::envelope(&core.description)? {
+        Some(envelope) => {
+            let home=PathBuf::from(std::env::var_os("USERPROFILE").ok_or("USERPROFILE is unset")?).join(".continuum");
+            let program_files=PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);
+            envelope.validate(&home,&program_files,&sid)?;
+            envelope.bootstrap
+        },
+        None => return Err("Legacy supervisor needs one-time protected bootstrap provisioning through the shared installer; no task was changed".into()),
+    };
     let plan = SupervisorPlan {
         shell: core.command.clone(),
         arguments: core.arguments.clone(),
         description: core.description.clone(),
-        user_sid: caller_sid().await?,
+        user_sid: sid,
         cli,
     };
     let deploy = task_report(DEPLOY_TASK).await?;
@@ -722,78 +747,14 @@ pub async fn install_supervisor(
         );
         return Ok(ArmReport::read_only(before.len()));
     }
-    println!(
-        "→ one elevation to register both tasks under the contract (S4U, boot / every {DEPLOY_EVERY_MIN} min); the core and builds stay unelevated"
-    );
-
-    let plan_path =
-        std::env::temp_dir().join(format!("continuum-supervisor-{}.json", std::process::id()));
-    let receipt = receipt_path(&plan_path);
-    let _ = std::fs::remove_file(&receipt);
-    let plan_bytes = serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?;
-    let plan_sha = plan_digest(&plan_bytes);
-    std::fs::write(&plan_path, &plan_bytes)
-        .map_err(|e| format!("install: cannot write the plan: {e}"))?;
-    let exe = std::env::current_exe().map_err(|e| format!("install: own path: {e}"))?;
-    let quote = |s: String| s.replace('\'', "''");
-    let script = format!(
-        "$ErrorActionPreference='Stop'; $p = Start-Process -FilePath '{}' -ArgumentList @('install','--supervisor','--elevated','--plan','{}','--plan-sha','{plan_sha}') -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
-        quote(exe.display().to_string()),
-        quote(plan_path.display().to_string()),
-    );
-    // The consent prompt waits for a human; ten minutes is the wall past which nobody is there.
-    let elevated = powershell(&script, std::time::Duration::from_secs(600)).await;
-    let receipt_text = std::fs::read_to_string(&receipt).unwrap_or_default(); // unwrap_or_default: an absent receipt is reported below as "none", never as success
-    let _ = std::fs::remove_file(&plan_path);
-    let _ = std::fs::remove_file(&receipt);
-    if let Err(why) = elevated {
-        if why.contains("canceled by the user") {
-            return Err("install: the elevation consent was refused — nothing changed. Re-run `continuum install --supervisor` and approve the prompt to register the supervisor session-independent.".to_string());
-        }
-        return Err(format!(
-            "install: the elevated registration did not complete: {why}\n  receipt: {}",
-            if receipt_text.is_empty() {
-                "(none — consent refused or the child never ran)"
-            } else {
-                receipt_text.trim()
-            }
-        ));
-    }
-    if !receipt_text.is_empty() {
-        println!("{}", receipt_text.trim());
-    }
-    // Verify by reading the scheduler, not by trusting the exit code.
-    let core = task_report(CORE_TASK).await?;
-    let deploy = task_report(DEPLOY_TASK).await?;
-    let after = drift(&core, &deploy, &plan);
-    if !after.is_empty() {
-        return Err(format!(
-            "install: the registration ran but the scheduler still reports drift: {after:?}"
-        ));
-    }
-    println!(
-        "✓ supervisor: converged — {CORE_TASK} S4U at boot (state {}), {DEPLOY_TASK} S4U every {DEPLOY_EVERY_MIN} min (state {}); the caller has read/execute on both",
-        core.state, deploy.state
-    );
-    Ok(ArmReport {
-        drift_before: before.len(),
-        drift_after: 0,
-    })
+    Err("Supervisor provisioning drift requires the shared Windows installer; no task was re-registered and the active release was preserved".into())
 }
 
 /// The elevated child: register exactly the plan, grant the caller read/execute,
 /// leave a receipt. No query, no decision, no second elevation.
 #[cfg(windows)]
-pub fn install_supervisor_elevated(plan_path: &Path, plan_sha: &str) -> Result<(), String> {
-    let receipt = receipt_path(plan_path);
-    let result =
-        read_bound_plan(plan_path, plan_sha).and_then(|plan| register_plan(plan_path, plan));
-    let text = match &result {
-        Ok(lines) => lines.join("\n"),
-        Err(why) => format!("elevated registration failed: {why}"),
-    };
-    let _ = std::fs::write(&receipt, text);
-    result.map(|_| ())
+pub fn install_supervisor_elevated(_plan_path: &Path, _plan_sha: &str) -> Result<(), String> {
+    Err("The per-release Rust registrar is retired; use the shared Windows installer to provision the protected supervisor once".into())
 }
 
 /// The plan the consent was given for, or a refusal: the bytes on disk must hash to
@@ -813,61 +774,6 @@ pub fn read_bound_plan(plan_path: &Path, plan_sha: &str) -> Result<SupervisorPla
     serde_json::from_slice(&bytes).map_err(|e| format!("the plan is not a SupervisorPlan: {e}"))
 }
 
-#[cfg(windows)]
-fn register_plan(plan_path: &Path, plan: SupervisorPlan) -> Result<Vec<String>, String> {
-    let start = (chrono::Local::now() + chrono::Duration::minutes(1))
-        .format("%Y-%m-%dT%H:%M:%S")
-        .to_string();
-    let tasks_dir = PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?)
-        .join("System32")
-        .join("Tasks");
-    let mut lines = Vec::new();
-    for spec in [TaskSpec::core(&plan), TaskSpec::deploy(&plan, start)] {
-        let xml_path = plan_path.with_extension(format!("{}.xml", spec.name));
-        write_task_xml(&xml_path, &spec.to_xml())?;
-        let out = std::process::Command::new("schtasks")
-            .args(["/Create", "/TN", spec.name, "/XML"])
-            .arg(&xml_path)
-            .arg("/F")
-            .output()
-            .map_err(|e| format!("schtasks: {e}"))?;
-        let _ = std::fs::remove_file(&xml_path);
-        if !out.status.success() {
-            return Err(format!(
-                "schtasks refused {}: {} {}",
-                spec.name,
-                String::from_utf8_lossy(&out.stderr).trim(),
-                String::from_utf8_lossy(&out.stdout).trim()
-            ));
-        }
-        // The task's security IS its file's DACL under System32\Tasks. RX lets the
-        // caller `schtasks /Run` it (`continuum start`'s handoff); nothing else changes.
-        let grant = format!("*{}:RX", plan.user_sid);
-        let out = std::process::Command::new("icacls")
-            .arg(tasks_dir.join(spec.name))
-            .args(["/grant", &grant])
-            .output()
-            .map_err(|e| format!("icacls: {e}"))?;
-        if !out.status.success() {
-            return Err(format!(
-                "icacls could not grant the caller read/execute on {}: {}",
-                spec.name,
-                String::from_utf8_lossy(&out.stderr).trim()
-            ));
-        }
-        lines.push(format!(
-            "  registered {} ({}) as S4U, RX granted to {}",
-            spec.name,
-            match &spec.trigger {
-                Trigger::Boot => "at boot".to_string(),
-                Trigger::Every { minutes, .. } => format!("every {minutes} min"),
-            },
-            plan.user_sid
-        ));
-    }
-    Ok(lines)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,6 +790,7 @@ mod tests {
 
     fn converged(spec: &TaskSpec, trigger: &str) -> TaskReport {
         TaskReport {
+            working_directory: String::new(),
             present: true,
             description: spec.description.clone(),
             command: spec.command.clone(),
@@ -1014,6 +921,27 @@ mod tests {
         assert!(
             drift(&spelled, &deploy, &p).is_empty(),
             "case and separators are not drift"
+        );
+        // Fixed supervisor changes selection through its receipt, never through task actions.
+        let mut fixed = p.clone();
+        fixed.description=serde_json::json!({"schema":2,"activeRelease":"C:/Users/test/.continuum/install-active.json","bootstrap":"C:/Program Files/Continuum/SID/supervisor/continuum.exe"}).to_string();
+        let core_spec = TaskSpec::core(&fixed);
+        let deploy_spec = TaskSpec::deploy(&fixed, String::new());
+        let mut core = converged(&core_spec, "MSFT_TaskBootTrigger");
+        let mut deploy = converged(&deploy_spec, "MSFT_TaskTimeTrigger");
+        core.working_directory = "C:/Program Files/Continuum/SID/supervisor".into();
+        deploy.working_directory = core.working_directory.clone();
+        assert!(drift(&core, &deploy, &fixed).is_empty());
+        deploy.arguments = "deploy-consume".into();
+        assert_eq!(
+            drift(&core, &deploy, &fixed),
+            vec![(DEPLOY_TASK, Drift::Action)]
+        );
+        deploy.arguments = deploy_spec.arguments;
+        core.working_directory = "C:/Users/test".into();
+        assert_eq!(
+            drift(&core, &deploy, &fixed),
+            vec![(CORE_TASK, Drift::Action)]
         );
     }
 

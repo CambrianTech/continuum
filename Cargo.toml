@@ -210,20 +210,20 @@ members = [
 # airc-protocol::mind_seal), #1536 Airc::mind_store() + put_at/remove, #1537
 # submission_reviews_for_card, #1538 `airc work submission-review`. Privacy of thought
 # step 2 reads and writes her mind store through Airc::mind_store(), never her key.
-airc-core = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
-airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
-airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
-airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
-airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
-airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
-airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
+airc-core = { git = "https://github.com/CambrianTech/airc", rev = "ee497fa1e701c453924aa5a89867bd920b63270e" }
+airc-blobs = { git = "https://github.com/CambrianTech/airc", rev = "ee497fa1e701c453924aa5a89867bd920b63270e" }
+airc-protocol = { git = "https://github.com/CambrianTech/airc", rev = "ee497fa1e701c453924aa5a89867bd920b63270e" }
+airc-ipc = { git = "https://github.com/CambrianTech/airc", rev = "ee497fa1e701c453924aa5a89867bd920b63270e" }
+airc-bus = { git = "https://github.com/CambrianTech/airc", rev = "ee497fa1e701c453924aa5a89867bd920b63270e" }
+airc-lib = { git = "https://github.com/CambrianTech/airc", rev = "ee497fa1e701c453924aa5a89867bd920b63270e" }
+airc-wire = { git = "https://github.com/CambrianTech/airc", rev = "ee497fa1e701c453924aa5a89867bd920b63270e" }
 # airc-work: the work-board domain (cards/lanes/PRs). `Airc::work_board`
 # returns a `WorkBoardProjection` whose types (`WorkCard`, `LaneRecord`,
 # `CardState`, …) the positron kanban projector maps → `KanbanViewState`
 # at the seam. Only continuum-core (the projector) depends on it; the
 # neutral `continuum-positron` contract crate MIRRORS these enums and
 # must NOT depend on airc-work.
-airc-work = { git = "https://github.com/CambrianTech/airc", rev = "841b5a0992db57137892b69a25066719c6a9387e" }
+airc-work = { git = "https://github.com/CambrianTech/airc", rev = "ee497fa1e701c453924aa5a89867bd920b63270e" }
 
 # Candle ML framework — patched via [patch.crates-io] below.
 # Fixes: Metal buffer pool leak (#2271), RoPE NEOX convention (#3410)
