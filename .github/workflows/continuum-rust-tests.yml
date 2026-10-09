@@ -56,7 +56,12 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: ${{ needs.changes.outputs.rust != 'false' && 'postgres:17-alpine' || '' }}
+        # The Docker-official image from ECR Public, not Docker Hub: hosted runners share one
+        # anonymous Docker Hub quota per IP, and on 2026-10-09 every Rust lane across the
+        # repo's PRs died in 16 s at "Initialize containers" with `toomanyrequests` (#4882,
+        # #4883, #4884), twice each on re-run. ECR Public mirrors docker/library with no
+        # anonymous pull limit. Same image, same tag.
+        image: ${{ needs.changes.outputs.rust != 'false' && 'public.ecr.aws/docker/library/postgres:17-alpine' || '' }}
         env:
           POSTGRES_DB: continuum_test
           POSTGRES_USER: continuum
