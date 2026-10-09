@@ -376,11 +376,13 @@ impl Inner {
             &serving,
             rank_of(serving.active_model.as_deref().unwrap_or("")) // unwrap_or: no model = no row anyway; `serving` returns None below
                 .unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, exactly as a peer's would
-            serving
-                .active_model
-                .as_deref()
-                .and_then(crate::inference::decode_knee::tps_for)
-                .map(|t| t as f32),
+            // The SAME rate this node beacons to its peers (own curve, fresh or stale), so
+            // local and foreign rows are measured by one definition (card 86fef3c3).
+            serving.active_model.as_deref().and_then(|model| {
+                crate::capacity::gossip::decode_tps_of(crate::capacity::gossip::beacon_decode_milli(
+                    &crate::inference::decode_knee::rate_for(model),
+                ))
+            }),
         );
         let peers = crate::capacity::gossip::global_ledger()
             .foreign_offers_with_age()
@@ -396,7 +398,9 @@ impl Inner {
                         capability_rank: rank_of(model).unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, the planner's number
                         window: o.served_context_window,
                         lanes: o.lanes,
-                        decode_tps_per_lane: None,
+                        // The peer's measured speed, off its beacon (card 86fef3c3); None from a
+                        // peer that has not measured, or an older core.
+                        decode_tps_per_lane: crate::capacity::gossip::decode_tps_of(o.decode_tps_milli),
                     }),
                     _ => None,
                 },
