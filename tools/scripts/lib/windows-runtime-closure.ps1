@@ -1,7 +1,7 @@
 # One application-runtime owner for published core/CLI binaries and engines.
 # Windows/NVIDIA drivers remain platform inputs; VC/OpenMP redistributables do not.
 function Get-CoreRuntimeDirectories {
-    param([switch]$Cuda)
+    param([switch]$Cuda, [string]$CMakeCache)
     if (-not $env:VCToolsRedistDir) { Enter-MsvcEnv }
     if (-not $env:VCToolsRedistDir) { throw 'Selected MSVC toolchain did not identify its redistributable directory.' }
     $redist = Join-Path $env:VCToolsRedistDir 'x64'
@@ -11,6 +11,18 @@ function Get-CoreRuntimeDirectories {
     } | ForEach-Object { $_.FullName })
     if (-not $directories.Count) { throw 'Selected toolchain has no x64 VC/OpenMP redistributables.' }
     if ($Cuda) { $directories += Join-Path (Get-CudaToolkitDirectory) 'bin' }
+    # FindOpenSSL selects headers/libraries outside PATH (e.g. the hosted
+    # runner's Program Files/OpenSSL). Its adjacent bin directory owns the
+    # matching TLS runtime; never substitute a different PATH installation.
+    if ($CMakeCache -match '(?m)^OPENSSL_INCLUDE_DIR:PATH=([^\r\n]+)\r?$') {
+        $include = ConvertTo-CoreImagePath $Matches[1]
+        Assert-CorePreparedPath -Path $include -Expected $include
+        if ((Split-Path $include -Leaf) -ine 'include') { throw 'Configured OpenSSL include layout has no known runtime directory.' }
+        $opensslBin = Join-Path (Split-Path $include -Parent) 'bin'
+        # Static OpenSSL has no DLL directory; unresolved dynamic imports still
+        # fail in the shared resolver below, rather than weakening TLS checks.
+        if (Test-Path -LiteralPath $opensslBin -PathType Container) { $directories += $opensslBin }
+    }
     foreach ($directory in $directories) { Assert-CorePreparedPath -Path $directory -Expected $directory }
     return $directories
 }

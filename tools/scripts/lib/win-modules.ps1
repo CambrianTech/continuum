@@ -1134,7 +1134,7 @@ function Mod-LlamaServer {
         }
     }
     Assert-CorePreparedPath -Path $installDir -Expected $installDir
-    $runtimeDirectories = @(Get-CoreRuntimeDirectories -Cuda:($backend -eq 'cuda'))
+    $runtimeDirectories = @(Get-CoreRuntimeDirectories -Cuda:($backend -eq 'cuda') -CMakeCache $cache)
     $runtimeNames = @($runtimeDirectories | ForEach-Object { Get-ChildItem -LiteralPath $_ -File -Filter '*.dll' | ForEach-Object { $_.Name } })
     foreach ($oldDll in @(Get-ChildItem -LiteralPath $installDir -File -Filter '*.dll')) {
         if ($oldDll.Name -notin $runtimeNames) { throw "Unowned application DLL in engine slot: $($oldDll.Name)" }

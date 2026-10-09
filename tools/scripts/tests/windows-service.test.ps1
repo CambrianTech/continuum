@@ -1773,6 +1773,34 @@ function Mod-LlamaServer {
             throw 'Runtime publisher did not preserve toolchain OpenMP bytes and bootstrap membership.'
         }
     }
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-runtime-closure.ps1')
+        $openssl = Join-Path $scratch 'configured OpenSSL'
+        $include = Join-Path $openssl 'include'
+        $tlsBin = Join-Path $openssl 'bin'
+        $redist = Join-Path $scratch 'selected-redist'
+        New-Item -ItemType Directory -Force -Path $include,$tlsBin,(Join-Path $redist 'x64/Microsoft.VC999.CRT') | Out-Null
+        foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
+            [IO.File]::WriteAllText((Join-Path $tlsBin $name), ('selected TLS '+$name))
+        }
+        $savedRedist = $env:VCToolsRedistDir
+        try {
+            $env:VCToolsRedistDir = $redist
+            $roots = @(Get-CoreRuntimeDirectories -CMakeCache ("OPENSSL_INCLUDE_DIR:PATH="+$include+"`n"))
+            if ($roots -notcontains $tlsBin) { throw 'Configured TLS runtime directory was omitted.' }
+            $tlsStage = Join-Path $scratch 'tls-stage'
+            New-Item -ItemType Directory -Path $tlsStage | Out-Null
+            $tlsExe = Join-Path $tlsStage 'llama-server.exe'
+            [IO.File]::WriteAllText($tlsExe, 'TLS engine fixture')
+            [IO.File]::WriteAllText($inspector, $inspection.Replace('nvcuda.dll', "libssl-3-x64.dll`r`necho     libcrypto-3-x64.dll"), [Text.Encoding]::ASCII)
+            function Invoke-InstallerProcess { param($FilePath,$ArgumentList,[switch]$OwnProcessTree) & $cmakePath @ArgumentList }
+            $tlsNames = Join-Path $tlsStage 'runtime-imports.txt'
+            Copy-CoreRuntimeClosure -Directory $tlsStage -Executables @($tlsExe) -Inspector $inspector -RuntimeDirectories $roots -OutputNames $tlsNames
+            foreach ($name in @('libssl-3-x64.dll','libcrypto-3-x64.dll')) {
+                if (@(Get-Content $tlsNames) -notcontains $name -or (Get-FileHash (Join-Path $tlsStage $name)).Hash -cne (Get-FileHash (Join-Path $tlsBin $name)).Hash) { throw 'TLS runtime was not captured and hashed from the configured package.' }
+            }
+        } finally { $env:VCToolsRedistDir = $savedRedist }
+    }
     Write-Output 'PASS: publisher preserves declared hardware contract and bounds engine imports on GPU-less hosts'
 
     $output = Join-Path $target 'release\continuum-core-server.exe'
