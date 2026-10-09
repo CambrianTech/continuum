@@ -105,6 +105,16 @@ pub fn card_branch(card: &airc_lib::WorkCard) -> String {
     format!("{short}/{slug}")
 }
 
+/// Whether a branch name has [`card_branch`]'s shape: a card's short id, then `/`. The one
+/// reader of that shape, so code outside card staging (the citizen workspace's shared sync)
+/// can tell a branch that will be pushed for review from a citizen's own working branch.
+pub fn is_card_branch(branch: &str) -> bool {
+    branch.split_once('/').is_some_and(|(short, _)| {
+        short.len() == airc_lib::work_worktree::SHORT_ID_LEN
+            && short.chars().all(|c| c.is_ascii_hexdigit())
+    })
+}
+
 /// Stage `title`'s work into the workspace of `claimer` under `home`.
 /// Stage for a claimed CARD: a benchmark card stages by its title recipe (below);
 /// any other card of a repo this node has a checkout of gets airc's per-card
@@ -692,6 +702,17 @@ mod tests {
         assert_eq!(card_branch(&card), format!("{short}/fix-the-login-redirect-again-v2"));
         let same = airc_lib::WorkCard { title: "FIX THE LOGIN REDIRECT AGAIN V2".into(), ..card.clone() };
         assert_eq!(card_branch(&same), card_branch(&card), "case and punctuation do not re-address the work");
+    }
+
+    // what this catches (card 8fecb762): the shared sync failing to recognise a card branch,
+    // so it autosaves the whole workspace onto it (Kimi's 63855189: 3,026 files, two PRs
+    // closed). Pinned against card_branch's real output, so the two cannot drift apart.
+    #[test]
+    fn a_card_branch_is_recognised_and_a_working_branch_is_not() {
+        assert!(is_card_branch(&card_branch(&generic_card("Fix the login redirect"))));
+        for other in ["main", "canary", "persona/kimi-work", "feature/63855189", "6385518/short-id", "6385518g/not-hex"] {
+            assert!(!is_card_branch(other), "{other} is not a card branch");
+        }
     }
 
     // what this catches: a re-dispatched, already-settled instance staged onto the
