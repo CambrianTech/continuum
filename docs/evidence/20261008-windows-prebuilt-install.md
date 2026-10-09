@@ -40,3 +40,22 @@ passed. A separate quick real-PE check used installed Git OpenSSL with the real
 MSVC dumpbin and CMake: shared Copy-CoreRuntimeClosure captured both TLS DLLs and
 verified their staged dependency graph. Native engine rebuild/publication remains
 pending; no serving state changed.
+
+Transitive VC packaging follow-up (2026-10-09): the publisher already staged
+selected MSVC redistributables, but CMake's discovery of an external OpenSSL DLL
+resolved its VC imports from System32 before the supplied runtime directories.
+The existing fixture reproduced this with all nine declared VC names. Capture
+now accepts that discovery result only when a unique selected runtime source and
+the already-staged application copy have identical SHA256; it never copies the
+System32 file. The mandatory second application-local verification retains the
+System32 refusal. Missing or corrupted staged copies still fail closed.
+
+The existing PowerShell5.1 fixture passed35groups, including transitive discovery,
+all nine runtime names/hashes, missing-copy and corrupt-copy regressions. A bounded
+real-PE audit with actual MSVC dumpbin/CMake inspected copies of engine-b,
+published616058 CLI and Git OpenSSL together: all six discovered CUDA/TLS/OpenMP
+DLLs were captured and the final graph verified. It did not execute those binaries;
+the temporary directory was removed. Raw local receipts: 20261009-vc-closure-before.log,
+20261009-vc-closure-after.log and 20261009-full-real-pe-closure.json in the team-proof
+state directory. This covers the installed sample, not the unpublished CI engine;
+actual corrected publication and fresh-user installation remain pending.
