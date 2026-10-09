@@ -348,6 +348,7 @@ try {
     Mod-Airc
     Mod-OrtRuntime
     Mod-Poppler
+    Mod-LiveKit -RepoRoot $RepoRoot
 
     # Grid transport reachability: Windows Firewall silently drops inbound peer
     # dials to the airc daemon unless it's allowed -- an asymmetric route failure
