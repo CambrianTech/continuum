@@ -2,16 +2,23 @@
 # No receipt is synthesized from an old HEAD:backend stamp.
 . (Join-Path $PSScriptRoot 'windows-prepared.ps1')
 
-function Get-CoreEngineFiles {
+function Get-CoreEngineCandidates {
     param([string]$Directory)
     Assert-CorePreparedPath -Path $Directory -Expected $Directory
-    $files = [ordered]@{}
-    $bytes = [long]0
     foreach ($item in @(Get-ChildItem -LiteralPath $Directory -Force | Where-Object {
         $_.Name -eq 'llama-server.exe' -or $_.Extension -ieq '.dll'
     } | Sort-Object Name)) {
         if ($item.PSIsContainer) { throw 'Non-file engine application candidate.' }
         Assert-CorePreparedPath -Path $item.FullName -Expected $item.FullName -File
+        $item
+    }
+}
+
+function Get-CoreEngineFiles {
+    param([string]$Directory)
+    $files = [ordered]@{}
+    $bytes = [long]0
+    foreach ($item in @(Get-CoreEngineCandidates -Directory $Directory)) {
         $bytes += $item.Length
         if ($files.Count -ge 256 -or $bytes -gt 4294967296) { throw 'Engine application inputs exceed verification bounds.' }
         $files[$item.Name.ToLowerInvariant()] = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -70,6 +77,36 @@ function Save-CoreEngineReceipt {
     Get-CoreEngineReceipt -Directory $Directory -Publishing | Out-Null
     $pending = Join-Path $Directory 'engine-install.pending'
     if (Test-Path -LiteralPath $pending) { Remove-Item -LiteralPath $pending }
+}
+
+function Copy-CoreEnginePublication {
+    # The installer holds install.lock and selects an idle managed slot before
+    # entering here. Pending prevents admission while replacing its whole DLL
+    # namespace; a failed copy is deliberately repairable by the same operation.
+    param([string]$SourceDirectory, [string]$Directory)
+    $receipt = Get-CoreEngineReceipt -Directory $SourceDirectory
+    Assert-CorePreparedPath -Path $Directory -Expected $Directory
+    if ([IO.Path]::GetFullPath($SourceDirectory) -ieq [IO.Path]::GetFullPath($Directory)) { throw 'Engine publication source equals destination.' }
+    New-Item -ItemType Directory -Path $Directory -Force | Out-Null
+    $existing = @(Get-CoreEngineCandidates -Directory $Directory)
+    # Validate every old leaf (including obsolete DLLs) before touching any byte.
+    foreach ($item in $existing) {
+        $probe = [IO.File]::Open($item.FullName, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $probe.Dispose()
+    }
+    Start-CoreEnginePublication -Directory $Directory
+    foreach ($entry in $receipt.files.PSObject.Properties) {
+        $target = Join-Path $Directory $entry.Name
+        Assert-CorePreparedPath -Path $target -Expected $target
+        Copy-Item -LiteralPath (Join-Path $SourceDirectory $entry.Name) -Destination $target -Force -ErrorAction Stop
+    }
+    foreach ($item in $existing) {
+        if ($item.Name -notin @($receipt.files.PSObject.Properties.Name)) {
+            Assert-CorePreparedPath -Path $item.FullName -Expected $item.FullName -File
+            Remove-Item -LiteralPath $item.FullName -ErrorAction Stop
+        }
+    }
+    Copy-CoreEngineReceipt -SourceDirectory $SourceDirectory -Directory $Directory
 }
 
 function Copy-CoreEngineReceipt {
