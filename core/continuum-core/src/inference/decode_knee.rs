@@ -317,13 +317,6 @@ pub fn conservative(curves: &BTreeMap<String, DecodeCurve>, now_ms: u64) -> Opti
         .min_by_key(|(knee, newest, _)| (*knee, u64::MAX - *newest))
         .map(|(knee, _, m)| (m, knee))
 }
-/// The decode rate this box measured for `model` at its lightest trusted concurrency —
-/// what one turn's decode costs per token here. `None` = unmeasured.
-pub fn tps_for(model: &str) -> Option<f64> {
-    let now = now_ms();
-    CURVES.lock().get(model).and_then(|c| c.lightest_trusted_tps(now))
-}
-
 /// Where a turn's decode rate came from — the `rate_source` field of
 /// `delib.turn.output_allowance`. A rate is NEVER 0.0 for a served model: the M5 on
 /// 2026-09-20 (20:58–21:14Z) restarted, every point went untrusted, the rate read 0.0,

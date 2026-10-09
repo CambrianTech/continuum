@@ -354,6 +354,25 @@ fn claim_is_live(card: &airc_work::WorkCard, now_ms: u64) -> bool {
     crate::persona::card_holder::hold_of(card, now_ms) == crate::persona::card_holder::Hold::Held
 }
 
+/// One held card in the `[your work]` lead: its id, title and state, and the absolute path
+/// its work lives at on this node when there is one ([`crate::modules::card_staging::checkout_path_for`],
+/// the one answer to "where does this card's work live").
+///
+/// WHY (card 31a9fe2b; the M5, 2026-10-08/09): the card and the round's kickoff name only
+/// `swe/<instance>/`, relative to a workspace she cannot see from every turn. So citizens
+/// reconstructed the location from memory, 131 times walking `find /` and `ls ~` through
+/// Joel's home dir, and one listed a `/Users/joel/continuum/swe` that never existed ~20
+/// times. The path is now in front of her each turn she holds the card. With no checkout on
+/// this node the line says nothing about one: an absence is not reported as a location.
+fn held_card_line(card: &airc_work::WorkCard, checkout: Option<&std::path::Path>) -> String {
+    let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
+    let line = format!("  {id8}: \"{}\" [{:?}]", card.title, card.state);
+    match checkout {
+        Some(path) => format!("{line}\n    its work is at {}", path.display()),
+        None => line,
+    }
+}
+
 fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -569,8 +588,8 @@ impl RagSource for RoomBoardSource {
                 .iter()
                 .take(5)
                 .map(|c| {
-                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
-                    format!("  {id8}: \"{}\" [{:?}]", c.title, c.state)
+                    let checkout = crate::modules::card_staging::checkout_path_for(&self.persona_id, c);
+                    held_card_line(c, checkout.as_deref())
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -1458,5 +1477,19 @@ mod tests {
             "an unstamped ctx keeps legacy behavior"
         );
         assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(home)));
+    }
+
+    // what this catches (card 31a9fe2b; the M5, 2026-10-08/09: 131 `find /` and `ls ~` walks
+    // by citizens hunting their SWE checkout): a held card's line in [your work] must carry
+    // the absolute path its work lives at, and must claim no location when this node has none.
+    #[test]
+    fn a_held_cards_line_names_where_its_work_lives_and_only_when_it_exists() {
+        let held = card("[bench swe] django__django-16136: async view", CardState::Claimed, Some(airc_core::PeerId::from_uuid(persona())));
+        let checkout = std::path::Path::new("/home/x/.continuum/citizens/peers/aaa/workspace/swe/django__django-16136");
+        let with = held_card_line(&held, Some(checkout));
+        assert!(with.contains(&checkout.display().to_string()), "the absolute checkout is in her view: {with}");
+        assert!(with.starts_with(&held_card_line(&held, None)), "the card's own line is unchanged above it");
+        let without = held_card_line(&held, None);
+        assert!(!without.contains("work is at"), "no checkout on this node, no location claimed: {without}");
     }
 }

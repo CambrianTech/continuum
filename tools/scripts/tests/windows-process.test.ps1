@@ -11,6 +11,132 @@ if (-not ('Continuum.Setup.OwnedProcess' -as [type])) {
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-process-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    # Card2041ea54: legacy bridge migration may close ONLY its own unused
+    # single-client stream. A core/Scheduler winning accept must remain alive.
+    & {
+        . "$PSScriptRoot/../lib/windows-media-reconciliation.ps1"
+        $media = Join-Path $scratch 'legacy-media'
+        New-Item -ItemType Directory -Path $media | Out-Null
+        $bridge = Join-Path $media 'livekit-bridge.exe'
+        Add-Type -OutputAssembly $bridge -OutputType ConsoleApplication -TypeDefinition @'
+using System;
+using System.IO;
+using System.Net;
+using System.Net.Sockets;
+public class SingleClientBridgeFixture {
+    public static void Main(string[] args) {
+        var listener=new TcpListener(IPAddress.Loopback,0);
+        listener.Start(); Console.WriteLine(((IPEndPoint)listener.LocalEndpoint).Port);
+        using(var client=listener.AcceptTcpClient()) {
+            File.WriteAllText(args[0],"accepted");
+            while(client.GetStream().ReadByte()!=-1) {}
+        }
+        listener.Stop();
+    }
+}
+'@
+        Invoke-InstallerProcess -OwnProcessTree "$env:SystemRoot\System32\cmd.exe" @('/d','/c','exit','0')
+        Initialize-CoreMediaHandle
+        $nativeConnections = ${function:Get-CoreMediaConnections}
+        foreach ($scenario in @('idle','active','racing-core')) {
+            $accepted = Join-Path $media "$scenario.accepted"
+            $start = [Diagnostics.ProcessStartInfo]::new()
+            $start.FileName=$bridge; $start.Arguments='"' + $accepted + '"'; $start.WorkingDirectory=$media
+            $start.UseShellExecute=$false; $start.CreateNoWindow=$true
+            $start.RedirectStandardOutput=$true; $start.RedirectStandardError=$true
+            $owned = [Continuum.Setup.OwnedProcessV2]::Start($start)
+            $primary = $null; $fixtureProcess = $null
+            try {
+                $line=$owned.StandardOutput.ReadLineAsync()
+                if (-not $line.Wait(5000)) { throw 'Media fixture did not listen.' }
+                $port=[int]$line.Result
+                $listener=@(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop)
+                $fixtureProcess=[Diagnostics.Process]::GetProcessById($listener[0].OwningProcess)
+                $identity=[Continuum.Setup.HeldMediaProcess]::new([uint32]$fixtureProcess.Id)
+                try {
+                    $plan=[pscustomobject]@{schema=1;installRoot=$media;image=$bridge;imageSha256=(Get-FileHash $bridge).Hash;
+                        processId=$fixtureProcess.Id;createdUtcMicroseconds=$identity.CreatedUtcMicroseconds;port=$port}
+                } finally { $identity.Dispose() }
+                if ($scenario -eq 'idle') {
+                    foreach ($field in @('image','imageSha256','createdUtcMicroseconds','port')) {
+                        $saved=$plan.$field
+                        $plan.$field=switch($field) { 'image' { Join-Path $media 'wrong.exe' } 'imageSha256' { '0'*64 } 'createdUtcMicroseconds' { [long]1 } 'port' { 1 } }
+                        $refused=$false
+                        try { Close-CoreIdleLegacyMedia -Plan $plan -ExitTimeoutMs 250 }
+                        catch { if ($_.Exception.Message -notmatch 'identity changed|image changed|endpoint changed') { throw }; $refused=$true }
+                        finally { $plan.$field=$saved }
+                        if (-not $refused -or $owned.WaitForExit(0) -or (Test-Path $accepted)) { throw "Unsafe media $field acceptance." }
+                    }
+                    $bound=Join-Path $media 'plan.json'
+                    [IO.File]::WriteAllText($bound,($plan | ConvertTo-Json -Compress))
+                    $refused=$false
+                    try { Invoke-CoreLegacyMediaPlan -Path $bound -Sha ('0'*64) }
+                    catch { if ($_.Exception.Message -notmatch 'consented digest') { throw }; $refused=$true }
+                    if (-not $refused) { throw 'Swapped elevation plan was accepted.' }
+                    $refused=$false
+                    try { Invoke-CoreLegacyMediaReconciliation -Image $bridge -InstallRoot $media }
+                    catch { if ($_.Exception.Message -notmatch 'PrepareOnly preserves') { throw }; $refused=$true }
+                    if (-not $refused -or (Test-Path $accepted)) { throw 'PrepareOnly changed media lifecycle.' }
+                    & {
+                        # Only elevation is replaced here. The real caller builds
+                        # its plan from CIM and the image hash, and must dispatch
+                        # the owning module rather than its importing script.
+                        $expectedCreated=$plan.createdUtcMicroseconds
+                        $expectedModule=[IO.Path]::GetFullPath("$PSScriptRoot/../lib/windows-media-reconciliation.ps1")
+                        function Get-NetTCPConnection { [pscustomobject]@{State='Listen';LocalAddress='127.0.0.1';LocalPort=9101;OwningProcess=$fixtureProcess.Id} }
+                        function Get-CoreMediaConnections { @{tcp=@(Get-NetTCPConnection);udp=@()} }
+                        function Invoke-Elevated {
+                            param($CommandLine,$Reason)
+                            if ($CommandLine[6] -ne $expectedModule -or $CommandLine[7] -ne '-MediaPlanPath' -or $CommandLine[9] -ne '-MediaPlanSha') { throw 'Wrong elevated media owner/arguments.' }
+                            $boundPlan=[IO.File]::ReadAllText($CommandLine[8]) | ConvertFrom-Json
+                            if ($boundPlan.createdUtcMicroseconds -ne $expectedCreated -or
+                                $boundPlan.image -ne $bridge -or $boundPlan.processId -ne $fixtureProcess.Id -or
+                                (Get-FileHash $CommandLine[8]).Hash -ne $CommandLine[10]) { throw 'Elevation lost process identity or plan binding.' }
+                            Write-Output 'fixture reconciliation receipt'
+                            $global:LASTEXITCODE=0
+                        }
+                        $data=@(Invoke-CoreLegacyMediaReconciliation -Image $bridge -InstallRoot $media -AllowElevation)
+                        if ($data.Count -or (Test-Path $accepted)) { throw 'Reconciliation diagnostic contaminated release data or caller opened a socket.' }
+                    }
+                } else {
+                    $primary=[Net.Sockets.TcpClient]::new()
+                    if ($scenario -eq 'active') { $primary.Connect('127.0.0.1',$port) }
+                    else {
+                        # Deterministic Scheduler/start race AFTER the real idle
+                        # observation, BEFORE reconciliation's own connection.
+                        function Get-CoreMediaConnections {
+                            param([int]$ProcessId)
+                            $snapshot=& $nativeConnections -ProcessId $ProcessId
+                            $primary.Connect('127.0.0.1',$port)
+                            return $snapshot
+                        }
+                    }
+                }
+                $refused=$false
+                try { Close-CoreIdleLegacyMedia -Plan $plan -ExitTimeoutMs 250 | Out-Null }
+                catch {
+                    if ($scenario -eq 'idle' -or $_.Exception.Message -notmatch 'is active|retained a client') { throw }
+                    $refused=$true
+                }
+                if ($scenario -eq 'idle') {
+                    if ($refused -or -not $owned.WaitForExit(5000) -or $owned.ExitCode -ne 0) { throw 'Idle bridge did not exit cleanly.' }
+                } else {
+                    if (-not $refused -or $owned.WaitForExit(0) -or -not $primary.Connected) { throw 'Reconciliation interrupted the first client.' }
+                    # Actual first stream remains usable; only its eventual EOF
+                    # ends this single-client server, not the queued second EOF.
+                    $primary.GetStream().WriteByte(42)
+                    $primary.Dispose(); $primary=$null
+                    if (-not $owned.WaitForExit(5000) -or $owned.ExitCode -ne 0) { throw 'Preserved client lost normal disconnect behavior.' }
+                }
+            } finally {
+                ${function:Get-CoreMediaConnections}=$nativeConnections
+                if ($primary) { $primary.Dispose() }
+                $owned.Dispose()
+                if ($fixtureProcess) { $fixtureProcess.Dispose() }
+            }
+        }
+        Write-Host 'PASS: pinned legacy media EOF retires idle bridge, refuses mismatches, and preserves active/racing first client.'
+    }
     if ($PrebuiltCli) {
         # Real published CLI regression: verified-archive progress must not
         # contaminate the JSON consumed by Get-CorePrebuiltRelease. This uses
@@ -76,6 +202,68 @@ exit $LASTEXITCODE
             } finally { $process.Dispose() }
         }
         Write-Host 'PASS: actual prepare-prebuilt keeps verified-archive diagnostics separate from JSON and refuses corruption.'
+        # The published supervisor must initialize real Windows PowerShell. Its
+        # canonical extended executable spelling previously failed before -File.
+        # Keep this fixture entirely outside the user's install and task state;
+        # inert core/engine files make accidental service launch fail closed.
+        . "$PSScriptRoot/../lib/windows-prepared.ps1"
+        $serviceHome = Join-Path $scratch 'supervisor-home'
+        $installRoot = Join-Path $serviceHome '.continuum'
+        $serviceSlot = Join-Path $installRoot 'bin/service-a'
+        $engineSlot = Join-Path $installRoot 'bin/engine-a'
+        $programFiles = Join-Path $scratch 'program-files'
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $cliHash = (Get-FileHash -LiteralPath $PrebuiltCli).Hash.ToLowerInvariant()
+        $bootstrap = Join-Path $programFiles "Continuum/$sid/supervisor-$cliHash"
+        New-Item -ItemType Directory -Force -Path $serviceSlot,$engineSlot,$bootstrap | Out-Null
+        Copy-Item -LiteralPath $PrebuiltCli -Destination (Join-Path $serviceSlot 'continuum.exe')
+        Copy-Item -LiteralPath $PrebuiltCli -Destination (Join-Path $bootstrap 'continuum.exe')
+        $publishedDirectory = Split-Path ([IO.Path]::GetFullPath($PrebuiltCli)) -Parent
+        foreach ($name in @(Get-Content -LiteralPath (Join-Path $publishedDirectory 'runtime-libs.txt'))) {
+            if ($name -notmatch '^[A-Za-z0-9_.-]+\.dll$') { throw 'Invalid published runtime fixture input.' }
+            Copy-Item -LiteralPath (Join-Path $publishedDirectory $name) -Destination (Join-Path $bootstrap $name)
+        }
+        [IO.File]::WriteAllText((Join-Path $serviceSlot 'continuum-core-server.exe'), 'inert fixture: never execute')
+        [IO.File]::WriteAllText((Join-Path $engineSlot 'llama-server.exe'), 'inert fixture: never execute')
+        @'
+param($ExecutablePath, $CorePath, $SocketPath, $EnginePath, $LogDirectory, $EyeRoot)
+[System.Net.ServicePointManager]::SecurityProtocol | Write-Output
+Write-Output 'DIAGNOSTIC_ONLY_NO_CORE'
+exit 0
+'@ | Set-Content -LiteralPath (Join-Path $serviceSlot 'run-service-hidden.ps1') -Encoding UTF8
+        $release = [pscustomobject]@{
+            artifact=(Join-Path $serviceSlot 'continuum-core-server.exe'); cli=(Join-Path $serviceSlot 'continuum.exe')
+            launcher=(Join-Path $serviceSlot 'run-service-hidden.ps1'); engine=(Join-Path $engineSlot 'llama-server.exe')
+            socket=(Join-Path $installRoot 'unused.sock'); logDirectory=(Join-Path $installRoot 'logs')
+        }
+        Save-CorePreparedRelease -Release $release -InstallRoot $installRoot -Selection Active
+        $supervisorChild = Join-Path $scratch 'supervisor-child.ps1'
+        @'
+param($Cli, $FixtureHome, $FixtureProgramFiles, $Receipt)
+$env:HOME = $FixtureHome
+$env:USERPROFILE = $FixtureHome
+$env:ProgramFiles = $FixtureProgramFiles
+$env:ProgramW6432 = $FixtureProgramFiles
+# Windows derives the native ProgramFiles value from ProgramW6432 at launch.
+& $Cli installed-service core $Receipt
+exit $LASTEXITCODE
+'@ | Set-Content -LiteralPath $supervisorChild -Encoding UTF8
+        $start = New-Object Diagnostics.ProcessStartInfo
+        $start.FileName = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        $start.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File "' + $supervisorChild + '" "' + (Join-Path $bootstrap 'continuum.exe') + '" "' + $serviceHome + '" "' + $programFiles + '" "' + (Join-Path $installRoot 'install-active.json') + '"'
+        $start.WorkingDirectory = $scratch
+        $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+        $process = [Continuum.Setup.OwnedProcessV2]::Start($start)
+        try {
+            $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(30000)) { throw 'Published supervisor diagnostic timed out.' }
+            if ($process.ExitCode -ne 0) { throw "Published supervisor refused: $($stderr.Result)" }
+            $launchLog = Get-Content -LiteralPath (Join-Path $release.logDirectory 'service-bootstrap.log') -Raw
+            if ($launchLog -notmatch 'DIAGNOSTIC_ONLY_NO_CORE' -or $launchLog -match 'ServicePointManager.*exception') { throw "Published PowerShell boundary failed: $launchLog" }
+            if (Test-Path -LiteralPath $release.socket) { throw 'Diagnostic launcher unexpectedly created a core socket.' }
+        } finally { $process.Dispose() }
+        Write-Host 'PASS: actual published supervisor initializes PowerShell and exits without starting a core.'
         return
     }
     # Regression: hidden PS5 -File lost Cargo stderr when its host rendered
