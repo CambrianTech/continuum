@@ -217,8 +217,10 @@ pub struct ServingDemand {
     /// `0` is the honest value on a seat nobody leases into, and on every seat until the
     /// inbound-generate seam feeds the gauge (the wire slice of the same card).
     pub leased_in: u32,
-    /// The measured decode knee of the model this seat serves — the slot count past which
-    /// every stream slows (`inference::decode_knee`) — when one is known. It bounds the
+    /// The measured knee of the model this seat serves — the tighter of the decode knee, the
+    /// slot count past which every stream slows (`inference::decode_knee`), and the prefill
+    /// knee, the slots its shared prefill rate can serve inside the turn budget
+    /// (`inference::prefill_knee`, card d4d2ef4a) — when one is known. It bounds the
     /// slot count the plan SERVES: residents, scratch AND leased-in together. Measured
     /// 2026-09-19 23:14Z on the M5: the roster was clamped to the knee (17 → 2) before
     /// `leased_in` (1) was added, so the plan said 3 lanes against a knee of 2 and the
