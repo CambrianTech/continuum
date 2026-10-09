@@ -1529,6 +1529,12 @@ impl ServingDaemonModule {
                 k
             }),
         };
+        // THE PREFILL KNEE (card d4d2ef4a): on a CPU seat the shared prefill rate, not memory
+        // or decode, is the limit (the IntelMac: 6 slots at 11-51 tok/s, a 13-26k prefilled
+        // median, residents "never reached the model"). The plan serves the tighter knee.
+        let decode_knee = knee;
+        let prefill_knee = model_for_knee.as_deref().and_then(crate::inference::prefill_knee::knee_for);
+        let knee = crate::inference::prefill_knee::tighter_knee(decode_knee, prefill_knee);
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
@@ -1555,8 +1561,10 @@ impl ServingDaemonModule {
                 model = %model_for_knee.unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,
                 knee = clamped as u64,
+                decode_knee = decode_knee.unwrap_or(0) as u64, // probe field: 0 = unmeasured
+                prefill_knee = prefill_knee.unwrap_or(0) as u64, // probe field: 0 = unmeasured, or prefill not the limit
                 clamped = clamped < lanes,
-                "lane demand against the measured decode knee — the roster pages, the streams stay fast"
+                "lane demand against the measured knees (the tighter of decode and prefill) — the roster pages, the streams stay fast"
             );
         }
         let lanes = clamped;
