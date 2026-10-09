@@ -237,6 +237,18 @@ pub fn knee_for(model: &str) -> Option<u32> {
     KNEE.lock().as_ref().filter(|(measured, _)| measured == model).map(|(_, k)| *k)
 }
 
+/// PURE: the prefill knee after a window publishes. Only a MEASURED bound replaces the last
+/// one. A window whose turns prefilled nothing keeps it: that is what the clamp itself
+/// produces once fewer lanes stop thrashing the cache, and clearing on it would unclamp,
+/// thrash and clamp again, a relaunch each window (Fable on #4883). A looser bound still
+/// raises it the moment one is measured.
+pub fn next_knee(prev: Option<(String, u32)>, engine: Option<&EngineRead>, bound: Option<u32>) -> Option<(String, u32)> {
+    match (engine, bound) {
+        (Some(e), Some(b)) => Some((e.model.clone(), b)),
+        _ => prev,
+    }
+}
+
 /// PURE: the knee the plan serves when both are known: the tighter one. Either alone bounds
 /// alone; neither leaves the roster's demand.
 pub fn tighter_knee(decode: Option<u32>, prefill: Option<u32>) -> Option<u32> {
@@ -278,12 +290,9 @@ pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize
     let median = turns.median();
     let ttft = crate::inference::prefill_rate::UNATTENDED_TTFT;
     let bound = median.and_then(|m| prefill_lanes(rate, m, ttft));
-    // Only a MEASURED bound replaces the last one. A window whose turns prefilled nothing
-    // keeps it: that is what the clamp itself produces once fewer lanes stop thrashing the
-    // cache, and clearing on it would unclamp, thrash, and clamp again, a relaunch each
-    // window (Fable on #4883). A looser bound still raises it the moment one is measured.
-    if let (Some(e), Some(b)) = (&engine, bound) {
-        *KNEE.lock() = Some((e.model.clone(), b));
+    {
+        let mut knee = KNEE.lock();
+        *knee = next_knee(knee.take(), engine.as_ref(), bound);
     }
     crate::probe!(
         class = "serving.prefill_knee.published",
@@ -416,6 +425,22 @@ mod tests {
         assert_eq!(tighter_knee(Some(3), Some(8)), Some(3), "a looser prefill bound never raises the decode knee");
         assert_eq!(tighter_knee(Some(3), None), Some(3));
         assert_eq!(tighter_knee(None, None), None, "neither measured: the roster's demand stands");
+    }
+
+    // what this catches (Fable on #4883): the clamp's own success clearing it. Fewer lanes
+    // stop thrashing the cache, the next window prefills nothing (no bound), and clearing
+    // on that would return the plan to 6 lanes, a relaunch each window. Only a measured
+    // bound may replace the last, looser or tighter.
+    #[test]
+    fn a_window_that_measures_no_prefill_keeps_the_last_bound() {
+        let engine = EngineRead { model: "coder-1.5b".into(), pid: 7 };
+        let k = next_knee(None, Some(&engine), Some(1));
+        assert_eq!(k, Some(("coder-1.5b".into(), 1)));
+        let k = next_knee(k, Some(&engine), None);
+        assert_eq!(k, Some(("coder-1.5b".into(), 1)), "a median-0 window keeps the bound");
+        let k = next_knee(k, None, Some(5));
+        assert_eq!(k, Some(("coder-1.5b".into(), 1)), "no engine named: nothing to attribute a bound to");
+        assert_eq!(next_knee(k, Some(&engine), Some(3)), Some(("coder-1.5b".into(), 3)), "a measured looser bound raises it");
     }
 
     #[test]
