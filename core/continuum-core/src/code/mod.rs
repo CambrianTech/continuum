@@ -14,6 +14,7 @@
 //! - `workspace_events` — `workspace:written` bus events emitted at every write site
 
 pub mod change_graph;
+pub mod confinement;
 pub mod diff_engine;
 pub mod file_engine;
 pub mod git_bridge;

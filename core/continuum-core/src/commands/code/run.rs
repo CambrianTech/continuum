@@ -160,9 +160,10 @@ impl ActionCommand for CodeRun {
                     chars = params.code.chars().count() as u64,
                     "what a python snippet is — a program, or the tree walked / a shell called from python"
                 );
+                let hands = Hands::of(ctx, cwd.as_deref().unwrap_or(&dir));
                 let result = match interpreter {
                     Ok(interpreter) => {
-                        run_python(&dir, cwd.as_deref(), &params.code, timeout, &interpreter).await
+                        run_python(&dir, cwd.as_deref(), &params.code, timeout, &interpreter, &hands).await
                     }
                     Err(error) => Err(error),
                 };
@@ -203,7 +204,8 @@ impl ActionCommand for CodeRun {
             CommandError::Internal(format!("code/run: temp dir create failed: {e}"))
         })?;
 
-        let result = compile_and_run_rust(&dir, &params.code, timeout).await;
+        let hands = Hands::of(ctx, &dir);
+        let result = compile_and_run_rust(&dir, &params.code, timeout, &hands).await;
         let _ = std::fs::remove_dir_all(&dir);
         result
     }
@@ -309,16 +311,16 @@ async fn run_python(
     code: &str,
     timeout: std::time::Duration,
     interpreter: &std::path::Path,
+    hands: &Hands,
 ) -> Result<CodeRunResult, CommandError> {
     let src = dir.join("main.py");
     std::fs::write(&src, code)
         .map_err(|e| CommandError::Internal(format!("code/run: write failed: {e}")))?;
     let interpreter_label = interpreter.display().to_string();
-    let mut cmd = tokio::process::Command::new(interpreter);
+    let mut cmd = hands.command(interpreter, &[src.clone().into()]);
     crate::code::shell_session::strip_secret_env(&mut cmd);
     crate::code::shell_session::utf8_text_env(&mut cmd);
-    cmd.arg(&src)
-        .current_dir(cwd.unwrap_or(dir))
+    cmd.current_dir(cwd.unwrap_or(dir))
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -365,10 +367,37 @@ async fn run_python(
     }
 }
 
+/// Whose hands a snippet runs with: the caller's confinement (a citizen's) or none (the
+/// operator's), plus the name the spawn probe carries. One value threaded through both
+/// interpreters so a snippet is confined exactly as her shell is (card d598c806).
+pub(crate) struct Hands {
+    confinement: Option<crate::code::confinement::Confinement>,
+    who: String,
+}
+
+impl Hands {
+    pub(crate) fn of(ctx: &Ctx, workspace: &std::path::Path) -> Self {
+        Self {
+            confinement: crate::modules::code_commands::confinement_of(ctx, workspace),
+            who: crate::modules::code_commands::caller_id(ctx),
+        }
+    }
+
+    #[cfg(test)]
+    fn operator() -> Self {
+        Self { confinement: None, who: "test".into() }
+    }
+
+    fn command(&self, program: &std::path::Path, args: &[std::ffi::OsString]) -> tokio::process::Command {
+        crate::code::confinement::command_for(self.confinement.as_ref(), &self.who, program, args)
+    }
+}
+
 async fn compile_and_run_rust(
     dir: &std::path::Path,
     code: &str,
     timeout: std::time::Duration,
+    hands: &Hands,
 ) -> Result<CodeRunResult, CommandError> {
     let src = dir.join("snippet.rs");
     let bin = dir.join("snippet");
@@ -379,15 +408,12 @@ async fn compile_and_run_rust(
 
     // 1. Compile. kill_on_drop bounds a runaway rustc; a non-success exit is a RESULT
     //    (the persona must SEE the compiler errors), only a spawn failure is an error.
-    let mut rustc = tokio::process::Command::new("rustc");
+    let mut rustc = hands.command(
+        std::path::Path::new("rustc"),
+        &["--edition".into(), "2021".into(), "-o".into(), bin.clone().into(), src.clone().into()],
+    );
     crate::code::shell_session::strip_secret_env(&mut rustc);
-    rustc
-        .arg("--edition")
-        .arg("2021")
-        .arg("-o")
-        .arg(&bin)
-        .arg(&src)
-        .kill_on_drop(true);
+    rustc.kill_on_drop(true);
     match tokio::time::timeout(timeout, rustc.output()).await {
         Ok(Ok(out)) if out.status.success() => {} // compiled — fall through to run
         Ok(Ok(out)) => {
@@ -426,7 +452,7 @@ async fn compile_and_run_rust(
     //    timeout fires, tokio::time::timeout drops the output() future. Without it the
     //    child is NOT killed — it orphans to init and burns a core forever (observed:
     //    6h+ runaway at 100% CPU). Dropping the Child with kill_on_drop sends SIGKILL.
-    let mut child = tokio::process::Command::new(&bin);
+    let mut child = hands.command(&bin, &[]);
     crate::code::shell_session::strip_secret_env(&mut child);
     child
         .stdout(std::process::Stdio::piped())
@@ -721,6 +747,7 @@ mod tests {
             "print('\\u2699 code/read \\u2014 \\u2713')\n",
             std::time::Duration::from_secs(20),
             &interpreter,
+            &Hands::operator(),
         )
         .await
         .expect("resolved Python");
@@ -745,6 +772,7 @@ mod tests {
             "import sys, time\nprint('partial-evidence', flush=True)\nsys.stderr.write('warming\\n'); sys.stderr.flush()\ntime.sleep(30)\nprint('never')\n",
             std::time::Duration::from_secs(1),
             &interpreter,
+            &Hands::operator(),
         )
         .await
         .expect("resolved Python");
@@ -791,6 +819,7 @@ mod tests {
             "print('never')",
             std::time::Duration::from_secs(5),
             &fake,
+            &Hands::operator(),
         )
         .await
         .expect("fake interpreter spawns");
@@ -832,6 +861,7 @@ mod tests {
             "print(open('marker.txt').read())",
             std::time::Duration::from_secs(10),
             &interpreter,
+            &Hands::operator(),
         )
         .await
         .expect("resolved Python");
@@ -848,6 +878,7 @@ mod tests {
             "print('must not run')",
             std::time::Duration::from_secs(10),
             &missing,
+            &Hands::operator(),
         )
         .await
         .expect_err("broken managed interpreter must not fall back");

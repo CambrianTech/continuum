@@ -209,6 +209,10 @@ pub struct ShellSession {
     executions: HashMap<String, Arc<Mutex<ExecutionState>>>,
     history: Vec<ShellHistoryEntry>,
     total_executions: u32,
+    /// What this session's children may touch (card d598c806). `None` = the
+    /// operator's own hands, unconfined; a citizen's session is confined by the
+    /// workspace authority before her first command.
+    confinement: Option<super::confinement::Confinement>,
 }
 
 impl ShellSession {
@@ -253,7 +257,18 @@ impl ShellSession {
             executions: HashMap::new(),
             history: Vec::new(),
             total_executions: 0,
+            confinement: None,
         })
+    }
+
+    /// Confine every later child of this session to `confinement`'s roots. Set by the
+    /// workspace authority for a citizen; the operator's session never calls it.
+    pub fn confine(&mut self, confinement: super::confinement::Confinement) {
+        self.confinement = Some(confinement);
+    }
+
+    pub fn confinement(&self) -> Option<&super::confinement::Confinement> {
+        self.confinement.as_ref()
     }
 
     pub fn id(&self) -> &str {
@@ -365,9 +380,11 @@ impl ShellSession {
         let cwd = self.cwd.clone();
         let env = self.env.clone();
         let cmd_str = command.to_string();
+        let confinement = self.confinement.clone();
+        let who = self.persona_id.clone();
 
         rt_handle.spawn(async move {
-            run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms).await;
+            run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who).await;
             // A finished command may have written anywhere under its cwd (a build, a
             // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
             // not — observers re-read the workspace on this event instead of
@@ -798,6 +815,8 @@ async fn run_shell_command(
     cwd: &Path,
     env: &HashMap<String, String>,
     timeout_ms: Option<u64>,
+    confinement: Option<&super::confinement::Confinement>,
+    who: &str,
 ) {
     // Resolve a REAL POSIX shell. `TokioCommand::new("bash")` finds
     // C:\Windows\System32\bash.exe on Windows — the WSL launcher, not a shell —
@@ -855,10 +874,15 @@ async fn run_shell_command(
         _ => command.to_string(),
     };
 
-    let mut cmd = TokioCommand::new(&shell_bin);
-    cmd.arg(shell_flag)
-        .arg(&effective_command)
-        .current_dir(cwd)
+    // A citizen's child is confined to her roots at the kernel (card d598c806:
+    // eleven citizens ran `find /` as the operator); the operator's is not.
+    let mut cmd = super::confinement::command_for(
+        confinement,
+        who,
+        &shell_bin,
+        &[shell_flag.into(), effective_command.clone().into()],
+    );
+    cmd.current_dir(cwd)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         // Don't inherit stdin — non-interactive
