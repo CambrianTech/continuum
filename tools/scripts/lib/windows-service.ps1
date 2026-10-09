@@ -1,5 +1,6 @@
 . (Join-Path $PSScriptRoot 'payload-paths.ps1')
 . (Join-Path $PSScriptRoot 'windows-prepared.ps1')
+. (Join-Path $PSScriptRoot 'windows-media-reconciliation.ps1')
 # The CLI also loads this file in a fresh PowerShell for slot preparation.
 # Reuse the shared native launcher there without resetting an outer installer's
 # already-loaded elevation ownership state.
@@ -351,7 +352,8 @@ function New-CoreServiceRelease {
         [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'),
         [string]$TargetDirectory = $env:CARGO_TARGET_DIR,
         [string]$ArtifactDirectory,
-        [string]$EnginePath
+        [string]$EnginePath,
+        [switch]$ReconcileLegacyMedia
     )
     if (-not $ArtifactDirectory) { $ArtifactDirectory = Join-Path $TargetDirectory 'release' }
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
@@ -382,7 +384,10 @@ function New-CoreServiceRelease {
     if ($unknownImages -and -not $descriptor.artifact) {
         throw 'Cannot inspect all live Continuum image paths and no registered release protects startup files.'
     }
+    $registeredReleaseSnapshot = $descriptor | ConvertTo-Json -Compress
     $slot = $null
+    $mediaBlocked = @()
+    $serviceFiles = @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1')
     foreach ($name in @('service-a', 'service-b')) {
         $candidate = Join-Path $root $name
         $occupied = @($liveImages | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) })
@@ -391,17 +396,43 @@ function New-CoreServiceRelease {
         # above, then verify every destination before touching any candidate file.
         # Windows denies write access to mapped executables. Copy-Item retains
         # that protection if a process starts after this non-mutating probe.
-        $writable = $true
-        foreach ($file in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1')) {
+        $blocked = @()
+        foreach ($file in $serviceFiles) {
             $destination = Join-Path $candidate $file
             if (-not (Test-Path -LiteralPath $destination)) { continue }
             try {
                 $probe = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
                 $probe.Dispose()
-            } catch [IO.IOException] { $writable = $false; break }
-            catch [UnauthorizedAccessException] { $writable = $false; break }
+            } catch [IO.IOException] { $blocked += $file }
+            catch [UnauthorizedAccessException] { $blocked += $file }
         }
-        if ($writable) { $slot = $candidate; break }
+        if ($blocked.Count -eq 1 -and $blocked[0] -eq 'livekit-bridge.exe') {
+            $mediaBlocked += $candidate
+        }
+        if ($blocked.Count -eq 0) { $slot = $candidate; break }
+    }
+    if (-not $slot -and $mediaBlocked.Count -eq 1) {
+        # Try all free slots first. Only an otherwise idle, unregistered slot
+        # qualifies. PrepareOnly never borrows elevation or changes the bridge.
+        $candidate = $mediaBlocked[0]
+        Invoke-CoreLegacyMediaReconciliation -Image (Join-Path $candidate 'livekit-bridge.exe') -InstallRoot $InstallRoot -AllowElevation:$ReconcileLegacyMedia
+        $currentTask = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
+        if ($currentTask.Description -cne $registered.Description) {
+            throw 'Registered release changed during legacy media reconciliation; candidate files were preserved.'
+        }
+        $currentRelease = if ($currentTask) { Get-CoreRegisteredRelease -Task $currentTask -InstallRoot $InstallRoot } else { $null }
+        if (($currentRelease | ConvertTo-Json -Compress) -cne $registeredReleaseSnapshot) {
+            throw 'Registered release changed during legacy media reconciliation; candidate files were preserved.'
+        }
+        # Recheck every image lock after graceful exit; Copy-Item retains OS
+        # protection if another owner maps an image after this observation.
+        foreach ($file in $serviceFiles) {
+            $destination = Join-Path $candidate $file
+            if (-not (Test-Path -LiteralPath $destination)) { continue }
+            $probe = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $probe.Dispose()
+        }
+        $slot = $candidate
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
     # The CLI this release installs is the one that knows the lane records' contract.

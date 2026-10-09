@@ -369,9 +369,9 @@ try {
     # user-owned so a later non-elevated `npm start` can rebuild).
     if ($DeveloperBuild) {
         Mod-BuildCore -RepoRoot $RepoRoot
-        $release = New-CoreServiceRelease -RepoRoot $RepoRoot
+        $release = New-CoreServiceRelease -RepoRoot $RepoRoot -ReconcileLegacyMedia:(-not $PrepareOnly)
     } else {
-        $release = New-CoreServiceRelease -RepoRoot $RepoRoot -ArtifactDirectory $artifactDirectory
+        $release = New-CoreServiceRelease -RepoRoot $RepoRoot -ArtifactDirectory $artifactDirectory -ReconcileLegacyMedia:(-not $PrepareOnly)
     }
 
     # Build llama-server.exe (the serving daemon's GPU-backend child) from the same

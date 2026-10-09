@@ -149,7 +149,7 @@ try {
         $entryCold = Join-Path $scratch 'payload entry cold'
         New-Item -ItemType Directory -Path $entryLib, $entryProfile -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $entryRepo
-        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-prepared.ps1', 'windows-prebuilt.ps1', 'payload-paths.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-media-reconciliation.ps1', 'windows-prepared.ps1', 'windows-prebuilt.ps1', 'payload-paths.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $entryLib
         }
         $entryGenerated = Join-Path (Split-Path $entryLib) 'generated'
@@ -1398,6 +1398,57 @@ public static class RegisteredGsudoFixture {
         try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Both installed core service slots' }
         if (-not $refused) { throw 'Unreadable busy candidate was overwritten' }
     } finally { $busy.Dispose() }
+    # Media-only blockage uses the same inactive-slot owner. Preparation never
+    # elevates; normal install retries only after graceful reconciliation, and
+    # a new registration during that operation must preserve candidate bytes.
+    & {
+        $nativeReconcile = ${function:Invoke-CoreLegacyMediaReconciliation}
+        $mediaImage = Join-Path (Split-Path $second.artifact) 'livekit-bridge.exe'
+        $busyBridge = [IO.File]::Open($mediaImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        $changeRegistration = $false; $changeReceipt = $false
+        function Invoke-CoreLegacyMediaReconciliation {
+            param($Image,$InstallRoot,[switch]$AllowElevation)
+            if (-not $AllowElevation) { & $nativeReconcile -Image $Image -InstallRoot $InstallRoot; return }
+            if ($Image -ne $mediaImage) { throw 'Wrong bridge selected.' }
+            $script:mediaReconcileCalls++
+            $busyBridge.Dispose()
+            if ($changeRegistration) { $script:registeredTask = [pscustomobject]@{ Description='new registration' } }
+            if ($changeReceipt) { $script:mediaRegisteredRelease = $second }
+        }
+        $script:mediaReconcileCalls = 0
+        try {
+            $refused=$false
+            try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null }
+            catch { if ($_ -notmatch 'PrepareOnly preserves') { throw }; $refused=$true }
+            if (-not $refused -or $script:mediaReconcileCalls) { throw 'Preparation reconciled legacy media.' }
+            $reconciled=New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target -ReconcileLegacyMedia
+            if ($reconciled.artifact -ne $second.artifact -or $script:mediaReconcileCalls -ne 1) { throw 'Normal install did not reuse its inactive slot.' }
+            $before=(Get-FileHash -LiteralPath $second.artifact).Hash
+            $busyBridge=[IO.File]::Open($mediaImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            $changeRegistration=$true; $refused=$false
+            try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target -ReconcileLegacyMedia | Out-Null }
+            catch { if ($_ -notmatch 'Registered release changed') { throw }; $refused=$true }
+            if (-not $refused -or (Get-FileHash -LiteralPath $second.artifact).Hash -ne $before) { throw 'Stale registration changed candidate files.' }
+            # Protocol2/3 task envelopes stay fixed while install-active.json
+            # changes underneath them. Recheck the resolved release too.
+            $nativeRegistered = ${function:Get-CoreRegisteredRelease}
+            function Get-CoreRegisteredRelease {
+                param($Task,$InstallRoot)
+                if ($Task.Description -eq 'fixed schema2 envelope') { return $script:mediaRegisteredRelease }
+                & $nativeRegistered -Task $Task -InstallRoot $InstallRoot
+            }
+            $script:registeredTask = [pscustomobject]@{ Description='fixed schema2 envelope' }
+            $script:mediaRegisteredRelease = $first
+            $changeRegistration=$false; $changeReceipt=$true; $refused=$false
+            $busyBridge=[IO.File]::Open($mediaImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target -ReconcileLegacyMedia | Out-Null }
+            catch { if ($_ -notmatch 'Registered release changed') { throw }; $refused=$true }
+            if (-not $refused -or (Get-FileHash -LiteralPath $second.artifact).Hash -ne $before) { throw 'Stable envelope concealed changed active release.' }
+        } finally {
+            $busyBridge.Dispose()
+            $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }
+        }
+    }
     $script:registeredTask = $null
     $refused = $false
     try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Cannot inspect all live' }

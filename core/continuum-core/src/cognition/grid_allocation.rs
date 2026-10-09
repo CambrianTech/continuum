@@ -177,6 +177,13 @@ impl LanePlan {
     }
 
     /// Does one lane of this plan seat a mind of a role with this requirement?
+    ///
+    /// ADMISSION GATES ON DECLARED REQUIREMENTS ONLY (Fable on #4856, from the 9/21 law: a
+    /// measured number must never be an admission gate; three nodes published ZERO seats that
+    /// night). `decode_tps_per_lane` is a real measurement since #4856, and it may refuse a
+    /// seat here only against a floor a citizen DECLARED (`decode_floor_tps`). A rate or turn
+    /// time the grid derives orders placement and names a rate-starved mind on the health line;
+    /// it must never become a floor in this function.
     pub fn holds(&self, req: &Requirement) -> bool {
         self.lanes > 0
             && self.window >= req.window
