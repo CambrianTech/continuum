@@ -72,7 +72,14 @@ const WRITABLE_HOME_ENTRIES: &[&str] = &[
     ".continuum/cache",
     ".cargo",
     ".rustup",
-    ".local",
+    // `.local` by its toolchain parts, never whole: `~/.local/share/keyrings` is the
+    // Linux secret store (Cormac on #4882).
+    ".local/bin",
+    ".local/lib",
+    ".local/share/uv",
+    ".local/share/pipx",
+    ".local/share/pnpm",
+    ".local/state/uv",
     ".npm",
     ".nvm",
     ".pyenv",
@@ -131,6 +138,7 @@ const READABLE_HOME_ENTRIES: &[&str] = &[
 /// deny-capable enforcer and never granted on an allow-only one (the granted roots
 /// are enumerated beneath them where that is needed). Relative to the home.
 const CARVED_OUT_HOME_ENTRIES: &[&str] = &[
+    ".local/share/keyrings",
     ".cache/huggingface/token",
     ".config/git/credentials",
     ".continuum/config.env",
@@ -521,6 +529,8 @@ mod tests {
             ".cache/huggingface/token",
             ".cache/huggingface/hub/",
             ".cache/pip/",
+            ".local/share/uv/tools/",
+            ".local/share/keyrings/login.keyring",
             ".config/gh/hosts.yml",
             ".config/git/config",
             ".config/git/credentials",
@@ -551,6 +561,7 @@ mod tests {
         assert!(ok(".gitconfig"), "git's config");
         assert!(ok(".cargo/registry/index"), "the toolchain");
         assert!(ok(".cache/pip/wheels"), "a package cache");
+        assert!(ok(".local/share/uv/tools/ruff"), "uv's tool installs");
         assert!(ok(".cache/huggingface/hub/x.gguf"), "the model cache");
         assert!(ok(".config/git/config"), "git's config dir");
         assert!(ok("miniconda3/envs/py311"), "a non-dot toolchain install");
@@ -566,6 +577,7 @@ mod tests {
         assert!(!ok(".config/git/credentials"), "a credential inside a granted dir");
         assert!(!ok(".cache/huggingface/token"), "a credential inside a WRITE root");
         assert!(!ok(".claude/credentials.json"), "an agent's auth");
+        assert!(!ok(".local/share/keyrings/login.keyring"), "the Linux secret store, beside the uv tools");
         assert!(!ok(".zsh_history"), "a shell history");
         assert!(!ok(".continuum/config.env"), "the core's secrets");
         assert!(!ok("Pictures/holiday.jpg"), "the operator's photos");
