@@ -224,15 +224,15 @@ pub struct EngineRead {
 static TURNS: LazyLock<parking_lot::Mutex<TurnPrefill>> = LazyLock::new(Default::default);
 
 /// The bound the last published window set, with the model it was measured on. It moves only
-/// when a window publishes (at most once per [`WINDOW_BUSY_MS`] of busy time), never per turn,
+/// when a window publishes a bound (at most once per [`WINDOW_BUSY_MS`] of busy time), never per turn,
 /// so the lane count it bounds cannot flap with each prompt; a lane change relaunches the
 /// engine. `None` until the first window of this process publishes: the plan then serves
 /// the decode knee alone, and the first window re-plans once.
 static KNEE: LazyLock<parking_lot::Mutex<Option<(String, u32)>>> = LazyLock::new(Default::default);
 
 /// The prefill knee of `model` on this seat: the lanes its measured server prefill can serve
-/// inside the turn budget. `None` when unmeasured, measured on another model, or when the
-/// last window found prefill was not the limit (every turn a cache hit).
+/// inside the turn budget. `None` when unmeasured or measured on another model. A window
+/// that measures no prefill keeps the last bound (see `observe_slots`).
 pub fn knee_for(model: &str) -> Option<u32> {
     KNEE.lock().as_ref().filter(|(measured, _)| measured == model).map(|(_, k)| *k)
 }
@@ -278,10 +278,13 @@ pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize
     let median = turns.median();
     let ttft = crate::inference::prefill_rate::UNATTENDED_TTFT;
     let bound = median.and_then(|m| prefill_lanes(rate, m, ttft));
-    *KNEE.lock() = match (&engine, bound) {
-        (Some(e), Some(b)) => Some((e.model.clone(), b)),
-        _ => None, // no engine named, or prefill was not the limit: no prefill bound
-    };
+    // Only a MEASURED bound replaces the last one. A window whose turns prefilled nothing
+    // keeps it: that is what the clamp itself produces once fewer lanes stop thrashing the
+    // cache, and clearing on it would unclamp, thrash, and clamp again, a relaunch each
+    // window (Fable on #4883). A looser bound still raises it the moment one is measured.
+    if let (Some(e), Some(b)) = (&engine, bound) {
+        *KNEE.lock() = Some((e.model.clone(), b));
+    }
     crate::probe!(
         class = "serving.prefill_knee.published",
         server_prefill_tps = rate,
