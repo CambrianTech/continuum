@@ -4184,6 +4184,17 @@ fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
 /// Say it on stdout AND in the log, stamped.
 fn deploy_note(line: &str) {
     println!("{line}");
+    record_deploy_note(line);
+}
+
+/// Protocol commands reserve stdout for their result; progress remains visible
+/// on stderr and in the same deployment log as interactive consumption.
+fn prepare_note(line: &str) {
+    eprintln!("{line}");
+    record_deploy_note(line);
+}
+
+fn record_deploy_note(line: &str) {
     if let Some(mut f) = deploy_log_file() {
         use std::io::Write;
         let stamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
@@ -4562,7 +4573,7 @@ async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
 /// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
 /// published is not THE build for this node, or does not match its checksum.
 async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
-    prepare_ci_core(repo, tip, platform, None).await
+    prepare_ci_core(repo, tip, platform, None, deploy_note).await
 }
 
 struct CiArtifactPreparation {
@@ -4591,13 +4602,13 @@ async fn prepare_prebuilt(args: Vec<String>) -> Result<(), String> {
     let (tip, _) = prebuilt_checkout_build_key(repo, None, head.trim());
     let platform = continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH)
         .ok_or("No compatible prebuilt is published for this platform")?;
-    let core = prepare_ci_core(repo, &tip, platform, Some(Path::new(&args[1])))
+    let core = prepare_ci_core(repo, &tip, platform, Some(Path::new(&args[1])), prepare_note)
         .await?.ok_or("The requested prebuilt is not published")?;
     println!("{}", serde_json::json!({"core": core, "git_sha": tip}));
     Ok(())
 }
 
-async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Option<&Path>) -> Result<Option<PathBuf>, String> {
+async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Option<&Path>, note: fn(&str)) -> Result<Option<PathBuf>, String> {
     use continuum_cli_lifecycle::prebuilt_artifact::{gpu_verdict, manifest_url, manifest_verdict, ArtifactManifest};
     use sha2::{Digest, Sha256};
     use std::io::Write;
@@ -4710,7 +4721,7 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
         std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), manifest.runtime_libs.join("\n"))
             .map_err(|e| format!("cannot record the runtime libraries beside {}: {e}", core.display()))?;
     }
-    deploy_note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
+    note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
     preparation.complete = true;
     prune_ci_cores(&root, &dir);
     Ok(Some(core))

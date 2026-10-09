@@ -1,6 +1,6 @@
 # Regression: installer native commands must retain arguments, drain both pipes,
 # and preserve failures without allocating a console in desktop harnesses.
-param([switch]$CheckDescendants)
+param([switch]$CheckDescendants, [string]$PrebuiltCli)
 $ErrorActionPreference = 'Stop'
 # A long-lived host may have loaded the previous helper ABI already. The new
 # launcher must not bind its completed-exit call to that cached zero-arg type.
@@ -11,6 +11,69 @@ if (-not ('Continuum.Setup.OwnedProcess' -as [type])) {
 $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-process-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $scratch | Out-Null
 try {
+    if ($PrebuiltCli) {
+        # Real published CLI regression: verified-archive progress must not
+        # contaminate the JSON consumed by Get-CorePrebuiltRelease. This uses
+        # its actual downloaded-archive path, not a canned child response.
+        $checkout = Join-Path $scratch 'checkout'
+        $download = Join-Path $scratch 'download'
+        $fixtureHome = Join-Path $scratch 'home'
+        $payload = Join-Path $download 'continuum-core-windows-x86_64'
+        New-Item -ItemType Directory -Force -Path "$checkout/tools/scripts/lib",$payload,$fixtureHome | Out-Null
+        [IO.File]::WriteAllText("$checkout/tools/scripts/lib/core-features.sh", 'select_core_features() { CONTINUUM_HARDWARE_FEATURES=""; }')
+        & git -C $checkout init --quiet
+        & git -C $checkout add .
+        & git -C $checkout -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m fixture
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot create prebuilt fixture checkout.' }
+        $fork = (& git -C $checkout rev-parse HEAD).Trim()
+        & git -C $checkout update-index --add --cacheinfo "160000,$fork,core/vendor/llama.cpp"
+        & git -C $checkout -c user.name=Fixture -c user.email=fixture@example.invalid commit --quiet -m fork
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot record fixture engine identity.' }
+        $tip = (& git -C $checkout rev-parse HEAD).Trim()
+        $bins = @('continuum-core-server','continuum','continuum-mcp','forge-custodian')
+        foreach ($bin in $bins) { [IO.File]::WriteAllText((Join-Path $payload "$bin.exe"), 'archive fixture; never executed') }
+        $archive = Join-Path $download 'continuum-core-windows-x86_64.tar.gz'
+        & tar.exe -czf $archive -C $download 'continuum-core-windows-x86_64'
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot create prebuilt fixture archive.' }
+        $manifest = @{platform='windows-x86_64'; git_sha=$tip; features=''; archive=(Split-Path $archive -Leaf); sha256=(Get-FileHash $archive).Hash.ToLowerInvariant(); bins=$bins; runtime_libs=@(); engine=@{source_revision=$fork;backend='cuda';relative_path='engine'}}
+        $manifestPath = Join-Path $download 'continuum-core-windows-x86_64.json'
+        $child = Join-Path $scratch 'prepare-child.ps1'
+        @'
+param($Cli, $Checkout, $Download, $FixtureHome)
+# Only this child changes its cache/log root, never the test host or user state.
+$env:HOME = $FixtureHome
+$env:USERPROFILE = $FixtureHome
+& $Cli prepare-prebuilt $Checkout $Download
+exit $LASTEXITCODE
+'@ | Set-Content -LiteralPath $child -Encoding UTF8
+        # Initialize and reuse the installer's job-owned adapter: timeout disposal
+        # kills the CLI and tar/git descendants, then reaps before scratch cleanup.
+        Invoke-InstallerProcess -OwnProcessTree "$env:SystemRoot\System32\cmd.exe" @('/d','/c','exit','0')
+        foreach ($corrupt in @($false,$true)) {
+            if ($corrupt) { $manifest.sha256 = '0' * 64 }
+            [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+            $start = New-Object Diagnostics.ProcessStartInfo
+            $start.FileName = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+            $start.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File "' + $child + '" "' + [IO.Path]::GetFullPath($PrebuiltCli) + '" "' + $checkout + '" "' + $download + '" "' + $fixtureHome + '"'
+            $start.WorkingDirectory = $scratch
+            $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+            $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+            $process = [Continuum.Setup.OwnedProcessV2]::Start($start)
+            try {
+                $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+                if (-not $process.WaitForExit(30000)) { throw 'Real prebuilt preparation timed out.' }
+                if ($corrupt) {
+                    if ($process.ExitCode -eq 0 -or $stdout.Result.Trim() -or $stderr.Result -notmatch 'sha256') { throw 'Invalid archive emitted success data or lost its checksum refusal.' }
+                } else {
+                    if ($process.ExitCode -ne 0) { throw "Real preparation refused: $($stderr.Result)" }
+                    $result = $stdout.Result | ConvertFrom-Json
+                    if ($result.git_sha -cne $tip -or -not (Test-Path -LiteralPath $result.core) -or $stderr.Result -notmatch 'deploy-consume: CI build') { throw 'Preparation lost its JSON identity, extracted core or separate diagnostic.' }
+                }
+            } finally { $process.Dispose() }
+        }
+        Write-Host 'PASS: actual prepare-prebuilt keeps verified-archive diagnostics separate from JSON and refuses corruption.'
+        return
+    }
     # Regression: hidden PS5 -File lost Cargo stderr when its host rendered
     # unmerged ErrorRecords. Test OS pipes across two real PS5 boundaries.
     $boundaryProbe = Join-Path $scratch 'boundary.ps1'
