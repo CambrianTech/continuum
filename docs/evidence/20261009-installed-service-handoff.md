@@ -48,16 +48,17 @@ promotion; preparation, receipt and stop failures unwind it, and supervised
 recovery restores it before restoring the prior core. An absent prior selection
 stays absent. Changed supervisor descriptors or engine selections refuse recovery.
 The existing promotion fixture covers no-op preparation failure, retry, actual
-prior selection, changed current and changed previous; final validation is pending.
+prior selection, changed current and changed previous. All seven existing
+engine-slot tests pass (0.17 s; 4m03s build).
 
-Validation in progress: existing Windows PS5.1 service fixture passes 36 groups,
+Local validation: existing Windows PS5.1 service fixture passes 36 groups,
 including published drift/stamp/promotion failures without source fallback.
 Existing lifecycle tests pass 71/71, including actual corrected PowerShell
 initialization through the shared owned-process boundary. Strict lifecycle
 Clippy passes. The pre-rollback core CLI check passes (48.10 s), and the updated shared
 receipt fixtures pass 2/2. The extended engine receipt regression passes 1/1
-(0.04 s; 8m22s build). The final rollback delta still needs its focused run and
-CLI check. The original failing/successful PowerShell comparison was observed
+(0.04 s; 8m22s initial build, then 0.03 s on the final snapshot). The final
+rollback CLI check passes (3m34s). The original failing/successful PowerShell comparison was observed
 in reviewer tool output; the corrected boundary is exercised by the retained
 owned-process regression, not a fabricated before/after log.
 
