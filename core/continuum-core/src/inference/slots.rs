@@ -202,6 +202,9 @@ pub struct KvSlotPool {
     /// slot pinned waits on before it leases again (card ff9ecfd8), so it never runs unpinned
     /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
     released: Arc<tokio::sync::Notify>,
+    /// Where [`Self::saved`] persists, set once when the engine is ready under a contract
+    /// that has a page dir and a fingerprint ([`SavedLedger`]). Unset = in-memory only.
+    ledger: std::sync::OnceLock<SavedLedger>,
 }
 
 /// A slot's operation permit. Dropping it wakes turns waiting for a slot
@@ -403,7 +406,27 @@ impl KvSlotPool {
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
+            ledger: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Persist this pool's confirmed-save set to `ledger` from now on. With `load`, the
+    /// ledger's own keys (same fingerprint, page file present) become restorable first:
+    /// a new core restoring the pages the last one saved. Returns the keys loaded.
+    pub(crate) fn attach_ledger(&self, ledger: SavedLedger, load: bool) -> usize {
+        let mut saved = self.saved.lock();
+        let loaded = if load {
+            let keys = ledger.load();
+            let n = keys.len();
+            saved.extend(keys);
+            n
+        } else {
+            0
+        };
+        if self.ledger.set(ledger).is_ok() {
+            self.persist_ledger(&saved);
+        }
+        loaded
     }
 
     pub fn n_slots(&self) -> u32 {
@@ -611,14 +634,103 @@ impl KvSlotPool {
     /// Record that `key`'s page was successfully written to disk — it becomes
     /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
     pub fn note_saved(&self, key: ActivityKey) {
-        self.saved.lock().insert(key);
+        let mut saved = self.saved.lock();
+        saved.insert(key);
+        self.persist_ledger(&saved);
     }
 
     /// The page turned out unusable (restore failed: file gone, geometry
     /// mismatch) — stop offering it so the turn falls back to a plain prefill
-    /// instead of retrying a dead restore every pin.
+    /// instead of retrying a dead restore every pin. Also called BEFORE a save
+    /// overwrites the page, so an interrupted save is never restorable.
     pub fn note_page_lost(&self, key: &ActivityKey) {
-        self.saved.lock().remove(key);
+        let mut saved = self.saved.lock();
+        if saved.remove(key) {
+            self.persist_ledger(&saved);
+        }
+    }
+
+    /// Write the confirmed-save set beside the pages, under the lock that changed it,
+    /// so the file's order of writes is the set's order of changes. Nothing to write
+    /// without a ledger (no page dir, or a contract that cannot be fingerprinted).
+    fn persist_ledger(&self, saved: &std::collections::HashSet<ActivityKey>) {
+        let Some(ledger) = self.ledger.get() else {
+            return;
+        };
+        if let Err(error) = ledger.write(saved) {
+            // The in-memory set stays authoritative for this process; only a restart
+            // loses the eligibility the file would have carried.
+            crate::probe!(
+                class = "inference.kv_page.ledger_unwritten",
+                path = %ledger.path.display(),
+                error = %error,
+                "the confirmed-save ledger could not be written: saved pages stay restorable in this process, a restart will re-prefill them"
+            );
+        }
+    }
+}
+
+/// The confirmed-save set of one page dir, on disk, so it outlives the process
+/// (a deploy). Before this, eligibility lived only in [`KvSlotPool::saved`], which
+/// starts empty in every core: on the M5 2026-10-10 the first turns after the 18:49Z
+/// deploy reused nothing (turn_cached 0 of 31,811 and 27,250) while their pages sat on
+/// disk. The file holds exactly the in-memory set: a key enters only after the engine
+/// confirms its save and leaves before any save overwrites it, so a timed-out or
+/// interrupted save is never in it. It is read back only under the SAME contract
+/// fingerprint it was written with (the exact-contract rule of #4367, unchanged).
+pub(crate) struct SavedLedger {
+    path: std::path::PathBuf,
+    fingerprint: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedLedgerFile {
+    fingerprint: String,
+    keys: Vec<(Uuid, Uuid)>,
+}
+
+/// The ledger's file name inside a page dir. Not an `a-*.bin` page, so the page
+/// store's trim never counts or removes it; the generation sweep removes it with its dir.
+const SAVED_LEDGER_FILE: &str = "saved-ledger.json";
+
+impl SavedLedger {
+    fn in_dir(page_dir: &std::path::Path, fingerprint: String) -> Self {
+        Self { path: page_dir.join(SAVED_LEDGER_FILE), fingerprint }
+    }
+
+    /// Atomic replace (tmp + rename) into a dir that must already exist: the lane
+    /// creates its page dir; the ledger never creates one.
+    fn write(&self, saved: &std::collections::HashSet<ActivityKey>) -> std::io::Result<()> {
+        let mut keys: Vec<(Uuid, Uuid)> = saved.iter().map(|k| (k.persona, k.room)).collect();
+        keys.sort_unstable();
+        let file = SavedLedgerFile { fingerprint: self.fingerprint.clone(), keys };
+        let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, bytes)?;
+        std::fs::rename(&tmp, &self.path)
+    }
+
+    /// The keys this ledger may restore: written under the same fingerprint, with
+    /// their page file still present. Anything else is no eligibility, never a guess:
+    /// a missing file, another contract's ledger, a malformed one.
+    fn load(&self) -> std::collections::HashSet<ActivityKey> {
+        let Some(dir) = self.path.parent() else {
+            return std::collections::HashSet::new();
+        };
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return std::collections::HashSet::new();
+        };
+        let Ok(file) = serde_json::from_slice::<SavedLedgerFile>(&bytes) else {
+            return std::collections::HashSet::new();
+        };
+        if file.fingerprint != self.fingerprint {
+            return std::collections::HashSet::new();
+        }
+        file.keys
+            .into_iter()
+            .filter_map(|(persona, room)| ActivityKey::new(persona, room))
+            .filter(|k| dir.join(page_filename(k)).is_file())
+            .collect()
     }
 }
 
@@ -644,6 +756,42 @@ pub(crate) struct KvPageContract {
     /// Cold-path revision evidence for the resolved model, adapters and engine.
     /// Unknown revisions refuse saved-page carry-over, never guess compatibility.
     pub revisions: Option<Vec<(std::path::PathBuf, u64, std::time::SystemTime)>>,
+}
+
+impl KvPageContract {
+    /// A stable digest of the whole contract, for the on-disk confirmed-save ledger:
+    /// two contracts with the same fingerprint are equal field for field. `None` under
+    /// the same conditions that refuse in-process carry-over (no page dir, unknown cache
+    /// type, unknown revisions): what cannot be compared exactly is never persisted.
+    pub(crate) fn fingerprint(&self) -> Option<String> {
+        use sha2::Digest;
+        let page_dir = self.page_dir.as_ref()?;
+        let cache_type = self.cache_type.as_ref()?;
+        let revisions = self.revisions.as_ref()?;
+        let mut h = sha2::Sha256::new();
+        let mut field = |label: &str, value: &[u8]| {
+            h.update(label.as_bytes());
+            h.update((value.len() as u64).to_le_bytes());
+            h.update(value);
+        };
+        field("model_id", self.model_id.as_bytes());
+        field("model", self.model.as_os_str().as_encoded_bytes());
+        for a in &self.adapters {
+            field("adapter", a.as_bytes());
+        }
+        field("page_dir", page_dir.as_os_str().as_encoded_bytes());
+        field("context", &self.context.to_le_bytes());
+        field("slots", &self.slots.to_le_bytes());
+        field("cache_type", cache_type.as_bytes());
+        field("engine", self.engine.as_bytes());
+        for (path, size, modified) in revisions {
+            field("revision", path.as_os_str().as_encoded_bytes());
+            field("size", &size.to_le_bytes());
+            let nanos = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).ok()?;
+            field("modified", &nanos.to_le_bytes());
+        }
+        Some(format!("{:x}", h.finalize()))
+    }
 }
 
 struct EndpointState {
@@ -1188,6 +1336,7 @@ impl EndpointTransition {
         // A fresh assignment ledger prevents old Arc holders/pins from affecting
         // the new engine. Copy ONLY saved-page eligibility under an exact contract.
         let pool = Arc::new(KvSlotPool::new(root, contract.slots));
+        let mut carried = false;
         if contract.page_dir.is_some()
             && contract.cache_type.is_some()
             && contract.revisions.is_some()
@@ -1195,7 +1344,22 @@ impl EndpointTransition {
         {
             if let Some(Some(old)) = state.pool.as_ref() {
                 *pool.saved.lock() = old.saved.lock().clone();
+                carried = true;
             }
+        }
+        // The same eligibility across a PROCESS restart: the ledger beside the pages,
+        // read only under the same fingerprint (the same exact contract). In-process
+        // carry-over is the fresher record when there is one, so the disk is read only
+        // when nothing was carried.
+        if let (Some(dir), Some(fingerprint)) = (contract.page_dir.as_ref(), contract.fingerprint()) {
+            let loaded = pool.attach_ledger(SavedLedger::in_dir(dir, fingerprint), !carried);
+            crate::probe!(
+                class = "inference.kv_page.ledger_attached",
+                endpoint = root,
+                carried = carried,
+                loaded = loaded as u64,
+                "confirmed-save ledger attached: pages saved under this exact contract are restorable, across a core restart too"
+            );
         }
         state.pool = Some(Some(pool));
         state.pool_generation = Some(generation.id);
@@ -1583,6 +1747,50 @@ mod tests {
         let p = dir.ensure_pool("s2", 4);
         assert_eq!(p.n_slots(), 4);
         assert!(matches!(dir.get("s2"), Some(Some(_))));
+    }
+
+    // What this catches (the M5, 2026-10-10 18:49Z: turn_cached 0 of 31,811 after a
+    // deploy, pages on disk): confirmed-save eligibility that dies with the process.
+    // A new pool under the SAME contract restores what the last one saved; a page whose
+    // file is gone, a key lost before its save completed, and any other contract (one
+    // more slot) restore nothing.
+    #[test]
+    fn confirmed_saves_survive_a_restart_only_under_the_same_contract() {
+        let dir = tempfile::tempdir().expect("test: page dir");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some(dir.path().to_path_buf()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
+        };
+        let fp = contract.fingerprint().expect("test: an exact contract fingerprints");
+        let ledger = || SavedLedger::in_dir(dir.path(), fp.clone());
+        let (kept, gone, interrupted) = (key(1, 2), key(3, 4), key(5, 6));
+        let first = KvSlotPool::new("test://ledger", 2);
+        assert_eq!(first.attach_ledger(ledger(), true), 0, "nothing saved yet");
+        for k in [kept, gone, interrupted] {
+            first.note_saved(k);
+            std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
+        }
+        std::fs::remove_file(dir.path().join(page_filename(&gone))).expect("test: page gone");
+        first.note_page_lost(&interrupted); // a save began over it and never confirmed
+
+        let restarted = KvSlotPool::new("test://ledger", 2);
+        assert_eq!(restarted.attach_ledger(ledger(), true), 1);
+        assert!(restarted.saved.lock().contains(&kept), "a confirmed save survives the restart");
+        assert!(!restarted.saved.lock().contains(&gone), "a page whose file is gone is never offered");
+        assert!(!restarted.saved.lock().contains(&interrupted), "an unconfirmed save is never offered");
+
+        let other = KvPageContract { slots: 3, ..contract.clone() };
+        let other_fp = other.fingerprint().expect("test: fingerprint");
+        assert_ne!(other_fp, fp, "the slot count is part of the page format (measured: a p2 page refused into p1)");
+        assert_eq!(KvSlotPool::new("test://ledger", 3).attach_ledger(SavedLedger::in_dir(dir.path(), other_fp), true), 0);
+        assert!(KvPageContract { revisions: None, ..contract }.fingerprint().is_none(), "unknown revisions never persist");
     }
 
     // What this catches: same-URL restart must restore saved KV, never trust old
