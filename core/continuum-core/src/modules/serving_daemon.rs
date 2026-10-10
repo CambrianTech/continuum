@@ -6071,10 +6071,24 @@ fn derived_prompt_cache_mib(
         .filter(|(id, _)| resident.contains(id))
         .map(|(_, d)| (d.sent_peak, d.peak_tokens))
         .collect();
-    let active = crate::persona::spawner_module::bounded_by_warm_slots(
+    // HOW MANY STATES: the minds actually taking turns, floored at the warm-slot bound
+    // (card 58ba9752, 5346e86a). lanes x 2 alone was the guard written after the M5 swap,
+    // not a sizing law: on the IntelMac, 2026-10-10, it held 4 states while 7 minds
+    // rotated through 2 lanes, so each evicted another and every turn re-prefilled
+    // 15-31k cold (cached 0-1,554). Counting minds seen within the rotation window keeps
+    // the M5's 23 dormant seeds out (the 7b01ed65 want stays demand-sized), and the bytes
+    // remain capped by `affordable_bytes` below, which pressure still shrinks.
+    let warm_floor = crate::persona::spawner_module::bounded_by_warm_slots(
         resident.len(),
         (lanes > 0).then_some(lanes),
     );
+    let seen: Vec<u64> = crate::cognition::working_set::global()
+        .all()
+        .into_iter()
+        .filter(|(id, _)| resident.contains(id))
+        .map(|(_, d)| d.last_seen_ms)
+        .collect();
+    let active = rotating_minds(&seen, crate::persona::trace::now_ms()).max(warm_floor);
     let demands = active_cache_states(&population, served_ctx, active);
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
     let decision = prompt_cache_decision(
@@ -6214,6 +6228,22 @@ struct PromptCacheDecision {
 /// roster that can serve (`MINDLESS_RESIDENT_FLOOR` states) — never the whole population:
 /// an absence is not a number in either direction, and "everything" is exactly the
 /// astronomical want this law exists to delete (Cormac's condition on #4253).
+/// How long a mind stays "in rotation" after her last turn, for prompt-cache sizing: a
+/// state is worth holding while she may come back for it. A mind silent longer has left
+/// the rotation and re-prefills when she wakes.
+// derived-or-floor: a floor — longer than one turn cycle on the slowest seat measured (the IntelMac: 16-30 min per turn per lane, minds returning within the hour).
+pub const ROTATION_WINDOW_MS: u64 = 60 * 60 * 1000;
+
+/// PURE: how many residents took a turn within [`ROTATION_WINDOW_MS`] of `now_ms`, from
+/// each one's last-seen stamp. The prompt cache holds this many states (never fewer than
+/// the warm-slot floor), so the minds that rotate keep their prefixes.
+pub fn rotating_minds(last_seen_ms: &[u64], now_ms: u64) -> usize {
+    last_seen_ms
+        .iter()
+        .filter(|&&seen| seen > 0 && now_ms.saturating_sub(seen) <= ROTATION_WINDOW_MS)
+        .count()
+}
+
 pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize) -> Vec<u32> {
     let mut states: Vec<u32> = population
         .iter()
@@ -7527,6 +7557,23 @@ pub(crate) mod tests {
             "demand-sized ({} MiB), not the afford ({afford_mib} MiB)",
             decision.desired_mib
         );
+    }
+
+    // what this catches (card 58ba9752): the cache sized for lanes x 2 while more minds
+    // rotate. The IntelMac, 2026-10-10: 7 minds turning through 2 lanes against 4 states,
+    // so every turn re-prefilled cold. Minds seen within the rotation window count; the
+    // M5's dormant seeds (never seen, or seen hours ago) do not, so 7b01ed65 stays shut.
+    #[test]
+    fn the_cache_counts_the_minds_that_rotate_not_the_seeds_on_disk() {
+        let now = 10 * ROTATION_WINDOW_MS;
+        let minute = 60_000;
+        let intelmac: Vec<u64> = (0..7).map(|i| now - i * 5 * minute).chain([0]).collect();
+        assert_eq!(rotating_minds(&intelmac, now), 7, "seven turned this hour; one never has");
+        let m5: Vec<u64> = (0..23).map(|i| if i < 3 { now - minute } else { now - 3 * ROTATION_WINDOW_MS }).collect();
+        assert_eq!(rotating_minds(&m5, now), 3, "23 seeds, three in rotation: the want stays demand-sized");
+        let floor = crate::persona::spawner_module::bounded_by_warm_slots(23, Some(2));
+        assert_eq!(rotating_minds(&m5, now).max(floor), floor, "the warm-slot floor still holds");
+        assert_eq!(rotating_minds(&[now - ROTATION_WINDOW_MS - 1], now), 0, "past the window is out of rotation");
     }
 
     // what this catches: c8a8829b / the 4096 MiB incident hid all prior branches
