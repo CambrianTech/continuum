@@ -424,7 +424,7 @@ pub(crate) async fn ask_the_act_question(
                     // her conversation turns (Cormac on #4474).
                     let mut genome_back =
                         crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
-                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, card_uuid) {
+                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid) {
                         crate::probe!(
                             class = "persona.genome.card_genes",
                             persona = %ctx.identity.agent_name,
@@ -450,9 +450,10 @@ pub(crate) async fn ask_the_act_question(
                         credit_capture.as_mut(),
                     )
                     .await;
-                    // Her genome between cards is her promoted genome alone: a trial gene
-                    // rides only the cards that drew it. Unreadable: the pre-turn snapshot.
-                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, None) {
+                    // After the card her genome is what every turn runs with (her trained
+                    // genes, §3d); re-read so a gene that landed mid-turn is in her head next
+                    // turn. Unreadable: the pre-turn snapshot.
+                    if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid) {
                         genome_back.restore_to(genes);
                     }
                     drop(genome_back);

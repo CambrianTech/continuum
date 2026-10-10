@@ -253,36 +253,33 @@ impl GeneTrial {
     }
 }
 
-/// PURE: the genes a turn of `persona` runs with on `base`: every promoted gene, plus each
-/// open trial's gene when `card` drew its candidate arm. A turn with no card (a
-/// conversation turn) runs the promoted genome alone: only a card has an outcome to
-/// credit a candidate with.
-pub fn genes_for_turn(
-    trials: &[GeneTrial],
-    persona: Uuid,
-    base: &str,
-    card: Option<Uuid>,
-) -> Vec<ActiveAdapterRequest> {
+/// PURE: the genes a turn of `persona` runs with on `base`: every gene she trained that
+/// has not been retired, on EVERY turn, card or conversation (Joel, 2026-10-10: a gene is
+/// hers once trained and follows her mind, never her workload; the full rule, selection
+/// by distance with two tiers, is GENE-REUSE-FORK-MINT §3d; with one gene there is nothing
+/// to select). The per-card arm (`candidate_arm`) no longer decides what is in her head;
+/// its tallies stop moving, so the old gate never decides again, and the trial row stays
+/// as the gene's receipt and rollback handle.
+pub fn genes_for_turn(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<ActiveAdapterRequest> {
     trials
         .iter()
         .filter(|t| t.persona_id == persona && t.base_model_id == base)
         .filter(|t| match t.state {
-            TrialState::Promoted => true,
-            TrialState::Trial => card.is_some_and(|c| t.candidate_arm(c)),
+            TrialState::Promoted | TrialState::Trial => true,
             TrialState::Retired | TrialState::Expired => false,
         })
         .map(GeneTrial::page)
         .collect()
 }
 
-/// The genes her next turn runs with, read from the trial file and the base the node serves
-/// right now. `None` when either cannot be read: the caller then leaves her genome as it is
+/// The genes her next turn runs with (every turn, card or conversation), read from the trial
+/// file and the base the node serves right now. `None` when either cannot be read: the caller then leaves her genome as it is
 /// (never a guessed one), and the reason is on the probe stream.
-pub fn live_genes(persona: Uuid, card: Option<Uuid>) -> Option<Vec<ActiveAdapterRequest>> {
+pub fn live_genes(persona: Uuid) -> Option<Vec<ActiveAdapterRequest>> {
     let base = crate::inference::llama_server::current_serving().active_model?;
     let store = GeneTrials::default_store()?;
     match store.load() {
-        Ok(trials) => Some(genes_for_turn(&trials, persona, &base, card)),
+        Ok(trials) => Some(genes_for_turn(&trials, persona, &base)),
         Err(error) => {
             crate::probe!(
                 class = "genome.trial.unreadable",
@@ -748,13 +745,12 @@ mod tests {
             assert_eq!(t.candidate_arm(*c), t.candidate_arm(*c));
         }
         let trials = store.load().unwrap();
-        let card_on = *cards.iter().find(|c| t.candidate_arm(**c)).unwrap();
-        let card_off = *cards.iter().find(|c| !t.candidate_arm(**c)).unwrap();
-        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", Some(card_on)).len(), 1);
-        assert!(genes_for_turn(&trials, kimi, "qwen-27b", Some(card_off)).is_empty());
-        assert!(genes_for_turn(&trials, kimi, "qwen-27b", None).is_empty(), "no card, no candidate");
-        assert!(genes_for_turn(&trials, kimi, "other-base", Some(card_on)).is_empty());
-        assert!(genes_for_turn(&trials, Uuid::nil(), "qwen-27b", Some(card_on)).is_empty());
+        // what this catches (Joel, 2026-10-10; gene 1 loaded on the 5090 and served zero turns
+        // because she held no card): a trained gene is in her head on every turn; no card,
+        // room or arm is asked (the signature says so).
+        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b").len(), 1, "a turn talks through the gene she trained");
+        assert!(genes_for_turn(&trials, kimi, "other-base").is_empty());
+        assert!(genes_for_turn(&trials, Uuid::nil(), "qwen-27b").is_empty());
 
         let verdict = TrialVerdict { candidate: ArmTally { settled: 6, passed: 4 }, stable: ArmTally { settled: 6, passed: 3 }, reason: "no worse".into() };
         let decided = store.decide(t.id, TrialState::Promoted, verdict.clone(), 30).unwrap().expect("decided");
@@ -772,8 +768,8 @@ mod tests {
         assert!((receipt["lift"].as_f64().expect("test: numeric lift") - 1.0 / 6.0).abs() < 1e-12);
         assert!(store.decide(t.id, TrialState::Retired, verdict, 40).unwrap().is_none(), "decided once");
         let trials = store.load().unwrap();
-        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", None).len(), 1, "promoted runs every turn");
-        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", Some(card_off))[0].path, "/genes/k1.gguf");
+        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b").len(), 1, "promoted runs every turn, and a retired one never");
+        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b")[0].path, "/genes/k1.gguf");
     }
 
     // what this catches (Cormac on #4476): a gate that promotes noise. A tie or a small lead
