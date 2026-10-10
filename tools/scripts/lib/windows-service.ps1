@@ -158,12 +158,42 @@ function Get-CoreEngineIdleSlot {
     return $slot
 }
 
+function Get-CoreReceiptedEngineSlots {
+    # The engine slots the installer's own records still name: the registered descriptor and the
+    # active and previous release receipts. The core's idle-slot verb reads only its current and
+    # previous POINTERS. When an activation fails after writing its receipt but before promoting the
+    # pointer, the two disagree, and the verb calls a receipted slot idle. On the 5090
+    # (2026-10-10 02:05Z) the install then copied the new engine over the slot install-active.json
+    # named, destroying that receipt's payload, and refused on the next step. Only the engine PATH is
+    # read here, never the hashes: this asks which slot a record owns, not whether it is intact.
+    param([Parameter(Mandatory = $true)][string]$InstallRoot, $Descriptor)
+    $engines = @()
+    if ($Descriptor -and $Descriptor.engine) { $engines += [string]$Descriptor.engine }
+    foreach ($name in @('install-active.json', 'install-previous.json')) {
+        $path = Join-Path $InstallRoot $name
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        if ((Get-Item -LiteralPath $path).Length -gt 65536) { throw "Release receipt $name is oversized; no slot can be proven unreceipted." }
+        $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -ErrorAction Stop
+        if ($receipt.release -and $receipt.release.engine) { $engines += [string]$receipt.release.engine }
+    }
+    @($engines | ForEach-Object { ConvertTo-CoreImagePath (Split-Path $_ -Parent) })
+}
+
 function Select-CoreEngineSlot {
     param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli, [switch]$SkipIfBusy)
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy
     if ($fromCore -eq 'BUSY') { return $null }
+    $receipted = @(Get-CoreReceiptedEngineSlots -InstallRoot $InstallRoot -Descriptor $Descriptor)
     if ($fromCore) {
+        if (@($receipted | Where-Object { [string]::Equals($_, $fromCore, [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            # The verb prefers a slot that is neither current nor previous, so on a node whose records
+            # agree with its pointers this never fires. When it does, the records disagree, and
+            # overwriting would destroy a release a receipt still owns: refuse, and let the supported
+            # receipt reconciliation retire the record first.
+            if ($SkipIfBusy) { return $null }
+            throw "The core named $fromCore idle, but an installer release receipt still names it; refusing to overwrite a receipted engine."
+        }
         # Belt and braces: a live engine whose path IS readable must not sit in the answer.
         $readable = @(Get-CimInstance Win32_Process -ErrorAction Stop |
             Where-Object { $_.Name -eq 'llama-server.exe' -and $_.ExecutablePath } |
@@ -189,6 +219,7 @@ function Select-CoreEngineSlot {
     $engineSlot = $null
     foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
         $candidate = Join-Path $root $name
+        if (@($receipted | Where-Object { [string]::Equals($_, $candidate, [StringComparison]::OrdinalIgnoreCase) }).Count) { continue }
         if (-not @($enginePaths | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
             $engineSlot = $candidate; break
         }
