@@ -266,8 +266,54 @@ pub fn measured_record(model: &str) -> Option<MeasuredCost> {
 /// excluded. On macOS `proc_pid_rusage` (libproc, no entitlement for our own user's
 /// processes); on Linux `/proc/<pid>/status` `RssAnon + VmSwap`. `None` = could not
 /// look (a dead pid, another platform) — never zero.
+///
+/// The RECENT maximum of the process's current reading ([`FOOTPRINT_WINDOW`]): the pager
+/// can dip the current figure while nothing was freed (9.0 → 5.9 GB in a minute on a live
+/// lane, 2026-09-17), so one reading under-states the need; the most it held in the window
+/// does not. Never the LIFETIME peak, which keeps the engine's LOAD forever: on the M5,
+/// 2026-10-10 23:34Z, the lifetime peak read 19.02 GB while the running engine held 11 GB,
+/// and that 8 GB became a 4.6 GB "fixed" cost per lane that kept the plan at one lane.
 pub fn anon_footprint_of(pid: u32) -> Option<u64> {
-    anon_footprint_impl(pid)
+    let reading = anon_footprint_impl(pid)?;
+    let process = (pid, crate::inference::engine_residency::process_start_s(pid).unwrap_or(0)); // unwrap_or: an unreadable start time keys by pid alone, as before
+    let mut windows = RECENT_FOOTPRINTS.lock();
+    Some(recent_max(&mut windows, process, now_ms(), reading))
+}
+
+/// How far back the recent maximum looks: longer than a pager dip (about a minute measured),
+/// short enough that a load peak (the first readings after a launch) ages out within a plan
+/// window. derived-or-floor: a floor over the measured dip.
+pub const FOOTPRINT_WINDOW: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+/// Readings kept per process and processes kept: what bounds the window in memory.
+const FOOTPRINT_SAMPLES: usize = 64;
+const FOOTPRINT_PROCESSES: usize = 8;
+
+/// Each process's recent readings, `(at_ms, bytes)`, keyed by (pid, OS start time) so a
+/// recycled pid never inherits another process's peak.
+type FootprintWindows = std::collections::VecDeque<((u32, u64), std::collections::VecDeque<(u64, u64)>)>;
+static RECENT_FOOTPRINTS: LazyLock<parking_lot::Mutex<FootprintWindows>> =
+    LazyLock::new(|| parking_lot::Mutex::new(std::collections::VecDeque::new()));
+
+/// PURE: add `reading` to `process`'s window and return the largest reading still inside
+/// [`FOOTPRINT_WINDOW`]. Bounded by [`FOOTPRINT_SAMPLES`] per process and
+/// [`FOOTPRINT_PROCESSES`] processes (the least recently read is dropped).
+fn recent_max(windows: &mut FootprintWindows, process: (u32, u64), now_ms: u64, reading: u64) -> u64 {
+    let horizon = now_ms.saturating_sub(FOOTPRINT_WINDOW.as_millis() as u64);
+    let mut ring = match windows.iter().position(|(p, _)| *p == process) {
+        Some(i) => windows.remove(i).map(|(_, r)| r).unwrap_or_default(), // unwrap_or_default: position just found it, so this is always Some
+        None => std::collections::VecDeque::new(),
+    };
+    ring.retain(|(at, _)| *at >= horizon);
+    ring.push_back((now_ms, reading));
+    while ring.len() > FOOTPRINT_SAMPLES {
+        ring.pop_front();
+    }
+    let max = ring.iter().map(|(_, b)| *b).max().unwrap_or(reading); // unwrap_or: the ring holds at least this reading
+    windows.push_back((process, ring));
+    while windows.len() > FOOTPRINT_PROCESSES {
+        windows.pop_front();
+    }
+    max
 }
 
 #[cfg(target_os = "macos")]
@@ -279,10 +325,9 @@ fn anon_footprint_impl(pid: u32) -> Option<u64> {
     // (18..27), v4 logical_writes (27), LIFETIME_MAX_PHYS_FOOTPRINT (28), instructions,
     // cycles, billed_energy, serviced_energy, interval_max_phys_footprint, runnable_time.
     //
-    // The measurement is the LARGER of the current footprint and the lifetime peak: the
-    // need is what the process ever held, and the current figure dips as the pager moves
-    // its pages (measured 2026-09-17 11:21Z: 9.0 → 5.9 GB in one minute on a live lane
-    // while swap grew 2 GB — the same server, nothing freed).
+    // The CURRENT footprint only. The recent maximum over a window is taken by the caller
+    // ([`anon_footprint_of`]), never the lifetime peak (index 28), which holds the engine's
+    // load and read 19.02 GB against a running 11 GB on the M5 (2026-10-10).
     #[repr(C)]
     struct RusageInfoV4 {
         uuid: [u8; 16],
@@ -293,12 +338,11 @@ fn anon_footprint_impl(pid: u32) -> Option<u64> {
     }
     const RUSAGE_INFO_V4: libc::c_int = 4;
     const PHYS_FOOTPRINT: usize = 7;
-    const LIFETIME_MAX_PHYS_FOOTPRINT: usize = 28;
     let mut info = RusageInfoV4 { uuid: [0; 16], fields: [0; 35] };
     // SAFETY: the buffer is a correctly sized, writable rusage_info_v4; libproc only
     // writes within it for flavor V4.
     let rc = unsafe { proc_pid_rusage(pid as libc::c_int, RUSAGE_INFO_V4, &mut info) };
-    (rc == 0).then(|| info.fields[PHYS_FOOTPRINT].max(info.fields[LIFETIME_MAX_PHYS_FOOTPRINT]))
+    (rc == 0).then(|| info.fields[PHYS_FOOTPRINT])
 }
 
 #[cfg(target_os = "linux")]
@@ -462,6 +506,28 @@ pub fn save_to(path: &Path, costs: &BTreeMap<String, MeasuredCost>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the M5, 2026-10-10 23:34Z: the reader returned the LIFETIME peak,
+    // 19.02 GB, for an engine holding 11 GB; the load-time 8 GB became a 4.6 GB "fixed" cost
+    // per lane and the plan settled at one lane): the footprint is the most the process held
+    // RECENTLY. A load peak ages out of the window; a pager dip inside it does not lower the
+    // reading; a recycled pid (another start time) never inherits a peak; the map is bounded.
+    #[test]
+    fn the_footprint_is_a_recent_max_never_the_load_peak() {
+        let gb = 1_000_000_000u64;
+        let window = FOOTPRINT_WINDOW.as_millis() as u64;
+        let mut w = FootprintWindows::new();
+        let engine = (22606, 1_700_000_000);
+        assert_eq!(recent_max(&mut w, engine, 0, 19 * gb), 19 * gb, "the load peak is what it held then");
+        assert_eq!(recent_max(&mut w, engine, 60_000, 11 * gb), 19 * gb, "still inside the window");
+        assert_eq!(recent_max(&mut w, engine, window + 60_000, 11 * gb), 11 * gb, "the load peak aged out");
+        assert_eq!(recent_max(&mut w, engine, window + 120_000, 7 * gb), 11 * gb, "a pager dip does not lower the reading");
+        assert_eq!(recent_max(&mut w, (22606, 1_800_000_000), window + 180_000, 5 * gb), 5 * gb, "a recycled pid starts fresh");
+        for pid in 0..(FOOTPRINT_PROCESSES as u32 * 2) {
+            recent_max(&mut w, (pid, 1), window + 240_000, gb);
+        }
+        assert!(w.len() <= FOOTPRINT_PROCESSES, "bounded by processes");
+    }
 
     // what this catches: no per-token reading at a starved window. At 2,048 tokens the
     // excess over weights is fixed buffers and reads as ~244k B/token; remembered, it pins
