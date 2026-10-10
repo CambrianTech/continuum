@@ -238,19 +238,41 @@ pub(crate) struct Refusal {
     pub error: String,
 }
 
-pub(crate) const REFUSAL_FILE: &str = "refusal.json";
+/// Why a job ended WITHOUT training in a way that hands its examples back to her bucket
+/// (card 0b8de4da). Recorded in the job's own directory (`returnable.json`) where it
+/// happens; the trigger's tick reads it. A job that failed any other way records nothing
+/// and is not returned automatically.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub(crate) enum Returnable {
+    /// The engine refused the run's graph: the next dispatch steps the chunk down.
+    EngineRefused(Refusal),
+    /// The lane this run was bound to was replaced while it waited at admission (a
+    /// re-home or relaunch): nothing ran, and the next dispatch plans against the new lane.
+    /// The 5090, 2026-10-10: a7893e09's 18 examples stranded this way until a human
+    /// cancelled and returned it.
+    LaneReplaced { error: String },
+}
 
-fn write_refusal(job_dir: &Path, refusal: &Refusal) -> Result<(), String> {
+pub(crate) const RETURNABLE_FILE: &str = "returnable.json";
+/// #4904's record, before `Returnable` (card 2dfce676): still read, as `EngineRefused`.
+const LEGACY_REFUSAL_FILE: &str = "refusal.json";
+
+fn write_returnable(job_dir: &Path, returnable: &Returnable) -> Result<(), String> {
     std::fs::create_dir_all(job_dir).map_err(|e| format!("{}: {e}", job_dir.display()))?;
-    let path = job_dir.join(REFUSAL_FILE);
-    let text = serde_json::to_string(refusal).map_err(|e| e.to_string())?; // file on disk: the job dir's refusal.json, read back by the trigger after a restart
+    let path = job_dir.join(RETURNABLE_FILE);
+    let text = serde_json::to_string(returnable).map_err(|e| e.to_string())?; // file on disk: the job dir's returnable.json, read back by the trigger after a restart
     std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// The refusal recorded in `job_dir`, if the engine refused this job. A missing or unreadable
-/// file is no refusal: the job failed some other way and is not returned automatically.
-pub(crate) fn read_refusal(job_dir: &Path) -> Option<Refusal> {
-    serde_json::from_slice(&std::fs::read(job_dir.join(REFUSAL_FILE)).ok()?).ok()
+/// What `job_dir` records about a return, if anything: `returnable.json`, else #4904's
+/// `refusal.json` as `EngineRefused`. A missing or unreadable record is none.
+pub(crate) fn read_returnable(job_dir: &Path) -> Option<Returnable> {
+    if let Some(r) = std::fs::read(job_dir.join(RETURNABLE_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok()) {
+        return Some(r);
+    }
+    let legacy: Refusal = serde_json::from_slice(&std::fs::read(job_dir.join(LEGACY_REFUSAL_FILE)).ok()?).ok()?;
+    Some(Returnable::EngineRefused(legacy))
 }
 
 /// PURE: whether a refused job has a smaller rung to step down to. At the smallest chunk a
@@ -1140,7 +1162,7 @@ impl EngineRun {
                         let refused = Shape { window: ran_window, chunk: ran_chunk, ..self.shape.clone() };
                         // The job's examples belong back in her bucket so the next dispatch can
                         // step down; the trigger reads this to decide (card 2dfce676).
-                        if let Err(e) = write_refusal(&self.job_dir, &Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() }) {
+                        if let Err(e) = write_returnable(&self.job_dir, &Returnable::EngineRefused(Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() })) {
                             crate::probe!(
                                 class = "training.job.refusal_unrecorded",
                                 job = %self.job,
@@ -1606,15 +1628,22 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     job_spec: Some(spec.clone()),
                 };
                 let (bind_store, bind_work) = (store.clone(), bound.clone());
+                let bind_job_dir = spec.job_dir.clone();
                 let bind = move || -> Result<(), String> {
                     let now = crate::inference::lane_registry::live_lane()
                         .and_then(|rec| incarnation_of(&rec))
                         .ok_or("no live engine at admission: the lane went away while this job waited")?;
                     if now != chosen {
-                        return Err(format!(
+                        let error = format!(
                             "the lane was replaced while this job waited (pid {} started {} is now pid {} started {}); not training on a different engine",
                             chosen.pid, chosen.started_s, now.pid, now.started_s
-                        ));
+                        );
+                        // Nothing ran: the examples go back to her bucket and the next dispatch
+                        // plans against the new lane (card 0b8de4da).
+                        if let Err(e) = write_returnable(&bind_job_dir, &Returnable::LaneReplaced { error: error.clone() }) {
+                            crate::probe!(class = "training.job.returnable_unrecorded", error = %e, "the replaced lane could not be recorded; the examples wait for a manual return");
+                        }
+                        return Err(error);
                     }
                     crate::inference::engine_residency::record(&bind_store, bind_work)
                 };
@@ -1841,10 +1870,14 @@ mod tests {
         // and a return happens only while a smaller chunk is left, so a job refused even at
         // the smallest is never returned into the same refusal forever.
         let dir = tempfile::tempdir().expect("test: tempdir");
-        assert_eq!(read_refusal(dir.path()), None, "no record, no refusal");
+        assert_eq!(read_returnable(dir.path()), None, "no record, no return");
         let refused = Refusal { window: 1536, chunk: 512, graph_bytes: 12_654 << 20, error: "over budget".into() };
-        write_refusal(dir.path(), &refused).expect("test: write");
-        assert_eq!(read_refusal(dir.path()), Some(refused.clone()));
+        // #4904's legacy refusal.json is still read, as EngineRefused
+        std::fs::write(dir.path().join(LEGACY_REFUSAL_FILE), serde_json::to_string(&refused).expect("test: json")).expect("test: legacy");
+        assert_eq!(read_returnable(dir.path()), Some(Returnable::EngineRefused(refused.clone())));
+        let replaced = Returnable::LaneReplaced { error: "the lane was replaced while this job waited".into() };
+        write_returnable(dir.path(), &replaced).expect("test: write");
+        assert_eq!(read_returnable(dir.path()), Some(replaced), "returnable.json wins over the legacy record");
         assert!(refusal_has_smaller_rung(&refused), "512 steps down to 256");
         assert!(!refusal_has_smaller_rung(&Refusal { chunk: 256, ..refused.clone() }), "256 is the floor");
         assert!(!refusal_has_smaller_rung(&Refusal { window: 1280, chunk: 256, ..refused }), "a 5x256 window's only chunk is 256");
