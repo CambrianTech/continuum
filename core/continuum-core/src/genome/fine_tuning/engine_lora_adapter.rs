@@ -2207,11 +2207,17 @@ mod tests {
         t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        // the trigger's dispatch and `return` carry no schedule: the engine runs the default
+        r.schedule = None;
         let h = t.create_job(r).await.expect("test: create");
         let TrainingStatus::Completed { .. } = wait_terminal(&t, &h).await else {
             panic!("test: not completed");
         };
-        assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["window"].as_u64(), Some(61_696), "the served window is sent as the ceiling");
+        let posted = seen.lock().unwrap().clone().expect("test: posted");
+        assert_eq!(posted["window"].as_u64(), Some(61_696), "the served window is sent as the ceiling");
+        // what this catches (the 5090, 2026-10-10, job ff186697): every trigger-dispatched gene
+        // trained at a second, disagreeing default of 1e-5 and barely moved (-0.2% per epoch)
+        assert_eq!(posted["lr"].as_f64(), Some(super::super::native_jobs::DEFAULT_LEARNING_RATE), "a run with no schedule trains at the one default learning rate");
         let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: footprint filed")).unwrap();
         let keys: Vec<&String> = rows.as_object().unwrap().keys().collect();
         // …and under the chunk that ran: 61,696 is 241 blocks, prime, so the engine's chunk was
