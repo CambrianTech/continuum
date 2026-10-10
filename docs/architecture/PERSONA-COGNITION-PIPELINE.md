@@ -37,6 +37,11 @@ data root. A selected legacy snapshot is not an acknowledged final-turn flush.
 
 ## 2. The Brain Pipeline — the verbs that exist
 
+Proposed extension: [adversarial hypothesis reasoning](ADVERSARIAL-HYPOTHESIS-REASONING.md)
+describes competing explanations, source provenance, bounded adversarial
+simulation, and calibrated action under uncertainty. It is a design placeholder,
+not implemented runtime behavior; integrate through the live owners below.
+
 This is the cognition cycle PER PERSONA, PER TURN. The verbs exist in `core/continuum-core/src/cognition/` and `core/continuum-core/src/persona/`. Do not re-implement. Do not parallel.
 
 **Status column added 2026-08-14 (citizenship audit):** the LIVE turn path is the
