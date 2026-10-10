@@ -297,6 +297,30 @@ pub fn git_sync_from_shared(
     workspace_root: &Path,
     shared_checkout: &Path,
 ) -> Result<GitSyncReport, String> {
+    // 0. A card branch is the citizen's own work in flight for review, and it gets pushed.
+    // The autosave below would commit her whole workspace onto it, and the shared-wins merge
+    // could overwrite her edits (Kimi's card 63855189: five autosaves swept 3,026 files into
+    // the branch and both its PRs were closed). A card branch reconciles with canary through
+    // card staging, never here, so the sync leaves it untouched and says why.
+    let branch = run_git(workspace_root, &["symbolic-ref", "--short", "-q", "HEAD"])
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if crate::modules::card_staging::is_card_branch(&branch) {
+        crate::probe!(
+            class = "workspace.sync.skipped_card_branch",
+            root = %workspace_root.display(),
+            branch = %branch,
+            "workspace is on a card branch; shared sync left it untouched"
+        );
+        return Ok(GitSyncReport {
+            synced: false,
+            summary: format!(
+                "on card branch {branch}: not synced from shared (a card branch reconciles through card staging)"
+            ),
+        });
+    }
+
     // 1. Preserve: commit in-flight persona work before merging.
     let porcelain = run_git(workspace_root, &["status", "--porcelain"]).unwrap_or_default();
     if !porcelain.trim().is_empty() {
@@ -595,6 +619,39 @@ mod tests {
         // Idempotent: a second sync is a clean no-op.
         let again = git_sync_from_shared(citizen.path(), shared.path()).expect("2nd sync ok");
         assert!(!again.synced, "already current: {}", again.summary);
+    }
+
+    // what this catches (card 8fecb762): the sync autosaving a citizen's workspace onto
+    // her card branch and merging shared into it. Kimi's 63855189 branch carried five such
+    // autosaves (3,026 files) and both its PRs were closed unreviewable. On a card branch
+    // the sync must commit nothing, merge nothing, and leave her uncommitted work in place.
+    #[test]
+    fn sync_from_shared_leaves_a_card_branch_untouched() {
+        let shared = setup_git_repo();
+        let citizen = tempfile::tempdir().unwrap();
+        let out = std::process::Command::new("cp")
+            .arg("-R")
+            .arg(format!("{}/.", shared.path().display()))
+            .arg(citizen.path())
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "cp clone failed: {}", String::from_utf8_lossy(&out.stderr));
+        run_git(citizen.path(), &["checkout", "-b", "63855189/code-github-pr-create-checks-the"]).unwrap();
+        let head = run_git(citizen.path(), &["rev-parse", "HEAD"]).unwrap();
+
+        fs::write(shared.path().join("framework.rs"), "// shared code\n").unwrap();
+        run_git(shared.path(), &["add", "."]).unwrap();
+        run_git(shared.path(), &["commit", "-m", "shared: add framework.rs"]).unwrap();
+        fs::write(citizen.path().join("repro_scratch.py"), "# workspace debris\n").unwrap();
+
+        let report = git_sync_from_shared(citizen.path(), shared.path()).expect("sync ok");
+        assert!(!report.synced, "a card branch is not synced: {}", report.summary);
+        assert_eq!(run_git(citizen.path(), &["rev-parse", "HEAD"]).unwrap(), head, "no autosave or merge commit");
+        assert!(!citizen.path().join("framework.rs").exists(), "shared was not merged in");
+        assert!(
+            run_git(citizen.path(), &["status", "--porcelain"]).unwrap().contains("repro_scratch.py"),
+            "her uncommitted file stays uncommitted"
+        );
     }
 
     // what this catches: the citizen-sync modify/delete strand (glass-boxed

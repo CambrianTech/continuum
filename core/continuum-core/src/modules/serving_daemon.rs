@@ -1529,6 +1529,12 @@ impl ServingDaemonModule {
                 k
             }),
         };
+        // THE PREFILL KNEE (card d4d2ef4a): on a CPU seat the shared prefill rate, not memory
+        // or decode, is the limit (the IntelMac: 6 slots at 11-51 tok/s, a 13-26k prefilled
+        // median, residents "never reached the model"). The plan serves the tighter knee.
+        let decode_knee = knee;
+        let prefill_knee = model_for_knee.as_deref().and_then(crate::inference::prefill_knee::knee_for);
+        let knee = crate::inference::prefill_knee::tighter_knee(decode_knee, prefill_knee);
         // +1 SCRATCH LANE: the adapter's traffic-class placement
         // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
         // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
@@ -1555,8 +1561,10 @@ impl ServingDaemonModule {
                 model = %model_for_knee.unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,
                 knee = clamped as u64,
+                decode_knee = decode_knee.unwrap_or(0) as u64, // probe field: 0 = unmeasured
+                prefill_knee = prefill_knee.unwrap_or(0) as u64, // probe field: 0 = unmeasured, or prefill not the limit
                 clamped = clamped < lanes,
-                "lane demand against the measured decode knee — the roster pages, the streams stay fast"
+                "lane demand against the measured knees (the tighter of decode and prefill) — the roster pages, the streams stay fast"
             );
         }
         let lanes = clamped;
@@ -6063,10 +6071,24 @@ fn derived_prompt_cache_mib(
         .filter(|(id, _)| resident.contains(id))
         .map(|(_, d)| (d.sent_peak, d.peak_tokens))
         .collect();
-    let active = crate::persona::spawner_module::bounded_by_warm_slots(
+    // HOW MANY STATES: the minds actually taking turns, floored at the warm-slot bound
+    // (card 58ba9752, 5346e86a). lanes x 2 alone was the guard written after the M5 swap,
+    // not a sizing law: on the IntelMac, 2026-10-10, it held 4 states while 7 minds
+    // rotated through 2 lanes, so each evicted another and every turn re-prefilled
+    // 15-31k cold (cached 0-1,554). Counting minds seen within the rotation window keeps
+    // the M5's 23 dormant seeds out (the 7b01ed65 want stays demand-sized), and the bytes
+    // remain capped by `affordable_bytes` below, which pressure still shrinks.
+    let warm_floor = crate::persona::spawner_module::bounded_by_warm_slots(
         resident.len(),
         (lanes > 0).then_some(lanes),
     );
+    let seen: Vec<(u64, u64)> = crate::cognition::working_set::global()
+        .all()
+        .into_iter()
+        .filter(|(id, _)| resident.contains(id))
+        .map(|(_, d)| (d.last_seen_ms, d.prev_seen_ms))
+        .collect();
+    let active = rotating_minds(&seen, crate::persona::trace::now_ms(), rotation_window_ms(&seen)).max(warm_floor);
     let demands = active_cache_states(&population, served_ctx, active);
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
     let decision = prompt_cache_decision(
@@ -6206,6 +6228,36 @@ struct PromptCacheDecision {
 /// roster that can serve (`MINDLESS_RESIDENT_FLOOR` states) — never the whole population:
 /// an absence is not a number in either direction, and "everything" is exactly the
 /// astronomical want this law exists to delete (Cormac's condition on #4253).
+/// PURE: the roster's rotation window, measured: the p90 of residents' return intervals
+/// (the gap between each one's last two turns). A state is worth holding while its mind
+/// may come back for it, and how long that takes is a property of the seat, not a
+/// constant: the IntelMac, 2026-10-10, returned residents every 4-6 hours, and a declared
+/// 1h window counted too few to clear the warm-slot floor and changed nothing (Fable on #4898: "a measured window
+/// sizes; a constant guesses"). `None` when no resident has two turns on record: then
+/// nothing counts as rotating and the warm-slot floor alone sizes the cache.
+pub fn rotation_window_ms(seen: &[(u64, u64)]) -> Option<u64> {
+    let mut gaps: Vec<u64> = seen
+        .iter()
+        .filter(|(last, prev)| *prev > 0 && last > prev)
+        .map(|(last, prev)| last - prev)
+        .collect();
+    if gaps.is_empty() {
+        return None;
+    }
+    gaps.sort_unstable();
+    Some(gaps[(gaps.len() * 9).div_ceil(10) - 1])
+}
+
+/// PURE: how many residents took a turn within `window_ms` of `now_ms`, from each one's
+/// `(last_seen_ms, prev_seen_ms)`. The prompt cache holds this many states (never fewer
+/// than the warm-slot floor), so the minds that rotate keep their prefixes.
+pub fn rotating_minds(seen: &[(u64, u64)], now_ms: u64, window_ms: Option<u64>) -> usize {
+    let Some(window) = window_ms else { return 0 };
+    seen.iter()
+        .filter(|(last, _)| *last > 0 && now_ms.saturating_sub(*last) <= window)
+        .count()
+}
+
 pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize) -> Vec<u32> {
     let mut states: Vec<u32> = population
         .iter()
@@ -7519,6 +7571,41 @@ pub(crate) mod tests {
             "demand-sized ({} MiB), not the afford ({afford_mib} MiB)",
             decision.desired_mib
         );
+    }
+
+    // what this catches (card 58ba9752): the cache sized for lanes x 2 while more minds
+    // rotate. The IntelMac, 2026-10-10: 7 minds turning through 2 lanes against 4 states,
+    // so every turn re-prefilled cold. Minds seen within the rotation window count; the
+    // M5's dormant seeds (never seen, or seen hours ago) do not, so 7b01ed65 stays shut.
+    #[test]
+    fn the_cache_counts_the_minds_that_rotate_not_the_seeds_on_disk() {
+        let hour = 60 * 60 * 1000u64;
+        let minute = 60_000u64;
+        let now = 1000 * hour;
+        // The IntelMac (card 56d3c76f): residents last seen 6, 41, 77, 225, 246, 250 and
+        // 366 minutes ago, each returning every 4-7 hours, plus one never seen.
+        let intelmac: Vec<(u64, u64)> = [6u64, 41, 77, 225, 246, 250, 366]
+            .iter()
+            .zip([4u64, 5, 6, 4, 5, 6, 7])
+            .map(|(ago, every)| (now - ago * minute, now - ago * minute - every * hour))
+            .chain([(0, 0)])
+            .collect();
+        let window = rotation_window_ms(&intelmac).expect("seven measured returns");
+        assert_eq!(window, 7 * hour, "the p90 return interval");
+        assert_eq!(rotating_minds(&intelmac, now, Some(window)), 7, "the whole rotation is held; the never-seen mind is not");
+        assert_eq!(rotating_minds(&intelmac, now, Some(hour)), 2, "a declared hour counted two and lost to the floor of four: the no-op");
+        // The M5 shape: 23 seeds, three returning every 19 minutes, twenty dormant for days.
+        let m5: Vec<(u64, u64)> = (0..23)
+            .map(|i| if i < 3 { (now - minute, now - 20 * minute) } else { (now - 72 * hour, 0) })
+            .collect();
+        let w5 = rotation_window_ms(&m5);
+        assert_eq!(w5, Some(19 * minute));
+        assert_eq!(rotating_minds(&m5, now, w5), 3, "the dormant seeds stay out: 7b01ed65 stays shut");
+        let floor = crate::persona::spawner_module::bounded_by_warm_slots(23, Some(2));
+        assert_eq!(rotating_minds(&m5, now, w5).max(floor), floor, "the warm-slot floor still holds");
+        // Nothing measured yet: nothing counts, and the floor alone sizes the cache.
+        assert_eq!(rotation_window_ms(&[(now, 0)]), None);
+        assert_eq!(rotating_minds(&[(now, 0)], now, None), 0);
     }
 
     // what this catches: c8a8829b / the 4096 MiB incident hid all prior branches

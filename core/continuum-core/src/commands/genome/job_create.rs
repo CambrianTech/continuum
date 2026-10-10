@@ -95,7 +95,15 @@ pub struct JobCreateOutcome {
 /// A decision's action that creates no job. The caller (the trigger) keeps the
 /// examples in her bucket for every arm: they are the competence's evidence, no gene
 /// was trained on them, and the fill after the pending thing settles decides again.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS, JsonSchema)]
+///
+/// Deserialize is written by hand ([`TookWire`]): before #4794 (2026-10-05) this was the
+/// bare id of the job she joined, and the trigger's durable dispatches
+/// (`DispatchPhase::Held { took }`, collection `training_trigger_dispatches`) still hold
+/// rows in that shape. Read as the tagged enum alone, every one of them failed with
+/// `invalid type: string "cc4f33b7-…", expected internally tagged enum Took`, and on the
+/// 5090 (2026-10-10, BigMama) Kimi's credit settlement refused all 13 staged revisions
+/// behind it. A bare id reads as [`Took::Joined`], which is what it meant.
+#[derive(Debug, Clone, PartialEq, Serialize, TS, JsonSchema)]
 #[ts(export, export_to = "../../../protocol/typescript/genome/Took.ts")]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum Took {
@@ -125,6 +133,45 @@ pub enum Took {
     /// memories suffice and no gene is minted while that holds. The bucket keeps filling
     /// and decides again when her surprise rises.
     Unsurprised { s: f32 },
+}
+
+/// The wire shapes a [`Took`] is read from: the tagged enum it serializes as, and the
+/// bare job id it was before #4794. The tagged half mirrors [`Took`] variant for variant
+/// (serde's `remote`-style idiom: the one place the legacy shape is admitted).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TookWire {
+    Tagged(TookTagged),
+    LegacyJoinedJob(uuid::Uuid),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum TookTagged {
+    Joined { job: uuid::Uuid },
+    Awaited { trial: uuid::Uuid },
+    Reused { trial: uuid::Uuid, gene: GeneRef },
+    TrialFileUnreadable,
+    Unsurprised { s: f32 },
+}
+
+impl From<TookWire> for Took {
+    fn from(wire: TookWire) -> Self {
+        match wire {
+            TookWire::LegacyJoinedJob(job) => Took::Joined { job },
+            TookWire::Tagged(TookTagged::Joined { job }) => Took::Joined { job },
+            TookWire::Tagged(TookTagged::Awaited { trial }) => Took::Awaited { trial },
+            TookWire::Tagged(TookTagged::Reused { trial, gene }) => Took::Reused { trial, gene },
+            TookWire::Tagged(TookTagged::TrialFileUnreadable) => Took::TrialFileUnreadable,
+            TookWire::Tagged(TookTagged::Unsurprised { s }) => Took::Unsurprised { s },
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Took {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        TookWire::deserialize(deserializer).map(Took::from)
+    }
 }
 
 /// A reuse that could not pull its gene: no job, the bucket keeps its examples, the next
@@ -642,6 +689,63 @@ crate::action_command! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the 5090, 2026-10-10): a durable dispatch from before #4794
+    // holding `took` as the bare id of the joined job, refused by the tagged enum so that
+    // every settlement behind it failed. A bare id reads as Joined; the tagged shapes
+    // round-trip unchanged; and the persisted row shape itself decodes.
+    #[test]
+    fn a_took_written_as_a_bare_job_id_before_4794_reads_as_joined() {
+        let job = uuid::Uuid::from_u128(0xcc4f33b7);
+        let legacy: Took = serde_json::from_value(serde_json::json!(job.to_string())).expect("a bare id");
+        assert_eq!(legacy, Took::Joined { job });
+        // EVERY variant round-trips through the hand-written wire shape: the list below is
+        // built by a wildcard-free match, so a variant added to `Took` without a line here
+        // (and so, without a `TookTagged` twin) fails to compile instead of becoming a row
+        // nothing can read (Cormac on #4893).
+        let trial = uuid::Uuid::from_u128(5);
+        let gene = GeneRef::Hub { repo: "cambriantech/kimi-code".into() };
+        let every: Vec<Took> = [
+            Took::Joined { job },
+            Took::Awaited { trial },
+            Took::Reused { trial, gene: gene.clone() },
+            Took::TrialFileUnreadable,
+            Took::Unsurprised { s: 0.25 },
+        ]
+        .into_iter()
+        .map(|took| match took {
+            Took::Joined { job } => Took::Joined { job },
+            Took::Awaited { trial } => Took::Awaited { trial },
+            Took::Reused { trial, gene } => Took::Reused { trial, gene },
+            Took::TrialFileUnreadable => Took::TrialFileUnreadable,
+            Took::Unsurprised { s } => Took::Unsurprised { s },
+        })
+        .collect();
+        for took in every {
+            let wire = serde_json::to_value(&took).expect("serialize");
+            assert!(wire.get("kind").and_then(|k| k.as_str()).is_some(), "still tagged on the wire: {wire}");
+            assert_eq!(serde_json::from_value::<Took>(wire).expect("round trip"), took);
+        }
+        // The persisted row, in whatever tag layout DispatchPhase serializes with, with its
+        // `took` as the bare id the pre-#4794 writer stored.
+        use crate::modules::training_trigger::DispatchPhase;
+        let mut row = serde_json::to_value(DispatchPhase::Held { took: Took::Joined { job } }).expect("serialize");
+        fn put_legacy_took(v: &mut serde_json::Value, job: uuid::Uuid) -> bool {
+            match v {
+                serde_json::Value::Object(map) => {
+                    if map.contains_key("took") {
+                        map.insert("took".into(), serde_json::Value::String(job.to_string()));
+                        return true;
+                    }
+                    map.values_mut().any(|child| put_legacy_took(child, job))
+                }
+                _ => false,
+            }
+        }
+        assert!(put_legacy_took(&mut row, job), "the row carries a took: {row}");
+        let phase: DispatchPhase = serde_json::from_value(row).expect("the persisted Held row from before #4794");
+        assert!(matches!(phase, DispatchPhase::Held { took: Took::Joined { job: j } } if j == job));
+    }
     use crate::commands::genome::test_support::{registry_with, request_for};
     use crate::sdk_codegen::{ActionCommand, Ctx};
 

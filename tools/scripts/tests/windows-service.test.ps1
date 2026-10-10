@@ -149,7 +149,7 @@ try {
         $entryCold = Join-Path $scratch 'payload entry cold'
         New-Item -ItemType Directory -Path $entryLib, $entryProfile -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $repo 'install.ps1') -Destination $entryRepo
-        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-prepared.ps1', 'windows-prebuilt.ps1', 'payload-paths.ps1')) {
+        foreach ($name in @('install-common.ps1', 'windows-elevation.ps1', 'windows-service.ps1', 'windows-media-reconciliation.ps1', 'windows-prepared.ps1', 'windows-prebuilt.ps1', 'payload-paths.ps1')) {
             Copy-Item -LiteralPath (Join-Path $repo "tools\scripts\lib\$name") -Destination $entryLib
         }
         $entryGenerated = Join-Path (Split-Path $entryLib) 'generated'
@@ -444,6 +444,7 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
     $refused = $false
     try { Get-CoreEngineReceipt -Directory $engineFixture | Out-Null } catch { $refused = $_ -match 'publication is incomplete' }
     if (-not $refused) { throw 'Incomplete fresh engine publication looked legacy.' }
+    [IO.File]::WriteAllText((Join-Path $engineFixture '.llama-server.stamp'), 'aaaaaaaaa:cuda:80:portable-v1')
     Save-CoreEngineReceipt -Directory $engineFixture -SourceRevision ('a' * 40) -Backend cuda
     Get-CoreEngineReceipt -Directory $engineFixture | Out-Null
     $newCandidate = Join-Path $engineFixture 'ggml-cuda-new.dll'
@@ -474,6 +475,51 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
     $refused = $false
     try { Get-CoreEngineReceipt -Directory $engineCopy | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw 'Missing runtime file was accepted.' }
+    # Public PrepareOnly formerly overlaid an idle slot, leaving five old DLLs
+    # outside the publisher receipt. Retry must repair precisely that namespace.
+    $obsolete = @('curand64_10.dll', 'nvblas64_12.dll', 'nvrtc-builtins64_129.dll', 'nvrtc64_120_0.alt.dll', 'nvrtc64_120_0.dll')
+    [IO.File]::WriteAllText((Join-Path $engineCopy '.llama-server.stamp'), '2d4d63bbb:cuda:120')
+    foreach ($leaf in $obsolete) { [IO.File]::WriteAllText((Join-Path $engineCopy $leaf), 'obsolete') }
+    [IO.File]::WriteAllText((Join-Path $engineCopy 'operator-note.txt'), 'retain')
+    $held = [IO.File]::Open((Join-Path $engineCopy $obsolete[0]), 'Open', 'Read', 'None')
+    try {
+        $refused = $false
+        try { Copy-CoreEnginePublication -SourceDirectory $engineFixture -Directory $engineCopy } catch { $refused = $true }
+        if (-not $refused -or (Test-Path -LiteralPath (Join-Path $engineCopy 'engine-install.pending'))) { throw 'Busy slot was mutated before publication preflight.' }
+    } finally { $held.Dispose() }
+    & {
+        function Copy-Item {
+            param($LiteralPath, $Destination, [switch]$Force, $ErrorAction)
+            if ($LiteralPath -like '*.exe') { throw 'Injected interrupted engine copy' }
+            Microsoft.PowerShell.Management\Copy-Item -LiteralPath $LiteralPath -Destination $Destination -Force -ErrorAction Stop
+        }
+        $refused = $false
+        try { Copy-CoreEnginePublication -SourceDirectory $engineFixture -Directory $engineCopy } catch { $refused = $_ -match 'Injected interrupted' }
+        if (-not $refused) { throw 'Interrupted copy fixture did not execute.' }
+    }
+    $refused = $false
+    try { Get-CoreEngineReceipt -Directory $engineCopy | Out-Null } catch { $refused = $_ -match 'publication is incomplete' }
+    if (-not $refused) { throw 'Interrupted replacement admitted its previous receipt.' }
+    Copy-CoreEnginePublication -SourceDirectory $engineFixture -Directory $engineCopy
+    if ((Get-Content -LiteralPath (Join-Path $engineCopy '.llama-server.stamp') -Raw) -ne 'aaaaaaaaa:cuda:80:portable-v1') { throw 'Published engine retained an obsolete convergence stamp.' }
+    $repaired = Get-CoreEngineReceipt -Directory $engineCopy
+    if (@($repaired.files.PSObject.Properties).Count -ne 3 -or
+        (Get-Content -LiteralPath (Join-Path $engineCopy 'operator-note.txt') -Raw) -ne 'retain') { throw 'Retry did not replace exactly the application namespace.' }
+    foreach ($leaf in $obsolete) { if (Test-Path -LiteralPath (Join-Path $engineCopy $leaf)) { throw 'Obsolete runtime survived publication.' } }
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-prebuilt.ps1')
+        function git { $global:LASTEXITCODE = 0; 'a' * 40 }
+        function Get-ScheduledTask { $null }
+        function Select-CoreEngineSlot { $engineCopy }
+        $artifact = Join-Path $scratch 'published engine artifact'
+        New-Item -ItemType Directory -Path $artifact | Out-Null
+        Microsoft.PowerShell.Management\Copy-Item -LiteralPath $engineFixture -Destination (Join-Path $artifact 'engine') -Recurse
+        $refused = $false
+        try { Copy-CorePublishedEngine -RepoRoot $repo -ArtifactDirectory $artifact -InstallDirectory (Join-Path $scratch 'wrong slot') } catch { $refused = $_ -match 'no longer idle' }
+        if (-not $refused -or (Test-Path -LiteralPath (Join-Path $scratch 'wrong slot'))) { throw 'Public engine copy ignored a changed idle-slot selection.' }
+        Copy-CorePublishedEngine -RepoRoot $repo -ArtifactDirectory $artifact -InstallDirectory $engineCopy
+        Get-CoreEngineReceipt -Directory $engineCopy | Out-Null
+    }
     Write-Output 'PASS: engine receipt pins application bytes, membership and copied-slot inputs'
     # Receipt migration must use the existing source/slot owners even when the
     # source SHA and legacy stamp are already current. No compiler is invoked.
@@ -651,14 +697,23 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
     $refused = $false
     try { Get-CoreSupervisorBootstrap -UserSid '..\outside' | Out-Null } catch { $refused = $true }
     if (-not $refused) { throw 'Bootstrap principal escaped its protected path' }
+    $legacyBootstrap = Get-CoreSupervisorBootstrap
+    $generationBootstrap = Get-CoreSupervisorBootstrap -Generation ('a' * 64)
+    Assert-CoreSupervisorLocation -Path $legacyBootstrap
+    Assert-CoreSupervisorLocation -Path $generationBootstrap
+    if ($legacyBootstrap -eq $generationBootstrap) { throw 'Bootstrap upgrade would overwrite its legacy authority.' }
+    $refused = $false
+    try { Assert-CoreSupervisorLocation -Path ($generationBootstrap.Replace(('a' * 64),'arbitrary')) } catch { $refused=$true }
+    if (-not $refused) { throw 'Unbound bootstrap generation was accepted.' }
     Write-Output 'PASS: bootstrap boundary rejects caller delete-child authority'
     & {
         $fixed = Join-Path $scratch 'protected-bootstrap.exe'
         Set-Content -LiteralPath $fixed -Value 'existing protected image'
         function Get-CoreSupervisorBootstrap { param($UserSid) $fixed }
+        function Assert-CoreSupervisorLocation { param($Path,$UserSid) if ($Path -ne $fixed) { throw 'Wrong bootstrap path' } }
         $script:bootstrapVerifications = 0
         function Assert-CoreSupervisorBootstrap { param($Path,$UserSid) $script:bootstrapVerifications++ }
-        function Invoke-InstallerProcess { param($Executable,$Arguments) if ($Executable -ne $fixed -or ($Arguments -join ' ') -ne 'installed-service --protocol') { throw 'Unexpected bootstrap probe' }; $global:LASTEXITCODE=0; '2' }
+        function Invoke-InstallerProcess { param($Executable,$Arguments) if ($Executable -ne $fixed -or ($Arguments -join ' ') -ne 'installed-service --protocol') { throw 'Unexpected bootstrap probe' }; $global:LASTEXITCODE=0; '3' }
         function Copy-Item { throw 'Task reprovisioning attempted to replace the protected bootstrap' }
         Install-CoreSupervisorBootstrap -Plan ([pscustomobject]@{cli=$fixed;shell=$fixed;userSid=$identity.User.Value;bootstrapSource='missing candidate';bootstrapHashes=@{}})
         if ($script:bootstrapVerifications -ne 1 -or (Get-Content -LiteralPath $fixed -Raw).Trim() -ne 'existing protected image') { throw 'Existing bootstrap was not verified/reused intact' }
@@ -747,6 +802,12 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
             Actions = @([pscustomobject]@{ Execute=(Get-CoreSupervisorBootstrap); WorkingDirectory=(Split-Path (Get-CoreSupervisorBootstrap) -Parent); Arguments=('installed-service core "{0}"' -f $activePath) }) }
         $fixedDescription = $script:resumeTask.Description
         if ((Get-CoreRegisteredRelease -Task $script:resumeTask -InstallRoot $resumeRoot).artifact -ne $second.artifact) { throw 'Fixed supervisor did not resolve second release' }
+        $upgradedBootstrap = Get-CoreSupervisorBootstrap -Generation ('a' * 64)
+        $script:resumeTask.Description = ([ordered]@{schema=2;activeRelease=$activePath;bootstrap=$upgradedBootstrap} | ConvertTo-Json -Compress)
+        $script:resumeTask.Actions[0].Execute = $upgradedBootstrap
+        $script:resumeTask.Actions[0].WorkingDirectory = Split-Path $upgradedBootstrap -Parent
+        if ((Get-CoreRegisteredRelease -Task $script:resumeTask -InstallRoot $resumeRoot).artifact -ne $second.artifact) { throw 'Bootstrap generation migration changed the active release.' }
+        $fixedDescription = $script:resumeTask.Description
         Set-Content -LiteralPath (Join-Path $secondSlot 'fixture-runtime.dll') -Value 'tampered runtime'
         $refused = $false
         try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'changed since preparation' }
@@ -757,6 +818,121 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         if (-not $refused) { throw 'Rollback overwrote a different active selection' }
         $restored = Restore-CoreActiveRelease -ExpectedDescription ($second | ConvertTo-Json -Compress) -InstallRoot $resumeRoot
         if ($restored.artifact -ne $release.artifact -or $script:resumeTask.Description -cne $fixedDescription) { throw 'Rollback changed supervisor registration or selected wrong release' }
+        # Regression: old staging reused an engine sealed by Active/Previous,
+        # although the newly Prepared candidate itself still verified. Recover
+        # only that shape; retain evidence and never fabricate an old rollback.
+        $activeBytes = [IO.File]::ReadAllBytes($activePath)
+        $previousPath = Join-Path $resumeRoot 'install-previous.json'
+        $previousBytes = [IO.File]::ReadAllBytes($previousPath)
+        $originalEngine = [IO.File]::ReadAllBytes($release.engine)
+        $script:resumeTask | Add-Member NoteProperty State 'Ready' -Force
+        function Get-CimInstance { @() }
+        [IO.File]::WriteAllText($release.engine, 'new published engine')
+        Save-CorePreparedRelease -Release $second -InstallRoot $resumeRoot
+        $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+        if ($plan.Active.Changed.Count -ne 1 -or $plan.Active.Changed[0] -ne 'engine') { throw 'Engine-only damage was not recognized' }
+        # Real readonly diagnosis after #4889 found a legacy Previous with only
+        # four original hashes. Recovery must validate those fields then archive
+        # it as damaged, without making it eligible for ordinary rollback.
+        $legacyPrevious = [Text.Encoding]::UTF8.GetString($previousBytes) | ConvertFrom-Json
+        $legacyPrevious.hashes = [ordered]@{}
+        foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) { $legacyPrevious.hashes[$field] = $plan.Previous.Receipt.hashes.$field }
+        # Actual-box follow-up: Previous names the reused service-b as well as
+        # engine-a; artifact, cli and engine changed, launcher did not.
+        $legacyPrevious.release = $second | ConvertTo-Json | ConvertFrom-Json
+        [IO.File]::WriteAllText($second.artifact, 'new published core')
+        [IO.File]::WriteAllText($second.cli, 'new published cli')
+        Save-CorePreparedRelease -Release $second -InstallRoot $resumeRoot
+        [IO.File]::WriteAllText($previousPath, ($legacyPrevious | ConvertTo-Json -Depth 5))
+        $refused = $false
+        try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Previous | Out-Null } catch { $refused = $_ -match 'invalid hash set' }
+        if (-not $refused) { throw 'Legacy diagnostic widened ordinary rollback integrity' }
+        $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+        if (($plan.Previous.Changed | Sort-Object) -join ',' -cne 'artifact,cli,engine') { throw 'Legacy same-slot superseded files were not recognized' }
+        $legacyBytes = [IO.File]::ReadAllBytes($previousPath)
+        foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) { $legacyPrevious.hashes[$field] = $plan.Prepared.Receipt.hashes.$field }
+        [IO.File]::WriteAllText($previousPath, ($legacyPrevious | ConvertTo-Json -Depth 5))
+        $refused = $false
+        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'not damaged' }
+        if (-not $refused) { throw 'Incomplete legacy Previous was falsely treated as valid rollback' }
+        [IO.File]::WriteAllBytes($previousPath, $legacyBytes)
+        foreach ($format in @('legacy', 'modern')) {
+            $superseded = [Text.Encoding]::UTF8.GetString($legacyBytes) | ConvertFrom-Json
+            if ($format -eq 'modern') {
+                foreach ($field in @($plan.Prepared.Actual.Keys | Where-Object { $_ -notin @('artifact', 'cli', 'launcher', 'engine') })) {
+                    $superseded.hashes | Add-Member NoteProperty $field $plan.Prepared.Receipt.hashes.$field
+                }
+            }
+            [IO.File]::WriteAllText($activePath, ($superseded | ConvertTo-Json -Depth 5))
+            $recognized = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+            if (($recognized.Active.Changed | Sort-Object) -join ',' -cne 'artifact,cli,engine') { throw "$format Active did not use the shared supersession predicate" }
+        }
+        [IO.File]::WriteAllBytes($activePath, $activeBytes)
+        $preparedCore = [IO.File]::ReadAllBytes($second.artifact)
+        [IO.File]::WriteAllText($second.artifact, 'bytes no longer match Prepared')
+        $refused = $false
+        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'complete, unchanged prepared' }
+        if (-not $refused) { throw 'Superseded file bytes were accepted without matching Prepared' }
+        [IO.File]::WriteAllBytes($second.artifact, $preparedCore)
+        $refused = $false
+        try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'Active release engine changed' }
+        if (-not $refused) { throw 'Recovery weakened ordinary Active hash validation' }
+        $script:resumeTask.State = 'Running'
+        $refused = $false
+        try { Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot } catch { $refused = $_ -match 'running, queued' }
+        if (-not $refused) { throw 'Recovery replaced a running selection' }
+        $script:resumeTask.State = 'Ready'
+        & {
+            function Save-CoreRecoveryEvidence { throw 'fixture archive unavailable' }
+            $refused = $false
+            try { Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot } catch { $refused = $_ -match 'archive unavailable' }
+            if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Archive failure changed rollback eligibility' }
+        }
+        $archiveEvidence = ${function:Save-CoreRecoveryEvidence}
+        & {
+            function Save-CoreRecoveryEvidence {
+                param($Snapshot, $InstallRoot)
+                & $archiveEvidence -Snapshot $Snapshot -InstallRoot $InstallRoot
+                $script:resumeTask.State = 'Running'
+            }
+            $refused = $false
+            try { Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot } catch { $refused = $_ -match 'running, queued' }
+            if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Scheduled-start race changed selection' }
+        }
+        $script:resumeTask.State = 'Ready'
+        # Real filesystem failure after invalid Previous retirement leaves the
+        # old invalid Active plus durable evidence, and a retry can finish.
+        $heldActive = [IO.File]::Open($activePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $refused = $false
+            try { Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot } catch { $refused = $true }
+            if (-not $refused -or (Test-Path -LiteralPath $previousPath)) { throw 'Partial recovery did not retain its fail-closed state' }
+        } finally { $heldActive.Dispose() }
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($activePath)) -cne [Convert]::ToBase64String($activeBytes)) { throw 'Failed switch resealed old Active' }
+        if (@(Get-ChildItem -LiteralPath $resumeRoot -Filter 'install-*.damaged-*.json').Count -ne 2) { throw 'Original damaged receipts were not archived' }
+        $retry = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+        Complete-CoreDamagedSelectionRecovery -Plan $retry -Release $second -InstallRoot $resumeRoot
+        if ((Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active).artifact -ne $second.artifact -or (Test-Path -LiteralPath $previousPath)) { throw 'Recovery invented a rollback or selected wrong candidate' }
+        # Valid independent Previous remains byte-for-byte unchanged.
+        [IO.File]::WriteAllBytes($activePath, $activeBytes)
+        $otherEngine = Join-Path $payload 'bin\engine-b\llama-server.exe'
+        New-Item -ItemType Directory -Force -Path (Split-Path $otherEngine -Parent) | Out-Null
+        [IO.File]::WriteAllBytes($otherEngine, $originalEngine)
+        $validPrevious = [Text.Encoding]::UTF8.GetString($previousBytes) | ConvertFrom-Json
+        $validPrevious.release.engine = $otherEngine
+        [IO.File]::WriteAllText($previousPath, ($validPrevious | ConvertTo-Json -Depth 5))
+        $validPreviousBytes = [IO.File]::ReadAllBytes($previousPath)
+        $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+        # Equal new bytes at a DIFFERENT path are not proof of supersession.
+        $originalCore = [IO.File]::ReadAllBytes($release.artifact)
+        [IO.File]::WriteAllBytes($release.artifact, $preparedCore)
+        $refused = $false
+        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'not the same verified prepared replacement' }
+        if (-not $refused) { throw 'Recovery accepted unrelated payload corruption' }
+        [IO.File]::WriteAllBytes($release.artifact, $originalCore)
+        Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($previousPath)) -cne [Convert]::ToBase64String($validPreviousBytes)) { throw 'Recovery changed a valid rollback' }
+        Write-Output 'PASS: damaged engine selection recovery, archival failure, partial commit retry, running refusal and valid rollback retention'
         Clear-CorePreparedSelectionForSlot -InstallRoot $resumeRoot -Slot $secondSlot
         if (Test-Path -LiteralPath $receiptPath) { throw 'Reused inactive slot retained a stale pending receipt' }
         Remove-Item -LiteralPath $activePath
@@ -820,12 +996,20 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $selected = $release | ConvertTo-Json | ConvertFrom-Json
         foreach ($field in @('artifact', 'cli', 'launcher', 'engine', 'logDirectory')) { $selected.$field = $selected.$field.Replace($resumeRoot, $root) }
         Save-CorePreparedRelease -Release $selected -InstallRoot $root
-        foreach ($extra in @('', ' -Update')) {
+        foreach ($mode in @('-ResumePrepared', '-ResumePrepared -Update', '-Grid')) {
+            if ($mode -eq '-Grid') {
+                # Normal install must recognize the saved recovery BEFORE loading
+                # build/provisioning modules; the strict receipt reader is real.
+                Save-CorePreparedRelease -Release $selected -InstallRoot $root -Selection Active
+                Copy-Item -LiteralPath (Join-Path $root 'install-active.json') -Destination (Join-Path $root 'install-previous.json') -Force
+                [IO.File]::WriteAllText($selected.engine, 'public retry engine')
+                Save-CorePreparedRelease -Release $selected -InstallRoot $root
+            }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
             # Hidden PS5 ConsoleHost can omit terminating errors from redirected
             # stderr. Capture the exception explicitly without accepting failure.
             $entry = (Join-Path $fakeRepo 'install.ps1').Replace("'", "''")
-            $invoke = "try { & '$entry' -ResumePrepared$extra } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $invoke = "try { & '$entry' $mode } catch { Write-Output `$_.Exception.Message; exit 1 }"
             $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
@@ -841,7 +1025,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
                 # as a red tip. 120 s is the test's patience; a real hang still fails, named.
                 if (-not $child.WaitForExit(120000)) { $child.Kill(); $child.WaitForExit(); throw 'Isolated resume installer fixture timed out (120 s)' }
                 $output = $stdout.Result + $stderr.Result
-                if (-not $extra) {
+                if ($mode -ne '-ResumePrepared -Update') {
                     if ($child.ExitCode -ne 0 -or $output -notmatch 'fixture register prepared' -or $output -notmatch 'fixture guarded handoff') {
                         throw "Public prepared resume did not reach guarded handoff: $output"
                     }
@@ -1307,6 +1491,13 @@ public static class RegisteredGsudoFixture {
     $extended = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     if ($extended.artifact -ne $second.artifact) { throw 'Extended Windows process path was not recognized as a live slot' }
     if ((ConvertTo-CoreImagePath '\\?\UNC\server\share\core.exe') -ne '\\server\share\core.exe') { throw 'Extended UNC image path normalization failed' }
+    # what this catches (the 5090, 2026-10-10): the core's unattended deploy passes its prebuilt's
+    # directory in the extended \\?\ form with no -EnginePath (a release that ships its engine), and
+    # Join-Path threw "the value of argument drive is null" while selecting the engine slot, so every
+    # such deploy failed. The same staging must succeed from the extended spelling.
+    $script:liveProcesses = @()
+    $fromExtended = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -ArtifactDirectory ('\\?\' + (Join-Path $target 'release'))
+    if (-not $fromExtended.artifact -or -not (Test-Path -LiteralPath $fromExtended.artifact)) { throw 'Staging from an extended artifact directory failed' }
     $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }
     $script:liveProcesses = @()
     $stopped = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
@@ -1337,6 +1528,57 @@ public static class RegisteredGsudoFixture {
         try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Both installed core service slots' }
         if (-not $refused) { throw 'Unreadable busy candidate was overwritten' }
     } finally { $busy.Dispose() }
+    # Media-only blockage uses the same inactive-slot owner. Preparation never
+    # elevates; normal install retries only after graceful reconciliation, and
+    # a new registration during that operation must preserve candidate bytes.
+    & {
+        $nativeReconcile = ${function:Invoke-CoreLegacyMediaReconciliation}
+        $mediaImage = Join-Path (Split-Path $second.artifact) 'livekit-bridge.exe'
+        $busyBridge = [IO.File]::Open($mediaImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+        $changeRegistration = $false; $changeReceipt = $false
+        function Invoke-CoreLegacyMediaReconciliation {
+            param($Image,$InstallRoot,[switch]$AllowElevation)
+            if (-not $AllowElevation) { & $nativeReconcile -Image $Image -InstallRoot $InstallRoot; return }
+            if ($Image -ne $mediaImage) { throw 'Wrong bridge selected.' }
+            $script:mediaReconcileCalls++
+            $busyBridge.Dispose()
+            if ($changeRegistration) { $script:registeredTask = [pscustomobject]@{ Description='new registration' } }
+            if ($changeReceipt) { $script:mediaRegisteredRelease = $second }
+        }
+        $script:mediaReconcileCalls = 0
+        try {
+            $refused=$false
+            try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null }
+            catch { if ($_ -notmatch 'PrepareOnly preserves') { throw }; $refused=$true }
+            if (-not $refused -or $script:mediaReconcileCalls) { throw 'Preparation reconciled legacy media.' }
+            $reconciled=New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target -ReconcileLegacyMedia
+            if ($reconciled.artifact -ne $second.artifact -or $script:mediaReconcileCalls -ne 1) { throw 'Normal install did not reuse its inactive slot.' }
+            $before=(Get-FileHash -LiteralPath $second.artifact).Hash
+            $busyBridge=[IO.File]::Open($mediaImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            $changeRegistration=$true; $refused=$false
+            try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target -ReconcileLegacyMedia | Out-Null }
+            catch { if ($_ -notmatch 'Registered release changed') { throw }; $refused=$true }
+            if (-not $refused -or (Get-FileHash -LiteralPath $second.artifact).Hash -ne $before) { throw 'Stale registration changed candidate files.' }
+            # Protocol2/3 task envelopes stay fixed while install-active.json
+            # changes underneath them. Recheck the resolved release too.
+            $nativeRegistered = ${function:Get-CoreRegisteredRelease}
+            function Get-CoreRegisteredRelease {
+                param($Task,$InstallRoot)
+                if ($Task.Description -eq 'fixed schema2 envelope') { return $script:mediaRegisteredRelease }
+                & $nativeRegistered -Task $Task -InstallRoot $InstallRoot
+            }
+            $script:registeredTask = [pscustomobject]@{ Description='fixed schema2 envelope' }
+            $script:mediaRegisteredRelease = $first
+            $changeRegistration=$false; $changeReceipt=$true; $refused=$false
+            $busyBridge=[IO.File]::Open($mediaImage, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target -ReconcileLegacyMedia | Out-Null }
+            catch { if ($_ -notmatch 'Registered release changed') { throw }; $refused=$true }
+            if (-not $refused -or (Get-FileHash -LiteralPath $second.artifact).Hash -ne $before) { throw 'Stable envelope concealed changed active release.' }
+        } finally {
+            $busyBridge.Dispose()
+            $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }
+        }
+    }
     $script:registeredTask = $null
     $refused = $false
     try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null } catch { $refused = $_ -match 'Cannot inspect all live' }
@@ -1401,6 +1643,40 @@ exit 64
         if (-not $refused) { throw 'A first install with every slot live was not refused' }
     } finally { $script:liveProcesses = @() }
     Write-Output 'PASS: the engine slot is the core answer from its lane records when the CLI knows the verb'
+
+    # what this catches (the 5090, 2026-10-10 02:05Z): an activation that failed after writing
+    # install-active.json but before promoting `current` leaves the core's pointers naming
+    # engine-b while the receipt names engine-c. The core then calls engine-c idle, and the next
+    # install copied the new engine over the payload the active receipt owned, then refused on its
+    # own next step. A slot an active or previous release receipt names is never staged into, on
+    # either path.
+    $activeReceipt = Join-Path $installed 'install-active.json'
+    $previousReceipt = Join-Path $installed 'install-previous.json'
+    $receiptNaming = { param($slot) (@{ schema = 1; release = @{ engine = (Join-Path $installedPayload "bin\$slot\llama-server.exe") }; hashes = @{} } | ConvertTo-Json -Depth 4) }
+    try {
+        Set-Content -LiteralPath $activeReceipt -Value (& $receiptNaming 'engine-c')
+        $env:FAKE_IDLE_SLOT = 'engine-c'; $env:FAKE_IDLE_RC = $null
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'release receipt still names it' }
+        if (-not $refused) { throw 'A slot the active receipt names was staged into' }
+        if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli -SkipIfBusy)) { throw 'A deploy staged into a receipted slot instead of skipping' }
+        Remove-Item -LiteralPath $activeReceipt
+        Set-Content -LiteralPath $previousReceipt -Value (& $receiptNaming 'engine-c')
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'release receipt still names it' }
+        if (-not $refused) { throw 'The rollback slot the previous receipt names was staged into' }
+        $env:FAKE_IDLE_SLOT = 'engine-b'
+        $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli
+        if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installedPayload 'bin\engine-b'))) { throw "An unreceipted idle slot was not used: $picked" }
+        # The pre-verb path skips a receipted slot and takes the next free one.
+        Set-Content -LiteralPath $previousReceipt -Value (& $receiptNaming 'engine-a')
+        $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null
+        if ($picked -ne (Join-Path (ConvertTo-CoreImagePath (Join-Path $installedPayload 'bin')) 'engine-b')) { throw "The pre-verb path did not skip the receipted slot: $picked" }
+    } finally {
+        $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null
+        foreach ($r in @($activeReceipt, $previousReceipt)) { if (Test-Path -LiteralPath $r) { Remove-Item -LiteralPath $r } }
+    }
+    Write-Output 'PASS: a slot an installer release receipt names is never staged into'
 
     # card d5584dfc: a drift-verified slot is promoted by the core's own verb (current is the one
     # truth), with the stamp the build wrote; a refused promote throws; a CLI without the verb
@@ -1470,6 +1746,24 @@ exit 64
             $refused = $false
             try { Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt } catch { $refused = $_ -match 'changed during engine preparation' }
             if (-not $refused) { throw 'A release changed mid-preparation was handed off' }
+            # Explicit published handoff never reaches selection/source building,
+            # including drift and unsupported promotion failures.
+            $script:changeTaskAfter = $false; $script:matching = 'engine-c'; $script:promoteResult = $true
+            $publishedSlot = Join-Path $bin 'engine-c'
+            [IO.File]::WriteAllText((Join-Path $publishedSlot '.llama-server.stamp'), 'aaaaaaaaa:cuda:80:portable-v1')
+            Save-CoreEngineReceipt -Directory $publishedSlot -SourceRevision ('a' * 40) -Backend cuda
+            $script:releaseJson = (@{ cli=(Join-Path $scratch 'fake-cli.exe'); engine=(Join-Path $publishedSlot 'llama-server.exe') } | ConvertTo-Json -Compress)
+            $script:selected = $false
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt -PrebuiltOnly
+            if ($script:selected -or $script:promoted -ne 'engine-c') { throw 'Published handoff took a developer path.' }
+            foreach ($failure in @('drift','stamp','promote')) {
+                $script:matching = if ($failure -eq 'drift') { 'none' } else { 'engine-c' }
+                $script:promoteResult = $failure -ne 'promote'
+                [IO.File]::WriteAllText((Join-Path $publishedSlot '.llama-server.stamp'), $(if ($failure -eq 'stamp') { 'bbbbbbbbb:cuda' } else { 'aaaaaaaaa:cuda:80:portable-v1' }))
+                $refused = $false
+                try { Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt -PrebuiltOnly } catch { $refused = $true }
+                if (-not $refused -or $script:selected) { throw 'Invalid published engine reached source fallback.' }
+            }
         } finally { $env:USERPROFILE = $savedProfile }
     }
     Write-Output 'PASS: a slot already at the pin is promoted without a build, and every other case takes its own road'
@@ -1643,6 +1937,16 @@ function Mod-LlamaServer {
         if ($script:resumedArtifact -ne $prepared.artifact) { throw 'Resume did not consume the new preparation receipt' }
     }
     Write-Output 'PASS: public prepare stages/validates/resumes without provisioning, elevation, handoff, or registered-slot overwrite'
+    # The installed CLI's cwd is its DLL slot. A fresh shell must load recovery
+    # from the registered installer checkout rather than that binary directory.
+    $moduleRoot = $repo.Replace("'", "''")
+    $priorTracked = $env:CONTINUUM_TRACK_REPO_DIR
+    $env:CONTINUUM_TRACK_REPO_DIR = $scratch
+    Push-Location $scratch
+    try {
+        $commands = & (Join-Path $env:SystemRoot 'System32/WindowsPowerShell/v1.0/powershell.exe') -NoProfile -NonInteractive -Command "`$ErrorActionPreference='Stop'; . '$moduleRoot/tools/scripts/lib/install-common.ps1'; . '$moduleRoot/tools/scripts/lib/windows-service.ps1'; Get-Command Restore-CoreActiveRelease,Prepare-CoreServiceEngine | ForEach-Object Name"
+        if ($LASTEXITCODE -ne 0 -or 'Restore-CoreActiveRelease' -notin $commands -or 'Prepare-CoreServiceEngine' -notin $commands) { throw 'Installed-path shell lost engine or recovery module imports.' }
+    } finally { Pop-Location; $env:CONTINUUM_TRACK_REPO_DIR = $priorTracked }
     $logs = Join-Path $scratch 'logs'
     New-Item -ItemType Directory -Path $logs | Out-Null
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'

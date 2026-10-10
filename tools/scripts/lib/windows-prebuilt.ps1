@@ -113,16 +113,19 @@ function Get-CorePrebuiltRelease {
 
 function Copy-CorePublishedEngine {
     param([string]$RepoRoot, [string]$ArtifactDirectory, [string]$InstallDirectory)
+    # The core's deploy passes the extended \\?\ form, which Join-Path refuses (see New-CoreServiceRelease).
+    $ArtifactDirectory = ConvertTo-CoreImagePath $ArtifactDirectory
     $source = Join-Path $ArtifactDirectory 'engine'
     $receipt = Get-CoreEngineReceipt -Directory $source
     $revision = (& git -C $RepoRoot rev-parse HEAD:core/vendor/llama.cpp | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $receipt.source_revision -cne $revision -or $receipt.backend -cne 'cuda') {
         throw 'Published engine differs from the selected checkout/backend.'
     }
-    New-Item -ItemType Directory -Path $InstallDirectory -Force | Out-Null
-    Start-CoreEnginePublication -Directory $InstallDirectory
-    foreach ($entry in $receipt.files.PSObject.Properties) {
-        Copy-Item -LiteralPath (Join-Path $source $entry.Name) -Destination (Join-Path $InstallDirectory $entry.Name) -Force -ErrorAction Stop
-    }
-    Copy-CoreEngineReceipt -SourceDirectory $source -Directory $InstallDirectory
+    # Preparation owns the install lease. Recheck the selected target immediately
+    # before publication, including current lane/process and registered-slot guards.
+    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
+    $descriptor = if ($task) { Get-CoreRegisteredRelease -Task $task } else { $null }
+    $idle = Select-CoreEngineSlot -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe')
+    if ((ConvertTo-CoreImagePath $idle) -ine (ConvertTo-CoreImagePath $InstallDirectory)) { throw 'Selected engine slot is no longer idle.' }
+    Copy-CoreEnginePublication -SourceDirectory $source -Directory $InstallDirectory
 }

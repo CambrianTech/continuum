@@ -70,25 +70,35 @@ function Assert-CorePreparedRelease {
     }
 }
 
-function Get-CoreReleaseHashes {
+function Get-CoreReleaseFiles {
     param($Release)
-    $hashes = @{}
+    $files = @{}
     foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) {
-        $hashes[$field] = (Get-FileHash -LiteralPath $Release.$field -Algorithm SHA256 -ErrorAction Stop).Hash
+        $files[$field] = $Release.$field
     }
     $slot = Split-Path $Release.cli -Parent
     $manifest = Join-Path $slot 'runtime-libs.txt'
     if (Test-Path -LiteralPath $manifest) {
-        $hashes['runtime-manifest'] = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256 -ErrorAction Stop).Hash
+        $files['runtime-manifest'] = $manifest
         foreach ($line in @(Get-Content -LiteralPath $manifest -ErrorAction Stop)) {
             $name = $line.Trim()
             if (-not $name) { continue }
-            if ($name -notmatch '^[A-Za-z0-9_.-]+\.dll$' -or $hashes.ContainsKey("runtime:$name")) {
+            if ($name -notmatch '^[A-Za-z0-9_.-]+\.dll$' -or $files.ContainsKey("runtime:$name")) {
                 throw 'Runtime manifest has an unsafe or duplicate library name.'
             }
             Assert-CorePreparedPath -Path (Join-Path $slot $name) -Expected (Join-Path $slot $name) -File
-            $hashes["runtime:$name"] = (Get-FileHash -LiteralPath (Join-Path $slot $name) -Algorithm SHA256 -ErrorAction Stop).Hash
+            $files["runtime:$name"] = Join-Path $slot $name
         }
+    }
+    return $files
+}
+
+function Get-CoreReleaseHashes {
+    param($Release)
+    $hashes = @{}
+    $files = Get-CoreReleaseFiles -Release $Release
+    foreach ($field in $files.Keys) {
+        $hashes[$field] = (Get-FileHash -LiteralPath $files[$field] -Algorithm SHA256 -ErrorAction Stop).Hash
     }
     return $hashes
 }
@@ -136,6 +146,41 @@ function Save-CorePreparedRelease {
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 }
 
+function Read-CoreReleaseReceipt {
+    param([string]$InstallRoot, [ValidateSet('Prepared', 'Active', 'Previous')][string]$Selection,
+        [switch]$RecognizeDamagedLegacySelection)
+    $path = Join-Path $InstallRoot ("install-{0}.json" -f $Selection.ToLowerInvariant())
+    Assert-CorePreparedPath -Path $path -Expected $path -File
+    if ((Get-Item -LiteralPath $path).Length -gt 65536) { throw 'Prepared release receipt is oversized.' }
+    $bytes = [IO.File]::ReadAllBytes($path)
+    $receipt = [Text.Encoding]::UTF8.GetString($bytes).TrimStart([char]0xfeff) | ConvertFrom-Json -ErrorAction Stop
+    $names = @($receipt.PSObject.Properties.Name)
+    if ($names.Count -ne 4 -or @($names | Where-Object { $_ -notin @('schema', 'userSid', 'release', 'hashes') }).Count -or
+        $receipt.schema -ne 1 -or $receipt.userSid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {
+        throw 'Prepared release receipt schema or owner differs.'
+    }
+    Assert-CorePreparedRelease -Release $receipt.release -InstallRoot $InstallRoot
+    $actual = Get-CoreReleaseHashes -Release $receipt.release
+    $legacyPending = $Selection -eq 'Prepared' -and @($receipt.hashes.PSObject.Properties).Count -eq 4
+    # Historical selections may predate DLL sealing. Diagnostic recovery only:
+    # all changed sealed files must subsequently match the verified preparation.
+    $legacySelection = $RecognizeDamagedLegacySelection -and $Selection -in @('Active', 'Previous') -and
+        @($receipt.hashes.PSObject.Properties).Count -eq 4 -and $actual.Count -gt 4
+    $fields = if ($legacyPending -or $legacySelection) { @('artifact', 'cli', 'launcher', 'engine') } else { @($actual.Keys) }
+    if (@($receipt.hashes.PSObject.Properties).Count -ne $fields.Count) { throw 'Prepared release receipt has an invalid hash set.' }
+    $changed = @()
+    foreach ($field in $fields) {
+        if ($receipt.hashes.$field -isnot [string] -or $receipt.hashes.$field -notmatch '^[0-9a-fA-F]{64}$') {
+            throw 'Prepared release receipt has an invalid hash value.'
+        }
+        if ($actual[$field] -ne $receipt.hashes.$field) { $changed += $field }
+    }
+    if ($legacySelection -and -not $changed.Count) {
+        throw 'Legacy selection lacks complete sealing and is not damaged; refusing recovery.'
+    }
+    return [pscustomobject]@{ Path = $path; Bytes = $bytes; Receipt = $receipt; Actual = $actual; Changed = $changed }
+}
+
 function Get-CorePreparedRelease {
     param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'),
         [ValidateSet('Prepared', 'Active', 'Previous')][string]$Selection = 'Prepared')
@@ -143,25 +188,9 @@ function Get-CorePreparedRelease {
     $path = Join-Path $InstallRoot $(switch ($Selection) { Active { 'install-active.json' } Previous { 'install-previous.json' } default { 'install-prepared.json' } })
     Assert-CorePreparedPath -Path $path -Expected $path
     if (Test-Path -LiteralPath $path) {
-        if ((Get-Item -LiteralPath $path).Length -gt 65536) { throw 'Prepared release receipt is oversized.' }
-        $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -ErrorAction Stop
-        $receiptFields = @($receipt.PSObject.Properties.Name)
-        if ($receiptFields.Count -ne 4 -or @($receiptFields | Where-Object { $_ -notin @('schema', 'userSid', 'release', 'hashes') }).Count -or
-            $receipt.schema -ne 1 -or $receipt.userSid -ne $userSid) { throw 'Prepared release receipt schema or owner differs.' }
-        $release = $receipt.release
-        Assert-CorePreparedRelease -Release $release -InstallRoot $InstallRoot
-        $actual = Get-CoreReleaseHashes -Release $release
-        # Old pending receipts predate DLL closure. They may be resumed once;
-        # every active publication is rewritten with the complete current set.
-        $legacyPending = $Selection -eq 'Prepared' -and @($receipt.hashes.PSObject.Properties).Count -eq 4
-        $fields = if ($legacyPending) { @('artifact', 'cli', 'launcher', 'engine') } else { @($actual.Keys) }
-        if (@($receipt.hashes.PSObject.Properties).Count -ne $fields.Count) { throw 'Prepared release receipt has an invalid hash set.' }
-        foreach ($field in $fields) {
-            if ($receipt.hashes.$field -isnot [string] -or $receipt.hashes.$field -notmatch '^[0-9a-fA-F]{64}$' -or
-                $actual[$field] -ne $receipt.hashes.$field) {
-                throw "Prepared release $field changed since preparation; refusing resume."
-            }
-        }
+        $snapshot = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection $Selection
+        if ($snapshot.Changed.Count) { throw "$Selection release $($snapshot.Changed -join ', ') changed since preparation; refusing resume." }
+        $release = $snapshot.Receipt.release
         Write-Step 'Selected the saved prepared release and verified its artifact hashes.'
     } else {
         if ($Selection -ne 'Prepared') { throw 'Provisioned supervisor has no committed release receipt; refusing legacy fallback.' }
@@ -173,6 +202,134 @@ function Get-CorePreparedRelease {
         Write-Step 'Selected the existing startup task release. No historical artifact/configuration receipt exists for this older preparation.'
     }
     return $release
+}
+
+# A failed old installer could reuse files still sealed by Active/Previous.
+# Every changed sealed file must be superseded by the verified preparation.
+# This is not a claim that a release never served, or permission to reseal it.
+function Get-CoreDamagedSelectionRecovery {
+    param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'))
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'install-active.json'))) { return $null }
+    $active = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Active -RecognizeDamagedLegacySelection
+    if (-not $active.Changed.Count) { return $null }
+    $prepared = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Prepared
+    if ($prepared.Changed.Count -or @($prepared.Receipt.hashes.PSObject.Properties).Count -ne $prepared.Actual.Count) {
+        throw 'Damaged selection recovery requires a complete, unchanged prepared release.'
+    }
+    $previous = $null
+    if (Test-Path -LiteralPath (Join-Path $InstallRoot 'install-previous.json')) {
+        $previous = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Previous -RecognizeDamagedLegacySelection
+    }
+    foreach ($snapshot in @($active, $previous)) {
+        if ($null -eq $snapshot -or -not $snapshot.Changed.Count) { continue }
+        $oldFiles = Get-CoreReleaseFiles -Release $snapshot.Receipt.release
+        $preparedFiles = Get-CoreReleaseFiles -Release $prepared.Receipt.release
+        foreach ($field in $snapshot.Changed) {
+            if (-not $preparedFiles.ContainsKey($field) -or
+                (ConvertTo-CoreImagePath $oldFiles[$field]) -ne (ConvertTo-CoreImagePath $preparedFiles[$field]) -or
+                $snapshot.Actual[$field] -ne $prepared.Receipt.hashes.$field) {
+                throw "Damaged selection $field is not the same verified prepared replacement; refusing recovery."
+            }
+        }
+    }
+    return [pscustomobject]@{ Active = $active; Previous = $previous; Prepared = $prepared }
+}
+
+function Assert-CoreRecoveryStopped {
+    param([string]$InstallRoot)
+    foreach ($name in @('ContinuumCore', 'ContinuumDeploy')) {
+        $task = Get-ScheduledTask -TaskName $name -TaskPath '\' -ErrorAction Stop
+        if ($task.State -notin @('Ready', 'Disabled')) { throw "Recovery refuses a running, queued or unknown $name task." }
+        if ($name -eq 'ContinuumCore' -and -not (Test-CoreProvisionedTask -Task $task -InstallRoot $InstallRoot)) {
+            throw 'Damaged selection recovery requires a verified fixed supervisor.'
+        }
+    }
+    if (@(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -like 'continuum-core-server*.exe' }).Count) {
+        throw 'Damaged selection recovery refuses an existing core process.'
+    }
+}
+
+function Save-CoreRecoveryEvidence {
+    param($Snapshot, [string]$InstallRoot)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { $digest = [BitConverter]::ToString($sha.ComputeHash($Snapshot.Bytes)).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    $path = Join-Path $InstallRoot ("{0}.damaged-{1}.json" -f [IO.Path]::GetFileNameWithoutExtension($Snapshot.Path), $digest)
+    Assert-CorePreparedPath -Path $path -Expected $path
+    if (Test-Path -LiteralPath $path) {
+        if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $digest) { throw 'Recovery evidence differs; refusing replacement.' }
+        return
+    }
+    $temporary = $path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    try {
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($Snapshot.Bytes, 0, $Snapshot.Bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+        [IO.File]::Move($temporary, $path)
+    } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -ErrorAction Stop } }
+}
+
+# Called only at the normal registration commit point, after bootstrap validation.
+# The caller retains install.lock. Old Active cannot pass the supervisor's full
+# hash validation; a scheduler race AFTER the atomic switch may start the valid
+# candidate. The lease alone does not exclude scheduler starts.
+function Complete-CoreDamagedSelectionRecovery {
+    param($Plan, $Release, [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'))
+    Assert-CoreRecoveryStopped -InstallRoot $InstallRoot
+    $registration = (Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop).Description
+    $current = Get-CoreDamagedSelectionRecovery -InstallRoot $InstallRoot
+    if (-not $current -or ($Release | ConvertTo-Json -Compress) -cne ($current.Prepared.Receipt.release | ConvertTo-Json -Compress)) {
+        throw 'Recovery candidate changed; refusing selection.'
+    }
+    foreach ($name in @('Active', 'Previous', 'Prepared')) {
+        if (($null -eq $Plan.$name) -ne ($null -eq $current.$name) -or
+            ($null -ne $Plan.$name -and [Convert]::ToBase64String($Plan.$name.Bytes) -cne [Convert]::ToBase64String($current.$name.Bytes))) {
+            throw 'Recovery receipts changed; refusing to replace a newer selection.'
+        }
+    }
+    Save-CoreRecoveryEvidence -Snapshot $current.Active -InstallRoot $InstallRoot
+    if ($current.Previous -and $current.Previous.Changed.Count) {
+        Save-CoreRecoveryEvidence -Snapshot $current.Previous -InstallRoot $InstallRoot
+    }
+    # Recheck after evidence I/O, before removing rollback eligibility or selecting.
+    Assert-CoreRecoveryStopped -InstallRoot $InstallRoot
+    foreach ($name in @('Active', 'Previous', 'Prepared')) {
+        $snapshot = $current.$name
+        if ($snapshot -and [Convert]::ToBase64String([IO.File]::ReadAllBytes($snapshot.Path)) -cne [Convert]::ToBase64String($snapshot.Bytes)) {
+            throw 'Recovery receipts changed during archival; refusing selection.'
+        }
+    }
+    $temporary = $current.Active.Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $pins = [Collections.Generic.List[IDisposable]]::new()
+    try {
+        foreach ($file in (Get-CoreReleaseFiles -Release $Release).Values) {
+            $pins.Add([IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+        }
+        $last = Get-CoreDamagedSelectionRecovery -InstallRoot $InstallRoot
+        if (-not $last -or [Convert]::ToBase64String($last.Prepared.Bytes) -cne [Convert]::ToBase64String($current.Prepared.Bytes) -or
+            [Convert]::ToBase64String($last.Active.Bytes) -cne [Convert]::ToBase64String($current.Active.Bytes) -or
+            ($null -eq $last.Previous) -ne ($null -eq $current.Previous) -or
+            ($last.Previous -and [Convert]::ToBase64String($last.Previous.Bytes) -cne [Convert]::ToBase64String($current.Previous.Bytes))) {
+            throw 'Recovery receipts changed before commit; refusing selection.'
+        }
+        Assert-CoreRecoveryStopped -InstallRoot $InstallRoot
+        if ((Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop).Description -cne $registration) {
+            throw 'Supervisor registration changed during recovery; refusing selection.'
+        }
+        $stream = [IO.File]::Open($temporary, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($current.Prepared.Bytes, 0, $current.Prepared.Bytes.Length); $stream.Flush($true) }
+        finally { $stream.Dispose() }
+        if ($current.Previous -and $current.Previous.Changed.Count) {
+            # Already durably archived; leaving it in the rollback namespace would
+            # falsely offer a release whose engine no longer exists.
+            [IO.File]::Delete($current.Previous.Path)
+        }
+        [IO.File]::Replace($temporary, $current.Active.Path, [NullString]::Value)
+    } finally {
+        foreach ($pin in $pins) { $pin.Dispose() }
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -ErrorAction Stop }
+    }
+    Write-Step 'Recovered the verified prepared selection; damaged receipts were retained as evidence, not rollback candidates.'
 }
 
 # Recovery is a compare-and-restore under the same installation lease. It never
@@ -225,10 +382,19 @@ function Get-CoreRegisteredRelease {
 }
 
 function Get-CoreSupervisorBootstrap {
-    param([string]$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
+    param([string]$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value), [string]$Generation = '')
     $canonical = [Security.Principal.SecurityIdentifier]::new($UserSid).Value
     if ($canonical -cne $UserSid) { throw 'Supervisor principal is not a canonical SID.' }
-    return Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) "Continuum\$UserSid\supervisor\continuum.exe"
+    if ($Generation -and $Generation -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid protected bootstrap generation.' }
+    $directory = if ($Generation) { 'supervisor-' + $Generation } else { 'supervisor' }
+    return Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) "Continuum\$UserSid\$directory\continuum.exe"
+}
+
+function Assert-CoreSupervisorLocation {
+    param([string]$Path, [string]$UserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value))
+    $name = Split-Path (Split-Path $Path -Parent) -Leaf
+    $generation = if ($name -ceq 'supervisor') { '' } elseif ($name -cmatch '^supervisor-([0-9a-f]{64})$') { $Matches[1] } else { throw 'Unknown protected bootstrap generation.' }
+    if ($Path -cne (Get-CoreSupervisorBootstrap -UserSid $UserSid -Generation $generation)) { throw 'Unexpected supervisor bootstrap path.' }
 }
 
 # Called only by the installer registrar under its initial consent. Executable
@@ -236,7 +402,8 @@ function Get-CoreSupervisorBootstrap {
 # bootstrap and its DLL closure must therefore never be caller-writable.
 function Install-CoreSupervisorBootstrap {
     param($Plan)
-    $expected = Get-CoreSupervisorBootstrap -UserSid $Plan.userSid
+    $expected = $Plan.cli
+    Assert-CoreSupervisorLocation -Path $expected -UserSid $Plan.userSid
     if ($Plan.cli -cne $expected -or $Plan.shell -cne $expected) { throw 'Bootstrap destination differs from its protected installation boundary.' }
     Assert-CorePreparedPath -Path $expected -Expected $expected
     if (Test-Path -LiteralPath $expected) {
@@ -244,9 +411,10 @@ function Install-CoreSupervisorBootstrap {
         # Repairing task drift must not replace DLLs under its running image.
         Assert-CoreSupervisorBootstrap -Path $expected -UserSid $Plan.userSid
         $protocol = (Invoke-InstallerProcess $expected @('installed-service', '--protocol') | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $protocol -cne '2') { throw 'Existing protected bootstrap has an incompatible protocol.' }
+        if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Existing protected bootstrap has an incompatible protocol.' }
         return
     }
+    if ($expected -cne (Get-CoreSupervisorBootstrap -UserSid $Plan.userSid -Generation ([string]$Plan.bootstrapHashes.cli).ToLowerInvariant())) { throw 'New bootstrap generation differs from candidate identity.' }
     $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
     $finalDirectory = Split-Path $expected -Parent
     $stagingName = 'supervisor.prepare-' + [guid]::NewGuid().ToString('N')
@@ -317,7 +485,7 @@ function Assert-CoreSupervisorBootstrap {
         if ((Split-Path $Path -Leaf) -cne 'continuum.exe' -or
             (Split-Path (Split-Path $Path -Parent) -Leaf) -notmatch '^supervisor\.prepare-[0-9a-f]{32}$' -or
             (Split-Path (Split-Path $Path -Parent) -Parent) -cne (Split-Path (Split-Path $expected -Parent) -Parent)) { throw 'Unexpected staged bootstrap path.' }
-    } elseif ($Path -cne $expected) { throw 'Unexpected supervisor bootstrap path.' }
+    } else { Assert-CoreSupervisorLocation -Path $Path -UserSid $UserSid }
     Assert-CorePreparedPath -Path $Path -Expected $Path -File
     $directory = Split-Path $Path -Parent
     $manifest = Join-Path $directory 'bootstrap-hashes.json'
@@ -325,6 +493,8 @@ function Assert-CoreSupervisorBootstrap {
     if ((Get-Item -LiteralPath $manifest -ErrorAction Stop).Length -gt 65536) { throw 'Bootstrap integrity receipt is oversized.' }
     $hashes = Get-Content -LiteralPath $manifest -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
     if (-not $hashes.'continuum.exe') { throw 'Bootstrap integrity receipt has no executable.' }
+    $generationName = Split-Path $directory -Leaf
+    if (-not $Staged -and $generationName -cmatch '^supervisor-([0-9a-f]{64})$' -and $Matches[1] -cne ([string]$hashes.'continuum.exe').ToLowerInvariant()) { throw 'Protected bootstrap generation identity differs from its manifest.' }
     foreach ($item in @(Get-ChildItem -LiteralPath $directory -Force -ErrorAction Stop)) {
         if ($item.PSIsContainer -or ($item.Name -ne 'bootstrap-hashes.json' -and $item.Name -notin @($hashes.PSObject.Properties.Name))) {
             throw 'Protected bootstrap directory contains undeclared content.'
@@ -366,8 +536,8 @@ function Test-CoreProvisionedTask {
     try {
         if ($d.schema -ne 2) { return $false }
         if (@($d.PSObject.Properties).Count -ne 3 -or
-            $d.activeRelease -cne (Join-Path $InstallRoot 'install-active.json') -or
-            $d.bootstrap -cne (Get-CoreSupervisorBootstrap)) { throw 'Supervisor provision descriptor differs from the installed boundary.' }
+            $d.activeRelease -cne (Join-Path $InstallRoot 'install-active.json')) { throw 'Supervisor provision descriptor differs from the installed boundary.' }
+        Assert-CoreSupervisorLocation -Path $d.bootstrap
         $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         if (-not (Test-CoreTaskUser -UserId $Task.Principal.UserId -ExpectedSid $sid) -or
             @($Task.Actions).Count -ne 1 -or $Task.Actions[0].Execute -cne $d.bootstrap -or

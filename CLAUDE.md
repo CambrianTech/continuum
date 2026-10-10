@@ -1,5 +1,35 @@
 # CLAUDE - ESSENTIAL DEVELOPMENT GUIDE
 
+## Ongoing refinement is part of every change
+
+Treat iteration speed and maintainability as product requirements, not optional
+cleanup. A narrow ticket does not prohibit repairing the shared responsibility
+that causes it. Coordinate edits with its owner; do not preserve duplication or
+an oversized file merely because callers cross the ticket boundary.
+
+- Extend the named owner of a behavior. When responsibility is scattered or a
+  file mixes concerns, extract a coherent module, migrate callers, and delete
+  superseded implementations in the same change where practical. Do not merely
+  add another wrapper, special case, or parallel path. Avoid arbitrary line caps.
+- Consolidate compatible test setup, scenarios and teardown. Test generic
+  contracts once and actual OS/adapter differences separately. Preserve necessary
+  isolation and defect coverage; fewer checks alone are not an improvement.
+- Refine CI continuously: remove redundant work, select checks by affected
+  responsibility, share immutable build artifacts and compatible caches, and
+  parallelize independent checks. Ordinary development should have a fast feedback
+  path. Broaden validation for changed contracts, failures or unresolved risks;
+  do not repeat unchanged checks by habit or weaken a gate to make it green.
+- Report concrete receipts proportional to the change: shared owner, migrated
+  callers, duplication removed, coverage retained, and measured build/test/deploy
+  time where performance is claimed. Distinguish source, CI and deployed behavior.
+- Reviewers must examine these opportunities, not just correctness of added lines.
+  Necessary adjacent work is authorized within the task; coordinate rather than
+  asking the user to manage it. If substantial work must remain, record a named
+  owner and actionable follow-up instead of an unowned cleanup promise.
+- Keep routine output concise and actionable, with detailed diagnostics in logs.
+  Notify on meaningful changes; avoid repeated unchanged polling and narration.
+
+
 ## 🛑 STOP — If You Are About To Edit Persona / Cognition / service_loop
 
 **Required first read** before touching ANY of `core/continuum-core/src/persona/{service_loop,unified,supervisor,rag_inspect}.rs`, anything in `core/continuum-core/src/cognition/`, or `core/continuum-core/src/bin/airc_chat_demo.rs`:

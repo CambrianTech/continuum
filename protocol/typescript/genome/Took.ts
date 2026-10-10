@@ -5,5 +5,13 @@ import type { GeneRef } from "./GeneRef";
  * A decision's action that creates no job. The caller (the trigger) keeps the
  * examples in her bucket for every arm: they are the competence's evidence, no gene
  * was trained on them, and the fill after the pending thing settles decides again.
+ *
+ * Deserialize is written by hand ([`TookWire`]): before #4794 (2026-10-05) this was the
+ * bare id of the job she joined, and the trigger's durable dispatches
+ * (`DispatchPhase::Held { took }`, collection `training_trigger_dispatches`) still hold
+ * rows in that shape. Read as the tagged enum alone, every one of them failed with
+ * `invalid type: string "cc4f33b7-…", expected internally tagged enum Took`, and on the
+ * 5090 (2026-10-10, BigMama) Kimi's credit settlement refused all 13 staged revisions
+ * behind it. A bare id reads as [`Took::Joined`], which is what it meant.
  */
 export type Took = { "kind": "joined", job: string, } | { "kind": "awaited", trial: string, } | { "kind": "reused", trial: string, gene: GeneRef, } | { "kind": "trialFileUnreadable" } | { "kind": "unsurprised", s: number, };

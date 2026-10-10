@@ -34,18 +34,22 @@ use crate::modules::training_trigger::TrainingTriggerState;
 use crate::sdk_codegen::DynCommand;
 
 pub mod flush;
+pub mod resolve;
+pub mod retire;
 pub mod return_;
 pub mod status;
 pub mod submit;
 
 use flush::TrainingTriggerFlush;
+use resolve::TrainingTriggerResolve;
+use retire::TrainingTriggerRetire;
 use return_::TrainingTriggerReturn;
 use status::TrainingTriggerStatus;
 use submit::TrainingTriggerSubmit;
 
 /// Build the dep-holding `genome/training-trigger/*` command objects over the
 /// shared [`TrainingTriggerState`]. Called from `TrainingTriggerModule::commands`.
-/// All three bind the SAME state so submit / flush serialize on the one
+/// All of them bind the SAME state so submit / flush / retire / resolve serialize on the one
 /// [`PerKeyGate`](crate::runtime::PerKeyGate) and touch the same buckets.
 pub fn command_objects(state: Arc<TrainingTriggerState>) -> Vec<Arc<dyn DynCommand>> {
     vec![
@@ -56,6 +60,12 @@ pub fn command_objects(state: Arc<TrainingTriggerState>) -> Vec<Arc<dyn DynComma
             state: state.clone(),
         }),
         Arc::new(TrainingTriggerReturn {
+            state: state.clone(),
+        }),
+        Arc::new(TrainingTriggerRetire {
+            state: state.clone(),
+        }),
+        Arc::new(TrainingTriggerResolve {
             state: state.clone(),
         }),
         Arc::new(TrainingTriggerStatus { state }),

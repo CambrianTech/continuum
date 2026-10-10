@@ -115,6 +115,33 @@ pub struct CapacityOffer {
     /// `free_slots_live: 2` and nothing said how wide.
     #[serde(default)]
     pub served_context_window: u32,
+    /// The per-lane decode rate this seat MEASURED for its served model, in thousandths of a
+    /// token per second (`beacon_decode_milli`); 0 = unmeasured, or a beacon from an older
+    /// core. A seat's speed was never on the wire: every peer read `decode_tps: None`, so
+    /// placement could only ask "does the window fit" and a CPU node that fits 8 minds at 32k
+    /// kept them hosted and silent (IntelMac, 2026-10-07: acts 0 an hour, card 86fef3c3). An
+    /// integer, like the other numbers here, so the offer stays `Eq`.
+    #[serde(default)]
+    pub decode_tps_milli: u32,
+}
+
+/// The beacon's form of this seat's measured decode rate: this model's OWN curve only, fresh
+/// or stale (a stale reading is still a measurement of this box, and a rate only ORDERS
+/// placement, never refuses a seat). The ladder's conservative rung borrows another model's
+/// number, which is a guess about this one, so it beacons as unmeasured (0).
+pub fn beacon_decode_milli(rate: &crate::inference::decode_knee::MeasuredRate) -> u32 {
+    use crate::inference::decode_knee::RateSource;
+    match (rate.source, rate.tps) {
+        (RateSource::Fresh | RateSource::Stale, Some(tps)) if tps > 0.0 => {
+            (tps * 1000.0).round().min(u32::MAX as f64) as u32
+        }
+        _ => 0,
+    }
+}
+
+/// A beacon's decode rate back as tokens per second per lane; `None` = unmeasured.
+pub fn decode_tps_of(milli: u32) -> Option<f32> {
+    (milli > 0).then(|| milli as f32 / 1000.0)
 }
 
 /// The 9-hex build sha prefix as the integer a beacon carries (0 when unparsable).
@@ -341,6 +368,22 @@ impl GridCapacityLedger {
 mod tests {
     use super::*;
 
+    /// what this catches (card 86fef3c3): a seat's measured speed never reaching its peers,
+    /// or a guess travelling as a measurement. This model's own fresh or stale reading
+    /// beacons and reads back; the conservative borrow (another model's rate) and an absence
+    /// beacon as 0, which reads back as unmeasured.
+    #[test]
+    fn a_seats_own_decode_rate_travels_and_a_borrowed_one_does_not() {
+        use crate::inference::decode_knee::{MeasuredRate, RateSource};
+        let rate = |tps, source| MeasuredRate { tps, source };
+        assert_eq!(beacon_decode_milli(&rate(Some(62.46), RateSource::Fresh)), 62_460);
+        assert_eq!(beacon_decode_milli(&rate(Some(56.57), RateSource::Stale)), 56_570);
+        assert_eq!(beacon_decode_milli(&rate(Some(9.0), RateSource::Conservative)), 0, "another model's rate is a guess");
+        assert_eq!(beacon_decode_milli(&MeasuredRate::UNKNOWN), 0);
+        assert_eq!(decode_tps_of(62_460), Some(62.46));
+        assert_eq!(decode_tps_of(0), None, "0 reads as unmeasured, never as a stopped seat");
+    }
+
     // what this catches: a beacon from an older core (no served fields) still parses,
     // and reads as offering nothing placeable — a mixed fleet keeps folding.
     #[test]
@@ -368,6 +411,7 @@ mod tests {
             lane_wait_p50_ms: 0,
             lane_wait_samples: 0,
             served_context_window: 0,
+            decode_tps_milli: 0,
         }
     }
     // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears

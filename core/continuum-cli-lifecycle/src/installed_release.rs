@@ -11,6 +11,7 @@ use std::{
 };
 
 pub const MAX_RECEIPT_BYTES: u64 = 65536;
+pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 3;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Envelope {
@@ -29,6 +30,36 @@ pub struct Release {
     pub log_directory: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eye_root: Option<String>,
+}
+
+impl Release {
+    /// Installed binaries run beside their DLLs, not inside the installer checkout.
+    /// Handoff and recovery must use the root registered with this release, never
+    /// a build-time path or an unrelated tracked main checkout.
+    pub fn installer_root(&self) -> Result<PathBuf, String> {
+        let root = PathBuf::from(
+            self.eye_root
+                .as_deref()
+                .ok_or("installed release has no installer root")?,
+        );
+        if !root.is_absolute() {
+            return Err("installed installer root must be absolute".into());
+        }
+        for module in [
+            "install-common.ps1",
+            "windows-service.ps1",
+            "windows-prepared.ps1",
+            "win-modules.ps1",
+        ] {
+            if !root.join("tools/scripts/lib").join(module).is_file() {
+                return Err(format!(
+                    "installed installer root {} lacks {module}",
+                    root.display()
+                ));
+            }
+        }
+        Ok(root)
+    }
 }
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -108,12 +139,31 @@ impl Envelope {
             return Err("invalid Windows user SID".into());
         }
         exact_path(&self.active_release, &home.join("install-active.json"))?;
+        let authority = program_files.join("Continuum").join(sid);
+        // Existing authorities remain readable for normal protected migration.
+        // New generations are immutable siblings keyed by validated CLI bytes.
+        let legacy = authority.join("supervisor/continuum.exe");
+        if exact_path(&self.bootstrap, &legacy).is_ok() {
+            return Ok(());
+        }
+        let directory = Path::new(&self.bootstrap)
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .ok_or("invalid bootstrap generation path")?;
+        let generation = directory
+            .strip_prefix("supervisor-")
+            .ok_or("invalid bootstrap generation")?;
+        if generation.len() != 64
+            || !generation
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err("invalid bootstrap generation identity".into());
+        }
         exact_path(
             &self.bootstrap,
-            &program_files
-                .join("Continuum")
-                .join(sid)
-                .join("supervisor/continuum.exe"),
+            &authority.join(directory).join("continuum.exe"),
         )
     }
     pub fn arguments(&self, mode: &str) -> String {
@@ -357,6 +407,27 @@ mod tests {
         }
         let mut receipt =
             serde_json::json!({"schema":1,"userSid":"SID","release":r,"hashes":hashes});
+        // Installed slot and installer root differ; never infer the latter from
+        // the former or accept a stale checkout missing the recovery owner.
+        let mut installed = r.clone();
+        assert!(installed.installer_root().is_err());
+        installed.eye_root = Some(slot.display().to_string());
+        assert!(installed.installer_root().is_err());
+        let checkout = home.join("installer checkout");
+        let modules = checkout.join("tools/scripts/lib");
+        std::fs::create_dir_all(&modules).unwrap();
+        for module in [
+            "install-common.ps1",
+            "windows-service.ps1",
+            "windows-prepared.ps1",
+            "win-modules.ps1",
+        ] {
+            std::fs::write(modules.join(module), b"fixture").unwrap();
+        }
+        installed.eye_root = Some(checkout.display().to_string());
+        assert_eq!(installed.installer_root().unwrap(), checkout);
+        std::fs::remove_file(modules.join("windows-prepared.ps1")).unwrap();
+        assert!(installed.installer_root().is_err());
         let encode = |v: &serde_json::Value| serde_json::to_string(v).unwrap();
         assert!(validate_receipt(&encode(&receipt), home, home, "SID").is_ok());
         assert!(validate_receipt(&encode(&receipt), home, home, "OTHER").is_err());
@@ -375,5 +446,32 @@ mod tests {
         assert!(validate_receipt(&encode(&receipt), home, home, "SID").is_err());
         assert!(envelope(r#"{"schema":2,"activeRelease":"missing"}"#).is_err());
         assert!(envelope(&encode(&receipt["release"])).unwrap().is_none());
+        let program_files = home.join("Program Files");
+        let sid = "S-1-5-21-1004";
+        for directory in [
+            "supervisor".to_owned(),
+            format!("supervisor-{}", "a".repeat(64)),
+        ] {
+            let authority = Envelope {
+                schema: 2,
+                active_release: home.join("install-active.json").display().to_string(),
+                bootstrap: program_files
+                    .join("Continuum")
+                    .join(sid)
+                    .join(directory)
+                    .join("continuum.exe")
+                    .display()
+                    .to_string(),
+            };
+            authority.validate(home, &program_files, sid).unwrap();
+            let mut invalid = authority;
+            invalid.bootstrap = program_files
+                .join("Continuum")
+                .join(sid)
+                .join("supervisor-arbitrary/continuum.exe")
+                .display()
+                .to_string();
+            assert!(invalid.validate(home, &program_files, sid).is_err());
+        }
     }
 }

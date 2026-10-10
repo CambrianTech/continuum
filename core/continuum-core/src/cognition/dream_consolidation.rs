@@ -38,6 +38,7 @@ use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ChatMessage, TextGenerationRequest};
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
+use crate::persona::training_producer::reviewed::boundaries::ReviewBoundaryStore;
 use crate::runtime::brain_region::{
     BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile,
     PressureSignalKind, RegionContext, RegionId, TickOutcome,
@@ -539,6 +540,15 @@ pub trait PersonaReflectionSource: Send + Sync {
     /// `reader_and_room` returning a tuple). `None` if the persona has no live
     /// reflective surface — the dream sleeps for that persona this tick.
     fn reflector_for(&self, persona_id: Uuid) -> Option<PersonaReflector>;
+
+    /// Durable reviewed-credit delivery belongs to the same resident identity.
+    /// Nonpersistent sources (test/ephemeral reflectors) have no credit store.
+    fn review_boundary_store(
+        &self,
+        _persona_id: Uuid,
+    ) -> Result<Option<ReviewBoundaryStore>, continuum_client::ClientError> {
+        Ok(None)
+    }
 }
 
 /// What a [`PersonaReflectionSource`] hands the region for one persona: the
@@ -730,11 +740,16 @@ pub const CARD_BOUNDARY_PASS_SECS: u64 = 90;
 /// requests remain retryable from durable credit acceptance; recent completed
 /// entries suppress replays, with engram dedup as the durable guard after eviction.
 const REVIEW_BOUNDARY_CAPACITY: usize = 64;
+const REVIEW_RECOVERY_PAGE: usize = 16;
+const REVIEW_RECOVERY_IO_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
+const REVIEW_COMPLETION_IO_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Default)]
 struct ReviewBoundaries {
     pending: HashSet<Uuid>,
     completed: VecDeque<Uuid>,
+    recovery_after: Option<String>,
+    recovery_initialized: bool,
 }
 
 /// Admission covers selection as well as inference. Public boundary requests and
@@ -872,11 +887,61 @@ impl DreamConsolidationRegion {
             personas: Arc::clone(&self.in_flight),
             persona: persona_id,
         });
+        let (store, storage_available) = match self.source.review_boundary_store(persona_id) {
+            Ok(store) => (store, true),
+            Err(error) => {
+                crate::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = %error,
+                    "resident credit storage unavailable; retained boundaries will retry");
+                (None, false)
+            }
+        };
+        if let Some(store) = &store {
+            let (after, capacity, initialized) = {
+                let mut all = self.review_boundaries.lock().unwrap(); // JUSTIFIED: snapshot paging state; no storage operation holds the guard.
+                let state = all.entry(persona_id).or_default();
+                (
+                    state.recovery_after.clone(),
+                    REVIEW_BOUNDARY_CAPACITY - state.pending.len(),
+                    state.recovery_initialized,
+                )
+            };
+            if capacity > 0 {
+                let recovery = async {
+                    if !initialized {
+                        store.prepare().await?;
+                        self.review_boundaries
+                            .lock()
+                            .unwrap() // JUSTIFIED: retain completed schema setup even if this page later times out.
+                            .entry(persona_id)
+                            .or_default()
+                            .recovery_initialized = true;
+                    }
+                    store.page(after, capacity.min(REVIEW_RECOVERY_PAGE)).await
+                };
+                match tokio::time::timeout(REVIEW_RECOVERY_IO_BUDGET, recovery).await {
+                    Ok(Ok(page)) => {
+                        let mut all = self.review_boundaries.lock().unwrap(); // JUSTIFIED: commit one bounded recovered page under the persona permit.
+                        let state = all.entry(persona_id).or_default();
+                        // Event intake can fill the bounded queue during the read.
+                        // Do not advance past an ID we could not retain.
+                        if state.pending.len() + page.pending.len() <= REVIEW_BOUNDARY_CAPACITY {
+                            state.pending.extend(page.pending);
+                            state.recovery_after = page.next;
+                        }
+                    }
+                    error => {
+                        crate::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = ?error,
+                            "accepted credit remains durable; existing governor retries recovery");
+                    }
+                }
+            }
+        }
         let boundary_ids: Vec<_> = self
             .review_boundaries
             .lock()
             .unwrap() // JUSTIFIED: snapshot receipt IDs while the persona permit serializes selection.
             .get(&persona_id)
+            .filter(|_| storage_available)
             .map(|r| r.pending.iter().copied().collect())
             .unwrap_or_default(); // No accepted review is pending for this persona.
         let trigger = if boundary_ids.is_empty() {
@@ -968,7 +1033,14 @@ impl DreamConsolidationRegion {
         let fresh = fresh_episodics(&self.consolidated, persona_id, &episodics);
         if fresh.len() < self.min_cluster {
             if !boundary_ids.is_empty() {
-                finish_review_boundaries(&self.review_boundaries, persona_id, &boundary_ids, 0);
+                finish_review_boundaries(
+                    &self.review_boundaries,
+                    persona_id,
+                    &boundary_ids,
+                    0,
+                    store.as_ref(),
+                )
+                .await;
                 return sleep(); // No eligible cluster; never force a singleton or a training bucket.
             }
             // Nothing new to digest — a QUIET day. The dream still works. Prefer
@@ -994,7 +1066,14 @@ impl DreamConsolidationRegion {
         let clusters = cluster_by_recall_key(&fresh, self.min_cluster);
         if clusters.is_empty() {
             if !boundary_ids.is_empty() {
-                finish_review_boundaries(&self.review_boundaries, persona_id, &boundary_ids, 0);
+                finish_review_boundaries(
+                    &self.review_boundaries,
+                    persona_id,
+                    &boundary_ids,
+                    0,
+                    store.as_ref(),
+                )
+                .await;
                 return sleep();
             }
             if let Some(launched) = self.try_review_only(&reflector, persona_id, &mut permit) {
@@ -1061,12 +1140,16 @@ impl DreamConsolidationRegion {
                 )
                 .await;
                 match completed {
-                    Ok(true) => finish_review_boundaries(
-                        &boundaries,
-                        persona_id,
-                        &boundary_ids,
-                        cluster_count,
-                    ),
+                    Ok(true) => {
+                        finish_review_boundaries(
+                            &boundaries,
+                            persona_id,
+                            &boundary_ids,
+                            cluster_count,
+                            store.as_ref(),
+                        )
+                        .await
+                    }
                     other => {
                         crate::probe!(class = "dream.review_boundary_retry", persona = %persona_id,
                             acceptances = boundary_ids.len(), timed_out = other.is_err(),
@@ -1089,7 +1172,7 @@ impl DreamConsolidationRegion {
             tokio::select! {
                 _ = async {
                     loop {
-                        if boundaries.lock().unwrap().get(&persona_id).is_some_and(|r| !r.pending.is_empty()) { // JUSTIFIED: inspect the owner state without holding its guard across the wait.
+                        if storage_available && boundaries.lock().unwrap().get(&persona_id).is_some_and(|r| !r.pending.is_empty()) { // JUSTIFIED: inspect the owner state without holding its guard across the wait.
                             return;
                         }
                         if boundary_wake.changed().await.is_err() { return; }
@@ -1286,12 +1369,25 @@ impl DreamConsolidationRegion {
     }
 }
 
-fn finish_review_boundaries(
+async fn finish_review_boundaries(
     all: &Mutex<HashMap<Uuid, ReviewBoundaries>>,
     persona: Uuid,
     reviews: &[Uuid],
     eligible_clusters: usize,
+    store: Option<&ReviewBoundaryStore>,
 ) {
+    if let Some(store) = store {
+        if let error @ (Ok(Err(_)) | Err(_)) = tokio::time::timeout(
+            REVIEW_COMPLETION_IO_BUDGET,
+            store.finish(reviews, eligible_clusters),
+        )
+        .await
+        {
+            crate::probe!(class = "dream.review_completion_deferred", persona = %persona, error = ?error,
+                "processed boundary remains pending until its durable receipt is acknowledged");
+            return;
+        }
+    }
     let mut all = all.lock().unwrap(); // JUSTIFIED: completion only updates the owner receipt cache synchronously.
     if let Some(receipts) = all.get_mut(&persona) {
         for review in reviews {
@@ -1871,6 +1967,12 @@ fn thought_engram(fact: &DistilledFact, lens: Lens) -> Engram {
 /// [`PersonaReflectionSource`]). Mirrors `impl PersonaChannelReader for
 /// PersonaAircRuntimeRegistry` in channel_digest_region.rs.
 impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWorkspaceRegistry {
+    fn review_boundary_store(
+        &self,
+        persona_id: Uuid,
+    ) -> Result<Option<ReviewBoundaryStore>, continuum_client::ClientError> {
+        ReviewBoundaryStore::resident(persona_id).map(Some)
+    }
     fn live_personas(&self) -> Vec<Uuid> {
         self.roster().into_iter().map(|(id, _)| id).collect()
     }
@@ -2111,9 +2213,22 @@ pub(crate) mod tests {
             persona_id: Uuid,
             admission: Arc<AdmissionState>,
             adapter: Arc<dyn AIProviderAdapter>,
+            boundary_store: Option<ReviewBoundaryStore>,
+            credit_unavailable: bool,
         }
 
         impl PersonaReflectionSource for StubReflectionSource {
+            fn review_boundary_store(
+                &self,
+                _persona_id: Uuid,
+            ) -> Result<Option<ReviewBoundaryStore>, continuum_client::ClientError> {
+                if self.credit_unavailable {
+                    return Err(continuum_client::ClientError::Transport(
+                        "credit storage unavailable".into(),
+                    ));
+                }
+                Ok(self.boundary_store.clone())
+            }
             fn live_personas(&self) -> Vec<Uuid> {
                 vec![self.persona_id]
             }
@@ -2155,10 +2270,20 @@ pub(crate) mod tests {
             persona_id: Uuid,
             admission: Arc<AdmissionState>,
         ) -> DreamConsolidationRegion {
+            region_over_with_store(persona_id, admission, None)
+        }
+
+        pub(crate) fn region_over_with_store(
+            persona_id: Uuid,
+            admission: Arc<AdmissionState>,
+            boundary_store: Option<ReviewBoundaryStore>,
+        ) -> DreamConsolidationRegion {
             DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
                 persona_id,
                 admission,
                 adapter: Arc::new(HeuristicInferenceAdapter::new()),
+                boundary_store,
+                credit_unavailable: false,
             }))
         }
 
@@ -2180,6 +2305,8 @@ pub(crate) mod tests {
             let admission = seeded_admission(&seeds);
             let calls = Arc::new(AtomicUsize::new(0));
             let mut region = DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                boundary_store: None,
+                credit_unavailable: false,
                 persona_id: persona,
                 admission: admission.clone(),
                 adapter: Arc::new(
@@ -2256,6 +2383,8 @@ pub(crate) mod tests {
             empty.text.clear();
             let calls = Arc::new(AtomicUsize::new(0));
             let region = DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                boundary_store: None,
+                credit_unavailable: false,
                 persona_id: persona,
                 admission: admission.clone(),
                 adapter: Arc::new(
@@ -2336,9 +2465,20 @@ pub(crate) mod tests {
                     ..Default::default()
                 },
             );
-            let region = region_over(persona, admission.clone());
-
+            let region = DreamConsolidationRegion::new(Arc::new(StubReflectionSource {
+                persona_id: persona,
+                admission: admission.clone(),
+                adapter: Arc::new(HeuristicInferenceAdapter::new()),
+                boundary_store: None,
+                credit_unavailable: true,
+            }));
+            let retained = Uuid::new_v4();
+            assert!(region.request_reviewed_boundary(persona, retained));
             region.tick(&RegionContext::for_persona(0, persona)).await;
+            assert!(
+                region.review_boundary_pending(persona, retained),
+                "storage failure cannot acknowledge pending work or disable ordinary decay"
+            );
 
             let after = admission
                 .recall_metadata()

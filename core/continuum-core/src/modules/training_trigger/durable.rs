@@ -77,6 +77,42 @@ pub(super) struct Submission {
     batch: PendingBatch,
     is_pending: bool,
     dispatch_id: Option<Uuid>,
+    /// Withdrawn before any dispatch by `genome/training-trigger/retire`: the
+    /// [`Retirement`] receipt that names why. Such a row is never pending again:
+    /// the producer's retry of the same submission id replays as accepted and
+    /// appends nothing (see [`TrainingTriggerState::accept`]). Absent on every
+    /// row written before the verb existed.
+    #[serde(default)]
+    retirement_id: Option<Uuid>,
+}
+
+/// The journaled withdrawal of bucket-pending submissions: what was pulled back
+/// before it could train, and why. One row per `retire` call; the rows it covers
+/// point back at it through `Submission::retirement_id`. Written BEFORE the rows
+/// flip, so a crash between the two leaves a receipt that names rows a rerun
+/// finishes (a rerun of the same selection reports them `already_retired`).
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "training_trigger_retirements")]
+#[entity(index(name = "idx_training_retirement_card", fields = ["cardId"]))]
+pub(super) struct Retirement {
+    #[serde(flatten)]
+    base: BaseEntity,
+    /// The card whose settled turns were withdrawn, when the selection was by card.
+    #[entity(indexed)]
+    card_id: Option<Uuid>,
+    /// The bucket the rows left.
+    persona_id: Uuid,
+    trait_kind: String,
+    base_model: String,
+    /// Every submission this receipt withdrew, in the order they were flipped.
+    submission_ids: Vec<Uuid>,
+    /// Examples those submissions carried: what the next job will NOT train on.
+    examples: u32,
+    reason: String,
+    /// The caller's peer id, when the command carried one.
+    retired_by: Option<Uuid>,
+    retired_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -123,6 +159,7 @@ pub(super) struct ActiveDispatch {
 pub(super) struct DurableStore {
     submissions: OrmStore<Submission>,
     dispatches: OrmStore<DispatchIntent>,
+    retirements: OrmStore<Retirement>,
     adapter: Arc<dyn StorageAdapter>,
 }
 
@@ -133,6 +170,9 @@ impl DurableStore {
                 .await
                 .map_err(|e| e.to_string())?,
             dispatches: OrmStore::new(adapter.clone())
+                .await
+                .map_err(|e| e.to_string())?,
+            retirements: OrmStore::new(adapter.clone())
                 .await
                 .map_err(|e| e.to_string())?,
             adapter,
@@ -198,6 +238,54 @@ impl DurableStore {
             .into_iter()
             .map(|row| serde_json::from_value(row.data).map_err(|error| error.to_string())) // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
             .collect()
+    }
+
+    /// Every pending submission, in any bucket, whose examples carry this card: the
+    /// producer stamps `metadata.cardId` on each example it settles from a card. Pages
+    /// the pending index (bounded by what is waiting to train, never by history).
+    async fn pending_rows_on_card(&self, card: Uuid) -> Result<Vec<Submission>, String> {
+        const PAGE: usize = 256;
+        let card = card.to_string();
+        let mut after = 0u64;
+        let mut found = Vec::new();
+        loop {
+            let result = self
+                .adapter
+                .query(
+                    QueryBuilder::new(Submission::COLLECTION)
+                        .filter_eq("isPending", true)
+                        .filter("sequence", QueryOperator::Gt(after.into()))
+                        .sort_asc("sequence")
+                        .limit(PAGE)
+                        .build(),
+                )
+                .await;
+            if !result.success {
+                return Err(result
+                    .error
+                    .unwrap_or_else(|| "training pending query refused".into())); // The query explicitly failed; this supplies its missing diagnostic, never rows.
+            }
+            let rows = result.data.ok_or("training pending query omitted rows")?;
+            let page = rows.len();
+            for row in rows {
+                let row: Submission = serde_json::from_value(row.data).map_err(|error| error.to_string())?; // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
+                after = after.max(row.sequence);
+                let on_card = row.batch.examples.iter().any(|example| {
+                    example
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("cardId"))
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c == card)
+                });
+                if on_card {
+                    found.push(row);
+                }
+            }
+            if page < PAGE {
+                return Ok(found);
+            }
+        }
     }
 
     async fn active_intent(&self, key: &BucketKey) -> Result<Option<DispatchIntent>, String> {
@@ -836,6 +924,7 @@ impl TrainingTriggerState {
             batch,
             is_pending: true,
             dispatch_id: None,
+            retirement_id: None,
         };
         if let Err(error) = store.submissions.save(id, &row).await {
             if !self.buckets.contains_key(key) && !self.active_dispatches.contains_key(key) {
@@ -1393,6 +1482,471 @@ impl TrainingTriggerState {
         } else {
             Err("training bucket recovery is still paging; retry the same submission ID".into())
         }
+    }
+
+    /// Settle a dispatch intent recovery cannot confirm (`genome/training-trigger/resolve`).
+    /// Recovery confirms Dispatching / RecoveryRequired only by a job registered under the
+    /// intent and otherwise refuses forever, which is right: it must never re-create a job
+    /// that may exist. This is the operator's half of that contract, under the bucket's own
+    /// gate, re-checking the whole ledger first so named evidence can never contradict it.
+    /// `NotDispatched` makes the intent retryable (the next tick re-creates the job from the
+    /// same batch); `Dispatched { job }` adopts a job the operator names. Journaled on the
+    /// intent (the Retryable error text carries the reason) and on a probe.
+    pub(crate) async fn resolve_dispatch(
+        self: &Arc<Self>,
+        dispatch: Uuid,
+        resolution: DispatchResolution,
+        reason: String,
+        resolved_by: Option<Uuid>,
+    ) -> Result<ResolveReport, (&'static str, String)> {
+        self.require_ready()
+            .map_err(|e| ("PersistenceUnavailable", e))?;
+        let store = self
+            .durable
+            .require()
+            .map_err(|e| ("PersistenceUnavailable", e))?;
+        let intent = store
+            .dispatches
+            .find_by_id(dispatch)
+            .await
+            .map_err(|e| ("PersistenceFailed", e.to_string()))?
+            .ok_or_else(|| ("NotFound", format!("dispatch {dispatch} is not on this node")))?;
+        let key = intent.key();
+        self.run_owned(key, move |state, key| async move {
+            state.resolve_in_bucket(&key, dispatch, resolution, reason, resolved_by).await
+        })
+        .await
+        .map_err(|e| ("RecoveryRequired", e))?
+    }
+
+    async fn resolve_in_bucket(
+        self: Arc<Self>,
+        key: &BucketKey,
+        dispatch: Uuid,
+        resolution: DispatchResolution,
+        reason: String,
+        resolved_by: Option<Uuid>,
+    ) -> Result<ResolveReport, (&'static str, String)> {
+        if !self
+            .hydrate_bucket(key)
+            .await
+            .map_err(|e| ("RecoveryRequired", e))?
+        {
+            return Err((
+                "RecoveryRequired",
+                "training bucket recovery is still paging; retry the same resolution".into(),
+            ));
+        }
+        let store = self
+            .durable
+            .require()
+            .map_err(|e| ("PersistenceUnavailable", e))?;
+        let active = self
+            .active_dispatches
+            .get(key)
+            .map(|a| Arc::clone(a.value()))
+            .filter(|a| entity_id(&a.intent.base).is_ok_and(|id| id == dispatch))
+            .ok_or_else(|| {
+                (
+                    "Invalid",
+                    format!("dispatch {dispatch} is not the bucket's active intent: it already finished, or another intent owns the bucket; nothing to settle"),
+                )
+            })?;
+        if !matches!(
+            active.intent.phase,
+            DispatchPhase::Dispatching | DispatchPhase::RecoveryRequired { .. }
+        ) {
+            return Err((
+                "Invalid",
+                format!(
+                    "dispatch {dispatch} is {:?}: only an intent recovery cannot confirm (Dispatching, RecoveryRequired) is settled by hand",
+                    active.intent.phase
+                ),
+            ));
+        }
+        // The ledger is read whole before any evidence is believed: a registration under
+        // this dispatch contradicts `NotDispatched`, and names the job `Dispatched` must match.
+        let registered = tokio::task::spawn_blocking({
+            #[cfg(test)]
+            let board = self.test_job_board.clone();
+            move || -> Result<Option<JobHandle>, String> {
+                #[cfg(not(test))]
+                let board = TrainingJobBoard::global();
+                let mut cursor = 0u64;
+                loop {
+                    match board.lookup_trigger_dispatch(dispatch, cursor)? {
+                        DispatchLookup::Observed(handle) => return Ok(Some(handle)),
+                        DispatchLookup::Incomplete { next_offset } => cursor = next_offset,
+                        DispatchLookup::NotObserved => return Ok(None),
+                        DispatchLookup::Corrupt { malformed, .. } => {
+                            return Err(format!("{malformed} unreadable journal rows: the ledger cannot be trusted whole; repair it before settling by hand"))
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|e| ("PersistenceFailed", format!("training dispatch evidence read: {e}")))?
+        .map_err(|e| ("RecoveryRequired", e))?;
+        let examples = active.batch.examples.len() as u32;
+        let id = entity_id(&active.intent.base).map_err(|e| ("PersistenceFailed", e))?;
+        match resolution {
+            DispatchResolution::NotDispatched => {
+                if let Some(handle) = registered {
+                    return Err((
+                        "Contradicted",
+                        format!("the ledger registers job {} under dispatch {dispatch}: it WAS dispatched; settle it with that job id, not as not-dispatched", handle.local_id),
+                    ));
+                }
+                let mut intent = active.intent.clone();
+                intent.phase = DispatchPhase::Retryable {
+                    error: format!("resolved by hand as not dispatched: {reason}"),
+                };
+                store
+                    .dispatches
+                    .update(id, &intent)
+                    .await
+                    .map_err(|e| ("PersistenceFailed", e.to_string()))?;
+                self.active_dispatches.insert(
+                    key.clone(),
+                    Arc::new(ActiveDispatch {
+                        intent,
+                        batch: Arc::clone(&active.batch),
+                        journal_cursor: active.journal_cursor,
+                    }),
+                );
+                crate::probe!(
+                    class = "training.trigger.dispatch_resolved",
+                    persona = %key.persona_id,
+                    trait_kind = %key.trait_kind,
+                    dispatch = %dispatch,
+                    resolution = "retryable",
+                    examples = examples as u64,
+                    resolved_by = ?resolved_by,
+                    reason = %reason,
+                    "an intent recovery could not confirm was settled by hand as never dispatched; the next tick re-creates its job from the same batch"
+                );
+                Ok(ResolveReport {
+                    dispatch_id: dispatch,
+                    resolution: Resolved::Retryable,
+                    examples,
+                    job_id: None,
+                })
+            }
+            DispatchResolution::Dispatched { job } => {
+                if let Some(handle) = &registered {
+                    if handle.local_id != job {
+                        return Err((
+                            "Contradicted",
+                            format!("the ledger registers job {} under dispatch {dispatch}, not {job}", handle.local_id),
+                        ));
+                    }
+                }
+                let registration = tokio::task::spawn_blocking({
+                    #[cfg(test)]
+                    let board = self.test_job_board.clone();
+                    move || {
+                        #[cfg(not(test))]
+                        let board = TrainingJobBoard::global();
+                        board.registration(job)
+                    }
+                })
+                .await
+                .map_err(|e| ("PersistenceFailed", format!("training job board read: {e}")))?
+                .ok_or_else(|| ("NotFound", format!("job {job} has no registration on this node's job ledger")))?;
+                if registration.persona_id != key.persona_id
+                    || registration.trait_kind != key.trait_kind
+                    || registration.base_model != key.base_model
+                {
+                    return Err((
+                        "Contradicted",
+                        format!("job {job} belongs to another bucket ({}/{}), not this dispatch's", registration.persona_name, registration.trait_kind),
+                    ));
+                }
+                if registration.trigger_dispatch_id.is_some_and(|d| d != dispatch) {
+                    return Err((
+                        "Contradicted",
+                        format!("job {job} is registered under dispatch {}, not {dispatch}", registration.trigger_dispatch_id.unwrap_or(dispatch)), // unwrap_or: guarded by is_some_and on the line above; the fallback is unreachable
+                    ));
+                }
+                let handle = tokio::task::spawn_blocking({
+                    #[cfg(test)]
+                    let board = self.test_job_board.clone();
+                    move || {
+                        #[cfg(not(test))]
+                        let board = TrainingJobBoard::global();
+                        board.registered_handle(job)
+                    }
+                })
+                .await
+                .map_err(|e| ("PersistenceFailed", format!("training job board read: {e}")))?
+                .ok_or_else(|| ("NotFound", format!("job {job}'s registration names no provider handle; it cannot be adopted")))?;
+                let provider = handle.provider_id.clone();
+                self.finish_dispatch(key, &active, handle, provider)
+                    .await
+                    .map_err(|e| ("PersistenceFailed", e))?;
+                crate::probe!(
+                    class = "training.trigger.dispatch_resolved",
+                    persona = %key.persona_id,
+                    trait_kind = %key.trait_kind,
+                    dispatch = %dispatch,
+                    resolution = "dispatched",
+                    job = %job,
+                    examples = examples as u64,
+                    resolved_by = ?resolved_by,
+                    reason = %reason,
+                    "an intent recovery could not confirm was settled by hand as the job named; that job takes the normal path"
+                );
+                Ok(ResolveReport {
+                    dispatch_id: dispatch,
+                    resolution: Resolved::Dispatched,
+                    examples,
+                    job_id: Some(job),
+                })
+            }
+        }
+    }
+
+    /// Withdraw pending submissions before they train (`genome/training-trigger/retire`).
+    /// Only rows still pending are examined: by card, that is a bounded scan of the
+    /// pending rows across every bucket (a card's dispatched history is not searched;
+    /// a job's examples come back through `return`). Each touched bucket is handled
+    /// under its own submit gate: the receipt is written first, the rows flip to
+    /// retired, and the bucket cache is rebuilt from the rows, so a dispatch racing
+    /// this call sees either the rows or their absence, never a half-flipped bucket.
+    pub(crate) async fn retire(
+        self: &Arc<Self>,
+        selection: RetireSelection,
+        reason: String,
+        retired_by: Option<Uuid>,
+    ) -> Result<RetireReport, (&'static str, String)> {
+        self.require_ready()
+            .map_err(|e| ("PersistenceUnavailable", e))?;
+        let store = self
+            .durable
+            .require()
+            .map_err(|e| ("PersistenceUnavailable", e))?;
+        let mut report = RetireReport::default();
+        // Which rows, grouped by the bucket that owns them.
+        let mut by_key: std::collections::BTreeMap<(Uuid, String, String), Vec<Uuid>> =
+            std::collections::BTreeMap::new();
+        let card = match &selection {
+            RetireSelection::Card(card) => Some(*card),
+            RetireSelection::Submissions(_) => None,
+        };
+        match selection {
+            RetireSelection::Submissions(ids) => {
+                for id in ids {
+                    match store
+                        .submissions
+                        .find_by_id(id)
+                        .await
+                        .map_err(|e| ("PersistenceFailed", e.to_string()))?
+                    {
+                        Some(row) => by_key
+                            .entry((row.persona_id, row.trait_kind.clone(), row.base_model.clone()))
+                            .or_default()
+                            .push(id),
+                        None => report.refused.push((
+                            id,
+                            None,
+                            "no submission with this id on this node".into(),
+                        )),
+                    }
+                }
+            }
+            RetireSelection::Card(card) => {
+                for row in store
+                    .pending_rows_on_card(card)
+                    .await
+                    .map_err(|e| ("PersistenceFailed", e))?
+                {
+                    let id = entity_id(&row.base).map_err(|e| ("PersistenceFailed", e))?;
+                    by_key
+                        .entry((row.persona_id, row.trait_kind.clone(), row.base_model.clone()))
+                        .or_default()
+                        .push(id);
+                }
+            }
+        }
+        for ((persona_id, trait_kind, base_model), ids) in by_key {
+            let key = BucketKey {
+                persona_id,
+                trait_kind,
+                base_model,
+            };
+            let reason = reason.clone();
+            let part = self
+                .run_owned(key, move |state, key| async move {
+                    state.retire_in_bucket(&key, card, ids, reason, retired_by).await
+                })
+                .await
+                .map_err(|e| ("RecoveryRequired", e))?
+                .map_err(|e| ("PersistenceFailed", e))?;
+            report.absorb(part);
+        }
+        Ok(report)
+    }
+
+    /// The gated half of [`Self::retire`] for one bucket: eligibility is judged on the
+    /// rows as persisted NOW (a dispatch may have taken them since the selection),
+    /// the receipt names exactly the rows that flip, and the cache is rebuilt from
+    /// the rows afterwards. A crash after the receipt and before the last flip
+    /// leaves rows a rerun of the same selection finishes under a second receipt,
+    /// reporting the first's rows as `already_retired`.
+    async fn retire_in_bucket(
+        self: Arc<Self>,
+        key: &BucketKey,
+        card: Option<Uuid>,
+        ids: Vec<Uuid>,
+        reason: String,
+        retired_by: Option<Uuid>,
+    ) -> Result<RetireReport, String> {
+        if !self.hydrate_bucket(key).await? {
+            return Err("training bucket recovery is still paging; retry the same retirement".into());
+        }
+        let store = self.durable.require()?;
+        let mut report = RetireReport::default();
+        let mut eligible = Vec::new();
+        for id in ids {
+            match store.submissions.find_by_id(id).await.map_err(|e| e.to_string())? {
+                None => report
+                    .refused
+                    .push((id, None, "no submission with this id on this node".into())),
+                Some(row) if row.key() != *key => report.refused.push((
+                    id,
+                    None,
+                    "the submission belongs to another bucket".into(),
+                )),
+                Some(row) if row.retirement_id.is_some() => report.already_retired.push(id),
+                Some(row) if !row.is_pending => report.refused.push((
+                    id,
+                    row.dispatch_id,
+                    "already carried into a job: its examples come back through genome/training-trigger/return on that job".into(),
+                )),
+                Some(row) => eligible.push((id, row)),
+            }
+        }
+        if eligible.is_empty() {
+            return Ok(report);
+        }
+        let retirement_id = Uuid::new_v4();
+        let examples: u32 = eligible
+            .iter()
+            .map(|(_, row)| row.batch.examples.len() as u32)
+            .sum();
+        let mut base = BaseEntity::for_new_record();
+        base.id = retirement_id.to_string();
+        let receipt = Retirement {
+            base,
+            card_id: card,
+            persona_id: key.persona_id,
+            trait_kind: key.trait_kind.clone(),
+            base_model: key.base_model.clone(),
+            submission_ids: eligible.iter().map(|(id, _)| *id).collect(),
+            examples,
+            reason: reason.clone(),
+            retired_by,
+            retired_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0), // a clock before 1970 stamps 0: the receipt still names its rows and reason
+        };
+        store
+            .retirements
+            .save(retirement_id, &receipt)
+            .await
+            .map_err(|e| e.to_string())?;
+        for (id, mut row) in eligible {
+            let count = row.batch.examples.len() as u32;
+            row.is_pending = false;
+            row.retirement_id = Some(retirement_id);
+            store
+                .submissions
+                .update(id, &row)
+                .await
+                .map_err(|e| format!("submission {id} could not be retired after receipt {retirement_id} was written: {e}; rerun the same retirement to finish"))?;
+            report.retired.push((id, count));
+            report.examples_retired += count;
+        }
+        report.retirement_ids.push(retirement_id);
+        // The cache is rebuilt from the rows, never edited in place.
+        self.restore_pending_bucket(key).await?;
+        crate::probe!(
+            class = "training.trigger.retired",
+            persona = %key.persona_id,
+            trait_kind = %key.trait_kind,
+            card = ?card,
+            retirement = %retirement_id,
+            submissions = report.retired.len(),
+            examples = report.examples_retired,
+            reason = %reason,
+            "pending submissions withdrawn before training; the next job will not see them"
+        );
+        Ok(report)
+    }
+}
+
+/// What `genome/training-trigger/resolve` settles an unconfirmed intent as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DispatchResolution {
+    /// No job was ever registered under it: retry from the same batch.
+    NotDispatched,
+    /// This job is the one it made: adopt it.
+    Dispatched { job: Uuid },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Resolved {
+    Retryable,
+    Dispatched,
+}
+
+impl From<Resolved> for String {
+    fn from(r: Resolved) -> Self {
+        match r {
+            Resolved::Retryable => "retryable".into(),
+            Resolved::Dispatched => "dispatched".into(),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct ResolveReport {
+    pub(crate) dispatch_id: Uuid,
+    pub(crate) resolution: Resolved,
+    pub(crate) examples: u32,
+    pub(crate) job_id: Option<Uuid>,
+}
+
+/// What [`TrainingTriggerState::retire`] withdraws.
+#[derive(Debug, Clone)]
+pub(crate) enum RetireSelection {
+    /// Every pending submission whose examples were settled from this card.
+    Card(Uuid),
+    /// Exactly these submissions.
+    Submissions(Vec<Uuid>),
+}
+
+/// The crate-internal result of a retirement; the verb projects it onto the wire.
+#[derive(Debug, Default)]
+pub(crate) struct RetireReport {
+    pub(crate) retirement_ids: Vec<Uuid>,
+    /// `(submission, examples it carried)`.
+    pub(crate) retired: Vec<(Uuid, u32)>,
+    pub(crate) already_retired: Vec<Uuid>,
+    /// `(submission, the dispatch that carried it if that is why, why)`.
+    pub(crate) refused: Vec<(Uuid, Option<Uuid>, String)>,
+    pub(crate) examples_retired: u32,
+}
+
+impl RetireReport {
+    fn absorb(&mut self, other: RetireReport) {
+        self.retirement_ids.extend(other.retirement_ids);
+        self.retired.extend(other.retired);
+        self.already_retired.extend(other.already_retired);
+        self.refused.extend(other.refused);
+        self.examples_retired += other.examples_retired;
     }
 }
 
@@ -2093,5 +2647,130 @@ mod tests {
             DispatchPhase::RecoveryRequired { .. }
         ));
         assert_eq!(active.batch.examples.len(), 1);
+    }
+
+    /// The fixture every resolve test starts from: an intent persisted mid-dispatch by one
+    /// core, found RecoveryRequired by the next, with no job registered under it.
+    async fn recovery_required_intent() -> (
+        Arc<crate::modules::training_trigger::TrainingTriggerModule>,
+        Arc<crate::runtime::CommandExecutor>,
+        BucketKey,
+        Uuid,
+        tempfile::TempDir,
+    ) {
+        let (adapter, dir) = crate::orm::store::fresh_adapter().await;
+        let (old, executor) = build_runtime(adapter.clone(), false).await;
+        let persona = Uuid::new_v4();
+        let key = BucketKey { persona_id: persona, trait_kind: "code".into(), base_model: "synthetic".into() };
+        let receipt = executor
+            .execute_json(
+                "genome/training-trigger/submit",
+                // five: the local trainer needs one full batch (as flush_dispatches_partial_bucket)
+                submit_params(persona, "code", (0..5).map(|i| ex(&format!("p-{i}"), "c")).collect(), Some(100)),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt["success"], true);
+        let batch = old.state.buckets.remove(&key).unwrap().1;
+        let intent = DispatchIntent {
+            base: BaseEntity::for_new_record(),
+            persona_id: key.persona_id,
+            trait_kind: key.trait_kind.clone(),
+            base_model: key.base_model.clone(),
+            submission_ids: batch.submission_ids,
+            phase: DispatchPhase::Dispatching,
+            is_active: true,
+        };
+        let id = entity_id(&intent.base).unwrap();
+        let store = old.state.durable.require().unwrap();
+        store.dispatches.save(id, &intent).await.unwrap();
+        store.assign(&intent).await.unwrap();
+        let (next, executor) = build_runtime(adapter, true).await;
+        next.tick().await.unwrap();
+        let active = next.state.active_dispatches.get(&key).unwrap();
+        assert!(matches!(active.intent.phase, DispatchPhase::RecoveryRequired { .. }));
+        drop(active);
+        (next, executor, key, id, dir)
+    }
+
+    // what this catches (card d24e3f25, the 5090 on 2026-10-10: 113 examples held on
+    // dispatch 0512a303, which never registered a job): recovery refuses forever, correctly;
+    // an operator settling it as not-dispatched makes it retryable and the SAME batch
+    // dispatches on the next pass, through the normal path, with nothing re-created by guess.
+    #[tokio::test]
+    async fn a_recovery_required_intent_settled_as_not_dispatched_retries_from_its_own_batch() {
+        let (next, executor, key, id, _dir) = recovery_required_intent().await;
+        let report = next
+            .state
+            .resolve_dispatch(id, DispatchResolution::NotDispatched, "the ledger has no line for it".into(), None)
+            .await
+            .expect("settled");
+        assert_eq!(report.resolution, Resolved::Retryable);
+        assert_eq!(report.examples, 5);
+        assert!(matches!(
+            next.state.active_dispatches.get(&key).unwrap().intent.phase,
+            DispatchPhase::Retryable { ref error } if error.contains("not dispatched")
+        ));
+        let flushed = executor
+            .execute_json(
+                "genome/training-trigger/flush",
+                serde_json::json!({ "personaId": key.persona_id, "traitKind": "code", "baseModel": "synthetic" }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(flushed["success"], true, "{flushed}");
+        assert_eq!(flushed["outcome"], "JobDispatched", "{flushed}");
+        assert_eq!(flushed["examplesUsed"], 5, "the same batch, not a copy: {flushed}");
+        let settled_twice = next
+            .state
+            .resolve_dispatch(id, DispatchResolution::NotDispatched, "again".into(), None)
+            .await;
+        assert!(matches!(settled_twice, Err(("Invalid", _))), "a finished intent is not settled again: {settled_twice:?}");
+    }
+
+    // what this catches: named evidence never beats the ledger. A job registered under the
+    // dispatch contradicts not-dispatched; the dispatched arm adopts exactly that job and
+    // refuses any other; a job from another bucket is refused by name.
+    #[tokio::test]
+    async fn a_registered_job_contradicts_not_dispatched_and_is_what_the_dispatched_arm_adopts() {
+        use crate::genome::fine_tuning::job_board::WatchedJob;
+        let (next, _executor, key, id, _dir) = recovery_required_intent().await;
+        let job = Uuid::new_v4();
+        let watched = |local: Uuid, dispatch: Option<Uuid>, trait_kind: &str| WatchedJob {
+            trigger_dispatch_id: dispatch,
+            handle: JobHandle { provider_id: "engine-local".into(), provider_job_id: local.to_string(), local_id: local },
+            persona_id: key.persona_id,
+            persona_name: "test-p".into(),
+            base_model: "synthetic".into(),
+            trait_kind: trait_kind.into(),
+            eval_set: None,
+            signature: None,
+            decision: None,
+        };
+        next.state.test_job_board.register(watched(job, Some(id), "code"));
+        let other = Uuid::new_v4();
+        next.state.test_job_board.register(watched(other, None, "chat"));
+        let contradicted = next
+            .state
+            .resolve_dispatch(id, DispatchResolution::NotDispatched, "wrong".into(), None)
+            .await;
+        assert!(matches!(contradicted, Err(("Contradicted", _))), "{contradicted:?}");
+        let wrong_job = next
+            .state
+            .resolve_dispatch(id, DispatchResolution::Dispatched { job: other }, "wrong job".into(), None)
+            .await;
+        assert!(matches!(wrong_job, Err(("Contradicted", _))), "{wrong_job:?}");
+        let adopted = next
+            .state
+            .resolve_dispatch(id, DispatchResolution::Dispatched { job }, "the ledger names it".into(), None)
+            .await
+            .expect("adopted");
+        assert_eq!(adopted.resolution, Resolved::Dispatched);
+        assert_eq!(adopted.job_id, Some(job));
+        let store = next.state.durable.require().unwrap();
+        let intent = store.dispatches.find_by_id(id).await.unwrap().unwrap();
+        assert!(matches!(intent.phase, DispatchPhase::Dispatched { ref handle, .. } if handle.local_id == job));
+        assert!(!intent.is_active);
+        assert!(next.state.active_dispatches.get(&key).is_none_or(|a| entity_id(&a.intent.base).ok() != Some(id)));
     }
 }

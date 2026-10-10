@@ -1,4 +1,5 @@
-//! THE PREFILL KNEE, measured and observe-only (card e370a673, slice 1).
+//! THE PREFILL KNEE: measured (card e370a673, slice 1), and a bound on the lanes a seat
+//! serves (card d4d2ef4a, slice 2).
 //!
 //! The IntelMac, 2026-09-27, one hour with no build running: 6 slots x 32k on a 6-core CPU,
 //! the whole server prefilling one 2,048-token ubatch per ~45 s (~45 tok/s), 42 of 45
@@ -18,9 +19,14 @@
 //!   the one generation seam, with how many turns were cold, so a lane cut that turns
 //!   reuse into re-prefill shows up instead of hiding in a median.
 //!
-//! Slice 1 CLAMPS NOTHING. It publishes `serving.prefill_knee.would_clamp`: the bound these
-//! inputs would set beside the lanes actually served. The clamp is slice 2, after a real
-//! hour shows the bound is stable and the prefilled median does not climb with the lanes.
+//! Slice 1 published the bound beside the lanes served, observe-only. The IntelMac read
+//! would_bound=1 against 6 served lanes for 3+ hours (server prefill 11-51 tok/s, prefilled
+//! median 13-26k), while its residents logged "never reached the model". Slice 2 makes the
+//! bound a second knee: the plan serves the lower of it and the decode knee, through the one
+//! `decode_knee::knee_lanes` seam, so it is floored at `MIN_KNEE_LANES` like the decode knee.
+//! It sizes the engine's slots; it never refuses a mind her seat (Fable's rule: a measured
+//! rate orders and sizes, a declared requirement gates). Residents page through fewer lanes
+//! that each finish a prefill inside the turn budget, instead of six that all time out.
 
 use std::sync::LazyLock;
 
@@ -217,6 +223,41 @@ pub struct EngineRead {
 }
 static TURNS: LazyLock<parking_lot::Mutex<TurnPrefill>> = LazyLock::new(Default::default);
 
+/// The bound the last published window set, with the model it was measured on. It moves only
+/// when a window publishes a bound (at most once per [`WINDOW_BUSY_MS`] of busy time), never per turn,
+/// so the lane count it bounds cannot flap with each prompt; a lane change relaunches the
+/// engine. `None` until the first window of this process publishes: the plan then serves
+/// the decode knee alone, and the first window re-plans once.
+static KNEE: LazyLock<parking_lot::Mutex<Option<(String, u32)>>> = LazyLock::new(Default::default);
+
+/// The prefill knee of `model` on this seat: the lanes its measured server prefill can serve
+/// inside the turn budget. `None` when unmeasured or measured on another model. A window
+/// that measures no prefill keeps the last bound (see `observe_slots`).
+pub fn knee_for(model: &str) -> Option<u32> {
+    KNEE.lock().as_ref().filter(|(measured, _)| measured == model).map(|(_, k)| *k)
+}
+
+/// PURE: the prefill knee after a window publishes. Only a MEASURED bound replaces the last
+/// one. A window whose turns prefilled nothing keeps it: that is what the clamp itself
+/// produces once fewer lanes stop thrashing the cache, and clearing on it would unclamp,
+/// thrash and clamp again, a relaunch each window (Fable on #4883). A looser bound still
+/// raises it the moment one is measured.
+pub fn next_knee(prev: Option<(String, u32)>, engine: Option<&EngineRead>, bound: Option<u32>) -> Option<(String, u32)> {
+    match (engine, bound) {
+        (Some(e), Some(b)) => Some((e.model.clone(), b)),
+        _ => prev,
+    }
+}
+
+/// PURE: the knee the plan serves when both are known: the tighter one. Either alone bounds
+/// alone; neither leaves the roster's demand.
+pub fn tighter_knee(decode: Option<u32>, prefill: Option<u32>) -> Option<u32> {
+    match (decode, prefill) {
+        (Some(d), Some(p)) => Some(d.min(p)),
+        (d, p) => d.or(p),
+    }
+}
+
 /// The generation seam: one turn's cache split (fed beside `citizen_health::note_generation`).
 /// Both 0 = the lane reported no timings: an absence, never a datum.
 pub fn note_turn(cached: u32, prefilled: u32) {
@@ -249,17 +290,21 @@ pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize
     let median = turns.median();
     let ttft = crate::inference::prefill_rate::UNATTENDED_TTFT;
     let bound = median.and_then(|m| prefill_lanes(rate, m, ttft));
+    {
+        let mut knee = KNEE.lock();
+        *knee = next_knee(knee.take(), engine.as_ref(), bound);
+    }
     crate::probe!(
-        class = "serving.prefill_knee.would_clamp",
+        class = "serving.prefill_knee.published",
         server_prefill_tps = rate,
         prefilled_median = median.unwrap_or(0), // probe field: 0 = no turn measured yet
         turns = turns.turns() as u64,
         cold_turns = turns.cold() as u64,
         ttft_secs = ttft.as_secs(),
         served_lanes = served_lanes as u64,
-        would_bound = bound.unwrap_or(0), // probe field: 0 = no bound (no turns, or all cache)
-        would_clamp = bound.is_some_and(|b| (b as usize) < served_lanes),
-        "prefill knee, observe-only: the lanes this server's measured prefill could serve inside the turn budget, beside the lanes it serves"
+        bound = bound.unwrap_or(0), // probe field: 0 = no bound (no turns, or all cache)
+        clamps = bound.is_some_and(|b| (b as usize) < served_lanes),
+        "prefill knee: the lanes this server's measured prefill can serve inside the turn budget, beside the lanes it serves; the plan serves the tighter of this and the decode knee"
     );
 }
 
@@ -368,6 +413,36 @@ mod tests {
     // what this catches: the bound's arithmetic and its edges. 45 tok/s over a 180 s budget
     // at 8k prefilled a turn serves one lane (the IntelMac serves six); an all-cache regime
     // has no prefill bound; the median resists one cold outlier and counts the cold turns.
+    // what this catches (card d4d2ef4a): the prefill bound failing to reach the plan, or
+    // reaching it past the floor. The IntelMac's measured bound of 1 against 6 served lanes
+    // must take a 6-lane roster to the floor of 2 whatever the decode knee says, and a looser
+    // prefill bound must never raise a tighter decode knee.
+    #[test]
+    fn the_plan_serves_the_tighter_knee_floored() {
+        use crate::inference::decode_knee::{knee_lanes, MIN_KNEE_LANES};
+        assert_eq!(knee_lanes(6, tighter_knee(None, Some(1))), MIN_KNEE_LANES, "the IntelMac: bound 1, floored");
+        assert_eq!(knee_lanes(6, tighter_knee(Some(4), Some(1))), MIN_KNEE_LANES);
+        assert_eq!(tighter_knee(Some(3), Some(8)), Some(3), "a looser prefill bound never raises the decode knee");
+        assert_eq!(tighter_knee(Some(3), None), Some(3));
+        assert_eq!(tighter_knee(None, None), None, "neither measured: the roster's demand stands");
+    }
+
+    // what this catches (Fable on #4883): the clamp's own success clearing it. Fewer lanes
+    // stop thrashing the cache, the next window prefills nothing (no bound), and clearing
+    // on that would return the plan to 6 lanes, a relaunch each window. Only a measured
+    // bound may replace the last, looser or tighter.
+    #[test]
+    fn a_window_that_measures_no_prefill_keeps_the_last_bound() {
+        let engine = EngineRead { model: "coder-1.5b".into(), pid: 7 };
+        let k = next_knee(None, Some(&engine), Some(1));
+        assert_eq!(k, Some(("coder-1.5b".into(), 1)));
+        let k = next_knee(k, Some(&engine), None);
+        assert_eq!(k, Some(("coder-1.5b".into(), 1)), "a median-0 window keeps the bound");
+        let k = next_knee(k, None, Some(5));
+        assert_eq!(k, Some(("coder-1.5b".into(), 1)), "no engine named: nothing to attribute a bound to");
+        assert_eq!(next_knee(k, Some(&engine), Some(3)), Some(("coder-1.5b".into(), 3)), "a measured looser bound raises it");
+    }
+
     #[test]
     fn the_prefill_bound_is_rate_times_budget_over_the_prefilled_median() {
         let ttft = std::time::Duration::from_secs(180);

@@ -958,11 +958,11 @@ mod tests {
         // stay coarse and human, never raw milliseconds for the model to parrot.
         assert_eq!(
             provenance_prefix(&engram_from(peer, 3 * 60 * 60 * 1000), me, now),
-            "(heard, 3h ago) "
+            "(heard, 2h+ ago) "
         );
         assert_eq!(
             provenance_prefix(&engram_from(me, 5 * 60 * 1000), me, now),
-            "(you said, 5m ago) "
+            "(you said, 5m+ ago) "
         );
         assert_eq!(
             provenance_prefix(&engram_from(peer, 30_000), me, now),
@@ -970,7 +970,7 @@ mod tests {
         );
         assert_eq!(
             provenance_prefix(&engram_from(peer, 3 * 24 * 60 * 60 * 1000), me, now),
-            "(heard, 3d ago) "
+            "(heard, 2d+ ago) "
         );
 
         // PEER-HEARD speech renders QUOTED — recalled speech is a quotation
@@ -980,11 +980,11 @@ mod tests {
         // words render bare — quoting yourself invites parroting yourself.
         assert_eq!(
             render_memory_line(&engram_from(peer, 3 * 60 * 60 * 1000), me, now),
-            "- (heard, 3h ago) \u{201c}staging gateway is on port 58057\u{201d}"
+            "- (heard, 2h+ ago) \u{201c}staging gateway is on port 58057\u{201d}"
         );
         assert_eq!(
             render_memory_line(&engram_from(me, 5 * 60 * 1000), me, now),
-            "- (you said, 5m ago) staging gateway is on port 58057"
+            "- (you said, 5m+ ago) staging gateway is on port 58057"
         );
     }
     use crate::persona::engram::{ChatMessageRef, Engram, EngramKind, EngramOrigin, TrustState};

@@ -530,20 +530,18 @@ pub struct VisionModule {
     /// Executor slot for verbs that re-enter the bus (vision/look → the
     /// describe generate). Installed by the runtime's install_executor hook.
     executor: Arc<crate::runtime::LateBound<crate::runtime::CommandExecutor>>,
-}
-
-impl Default for VisionModule {
-    fn default() -> Self {
-        Self {
-            cache: Arc::new(VisionCache::new()),
-            executor: Arc::new(crate::runtime::LateBound::new("vision module executor")),
-        }
-    }
+    /// The code module's state: `vision/look` resolves the file it is handed through
+    /// the caller's workspace engine, the one path authority (card d598c806).
+    code: Arc<crate::modules::code::CodeState>,
 }
 
 impl VisionModule {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(code: Arc<crate::modules::code::CodeState>) -> Self {
+        Self {
+            cache: Arc::new(VisionCache::new()),
+            executor: Arc::new(crate::runtime::LateBound::new("vision module executor")),
+            code,
+        }
     }
 }
 
@@ -584,7 +582,7 @@ impl ServiceModule for VisionModule {
     }
 
     fn commands(&self) -> Vec<Arc<dyn crate::sdk_codegen::DynCommand>> {
-        crate::commands::vision::command_objects(self.cache.clone(), self.executor.clone())
+        crate::commands::vision::command_objects(self.cache.clone(), self.executor.clone(), self.code.clone())
     }
 
     fn install_executor(&self, executor: Arc<crate::runtime::CommandExecutor>) {
@@ -743,7 +741,11 @@ mod tests {
     // registry owns vision/* now) rather than silently dispatching.
     #[tokio::test]
     async fn legacy_handle_command_fails_loud() {
-        let module = VisionModule::new();
+        let module = VisionModule::new(Arc::new(crate::modules::code::CodeState::new(
+            Arc::new(dashmap::DashMap::new()),
+            Arc::new(dashmap::DashMap::new()),
+            tokio::runtime::Handle::current(),
+        )));
         let err = module
             .handle_command("vision/cache-stats", json!({}))
             .await

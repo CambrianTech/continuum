@@ -461,6 +461,15 @@ pub struct StagedCredit {
     /// the same field. `default` reads a row staged before this field as real work.
     #[serde(default)]
     pub coursework_set: Option<String>,
+    /// When HER core observed a FAILED review of this row's card while the row was
+    /// staged: her own clock, never the reviewer's (card ad4bfaeb). A row a review
+    /// rejected is the behaviour the reviewer refused, so a later PASS on the same card
+    /// must not train it as good; only the rows staged after the failure (the
+    /// correction) settle as passing. Attached at settlement and only ever added, like
+    /// `served`. The flag is also the record of what a gene did NOT train on, kept as a
+    /// negative for later.
+    #[serde(default)]
+    pub rejected_at_ms: Option<u64>,
 }
 
 /// A scored, gated, classified training example ready to submit. The pure product
@@ -1334,6 +1343,7 @@ async fn stage_credit<T: Transport>(
         // a fourth time would be the duplication the compression principle forbids.
         staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
         coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
+        rejected_at_ms: None,
     };
 
     let mut operations = Vec::new();
@@ -1604,6 +1614,14 @@ pub fn acted_chain(turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) -> S
         .join("")
 }
 
+/// The substrate's own connection to this core: no caller identity, so the gate resolves
+/// it to Owner. For the producer's BOOKKEEPING on a resident's store only (the rejected
+/// mark, shedding a transferred row's lived copy); never for her acts, which carry her
+/// identity so provenance stays hers.
+fn substrate_connection(executor: &Arc<CommandExecutor>) -> Connection<InProcessTransport> {
+    Connection::new(InProcessTransport::new(executor.clone(), None))
+}
+
 /// Settle a card's staged credit: eligible claimed turns on `card_id` may transfer
 /// after a passing verdict, through the same quality gate as live turns. Failed,
 /// unknown and incompatible evidence remains staged. Reads each
@@ -1611,6 +1629,14 @@ pub fn acted_chain(turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) -> S
 /// receipted: a store that cannot be read names itself; nothing here can fail the
 /// verdict that triggered it.
 pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
+    settle_card_credit_with_history(card_id, passed, false).await;
+}
+
+/// [`settle_card_credit`], told whether the board holds a FAILED review of this card
+/// before the verdict being settled. Only the catch-up pass knows that without having
+/// observed it; a live verdict passes `false` and relies on the rows its own core
+/// marked when the failure arrived.
+async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_earlier: bool) {
     let Some(executor) = EXECUTOR.cloned() else {
         return;
     };
@@ -1625,6 +1651,11 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
                 crate::identity::PeerId::from_uuid(persona_id),
             )),
         ));
+        // The SUBSTRATE does the bookkeeping on her store (the rejected mark, shedding a
+        // transferred row's lived copy); her own identity resolves to Trusted, where
+        // data/update is refused (modules/grid/acl.rs; cards fd47a804, 44aee459). Her acts
+        // (staging, decisions, submits) stay under her identity above.
+        let substrate = substrate_connection(&executor);
         let listed = match conn
             .commands()
             .execute_value(
@@ -1677,6 +1708,45 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
                 .collect();
             crate::genome::gene_trial::credit_settled_card(persona_id, card_id, passed, &turns);
         }
+        // VERDICT ORDER (card ad4bfaeb): a failure marks every row staged so far; a pass
+        // trains only what was staged after it. The order is her own core's perception of
+        // the failure, so no clock on the reviewer's node is compared with hers.
+        let rows = if passed {
+            match pass_admits(&rows, failed_earlier) {
+                PassAdmits::All => rows,
+                PassAdmits::AfterFailure => {
+                    let (rejected, admitted): (Vec<StagedCredit>, Vec<StagedCredit>) =
+                        rows.into_iter().partition(|r| r.rejected_at_ms.is_some());
+                    crate::probe!(
+                        class = "training.credit.rejected_excluded",
+                        persona = %persona_name,
+                        card = %card_id,
+                        excluded = rejected.len() as u64,
+                        admitted = admitted.len() as u64,
+                        excluded_ids = %rejected.iter().map(|r| r.id.to_string()).collect::<Vec<_>>().join(","),
+                        "a passing verdict after a failure: the rows the failure rejected are not trained as passing; only the correction settles"
+                    );
+                    admitted
+                }
+                PassAdmits::Unordered => {
+                    crate::probe!(
+                        class = "training.credit.unordered_withheld",
+                        persona = %persona_name,
+                        card = %card_id,
+                        withheld = rows.len() as u64,
+                        "the board holds a failure before this pass that her core never observed, so no row can be placed after it; nothing trains"
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            // The SUBSTRATE marks her rows, not she: the mark is settlement bookkeeping on her
+            // store, and her own connection resolves to Trusted, where data/update is refused
+            // (modules/grid/acl.rs; card fd47a804). Through her identity every mark failed and a
+            // later pass trained the rejected rows anyway.
+            mark_rejected(&substrate, &persona_name, card_id, &rows).await;
+            rows
+        };
         let mut submitted = 0usize;
         let mut rows = rows;
         rows.sort_by_key(|r| r.staged_at_ms);
@@ -1692,7 +1762,7 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
                 );
                 continue;
             }
-            match settle_staged_row(&conn, persona_id, &persona_name, row, passed).await {
+            match settle_staged_row(&conn, &substrate, persona_id, &persona_name, row, passed).await {
                 Ok(true) => submitted += 1,
                 Ok(false) => {}
                 Err(error) => crate::probe!(
@@ -1900,8 +1970,9 @@ fn across_turns(rows: &[StagedCredit]) -> Vec<(&StagedCredit, Option<&'static st
         .collect()
 }
 
-async fn settle_staged_row<T: Transport>(
+async fn settle_staged_row<T: Transport, S: Transport>(
     conn: &Connection<T>,
+    substrate: &Connection<S>,
     persona_id: Uuid,
     persona_name: &str,
     row: &StagedCredit,
@@ -1940,7 +2011,7 @@ async fn settle_staged_row<T: Transport>(
         }
     }
     if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
-        clear_lived(conn, persona_name, row).await;
+        clear_lived(substrate, persona_name, row).await;
         return Ok(false);
     }
     let receipt = submit_training(conn, params).await?;
@@ -1965,7 +2036,7 @@ async fn settle_staged_row<T: Transport>(
         .is_some_and(|accepted| accepted.replayed);
     let dispatch_success = receipt.success;
     reviewed::accept_transfer(conn, persona_name, row.id, receipt).await?;
-    clear_lived(conn, persona_name, row).await;
+    clear_lived(substrate, persona_name, row).await;
     crate::probe!(
         class = "training.credit.transferred",
         persona = %persona_name,
@@ -1978,15 +2049,95 @@ async fn settle_staged_row<T: Transport>(
     Ok(true)
 }
 
+/// Which staged rows a PASSING verdict may train (card ad4bfaeb).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PassAdmits {
+    /// No failure on this card: every row is the work that passed.
+    All,
+    /// Her core observed a failure: only the rows staged after it (unmarked) train.
+    AfterFailure,
+    /// The board holds an earlier failure her core never observed, so no row can be
+    /// placed after it. Nothing trains: a pre-failure row labelled passing is the
+    /// expensive mistake, and exclusion never is.
+    Unordered,
+}
+
+/// PURE: what a pass admits, from the rows' marks and whether the board holds an
+/// earlier failure.
+pub(crate) fn pass_admits(rows: &[StagedCredit], failed_earlier: bool) -> PassAdmits {
+    if rows.iter().any(|r| r.rejected_at_ms.is_some()) {
+        PassAdmits::AfterFailure
+    } else if failed_earlier {
+        PassAdmits::Unordered
+    } else {
+        PassAdmits::All
+    }
+}
+
+/// A FAILED verdict marks every row staged on the card so far as rejected, on her own
+/// core's clock. `conn` must be the SUBSTRATE's (no caller identity): a persona
+/// identity resolves to Trusted, where data/update is refused. A row already marked keeps its first mark (a second failure doesn't move it).
+/// A write that fails is named; that row may then train on a later pass, which is the
+/// old behaviour, never a new one.
+async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[StagedCredit]) {
+    let now = crate::persona::trace::now_ms();
+    for row in rows.iter().filter(|r| r.rejected_at_ms.is_none()) {
+        let marked = conn
+            .commands()
+            .execute_value(
+                "data/update",
+                json!({
+                    "collection": StagedCredit::COLLECTION,
+                    "id": row.id,
+                    "data": { "rejectedAtMs": now },
+                    "dbPath": format!("@persona:{persona_name}"),
+                }),
+            )
+            .await
+            .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
+        if let Err(error) = marked {
+            crate::probe!(
+                class = "training.credit.reject_mark_failed",
+                persona = %persona_name,
+                card = %card_id,
+                submission = %row.id,
+                error = %error,
+                "a row the failure rejected could not be marked; a later pass may still train it"
+            );
+        }
+    }
+}
+
+/// PURE: whether the board holds a FAILED review earlier than the card's latest real
+/// verdict (catch-up's question: did she miss a failure before this pass?).
+pub(crate) fn failed_before_latest<'a>(
+    reviews: impl Iterator<Item = (u64, &'a airc_work::WorkReviewOutcome)>,
+) -> bool {
+    let real: Vec<(u64, bool)> = reviews
+        .filter_map(|(at, outcome)| match outcome {
+            airc_work::WorkReviewOutcome::Passed => Some((at, true)),
+            airc_work::WorkReviewOutcome::Failed => Some((at, false)),
+            airc_work::WorkReviewOutcome::Unknown => None,
+        })
+        .collect();
+    let Some(&(latest, _)) = real.iter().max_by_key(|(at, _)| *at) else { return false };
+    real.iter().any(|&(at, passed)| !passed && at < latest)
+}
+
 /// Once the destination holds a row's lived calls as examples, the row keeps its
 /// receipts (the provenance) and drops the second copy, so settled rows stay small.
 /// A failed clear is named; the next settle pass meets the accepted transfer and
 /// clears again.
-async fn clear_lived<T: Transport>(conn: &Connection<T>, persona_name: &str, row: &StagedCredit) {
+/// `substrate` must be the SUBSTRATE's connection (no caller identity): this write
+/// is bookkeeping on her store, and her own identity resolves to Trusted, where
+/// data/update is refused. Measured on the 5090 (2026-10-10, 26 refusals in one pass):
+/// through her identity no transferred row ever shed its lived copy, so her staged
+/// store grew by a second copy of every call she had already handed to training.
+async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: &str, row: &StagedCredit) {
     if row.lived.is_none() {
         return;
     }
-    let cleared = conn
+    let cleared = substrate
         .commands()
         .execute_value(
             "data/update",
@@ -2090,6 +2241,11 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
         ) else {
             continue;
         };
+        let failed_earlier = failed_before_latest(
+            board
+                .submission_reviews_for_card(card.card_id)
+                .map(|r| (r.reviewed_at_ms, &r.outcome)),
+        );
         judged += 1;
         crate::probe!(
             class = "training.credit.reconcile_card",
@@ -2098,7 +2254,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             passed,
             "the board already judged this card of hers — its staged credit settles now"
         );
-        settle_card_credit(card.card_id.as_uuid(), passed).await;
+        settle_card_credit_with_history(card.card_id.as_uuid(), passed, failed_earlier).await;
     }
     crate::probe!(
         class = "training.credit.reconciled",
@@ -2160,6 +2316,54 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    // what this catches (card ad4bfaeb): a passing review after a failure training the
+    // rejected turns as good. Kimi, 2026-10-10: review 5769a6c3 failed her card 63855189
+    // for unjustified production unwrap_or, she fixed it, and review 7845d153 passed it.
+    // Without verdict order the pass settled every staged row, the turns that wrote the
+    // mistake included, as passing work. A live failure marks the rows staged so far, so
+    // the pass admits only the correction; a failure her core never saw admits nothing;
+    // a card never failed admits all, as before.
+    // what this catches (card fd47a804, the 5090): the rejected mark written through her
+    // own identity. A local persona resolves to Trusted, and data/update is not authorized
+    // there, so every mark was refused (routing.acl.refused) and #4900 trained the rejected
+    // rows anyway. The mark goes through the substrate (Owner). If data/update ever opens
+    // to Trusted this fails, and the substrate connection can be revisited.
+    #[test]
+    fn the_rejected_mark_needs_the_substrates_authority_not_hers() {
+        use crate::modules::grid::acl::is_command_authorized;
+        use crate::modules::grid::node::TrustLevel;
+        assert!(!is_command_authorized("data/update", TrustLevel::Trusted), "her own identity cannot mark the row");
+        assert!(is_command_authorized("data/list", TrustLevel::Trusted), "while she can still read her staged rows");
+    }
+
+    #[test]
+    fn a_pass_after_a_failure_trains_the_correction_not_the_rejected_turns() {
+        let row = |at: u64, rejected: Option<u64>| -> StagedCredit {
+            let mut r: StagedCredit = serde_json::from_value(json!({
+                "id": Uuid::new_v4(), "cardId": Uuid::from_u128(0x6385), "claimId": null, "owner": null,
+                "role": null, "receipts": [], "served": null, "prompt": "p", "completion": "c", "stagedAtMs": at,
+            }))
+            .expect("a minimal staged row");
+            r.rejected_at_ms = rejected;
+            r
+        };
+        let before = row(10, Some(50));
+        let fix = row(60, None);
+        assert_eq!(pass_admits(&[before.clone(), fix.clone()], false), PassAdmits::AfterFailure);
+        let (rejected, admitted): (Vec<_>, Vec<_>) =
+            [before, fix.clone()].into_iter().partition(|r| r.rejected_at_ms.is_some());
+        assert_eq!((rejected.len(), admitted.len()), (1, 1));
+        assert_eq!(admitted[0].id, fix.id, "only the turn staged after the failure trains");
+        assert_eq!(pass_admits(&[row(10, None), row(60, None)], true), PassAdmits::Unordered, "a failure she never observed: nothing can be placed after it");
+        assert_eq!(pass_admits(&[row(10, None)], false), PassAdmits::All, "never failed: every row is the passing work");
+
+        use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
+        assert!(failed_before_latest([(1, &Failed), (2, &Passed)].into_iter()));
+        assert!(!failed_before_latest([(1, &Passed)].into_iter()));
+        assert!(!failed_before_latest([(2, &Failed), (1, &Passed)].into_iter()), "the latest is the failure itself: no pass to settle");
+        assert!(failed_before_latest([(1, &Failed), (2, &Unknown), (3, &Failed), (4, &Passed)].into_iter()), "a second failure is still a failure before the pass");
+    }
 
     // what this catches (genome lane, 2026-10-05): the room's review on a submission is
     // what settles a card's staged credit, passed or failed, whoever reviewed it; an
@@ -2258,6 +2462,7 @@ pub(crate) mod tests {
                 lived: None,
                 staged_at_ms: 1,
                 coursework_set: None,
+                rejected_at_ms: None,
             }
         }
 
@@ -2951,6 +3156,10 @@ pub(crate) mod tests {
         TurnCreditCapture::with_executor(data_runtime(), persona_id, persona_name, prompt, credit)
     }
 
+    fn substrate_conn(executor: &Arc<CommandExecutor>) -> Connection<InProcessTransport> {
+        substrate_connection(executor)
+    }
+
     fn conn_as(executor: Arc<CommandExecutor>, persona: Uuid) -> Connection<InProcessTransport> {
         Connection::new(InProcessTransport::new(
             executor,
@@ -3263,6 +3472,7 @@ pub(crate) mod tests {
             lived,
             staged_at_ms: at,
             coursework_set: None,
+            rejected_at_ms: None,
         };
         let read = || call(Some(("code/read", json!({"path": "xarray/core/merge.py"}))));
         let edit = || call(Some(("code/edit", json!({"path": "xarray/core/merge.py"}))));
@@ -3792,7 +4002,7 @@ pub(crate) mod tests {
         let persona = Uuid::new_v4();
         use crate::cognition::dream_consolidation::tests::{
             episodic,
-            region::{drain, region_over, seeded_admission},
+            region::{drain, region_over_with_store, seeded_admission},
         };
         use crate::runtime::brain_region::{BrainRegion, RegionContext};
         let admission = seeded_admission(
@@ -3806,12 +4016,14 @@ pub(crate) mod tests {
                 })
                 .collect::<Vec<_>>(),
         );
-        let dream = region_over(persona, admission.clone());
         let owner = airc_core::PeerId::from_uuid(persona);
         let reviewer = airc_core::PeerId::new();
         let card_id = airc_work::WorkCardId::new();
         let room = Uuid::new_v4();
         let name = "reviewed-project-work";
+        let store =
+            reviewed::boundaries::ReviewBoundaryStore::new(executor.clone(), name.into(), persona);
+        let dream = region_over_with_store(persona, admission.clone(), Some(store.clone()));
         let receipts = vec![served_receipt("reviewed-request", "actual-model")];
         let (mut capture, selected) = stage_settlement_fixture(
             executor.clone(),
@@ -4047,9 +4259,15 @@ pub(crate) mod tests {
                 params["examples"][0]["metadata"]["reviewedSubmission"]["review"]["review_id"],
                 json!(review_id)
             );
+            // what this catches (card 04a5e867): the exact path's examples carry the card
+            // beside the review, so `genome/training-trigger/retire --card` finds them.
+            assert_eq!(
+                params["examples"][0]["metadata"]["cardId"],
+                json!(card_id.as_uuid())
+            );
             Err(ClientError::Transport("destination ACK lost".into()))
         });
-        let conn = settlement_connection(executor, persona, submit, None);
+        let conn = settlement_connection(executor.clone(), persona, submit, None);
         assert!(reviewed::consume_observed_review_with_boundary(
             &conn,
             name,
@@ -4176,6 +4394,55 @@ pub(crate) mod tests {
             State::Accepted,
             "another review can inspect the accepted submission without owning its boundary"
         );
+        // The original owner dies after durable acceptance, before its pending
+        // notification is consumed. No AIRC replay or second submission follows.
+        drop(dream);
+        let reopened_store =
+            reviewed::boundaries::ReviewBoundaryStore::new(data_runtime(), name.into(), persona);
+        let page = reopened_store.page(None, 1).await.unwrap();
+        assert_eq!(page.pending, vec![selection.submission_id]);
+        assert_eq!(page.next, Some(selection.submission_id.to_string()));
+        assert!(reopened_store
+            .page(page.next, 1)
+            .await
+            .unwrap()
+            .pending
+            .is_empty());
+        // A malformed earlier acceptance cannot permanently hide later valid IDs.
+        // Keep it in the same real ORM store; recovery never regrades or deletes it.
+        let mut malformed = reviewed::read_one::<_, reviewed::CreditReviewAcceptance>(
+            &data,
+            name,
+            &selection.submission_id.to_string(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        malformed.id = Uuid::nil();
+        data.commands().execute_value("data/batch", json!({
+            "dbPath": format!("@persona:{name}"),
+            "operations": [{"operationType": "create", "collection": reviewed::CreditReviewAcceptance::COLLECTION,
+                "id": malformed.id.to_string(), "data": malformed}],
+        })).await.unwrap();
+        let skipped = reopened_store.page(None, 1).await.unwrap();
+        assert!(skipped.pending.is_empty());
+        assert_eq!(skipped.next, Some(Uuid::nil().to_string()));
+        assert_eq!(
+            reopened_store.page(skipped.next, 1).await.unwrap().pending,
+            vec![selection.submission_id]
+        );
+        let wrong_owner = reviewed::boundaries::ReviewBoundaryStore::new(
+            data_runtime(),
+            name.into(),
+            Uuid::new_v4(),
+        );
+        assert!(wrong_owner
+            .finish(&[selection.submission_id], 0)
+            .await
+            .is_err());
+        let dream =
+            region_over_with_store(persona, admission.clone(), Some(reopened_store.clone()));
+        assert!(!dream.review_boundary_pending(persona, selection.submission_id));
         dream.tick(&RegionContext::for_persona(0, persona)).await;
         drain(&dream).await;
         assert!(!dream.review_boundary_pending(persona, selection.submission_id));
@@ -4187,9 +4454,24 @@ pub(crate) mod tests {
                 .count(),
             1
         );
-        // Replaying the durable acceptance into a fresh owner restores the request;
-        // automatic acceptance rescan after boot belongs to retained-credit retry.
-        let restarted = region_over(persona, admission);
+        let completed = reviewed::read_one::<_, reviewed::boundaries::ProcessedReviewBoundary>(
+            &data,
+            name,
+            &selection.submission_id.to_string(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(completed.persona_id, persona);
+        assert_eq!(completed.review_id, pass.review_id.as_uuid());
+        assert_eq!(completed.eligible_clusters, 1);
+        assert!(reopened_store
+            .page(Some(Uuid::nil().to_string()), 1)
+            .await
+            .unwrap()
+            .pending
+            .is_empty());
+        let restarted = region_over_with_store(persona, admission, Some(reopened_store));
         reviewed::consume_review_with_boundary(
             &refused_conn,
             name,
@@ -4216,7 +4498,10 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert!(restarted.review_boundary_pending(persona, selection.submission_id));
+        assert!(
+            !restarted.review_boundary_pending(persona, selection.submission_id),
+            "durable completion suppresses exact replay after another restart"
+        );
         assert_eq!(
             stored_credit_rows(&data, name).await.len(),
             1,
@@ -4520,6 +4805,74 @@ pub(crate) mod tests {
         .is_err());
     }
 
+    // what this catches (card 44aee459, the 5090 on 2026-10-10): a transferred row's lived
+    // copy is shed through data/update, which the gate refuses at her identity (Trusted)
+    // and admits for the substrate (Owner). Under the REAL gate: through her connection the
+    // copy stays (26 refusals in one pass on the 5090), through the substrate's it is gone.
+    #[tokio::test]
+    async fn the_lived_copy_is_shed_by_the_substrate_not_by_her_identity() {
+        use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
+        let executor = data_runtime();
+        let persona = Uuid::new_v4();
+        let name = "kimi";
+        let hers = conn_as(executor.clone(), persona);
+        let lived = crate::genome::fine_tuning::LivedCall {
+            capture: Uuid::new_v4().to_string(),
+            request: TextGenerationRequest::default(),
+            response: TextGenerationResponse {
+                text: "read it before guessing".into(),
+                finish_reason: crate::ai::FinishReason::Stop,
+                model: "m".into(),
+                provider: "p".into(),
+                usage: crate::ai::UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: "r".into(),
+                content: None,
+                tool_calls: None,
+                reasoning: None,
+                routing: None,
+                error: None,
+                timing: None,
+            },
+        };
+        let credit = CapturedCredit {
+            card_id: Uuid::new_v4(),
+            claim: Some(ClaimReceipt {
+                claim_id: Uuid::new_v4(),
+                owner: airc_core::PeerId::from_uuid(persona),
+                role: CreditRole::Owner,
+            }),
+        };
+        // Her act, under her identity: staging is hers and is admitted.
+        let id = stage_credit(
+            &hers,
+            name,
+            &credit,
+            vec![served_receipt("lived-generation", "actual-model")],
+            "p".into(),
+            "c".into(),
+            Some(vec![lived]),
+            Uuid::new_v4(),
+            &[],
+        )
+        .await
+        .expect("test: her staging is admitted");
+        let row = stored_credit_rows(&hers, name).await.into_iter().find(|r| r.id == id).expect("test: staged");
+        assert!(row.lived.as_deref().is_some_and(|calls| !calls.is_empty()), "staged with its lived copy");
+        clear_lived(&hers, name, &row).await;
+        let still = stored_credit_rows(&hers, name).await;
+        assert!(
+            still.iter().any(|r| r.id == id && r.lived.is_some()),
+            "her own identity cannot shed the copy: data/update is refused at Trusted"
+        );
+        clear_lived(&substrate_conn(&executor), name, &row).await;
+        let shed = stored_credit_rows(&hers, name).await;
+        assert!(
+            shed.iter().any(|r| r.id == id && r.lived.is_none()),
+            "the substrate sheds it"
+        );
+    }
+
     // what this catches: 6c36c24d — legacy refusal/uncertain acknowledgement
     // cannot leave generation reservations whose replaced payload is lost.
     #[tokio::test]
@@ -4552,7 +4905,7 @@ pub(crate) mod tests {
             script_settlement_reply(&submit, &original, refused);
             let conn = settlement_connection(executor.clone(), persona, submit, None);
             assert!(!matches!(
-                settle_staged_row(&conn, persona, name, &original, true).await,
+                settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &original, true).await,
                 Ok(true)
             ));
             let mut later_receipts = receipts;
@@ -4607,13 +4960,13 @@ pub(crate) mod tests {
             submit.respond_to("genome/training-trigger/submit", |_| {
                 panic!("overlap reached destination")
             });
-            let conn = settlement_connection(reopened_executor, persona, submit, None);
+            let conn = settlement_connection(reopened_executor.clone(), persona, submit, None);
             assert!(
-                settle_staged_row(&conn, persona, name, &intent.snapshot, true)
+                settle_staged_row(&conn, &substrate_conn(&reopened_executor), persona, name, &intent.snapshot, true)
                     .await
                     .unwrap()
             );
-            assert!(!settle_staged_row(&conn, persona, name, &newer, true)
+            assert!(!settle_staged_row(&conn, &substrate_conn(&reopened_executor), persona, name, &newer, true)
                 .await
                 .unwrap());
             assert_eq!(stored_credit_rows(&reopened, name).await[0].id, newer.id);
@@ -4665,7 +5018,8 @@ pub(crate) mod tests {
             submit,
             Some((entered.clone(), release.clone())),
         );
-        let mut drain = Box::pin(settle_staged_row(&conn, persona, name, &older, true));
+        let substrate = substrate_conn(&executor);
+        let mut drain = Box::pin(settle_staged_row(&conn, &substrate, persona, name, &older, true));
         tokio::select! {
             _ = entered.notified() => {},
             result = &mut drain => panic!("drain settled before its paused receipt: {result:?}"),
@@ -4715,9 +5069,9 @@ pub(crate) mod tests {
         submit.respond_to("genome/training-trigger/submit", |_| {
             panic!("overlapping cumulative revision reached destination submission")
         });
-        let conn = settlement_connection(executor, persona, submit, None);
+        let conn = settlement_connection(executor.clone(), persona, submit, None);
         assert!(
-            !settle_staged_row(&conn, persona, name, &newer, true)
+            !settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &newer, true)
                 .await
                 .unwrap(),
             "a cumulative successor cannot inherit a verdict and train the same generations again"
@@ -4790,7 +5144,7 @@ pub(crate) mod tests {
         let conn = settlement_connection(executor.clone(), persona, submit.clone(), None);
         for _ in 0..4 {
             assert!(!matches!(
-                settle_staged_row(&conn, persona, name, &a, true).await,
+                settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, true).await,
                 Ok(true)
             ));
             assert_eq!(stored_credit_rows(&data, name).await.len(), 4,
@@ -4806,28 +5160,28 @@ pub(crate) mod tests {
                 "acceptance":{"submissionId":a.id,"replayed":true}
             })),
         );
-        assert!(!settle_staged_row(&conn, persona, name, &mixed, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &mixed, true)
             .await
             .unwrap());
-        assert!(!settle_staged_row(&conn, persona, name, &faulted, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &faulted, true)
             .await
             .unwrap());
-        assert!(!settle_staged_row(&conn, persona, name, &a, false)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, false)
             .await
             .unwrap());
         let mut claimless = a.clone();
         claimless.claim_id = None;
         claimless.owner = None;
-        assert!(!settle_staged_row(&conn, persona, name, &claimless, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &claimless, true)
             .await
             .unwrap());
         let mut foreign = a.clone();
         foreign.owner = Some(Uuid::new_v4());
-        assert!(!settle_staged_row(&conn, persona, name, &foreign, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &foreign, true)
             .await
             .unwrap());
         assert_eq!(stored_credit_rows(&data, name).await.len(), 4);
-        assert!(settle_staged_row(&conn, persona, name, &a, true)
+        assert!(settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, true)
             .await
             .unwrap());
         script_settlement_reply(
@@ -4838,7 +5192,7 @@ pub(crate) mod tests {
                 "acceptance":{"submissionId":b.id,"replayed":false}
             })),
         );
-        assert!(settle_staged_row(&conn, persona, name, &b, true)
+        assert!(settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &b, true)
             .await
             .unwrap());
         let remaining = stored_credit_rows(&data, name).await;
@@ -4856,10 +5210,10 @@ pub(crate) mod tests {
         submit.respond_to("genome/training-trigger/submit", |_| {
             panic!("acknowledged transfer was dispatched again")
         });
-        assert!(!settle_staged_row(&conn, persona, name, &a, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, true)
             .await
             .unwrap());
-        assert!(!settle_staged_row(&conn, persona, name, &b, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &b, true)
             .await
             .unwrap());
         assert!(remaining.iter().any(|row| row.id == mixed.id));

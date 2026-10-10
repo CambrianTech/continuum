@@ -190,6 +190,107 @@ struct Shape {
     /// Depth drives the graph (~linear), so a reduced-depth run is its own shape.
     #[serde(default)]
     depth: Option<u32>,
+    /// The exact walk (fork #47) is its own shape: its chunk graph carries GRAD leaves for the
+    /// cached K/V over the gradient horizon, several times the plain walk's. Measured on the
+    /// 5090, 2026-10-10 04:34Z (card d6dae498): a plain-walk footprint of 3418 MiB was leased
+    /// for Kimi's first exact run, whose chunk graph needed 9236 MiB more, and the job refused.
+    #[serde(default)]
+    exact: bool,
+    /// The training chunk (one batch, one ubatch): the chunk graph's activations scale with
+    /// it, so a shape at a smaller chunk is a smaller footprint, and the chunk the core sends
+    /// is the one the footprint was measured at.
+    #[serde(default = "default_chunk")]
+    chunk: u32,
+    /// Per-layer recompute (fork #37) is its own shape: the backward pass keeps only the layer
+    /// outputs and rebuilds the rest, so a chunk's graph is a fraction of the one that keeps
+    /// every layer's activations. Measured on the 5090, 2026-10-10 08:32Z (job 888ce9c6): the
+    /// exact walk at chunk 256 without it needed 5.6 GiB more than the lease under every
+    /// gradient horizon from 1155 down to 256. A footprint measured without recompute is never
+    /// leased for a run with it, nor the reverse.
+    #[serde(default)]
+    recompute: bool,
+}
+
+/// The engine's own default chunk when a caller sends none (`server-train.cpp`,
+/// `train_chunk_for(window, 512)`): the chunk every footprint row before `chunk` existed was
+/// measured at.
+const TRAINING_CHUNK: u32 = 512;
+const fn default_chunk() -> u32 {
+    TRAINING_CHUNK
+}
+/// The smallest chunk the engine accepts (`"chunk" >= 256`, a multiple of 256).
+const TRAINING_CHUNK_MIN: u32 = 256;
+
+/// The chunk the engine will actually train at for `window` when asked for `asked`: the
+/// largest multiple of 256 that divides the window and is at most `asked` — the engine's
+/// `train_chunk_for`, mirrored so the shape the core keys its footprint under is the shape
+/// the engine runs.
+/// A job the engine REFUSED before training: the shape its preflight measured, recorded in the
+/// job's own directory (`refusal.json`). The trigger reads it to hand the job's examples back
+/// to her bucket so the next dispatch chooses a smaller chunk (card 2dfce676). Without it a
+/// refused job's examples sat in its directory until a human returned them, and the chunk
+/// ladder #4894 builds never walked on its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Refusal {
+    pub window: u32,
+    pub chunk: u32,
+    pub graph_bytes: u64,
+    pub error: String,
+}
+
+pub(crate) const REFUSAL_FILE: &str = "refusal.json";
+
+fn write_refusal(job_dir: &Path, refusal: &Refusal) -> Result<(), String> {
+    std::fs::create_dir_all(job_dir).map_err(|e| format!("{}: {e}", job_dir.display()))?;
+    let path = job_dir.join(REFUSAL_FILE);
+    let text = serde_json::to_string(refusal).map_err(|e| e.to_string())?; // file on disk: the job dir's refusal.json, read back by the trigger after a restart
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The refusal recorded in `job_dir`, if the engine refused this job. A missing or unreadable
+/// file is no refusal: the job failed some other way and is not returned automatically.
+pub(crate) fn read_refusal(job_dir: &Path) -> Option<Refusal> {
+    serde_json::from_slice(&std::fs::read(job_dir.join(REFUSAL_FILE)).ok()?).ok()
+}
+
+/// PURE: whether a refused job has a smaller rung to step down to. At the smallest chunk a
+/// return would only be refused again, forever, so the ladder ends there (the loop guard
+/// `genome/training-trigger/return`'s own doc warns about).
+pub(crate) fn refusal_has_smaller_rung(refusal: &Refusal) -> bool {
+    train_chunk_for(refusal.window, refusal.chunk / 2) < refusal.chunk && refusal.chunk / 2 >= TRAINING_CHUNK_MIN
+}
+
+fn train_chunk_for(window: u32, asked: u32) -> u32 {
+    let blocks = window / 256;
+    let mut g = blocks.min((asked / 256).max(1));
+    while g >= 1 {
+        if blocks % g == 0 {
+            return g * 256;
+        }
+        g -= 1;
+    }
+    256
+}
+
+/// The chunk a job trains at and the footprint it leases, from the largest chunk down: a
+/// chunk whose measured footprint fits the governed VRAM leases that number; a chunk never
+/// measured is a calibration run (leases everything governed and free, `None`); a chunk
+/// measured too large for what is free is halved and the next shape asked. The smallest
+/// chunk's measurement stands even when it does not fit: the governor then waits for the
+/// capacity rather than this guessing smaller than the engine can run.
+fn choose_chunk(window: u32, available: u64, measured_at: impl Fn(u32) -> Option<u64>) -> (u32, Option<u64>) {
+    let mut chunk = train_chunk_for(window, TRAINING_CHUNK);
+    loop {
+        let measured = measured_at(chunk);
+        let next = if chunk / 2 >= TRAINING_CHUNK_MIN { Some(train_chunk_for(window, chunk / 2)) } else { None };
+        match (measured, next) {
+            (None, _) => return (chunk, None),
+            (Some(bytes), _) if bytes <= available => return (chunk, Some(bytes)),
+            (Some(bytes), None) => return (chunk, Some(bytes)),
+            (Some(_), Some(smaller)) if smaller == chunk => return (chunk, measured),
+            (Some(_), Some(smaller)) => chunk = smaller,
+        }
+    }
 }
 
 impl Shape {
@@ -198,10 +299,17 @@ impl Shape {
     /// can never land on a full-depth row, nor a full-depth lookup on a reduced one.
     fn key(&self) -> String {
         let base = format!("{}|w{}|r{}|{}", self.model, self.window, self.rank, self.targets);
-        match self.depth {
+        let base = match self.depth {
             Some(k) => format!("{base}|d{k}"),
             None => base,
-        }
+        };
+        // The plain walk at the engine's own chunk for this window keeps the key every row
+        // before `chunk`/`exact` existed was written under (all plain, all at the engine's
+        // default); a chunk the core shrank and the exact walk add their own suffix, so
+        // neither lands on the other's row.
+        let base = if self.chunk == train_chunk_for(self.window, TRAINING_CHUNK) { base } else { format!("{base}|c{}", self.chunk) };
+        let base = if self.exact { format!("{base}|exact") } else { base };
+        if self.recompute { format!("{base}|rc") } else { base }
     }
 }
 
@@ -391,6 +499,17 @@ struct TrainRequest {
     /// The exact walk's host memory per window (see `TRAINING_HOST_SHARE`).
     #[serde(skip_serializing_if = "Option::is_none")]
     walk_host_budget_mib: Option<u64>,
+    /// The training chunk (one batch, one ubatch), chosen with the lease it fits
+    /// ([`choose_chunk`]). An engine before the key ignores it and takes 512.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk: Option<u32>,
+    /// Per-layer recompute (fork #37): the backward pass keeps the layer outputs as checkpoints
+    /// and rebuilds each layer's activations from them, so a chunk holds one layer's
+    /// activations instead of every layer's. It is the memory a large model's chunk graph is
+    /// made of (see [`Shape::recompute`]), and it takes the same step: fork #50 measures the
+    /// exact walk with and without it at cosine 1.0000, norm ratio 1.0000. An engine before
+    /// #37 ignores the key.
+    recompute: bool,
 }
 
 /// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
@@ -454,6 +573,10 @@ struct TrainStatus {
     /// the training graph the engine measured before allocating it: this shape's footprint
     #[serde(default)]
     graph_mib: Option<f64>,
+    /// The chunk the engine trained at (`state["chunk"]`): the shape its footprint is filed
+    /// under. An engine before the key reports none and the core mirrors its rule.
+    #[serde(default)]
+    chunk: Option<u32>,
     /// fork #28: a pause asked for, and one the worker has reached (a pause is real only when
     /// both are true); waiting on serving slots is a separate, automatic yield
     #[serde(default)]
@@ -541,8 +664,10 @@ fn live_lane_for(base: &str) -> Option<LaneChoice> {
 /// tests drive the run without a governor.
 enum Admission {
     Governed,
+    /// No governor: the free VRAM a chunk is fitted against is what the test says it is
+    /// (`u64::MAX` = nothing to fit against, the default chunk).
     #[cfg(test)]
-    Ungoverned,
+    Ungoverned { vram_free: u64 },
 }
 
 pub struct EngineLoraFineTuner {
@@ -598,6 +723,27 @@ impl EngineLoraFineTuner {
     }
 
     #[cfg(test)]
+    /// [`Self::for_test`] on a host with `vram_free` bytes governed and free, so a chunk is
+    /// chosen against it (card d6dae498).
+    #[cfg(test)]
+    fn for_test_with_vram(lane_url: String, train_dir: PathBuf, footprints: PathBuf, vram_free: u64) -> Self {
+        let mut t = Self::for_test(lane_url, train_dir, footprints);
+        t.admission = Admission::Ungoverned { vram_free };
+        t
+    }
+
+    /// The VRAM a job may fit a chunk into now: the governor's figure for this consumer, or
+    /// what an ungoverned (test) host declares.
+    fn vram_free_for(&self, consumer: &str) -> u64 {
+        match self.admission {
+            Admission::Governed => crate::resources::ResourceDaemon::global()
+                .map_or(0, |d| d.available_for(consumer, crate::resources::ResourceKind::Vram)), // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
+            #[cfg(test)]
+            Admission::Ungoverned { vram_free } => vram_free,
+        }
+    }
+
+    #[cfg(test)]
     fn for_test(lane_url: String, train_dir: PathBuf, footprints: PathBuf) -> Self {
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
@@ -606,7 +752,7 @@ impl EngineLoraFineTuner {
             lane: Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None })),
             train_dir: Some(train_dir),
             footprints: Footprints { path: footprints },
-            admission: Admission::Ungoverned,
+            admission: Admission::Ungoverned { vram_free: u64::MAX },
             holds: TrainingHolds::new(),
             hold_store: None,
             residency_store: None,
@@ -619,6 +765,12 @@ impl EngineLoraFineTuner {
 struct EngineRun {
     http: reqwest::Client,
     lane: String,
+    /// The shape this run trains, and where footprints are filed: a REFUSED run files the
+    /// graph the engine's preflight measured, under the chunk it reports, so the next
+    /// dispatch of this shape chooses a smaller chunk instead of calibrating at the same
+    /// one forever (BigMama on #4894: footprints were filed by a finished run only).
+    shape: Shape,
+    footprints_path: PathBuf,
     /// The run to POST, or `None` for a run this core RE-ATTACHED to: it is already training in
     /// the engine, and POSTing it again would be the duplicate run step 3 exists to prevent.
     start: Option<TrainRequest>,
@@ -626,6 +778,8 @@ struct EngineRun {
     out: String,
     /// where the engine writes this job's adapter (removed if a cancel races a finish)
     adapter_path: PathBuf,
+    /// This job's own directory, where a refusal is recorded for the trigger (card 2dfce676).
+    job_dir: PathBuf,
     epochs: u32,
     /// The run's last status as the engine reported it (finish reads its losses and footprint).
     last: Arc<Mutex<Option<TrainStatus>>>,
@@ -976,6 +1130,42 @@ impl EngineRun {
                 TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
                 TrainState::Error => {
                     let why = s.error.as_deref().unwrap_or("no error text"); // unwrap_or: the state alone is the failure
+                    // THE REFUSAL IS THE MEASUREMENT: the preflight sized the graph before refusing
+                    // it, and the engine reports that size on an error too. Filed under the chunk
+                    // the engine ran, so `choose_chunk` steps down on the next dispatch.
+                    let grown = s.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
+                    if grown > 0 {
+                        let ran_window = s.window.unwrap_or(self.shape.window); // unwrap_or: an engine that reports no window ran the one asked
+                        let ran_chunk = s.chunk.unwrap_or_else(|| train_chunk_for(ran_window, self.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
+                        let refused = Shape { window: ran_window, chunk: ran_chunk, ..self.shape.clone() };
+                        // The job's examples belong back in her bucket so the next dispatch can
+                        // step down; the trigger reads this to decide (card 2dfce676).
+                        if let Err(e) = write_refusal(&self.job_dir, &Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() }) {
+                            crate::probe!(
+                                class = "training.job.refusal_unrecorded",
+                                job = %self.job,
+                                error = %e,
+                                "the refusal could not be recorded in the job's directory; its examples wait for a manual return"
+                            );
+                        }
+                        match (Footprints { path: self.footprints_path.clone() }).record(&refused, grown, self.job) {
+                            Ok(()) => crate::probe!(
+                                class = "training.job.footprint_from_refusal",
+                                job = %self.job,
+                                window = ran_window as u64,
+                                chunk = ran_chunk as u64,
+                                exact = refused.exact,
+                                graph_bytes = grown,
+                                "the engine refused this shape's graph; its measured size is filed so the next dispatch chooses a smaller chunk"
+                            ),
+                            Err(e) => crate::probe!(
+                                class = "training.job.footprint_unrecorded",
+                                job = %self.job,
+                                error = %e,
+                                "the refused graph's size could not be recorded; the next dispatch calibrates at the same chunk"
+                            ),
+                        }
+                    }
                     return InPlaceEnd::Failed(format!("the engine's training run failed: {why}"));
                 }
                 // idle while ours is named, or a state this core does not know: not a known end
@@ -1169,11 +1359,14 @@ impl EngineLoraFineTuner {
                 }
                 let last = Arc::new(Mutex::new(None));
                 let run = EngineRun {
+                    shape: spec.shape.clone(),
+                    footprints_path: self.footprints.path.clone(),
                     http: self.http.clone(),
                     lane,
                     start: None,
                     out: work.out.clone(),
                     adapter_path: spec.adapter_path.clone(),
+                    job_dir: spec.job_dir.clone(),
                     epochs: spec.epochs,
                     last: last.clone(),
                     holds: self.holds.clone(),
@@ -1294,13 +1487,6 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
-        let shape = Shape {
-            model: request.base_model.clone(),
-            window,
-            rank: lora.rank,
-            targets: targets.clone(),
-            depth,
-        };
         let val = request.dataset.validation_split.clamp(0.0, 0.5);
         let mut body = TrainRequest {
             examples: request.dataset.examples.iter().map(engine_example).collect(),
@@ -1319,6 +1505,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             fit: "middle",
             exact: false,
             walk_host_budget_mib: None,
+            chunk: None,
+            recompute: true,
         };
         // THE EXACT WALK ONLY WITH A KNOWN BUDGET: unread memory trains the plain walk
         (body.exact, body.walk_host_budget_mib) =
@@ -1329,7 +1517,25 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 "the host memory monitor has not read the host: the job trains the plain (chunk-bounded) walk rather than an exact walk with no budget"
             );
         }
-        let measured = self.footprints.get(&shape);
+        // THE CHUNK FITS THE LEASE (card d6dae498): the shape is keyed by the walk it trains
+        // and the chunk it trains at, and the chunk is the largest whose measured footprint
+        // fits the governed VRAM now; a chunk never measured calibrates. Before this, the
+        // engine took 512 for every job and a plain-walk footprint stood in for the exact
+        // walk's (the 5090, 2026-10-10: 3418 MiB leased, 12.6 GB needed, refused in 8 s).
+        let shape_at = |chunk: u32| Shape {
+            model: request.base_model.clone(),
+            window,
+            rank: lora.rank,
+            targets: targets.clone(),
+            depth,
+            exact: body.exact,
+            chunk,
+            recompute: body.recompute,
+        };
+        let governed_free = self.vram_free_for(&format!("genome-train:{id}"));
+        let (chunk, measured) = choose_chunk(window, governed_free, |c| self.footprints.get(&shape_at(c)));
+        let shape = shape_at(chunk);
+        body.chunk = Some(chunk);
         let footprints_path = self.footprints.path.clone();
         let http = self.http.clone();
         let holds = self.holds.clone();
@@ -1371,6 +1577,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     base = shape.model.as_str(),
                     window = shape.window as u64,
                     depth = shape.depth.map_or(0, u64::from), // probe field: 0 = every block
+                    exact = shape.exact,
+                    chunk = shape.chunk as u64,
                     measured = measured.is_some(),
                     memory_bytes = bytes,
                     "engine training: the measured footprint for this shape, or (unmeasured) all governed \
@@ -1431,9 +1639,12 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             let run = EngineRun {
                 http,
                 lane,
+                shape: spec.shape.clone(),
+                footprints_path: footprints_path.clone(),
                 start: Some(body),
                 out: out.clone(),
                 adapter_path: spec.adapter_path.clone(),
+                job_dir: spec.job_dir.clone(),
                 epochs,
                 last: last.clone(),
                 holds,
@@ -1523,7 +1734,10 @@ fn finish_run(
                 "the engine sized its training graph to the data: the footprint is filed under the window that ran"
             );
         }
-        let measured_shape = Shape { depth: adapted, window: ran_window, ..spec.shape.clone() };
+        // …and under the chunk the engine ran at that window: the engine's rule applied to
+        // the chunk the core asked for (`train_chunk_for`), never the asked number as sent.
+        let ran_chunk = status.chunk.unwrap_or_else(|| train_chunk_for(ran_window, spec.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
+        let measured_shape = Shape { depth: adapted, window: ran_window, chunk: ran_chunk, ..spec.shape.clone() };
         // A depth equal to the model's block count IS full depth (fork #27 refuses one
         // past it): filed under the asked key too, or that request would calibrate on
         // every run (Cormac on #4472).
@@ -1532,7 +1746,7 @@ fn finish_run(
             let store = Footprints { path: footprints_path };
             if asked_full {
                 // the asked depth, at the window that ran
-                let asked_ran = Shape { window: ran_window, ..spec.shape.clone() };
+                let asked_ran = Shape { window: ran_window, chunk: ran_chunk, ..spec.shape.clone() };
                 let _ = store.record(&asked_ran, grown, job); // best effort: the full-depth row below is the one that matters
             }
             if let Err(e) = store.record(&measured_shape, grown, job) {
@@ -1619,6 +1833,59 @@ fn engine_example(e: &TrainingExample) -> EngineExample {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_job_records_its_shape_and_the_ladder_ends_at_the_smallest_chunk() {
+        // what this catches (card 2dfce676): the record the trigger returns a refused job by.
+        // It round-trips through the job's directory; a directory without one is no refusal;
+        // and a return happens only while a smaller chunk is left, so a job refused even at
+        // the smallest is never returned into the same refusal forever.
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        assert_eq!(read_refusal(dir.path()), None, "no record, no refusal");
+        let refused = Refusal { window: 1536, chunk: 512, graph_bytes: 12_654 << 20, error: "over budget".into() };
+        write_refusal(dir.path(), &refused).expect("test: write");
+        assert_eq!(read_refusal(dir.path()), Some(refused.clone()));
+        assert!(refusal_has_smaller_rung(&refused), "512 steps down to 256");
+        assert!(!refusal_has_smaller_rung(&Refusal { chunk: 256, ..refused.clone() }), "256 is the floor");
+        assert!(!refusal_has_smaller_rung(&Refusal { window: 1280, chunk: 256, ..refused }), "a 5x256 window's only chunk is 256");
+    }
+
+    // what this catches (card d6dae498; the 5090, 2026-10-10 04:34Z): a plain-walk footprint
+    // leased for an exact run, or a footprint measured at one chunk leased for another; the
+    // chunk the core keys under differing from the chunk the engine runs; and a lease that
+    // never shrinks the chunk when the measured graph does not fit what is free.
+    #[test]
+    fn the_walk_and_its_chunk_are_the_footprints_shape_and_the_chunk_fits_the_lease() {
+        // the engine's rule, mirrored: the largest multiple of 256 dividing the window
+        assert_eq!(train_chunk_for(1536, 512), 512);
+        assert_eq!(train_chunk_for(1536, 256), 256);
+        assert_eq!(train_chunk_for(1280, 512), 256, "1280 = 5 x 256: 512 does not divide it");
+        assert_eq!(train_chunk_for(66_560, 512), 512);
+        assert_eq!(train_chunk_for(256, 512), 256);
+        // the key: a plain walk at the default chunk is the row every older core wrote;
+        // the exact walk and any other chunk never land on it
+        let plain = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
+        assert_eq!(plain.key(), "m|w1536|r8|attn_q");
+        let exact = Shape { exact: true, ..plain.clone() };
+        assert_eq!(exact.key(), "m|w1536|r8|attn_q|exact");
+        let small = Shape { chunk: 256, ..exact.clone() };
+        assert_eq!(small.key(), "m|w1536|r8|attn_q|c256|exact");
+        let rebuilt = Shape { recompute: true, ..small.clone() };
+        assert_eq!(rebuilt.key(), "m|w1536|r8|attn_q|c256|exact|rc", "a footprint that keeps every layer's activations is never leased for recompute, nor the reverse");
+        assert_ne!(exact.key(), plain.key(), "a plain-walk footprint is never leased for the exact walk");
+        let one_chunk = Shape { window: 256, chunk: 256, ..plain.clone() };
+        assert_eq!(one_chunk.key(), "m|w256|r8|attn_q", "a 256 window's only chunk is the engine's default there: the old key");
+        // the chunk: unmeasured calibrates at the default; a measurement that fits leases;
+        // one that does not fit halves the chunk and asks that shape; the smallest stands
+        let gib = 1024u64 * 1024 * 1024;
+        assert_eq!(choose_chunk(1536, 6 * gib, |_| None), (512, None), "never measured: calibrate at the default");
+        assert_eq!(choose_chunk(1536, 6 * gib, |c| (c == 512).then_some(3 * gib)), (512, Some(3 * gib)));
+        let measured = |c: u32| match c { 512 => Some(12 * gib), 256 => Some(5 * gib), _ => None };
+        assert_eq!(choose_chunk(1536, 6 * gib, measured), (256, Some(5 * gib)), "the 5090: 12.6 GB at 512 does not fit 6.2 GB free; 256 does");
+        assert_eq!(choose_chunk(1536, 6 * gib, |c| (c == 512).then_some(12 * gib)), (256, None), "512 too big, 256 never measured: calibrate at 256");
+        assert_eq!(choose_chunk(1536, 1 * gib, measured), (256, Some(5 * gib)), "nothing fits: the smallest chunk's number stands and the governor waits");
+        assert_eq!(choose_chunk(256, 1 * gib, |_| Some(5 * gib)), (256, Some(5 * gib)), "a 256 window has one chunk");
+    }
     use crate::genome::fine_tuning::{LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingSource};
 
     fn request(base: &str) -> TrainingJobRequest {
@@ -1694,6 +1961,14 @@ mod tests {
                     }
                     if mode == "cancel_only" || l.polls < 3 {
                         return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": []}));
+                    }
+                    // the 5090, 2026-10-10 04:34Z: the device budget refused the chunk graph, and the
+                    // engine reports the size its preflight measured, the chunk and the window it ran
+                    if mode == "refused" {
+                        let body = l.body.clone().unwrap_or(Value::Null);
+                        return axum::Json(json!({"state": "error", "out": out,
+                            "error": "the graph needs 9236.1 MiB more on CUDA0, over the 3418.0 MiB it may add: not allocating it",
+                            "graph_mib": 12_654.1, "chunk": body.get("chunk").cloned().unwrap_or(json!(512)), "window": body.get("window").cloned().unwrap_or(Value::Null)}));
                     }
                     std::fs::write(dir.join(&out), b"GGUF-lora").unwrap();
                     let mut done = json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out, "graph_mib": 5.0,
@@ -1887,6 +2162,37 @@ mod tests {
         server.abort();
     }
 
+    // what this catches (BigMama on #4894; the 5090, 2026-10-10 04:34Z): a refused calibration
+    // filing nothing, so every later dispatch calibrates at the same chunk and is refused the
+    // same way. The refusal files the graph the engine measured under the chunk it ran; the
+    // next dispatch of the shape chooses the next chunk down against what is free.
+    #[tokio::test]
+    async fn a_refused_run_files_its_graph_and_the_next_dispatch_steps_the_chunk_down() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "refused").await;
+        let footprints = jobs.path().join("footprints.json");
+        let gib = 1024u64 * 1024 * 1024;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * gib);
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r.clone()).await.expect("test: create");
+        let TrainingStatus::Failed { error } = wait_terminal(&t, &h).await else {
+            panic!("test: the refused run must fail");
+        };
+        assert!(error.contains("it may add"), "the engine's refusal, by name: {error}");
+        assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(512), "the first dispatch calibrates at the engine's default chunk");
+        let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: the refusal filed a footprint")).unwrap();
+        let (key, row) = rows.as_object().unwrap().iter().next().expect("test: one row");
+        assert_eq!(key, "ggml-org/Qwen3.8-27B-GGUF|w1536|r8|attn_q,attn_v|rc", "filed under the shape and the chunk that ran (512 is 1536's default: no chunk suffix), with recompute");
+        assert_eq!(row["bytes"].as_u64(), Some((12_654.1f64 * 1024.0 * 1024.0) as u64), "the graph the preflight measured");
+        let h2 = t.create_job(r).await.expect("test: create again");
+        let _ = wait_terminal(&t, &h2).await;
+        assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(256), "12.4 GB at 512 does not fit 6 GB free: the next dispatch asks for 256");
+        server.abort();
+    }
+
     // what this catches (Codex on #4498): a footprint filed under the window SENT when the
     // engine ran a smaller graph sized to the data. The lane serves 61,696 a slot; the engine
     // trains at 15,360; the measured graph is filed under w15360, so it can never be leased for
@@ -1908,7 +2214,10 @@ mod tests {
         assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["window"].as_u64(), Some(61_696), "the served window is sent as the ceiling");
         let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: footprint filed")).unwrap();
         let keys: Vec<&String> = rows.as_object().unwrap().keys().collect();
-        assert_eq!(keys, vec!["ggml-org/Qwen3.8-27B-GGUF|w15360|r8|attn_q,attn_v"], "filed under the window that ran");
+        // …and under the chunk that ran: 61,696 is 241 blocks, prime, so the engine's chunk was
+        // 256, not the 512 a 15,360 window would take by default; a 15,360 run at 256 is its own
+        // (smaller) graph and must never lease a default-chunk row's number (card d6dae498).
+        assert_eq!(keys, vec!["ggml-org/Qwen3.8-27B-GGUF|w15360|r8|attn_q,attn_v|c256|rc"], "filed under the window and the chunk that ran");
         server.abort();
     }
 
@@ -1945,6 +2254,9 @@ mod tests {
         // monitor; here no monitor runs, so the plain walk, with no unbounded exact walk
         assert_eq!(body["exact"], false, "an unread host trains the plain walk");
         assert!(body.get("walk_host_budget_mib").is_none(), "and sends no budget");
+        // what this catches (Kimi's first exact run, the 5090 2026-10-10: refused at chunk 256
+        // needing 5.6 GiB more): fork #37's recompute was built and never asked for
+        assert_eq!(body["recompute"], true, "every run keeps the layer outputs, not every layer's activations");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
         assert!(path.starts_with(jobs.path()) && path.is_file(), "adapter in the job dir: {}", path.display());
@@ -2026,7 +2338,7 @@ mod tests {
             epochs: 2,
             val_split: SplitPpm::from(0.1),
             model_id: format!("{PROVIDER_ID}:code:{job}"),
-            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None },
+            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let bound = crate::inference::engine_residency::ResidentWork {
             job,
@@ -2069,7 +2381,7 @@ mod tests {
     // depth the engine reported, never the request's.
     #[tokio::test]
     async fn a_finished_run_files_its_graph_and_its_gene_under_the_depth_the_engine_adapted() {
-        for (mode, filed, gene) in [("normal", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v", None), ("depth", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|d8", Some(8))] {
+        for (mode, filed, gene) in [("normal", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|rc", None), ("depth", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|d8|rc", Some(8))] {
             let train = tempfile::tempdir().expect("test: dir");
             let jobs = tempfile::tempdir().expect("test: dir");
             let (url, server, seen) = fake_lane(train.path().to_path_buf(), mode).await;
@@ -2261,7 +2573,7 @@ mod tests {
     fn a_footprint_keeps_the_largest_observation() {
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints { path: dir.path().join("f.json") };
-        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None };
+        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
         f.record(&s, 900, Uuid::nil()).unwrap();
         f.record(&s, 700, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
@@ -2278,7 +2590,7 @@ mod tests {
     fn a_footprint_answers_only_the_depth_it_was_measured_at() {
         let dir = tempfile::tempdir().expect("test: dir");
         let path = dir.path().join("f.json");
-        let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None };
+        let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
         let top8 = Shape { depth: Some(8), ..full.clone() };
         // a row written before depth existed: the key full depth still reads
         std::fs::write(

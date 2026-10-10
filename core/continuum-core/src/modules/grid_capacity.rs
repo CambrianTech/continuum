@@ -191,6 +191,12 @@ pub(crate) fn offer_from_board(board: &crate::resources::LeaseBoard, at_ms: u64)
         lane_wait_p50_ms: crate::cognition::resource_admission::leased_in_wait_p50_ms().0,
         lane_wait_samples: crate::cognition::resource_admission::leased_in_wait_p50_ms().1,
         served_context_window: serving.served_context_window,
+        // This seat's measured speed for what it serves, so peers can ORDER placement by it
+        // (card 86fef3c3); unmeasured beacons 0.
+        decode_tps_milli: serving
+            .active_model
+            .as_deref()
+            .map_or(0, |model| crate::capacity::gossip::beacon_decode_milli(&crate::inference::decode_knee::rate_for(model))),
     })
 }
 

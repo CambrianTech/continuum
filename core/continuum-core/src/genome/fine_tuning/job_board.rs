@@ -156,6 +156,10 @@ pub struct TrainingJobBoard {
     _test_directory: Option<std::sync::Arc<tempfile::TempDir>>,
     /// Orphans the boot replay found, until the trigger takes them (`take_orphans`).
     orphans: std::sync::Mutex<Vec<OrphanedJob>>,
+    /// Trigger-dispatched jobs that ended FAILED at runtime, until the trigger takes them
+    /// (`take_failed`) and decides whether their examples go back to her bucket (card
+    /// 2dfce676). The sentinel only polls and claims; the decision is the trigger's.
+    failed: std::sync::Mutex<Vec<WatchedJob>>,
 }
 
 /// A bounded evidence read. Neither absence, a partial scan, nor an I/O error
@@ -508,6 +512,7 @@ impl TrainingJobBoard {
             adopting: DashMap::new(),
             quarantined: DashMap::new(),
             orphans: std::sync::Mutex::new(Vec::new()),
+            failed: std::sync::Mutex::new(Vec::new()),
             ledger,
             #[cfg(test)]
             _test_directory: None,
@@ -562,6 +567,26 @@ impl TrainingJobBoard {
             .filter(|row| row.get("local_id").and_then(|i| i.as_str()) == Some(id.as_str()))
             .last()
             .and_then(|row| orphan_of(&id, &row))
+    }
+
+    /// The ledger's latest registration of `local_id`, as the handle its adapter owns:
+    /// what an operator-settled dispatch adopts (`genome/training-trigger/resolve`).
+    pub fn registered_handle(&self, local_id: Uuid) -> Option<JobHandle> {
+        if let Some(handle) = self.jobs.iter().find_map(|job| (job.handle.local_id == local_id).then(|| job.handle.clone())) {
+            return Some(handle);
+        }
+        let id = local_id.to_string();
+        let row = self
+            .ledger_rows()
+            .filter(|row| row.get("event").and_then(|e| e.as_str()) == Some("registered"))
+            .filter(|row| row.get("local_id").and_then(|i| i.as_str()) == Some(id.as_str()))
+            .last()?;
+        let field = |name: &str| row.get(name).and_then(|v| v.as_str()).map(str::to_owned);
+        Some(JobHandle {
+            provider_id: field("provider_id")?,
+            provider_job_id: field("provider_job_id")?,
+            local_id,
+        })
     }
 
     /// Has `local_id` reached a terminal row on the ledger?
@@ -660,6 +685,12 @@ impl TrainingJobBoard {
     /// tick with a live executor and resumes what it can.
     pub fn take_orphans(&self) -> Vec<OrphanedJob> {
         self.orphans.lock().map(|mut o| std::mem::take(&mut *o)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to resume, never a panic at boot
+    }
+
+    /// The trigger-dispatched jobs that ended FAILED since the last take: the trigger's tick
+    /// takes them and returns the ones the engine refused (card 2dfce676).
+    pub fn take_failed(&self) -> Vec<WatchedJob> {
+        self.failed.lock().map(|mut f| std::mem::take(&mut *f)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to return, never a panic on the tick
     }
 
     /// The first job in `local_id`'s resume lineage, from the ledger's `resumed` rows.
@@ -792,6 +823,11 @@ impl TrainingJobBoard {
         if let Some(job) = &job {
             if matches!(status, TrainingStatus::Completed { .. }) {
                 self.adopting.insert(local_id, job.clone());
+            }
+            if matches!(status, TrainingStatus::Failed { .. }) && job.trigger_dispatch_id.is_some() {
+                if let Ok(mut failed) = self.failed.lock() {
+                    failed.push(job.clone());
+                }
             }
             self.journal(&serde_json::json!({
                 "event": "terminal",
@@ -949,6 +985,28 @@ mod tests {
         assert!(recovered
             .lookup_trigger_dispatch(dispatch_id, u64::MAX)
             .is_err());
+    }
+
+    // what this catches (card 2dfce676): a refused training job's examples stranded because
+    // the trigger is never told its job failed. A FAILED job the trigger dispatched is handed
+    // to the trigger exactly once; a completed one, or one the trigger didn't dispatch (an
+    // operator's), is not.
+    #[test]
+    fn a_failed_trigger_dispatched_job_is_handed_to_the_trigger_once() {
+        let board = TrainingJobBoard::default();
+        let (failed, done, operators) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        for (id, dispatched) in [(failed, true), (done, true), (operators, false)] {
+            let mut job = watched(id, "engine-local");
+            job.trigger_dispatch_id = dispatched.then(Uuid::new_v4);
+            board.register(job);
+        }
+        board.claim(failed, &TrainingStatus::Failed { error: "the engine's training run failed: over budget".into() });
+        board.claim(operators, &TrainingStatus::Failed { error: "x".into() });
+        let taken: Vec<Uuid> = board.take_failed().iter().map(|j| j.handle.local_id).collect();
+        assert_eq!(taken, vec![failed], "only the trigger's own failed job");
+        assert!(board.take_failed().is_empty(), "handed over once");
+        assert!(board.claim(done, &TrainingStatus::Cancelled).is_some());
+        assert!(board.take_failed().is_empty(), "a cancelled job is not a refusal to return");
     }
 
     // what this catches: the claim-once contract. A registered job is visible in the

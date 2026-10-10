@@ -247,3 +247,6 @@ benchmarks/swe/.venv/
 # Ad-hoc instruments, not project tooling; regenerated on demand.
 .gymtool/
 models/whisper/
+
+# confinement tests build a fake home beside the crate (never under the temp root, which is a citizen write root)
+core/continuum-core/.confinement-test-home-*

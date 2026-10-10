@@ -1,5 +1,6 @@
 . (Join-Path $PSScriptRoot 'payload-paths.ps1')
 . (Join-Path $PSScriptRoot 'windows-prepared.ps1')
+. (Join-Path $PSScriptRoot 'windows-media-reconciliation.ps1')
 # The CLI also loads this file in a fresh PowerShell for slot preparation.
 # Reuse the shared native launcher there without resetting an outer installer's
 # already-loaded elevation ownership state.
@@ -157,12 +158,42 @@ function Get-CoreEngineIdleSlot {
     return $slot
 }
 
+function Get-CoreReceiptedEngineSlots {
+    # The engine slots the installer's own records still name: the registered descriptor and the
+    # active and previous release receipts. The core's idle-slot verb reads only its current and
+    # previous POINTERS. When an activation fails after writing its receipt but before promoting the
+    # pointer, the two disagree, and the verb calls a receipted slot idle. On the 5090
+    # (2026-10-10 02:05Z) the install then copied the new engine over the slot install-active.json
+    # named, destroying that receipt's payload, and refused on the next step. Only the engine PATH is
+    # read here, never the hashes: this asks which slot a record owns, not whether it is intact.
+    param([Parameter(Mandatory = $true)][string]$InstallRoot, $Descriptor)
+    $engines = @()
+    if ($Descriptor -and $Descriptor.engine) { $engines += [string]$Descriptor.engine }
+    foreach ($name in @('install-active.json', 'install-previous.json')) {
+        $path = Join-Path $InstallRoot $name
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        if ((Get-Item -LiteralPath $path).Length -gt 65536) { throw "Release receipt $name is oversized; no slot can be proven unreceipted." }
+        $receipt = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -ErrorAction Stop
+        if ($receipt.release -and $receipt.release.engine) { $engines += [string]$receipt.release.engine }
+    }
+    @($engines | ForEach-Object { ConvertTo-CoreImagePath (Split-Path $_ -Parent) })
+}
+
 function Select-CoreEngineSlot {
     param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli, [switch]$SkipIfBusy)
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $fromCore = Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot -SkipIfBusy:$SkipIfBusy
     if ($fromCore -eq 'BUSY') { return $null }
+    $receipted = @(Get-CoreReceiptedEngineSlots -InstallRoot $InstallRoot -Descriptor $Descriptor)
     if ($fromCore) {
+        if (@($receipted | Where-Object { [string]::Equals($_, $fromCore, [StringComparison]::OrdinalIgnoreCase) }).Count) {
+            # The verb prefers a slot that is neither current nor previous, so on a node whose records
+            # agree with its pointers this never fires. When it does, the records disagree, and
+            # overwriting would destroy a release a receipt still owns: refuse, and let the supported
+            # receipt reconciliation retire the record first.
+            if ($SkipIfBusy) { return $null }
+            throw "The core named $fromCore idle, but an installer release receipt still names it; refusing to overwrite a receipted engine."
+        }
         # Belt and braces: a live engine whose path IS readable must not sit in the answer.
         $readable = @(Get-CimInstance Win32_Process -ErrorAction Stop |
             Where-Object { $_.Name -eq 'llama-server.exe' -and $_.ExecutablePath } |
@@ -188,6 +219,7 @@ function Select-CoreEngineSlot {
     $engineSlot = $null
     foreach ($name in @('engine-a', 'engine-b', 'engine-c')) {
         $candidate = Join-Path $root $name
+        if (@($receipted | Where-Object { [string]::Equals($_, $candidate, [StringComparison]::OrdinalIgnoreCase) }).Count) { continue }
         if (-not @($enginePaths | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {
             $engineSlot = $candidate; break
         }
@@ -232,12 +264,26 @@ function Invoke-CoreEnginePromote {
 function Prepare-CoreServiceEngine {
     param([Parameter(Mandatory = $true)][string]$RepoRoot,
         [Parameter(Mandatory = $true)][string]$Description,
-        [Parameter(Mandatory = $true)][string]$ReceiptPath)
+        [Parameter(Mandatory = $true)][string]$ReceiptPath, [switch]$PrebuiltOnly)
     # The calling reboot holds install.lock across preparation and handoff.
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
     if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed before engine preparation.' }
     $release = $Description | ConvertFrom-Json -ErrorAction Stop
     $requirement = Get-CoreEngineRequirement -RepoRoot $RepoRoot
+    if ($PrebuiltOnly) {
+        # An explicit published handoff can only promote its registered verified
+        # payload. Drift is a preparation failure, never permission to compile.
+        $built = Split-Path $release.engine
+        $drift = Get-CoreEngineDrift -Directory $built -Requirement $requirement
+        if ($drift) { throw $drift }
+        $engineReceipt = Get-CoreEngineReceipt -Directory $built
+        Get-CorePublishedEngineStamp -Directory $built -Receipt $engineReceipt | Out-Null
+        if (-not (Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $built)) { throw 'Prepared CLI cannot promote the published engine.' }
+        $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+        if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
+        [IO.File]::WriteAllText($ReceiptPath, $release.engine, (New-Object Text.UTF8Encoding $false))
+        return
+    }
     # A slot that ALREADY holds the pinned engine is promoted as is (card 6d5bacab): a build whose
     # promotion never happened (the 5090's cancelled install left engine-c built and verified while
     # current stayed engine-b). Promotion overwrites nothing, so it needs no proof that the slot is
@@ -337,9 +383,14 @@ function New-CoreServiceRelease {
         [string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'),
         [string]$TargetDirectory = $env:CARGO_TARGET_DIR,
         [string]$ArtifactDirectory,
-        [string]$EnginePath
+        [string]$EnginePath,
+        [switch]$ReconcileLegacyMedia
     )
     if (-not $ArtifactDirectory) { $ArtifactDirectory = Join-Path $TargetDirectory 'release' }
+    # The core hands its prebuilt's directory over in the extended form (\\?\C:\...), which
+    # Join-Path refuses ("the value of argument drive is null"): every unattended deploy that
+    # shipped a new engine failed here on the 5090 (2026-10-10). One spelling from here on.
+    $ArtifactDirectory = ConvertTo-CoreImagePath $ArtifactDirectory
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $liveProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.Name -in @('continuum.exe', 'continuum-core-server.exe') })
@@ -368,7 +419,10 @@ function New-CoreServiceRelease {
     if ($unknownImages -and -not $descriptor.artifact) {
         throw 'Cannot inspect all live Continuum image paths and no registered release protects startup files.'
     }
+    $registeredReleaseSnapshot = $descriptor | ConvertTo-Json -Compress
     $slot = $null
+    $mediaBlocked = @()
+    $serviceFiles = @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1')
     foreach ($name in @('service-a', 'service-b')) {
         $candidate = Join-Path $root $name
         $occupied = @($liveImages | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) })
@@ -377,17 +431,43 @@ function New-CoreServiceRelease {
         # above, then verify every destination before touching any candidate file.
         # Windows denies write access to mapped executables. Copy-Item retains
         # that protection if a process starts after this non-mutating probe.
-        $writable = $true
-        foreach ($file in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1')) {
+        $blocked = @()
+        foreach ($file in $serviceFiles) {
             $destination = Join-Path $candidate $file
             if (-not (Test-Path -LiteralPath $destination)) { continue }
             try {
                 $probe = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
                 $probe.Dispose()
-            } catch [IO.IOException] { $writable = $false; break }
-            catch [UnauthorizedAccessException] { $writable = $false; break }
+            } catch [IO.IOException] { $blocked += $file }
+            catch [UnauthorizedAccessException] { $blocked += $file }
         }
-        if ($writable) { $slot = $candidate; break }
+        if ($blocked.Count -eq 1 -and $blocked[0] -eq 'livekit-bridge.exe') {
+            $mediaBlocked += $candidate
+        }
+        if ($blocked.Count -eq 0) { $slot = $candidate; break }
+    }
+    if (-not $slot -and $mediaBlocked.Count -eq 1) {
+        # Try all free slots first. Only an otherwise idle, unregistered slot
+        # qualifies. PrepareOnly never borrows elevation or changes the bridge.
+        $candidate = $mediaBlocked[0]
+        Invoke-CoreLegacyMediaReconciliation -Image (Join-Path $candidate 'livekit-bridge.exe') -InstallRoot $InstallRoot -AllowElevation:$ReconcileLegacyMedia
+        $currentTask = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
+        if ($currentTask.Description -cne $registered.Description) {
+            throw 'Registered release changed during legacy media reconciliation; candidate files were preserved.'
+        }
+        $currentRelease = if ($currentTask) { Get-CoreRegisteredRelease -Task $currentTask -InstallRoot $InstallRoot } else { $null }
+        if (($currentRelease | ConvertTo-Json -Compress) -cne $registeredReleaseSnapshot) {
+            throw 'Registered release changed during legacy media reconciliation; candidate files were preserved.'
+        }
+        # Recheck every image lock after graceful exit; Copy-Item retains OS
+        # protection if another owner maps an image after this observation.
+        foreach ($file in $serviceFiles) {
+            $destination = Join-Path $candidate $file
+            if (-not (Test-Path -LiteralPath $destination)) { continue }
+            $probe = [IO.File]::Open($destination, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $probe.Dispose()
+        }
+        $slot = $candidate
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
     # The CLI this release installs is the one that knows the lane records' contract.
@@ -448,18 +528,34 @@ function Register-CoreServiceRelease {
         Invoke-InstallerProcess $Release.cli @('reboot', '--prebuilt', $Release.artifact, '--validate-only')
         if ($LASTEXITCODE -ne 0) { throw 'Candidate validation failed; startup registration and the running core were preserved.' }
     } finally { Pop-Location }
-    if ($PersistPreparedReceipt -or $PrepareOnly) { Save-CorePreparedRelease -Release $Release }
+    $selectionRecovery = Get-CoreDamagedSelectionRecovery
+    if ($selectionRecovery) {
+        if (($Release | ConvertTo-Json -Compress) -cne ($selectionRecovery.Prepared.Receipt.release | ConvertTo-Json -Compress)) {
+            throw 'Damaged selection must resume the existing verified preparation before restaging.'
+        }
+        Assert-CoreRecoveryStopped -InstallRoot (Join-Path $env:USERPROFILE '.continuum')
+    }
+    if (($PersistPreparedReceipt -or $PrepareOnly) -and -not $selectionRecovery) { Save-CorePreparedRelease -Release $Release }
     if ($PrepareOnly) { return }
     $protocol = (Invoke-InstallerProcess $Release.cli @('installed-service', '--protocol') | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $protocol -cne '2') { throw 'Candidate CLI cannot consume provisioned supervisor schema 2; registration and active release were preserved.' }
+    if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Candidate CLI lacks supervisor protocol 3; registration and active release were preserved.' }
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $bootstrap = Get-CoreSupervisorBootstrap
+    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
+    $bootstrap = Get-CoreSupervisorBootstrap -Generation (Get-FileHash -LiteralPath $Release.cli -Algorithm SHA256).Hash.ToLowerInvariant()
+    # Reuse a verified compatible authority; only an incompatible generation
+    # requires a new protected sibling and normal elevated registration.
+    if ($task -and (Test-CoreProvisionedTask -Task $task)) {
+        $priorBootstrap = ($task.Description | ConvertFrom-Json).bootstrap
+        Assert-CoreSupervisorBootstrap -Path $priorBootstrap
+        $priorProtocol = (Invoke-InstallerProcess $priorBootstrap @('installed-service', '--protocol') | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect installed bootstrap capability.' }
+        if ($priorProtocol -ceq '3') { $bootstrap = $priorBootstrap }
+    }
     $activePath = Join-Path $env:USERPROFILE '.continuum\install-active.json'
     $arguments = 'installed-service core "{0}"' -f $activePath
     $deployArguments = 'installed-service deploy "{0}"' -f $activePath
     $description = [ordered]@{ schema = 2; activeRelease = $activePath; bootstrap = $bootstrap } | ConvertTo-Json -Compress
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     $deploy = Get-ScheduledTask -TaskName ContinuumDeploy -TaskPath '\' -ErrorAction SilentlyContinue
     $canRun = $false
     if ($task) {
@@ -491,7 +587,8 @@ function Register-CoreServiceRelease {
     }
     if ($provisioned) {
         Assert-CoreSupervisorBootstrap -Path $bootstrap -UserSid $userSid
-        Save-CorePreparedRelease -Release $Release -Selection Active
+        if ($selectionRecovery) { Complete-CoreDamagedSelectionRecovery -Plan $selectionRecovery -Release $Release }
+        else { Save-CorePreparedRelease -Release $Release -Selection Active }
         Module-Skip 'service' 'fixed supervisor retained; verified active release committed without elevation'
         return
     }
@@ -499,7 +596,10 @@ function Register-CoreServiceRelease {
     # Publish the SAME legacy selection first; only after both task contracts
     # verify may the candidate replace it. A mid-migration reboot still selects
     # the prior installed release, and the first update has a real rollback.
-    $seededFirstInstall = Initialize-CoreActiveSelection -Task $task -Release $Release
+    # A recognized damaged selection remains launch-invalid throughout bootstrap
+    # migration. Do not reseal it or promise that it is a usable rollback.
+    $seededFirstInstall = $false
+    if (-not $selectionRecovery) { $seededFirstInstall = Initialize-CoreActiveSelection -Task $task -Release $Release }
     New-Item -ItemType Directory -Force -Path $Release.logDirectory | Out-Null
     $planPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
@@ -548,7 +648,8 @@ function Register-CoreServiceRelease {
         throw 'Deploy supervisor contract did not verify; active release was preserved.'
     }
     Assert-CoreSupervisorBootstrap -Path $bootstrap -UserSid $userSid
-    Save-CorePreparedRelease -Release $Release -Selection Active
+    if ($selectionRecovery) { Complete-CoreDamagedSelectionRecovery -Plan $selectionRecovery -Release $Release }
+    else { Save-CorePreparedRelease -Release $Release -Selection Active }
     Module-Done 'service'
 }
 

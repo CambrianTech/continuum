@@ -83,13 +83,16 @@ crate::action_command! {
     /// shows. Use for any image in your workspace — screenshots, charts,
     /// diagrams, photos. Pass `focus` to direct your attention (e.g. "count the
     /// red shapes"). This runs the image through your own vision system.
-    pub struct VisionLook { executor_slot: Arc<LateBound<CommandExecutor>> }
+    pub struct VisionLook {
+        executor_slot: Arc<LateBound<CommandExecutor>>,
+        code: Arc<crate::modules::code::CodeState>,
+    }
     name: "vision/look",
     access: AiSafe,
     native: true,
     params: VisionLookParams,
     output: VisionLookResult,
-    run(this, _ctx, p) => {
+    run(this, ctx, p) => {
         if p.artifact.is_some() && !p.file_path.is_empty() {
             return Err(CommandError::Invalid("provide artifact OR file_path, not both".into()));
         }
@@ -97,7 +100,11 @@ crate::action_command! {
             let store = crate::media::artifact::store().map_err(CommandError::Internal)?;
             (artifact.read(&store).map_err(CommandError::Internal)?, artifact.mime.clone())
         } else {
-        let path = std::path::Path::new(&p.file_path);
+        // The caller names a path; her workspace engine says whether it is hers to read
+        // (card d598c806: a citizen called this on the operator's Desktop). Same scope,
+        // same refusal as `code/read`.
+        let resolved = crate::modules::code_commands::resolve_readable_path(&this.code, ctx, &p.file_path).await?;
+        let path = resolved.as_path();
         let Some(mime) = mime_for(path) else {
             return Err(CommandError::Invalid(format!(
                 "vision/look: '{}' does not look like an image file \
