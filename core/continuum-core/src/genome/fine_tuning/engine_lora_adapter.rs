@@ -1652,6 +1652,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             recompute: body.recompute,
         };
         let rows = self.footprints.rows_like(&family);
+        let model = GraphModel::fit(&rows);
         let window = choose_window(window, governed_free, &rows);
         if window != body.window {
             crate::probe!(
@@ -1665,7 +1666,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             body.window = window;
         }
         let shape_at = |chunk: u32| Shape { window, chunk, ..family.clone() };
-        let (chunk, measured) = choose_chunk(window, governed_free, |c| self.footprints.get(&shape_at(c)));
+        // The chunk is chosen against the measured graph, else the fitted model's prediction for
+        // an unmeasured (window, chunk): a calculated window with a chunk left to the default
+        // would refuse by construction (Cormac on #4920). The LEASE is only ever a measurement:
+        // a chunk known only by prediction is a calibration run, leasing all governed free VRAM.
+        let (chunk, _) = choose_chunk(window, governed_free, |c| {
+            self.footprints.get(&shape_at(c)).or_else(|| model.map(|m| m.bytes(window, c)))
+        });
+        let measured = self.footprints.get(&shape_at(chunk));
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
         let footprints_path = self.footprints.path.clone();
@@ -2036,6 +2044,10 @@ mod tests {
         assert!(model.bytes(w, TRAINING_CHUNK_MIN) <= free, "that fits");
         assert!(model.bytes(w + 256, TRAINING_CHUNK_MIN) > free || w == 68608, "and is the largest that does");
         assert_eq!(choose_window(68608, free, &rows[..1]), 68608, "one window measured: nothing to calculate, served");
+        // and the chunk at that window comes from the same model, never the default 512 that the
+        // window was not sized for (Cormac on #4920)
+        let (c, _) = choose_chunk(w, free, |c| Some(model.bytes(w, c)));
+        assert!(model.bytes(w, c) <= free, "the chunk at the calculated window fits too: {c}");
         assert_eq!(choose_window(1536, free, &rows), 1536, "never above served");
         assert_eq!(choose_window(68608, 1, &rows), TRAINING_WINDOW_MIN, "never under the floor");
         // the store reads its rows back by rebuilding the key, so another family never counts
@@ -2363,6 +2375,37 @@ mod tests {
         let h2 = t.create_job(r).await.expect("test: create again");
         let _ = wait_terminal(&t, &h2).await;
         assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(256), "12.4 GB at 512 does not fit 6 GB free: the next dispatch asks for 256");
+        server.abort();
+    }
+
+    // what this catches (Cormac and Astra on #4920; the 5090 2026-10-10, job 00431d4d): the WHOLE
+    // planner, not its parts. With two windows of the family measured and a lane serving more
+    // than the graph can hold, the dispatch POSTS a calculated window under served AND a chunk
+    // whose modelled graph fits the same grant (a window sized for the floor chunk sent at the
+    // default 512 refuses by construction).
+    #[tokio::test]
+    async fn a_dispatch_the_served_window_cannot_hold_posts_a_window_and_chunk_that_fit() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let footprints = jobs.path().join("footprints.json");
+        let mib = 1024u64 * 1024;
+        let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
+        let store = Footprints { path: footprints.clone() };
+        store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
+        store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
+        let free = 4142 * mib;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), free);
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 68_608, engine: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        let _ = wait_terminal(&t, &h).await;
+        let posted = seen.lock().unwrap().clone().expect("test: posted");
+        let (w, c) = (posted["window"].as_u64().expect("test: window") as u32, posted["chunk"].as_u64().expect("test: chunk") as u32);
+        assert!(w < 68_608 && w % 256 == 0, "a calculated window under served: {w}");
+        assert!(model.bytes(w, c) <= free, "the POSTED window and chunk fit the grant together: w{w} c{c} = {} MiB of {} MiB", model.bytes(w, c) / mib, free / mib);
         server.abort();
     }
 
