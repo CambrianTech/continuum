@@ -196,7 +196,7 @@
     },
     "teach_set": {
       "default": "",
-      "doc": "a lesson JSONL of EvalTask rows; empty (with no from_experience) = the committed default teach set. Only lessons that carry a test become cards: the test is the card's verdict"
+      "doc": "a lesson JSONL of EvalTask rows; empty (with no from_experience) = the committed default teach set. Only lessons graded by something that runs (a test, or a definition of done) become cards: that oracle is the card's verdict"
     },
     "repo": {
       "default": "",

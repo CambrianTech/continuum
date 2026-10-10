@@ -1537,6 +1537,16 @@ pub struct EvalTask {
     #[serde(default, alias = "dodShell", skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub dod_shell: Option<String>,
+    /// A HELD-OUT grade: a shell command run in her workspace once `dod_shell` passes, and
+    /// never shown to her. Not in the card, not in the verify loop's re-drive, not in a
+    /// verdict line (a failure says only that a requirement the task did not state was not
+    /// met). `dod_shell` is the definition of done she works against; this checks something
+    /// she should already know without being told, which is what a learned correction is.
+    /// Without it the only workspace oracle was the visible DoD, so a check of a learned rule
+    /// had to be printed in the card, which taught every arm the rule. Pass = both exit 0.
+    #[serde(default, alias = "heldOutShell", skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub held_out_shell: Option<String>,
     /// ARTIFACT grade: a relative in-workspace path she is told to write her solution to. When
     /// set alongside `test`, the grade reads HER FILE (her hands) instead of extracting a code
     /// block from her spoken answer (her mouth), then runs the SAME harness (strip her `main`,
@@ -1636,6 +1646,13 @@ impl EvalTask {
     /// discovery-only turn the saturation gate should have interrupted).
     pub fn workspace_deliverable(&self) -> bool {
         self.dod_shell.is_some() || self.solution_file.is_some() || !self.ui_checks.is_empty()
+    }
+
+    /// Is this task graded by something that RUNS: a compiled `test`, or a workspace
+    /// definition of done? The ONE predicate for "a lesson whose verdict is objective":
+    /// coursework keeps only these, and the room's gym grader has an arm for each.
+    pub fn has_run_oracle(&self) -> bool {
+        self.test.is_some() || self.dod_shell.is_some()
     }
 }
 
@@ -3973,6 +3990,42 @@ async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> DodVerdict {
     }
 }
 
+/// The held-out half of a workspace grade ([`EvalTask::held_out_shell`]), applied to the
+/// visible DoD's verdict: it runs only when that verdict passed, and its own verdict text
+/// never carries the command or its output, because both would teach the rule it checks.
+/// What the command printed goes to the probe stream, where an operator reads it.
+pub(crate) async fn run_held_out(root: Option<&std::path::Path>, t: &EvalTask, visible: DodVerdict) -> DodVerdict {
+    let (cmd, seen) = match (t.held_out_shell.as_deref(), visible) {
+        (Some(cmd), DodVerdict::Pass(seen)) => (cmd, seen),
+        (_, visible) => return visible,
+    };
+    let held = run_dod(root, cmd).await;
+    crate::probe!(
+        class = "eval.task.held_out",
+        task = %t.id,
+        passed = held.passed(),
+        infra = matches!(held, DodVerdict::InfraError(_)),
+        output = %held.message(),
+        "the held-out check ran on work whose visible definition of done passed"
+    );
+    match held {
+        DodVerdict::Pass(_) => DodVerdict::Pass(format!("{seen}; the held-out check passed")),
+        DodVerdict::Fail(_) => DodVerdict::Fail(format!(
+            "{seen}, but the held-out check failed: the work misses a requirement the task did not state"
+        )),
+        DodVerdict::InfraError(_) => DodVerdict::InfraError(
+            "the held-out check could not RUN (grader/infra fault, not a wrong answer; its output is on the eval.task.held_out probe)".into(),
+        ),
+    }
+}
+
+/// A workspace task's whole grade: its visible definition of done, then its held-out check.
+/// The one composition every grader of a `dod_shell` task runs (the eval's fallback and team
+/// arms, the room's gym grader), so no grader can skip the held-out half.
+pub(crate) async fn run_workspace_grade(root: Option<&std::path::Path>, t: &EvalTask, dod: &str) -> DodVerdict {
+    run_held_out(root, t, run_dod(root, dod).await).await
+}
+
 /// Grade a FUNCTIONAL WEB-DEV task by OBSERVING what the persona's UI actually rendered, then
 /// scoring the element tree against the task's `ui_checks`. Returns `(ok, verdict)` in the same
 /// shape as [`run_dod`].
@@ -5034,7 +5087,17 @@ async fn run_pass(
                     }
                 };
                 if dod_ok || redrive_round >= DOD_REDRIVES {
-                    presettle_dod = Some((dod_ok, dod_out));
+                    // The held-out check grades the settled work once and never re-drives:
+                    // handing her its verdict would teach the rule it is there to measure.
+                    let settled_verdict = if dod_ok {
+                        run_held_out(task_root.map(std::path::Path::new), t, DodVerdict::Pass(dod_out)).await
+                    } else {
+                        DodVerdict::Fail(dod_out)
+                    };
+                    if let DodVerdict::InfraError(m) = &settled_verdict {
+                        dod_infra = Some(m.clone());
+                    }
+                    presettle_dod = Some((settled_verdict.passed(), settled_verdict.message().to_string()));
                     break;
                 }
                 redrive_round += 1;
@@ -5166,7 +5229,7 @@ Fix the workspace and finish —                              the grade reads th
                 // Unreachable for dod tasks (the loop always sets it); the honest
                 // fallback re-runs and folds any infra classification into the pair.
                 None => {
-                    let v = run_dod(task_root.map(std::path::Path::new), dod).await;
+                    let v = run_workspace_grade(task_root.map(std::path::Path::new), t, dod).await;
                     (v.passed(), v.message().to_string())
                 }
             }
@@ -5417,8 +5480,9 @@ async fn run_pass_team(
         // narrating at each other is the exact failure this arm must not reward (and the exact
         // one a review/handoff loop makes MORE likely, not less).
         let (ok, grade) = if let Some(dod) = &t.dod_shell {
-            let v = run_dod(
+            let v = run_workspace_grade(
                 t.workspace_root.as_deref().or(workspace_root).map(std::path::Path::new),
+                t,
                 dod,
             )
             .await;
@@ -5545,6 +5609,42 @@ mod tests {
             !std::path::Path::new("dod-was-here").exists(),
             "nothing may land in the process cwd when a root is given"
         );
+    }
+
+    // what this catches (card 47d2ab33): a held-out check that leaks. The lc-related set
+    // measures whether she applies a learned rule unprompted; if the rule reaches her through
+    // the card body or a verdict line, every arm is taught it and the measurement is void.
+    // The check must also gate the grade (a red held-out fails a green DoD) and must never
+    // run on work whose visible DoD is already red.
+    #[tokio::test]
+    async fn a_held_out_check_grades_without_ever_being_shown() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let secret = "grep -q SECRET-RULE-MARKER rule.txt";
+        let t = EvalTask {
+            id: "lc-related/env-port".into(),
+            prompt: "implement port()".into(),
+            dod_shell: Some("true".into()),
+            held_out_shell: Some(secret.into()),
+            ..Default::default()
+        };
+        let body = crate::commands::benchmark::dispatch_card_body("coursework-0123456789ab", &t);
+        assert!(!body.contains("SECRET-RULE-MARKER"), "the card never shows the held-out check:\n{body}");
+
+        // the file exists (a missing one would read as an infra fault, not a red result)
+        std::fs::write(dir.path().join("rule.txt"), "").expect("write");
+        let red = run_workspace_grade(Some(dir.path()), &t, "true").await;
+        assert!(matches!(red, DodVerdict::Fail(_)), "a missed held-out requirement fails a green DoD: {red:?}");
+        assert!(!red.message().contains("SECRET-RULE-MARKER"), "nor does a verdict: {}", red.message());
+
+        std::fs::write(dir.path().join("rule.txt"), "SECRET-RULE-MARKER").expect("write");
+        let green = run_workspace_grade(Some(dir.path()), &t, "true").await;
+        assert!(green.passed(), "both checks green: {green:?}");
+        assert!(!green.message().contains("SECRET-RULE-MARKER"), "{}", green.message());
+
+        let t_marks = EvalTask { held_out_shell: Some("touch held-out-ran".into()), ..t };
+        let visible_red = run_workspace_grade(Some(dir.path()), &t_marks, "false").await;
+        assert!(matches!(visible_red, DodVerdict::Fail(_)));
+        assert!(!dir.path().join("held-out-ran").exists(), "a red DoD is the verdict; the held-out check does not run");
     }
 
     // what this catches: the orphan sweep deleting a CONCURRENT run's live world —

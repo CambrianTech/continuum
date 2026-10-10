@@ -53,6 +53,16 @@ lang?: string,
  */
 dod_shell?: string, 
 /**
+ * A HELD-OUT grade: a shell command run in her workspace once `dod_shell` passes, and
+ * never shown to her. Not in the card, not in the verify loop's re-drive, not in a
+ * verdict line (a failure says only that a requirement the task did not state was not
+ * met). `dod_shell` is the definition of done she works against; this checks something
+ * she should already know without being told, which is what a learned correction is.
+ * Without it the only workspace oracle was the visible DoD, so a check of a learned rule
+ * had to be printed in the card, which taught every arm the rule. Pass = both exit 0.
+ */
+held_out_shell?: string, 
+/**
  * ARTIFACT grade: a relative in-workspace path she is told to write her solution to. When
  * set alongside `test`, the grade reads HER FILE (her hands) instead of extracting a code
  * block from her spoken answer (her mouth), then runs the SAME harness (strip her `main`,
