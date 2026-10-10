@@ -450,8 +450,9 @@ pub(crate) async fn ask_the_act_question(
                         credit_capture.as_mut(),
                     )
                     .await;
-                    // Her genome between cards is her promoted genome alone: a trial gene
-                    // rides only the cards that drew it. Unreadable: the pre-turn snapshot.
+                    // After the card her genome is what every turn runs with (her trained
+                    // genes, §3d); re-read so a gene that landed mid-turn is in her head next
+                    // turn. Unreadable: the pre-turn snapshot.
                     if let Some(genes) = crate::genome::gene_trial::live_genes(persona_uuid, None) {
                         genome_back.restore_to(genes);
                     }
