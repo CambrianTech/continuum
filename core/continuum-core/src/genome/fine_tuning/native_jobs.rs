@@ -481,6 +481,40 @@ pub(super) fn default_lora() -> LoRAHyperparams {
 mod tests {
     use super::*;
 
+    // what this catches (the 5090, 2026-10-10, job a7893e09): a calibration run (an unmeasured
+    // shape) planned "all free" while serving was mid-handoff, serving then grew into it, and the
+    // job waited forever for the plan-time number. A calibration admission takes what is free
+    // AT ADMISSION, and its bind sees the bytes actually granted.
+    #[tokio::test]
+    async fn a_calibration_run_takes_what_is_free_at_admission_not_at_plan() {
+        use crate::forge::training_admission::{wait_for_training_memory, wait_for_training_memory_bound, TrainingNeed};
+        use crate::resources::{capacity::MockCapacitySource, DaemonConfig, ResourceDaemon, ResourceKind};
+        use futures::FutureExt;
+        let daemon = ResourceDaemon::start(
+            vec![Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1024))],
+            vec![],
+            DaemonConfig::default(),
+        );
+        let gate = crate::modules::serving_daemon::LifecycleGate::unowned(true);
+        let planned = daemon.available_for("trainer", ResourceKind::Vram);
+        assert_eq!(planned, 1024, "test: everything is free when the run plans");
+        // serving grows into the memory after the plan
+        let _serving = wait_for_training_memory(daemon.clone(), &gate, "serving", 768, |_| {})
+            .await
+            .unwrap();
+        let bound = Arc::new(std::sync::Mutex::new(None));
+        let saw = bound.clone();
+        let admitted = wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate, |_| {}, move |granted| {
+            *saw.lock().unwrap() = Some(granted);
+            Ok(())
+        })
+        .now_or_never()
+        .expect("a calibration admission does not wait for the plan-time number")
+        .expect("test: admitted");
+        assert_eq!(admitted.bytes(), 256, "it leases what is free now");
+        assert_eq!(*bound.lock().unwrap(), Some(256), "and binds with the bytes it was granted");
+    }
+
     // Regression: capacity contention must wait without allocating, wake on
     // release, and cancellation must never turn a queued job into a trainer.
     #[tokio::test]
