@@ -315,6 +315,82 @@ fn choose_chunk(window: u32, available: u64, measured_at: impl Fn(u32) -> Option
     }
 }
 
+/// The smallest training window the calculation offers: the smallest window any lane is ever
+/// served at ([`crate::cognition::serving_plan::MIN_SERVE_CTX`]). A gene never trains on less
+/// context than she could be served in, and under it a lived example has no room for her system
+/// and tool head and her reply, so the run would only skip examples.
+const TRAINING_WINDOW_MIN: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX;
+
+/// A per-chunk training graph as a function of the window, fitted to measured footprints of ONE
+/// shape (model, rank, targets, depth, walk, recompute): bytes ~ chunk x (per_token + per_token_per_pos x window).
+/// Two terms because the graph is two costs: the chunk's activations (~chunk) and its
+/// attention scores against the cached prefix (~chunk x window; no flash backward, so explicit).
+/// Measured on the 5090 2026-10-10: at window 1536 chunk 256 the recompute graph was 2.6 GB,
+/// and at window 68608 chunk 512 the engine reported it needed 7.4 GB more than the 2.8 GB it
+/// could add, so the window term dominates long lived conversations, and one point cannot
+/// separate the two terms.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct GraphModel {
+    per_token: f64,
+    per_token_per_pos: f64,
+}
+
+impl GraphModel {
+    /// A least-squares line through `bytes / chunk` against `window`, over rows at two or more
+    /// DISTINCT windows. `None` with fewer, or when the fit has no positive window term (the
+    /// window would not be what limits the graph, so no window calculation applies).
+    fn fit(rows: &[(u32, u32, u64)]) -> Option<Self> {
+        let pts: Vec<(f64, f64)> = rows
+            .iter()
+            .filter(|(_, c, _)| *c > 0)
+            .map(|&(w, c, b)| (f64::from(w), b as f64 / f64::from(c)))
+            .collect();
+        let mut windows: Vec<u64> = pts.iter().map(|(w, _)| *w as u64).collect();
+        windows.sort_unstable();
+        windows.dedup();
+        if windows.len() < 2 {
+            return None;
+        }
+        let n = pts.len() as f64;
+        let mean_w = pts.iter().map(|p| p.0).sum::<f64>() / n;
+        let mean_g = pts.iter().map(|p| p.1).sum::<f64>() / n;
+        let sxx: f64 = pts.iter().map(|p| (p.0 - mean_w).powi(2)).sum();
+        let sxy: f64 = pts.iter().map(|p| (p.0 - mean_w) * (p.1 - mean_g)).sum();
+        let per_token_per_pos = sxy / sxx;
+        if per_token_per_pos <= 0.0 {
+            return None;
+        }
+        let per_token = (mean_g - per_token_per_pos * mean_w).max(0.0);
+        Some(Self { per_token, per_token_per_pos })
+    }
+
+    fn bytes(&self, window: u32, chunk: u32) -> u64 {
+        (f64::from(chunk) * (self.per_token + self.per_token_per_pos * f64::from(window))) as u64
+    }
+}
+
+/// The training window, CALCULATED before dispatch (Joel, 2026-10-10: "can't it calculate what it
+/// can do instead of failing and us waiting?"). INTERIM: Joel's standing rule is that learning sees
+/// what serving sees (train at her served window); the engine's attention memory grows with the
+/// cached prefix, so at her 68k window a lived conversation does not fit beside serving. Until that
+/// memory stops growing with the prefix (flash-attention backward, or the prefix forward-only as a
+/// leaf), the window is the largest the measured graph says fits `available` at the floor chunk,
+/// never above `served`, never under [`TRAINING_WINDOW_MIN`]. The engine's fit:"middle" drops her
+/// OLDEST history and keeps the system and tool head and her reply (fork #29), which is also how
+/// serving fits her perception every turn. With fewer than two windows of this shape measured
+/// there is nothing to calculate from: `served`, and that run's footprint (or refusal) is the
+/// measurement. The window is in the footprint key, so a later engine that fits climbs back up.
+fn choose_window(served: u32, available: u64, rows: &[(u32, u32, u64)]) -> u32 {
+    let Some(model) = GraphModel::fit(rows) else {
+        return served;
+    };
+    let mut window = served;
+    while window > TRAINING_WINDOW_MIN && model.bytes(window, TRAINING_CHUNK_MIN) > available {
+        window = train_window(window.saturating_sub(256).max(TRAINING_WINDOW_MIN));
+    }
+    window
+}
+
 impl Shape {
     /// Full depth keeps the key every row before depth existed was written under (those
     /// rows were all full-depth runs); a reduced depth adds `|dK`, so a reduced-depth lookup
@@ -417,6 +493,25 @@ impl Footprints {
     }
     fn get(&self, shape: &Shape) -> Option<u64> {
         self.read_all().get(&shape.key()).map(|r| r.bytes)
+    }
+    /// Every measured `(window, chunk, bytes)` of `shape`'s family (the same model, rank, targets,
+    /// depth, walk and recompute, at any window and chunk): what [`choose_window`] fits. A key is
+    /// read back by rebuilding the shape it names and comparing keys, so the parse can never
+    /// accept a row of a different family.
+    fn rows_like(&self, shape: &Shape) -> Vec<(u32, u32, u64)> {
+        self.read_all()
+            .into_iter()
+            .filter_map(|(key, row)| {
+                let num = |prefix: char| {
+                    key.split('|')
+                        .find_map(|seg| seg.strip_prefix(prefix).filter(|v| v.chars().all(|c| c.is_ascii_digit())).and_then(|v| v.parse::<u32>().ok()))
+                };
+                let window = num('w')?;
+                let chunk = num('c').unwrap_or_else(|| train_chunk_for(window, TRAINING_CHUNK));
+                let candidate = Shape { window, chunk, ..shape.clone() };
+                (candidate.key() == key).then_some((window, chunk, row.bytes))
+            })
+            .collect()
     }
     /// Keeps the LARGEST footprint observed for a shape: the peak is sampled on the governor's
     /// scan cadence, which can miss the true peak but never invents one (Cormac on #4443).
@@ -1489,8 +1584,10 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // trains whole with its system and tool head. No request sets it (§9.1): a record that
         // predates the field is refused, never trained at a guessed window (Cormac on #4498:
         // a fallback to the request's length is attempt #1 again). The engine measures the
-        // training graph at this window before allocating and refuses past the lease: a window
-        // that does not fit is an engineering problem, never a smaller window.
+        // training graph at this window before allocating and refuses past the lease. This is the
+        // CEILING: when the measured graph says it cannot fit beside serving, the window is
+        // calculated down from it ([`choose_window`], interim until the attention memory stops
+        // growing with the cached prefix); never from the request's length.
         if served_window == 0 {
             return Err(FineTuningError::InvalidRequest(format!(
                 "the live lane serving {} has no recorded served window (a record from before the field): not training at a guessed window",
@@ -1551,18 +1648,40 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // fits the governed VRAM now; a chunk never measured calibrates. Before this, the
         // engine took 512 for every job and a plain-walk footprint stood in for the exact
         // walk's (the 5090, 2026-10-10: 3418 MiB leased, 12.6 GB needed, refused in 8 s).
-        let shape_at = |chunk: u32| Shape {
+        let governed_free = self.vram_free_for(&format!("genome-train:{id}"));
+        let family = Shape {
             model: request.base_model.clone(),
             window,
             rank: lora.rank,
             targets: targets.clone(),
             depth,
             exact: body.exact,
-            chunk,
+            chunk: TRAINING_CHUNK_MIN,
             recompute: body.recompute,
         };
-        let governed_free = self.vram_free_for(&format!("genome-train:{id}"));
-        let (chunk, measured) = choose_chunk(window, governed_free, |c| self.footprints.get(&shape_at(c)));
+        let rows = self.footprints.rows_like(&family);
+        let model = GraphModel::fit(&rows);
+        let window = choose_window(window, governed_free, &rows);
+        if window != body.window {
+            crate::probe!(
+                class = "training.job.window_calculated",
+                served = u64::from(body.window),
+                window = u64::from(window),
+                governed_free = governed_free,
+                measured_rows = rows.len() as u64,
+                "the training window the measured graph says fits beside serving (interim: her served window does not fit; fit:middle keeps her head and reply)"
+            );
+            body.window = window;
+        }
+        let shape_at = |chunk: u32| Shape { window, chunk, ..family.clone() };
+        // The chunk is chosen against the measured graph, else the fitted model's prediction for
+        // an unmeasured (window, chunk): a calculated window with a chunk left to the default
+        // would refuse by construction (Cormac on #4920). The LEASE is only ever a measurement:
+        // a chunk known only by prediction is a calibration run, leasing all governed free VRAM.
+        let (chunk, _) = choose_chunk(window, governed_free, |c| {
+            self.footprints.get(&shape_at(c)).or_else(|| model.map(|m| m.bytes(window, c)))
+        });
+        let measured = self.footprints.get(&shape_at(chunk));
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
         let footprints_path = self.footprints.path.clone();
@@ -1918,6 +2037,37 @@ mod tests {
         assert_ne!(exact.key(), plain.key(), "a plain-walk footprint is never leased for the exact walk");
         let one_chunk = Shape { window: 256, chunk: 256, ..plain.clone() };
         assert_eq!(one_chunk.key(), "m|w256|r8|attn_q", "a 256 window's only chunk is the engine's default there: the old key");
+        // what this catches (the 5090, 2026-10-10, job 00431d4d): a lived 68k-window batch was
+        // dispatched only to be refused, 7.4 GB over. With two windows of a shape measured, the
+        // window is CALCULATED before dispatch: the largest that fits at the floor chunk, never
+        // above served, never under the floor; with fewer, served (the run is the measurement).
+        let mib = 1024u64 * 1024;
+        // illustrative second point (the real one was lost to a Windows rename, os error 32)
+        let rows = [(1536, 256, 2598 * mib), (68608, 512, 10_225 * mib)];
+        let model = GraphModel::fit(&rows).expect("test: two windows fit");
+        assert!(model.per_token_per_pos > 0.0, "the window term is real");
+        let free = 4142 * mib;
+        let w = choose_window(68608, free, &rows);
+        assert!(w % 256 == 0 && w < 68608 && w >= TRAINING_WINDOW_MIN, "a smaller 256-multiple window: {w}");
+        assert!(model.bytes(w, TRAINING_CHUNK_MIN) <= free, "that fits");
+        assert!(model.bytes(w + 256, TRAINING_CHUNK_MIN) > free || w == 68608, "and is the largest that does");
+        assert_eq!(choose_window(68608, free, &rows[..1]), 68608, "one window measured: nothing to calculate, served");
+        // and the chunk at that window comes from the same model, never the default 512 that the
+        // window was not sized for (Cormac on #4920)
+        let (c, _) = choose_chunk(w, free, |c| Some(model.bytes(w, c)));
+        assert!(model.bytes(w, c) <= free, "the chunk at the calculated window fits too: {c}");
+        assert_eq!(choose_window(1536, free, &rows), 1536, "never above served");
+        assert_eq!(choose_window(68608, 1, &rows), TRAINING_WINDOW_MIN, "never under the floor");
+        // the store reads its rows back by rebuilding the key, so another family never counts
+        let dir = tempfile::tempdir().expect("test: dir");
+        let store = Footprints { path: dir.path().join("fp.json") };
+        let fam = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
+        store.record(&fam, 7, Uuid::nil()).expect("test: record");
+        store.record(&Shape { window: 68608, chunk: 512, ..fam.clone() }, 9, Uuid::nil()).expect("test: record");
+        store.record(&Shape { recompute: false, ..fam.clone() }, 99, Uuid::nil()).expect("test: record");
+        let mut got = store.rows_like(&fam);
+        got.sort_unstable();
+        assert_eq!(got, vec![(1536, 256, 7), (68608, 512, 9)], "its own family only, at every window");
         // the chunk: unmeasured calibrates at the default; a measurement that fits leases;
         // one that does not fit halves the chunk and asks that shape; the smallest stands
         let gib = 1024u64 * 1024 * 1024;
@@ -2233,6 +2383,37 @@ mod tests {
         let h2 = t.create_job(r).await.expect("test: create again");
         let _ = wait_terminal(&t, &h2).await;
         assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(256), "12.4 GB at 512 does not fit 6 GB free: the next dispatch asks for 256");
+        server.abort();
+    }
+
+    // what this catches (Cormac and Astra on #4920; the 5090 2026-10-10, job 00431d4d): the WHOLE
+    // planner, not its parts. With two windows of the family measured and a lane serving more
+    // than the graph can hold, the dispatch POSTS a calculated window under served AND a chunk
+    // whose modelled graph fits the same grant (a window sized for the floor chunk sent at the
+    // default 512 refuses by construction).
+    #[tokio::test]
+    async fn a_dispatch_the_served_window_cannot_hold_posts_a_window_and_chunk_that_fit() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let footprints = jobs.path().join("footprints.json");
+        let mib = 1024u64 * 1024;
+        let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
+        let store = Footprints { path: footprints.clone() };
+        store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
+        store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
+        let free = 4142 * mib;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), free);
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 68_608, engine: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        let _ = wait_terminal(&t, &h).await;
+        let posted = seen.lock().unwrap().clone().expect("test: posted");
+        let (w, c) = (posted["window"].as_u64().expect("test: window") as u32, posted["chunk"].as_u64().expect("test: chunk") as u32);
+        assert!(w < 68_608 && w % 256 == 0, "a calculated window under served: {w}");
+        assert!(model.bytes(w, c) <= free, "the POSTED window and chunk fit the grant together: w{w} c{c} = {} MiB of {} MiB", model.bytes(w, c) / mib, free / mib);
         server.abort();
     }
 
