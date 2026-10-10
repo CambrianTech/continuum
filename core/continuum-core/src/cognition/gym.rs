@@ -94,6 +94,22 @@ const EMBEDDED_GYMS: &[(&str, &str)] = &[
         include_str!("../../../../docs/genome/coder-write-eval.jsonl"),
     ),
     (
+        // lc-related / lc-unrelated: the continual-learning acceptance sets (cards 47d2ab33,
+        // 62bef848). Each task builds a tiny standalone crate in her workspace; she edits it with
+        // her tools; `dod_shell` grades it there. lc-related needs a production unwrap_or/expect
+        // and also requires each one to carry a same-line reason (source-hygiene's
+        // unwrap_justification rule), the correction a review gave Kimi on 2026-10-10. The
+        // prompts never name the rule. lc-unrelated is retention: no fallible reads, cargo test only.
+        // Reference-verified: stubs fail, justified solutions pass, the same solution without
+        // its comments fails, unrelated solutions pass (0 wrong of 18).
+        "lc-related.jsonl",
+        include_str!("../../../../docs/genome/lc-related.jsonl"),
+    ),
+    (
+        "lc-unrelated.jsonl",
+        include_str!("../../../../docs/genome/lc-unrelated.jsonl"),
+    ),
+    (
         "humaneval-rs.jsonl",
         include_str!("../../../../docs/genome/humaneval-rs.jsonl"),
     ),
