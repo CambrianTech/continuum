@@ -110,6 +110,12 @@ pub struct PersonaDemand {
     pub last_tokens: u32,
     /// Wall clock of the most recent observation.
     pub last_seen_ms: u64,
+    /// Wall clock of the turn BEFORE `last_seen_ms` (0 = fewer than two turns seen). The
+    /// gap between them is how long she takes to come back, which is what the prompt
+    /// cache must hold her state across (`serving_daemon::rotation_window_ms`, card
+    /// 56d3c76f). Legacy files read 0: no return measured yet.
+    #[serde(default)]
+    pub prev_seen_ms: u64,
     /// How many turns have been observed. One observation is a measurement; the
     /// count is what lets a reader judge how much to trust the peak.
     pub turns: u64,
@@ -428,6 +434,12 @@ impl WorkingSetRegistry {
             .and_modify(|d| {
                 d.peak_tokens = d.peak_tokens.max(demand_tokens);
                 d.last_tokens = demand_tokens;
+                // Only a previous TURN starts a return interval: a sent/need record can
+                // create the entry seconds before her first demand (turns 0), and that
+                // stamp is not a turn she came back from.
+                if d.turns > 0 {
+                    d.prev_seen_ms = d.last_seen_ms;
+                }
                 d.last_seen_ms = now_ms;
                 d.turns += 1;
                 push_recent(d, demand_tokens);
@@ -437,6 +449,7 @@ impl WorkingSetRegistry {
                     peak_tokens: demand_tokens,
                     last_tokens: demand_tokens,
                     last_seen_ms: now_ms,
+                    prev_seen_ms: 0,
                     turns: 1,
                     sent_peak: 0,
                     recent: [0; RECENT_TURNS],
@@ -480,6 +493,7 @@ impl WorkingSetRegistry {
                 peak_tokens: 0,
                 last_tokens: 0,
                 last_seen_ms: now_ms,
+                prev_seen_ms: 0,
                 turns: 0,
                 sent_peak: sent_tokens,
                 recent: [0; RECENT_TURNS],
@@ -510,6 +524,7 @@ impl WorkingSetRegistry {
                     peak_tokens: 0,
                     last_tokens: 0,
                     last_seen_ms: now_ms,
+                    prev_seen_ms: 0,
                     turns: 0,
                     sent_peak: 0,
                     recent: [0; RECENT_TURNS],
@@ -918,7 +933,7 @@ mod tests {
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
-        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0 };
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [0; RECENT_TURNS], need_next: 0 };
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
