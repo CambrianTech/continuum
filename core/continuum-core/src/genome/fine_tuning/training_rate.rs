@@ -94,10 +94,26 @@ pub(crate) fn default_epochs() -> u32 {
     super::native_jobs::default_schedule().epochs
 }
 
-/// The characters of one example's payload: its serialized form, the same count at measurement
-/// and at estimate, so the two can never disagree about what a character is.
+/// The characters of one example's payload: the length of its serialized form, the same count
+/// at measurement and at estimate, so the two can never disagree about what a character is.
+/// Counted by streaming the encoding into a byte counter: nothing is allocated or kept, so
+/// sizing a 311-conversation batch costs no copy of it.
 pub(crate) fn example_chars(example: &TrainingExample) -> u64 {
-    serde_json::to_string(example).map_or(0, |s| s.len() as u64)
+    struct Count(u64);
+    impl std::io::Write for Count {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    match serde_json::to_writer(&mut count, example) {
+        Ok(()) => count.0,
+        Err(_) => 0, // an example that cannot be encoded cannot be sent either: it costs nothing to plan for
+    }
 }
 
 /// How many of the OLDEST submissions a run should take, in arrival order: their estimated wall
@@ -150,5 +166,9 @@ mod tests {
         assert_eq!(rates.secs_per_char_epoch("m"), None, "unmeasured: none");
         rates.record("m", 1_000, 2, 4_000, uuid::Uuid::nil()).expect("test: record");
         assert_eq!(rates.secs_per_char_epoch("m"), Some(0.002), "4 s over 1000 chars x 2 epochs");
+        let ex = TrainingExample { prompt: "p".into(), completion: "a reply".into(), metadata: None, lived: None };
+        let mut encoded = Vec::new();
+        serde_json::to_writer(&mut encoded, &ex).expect("test: encodes");
+        assert_eq!(example_chars(&ex), encoded.len() as u64, "the counted length is the encoded length");
     }
 }
