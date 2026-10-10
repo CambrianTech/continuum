@@ -432,6 +432,22 @@ impl KvSlotPool {
         loaded
     }
 
+    /// Stamp the engine process into this pool's ledger and rewrite it, so a core that
+    /// later adopts this engine can prove the ledger is its own. Once per ledger.
+    fn stamp_incarnation(&self, incarnation: (u32, u64)) {
+        let Some(ledger) = self.ledger.get() else {
+            return;
+        };
+        if ledger.incarnation.set(incarnation).is_err() {
+            return;
+        }
+        let snapshot = {
+            let saved = self.saved.lock();
+            self.ledger_snapshot(&saved)
+        };
+        self.persist_ledger(snapshot);
+    }
+
     pub fn n_slots(&self) -> u32 {
         self.n_slots
     }
@@ -706,12 +722,21 @@ pub(crate) struct SavedLedger {
     /// The generation of the snapshot on disk; a write serializes on this and skips a
     /// snapshot older than it.
     written: Mutex<u64>,
+    /// The engine process these pages belong to, stamped by the spawn once the engine is
+    /// ready ([`stamp_engine_incarnation`]) or carried over by an adoption.
+    incarnation: std::sync::OnceLock<(u32, u64)>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedLedgerFile {
     fingerprint: String,
     keys: Vec<(Uuid, Uuid)>,
+    /// The engine process that wrote these pages: (pid, OS start time). A core that
+    /// ADOPTS a running engine has no launch contract of its own; this is how it proves
+    /// the ledger is that very process's, and so under its contract. Absent on a ledger
+    /// written before the spawn stamped it: such a ledger is never adopted.
+    #[serde(default)]
+    incarnation: Option<(u32, u64)>,
 }
 
 /// The ledger's file name inside a page dir. Not an `a-*.bin` page, so the page
@@ -720,7 +745,27 @@ const SAVED_LEDGER_FILE: &str = "saved-ledger.json";
 
 impl SavedLedger {
     fn in_dir(page_dir: &std::path::Path, fingerprint: String) -> Self {
-        Self { path: page_dir.join(SAVED_LEDGER_FILE), fingerprint, written: Mutex::new(0) }
+        Self {
+            path: page_dir.join(SAVED_LEDGER_FILE),
+            fingerprint,
+            written: Mutex::new(0),
+            incarnation: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The ledger a running engine left in `page_dir`, if that engine is the process
+    /// `incarnation` names: the fingerprint it was written under becomes this ledger's
+    /// own, because it is the same process under the same launch contract. Any other
+    /// ledger (another process, an unstamped one, none) is not this engine's.
+    fn of_running_engine(page_dir: &std::path::Path, incarnation: (u32, u64)) -> Option<Self> {
+        let bytes = std::fs::read(page_dir.join(SAVED_LEDGER_FILE)).ok()?;
+        let file = serde_json::from_slice::<SavedLedgerFile>(&bytes).ok()?;
+        if file.incarnation != Some(incarnation) {
+            return None;
+        }
+        let ledger = Self::in_dir(page_dir, file.fingerprint);
+        let _ = ledger.incarnation.set(incarnation);
+        Some(ledger)
     }
 
     /// Atomic replace (write a sibling, then `replace_file`) into a dir that must already
@@ -732,7 +777,7 @@ impl SavedLedger {
         if generation <= *written {
             return Ok(());
         }
-        let file = SavedLedgerFile { fingerprint: self.fingerprint.clone(), keys };
+        let file = SavedLedgerFile { fingerprint: self.fingerprint.clone(), keys, incarnation: self.incarnation.get().copied() };
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)?;
@@ -1474,6 +1519,30 @@ impl SlotDirectory {
     }
 }
 
+/// The spawn's half of adoption: once the engine at `root` is ready, name the process
+/// (pid + OS start time) in its confirmed-save ledger.
+pub(crate) fn stamp_engine_incarnation(root: &str, pid: u32, started_s: u64) {
+    if started_s == 0 {
+        return; // an unreadable start time names no process, so it can prove nothing
+    }
+    if let Some(Some(pool)) = directory().get(root) {
+        pool.stamp_incarnation((pid, started_s));
+    }
+}
+
+/// The adopting core's half: `pool` was installed by props discovery for a running engine
+/// this core did not spawn. If that engine is the live lane `(pid, started_s)` and left a
+/// ledger in `page_dir` stamped with that same process, its confirmed saves become
+/// restorable here (same process, same contract). Returns the keys loaded; `None` when
+/// the ledger is not this engine's.
+pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path, pid: u32, started_s: u64) -> Option<usize> {
+    if started_s == 0 {
+        return None;
+    }
+    let ledger = SavedLedger::of_running_engine(page_dir, (pid, started_s))?;
+    Some(pool.attach_ledger(ledger, true))
+}
+
 /// The one process-wide directory (same scope as the serving resource itself:
 /// every adapter instance talking to one server shares one assignment).
 pub fn directory() -> &'static SlotDirectory {
@@ -1833,6 +1902,44 @@ mod tests {
         assert_ne!(other_fp, fp, "the slot count is part of the page format (measured: a p2 page refused into p1)");
         assert_eq!(KvSlotPool::new("test://ledger", 3).attach_ledger(SavedLedger::in_dir(dir.path(), other_fp), true), 0);
         assert!(KvPageContract { revisions: None, ..contract }.fingerprint().is_none(), "unknown revisions never persist");
+    }
+
+    // What this catches (IntelMac, 2026-10-10 20:29Z: the new core ADOPTED the running
+    // engine, and an adopted engine's pool has no launch contract, so #4921's ledger never
+    // attached and every saved page was ignored): an adopting core restores the ledger
+    // its engine left, and ONLY when that ledger names the same process. Another pid,
+    // another start time of the same pid (a recycled number), or a ledger the spawn
+    // never stamped adopts nothing.
+    #[test]
+    fn an_adopted_engine_restores_only_the_ledger_its_own_process_wrote() {
+        let dir = tempfile::tempdir().expect("test: page dir");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some(dir.path().to_path_buf()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
+        };
+        let fp = contract.fingerprint().expect("test: fingerprint");
+        let spawned = KvSlotPool::new("test://adopt", 2);
+        spawned.attach_ledger(SavedLedger::in_dir(dir.path(), fp), true);
+        let k = key(7, 8);
+        spawned.note_saved(k);
+        std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
+
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_000), None, "an unstamped ledger proves no process");
+        spawned.stamp_incarnation((4242, 1_700_000_000));
+
+        let adopted = KvSlotPool::new("test://adopt", 2);
+        assert_eq!(adopt_engine_ledger(&adopted, dir.path(), 4242, 1_700_000_000), Some(1));
+        assert!(adopted.saved.lock().contains(&k), "the same process's confirmed save is restorable after the core restart");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4243, 1_700_000_000), None, "another process");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_999), None, "a recycled pid");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 0), None, "no start time, no proof");
     }
 
     // What this catches: same-URL restart must restore saved KV, never trust old

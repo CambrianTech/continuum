@@ -6396,6 +6396,13 @@ impl LlamaServerProcess {
                 },
             )
             .map_err(LlamaServerError::Spawn)?;
+        // Name this process in its confirmed-save ledger, so a core that adopts this engine
+        // after a deploy restores its saved pages instead of re-prefilling every mind.
+        if let Some(pid) = child_pid {
+            if let Some(started_s) = crate::inference::engine_residency::process_start_s(pid) {
+                crate::inference::slots::stamp_engine_incarnation(&self.root, pid, started_s);
+            }
+        }
         self.record_verified_target(
             &generation,
             target,
