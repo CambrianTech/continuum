@@ -219,10 +219,17 @@ fn pack(fp: &ModelFootprint, sorted: &[&LaneRequirement], largest_known: Option<
 ///
 /// Objective order: every served mind at her requirement; then the most capable
 /// model that serves at least one; then the most minds. The seat keeps its model.
+///
+/// `max_lanes` is the plan's own lane bound: the roster's demand clamped to the measured
+/// knee (`decode_knee::knee_lanes`, the tighter of decode and prefill). Packing never
+/// exceeds it, however many minds the memory would hold: the knee is a rate limit, and
+/// memory knows nothing of rates (IntelMac, 2026-10-10: knee 2, this allocator packed 4,
+/// and the seat relaunched past its knee; card b52e8da0).
 pub fn allocate(
     requirements: &[LaneRequirement],
     candidates: &[ModelFootprint],
     budget: &HostBudget,
+    max_lanes: u32,
 ) -> Result<Allocation, Unallocatable> {
     if candidates.is_empty() {
         return Err(Unallocatable::NoCandidates);
@@ -235,7 +242,7 @@ pub fn allocate(
     let largest_known = largest_known(requirements);
     let mut sorted: Vec<&LaneRequirement> = requirements.iter().collect();
     sorted.sort_by_key(|r| (r.window.unwrap_or(u32::MAX), r.persona));
-    let lane_cap = (requirements.len() as u32).min(budget.perf_cores.max(1)).min(MAX_LANES).max(1);
+    let lane_cap = (requirements.len() as u32).min(budget.perf_cores.max(1)).min(MAX_LANES).min(max_lanes).max(1);
 
     let mut best: Option<(&ModelFootprint, u32, u32)> = None;
     for fp in candidates {
@@ -315,11 +322,25 @@ mod tests {
     #[test]
     fn the_5090_serves_two_coders_at_their_requirement_never_a_2k_lane() {
         let reqs = minds(&[70_000, 70_000]);
-        let a = allocate(&reqs, &[qwen27b()], &budget(30)).expect("fits");
+        let a = allocate(&reqs, &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!((a.lanes, a.window), (2, 70_000));
         assert_eq!(a.served.len(), 2);
         assert!(a.unserved.is_empty());
         assert!(a.device_bytes <= 30 * GB, "{} GB", a.device_bytes / GB);
+    }
+
+    // what this catches (card b52e8da0): memory packing past the measured knee. The
+    // IntelMac, 2026-10-10: four minds on a 1.5B fit easily, the knee was 2, the
+    // allocator packed 4, and the seat relaunched past its knee. The plan's bound wins
+    // over what memory would hold; with no bound (u32::MAX) memory alone decides.
+    #[test]
+    fn the_knee_bounds_the_lanes_however_many_minds_memory_would_hold() {
+        let reqs = minds(&[32_768, 32_768, 32_768, 32_768]);
+        let a = allocate(&reqs, &[small7b()], &budget(60), 2).expect("fits");
+        assert_eq!(a.lanes, 2, "the knee, not memory");
+        assert_eq!(a.served.len(), 2);
+        let free = allocate(&reqs, &[small7b()], &budget(60), u32::MAX).expect("fits");
+        assert_eq!(free.lanes, 4, "unbounded, memory holds all four");
     }
 
     // what this catches: lanes are shed BEFORE the window. Five minds at 70k on the
@@ -328,7 +349,7 @@ mod tests {
     #[test]
     fn a_squeeze_sheds_minds_never_shrinks_a_lane_below_its_requirement() {
         let reqs = minds(&[70_000, 70_000, 70_000, 70_000, 70_000]);
-        let a = allocate(&reqs, &[qwen27b()], &budget(30)).expect("fits");
+        let a = allocate(&reqs, &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!(a.lanes, 2);
         assert_eq!(a.window, 70_000);
         assert_eq!(a.unserved.len(), 3);
@@ -340,11 +361,11 @@ mod tests {
     #[test]
     fn the_outlier_is_served_last_and_does_not_size_the_others_lanes() {
         let reqs = minds(&[256_000, 70_000, 70_000]);
-        let a = allocate(&reqs, &[qwen27b()], &budget(30)).expect("fits");
+        let a = allocate(&reqs, &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!(a.lanes, 2, "two at 70k; the 256k mind would need 3 lanes at 256k");
         assert_eq!(a.window, 70_000);
         assert_eq!(a.unserved.len(), 1);
-        let roomy = allocate(&reqs, &[qwen27b()], &budget(60)).expect("fits");
+        let roomy = allocate(&reqs, &[qwen27b()], &budget(60), u32::MAX).expect("fits");
         assert_eq!((roomy.lanes, roomy.window), (3, 256_000), "with room, all three at the largest requirement");
     }
 
@@ -360,11 +381,11 @@ mod tests {
         let measured = LaneRequirement::from_demand(Uuid::new_v4(), 56_057, 1.25);
         assert_eq!(measured.window, Some(70_071));
         // Beside a measured 70k coder, the unknown takes 70k: two lanes at 70k.
-        let a = allocate(&[measured.clone(), unknown.clone()], &[qwen27b()], &budget(30)).expect("fits");
+        let a = allocate(&[measured.clone(), unknown.clone()], &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!((a.lanes, a.window), (2, 70_071));
         // Alone, the unknown takes the model's trained window bounded by one lane's fit:
         // the 27B in 30 GB holds ~ (30-19) GB / per-token cost — far above any floor.
-        let alone = allocate(&[unknown], &[qwen27b()], &budget(30)).expect("fits");
+        let alone = allocate(&[unknown], &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!(alone.lanes, 1);
         assert!(alone.window > 200_000, "the trained window, not a constant: {}", alone.window);
     }
@@ -375,10 +396,10 @@ mod tests {
     #[test]
     fn the_model_is_shed_before_a_mind_is_served_at_less() {
         let reqs = minds(&[70_000, 70_000]);
-        let tight = allocate(&reqs, &[qwen27b(), small7b()], &budget(16)).expect("the 7b fits");
+        let tight = allocate(&reqs, &[qwen27b(), small7b()], &budget(16), u32::MAX).expect("the 7b fits");
         assert_eq!(tight.model_id, "small-7b");
         assert_eq!((tight.lanes, tight.window), (2, 70_000));
-        let nothing = allocate(&reqs, &[qwen27b(), small7b()], &budget(4)).unwrap_err();
+        let nothing = allocate(&reqs, &[qwen27b(), small7b()], &budget(4), u32::MAX).unwrap_err();
         assert!(matches!(nothing, Unallocatable::NothingFitsOneLane { smallest_requirement: 70_000, .. }), "{nothing:?}");
     }
 
@@ -389,7 +410,7 @@ mod tests {
     #[test]
     fn capability_outranks_head_count_while_one_mind_is_held() {
         let reqs = minds(&[70_000, 70_000, 70_000]);
-        let a = allocate(&reqs, &[qwen27b(), small7b()], &budget(30)).expect("fits");
+        let a = allocate(&reqs, &[qwen27b(), small7b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!(a.model_id, "qwen-27b");
         assert_eq!((a.lanes, a.unserved.len()), (2, 1));
         // The 5090 as it stands: 22 GB handed to serving, q8 KV (32,768 B/token).
@@ -402,7 +423,7 @@ mod tests {
         assert!(one_lane > 40_000 && one_lane < 90_000, "precondition: one 27B lane on this card is tens of k, not hundreds: {one_lane}");
         let kimi = one_lane - 1_000;
         let seat = vec![LaneRequirement::declared(Uuid::new_v4(), kimi), LaneRequirement::declared(Uuid::new_v4(), 97_268)];
-        let a = allocate(&seat, &[q8, small7b()], &budget(22)).expect("fits");
+        let a = allocate(&seat, &[q8, small7b()], &budget(22), u32::MAX).expect("fits");
         assert_eq!((a.model_id.as_str(), a.lanes, a.window), ("qwen-27b", 1, kimi));
         assert_eq!(a.unserved.len(), 1);
     }
