@@ -194,6 +194,32 @@ fn gh_command(root: &Path, args: &[String]) -> tokio::process::Command {
     cmd
 }
 
+/// Run one local `git` invocation in `root`, off the runtime worker — the preflight twin of
+/// `run_gh`. This is the module's single git executor: it preserves the full Output (status and
+/// both streams) and owns the execution error policy. When we cannot run git at all (missing
+/// binary, spawn failure), it returns None = unknown; a check that cannot decide defers to the
+/// real command instead of inventing a new failure mode. Callers layer their own interpretation.
+pub(crate) async fn git_output(root: PathBuf, args: Vec<String>) -> Option<std::process::Output> {
+    tokio::task::spawn_blocking(move || {
+        std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&root)
+            .output() // no git on this host → unknown, defer to `gh` (which will say so itself)
+            .ok()
+    })
+    .await
+    .unwrap_or(None) // the worker panicked — treat as undecidable
+}
+
+/// [`git_output`] with the "did it succeed?" interpretation: a non-zero exit returns None (unknown).
+pub(crate) async fn git_quiet(root: PathBuf, args: Vec<String>) -> Option<String> {
+    let out = git_output(root, args).await?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
 /// The GitHub-collaboration command objects the code module contributes to the kernel's
 /// typed object map, aggregated with the shared `Arc<CodeState>` (mirrors
 /// [`super::git::command_objects`]).
