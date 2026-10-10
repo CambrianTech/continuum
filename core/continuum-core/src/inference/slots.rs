@@ -205,6 +205,9 @@ pub struct KvSlotPool {
     /// Where [`Self::saved`] persists, set once when the engine is ready under a contract
     /// that has a page dir and a fingerprint ([`SavedLedger`]). Unset = in-memory only.
     ledger: std::sync::OnceLock<SavedLedger>,
+    /// Numbers each change of [`Self::saved`] for the ledger, so a write taken outside the
+    /// lock never replaces a newer one ([`Self::ledger_snapshot`]).
+    ledger_generation: AtomicU64,
 }
 
 /// A slot's operation permit. Dropping it wakes turns waiting for a slot
@@ -407,6 +410,7 @@ impl KvSlotPool {
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
             ledger: std::sync::OnceLock::new(),
+            ledger_generation: AtomicU64::new(0),
         }
     }
 
@@ -414,18 +418,17 @@ impl KvSlotPool {
     /// ledger's own keys (same fingerprint, page file present) become restorable first:
     /// a new core restoring the pages the last one saved. Returns the keys loaded.
     pub(crate) fn attach_ledger(&self, ledger: SavedLedger, load: bool) -> usize {
-        let mut saved = self.saved.lock();
-        let loaded = if load {
-            let keys = ledger.load();
-            let n = keys.len();
-            saved.extend(keys);
-            n
-        } else {
-            0
-        };
-        if self.ledger.set(ledger).is_ok() {
-            self.persist_ledger(&saved);
+        let keys = if load { ledger.load() } else { std::collections::HashSet::new() };
+        let loaded = keys.len();
+        if self.ledger.set(ledger).is_err() {
+            return 0;
         }
+        let snapshot = {
+            let mut saved = self.saved.lock();
+            saved.extend(keys);
+            self.ledger_snapshot(&saved)
+        };
+        self.persist_ledger(snapshot);
         loaded
     }
 
@@ -634,9 +637,12 @@ impl KvSlotPool {
     /// Record that `key`'s page was successfully written to disk — it becomes
     /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
     pub fn note_saved(&self, key: ActivityKey) {
-        let mut saved = self.saved.lock();
-        saved.insert(key);
-        self.persist_ledger(&saved);
+        let snapshot = {
+            let mut saved = self.saved.lock();
+            saved.insert(key);
+            self.ledger_snapshot(&saved)
+        };
+        self.persist_ledger(snapshot);
     }
 
     /// The page turned out unusable (restore failed: file gone, geometry
@@ -644,20 +650,36 @@ impl KvSlotPool {
     /// instead of retrying a dead restore every pin. Also called BEFORE a save
     /// overwrites the page, so an interrupted save is never restorable.
     pub fn note_page_lost(&self, key: &ActivityKey) {
-        let mut saved = self.saved.lock();
-        if saved.remove(key) {
-            self.persist_ledger(&saved);
-        }
+        let snapshot = {
+            let mut saved = self.saved.lock();
+            if !saved.remove(key) {
+                return;
+            }
+            self.ledger_snapshot(&saved)
+        };
+        self.persist_ledger(snapshot);
     }
 
-    /// Write the confirmed-save set beside the pages, under the lock that changed it,
-    /// so the file's order of writes is the set's order of changes. Nothing to write
-    /// without a ledger (no page dir, or a contract that cannot be fingerprinted).
-    fn persist_ledger(&self, saved: &std::collections::HashSet<ActivityKey>) {
-        let Some(ledger) = self.ledger.get() else {
+    /// The set as it stands, numbered under the lock that changed it, so writes taken
+    /// outside that lock can still be applied in the set's order ([`SavedLedger::write`]
+    /// drops a snapshot older than the one already on disk). `None` without a ledger.
+    fn ledger_snapshot(&self, saved: &std::collections::HashSet<ActivityKey>) -> Option<(u64, Vec<(Uuid, Uuid)>)> {
+        self.ledger.get()?;
+        let generation = self.ledger_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut keys: Vec<(Uuid, Uuid)> = saved.iter().map(|k| (k.persona, k.room)).collect();
+        keys.sort_unstable();
+        Some((generation, keys))
+    }
+
+    /// Write a snapshot beside the pages, OUTSIDE the set's lock: the write may retry a
+    /// Windows sharing violation for ~1.6 s (`replace_file`), and a turn's paging must
+    /// never wait on that. Nothing to write without a ledger (no page dir, or a contract
+    /// that cannot be fingerprinted).
+    fn persist_ledger(&self, snapshot: Option<(u64, Vec<(Uuid, Uuid)>)>) {
+        let (Some(ledger), Some((generation, keys))) = (self.ledger.get(), snapshot) else {
             return;
         };
-        if let Err(error) = ledger.write(saved) {
+        if let Err(error) = ledger.write(generation, keys) {
             // The in-memory set stays authoritative for this process; only a restart
             // loses the eligibility the file would have carried.
             crate::probe!(
@@ -681,6 +703,9 @@ impl KvSlotPool {
 pub(crate) struct SavedLedger {
     path: std::path::PathBuf,
     fingerprint: String,
+    /// The generation of the snapshot on disk; a write serializes on this and skips a
+    /// snapshot older than it.
+    written: Mutex<u64>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -695,19 +720,25 @@ const SAVED_LEDGER_FILE: &str = "saved-ledger.json";
 
 impl SavedLedger {
     fn in_dir(page_dir: &std::path::Path, fingerprint: String) -> Self {
-        Self { path: page_dir.join(SAVED_LEDGER_FILE), fingerprint }
+        Self { path: page_dir.join(SAVED_LEDGER_FILE), fingerprint, written: Mutex::new(0) }
     }
 
-    /// Atomic replace (tmp + rename) into a dir that must already exist: the lane
-    /// creates its page dir; the ledger never creates one.
-    fn write(&self, saved: &std::collections::HashSet<ActivityKey>) -> std::io::Result<()> {
-        let mut keys: Vec<(Uuid, Uuid)> = saved.iter().map(|k| (k.persona, k.room)).collect();
-        keys.sort_unstable();
+    /// Atomic replace (write a sibling, then `replace_file`) into a dir that must already
+    /// exist: the lane creates its page dir; the ledger never creates one. Writes are
+    /// serialized and a snapshot older than the one on disk is dropped, so the file is
+    /// always the newest set even when writers race.
+    fn write(&self, generation: u64, keys: Vec<(Uuid, Uuid)>) -> std::io::Result<()> {
+        let mut written = self.written.lock();
+        if generation <= *written {
+            return Ok(());
+        }
         let file = SavedLedgerFile { fingerprint: self.fingerprint.clone(), keys };
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)?;
-        std::fs::rename(&tmp, &self.path)
+        crate::utils::file_replace::replace_file(&tmp, &self.path)?;
+        *written = generation;
+        Ok(())
     }
 
     /// The keys this ledger may restore: written under the same fingerprint, with
@@ -717,14 +748,25 @@ impl SavedLedger {
         let Some(dir) = self.path.parent() else {
             return std::collections::HashSet::new();
         };
-        let Ok(bytes) = std::fs::read(&self.path) else {
-            return std::collections::HashSet::new();
+        let unread = |why: &str| {
+            crate::probe!(
+                class = "inference.kv_page.ledger_unread",
+                path = %self.path.display(),
+                why = why,
+                "no confirmed-save ledger restored: the pages in this dir re-prefill once"
+            );
+            std::collections::HashSet::new()
+        };
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return std::collections::HashSet::new(),
+            Err(_) => return unread("unreadable"),
         };
         let Ok(file) = serde_json::from_slice::<SavedLedgerFile>(&bytes) else {
-            return std::collections::HashSet::new();
+            return unread("malformed");
         };
         if file.fingerprint != self.fingerprint {
-            return std::collections::HashSet::new();
+            return unread("written under another contract");
         }
         file.keys
             .into_iter()
