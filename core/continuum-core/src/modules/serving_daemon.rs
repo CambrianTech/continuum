@@ -2559,7 +2559,9 @@ impl ServingDaemonModule {
                     live.lanes,
                     live.served_context_window,
                     anon,
-                    fp.compute_buffer_per_lane(),
+                    // the BASE buffer: the fixed term is derived from this reading
+                    // (`base_compute_buffer_per_lane`, the M5's two-tick flap)
+                    fp.base_compute_buffer_per_lane(),
                     host_cache_bytes,
                 );
                 let Ok(measured) = measured else {
@@ -7989,6 +7991,34 @@ pub(crate) mod tests {
     // computed a negative gain and never relaunched — five residents thrashed
     // two slots at hit_rate 0.0 until an operator cycled the server by hand.
     // The evidence currency is window × lanes.
+    // what this catches (the M5, 2026-10-10 19:58-20:01Z: per-lane compute read 1.93 GB and
+    // 4.40 GB on alternate ticks, and the plan flipped between 2 lanes and 1 every tick): a
+    // lane measurement fed its own derived fixed term. The loop the daemon runs is sample
+    // (anon minus the floor the sampler subtracts) -> fixed term -> next floor. With the
+    // base buffer as that floor, the fixed term is the lane's true fixed residency after
+    // ONE sample and stays there; subtracting compute_buffer_per_lane (base + fixed) gives
+    // fixed(n+1) = C - fixed(n), which alternates and fails this.
+    #[test]
+    fn a_lane_measurement_converges_and_never_feeds_back_its_own_fixed_term() {
+        let header_rate = 32_768u64;
+        let (lanes, window) = (1u32, 56_832u32);
+        let mut fp = crate::cognition::serving_plan::ModelFootprint {
+            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+        };
+        let true_fixed = 3_950_000_000u64; // what the engine really holds per lane beyond KV and the base buffer
+        let anon = (fp.base_compute_buffer_per_lane() + true_fixed + header_rate * u64::from(window)) * u64::from(lanes);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let per_token = crate::inference::lane_footprint::per_token_from(anon, lanes, window, fp.base_compute_buffer_per_lane(), 0)
+                .expect("test: a reading");
+            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes: anon, last_ms: 0 };
+            fp.fixed_per_lane_bytes = fixed_per_lane_from(header_rate, &record);
+            seen.push(fp.fixed_per_lane_bytes);
+        }
+        let tolerance = u64::from(window); // integer division loses under one byte per token
+        assert!(seen.iter().all(|f| f.abs_diff(true_fixed) <= tolerance), "converges to the true fixed term at once and holds: {seen:?}");
+    }
+
         // what this catches (2026-09-17, the M5 swapping at 8 × 51,712): a fresh measured
     // per-token cost above the arithmetic raises the plan's kv rate so that kv + kv/D
     // equals the measurement; agreement or a smaller reading leaves the estimate alone.
