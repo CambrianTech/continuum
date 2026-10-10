@@ -438,7 +438,8 @@ impl Footprints {
         }
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
-        std::fs::rename(tmp, &self.path)
+        // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
+        crate::utils::file_replace::replace_file(&tmp, &self.path)
     }
 }
 
