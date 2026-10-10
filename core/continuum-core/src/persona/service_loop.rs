@@ -1295,7 +1295,7 @@ async fn serve_persona_loop_inner(
                 // has. The receipt names the genes that ran (GenerationReceipt::genes).
                 let _genome_pin = {
                     let pin = crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
-                    if let Some(genes) = crate::genome::gene_trial::live_genes(ctx.identity.peer_id.as_uuid(), None) {
+                    if let Some(genes) = crate::genome::gene_trial::live_genes(ctx.identity.peer_id.as_uuid()) {
                         crate::probe!(
                             class = "persona.genome.turn_genes",
                             persona = %ctx.identity.agent_name,
