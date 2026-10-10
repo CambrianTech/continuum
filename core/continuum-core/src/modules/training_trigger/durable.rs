@@ -471,15 +471,16 @@ impl PendingBatch {
 }
 
 /// Split a bucket for one run: `(taken, rest)`, `rest` `None` when the whole batch is the run.
-/// Takes whole submissions, newest first. A bucket whose per-submission counts do not cover its
+/// Takes whole submissions, OLDEST first: the drain, so under steady inflow every submission is
+/// eventually trained (Cormac on #4926). A bucket whose per-submission counts do not cover its
 /// examples (a shape this core did not assemble) is never split: it trains whole.
 fn budget_split(batch: PendingBatch, base_model: &str) -> (PendingBatch, Option<PendingBatch>) {
-    use crate::genome::fine_tuning::training_rate::{example_chars, newest_within_budget, TrainingRates, TRAINING_RUN_BUDGET};
+    use crate::genome::fine_tuning::training_rate::{default_epochs, example_chars, oldest_within_budget, TrainingRates, TRAINING_RUN_BUDGET};
     let counts = &batch.submission_examples;
     if counts.len() != batch.submission_ids.len() || counts.iter().map(|&c| c as usize).sum::<usize>() != batch.examples.len() {
         return (batch, None);
     }
-    let epochs = batch.schedule.as_ref().map_or(3, |s| s.epochs); // map_or: the engine's default schedule trains 3 epochs
+    let epochs = batch.schedule.as_ref().map_or_else(default_epochs, |s| s.epochs);
     let take = match TrainingRates::in_home().and_then(|r| r.secs_per_char_epoch(base_model)) {
         Some(rate) => {
             let mut offset = 0;
@@ -492,12 +493,12 @@ fn budget_split(batch: PendingBatch, base_model: &str) -> (PendingBatch, Option<
                     sum
                 })
                 .collect();
-            newest_within_budget(&chars, rate, epochs, TRAINING_RUN_BUDGET)
+            oldest_within_budget(&chars, rate, epochs, TRAINING_RUN_BUDGET)
         }
-        // no measured rate: a calibration run of the bucket's own threshold, newest first
+        // no measured rate: a calibration run of the bucket's own threshold, oldest first
         None => {
             let mut examples = 0usize;
-            let take = counts.iter().rev().take_while(|&&c| {
+            let take = counts.iter().take_while(|&&c| {
                 let under = examples < batch.min_examples as usize;
                 examples += c as usize;
                 under
@@ -508,13 +509,12 @@ fn budget_split(batch: PendingBatch, base_model: &str) -> (PendingBatch, Option<
     let Some(take) = take.filter(|&t| t > 0 && t < counts.len()) else {
         return (batch, None);
     };
-    let keep = counts.len() - take;
-    let split_at: usize = counts[..keep].iter().map(|&c| c as usize).sum();
-    let mut rest = batch;
-    let mut taken = rest.clone();
-    taken.submission_ids = rest.submission_ids.split_off(keep);
-    taken.submission_examples = rest.submission_examples.split_off(keep);
-    taken.examples = rest.examples.split_off(split_at);
+    let split_at: usize = counts[..take].iter().map(|&c| c as usize).sum();
+    let mut taken = batch;
+    let mut rest = taken.clone();
+    rest.submission_ids = taken.submission_ids.split_off(take);
+    rest.submission_examples = taken.submission_examples.split_off(take);
+    rest.examples = taken.examples.split_off(split_at);
     (taken, Some(rest))
 }
 
@@ -1111,7 +1111,7 @@ impl TrainingTriggerState {
                 self.hydrated.remove(key);
                 return Ok(DispatchResult::Empty);
             };
-            // A RUN THE LEARNING LOOP CAN WAIT FOR (training_rate): the newest submissions whose
+            // A RUN THE LEARNING LOOP CAN WAIT FOR (training_rate): the oldest submissions whose
             // measured cost fits the run budget; the rest stay in the bucket, pending, for the next
             // run (their durable rows are not in this intent, so a restart re-hydrates them as
             // pending too). With no measured rate, the bucket's own threshold calibrates.
@@ -1124,7 +1124,7 @@ impl TrainingTriggerState {
                         taken = taken.examples.len() as u64,
                         pending = rest.examples.len() as u64,
                         budget_s = crate::genome::fine_tuning::training_rate::TRAINING_RUN_BUDGET.as_secs(),
-                        "this run trains the newest examples that fit the run budget at the measured rate; the rest wait for the next run"
+                        "this run trains the oldest examples that fit the run budget at the measured rate; the rest wait for the next run"
                     );
                     self.buckets.insert(key.clone(), rest);
                     taken
@@ -2078,11 +2078,11 @@ mod tests {
     use super::*;
 
     // what this catches (the 5090, 2026-10-10): a bucket that filled all day dispatched as one
-    // ~100-hour run. With no measured rate a run takes the newest WHOLE submissions up to the
-    // bucket's threshold and leaves the rest pending, in order; a bucket whose per-submission
-    // counts do not cover its examples is never split.
+    // ~100-hour run. With no measured rate a run takes the OLDEST whole submissions up to the
+    // bucket's threshold (the drain: none starves) and leaves the rest pending, in order; a bucket
+    // whose per-submission counts do not cover its examples is never split.
     #[test]
-    fn a_dispatch_takes_whole_newest_submissions_and_leaves_the_rest_pending() {
+    fn a_dispatch_takes_whole_oldest_submissions_and_leaves_the_rest_pending() {
         let ex = |p: &str| crate::genome::fine_tuning::TrainingExample { prompt: p.into(), completion: "c".into(), metadata: None, lived: None };
         let ids: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
         let batch = PendingBatch {
@@ -2101,10 +2101,10 @@ mod tests {
         };
         let (taken, rest) = budget_split(batch.clone(), "no-rate-for-this-base");
         let rest = rest.expect("over the threshold: split");
-        assert_eq!(taken.submission_ids, ids[2..].to_vec(), "the newest whole submissions");
-        assert_eq!(taken.examples.iter().map(|e| e.prompt.as_str()).collect::<Vec<_>>(), ["c1", "c2", "c3", "d1"], "with exactly their examples");
-        assert_eq!(rest.submission_ids, ids[..2].to_vec(), "the older ones stay pending");
-        assert_eq!(rest.examples.iter().map(|e| e.prompt.as_str()).collect::<Vec<_>>(), ["a1", "a2", "b1"]);
+        assert_eq!(taken.submission_ids, ids[..2].to_vec(), "the oldest whole submissions, to the threshold");
+        assert_eq!(taken.examples.iter().map(|e| e.prompt.as_str()).collect::<Vec<_>>(), ["a1", "a2", "b1"], "with exactly their examples");
+        assert_eq!(rest.submission_ids, ids[2..].to_vec(), "the newer ones stay pending, in order");
+        assert_eq!(rest.examples.iter().map(|e| e.prompt.as_str()).collect::<Vec<_>>(), ["c1", "c2", "c3", "d1"]);
         let mut unknown = batch;
         unknown.submission_examples.pop();
         let (whole, none) = budget_split(unknown, "no-rate-for-this-base");

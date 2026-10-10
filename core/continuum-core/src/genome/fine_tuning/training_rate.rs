@@ -88,17 +88,25 @@ impl TrainingRates {
     }
 }
 
+/// The epochs a run trains when its request names no schedule: the ONE default
+/// (`native_jobs::default_schedule`), never a second copy of its number.
+pub(crate) fn default_epochs() -> u32 {
+    super::native_jobs::default_schedule().epochs
+}
+
 /// The characters of one example's payload: its serialized form, the same count at measurement
 /// and at estimate, so the two can never disagree about what a character is.
 pub(crate) fn example_chars(example: &TrainingExample) -> u64 {
     serde_json::to_string(example).map_or(0, |s| s.len() as u64)
 }
 
-/// How many of the NEWEST submissions a run should take: their estimated wall time at `rate`
-/// stays within `budget`, and at least one is always taken (a single submission over budget
-/// still trains, alone). `None` = take them all (they fit, or there is no rate and the caller
-/// calibrates). `chars_per_submission` is oldest first.
-pub(crate) fn newest_within_budget(chars_per_submission: &[u64], secs_per_char_epoch: f64, epochs: u32, budget: Duration) -> Option<usize> {
+/// How many of the OLDEST submissions a run should take, in arrival order: their estimated wall
+/// time at `rate` stays within `budget`, and at least one is always taken (a single submission
+/// over budget still trains, alone). `None` = take them all. Oldest first is the DRAIN: under
+/// steady inflow every submission is eventually taken, where newest-first would starve the
+/// oldest forever and grow the pending bucket without bound (Cormac on #4926).
+/// `chars_per_submission` is oldest first.
+pub(crate) fn oldest_within_budget(chars_per_submission: &[u64], secs_per_char_epoch: f64, epochs: u32, budget: Duration) -> Option<usize> {
     let per_char = secs_per_char_epoch * f64::from(epochs.max(1));
     let total: f64 = chars_per_submission.iter().map(|&c| c as f64 * per_char).sum();
     if total <= budget.as_secs_f64() {
@@ -106,7 +114,7 @@ pub(crate) fn newest_within_budget(chars_per_submission: &[u64], secs_per_char_e
     }
     let mut spent = 0.0;
     let mut take = 0;
-    for &chars in chars_per_submission.iter().rev() {
+    for &chars in chars_per_submission {
         let cost = chars as f64 * per_char;
         if take > 0 && spent + cost > budget.as_secs_f64() {
             break;
@@ -131,12 +139,12 @@ mod tests {
     // ~100-hour run. A run takes the newest submissions that fit the budget at the measured rate,
     // never zero, and all of them when they fit; and the rate is what a finished run measured.
     #[test]
-    fn a_run_takes_the_newest_submissions_that_fit_its_budget() {
+    fn a_run_takes_the_oldest_submissions_that_fit_its_budget() {
         let hour = Duration::from_secs(3600);
         // 1 s per char per epoch x 3 epochs: each 1000-char submission costs 3000 s
-        assert_eq!(newest_within_budget(&[1000, 1000, 1000], 1.0, 3, hour), Some(1), "only the newest fits an hour");
-        assert_eq!(newest_within_budget(&[100, 100, 100], 1.0, 3, hour), None, "900 s: all of them fit");
-        assert_eq!(newest_within_budget(&[10_000], 1.0, 3, hour), Some(1), "one over budget still trains, alone");
+        assert_eq!(oldest_within_budget(&[1000, 1000, 1000], 1.0, 3, hour), Some(1), "only the oldest fits an hour");
+        assert_eq!(oldest_within_budget(&[100, 100, 100], 1.0, 3, hour), None, "900 s: all of them fit");
+        assert_eq!(oldest_within_budget(&[10_000], 1.0, 3, hour), Some(1), "one over budget still trains, alone");
         let dir = tempfile::tempdir().expect("test: dir");
         let rates = rates_at(&dir.path().join("rates.json"));
         assert_eq!(rates.secs_per_char_epoch("m"), None, "unmeasured: none");
