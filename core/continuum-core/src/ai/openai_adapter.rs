@@ -646,6 +646,25 @@ impl OpenAICompatibleAdapter {
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
         let pool = dir.ensure_pool(root, n_slots);
+        // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
+        // so its confirmed saves come from the ledger it left, when that ledger names this
+        // very process. A spawned engine already attached its own at readiness; this then
+        // loads nothing.
+        if let Some(lane) = crate::inference::lane_registry::live_lane()
+            .filter(|l| l.root_url() == root.trim_end_matches('/'))
+            .filter(|l| crate::inference::engine_residency::process_start_s(l.pid) == Some(l.started_s))
+        {
+            if let Some(page_dir) = lane.page_dir.as_deref() {
+                let loaded = crate::inference::slots::adopt_engine_ledger(&pool, page_dir, lane.pid, lane.started_s);
+                crate::probe!(
+                    class = "inference.kv_page.ledger_adopted",
+                    pid = lane.pid as u64,
+                    loaded = loaded.unwrap_or(0) as u64, // probe field: 0 when the ledger is not this engine's (see adopted)
+                    adopted = loaded.is_some(),
+                    "an adopted engine's confirmed-save ledger: its saved pages are restorable when the ledger names this same process"
+                );
+            }
+        }
         tracing::info!(
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"
