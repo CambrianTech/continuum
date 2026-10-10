@@ -461,6 +461,15 @@ pub struct StagedCredit {
     /// the same field. `default` reads a row staged before this field as real work.
     #[serde(default)]
     pub coursework_set: Option<String>,
+    /// When HER core observed a FAILED review of this row's card while the row was
+    /// staged: her own clock, never the reviewer's (card ad4bfaeb). A row a review
+    /// rejected is the behaviour the reviewer refused, so a later PASS on the same card
+    /// must not train it as good; only the rows staged after the failure (the
+    /// correction) settle as passing. Attached at settlement and only ever added, like
+    /// `served`. The flag is also the record of what a gene did NOT train on, kept as a
+    /// negative for later.
+    #[serde(default)]
+    pub rejected_at_ms: Option<u64>,
 }
 
 /// A scored, gated, classified training example ready to submit. The pure product
@@ -1334,6 +1343,7 @@ async fn stage_credit<T: Transport>(
         // a fourth time would be the duplication the compression principle forbids.
         staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
         coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
+        rejected_at_ms: None,
     };
 
     let mut operations = Vec::new();
@@ -1611,6 +1621,14 @@ pub fn acted_chain(turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) -> S
 /// receipted: a store that cannot be read names itself; nothing here can fail the
 /// verdict that triggered it.
 pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
+    settle_card_credit_with_history(card_id, passed, false).await;
+}
+
+/// [`settle_card_credit`], told whether the board holds a FAILED review of this card
+/// before the verdict being settled. Only the catch-up pass knows that without having
+/// observed it; a live verdict passes `false` and relies on the rows its own core
+/// marked when the failure arrived.
+async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_earlier: bool) {
     let Some(executor) = EXECUTOR.cloned() else {
         return;
     };
@@ -1677,6 +1695,41 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
                 .collect();
             crate::genome::gene_trial::credit_settled_card(persona_id, card_id, passed, &turns);
         }
+        // VERDICT ORDER (card ad4bfaeb): a failure marks every row staged so far; a pass
+        // trains only what was staged after it. The order is her own core's perception of
+        // the failure, so no clock on the reviewer's node is compared with hers.
+        let rows = if passed {
+            match pass_admits(&rows, failed_earlier) {
+                PassAdmits::All => rows,
+                PassAdmits::AfterFailure => {
+                    let (rejected, admitted): (Vec<StagedCredit>, Vec<StagedCredit>) =
+                        rows.into_iter().partition(|r| r.rejected_at_ms.is_some());
+                    crate::probe!(
+                        class = "training.credit.rejected_excluded",
+                        persona = %persona_name,
+                        card = %card_id,
+                        excluded = rejected.len() as u64,
+                        admitted = admitted.len() as u64,
+                        excluded_ids = %rejected.iter().map(|r| r.id.to_string()).collect::<Vec<_>>().join(","),
+                        "a passing verdict after a failure: the rows the failure rejected are not trained as passing; only the correction settles"
+                    );
+                    admitted
+                }
+                PassAdmits::Unordered => {
+                    crate::probe!(
+                        class = "training.credit.unordered_withheld",
+                        persona = %persona_name,
+                        card = %card_id,
+                        withheld = rows.len() as u64,
+                        "the board holds a failure before this pass that her core never observed, so no row can be placed after it; nothing trains"
+                    );
+                    Vec::new()
+                }
+            }
+        } else {
+            mark_rejected(&conn, &persona_name, card_id, &rows).await;
+            rows
+        };
         let mut submitted = 0usize;
         let mut rows = rows;
         rows.sort_by_key(|r| r.staged_at_ms);
@@ -1978,6 +2031,80 @@ async fn settle_staged_row<T: Transport>(
     Ok(true)
 }
 
+/// Which staged rows a PASSING verdict may train (card ad4bfaeb).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PassAdmits {
+    /// No failure on this card: every row is the work that passed.
+    All,
+    /// Her core observed a failure: only the rows staged after it (unmarked) train.
+    AfterFailure,
+    /// The board holds an earlier failure her core never observed, so no row can be
+    /// placed after it. Nothing trains: a pre-failure row labelled passing is the
+    /// expensive mistake, and exclusion never is.
+    Unordered,
+}
+
+/// PURE: what a pass admits, from the rows' marks and whether the board holds an
+/// earlier failure.
+pub(crate) fn pass_admits(rows: &[StagedCredit], failed_earlier: bool) -> PassAdmits {
+    if rows.iter().any(|r| r.rejected_at_ms.is_some()) {
+        PassAdmits::AfterFailure
+    } else if failed_earlier {
+        PassAdmits::Unordered
+    } else {
+        PassAdmits::All
+    }
+}
+
+/// A FAILED verdict marks every row staged on the card so far as rejected, on her own
+/// clock. A row already marked keeps its first mark (a second failure doesn't move it).
+/// A write that fails is named; that row may then train on a later pass, which is the
+/// old behaviour, never a new one.
+async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[StagedCredit]) {
+    let now = crate::persona::trace::now_ms();
+    for row in rows.iter().filter(|r| r.rejected_at_ms.is_none()) {
+        let marked = conn
+            .commands()
+            .execute_value(
+                "data/update",
+                json!({
+                    "collection": StagedCredit::COLLECTION,
+                    "id": row.id,
+                    "data": { "rejectedAtMs": now },
+                    "dbPath": format!("@persona:{persona_name}"),
+                }),
+            )
+            .await
+            .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
+        if let Err(error) = marked {
+            crate::probe!(
+                class = "training.credit.reject_mark_failed",
+                persona = %persona_name,
+                card = %card_id,
+                submission = %row.id,
+                error = %error,
+                "a row the failure rejected could not be marked; a later pass may still train it"
+            );
+        }
+    }
+}
+
+/// PURE: whether the board holds a FAILED review earlier than the card's latest real
+/// verdict (catch-up's question: did she miss a failure before this pass?).
+pub(crate) fn failed_before_latest<'a>(
+    reviews: impl Iterator<Item = (u64, &'a airc_work::WorkReviewOutcome)>,
+) -> bool {
+    let real: Vec<(u64, bool)> = reviews
+        .filter_map(|(at, outcome)| match outcome {
+            airc_work::WorkReviewOutcome::Passed => Some((at, true)),
+            airc_work::WorkReviewOutcome::Failed => Some((at, false)),
+            airc_work::WorkReviewOutcome::Unknown => None,
+        })
+        .collect();
+    let Some(&(latest, _)) = real.iter().max_by_key(|(at, _)| *at) else { return false };
+    real.iter().any(|&(at, passed)| !passed && at < latest)
+}
+
 /// Once the destination holds a row's lived calls as examples, the row keeps its
 /// receipts (the provenance) and drops the second copy, so settled rows stay small.
 /// A failed clear is named; the next settle pass meets the accepted transfer and
@@ -2090,6 +2217,11 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
         ) else {
             continue;
         };
+        let failed_earlier = failed_before_latest(
+            board
+                .submission_reviews_for_card(card.card_id)
+                .map(|r| (r.reviewed_at_ms, &r.outcome)),
+        );
         judged += 1;
         crate::probe!(
             class = "training.credit.reconcile_card",
@@ -2098,7 +2230,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             passed,
             "the board already judged this card of hers — its staged credit settles now"
         );
-        settle_card_credit(card.card_id.as_uuid(), passed).await;
+        settle_card_credit_with_history(card.card_id.as_uuid(), passed, failed_earlier).await;
     }
     crate::probe!(
         class = "training.credit.reconciled",
@@ -2160,6 +2292,41 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    // what this catches (card ad4bfaeb): a passing review after a failure training the
+    // rejected turns as good. Kimi, 2026-10-10: review 5769a6c3 failed her card 63855189
+    // for unjustified production unwrap_or, she fixed it, and review 7845d153 passed it.
+    // Without verdict order the pass settled every staged row, the turns that wrote the
+    // mistake included, as passing work. A live failure marks the rows staged so far, so
+    // the pass admits only the correction; a failure her core never saw admits nothing;
+    // a card never failed admits all, as before.
+    #[test]
+    fn a_pass_after_a_failure_trains_the_correction_not_the_rejected_turns() {
+        let row = |at: u64, rejected: Option<u64>| -> StagedCredit {
+            let mut r: StagedCredit = serde_json::from_value(json!({
+                "id": Uuid::new_v4(), "cardId": Uuid::from_u128(0x6385), "claimId": null, "owner": null,
+                "role": null, "receipts": [], "served": null, "prompt": "p", "completion": "c", "stagedAtMs": at,
+            }))
+            .expect("a minimal staged row");
+            r.rejected_at_ms = rejected;
+            r
+        };
+        let before = row(10, Some(50));
+        let fix = row(60, None);
+        assert_eq!(pass_admits(&[before.clone(), fix.clone()], false), PassAdmits::AfterFailure);
+        let (rejected, admitted): (Vec<_>, Vec<_>) =
+            [before, fix.clone()].into_iter().partition(|r| r.rejected_at_ms.is_some());
+        assert_eq!((rejected.len(), admitted.len()), (1, 1));
+        assert_eq!(admitted[0].id, fix.id, "only the turn staged after the failure trains");
+        assert_eq!(pass_admits(&[row(10, None), row(60, None)], true), PassAdmits::Unordered, "a failure she never observed: nothing can be placed after it");
+        assert_eq!(pass_admits(&[row(10, None)], false), PassAdmits::All, "never failed: every row is the passing work");
+
+        use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
+        assert!(failed_before_latest([(1, &Failed), (2, &Passed)].into_iter()));
+        assert!(!failed_before_latest([(1, &Passed)].into_iter()));
+        assert!(!failed_before_latest([(2, &Failed), (1, &Passed)].into_iter()), "the latest is the failure itself: no pass to settle");
+        assert!(failed_before_latest([(1, &Failed), (2, &Unknown), (3, &Failed), (4, &Passed)].into_iter()), "a second failure is still a failure before the pass");
+    }
 
     // what this catches (genome lane, 2026-10-05): the room's review on a submission is
     // what settles a card's staged credit, passed or failed, whoever reviewed it; an
@@ -2258,6 +2425,7 @@ pub(crate) mod tests {
                 lived: None,
                 staged_at_ms: 1,
                 coursework_set: None,
+                rejected_at_ms: None,
             }
         }
 
@@ -3263,6 +3431,7 @@ pub(crate) mod tests {
             lived,
             staged_at_ms: at,
             coursework_set: None,
+            rejected_at_ms: None,
         };
         let read = || call(Some(("code/read", json!({"path": "xarray/core/merge.py"}))));
         let edit = || call(Some(("code/edit", json!({"path": "xarray/core/merge.py"}))));
