@@ -6230,9 +6230,14 @@ struct PromptCacheDecision {
 /// astronomical want this law exists to delete (Cormac's condition on #4253).
 /// How long a mind stays "in rotation" after her last turn, for prompt-cache sizing: a
 /// state is worth holding while she may come back for it. A mind silent longer has left
-/// the rotation and re-prefills when she wakes.
-// derived-or-floor: a floor — longer than one turn cycle on the slowest seat measured (the IntelMac: 16-30 min per turn per lane, minds returning within the hour).
-pub const ROTATION_WINDOW_MS: u64 = 60 * 60 * 1000;
+/// the rotation and re-prefills when she wakes. What matters is a cycle through the
+/// whole roster, not one turn: on a slow seat a resident waits behind every other mind
+/// before her next turn. The IntelMac, 2026-10-10 (card 56d3c76f): residents seen
+/// within 1h = 3, 3h = 4, 6h = 7, 12h = 8, so each returns every 4-6 hours. At the
+/// first value here (1h) #4892 counted fewer minds than the warm-slot floor and changed
+/// nothing on the seat it was written for.
+// derived-or-floor: a floor — twice the slowest roster rotation measured (the IntelMac's 4-6 h); dormant seeds (never seen, or seen days ago) stay out, and the bytes stay capped by `affordable_bytes`.
+pub const ROTATION_WINDOW_MS: u64 = 12 * 60 * 60 * 1000;
 
 /// PURE: how many residents took a turn within [`ROTATION_WINDOW_MS`] of `now_ms`, from
 /// each one's last-seen stamp. The prompt cache holds this many states (never fewer than
@@ -7574,6 +7579,11 @@ pub(crate) mod tests {
         let floor = crate::persona::spawner_module::bounded_by_warm_slots(23, Some(2));
         assert_eq!(rotating_minds(&m5, now).max(floor), floor, "the warm-slot floor still holds");
         assert_eq!(rotating_minds(&[now - ROTATION_WINDOW_MS - 1], now), 0, "past the window is out of rotation");
+        // The IntelMac's measured rotation (card 56d3c76f): residents last seen 6, 41, 77,
+        // 225, 246, 250 and 366 minutes ago all come back for their state; at a one-hour
+        // window only two counted and the warm-slot floor (4) won, a no-op.
+        let slow_seat: Vec<u64> = [6u64, 41, 77, 225, 246, 250, 366].iter().map(|m| now - m * minute).collect();
+        assert_eq!(rotating_minds(&slow_seat, now), 7, "a slow seat's whole rotation is in the cache");
     }
 
     // what this catches: c8a8829b / the 4096 MiB incident hid all prior branches
