@@ -113,6 +113,8 @@ function Get-CorePrebuiltRelease {
 
 function Copy-CorePublishedEngine {
     param([string]$RepoRoot, [string]$ArtifactDirectory, [string]$InstallDirectory)
+    # The core's deploy passes the extended \\?\ form, which Join-Path refuses (see New-CoreServiceRelease).
+    $ArtifactDirectory = ConvertTo-CoreImagePath $ArtifactDirectory
     $source = Join-Path $ArtifactDirectory 'engine'
     $receipt = Get-CoreEngineReceipt -Directory $source
     $revision = (& git -C $RepoRoot rev-parse HEAD:core/vendor/llama.cpp | Out-String).Trim()

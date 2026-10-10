@@ -387,6 +387,10 @@ function New-CoreServiceRelease {
         [switch]$ReconcileLegacyMedia
     )
     if (-not $ArtifactDirectory) { $ArtifactDirectory = Join-Path $TargetDirectory 'release' }
+    # The core hands its prebuilt's directory over in the extended form (\\?\C:\...), which
+    # Join-Path refuses ("the value of argument drive is null"): every unattended deploy that
+    # shipped a new engine failed here on the 5090 (2026-10-10). One spelling from here on.
+    $ArtifactDirectory = ConvertTo-CoreImagePath $ArtifactDirectory
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
     $liveProcesses = @(Get-CimInstance Win32_Process -ErrorAction Stop |
         Where-Object { $_.Name -in @('continuum.exe', 'continuum-core-server.exe') })

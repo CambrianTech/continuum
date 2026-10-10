@@ -1491,6 +1491,13 @@ public static class RegisteredGsudoFixture {
     $extended = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     if ($extended.artifact -ne $second.artifact) { throw 'Extended Windows process path was not recognized as a live slot' }
     if ((ConvertTo-CoreImagePath '\\?\UNC\server\share\core.exe') -ne '\\server\share\core.exe') { throw 'Extended UNC image path normalization failed' }
+    # what this catches (the 5090, 2026-10-10): the core's unattended deploy passes its prebuilt's
+    # directory in the extended \\?\ form with no -EnginePath (a release that ships its engine), and
+    # Join-Path threw "the value of argument drive is null" while selecting the engine slot, so every
+    # such deploy failed. The same staging must succeed from the extended spelling.
+    $script:liveProcesses = @()
+    $fromExtended = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -ArtifactDirectory ('\\?\' + (Join-Path $target 'release'))
+    if (-not $fromExtended.artifact -or -not (Test-Path -LiteralPath $fromExtended.artifact)) { throw 'Staging from an extended artifact directory failed' }
     $script:registeredTask = [pscustomobject]@{ Description = ($first | ConvertTo-Json -Compress) }
     $script:liveProcesses = @()
     $stopped = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
