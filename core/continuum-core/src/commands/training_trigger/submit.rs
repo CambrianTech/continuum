@@ -859,13 +859,13 @@ mod tests {
         crate::persona::perception_feed::unregister(persona);
     }
 
-    // what this catches (card 17dc0a7b): a gene of hers ON TRIAL for this bucket's
-    // competence holds the bucket exactly as a job in flight does. Without it, the fill
-    // after a reuse (or after a trained gene opened its trial) reads the gene as resident
-    // and forks it while her cards are still judging it: a fork storm in place of the
-    // mint storm Join closed.
+    // what this catches (card 17dc0a7b, then 70a35a29): a gene of hers that JUST LANDED
+    // for this bucket's competence holds the bucket while it settles, exactly as a job in
+    // flight does. Without it, the next fill reads the gene as resident and forks it before
+    // her turns have told what it does: a fork storm in place of the mint storm Join closed.
+    // Past the settling window the fill decides on its own; the gene stays in her head.
     #[tokio::test]
-    async fn a_fill_while_a_gene_is_on_trial_for_the_competence_is_held_not_forked() {
+    async fn a_fill_while_a_landed_gene_is_settling_is_held_not_forked() {
         let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
         let gene = std::env::temp_dir().join(format!("on-trial-{persona}.gguf"));
@@ -889,11 +889,12 @@ mod tests {
         assert!(trigger.state.test_job_board.snapshot().is_empty(), "no job while the trial is open");
         assert_eq!(fill["heldBy"]["trial"], trial.id.to_string(), "the outcome names the trial the examples wait for: {fill}");
 
-        // Her work decides the trial: the file no longer holds the bucket. (The decided
-        // row is written by the gate; here it is retired by hand, which is the same row.)
+        // The gene has settled (its window passed; moved by hand on the same row the
+        // clock would read): the file no longer holds the bucket, and the gene is still hers.
         let mut all = trigger.state.test_trials.load().unwrap();
-        all[0].state = crate::genome::gene_trial::TrialState::Retired;
+        all[0].opened_at_ms = all[0].opened_at_ms.saturating_sub(crate::genome::gene_trial::SETTLE_WINDOW_MS + 1);
         trigger.state.test_trials.save_for_test(&all).unwrap();
+        assert_eq!(all[0].state, crate::genome::gene_trial::TrialState::Trial, "settling is not a verdict");
         let next = executor
             .execute_json(
                 "genome/training-trigger/submit",
@@ -901,7 +902,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(next["outcome"], "JobDispatched", "a decided trial releases the bucket: {next}");
+        assert_eq!(next["outcome"], "JobDispatched", "a settled gene releases the bucket: {next}");
     }
 
     #[tokio::test]
