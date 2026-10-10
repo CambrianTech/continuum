@@ -1564,25 +1564,18 @@ impl TrainingTriggerState {
                 ),
             ));
         }
-        // The ledger is read whole before any evidence is believed: a registration under
+        // The ledger is read to its end before any evidence is believed: a registration under
         // this dispatch contradicts `NotDispatched`, and names the job `Dispatched` must match.
+        // From the intent's own recovery cursor: the prefix behind it was already scanned for
+        // THIS intent by recovery, which recorded any malformed rows there once and moved on.
+        let from = active.journal_cursor;
         let registered = tokio::task::spawn_blocking({
             #[cfg(test)]
             let board = self.test_job_board.clone();
             move || -> Result<Option<JobHandle>, String> {
                 #[cfg(not(test))]
                 let board = TrainingJobBoard::global();
-                let mut cursor = 0u64;
-                loop {
-                    match board.lookup_trigger_dispatch(dispatch, cursor)? {
-                        DispatchLookup::Observed(handle) => return Ok(Some(handle)),
-                        DispatchLookup::Incomplete { next_offset } => cursor = next_offset,
-                        DispatchLookup::NotObserved => return Ok(None),
-                        DispatchLookup::Corrupt { malformed, .. } => {
-                            return Err(format!("{malformed} unreadable journal rows: the ledger cannot be trusted whole; repair it before settling by hand"))
-                        }
-                    }
-                }
+                registration_from(&board, dispatch, from)
             }
         })
         .await
@@ -1884,6 +1877,30 @@ impl TrainingTriggerState {
             "pending submissions withdrawn before training; the next job will not see them"
         );
         Ok(report)
+    }
+}
+
+/// The job registered under `dispatch`, read from `from` to the ledger's end (the whole
+/// remainder, not one recovery page). A registration anywhere in it wins, even on a page
+/// with malformed rows; a malformed row with no registration refuses, because that row
+/// could have been it. Rows before `from` are the prefix recovery already scanned for this
+/// intent (it records malformed rows once and advances the intent's cursor past them):
+/// on the 5090, 2026-10-10, thirteen cargo-test fixture rows from September sat there and
+/// refused every resolve that rescanned from 0.
+fn registration_from(board: &crate::genome::fine_tuning::TrainingJobBoard, dispatch: Uuid, from: u64) -> Result<Option<JobHandle>, String> {
+    let mut cursor = from;
+    loop {
+        match board.lookup_trigger_dispatch(dispatch, cursor)? {
+            DispatchLookup::Observed(handle) => return Ok(Some(handle)),
+            DispatchLookup::Incomplete { next_offset } => cursor = next_offset,
+            DispatchLookup::NotObserved => return Ok(None),
+            DispatchLookup::Corrupt { observed: Some(handle), .. } => return Ok(Some(handle)),
+            DispatchLookup::Corrupt { observed: None, malformed, .. } => {
+                return Err(format!(
+                    "{malformed} unreadable journal rows after this intent's recovery cursor ({cursor}): one of them could be its registration; repair the ledger before settling by hand"
+                ))
+            }
+        }
     }
 }
 
@@ -2647,6 +2664,36 @@ mod tests {
             DispatchPhase::RecoveryRequired { .. }
         ));
         assert_eq!(active.batch.examples.len(), 1);
+    }
+
+    // what this catches (the 5090, 2026-10-10: thirteen cargo-test fixture rows from
+    // September in the production jobs ledger refused every resolve): a malformed row BEHIND
+    // the intent's recovery cursor is the prefix recovery already scanned and no longer refuses;
+    // the same row read from 0, or one AFTER the cursor, still refuses; a registration after it
+    // is still found.
+    #[test]
+    fn resolve_reads_the_ledger_from_the_intents_recovery_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("jobs-ledger.jsonl");
+        let junk = "{this is not a ledger row\n";
+        std::fs::write(&path, junk).unwrap();
+        let board = crate::genome::fine_tuning::TrainingJobBoard::with_ledger(Some(path.clone()));
+        let dispatch = Uuid::new_v4();
+        let past = junk.len() as u64;
+        assert!(registration_from(&board, dispatch, 0).is_err(), "from 0 the fixture row could be anything");
+        assert!(registration_from(&board, dispatch, past).unwrap().is_none(), "behind the cursor: already judged");
+        let job = Uuid::new_v4();
+        let row = serde_json::json!({
+            "event": "registered", "local_id": job.to_string(), "trigger_dispatch_id": dispatch.to_string(),
+            "provider_id": "engine-local", "provider_job_id": job.to_string(),
+            "persona_id": Uuid::new_v4().to_string(), "persona_name": "p", "base_model": "m", "trait_kind": "code",
+        });
+        let mut text = std::fs::read_to_string(&path).unwrap();
+        text.push_str(&format!("{row}\n{junk}"));
+        std::fs::write(&path, text).unwrap();
+        let found = registration_from(&board, dispatch, past).unwrap().expect("the registration after the cursor is found");
+        assert_eq!(found.local_id, job);
+        assert!(registration_from(&board, Uuid::new_v4(), past).is_err(), "a malformed row after the cursor still refuses");
     }
 
     /// The fixture every resolve test starts from: an intent persisted mid-dispatch by one
