@@ -692,6 +692,7 @@ impl EngineLoraFineTuner {
         }
     }
 
+    #[cfg(test)]
     fn for_test(lane_url: String, train_dir: PathBuf, footprints: PathBuf) -> Self {
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
