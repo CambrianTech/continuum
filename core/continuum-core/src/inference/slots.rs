@@ -1545,8 +1545,22 @@ pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path,
     if started_s == 0 {
         return Err(AdoptRefusal::NoStartTime);
     }
-    let ledger = SavedLedger::of_running_engine(page_dir, (pid, started_s))?;
-    Ok(pool.attach_ledger(ledger, true))
+    match SavedLedger::of_running_engine(page_dir, (pid, started_s)) {
+        Ok(ledger) => Ok(pool.attach_ledger(ledger, true)),
+        Err(refusal) => {
+            // Nothing of this process's to restore, but it IS this process (the caller verified
+            // the live lane): start its ledger now, empty, so what it saves from here on is
+            // restorable by the next core that adopts it. Without this, a refused adoption left
+            // the pool with no ledger and the chain never began (IntelMac 2026-10-10 22:35Z:
+            // why=no_ledger on an engine older than the ledger, kept by every deploy since).
+            // Its fingerprint is the incarnation: only an adopter of this same process ever
+            // loads it, and a spawned engine's contract fingerprint never equals it.
+            let ledger = SavedLedger::in_dir(page_dir, format!("incarnation:{pid}:{started_s}"));
+            let _ = ledger.incarnation.set((pid, started_s));
+            pool.attach_ledger(ledger, false);
+            Err(refusal)
+        }
+    }
 }
 
 /// Why an adopted engine's saved pages stay unrestorable: each is a different thing to fix
@@ -1966,7 +1980,16 @@ mod tests {
         std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
 
         let empty = tempfile::tempdir().expect("test: empty dir");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::NoLedger));
+        let first_core = KvSlotPool::new("test://adopt", 2);
+        assert_eq!(adopt_engine_ledger(&first_core, empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::NoLedger));
+        // ...but the adopting core starts this process's ledger, so its saves survive the next deploy
+        let saved_after = key(9, 10);
+        first_core.note_saved(saved_after);
+        std::fs::write(empty.path().join(page_filename(&saved_after)), b"kv").expect("test: page");
+        let next_core = KvSlotPool::new("test://adopt", 2);
+        assert_eq!(adopt_engine_ledger(&next_core, empty.path(), 4242, 1_700_000_000), Ok(1), "the next deploy restores what the adopter saved");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4243, 1_700_000_000), Err(AdoptRefusal::AnotherProcess), "never another process");
+        std::fs::remove_file(empty.path().join(SAVED_LEDGER_FILE)).expect("test: reset for the cases below");
         assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_000), Err(AdoptRefusal::Unstamped), "an unstamped ledger proves no process");
         spawned.stamp_incarnation((4242, 1_700_000_000));
 
