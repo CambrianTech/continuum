@@ -1614,6 +1614,14 @@ pub fn acted_chain(turn_acts: &[(String, Vec<crate::ai::types::ToolCall>)]) -> S
         .join("")
 }
 
+/// The substrate's own connection to this core: no caller identity, so the gate resolves
+/// it to Owner. For the producer's BOOKKEEPING on a resident's store only (the rejected
+/// mark, shedding a transferred row's lived copy); never for her acts, which carry her
+/// identity so provenance stays hers.
+fn substrate_connection(executor: &Arc<CommandExecutor>) -> Connection<InProcessTransport> {
+    Connection::new(InProcessTransport::new(executor.clone(), None))
+}
+
 /// Settle a card's staged credit: eligible claimed turns on `card_id` may transfer
 /// after a passing verdict, through the same quality gate as live turns. Failed,
 /// unknown and incompatible evidence remains staged. Reads each
@@ -1643,6 +1651,11 @@ async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_ear
                 crate::identity::PeerId::from_uuid(persona_id),
             )),
         ));
+        // The SUBSTRATE does the bookkeeping on her store (the rejected mark, shedding a
+        // transferred row's lived copy); her own identity resolves to Trusted, where
+        // data/update is refused (modules/grid/acl.rs; cards fd47a804, 44aee459). Her acts
+        // (staging, decisions, submits) stay under her identity above.
+        let substrate = substrate_connection(&executor);
         let listed = match conn
             .commands()
             .execute_value(
@@ -1731,7 +1744,6 @@ async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_ear
             // store, and her own connection resolves to Trusted, where data/update is refused
             // (modules/grid/acl.rs; card fd47a804). Through her identity every mark failed and a
             // later pass trained the rejected rows anyway.
-            let substrate = Connection::new(InProcessTransport::new(executor.clone(), None));
             mark_rejected(&substrate, &persona_name, card_id, &rows).await;
             rows
         };
@@ -1750,7 +1762,7 @@ async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_ear
                 );
                 continue;
             }
-            match settle_staged_row(&conn, persona_id, &persona_name, row, passed).await {
+            match settle_staged_row(&conn, &substrate, persona_id, &persona_name, row, passed).await {
                 Ok(true) => submitted += 1,
                 Ok(false) => {}
                 Err(error) => crate::probe!(
@@ -1958,8 +1970,9 @@ fn across_turns(rows: &[StagedCredit]) -> Vec<(&StagedCredit, Option<&'static st
         .collect()
 }
 
-async fn settle_staged_row<T: Transport>(
+async fn settle_staged_row<T: Transport, S: Transport>(
     conn: &Connection<T>,
+    substrate: &Connection<S>,
     persona_id: Uuid,
     persona_name: &str,
     row: &StagedCredit,
@@ -1998,7 +2011,7 @@ async fn settle_staged_row<T: Transport>(
         }
     }
     if reviewed::transfer_accepted(conn, persona_name, row.id).await? {
-        clear_lived(conn, persona_name, row).await;
+        clear_lived(substrate, persona_name, row).await;
         return Ok(false);
     }
     let receipt = submit_training(conn, params).await?;
@@ -2023,7 +2036,7 @@ async fn settle_staged_row<T: Transport>(
         .is_some_and(|accepted| accepted.replayed);
     let dispatch_success = receipt.success;
     reviewed::accept_transfer(conn, persona_name, row.id, receipt).await?;
-    clear_lived(conn, persona_name, row).await;
+    clear_lived(substrate, persona_name, row).await;
     crate::probe!(
         class = "training.credit.transferred",
         persona = %persona_name,
@@ -2115,11 +2128,16 @@ pub(crate) fn failed_before_latest<'a>(
 /// receipts (the provenance) and drops the second copy, so settled rows stay small.
 /// A failed clear is named; the next settle pass meets the accepted transfer and
 /// clears again.
-async fn clear_lived<T: Transport>(conn: &Connection<T>, persona_name: &str, row: &StagedCredit) {
+/// `substrate` must be the SUBSTRATE's connection (no caller identity): this write
+/// is bookkeeping on her store, and her own identity resolves to Trusted, where
+/// data/update is refused. Measured on the 5090 (2026-10-10, 26 refusals in one pass):
+/// through her identity no transferred row ever shed its lived copy, so her staged
+/// store grew by a second copy of every call she had already handed to training.
+async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: &str, row: &StagedCredit) {
     if row.lived.is_none() {
         return;
     }
-    let cleared = conn
+    let cleared = substrate
         .commands()
         .execute_value(
             "data/update",
@@ -3136,6 +3154,10 @@ pub(crate) mod tests {
         credit: CapturedCredit,
     ) -> TurnCreditCapture {
         TurnCreditCapture::with_executor(data_runtime(), persona_id, persona_name, prompt, credit)
+    }
+
+    fn substrate_conn(executor: &Arc<CommandExecutor>) -> Connection<InProcessTransport> {
+        substrate_connection(executor)
     }
 
     fn conn_as(executor: Arc<CommandExecutor>, persona: Uuid) -> Connection<InProcessTransport> {
@@ -4245,7 +4267,7 @@ pub(crate) mod tests {
             );
             Err(ClientError::Transport("destination ACK lost".into()))
         });
-        let conn = settlement_connection(executor, persona, submit, None);
+        let conn = settlement_connection(executor.clone(), persona, submit, None);
         assert!(reviewed::consume_observed_review_with_boundary(
             &conn,
             name,
@@ -4783,6 +4805,74 @@ pub(crate) mod tests {
         .is_err());
     }
 
+    // what this catches (card 44aee459, the 5090 on 2026-10-10): a transferred row's lived
+    // copy is shed through data/update, which the gate refuses at her identity (Trusted)
+    // and admits for the substrate (Owner). Under the REAL gate: through her connection the
+    // copy stays (26 refusals in one pass on the 5090), through the substrate's it is gone.
+    #[tokio::test]
+    async fn the_lived_copy_is_shed_by_the_substrate_not_by_her_identity() {
+        use crate::ai::types::{TextGenerationRequest, TextGenerationResponse};
+        let executor = data_runtime();
+        let persona = Uuid::new_v4();
+        let name = "kimi";
+        let hers = conn_as(executor.clone(), persona);
+        let lived = crate::genome::fine_tuning::LivedCall {
+            capture: Uuid::new_v4().to_string(),
+            request: TextGenerationRequest::default(),
+            response: TextGenerationResponse {
+                text: "read it before guessing".into(),
+                finish_reason: crate::ai::FinishReason::Stop,
+                model: "m".into(),
+                provider: "p".into(),
+                usage: crate::ai::UsageMetrics::default(),
+                response_time_ms: 0,
+                request_id: "r".into(),
+                content: None,
+                tool_calls: None,
+                reasoning: None,
+                routing: None,
+                error: None,
+                timing: None,
+            },
+        };
+        let credit = CapturedCredit {
+            card_id: Uuid::new_v4(),
+            claim: Some(ClaimReceipt {
+                claim_id: Uuid::new_v4(),
+                owner: airc_core::PeerId::from_uuid(persona),
+                role: CreditRole::Owner,
+            }),
+        };
+        // Her act, under her identity: staging is hers and is admitted.
+        let id = stage_credit(
+            &hers,
+            name,
+            &credit,
+            vec![served_receipt("lived-generation", "actual-model")],
+            "p".into(),
+            "c".into(),
+            Some(vec![lived]),
+            Uuid::new_v4(),
+            &[],
+        )
+        .await
+        .expect("test: her staging is admitted");
+        let row = stored_credit_rows(&hers, name).await.into_iter().find(|r| r.id == id).expect("test: staged");
+        assert!(row.lived.as_deref().is_some_and(|calls| !calls.is_empty()), "staged with its lived copy");
+        clear_lived(&hers, name, &row).await;
+        let still = stored_credit_rows(&hers, name).await;
+        assert!(
+            still.iter().any(|r| r.id == id && r.lived.is_some()),
+            "her own identity cannot shed the copy: data/update is refused at Trusted"
+        );
+        clear_lived(&substrate_conn(&executor), name, &row).await;
+        let shed = stored_credit_rows(&hers, name).await;
+        assert!(
+            shed.iter().any(|r| r.id == id && r.lived.is_none()),
+            "the substrate sheds it"
+        );
+    }
+
     // what this catches: 6c36c24d — legacy refusal/uncertain acknowledgement
     // cannot leave generation reservations whose replaced payload is lost.
     #[tokio::test]
@@ -4815,7 +4905,7 @@ pub(crate) mod tests {
             script_settlement_reply(&submit, &original, refused);
             let conn = settlement_connection(executor.clone(), persona, submit, None);
             assert!(!matches!(
-                settle_staged_row(&conn, persona, name, &original, true).await,
+                settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &original, true).await,
                 Ok(true)
             ));
             let mut later_receipts = receipts;
@@ -4870,13 +4960,13 @@ pub(crate) mod tests {
             submit.respond_to("genome/training-trigger/submit", |_| {
                 panic!("overlap reached destination")
             });
-            let conn = settlement_connection(reopened_executor, persona, submit, None);
+            let conn = settlement_connection(reopened_executor.clone(), persona, submit, None);
             assert!(
-                settle_staged_row(&conn, persona, name, &intent.snapshot, true)
+                settle_staged_row(&conn, &substrate_conn(&reopened_executor), persona, name, &intent.snapshot, true)
                     .await
                     .unwrap()
             );
-            assert!(!settle_staged_row(&conn, persona, name, &newer, true)
+            assert!(!settle_staged_row(&conn, &substrate_conn(&reopened_executor), persona, name, &newer, true)
                 .await
                 .unwrap());
             assert_eq!(stored_credit_rows(&reopened, name).await[0].id, newer.id);
@@ -4928,7 +5018,8 @@ pub(crate) mod tests {
             submit,
             Some((entered.clone(), release.clone())),
         );
-        let mut drain = Box::pin(settle_staged_row(&conn, persona, name, &older, true));
+        let substrate = substrate_conn(&executor);
+        let mut drain = Box::pin(settle_staged_row(&conn, &substrate, persona, name, &older, true));
         tokio::select! {
             _ = entered.notified() => {},
             result = &mut drain => panic!("drain settled before its paused receipt: {result:?}"),
@@ -4978,9 +5069,9 @@ pub(crate) mod tests {
         submit.respond_to("genome/training-trigger/submit", |_| {
             panic!("overlapping cumulative revision reached destination submission")
         });
-        let conn = settlement_connection(executor, persona, submit, None);
+        let conn = settlement_connection(executor.clone(), persona, submit, None);
         assert!(
-            !settle_staged_row(&conn, persona, name, &newer, true)
+            !settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &newer, true)
                 .await
                 .unwrap(),
             "a cumulative successor cannot inherit a verdict and train the same generations again"
@@ -5053,7 +5144,7 @@ pub(crate) mod tests {
         let conn = settlement_connection(executor.clone(), persona, submit.clone(), None);
         for _ in 0..4 {
             assert!(!matches!(
-                settle_staged_row(&conn, persona, name, &a, true).await,
+                settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, true).await,
                 Ok(true)
             ));
             assert_eq!(stored_credit_rows(&data, name).await.len(), 4,
@@ -5069,28 +5160,28 @@ pub(crate) mod tests {
                 "acceptance":{"submissionId":a.id,"replayed":true}
             })),
         );
-        assert!(!settle_staged_row(&conn, persona, name, &mixed, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &mixed, true)
             .await
             .unwrap());
-        assert!(!settle_staged_row(&conn, persona, name, &faulted, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &faulted, true)
             .await
             .unwrap());
-        assert!(!settle_staged_row(&conn, persona, name, &a, false)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, false)
             .await
             .unwrap());
         let mut claimless = a.clone();
         claimless.claim_id = None;
         claimless.owner = None;
-        assert!(!settle_staged_row(&conn, persona, name, &claimless, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &claimless, true)
             .await
             .unwrap());
         let mut foreign = a.clone();
         foreign.owner = Some(Uuid::new_v4());
-        assert!(!settle_staged_row(&conn, persona, name, &foreign, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &foreign, true)
             .await
             .unwrap());
         assert_eq!(stored_credit_rows(&data, name).await.len(), 4);
-        assert!(settle_staged_row(&conn, persona, name, &a, true)
+        assert!(settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, true)
             .await
             .unwrap());
         script_settlement_reply(
@@ -5101,7 +5192,7 @@ pub(crate) mod tests {
                 "acceptance":{"submissionId":b.id,"replayed":false}
             })),
         );
-        assert!(settle_staged_row(&conn, persona, name, &b, true)
+        assert!(settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &b, true)
             .await
             .unwrap());
         let remaining = stored_credit_rows(&data, name).await;
@@ -5119,10 +5210,10 @@ pub(crate) mod tests {
         submit.respond_to("genome/training-trigger/submit", |_| {
             panic!("acknowledged transfer was dispatched again")
         });
-        assert!(!settle_staged_row(&conn, persona, name, &a, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, true)
             .await
             .unwrap());
-        assert!(!settle_staged_row(&conn, persona, name, &b, true)
+        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &b, true)
             .await
             .unwrap());
         assert!(remaining.iter().any(|row| row.id == mixed.id));
