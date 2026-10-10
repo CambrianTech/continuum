@@ -569,6 +569,26 @@ impl TrainingJobBoard {
             .and_then(|row| orphan_of(&id, &row))
     }
 
+    /// The ledger's latest registration of `local_id`, as the handle its adapter owns:
+    /// what an operator-settled dispatch adopts (`genome/training-trigger/resolve`).
+    pub fn registered_handle(&self, local_id: Uuid) -> Option<JobHandle> {
+        if let Some(handle) = self.jobs.iter().find_map(|job| (job.handle.local_id == local_id).then(|| job.handle.clone())) {
+            return Some(handle);
+        }
+        let id = local_id.to_string();
+        let row = self
+            .ledger_rows()
+            .filter(|row| row.get("event").and_then(|e| e.as_str()) == Some("registered"))
+            .filter(|row| row.get("local_id").and_then(|i| i.as_str()) == Some(id.as_str()))
+            .last()?;
+        let field = |name: &str| row.get(name).and_then(|v| v.as_str()).map(str::to_owned);
+        Some(JobHandle {
+            provider_id: field("provider_id")?,
+            provider_job_id: field("provider_job_id")?,
+            local_id,
+        })
+    }
+
     /// Has `local_id` reached a terminal row on the ledger?
     pub fn is_terminal(&self, local_id: Uuid) -> bool {
         let id = local_id.to_string();
