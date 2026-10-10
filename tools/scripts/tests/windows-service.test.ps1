@@ -1593,6 +1593,40 @@ exit 64
     } finally { $script:liveProcesses = @() }
     Write-Output 'PASS: the engine slot is the core answer from its lane records when the CLI knows the verb'
 
+    # what this catches (the 5090, 2026-10-10 02:05Z): an activation that failed after writing
+    # install-active.json but before promoting `current` leaves the core's pointers naming
+    # engine-b while the receipt names engine-c. The core then calls engine-c idle, and the next
+    # install copied the new engine over the payload the active receipt owned, then refused on its
+    # own next step. A slot an active or previous release receipt names is never staged into, on
+    # either path.
+    $activeReceipt = Join-Path $installed 'install-active.json'
+    $previousReceipt = Join-Path $installed 'install-previous.json'
+    $receiptNaming = { param($slot) (@{ schema = 1; release = @{ engine = (Join-Path $installedPayload "bin\$slot\llama-server.exe") }; hashes = @{} } | ConvertTo-Json -Depth 4) }
+    try {
+        Set-Content -LiteralPath $activeReceipt -Value (& $receiptNaming 'engine-c')
+        $env:FAKE_IDLE_SLOT = 'engine-c'; $env:FAKE_IDLE_RC = $null
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'release receipt still names it' }
+        if (-not $refused) { throw 'A slot the active receipt names was staged into' }
+        if ($null -ne (Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli -SkipIfBusy)) { throw 'A deploy staged into a receipted slot instead of skipping' }
+        Remove-Item -LiteralPath $activeReceipt
+        Set-Content -LiteralPath $previousReceipt -Value (& $receiptNaming 'engine-c')
+        $refused = $false
+        try { Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli | Out-Null } catch { $refused = $_ -match 'release receipt still names it' }
+        if (-not $refused) { throw 'The rollback slot the previous receipt names was staged into' }
+        $env:FAKE_IDLE_SLOT = 'engine-b'
+        $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null -Cli $fakeCli
+        if ($picked -ne (ConvertTo-CoreImagePath (Join-Path $installedPayload 'bin\engine-b'))) { throw "An unreceipted idle slot was not used: $picked" }
+        # The pre-verb path skips a receipted slot and takes the next free one.
+        Set-Content -LiteralPath $previousReceipt -Value (& $receiptNaming 'engine-a')
+        $picked = Select-CoreEngineSlot -InstallRoot $installed -Descriptor $null
+        if ($picked -ne (Join-Path (ConvertTo-CoreImagePath (Join-Path $installedPayload 'bin')) 'engine-b')) { throw "The pre-verb path did not skip the receipted slot: $picked" }
+    } finally {
+        $env:FAKE_IDLE_SLOT = $null; $env:FAKE_IDLE_RC = $null
+        foreach ($r in @($activeReceipt, $previousReceipt)) { if (Test-Path -LiteralPath $r) { Remove-Item -LiteralPath $r } }
+    }
+    Write-Output 'PASS: a slot an installer release receipt names is never staged into'
+
     # card d5584dfc: a drift-verified slot is promoted by the core's own verb (current is the one
     # truth), with the stamp the build wrote; a refused promote throws; a CLI without the verb
     # leaves the release registration to bootstrap, and says so.
