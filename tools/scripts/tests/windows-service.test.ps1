@@ -837,19 +837,43 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         $legacyPrevious = [Text.Encoding]::UTF8.GetString($previousBytes) | ConvertFrom-Json
         $legacyPrevious.hashes = [ordered]@{}
         foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) { $legacyPrevious.hashes[$field] = $plan.Previous.Receipt.hashes.$field }
+        # Actual-box follow-up: Previous names the reused service-b as well as
+        # engine-a; artifact, cli and engine changed, launcher did not.
+        $legacyPrevious.release = $second | ConvertTo-Json | ConvertFrom-Json
+        [IO.File]::WriteAllText($second.artifact, 'new published core')
+        [IO.File]::WriteAllText($second.cli, 'new published cli')
+        Save-CorePreparedRelease -Release $second -InstallRoot $resumeRoot
         [IO.File]::WriteAllText($previousPath, ($legacyPrevious | ConvertTo-Json -Depth 5))
         $refused = $false
         try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Previous | Out-Null } catch { $refused = $_ -match 'invalid hash set' }
         if (-not $refused) { throw 'Legacy diagnostic widened ordinary rollback integrity' }
         $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
-        if ($plan.Previous.Changed.Count -ne 1 -or $plan.Previous.Changed[0] -ne 'engine') { throw 'Legacy engine-only Previous was not recognized' }
+        if (($plan.Previous.Changed | Sort-Object) -join ',' -cne 'artifact,cli,engine') { throw 'Legacy same-slot superseded files were not recognized' }
         $legacyBytes = [IO.File]::ReadAllBytes($previousPath)
-        $legacyPrevious.hashes.engine = $plan.Prepared.Receipt.hashes.engine
+        foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) { $legacyPrevious.hashes[$field] = $plan.Prepared.Receipt.hashes.$field }
         [IO.File]::WriteAllText($previousPath, ($legacyPrevious | ConvertTo-Json -Depth 5))
         $refused = $false
-        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'not engine-only damaged' }
+        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'not damaged' }
         if (-not $refused) { throw 'Incomplete legacy Previous was falsely treated as valid rollback' }
         [IO.File]::WriteAllBytes($previousPath, $legacyBytes)
+        foreach ($format in @('legacy', 'modern')) {
+            $superseded = [Text.Encoding]::UTF8.GetString($legacyBytes) | ConvertFrom-Json
+            if ($format -eq 'modern') {
+                foreach ($field in @($plan.Prepared.Actual.Keys | Where-Object { $_ -notin @('artifact', 'cli', 'launcher', 'engine') })) {
+                    $superseded.hashes | Add-Member NoteProperty $field $plan.Prepared.Receipt.hashes.$field
+                }
+            }
+            [IO.File]::WriteAllText($activePath, ($superseded | ConvertTo-Json -Depth 5))
+            $recognized = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+            if (($recognized.Active.Changed | Sort-Object) -join ',' -cne 'artifact,cli,engine') { throw "$format Active did not use the shared supersession predicate" }
+        }
+        [IO.File]::WriteAllBytes($activePath, $activeBytes)
+        $preparedCore = [IO.File]::ReadAllBytes($second.artifact)
+        [IO.File]::WriteAllText($second.artifact, 'bytes no longer match Prepared')
+        $refused = $false
+        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'complete, unchanged prepared' }
+        if (-not $refused) { throw 'Superseded file bytes were accepted without matching Prepared' }
+        [IO.File]::WriteAllBytes($second.artifact, $preparedCore)
         $refused = $false
         try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'Active release engine changed' }
         if (-not $refused) { throw 'Recovery weakened ordinary Active hash validation' }
@@ -899,12 +923,13 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         [IO.File]::WriteAllText($previousPath, ($validPrevious | ConvertTo-Json -Depth 5))
         $validPreviousBytes = [IO.File]::ReadAllBytes($previousPath)
         $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
-        # A changed core is not an engine-reuse recovery, even with valid Prepared.
-        [IO.File]::WriteAllText($release.artifact, 'unrelated corruption')
+        # Equal new bytes at a DIFFERENT path are not proof of supersession.
+        $originalCore = [IO.File]::ReadAllBytes($release.artifact)
+        [IO.File]::WriteAllBytes($release.artifact, $preparedCore)
         $refused = $false
-        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'beyond the prepared engine' }
+        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'not the same verified prepared replacement' }
         if (-not $refused) { throw 'Recovery accepted unrelated payload corruption' }
-        [IO.File]::WriteAllText($release.artifact, ([IO.File]::ReadAllText($second.artifact)))
+        [IO.File]::WriteAllBytes($release.artifact, $originalCore)
         Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot
         if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($previousPath)) -cne [Convert]::ToBase64String($validPreviousBytes)) { throw 'Recovery changed a valid rollback' }
         Write-Output 'PASS: damaged engine selection recovery, archival failure, partial commit retry, running refusal and valid rollback retention'

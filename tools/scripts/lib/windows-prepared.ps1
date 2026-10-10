@@ -70,25 +70,35 @@ function Assert-CorePreparedRelease {
     }
 }
 
-function Get-CoreReleaseHashes {
+function Get-CoreReleaseFiles {
     param($Release)
-    $hashes = @{}
+    $files = @{}
     foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) {
-        $hashes[$field] = (Get-FileHash -LiteralPath $Release.$field -Algorithm SHA256 -ErrorAction Stop).Hash
+        $files[$field] = $Release.$field
     }
     $slot = Split-Path $Release.cli -Parent
     $manifest = Join-Path $slot 'runtime-libs.txt'
     if (Test-Path -LiteralPath $manifest) {
-        $hashes['runtime-manifest'] = (Get-FileHash -LiteralPath $manifest -Algorithm SHA256 -ErrorAction Stop).Hash
+        $files['runtime-manifest'] = $manifest
         foreach ($line in @(Get-Content -LiteralPath $manifest -ErrorAction Stop)) {
             $name = $line.Trim()
             if (-not $name) { continue }
-            if ($name -notmatch '^[A-Za-z0-9_.-]+\.dll$' -or $hashes.ContainsKey("runtime:$name")) {
+            if ($name -notmatch '^[A-Za-z0-9_.-]+\.dll$' -or $files.ContainsKey("runtime:$name")) {
                 throw 'Runtime manifest has an unsafe or duplicate library name.'
             }
             Assert-CorePreparedPath -Path (Join-Path $slot $name) -Expected (Join-Path $slot $name) -File
-            $hashes["runtime:$name"] = (Get-FileHash -LiteralPath (Join-Path $slot $name) -Algorithm SHA256 -ErrorAction Stop).Hash
+            $files["runtime:$name"] = Join-Path $slot $name
         }
+    }
+    return $files
+}
+
+function Get-CoreReleaseHashes {
+    param($Release)
+    $hashes = @{}
+    $files = Get-CoreReleaseFiles -Release $Release
+    foreach ($field in $files.Keys) {
+        $hashes[$field] = (Get-FileHash -LiteralPath $files[$field] -Algorithm SHA256 -ErrorAction Stop).Hash
     }
     return $hashes
 }
@@ -138,7 +148,7 @@ function Save-CorePreparedRelease {
 
 function Read-CoreReleaseReceipt {
     param([string]$InstallRoot, [ValidateSet('Prepared', 'Active', 'Previous')][string]$Selection,
-        [switch]$RecognizeDamagedLegacyPrevious)
+        [switch]$RecognizeDamagedLegacySelection)
     $path = Join-Path $InstallRoot ("install-{0}.json" -f $Selection.ToLowerInvariant())
     Assert-CorePreparedPath -Path $path -Expected $path -File
     if ((Get-Item -LiteralPath $path).Length -gt 65536) { throw 'Prepared release receipt is oversized.' }
@@ -152,11 +162,11 @@ function Read-CoreReleaseReceipt {
     Assert-CorePreparedRelease -Release $receipt.release -InstallRoot $InstallRoot
     $actual = Get-CoreReleaseHashes -Release $receipt.release
     $legacyPending = $Selection -eq 'Prepared' -and @($receipt.hashes.PSObject.Properties).Count -eq 4
-    # Historical Previous may predate DLL sealing. This is diagnostic recovery
-    # only: it cannot become a valid rollback, and must prove engine-only damage.
-    $legacyPrevious = $RecognizeDamagedLegacyPrevious -and $Selection -eq 'Previous' -and
+    # Historical selections may predate DLL sealing. Diagnostic recovery only:
+    # all changed sealed files must subsequently match the verified preparation.
+    $legacySelection = $RecognizeDamagedLegacySelection -and $Selection -in @('Active', 'Previous') -and
         @($receipt.hashes.PSObject.Properties).Count -eq 4 -and $actual.Count -gt 4
-    $fields = if ($legacyPending -or $legacyPrevious) { @('artifact', 'cli', 'launcher', 'engine') } else { @($actual.Keys) }
+    $fields = if ($legacyPending -or $legacySelection) { @('artifact', 'cli', 'launcher', 'engine') } else { @($actual.Keys) }
     if (@($receipt.hashes.PSObject.Properties).Count -ne $fields.Count) { throw 'Prepared release receipt has an invalid hash set.' }
     $changed = @()
     foreach ($field in $fields) {
@@ -165,8 +175,8 @@ function Read-CoreReleaseReceipt {
         }
         if ($actual[$field] -ne $receipt.hashes.$field) { $changed += $field }
     }
-    if ($legacyPrevious -and ($changed.Count -ne 1 -or $changed[0] -ne 'engine')) {
-        throw 'Legacy Previous lacks complete sealing and is not engine-only damaged; refusing recovery.'
+    if ($legacySelection -and -not $changed.Count) {
+        throw 'Legacy selection lacks complete sealing and is not damaged; refusing recovery.'
     }
     return [pscustomobject]@{ Path = $path; Bytes = $bytes; Receipt = $receipt; Actual = $actual; Changed = $changed }
 }
@@ -194,13 +204,13 @@ function Get-CorePreparedRelease {
     return $release
 }
 
-# A failed old installer could reuse an engine still sealed by Active/Previous.
-# Diagnose that one shape; malformed receipts and all other corruption still fail.
+# A failed old installer could reuse files still sealed by Active/Previous.
+# Every changed sealed file must be superseded by the verified preparation.
 # This is not a claim that a release never served, or permission to reseal it.
 function Get-CoreDamagedSelectionRecovery {
     param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'))
     if (-not (Test-Path -LiteralPath (Join-Path $InstallRoot 'install-active.json'))) { return $null }
-    $active = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Active
+    $active = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Active -RecognizeDamagedLegacySelection
     if (-not $active.Changed.Count) { return $null }
     $prepared = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Prepared
     if ($prepared.Changed.Count -or @($prepared.Receipt.hashes.PSObject.Properties).Count -ne $prepared.Actual.Count) {
@@ -208,14 +218,18 @@ function Get-CoreDamagedSelectionRecovery {
     }
     $previous = $null
     if (Test-Path -LiteralPath (Join-Path $InstallRoot 'install-previous.json')) {
-        $previous = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Previous -RecognizeDamagedLegacyPrevious
+        $previous = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Previous -RecognizeDamagedLegacySelection
     }
     foreach ($snapshot in @($active, $previous)) {
         if ($null -eq $snapshot -or -not $snapshot.Changed.Count) { continue }
-        if ($snapshot.Changed.Count -ne 1 -or $snapshot.Changed[0] -ne 'engine' -or
-            (ConvertTo-CoreImagePath $snapshot.Receipt.release.engine) -ne (ConvertTo-CoreImagePath $prepared.Receipt.release.engine) -or
-            $snapshot.Actual.engine -ne $prepared.Receipt.hashes.engine) {
-            throw 'Damaged selection differs beyond the prepared engine replacement; refusing recovery.'
+        $oldFiles = Get-CoreReleaseFiles -Release $snapshot.Receipt.release
+        $preparedFiles = Get-CoreReleaseFiles -Release $prepared.Receipt.release
+        foreach ($field in $snapshot.Changed) {
+            if (-not $preparedFiles.ContainsKey($field) -or
+                (ConvertTo-CoreImagePath $oldFiles[$field]) -ne (ConvertTo-CoreImagePath $preparedFiles[$field]) -or
+                $snapshot.Actual[$field] -ne $prepared.Receipt.hashes.$field) {
+                throw "Damaged selection $field is not the same verified prepared replacement; refusing recovery."
+            }
         }
     }
     return [pscustomobject]@{ Active = $active; Previous = $previous; Prepared = $prepared }
@@ -288,10 +302,7 @@ function Complete-CoreDamagedSelectionRecovery {
     $temporary = $current.Active.Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
     $pins = [Collections.Generic.List[IDisposable]]::new()
     try {
-        foreach ($field in $current.Prepared.Actual.Keys) {
-            $file = if ($field -eq 'runtime-manifest') { Join-Path (Split-Path $Release.cli -Parent) 'runtime-libs.txt' }
-                elseif ($field.StartsWith('runtime:')) { Join-Path (Split-Path $Release.cli -Parent) $field.Substring(8) }
-                else { $Release.$field }
+        foreach ($file in (Get-CoreReleaseFiles -Release $Release).Values) {
             $pins.Add([IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
         }
         $last = Get-CoreDamagedSelectionRecovery -InstallRoot $InstallRoot
