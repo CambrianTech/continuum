@@ -315,10 +315,11 @@ fn choose_chunk(window: u32, available: u64, measured_at: impl Fn(u32) -> Option
     }
 }
 
-/// The smallest training window the calculation offers: under it a lived example has no room
-/// for her system and tool head and her reply, so the run would only skip examples.
-/// derived-or-floor: a floor, 8x the engine's 256-token granularity.
-const TRAINING_WINDOW_MIN: u32 = 2048;
+/// The smallest training window the calculation offers: the smallest window any lane is ever
+/// served at ([`crate::cognition::serving_plan::MIN_SERVE_CTX`]). A gene never trains on less
+/// context than she could be served in, and under it a lived example has no room for her system
+/// and tool head and her reply, so the run would only skip examples.
+const TRAINING_WINDOW_MIN: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX;
 
 /// A per-chunk training graph as a function of the window, fitted to measured footprints of ONE
 /// shape (model, rank, targets, depth, walk, recompute): bytes ~ chunk x (per_token + per_token_per_pos x window).
