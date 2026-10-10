@@ -292,7 +292,7 @@ Initialize-InstallEnvironment
 if (-not $PrepareOnly) { Initialize-ElevationSession }
 . (Join-Path $LibDir 'windows-service.ps1')
 . (Join-Path $LibDir 'windows-prepared.ps1')
-# A prior failed installer may have replaced an engine sealed by Active. Resume
+# A prior failed installer may have replaced files sealed by Active. Resume
 # its fully verified Prepared candidate before any restaging can overwrite it.
 # PrepareOnly remains non-activating; unrelated receipt damage still fails closed.
 $recoverPrepared = $false
