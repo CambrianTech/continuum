@@ -51,6 +51,11 @@ pub enum TrialState {
 /// NEVER leaves her head by silence; only a retirement takes it out (Cormac on #4916:
 /// with the card arm no longer judging, the old seven-day "no verdict" expiry would have
 /// removed every gene a week after it loaded).
+///
+/// INTERIM (Cormac on #4917): the real condition is "this gene has a fitness reading"
+/// (§3d: the world's surprise on the turns it ran, an offline gene-off replay). Until
+/// that number exists this clock stands in for it; it is not a tuned constant and must
+/// not be tuned. When the reading exists, the hold ends on the reading, not on time.
 pub const SETTLE_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
 
 impl GeneTrial {
