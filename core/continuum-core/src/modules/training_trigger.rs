@@ -364,7 +364,7 @@ impl TrainingTriggerState {
     /// with a smaller chunk left to try, goes back. Through `return_job`, the one return: it
     /// refuses an open or trained job and a replay is recognised, never copied.
     pub(crate) async fn return_refused_jobs(self: &Arc<Self>) {
-        use crate::genome::fine_tuning::engine_lora_adapter::{read_refusal, refusal_has_smaller_rung};
+        use crate::genome::fine_tuning::engine_lora_adapter::{read_returnable, refusal_has_smaller_rung, Returnable};
         let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
         let failed = board.take_failed();
         if failed.is_empty() {
@@ -378,30 +378,31 @@ impl TrainingTriggerState {
             let id = job.handle.local_id;
             let dir = job_dir_under(&root, &job.persona_name, &job.trait_kind, id);
             // the request may have put the job under its own artifact dir (as `return_job` reads it)
-            let refusal = read_refusal(&dir).or_else(|| {
-                read_job_request(&dir).ok()?.local_artifact_dir.and_then(|r| read_refusal(&r.join(id.to_string())))
+            let returnable = read_returnable(&dir).or_else(|| {
+                read_job_request(&dir).ok()?.local_artifact_dir.and_then(|r| read_returnable(&r.join(id.to_string())))
             });
-            let Some(refusal) = refusal else {
-                continue; // failed some other way: not the engine refusing its shape, not returned
+            let Some(returnable) = returnable else {
+                continue; // failed some other way: nothing recorded a return, so none is made
             };
-            if !refusal_has_smaller_rung(&refusal) {
-                crate::probe!(
-                    class = "training.job.refusal_at_floor",
-                    job = %id,
-                    chunk = refusal.chunk as u64,
-                    graph_bytes = refusal.graph_bytes,
-                    "the engine refused even the smallest chunk: returning would be refused again, so the examples stay for a human"
-                );
-                continue;
+            if let Returnable::EngineRefused(refusal) = &returnable {
+                if !refusal_has_smaller_rung(refusal) {
+                    crate::probe!(
+                        class = "training.job.refusal_at_floor",
+                        job = %id,
+                        chunk = refusal.chunk as u64,
+                        graph_bytes = refusal.graph_bytes,
+                        "the engine refused even the smallest chunk: returning would be refused again, so the examples stay for a human"
+                    );
+                    continue;
+                }
             }
             match crate::commands::training_trigger::return_::return_job(self, board, &root, id).await {
                 Ok(outcome) if outcome.success => crate::probe!(
                     class = "training.job.refusal_returned",
                     job = %id,
                     persona = %job.persona_name,
-                    refused_chunk = refusal.chunk as u64,
-                    graph_bytes = refusal.graph_bytes,
-                    "a refused job's examples went back to her bucket; the next dispatch chooses a smaller chunk from the filed footprint"
+                    why = ?returnable,
+                    "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the next dispatch re-plans"
                 ),
                 Ok(outcome) => crate::probe!(
                     class = "training.job.refusal_return_refused",
