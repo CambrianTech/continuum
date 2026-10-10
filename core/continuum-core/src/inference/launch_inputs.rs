@@ -158,6 +158,23 @@ fn charge_tensor_name(name: &str, remaining: &mut usize) -> Result<(), String> {
     Ok(())
 }
 
+/// The share mode a launch input's pin holds at `depth` along its path (0 = the input itself,
+/// then each ancestor directory). Every pin omits FILE_SHARE_DELETE, so neither the input nor
+/// any directory on its path can be renamed, deleted or replaced while the engine runs: the
+/// path stays the path that was verified. The input itself shares READ only (its bytes cannot
+/// be rewritten). A DIRECTORY also shares WRITE: a rename, create or delete of a file INSIDE a
+/// directory opens that directory for write, so a read-only share on an ancestor froze every
+/// rename beneath it. Measured on the 5090 2026-10-10: once gene 1 (~/.continuum/genome/...)
+/// became a launch input, renames in ~/.continuum, genome, Kimi and code all failed with os
+/// error 32 for the lane's lifetime, so training footprints, gene moves and install receipts
+/// could not be written.
+#[cfg(windows)]
+fn pin_share_mode(depth: usize) -> u32 {
+    const FILE_SHARE_READ: u32 = 0x1;
+    const FILE_SHARE_WRITE: u32 = 0x2;
+    if depth == 0 { FILE_SHARE_READ } else { FILE_SHARE_READ | FILE_SHARE_WRITE }
+}
+
 fn pin_mapping(
     path: &Path,
     cancelled: &dyn Fn() -> bool,
@@ -166,13 +183,13 @@ fn pin_mapping(
     {
         use std::os::windows::fs::OpenOptionsExt;
         let mut guards = Vec::new();
-        for ancestor in path.ancestors() {
+        for (depth, ancestor) in path.ancestors().enumerate() {
             if cancelled() {
                 return Err("local input capture cancelled".into());
             }
             let guard = std::fs::OpenOptions::new()
                 .read(true)
-                .share_mode(1)
+                .share_mode(pin_share_mode(depth))
                 .custom_flags(0x02200000) // OPEN_REPARSE_POINT | BACKUP_SEMANTICS: pin links/directories themselves.
                 .open(ancestor)
                 .map_err(|e| format!("local input mapping pin: {e}"))?;
@@ -263,6 +280,25 @@ impl InputFile {
 
 #[cfg(test)]
 mod tests {
+    // what this catches (the 5090, 2026-10-10): pinning a launch input froze every rename in
+    // every directory on its path. With the pins held, a file beside the input can be renamed,
+    // while the input itself and the directory holding it still cannot be (the path stays fixed).
+    #[cfg(windows)]
+    #[test]
+    fn a_pinned_inputs_directories_still_allow_renames_inside_them_but_not_of_themselves() {
+        let root = tempfile::tempdir().expect("test: root");
+        let dir = root.path().join("genome");
+        std::fs::create_dir(&dir).expect("test: dir");
+        let input = dir.join("adapter.gguf");
+        std::fs::write(&input, b"gene").expect("test: input");
+        let _pins = super::pin_mapping(&input, &|| false).expect("test: pinned");
+        let tmp = dir.join("footprints.json.tmp");
+        std::fs::write(&tmp, b"{}").expect("test: tmp");
+        std::fs::rename(&tmp, dir.join("footprints.json")).expect("a rename beside the pinned input succeeds");
+        assert!(std::fs::rename(&input, dir.join("moved.gguf")).is_err(), "the input itself cannot be renamed");
+        assert!(std::fs::rename(&dir, root.path().join("moved")).is_err(), "nor the directory on its path");
+    }
+
     use super::*;
 
     // what this catches: split filenames/mtime cannot certify missing or replaced
