@@ -818,6 +818,77 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         if (-not $refused) { throw 'Rollback overwrote a different active selection' }
         $restored = Restore-CoreActiveRelease -ExpectedDescription ($second | ConvertTo-Json -Compress) -InstallRoot $resumeRoot
         if ($restored.artifact -ne $release.artifact -or $script:resumeTask.Description -cne $fixedDescription) { throw 'Rollback changed supervisor registration or selected wrong release' }
+        # Regression: old staging reused an engine sealed by Active/Previous,
+        # although the newly Prepared candidate itself still verified. Recover
+        # only that shape; retain evidence and never fabricate an old rollback.
+        $activeBytes = [IO.File]::ReadAllBytes($activePath)
+        $previousPath = Join-Path $resumeRoot 'install-previous.json'
+        $previousBytes = [IO.File]::ReadAllBytes($previousPath)
+        $originalEngine = [IO.File]::ReadAllBytes($release.engine)
+        $script:resumeTask | Add-Member NoteProperty State 'Ready' -Force
+        function Get-CimInstance { @() }
+        [IO.File]::WriteAllText($release.engine, 'new published engine')
+        Save-CorePreparedRelease -Release $second -InstallRoot $resumeRoot
+        $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+        if ($plan.Active.Changed.Count -ne 1 -or $plan.Active.Changed[0] -ne 'engine') { throw 'Engine-only damage was not recognized' }
+        $refused = $false
+        try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'Active release engine changed' }
+        if (-not $refused) { throw 'Recovery weakened ordinary Active hash validation' }
+        $script:resumeTask.State = 'Running'
+        $refused = $false
+        try { Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot } catch { $refused = $_ -match 'running, queued' }
+        if (-not $refused) { throw 'Recovery replaced a running selection' }
+        $script:resumeTask.State = 'Ready'
+        & {
+            function Save-CoreRecoveryEvidence { throw 'fixture archive unavailable' }
+            $refused = $false
+            try { Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot } catch { $refused = $_ -match 'archive unavailable' }
+            if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Archive failure changed rollback eligibility' }
+        }
+        $archiveEvidence = ${function:Save-CoreRecoveryEvidence}
+        & {
+            function Save-CoreRecoveryEvidence {
+                param($Snapshot, $InstallRoot)
+                & $archiveEvidence -Snapshot $Snapshot -InstallRoot $InstallRoot
+                $script:resumeTask.State = 'Running'
+            }
+            $refused = $false
+            try { Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot } catch { $refused = $_ -match 'running, queued' }
+            if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Scheduled-start race changed selection' }
+        }
+        $script:resumeTask.State = 'Ready'
+        # Real filesystem failure after invalid Previous retirement leaves the
+        # old invalid Active plus durable evidence, and a retry can finish.
+        $heldActive = [IO.File]::Open($activePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        try {
+            $refused = $false
+            try { Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot } catch { $refused = $true }
+            if (-not $refused -or (Test-Path -LiteralPath $previousPath)) { throw 'Partial recovery did not retain its fail-closed state' }
+        } finally { $heldActive.Dispose() }
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($activePath)) -cne [Convert]::ToBase64String($activeBytes)) { throw 'Failed switch resealed old Active' }
+        if (@(Get-ChildItem -LiteralPath $resumeRoot -Filter 'install-*.damaged-*.json').Count -ne 2) { throw 'Original damaged receipts were not archived' }
+        $retry = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+        Complete-CoreDamagedSelectionRecovery -Plan $retry -Release $second -InstallRoot $resumeRoot
+        if ((Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active).artifact -ne $second.artifact -or (Test-Path -LiteralPath $previousPath)) { throw 'Recovery invented a rollback or selected wrong candidate' }
+        # Valid independent Previous remains byte-for-byte unchanged.
+        [IO.File]::WriteAllBytes($activePath, $activeBytes)
+        $otherEngine = Join-Path $payload 'bin\engine-b\llama-server.exe'
+        New-Item -ItemType Directory -Force -Path (Split-Path $otherEngine -Parent) | Out-Null
+        [IO.File]::WriteAllBytes($otherEngine, $originalEngine)
+        $validPrevious = [Text.Encoding]::UTF8.GetString($previousBytes) | ConvertFrom-Json
+        $validPrevious.release.engine = $otherEngine
+        [IO.File]::WriteAllText($previousPath, ($validPrevious | ConvertTo-Json -Depth 5))
+        $validPreviousBytes = [IO.File]::ReadAllBytes($previousPath)
+        $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+        # A changed core is not an engine-reuse recovery, even with valid Prepared.
+        [IO.File]::WriteAllText($release.artifact, 'unrelated corruption')
+        $refused = $false
+        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'beyond the prepared engine' }
+        if (-not $refused) { throw 'Recovery accepted unrelated payload corruption' }
+        [IO.File]::WriteAllText($release.artifact, ([IO.File]::ReadAllText($second.artifact)))
+        Complete-CoreDamagedSelectionRecovery -Plan $plan -Release $second -InstallRoot $resumeRoot
+        if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($previousPath)) -cne [Convert]::ToBase64String($validPreviousBytes)) { throw 'Recovery changed a valid rollback' }
+        Write-Output 'PASS: damaged engine selection recovery, archival failure, partial commit retry, running refusal and valid rollback retention'
         Clear-CorePreparedSelectionForSlot -InstallRoot $resumeRoot -Slot $secondSlot
         if (Test-Path -LiteralPath $receiptPath) { throw 'Reused inactive slot retained a stale pending receipt' }
         Remove-Item -LiteralPath $activePath
@@ -881,12 +952,20 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
         $selected = $release | ConvertTo-Json | ConvertFrom-Json
         foreach ($field in @('artifact', 'cli', 'launcher', 'engine', 'logDirectory')) { $selected.$field = $selected.$field.Replace($resumeRoot, $root) }
         Save-CorePreparedRelease -Release $selected -InstallRoot $root
-        foreach ($extra in @('', ' -Update')) {
+        foreach ($mode in @('-ResumePrepared', '-ResumePrepared -Update', '-Grid')) {
+            if ($mode -eq '-Grid') {
+                # Normal install must recognize the saved recovery BEFORE loading
+                # build/provisioning modules; the strict receipt reader is real.
+                Save-CorePreparedRelease -Release $selected -InstallRoot $root -Selection Active
+                Copy-Item -LiteralPath (Join-Path $root 'install-active.json') -Destination (Join-Path $root 'install-previous.json') -Force
+                [IO.File]::WriteAllText($selected.engine, 'public retry engine')
+                Save-CorePreparedRelease -Release $selected -InstallRoot $root
+            }
             $info = [Diagnostics.ProcessStartInfo]::new((Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'))
             # Hidden PS5 ConsoleHost can omit terminating errors from redirected
             # stderr. Capture the exception explicitly without accepting failure.
             $entry = (Join-Path $fakeRepo 'install.ps1').Replace("'", "''")
-            $invoke = "try { & '$entry' -ResumePrepared$extra } catch { Write-Output `$_.Exception.Message; exit 1 }"
+            $invoke = "try { & '$entry' $mode } catch { Write-Output `$_.Exception.Message; exit 1 }"
             $info.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -Command "' + $invoke + '"'
             $info.UseShellExecute = $false
             $info.CreateNoWindow = $true
@@ -902,7 +981,7 @@ function Invoke-CoreServiceRelease { param($Release, $RepoRoot, $WorkingDirector
                 # as a red tip. 120 s is the test's patience; a real hang still fails, named.
                 if (-not $child.WaitForExit(120000)) { $child.Kill(); $child.WaitForExit(); throw 'Isolated resume installer fixture timed out (120 s)' }
                 $output = $stdout.Result + $stderr.Result
-                if (-not $extra) {
+                if ($mode -ne '-ResumePrepared -Update') {
                     if ($child.ExitCode -ne 0 -or $output -notmatch 'fixture register prepared' -or $output -notmatch 'fixture guarded handoff') {
                         throw "Public prepared resume did not reach guarded handoff: $output"
                     }

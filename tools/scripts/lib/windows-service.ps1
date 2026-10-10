@@ -493,7 +493,14 @@ function Register-CoreServiceRelease {
         Invoke-InstallerProcess $Release.cli @('reboot', '--prebuilt', $Release.artifact, '--validate-only')
         if ($LASTEXITCODE -ne 0) { throw 'Candidate validation failed; startup registration and the running core were preserved.' }
     } finally { Pop-Location }
-    if ($PersistPreparedReceipt -or $PrepareOnly) { Save-CorePreparedRelease -Release $Release }
+    $selectionRecovery = Get-CoreDamagedSelectionRecovery
+    if ($selectionRecovery) {
+        if (($Release | ConvertTo-Json -Compress) -cne ($selectionRecovery.Prepared.Receipt.release | ConvertTo-Json -Compress)) {
+            throw 'Damaged selection must resume the existing verified preparation before restaging.'
+        }
+        Assert-CoreRecoveryStopped -InstallRoot (Join-Path $env:USERPROFILE '.continuum')
+    }
+    if (($PersistPreparedReceipt -or $PrepareOnly) -and -not $selectionRecovery) { Save-CorePreparedRelease -Release $Release }
     if ($PrepareOnly) { return }
     $protocol = (Invoke-InstallerProcess $Release.cli @('installed-service', '--protocol') | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Candidate CLI lacks supervisor protocol 3; registration and active release were preserved.' }
@@ -545,7 +552,8 @@ function Register-CoreServiceRelease {
     }
     if ($provisioned) {
         Assert-CoreSupervisorBootstrap -Path $bootstrap -UserSid $userSid
-        Save-CorePreparedRelease -Release $Release -Selection Active
+        if ($selectionRecovery) { Complete-CoreDamagedSelectionRecovery -Plan $selectionRecovery -Release $Release }
+        else { Save-CorePreparedRelease -Release $Release -Selection Active }
         Module-Skip 'service' 'fixed supervisor retained; verified active release committed without elevation'
         return
     }
@@ -553,7 +561,10 @@ function Register-CoreServiceRelease {
     # Publish the SAME legacy selection first; only after both task contracts
     # verify may the candidate replace it. A mid-migration reboot still selects
     # the prior installed release, and the first update has a real rollback.
-    $seededFirstInstall = Initialize-CoreActiveSelection -Task $task -Release $Release
+    # A recognized damaged selection remains launch-invalid throughout bootstrap
+    # migration. Do not reseal it or promise that it is a usable rollback.
+    $seededFirstInstall = $false
+    if (-not $selectionRecovery) { $seededFirstInstall = Initialize-CoreActiveSelection -Task $task -Release $Release }
     New-Item -ItemType Directory -Force -Path $Release.logDirectory | Out-Null
     $planPath = Join-Path ([IO.Path]::GetTempPath()) ('continuum-service-' + [guid]::NewGuid().ToString('N') + '.json')
     try {
@@ -602,7 +613,8 @@ function Register-CoreServiceRelease {
         throw 'Deploy supervisor contract did not verify; active release was preserved.'
     }
     Assert-CoreSupervisorBootstrap -Path $bootstrap -UserSid $userSid
-    Save-CorePreparedRelease -Release $Release -Selection Active
+    if ($selectionRecovery) { Complete-CoreDamagedSelectionRecovery -Plan $selectionRecovery -Release $Release }
+    else { Save-CorePreparedRelease -Release $Release -Selection Active }
     Module-Done 'service'
 }
 
