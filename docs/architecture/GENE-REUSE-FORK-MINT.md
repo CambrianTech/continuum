@@ -147,6 +147,19 @@ Sources 1 to 3 need no new oracle at all; today they are only not collected.
 
 Consent holds both ways. Her mistakes become examples under the same agreement as the rest of her curriculum, and a mentor's demonstration names its author.
 
+## 3d. Which genes are in her head on a turn: what her mind is on, never the work around her
+
+Joel, 2026-10-10, after gene 1 loaded on the 5090 and served zero turns because a trial gene ran only on a CARD that drew a 50/50 arm: *"Must take card to do something sounds like a pipeline"*, and, when the fix keyed the arm by room instead: *"Why would genes not be tied to mind not workload? Take a step back and think hard."* A randomized arm keyed by card, room or anything else is an experiment harness deciding when her own learning is in her head. It is retired. The rule:
+
+- **Selection is by distance, every turn.** The turn's perception (what she is about to think about: the burst, the room's recent lines, her stated focus) is embedded once; each of her genes' signatures is compared to it (`genome::signature`, the same kernel competence clustering and recall use); the nearest genes are paged in, several at once when several are near, the way a mixture of experts routes. No card, room, round or activity decides it. A turn in her mind room selects the same way; the draw is simply not counted (§3a, the privacy sink).
+- **The floor is automatic.** A gene is paged only when the turn is inside its region: the floor is the gene's own spread, the similarity of its training examples to its centroid at a low quantile, filed with the signature at training. Never a hand-tuned constant; a broad gene has a wide region, a narrow one a narrow region (BigMama: without a floor a code gene rides every unrelated turn and retention has nothing to measure). The number of genes paged at once is bounded by the engine's adapter slots, nearest first.
+- **A trained gene is hers at once.** It enters her genome the moment it loads (`serving.genome.adopted_in_place`) and is selected whenever its region is near. There is no admission arm.
+- **Fitness is the world's surprise on the turns it ran, never her own.** A gene trained on her replies lowers the likelihood of her own next replies by construction, so self-surprise would always say keep (BigMama). Scored instead: what came BACK on turns it was paged into (tool results, peer replies, review verdicts, a `dod_shell` grade), the verdict and model surprise of §3 folded per gene.
+- **The comparison is the same turn without the gene, offline.** `persona::recorder` captures each paged turn; `vdd::turn_replay` re-runs a sample of them with the gene un-paged on the same base, tools and context, off her serving path. Same turn, gene on vs gene off: Astra's "same base without the gene" bar, and the retirement evidence, without a live arm ever deciding what she thinks with. A gene whose replayed turns go better without it is retired (rolled back by its signature row); utilization and propagation (§3a) decide the rest.
+- **Every turn says why.** A probe per turn: the genes considered, each similarity, its floor, the genes paged (`persona.genome.selected`). "Why was this gene in her head" is always answerable.
+
+What this replaces: `gene_trial`'s per-card arm draw and its card-settled promotion gate. What it keeps: the trial row as the gene's receipt and rollback handle, `GenerationReceipt::genes` naming what ran, and Reuse / Fork / Mint (§2), which decide what genes EXIST; this section decides which are in her head.
+
 ## 4. What Kimi's §12 pass asks of this
 
 - *"No δ_c in front of me to turn"*: the dial and `S(C)` both render on her strip; she sees the number before any gene lands, so Prediction 2 (surprise falls after a gene) is testable from inside.
@@ -166,7 +179,9 @@ Status: `genome::recall` already walks local-then-grid (`RecallScope::LocalThenG
 |---|---|
 | Signatures by distance, subspaces | exists (`genome::signature`) |
 | Fitness with harm → 0 | exists (`genome::fitness`) |
-| Trials judged on her cards | exists (`genome::gene_trial`) |
+| Trials judged on her cards | exists (`genome::gene_trial`); **retired by §3d**: per-card 50/50 arm and card-settled promotion |
+| **Per-turn selection by signature distance, automatic floor, several at once (§3d)** | new: `genome_paging` is the dormant pager; signatures and their spread exist |
+| **Fitness from the world's surprise + offline gene-off replay (§3d)** | new: `persona::recorder` + `vdd::turn_replay` exist |
 | Settlement by the room's review | #4765 |
 | Recall local → grid | exists (`genome::recall`) |
 | Resolver score | doctrine (`GENOME-REPOSITORY-ON-HF.md` §2b), partly coded |
