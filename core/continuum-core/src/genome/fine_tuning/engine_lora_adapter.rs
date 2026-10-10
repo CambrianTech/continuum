@@ -1583,16 +1583,17 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 let daemon = crate::resources::ResourceDaemon::global()
                     .ok_or_else(|| failure("engine training requires the resource governor"))?;
                 // A measured shape leases its number; an unmeasured one is a calibration run
-                // that leases everything governed and free, so nothing grows into it.
+                // that leases everything governed and free AT ADMISSION, so nothing grows into
+                // it (`TrainingNeed::Calibrate`). `bytes` here is what is free now, for the plan
+                // probe and the wait's report; the lease the engine runs under is what was granted.
+                let need = match measured {
+                    Some(bytes) => crate::forge::training_admission::TrainingNeed::Measured(bytes),
+                    None => crate::forge::training_admission::TrainingNeed::Calibrate,
+                };
                 let bytes = match measured {
                     Some(bytes) => bytes,
                     None => daemon.available_for(&consumer, crate::resources::ResourceKind::Vram),
                 };
-                if bytes == 0 {
-                    return Err(FineTuningError::Transient(
-                        "no governed VRAM is free to calibrate this engine training shape on".into(),
-                    ));
-                }
                 crate::probe!(
                     class = "training.job.planned",
                     job = %id,
@@ -1627,9 +1628,10 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     interrupted: None,
                     job_spec: Some(spec.clone()),
                 };
-                let (bind_store, bind_work) = (store.clone(), bound.clone());
+                let (bind_store, mut bind_work) = (store.clone(), bound.clone());
                 let bind_job_dir = spec.job_dir.clone();
-                let bind = move || -> Result<(), String> {
+                let bind = move |granted: u64| -> Result<(), String> {
+                    bind_work.reserved_bytes = granted;
                     let now = crate::inference::lane_registry::live_lane()
                         .and_then(|rec| incarnation_of(&rec))
                         .ok_or("no live engine at admission: the lane went away while this job waited")?;
@@ -1651,15 +1653,16 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     daemon.clone(),
                     &gate,
                     &consumer,
-                    bytes,
+                    need,
                     |available| progress.waiting_for_capacity(bytes, available),
                     bind,
                 )
                 .await
                 .map_err(FineTuningError::Transient)?;
-                residency = Some((store, bound));
-                // the engine refuses a graph over the lease before allocating it
-                body.memory_budget_mib = Some(bytes / (1024 * 1024));
+                let granted = reservation.bytes();
+                residency = Some((store, crate::inference::engine_residency::ResidentWork { reserved_bytes: granted, ..bound }));
+                // the engine refuses a graph over the lease it was GRANTED, before allocating it
+                body.memory_budget_mib = Some(granted / (1024 * 1024));
                 Some(reservation)
             } else {
                 None
