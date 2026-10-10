@@ -217,6 +217,41 @@ const TRAINING_CHUNK_MIN: u32 = 256;
 /// largest multiple of 256 that divides the window and is at most `asked` — the engine's
 /// `train_chunk_for`, mirrored so the shape the core keys its footprint under is the shape
 /// the engine runs.
+/// A job the engine REFUSED before training: the shape its preflight measured, recorded in the
+/// job's own directory (`refusal.json`). The trigger reads it to hand the job's examples back
+/// to her bucket so the next dispatch chooses a smaller chunk (card 2dfce676). Without it a
+/// refused job's examples sat in its directory until a human returned them, and the chunk
+/// ladder #4894 builds never walked on its own.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Refusal {
+    pub window: u32,
+    pub chunk: u32,
+    pub graph_bytes: u64,
+    pub error: String,
+}
+
+pub(crate) const REFUSAL_FILE: &str = "refusal.json";
+
+fn write_refusal(job_dir: &Path, refusal: &Refusal) -> Result<(), String> {
+    std::fs::create_dir_all(job_dir).map_err(|e| format!("{}: {e}", job_dir.display()))?;
+    let path = job_dir.join(REFUSAL_FILE);
+    let text = serde_json::to_string(refusal).map_err(|e| e.to_string())?; // file on disk: the job dir's refusal.json, read back by the trigger after a restart
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The refusal recorded in `job_dir`, if the engine refused this job. A missing or unreadable
+/// file is no refusal: the job failed some other way and is not returned automatically.
+pub(crate) fn read_refusal(job_dir: &Path) -> Option<Refusal> {
+    serde_json::from_slice(&std::fs::read(job_dir.join(REFUSAL_FILE)).ok()?).ok()
+}
+
+/// PURE: whether a refused job has a smaller rung to step down to. At the smallest chunk a
+/// return would only be refused again, forever, so the ladder ends there (the loop guard
+/// `genome/training-trigger/return`'s own doc warns about).
+pub(crate) fn refusal_has_smaller_rung(refusal: &Refusal) -> bool {
+    train_chunk_for(refusal.window, refusal.chunk / 2) < refusal.chunk && refusal.chunk / 2 >= TRAINING_CHUNK_MIN
+}
+
 fn train_chunk_for(window: u32, asked: u32) -> u32 {
     let blocks = window / 256;
     let mut g = blocks.min((asked / 256).max(1));
@@ -727,6 +762,8 @@ struct EngineRun {
     out: String,
     /// where the engine writes this job's adapter (removed if a cancel races a finish)
     adapter_path: PathBuf,
+    /// This job's own directory, where a refusal is recorded for the trigger (card 2dfce676).
+    job_dir: PathBuf,
     epochs: u32,
     /// The run's last status as the engine reported it (finish reads its losses and footprint).
     last: Arc<Mutex<Option<TrainStatus>>>,
@@ -1085,6 +1122,16 @@ impl EngineRun {
                         let ran_window = s.window.unwrap_or(self.shape.window); // unwrap_or: an engine that reports no window ran the one asked
                         let ran_chunk = s.chunk.unwrap_or_else(|| train_chunk_for(ran_window, self.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
                         let refused = Shape { window: ran_window, chunk: ran_chunk, ..self.shape.clone() };
+                        // The job's examples belong back in her bucket so the next dispatch can
+                        // step down; the trigger reads this to decide (card 2dfce676).
+                        if let Err(e) = write_refusal(&self.job_dir, &Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() }) {
+                            crate::probe!(
+                                class = "training.job.refusal_unrecorded",
+                                job = %self.job,
+                                error = %e,
+                                "the refusal could not be recorded in the job's directory; its examples wait for a manual return"
+                            );
+                        }
                         match (Footprints { path: self.footprints_path.clone() }).record(&refused, grown, self.job) {
                             Ok(()) => crate::probe!(
                                 class = "training.job.footprint_from_refusal",
@@ -1303,6 +1350,7 @@ impl EngineLoraFineTuner {
                     start: None,
                     out: work.out.clone(),
                     adapter_path: spec.adapter_path.clone(),
+                    job_dir: spec.job_dir.clone(),
                     epochs: spec.epochs,
                     last: last.clone(),
                     holds: self.holds.clone(),
@@ -1578,6 +1626,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 start: Some(body),
                 out: out.clone(),
                 adapter_path: spec.adapter_path.clone(),
+                job_dir: spec.job_dir.clone(),
                 epochs,
                 last: last.clone(),
                 holds,
@@ -1766,6 +1815,22 @@ fn engine_example(e: &TrainingExample) -> EngineExample {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_job_records_its_shape_and_the_ladder_ends_at_the_smallest_chunk() {
+        // what this catches (card 2dfce676): the record the trigger returns a refused job by.
+        // It round-trips through the job's directory; a directory without one is no refusal;
+        // and a return happens only while a smaller chunk is left, so a job refused even at
+        // the smallest is never returned into the same refusal forever.
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        assert_eq!(read_refusal(dir.path()), None, "no record, no refusal");
+        let refused = Refusal { window: 1536, chunk: 512, graph_bytes: 12_654 << 20, error: "over budget".into() };
+        write_refusal(dir.path(), &refused).expect("test: write");
+        assert_eq!(read_refusal(dir.path()), Some(refused.clone()));
+        assert!(refusal_has_smaller_rung(&refused), "512 steps down to 256");
+        assert!(!refusal_has_smaller_rung(&Refusal { chunk: 256, ..refused.clone() }), "256 is the floor");
+        assert!(!refusal_has_smaller_rung(&Refusal { window: 1280, chunk: 256, ..refused }), "a 5x256 window's only chunk is 256");
+    }
 
     // what this catches (card d6dae498; the 5090, 2026-10-10 04:34Z): a plain-walk footprint
     // leased for an exact run, or a footprint measured at one chunk leased for another; the

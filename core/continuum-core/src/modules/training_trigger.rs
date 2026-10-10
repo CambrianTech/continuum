@@ -358,6 +358,67 @@ impl TrainingTriggerState {
             .or_else(|| self.active_dispatches.get(key).map(|active| active.batch.policy()))
     }
 
+    /// Hand back the examples of jobs the ENGINE REFUSED, so her bucket re-fires and the next
+    /// dispatch steps the chunk down (card 2dfce676; Fable's 739f1845). The sentinel claims a
+    /// failed job and the board hands it here; only a job whose directory records a refusal,
+    /// with a smaller chunk left to try, goes back. Through `return_job`, the one return: it
+    /// refuses an open or trained job and a replay is recognised, never copied.
+    pub(crate) async fn return_refused_jobs(self: &Arc<Self>) {
+        use crate::genome::fine_tuning::engine_lora_adapter::{read_refusal, refusal_has_smaller_rung};
+        let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
+        let failed = board.take_failed();
+        if failed.is_empty() {
+            return;
+        }
+        let Some(root) = genome_root() else {
+            crate::probe!(class = "training.job.refusal_return_unrooted", jobs = failed.len() as u64, "no home: refused jobs cannot be found to return");
+            return;
+        };
+        for job in failed {
+            let id = job.handle.local_id;
+            let dir = job_dir_under(&root, &job.persona_name, &job.trait_kind, id);
+            // the request may have put the job under its own artifact dir (as `return_job` reads it)
+            let refusal = read_refusal(&dir).or_else(|| {
+                read_job_request(&dir).ok()?.local_artifact_dir.and_then(|r| read_refusal(&r.join(id.to_string())))
+            });
+            let Some(refusal) = refusal else {
+                continue; // failed some other way: not the engine refusing its shape, not returned
+            };
+            if !refusal_has_smaller_rung(&refusal) {
+                crate::probe!(
+                    class = "training.job.refusal_at_floor",
+                    job = %id,
+                    chunk = refusal.chunk as u64,
+                    graph_bytes = refusal.graph_bytes,
+                    "the engine refused even the smallest chunk: returning would be refused again, so the examples stay for a human"
+                );
+                continue;
+            }
+            match crate::commands::training_trigger::return_::return_job(self, board, &root, id).await {
+                Ok(outcome) if outcome.success => crate::probe!(
+                    class = "training.job.refusal_returned",
+                    job = %id,
+                    persona = %job.persona_name,
+                    refused_chunk = refusal.chunk as u64,
+                    graph_bytes = refusal.graph_bytes,
+                    "a refused job's examples went back to her bucket; the next dispatch chooses a smaller chunk from the filed footprint"
+                ),
+                Ok(outcome) => crate::probe!(
+                    class = "training.job.refusal_return_refused",
+                    job = %id,
+                    error = ?outcome.error,
+                    "the return of a refused job was refused; its examples stay in its directory"
+                ),
+                Err(error) => crate::probe!(
+                    class = "training.job.refusal_return_failed",
+                    job = %id,
+                    error = %error,
+                    "the return of a refused job failed; its examples stay in its directory"
+                ),
+            }
+        }
+    }
+
     pub(crate) async fn resume_orphans_once(self: &Arc<Self>) {
         use std::sync::atomic::Ordering;
         if self.resumed_orphans.load(Ordering::Acquire)
@@ -791,6 +852,7 @@ impl ServiceModule for TrainingTriggerModule {
 
     async fn tick(&self) -> Result<(), String> {
         self.state.resume_orphans_once().await;
+        self.state.return_refused_jobs().await;
         self.state.recover_tick().await
     }
 
