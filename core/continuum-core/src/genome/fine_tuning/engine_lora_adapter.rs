@@ -235,7 +235,7 @@ pub(crate) const REFUSAL_FILE: &str = "refusal.json";
 fn write_refusal(job_dir: &Path, refusal: &Refusal) -> Result<(), String> {
     std::fs::create_dir_all(job_dir).map_err(|e| format!("{}: {e}", job_dir.display()))?;
     let path = job_dir.join(REFUSAL_FILE);
-    let text = serde_json::to_string(refusal).map_err(|e| e.to_string())?;
+    let text = serde_json::to_string(refusal).map_err(|e| e.to_string())?; // file on disk: the job dir's refusal.json, read back by the trigger after a restart
     std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
 }
 
