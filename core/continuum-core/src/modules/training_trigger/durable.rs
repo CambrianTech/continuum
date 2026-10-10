@@ -988,11 +988,11 @@ impl TrainingTriggerState {
         }
     }
 
-    /// The open trial of a gene of hers for this bucket's `(persona, trait, base)`, if
-    /// one is being judged in her work (its id). The trial file is one small JSON read,
-    /// bounded by the genes ever trialled. A trial past its window holds nothing
-    /// (`is_live`). An UNREADABLE file holds the bucket, loudly: nothing dispatches
-    /// beside a trial nobody can see (Cormac on #4794, point 5).
+    /// The gene of hers that just landed for this bucket's `(persona, trait, base)` and is
+    /// still settling (its id). The trial file is one small JSON read, bounded by the genes
+    /// ever trialled. Past its settling window a gene holds nothing (`is_settling`); it
+    /// stays in her head regardless. An UNREADABLE file holds the bucket, loudly: nothing
+    /// dispatches beside a gene nobody can see (Cormac on #4794, point 5).
     fn trial_open_for(&self, key: &BucketKey) -> Result<Option<Uuid>, ()> {
         #[cfg(not(test))]
         let trials = crate::genome::gene_trial::GeneTrials::default_store();
@@ -1017,10 +1017,10 @@ impl TrainingTriggerState {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_millis() as u64)
-            .unwrap_or(0); // pre-epoch clock: every open trial reads as live, the conservative side
+            .unwrap_or(0); // pre-epoch clock: every landed gene reads as settling, the conservative side
         Ok(all
             .iter()
-            .find(|t| t.persona_id == key.persona_id && t.alias == key.trait_kind && t.base_model_id == key.base_model && t.is_live(now_ms))
+            .find(|t| t.persona_id == key.persona_id && t.alias == key.trait_kind && t.base_model_id == key.base_model && t.is_settling(now_ms))
             .map(|t| t.id))
     }
 

@@ -454,15 +454,16 @@ crate::action_command! {
                     .filter(|j| j.persona_id == watched_persona_id && j.base_model == p.request.base_model)
                     .filter_map(|j| j.signature.as_ref().map(|s| (j.handle.local_id, s))),
             );
-            // A GENE ALREADY ON TRIAL for this competence: ONE matching rule, the bucket's
-            // key (her, this trait, this base), the same rule the trigger holds the bucket
-            // by (Cormac on #4794, point 4: two rules churned a bucket between them). The
-            // signature similarity rides along as a measurement, never as the decision; a
-            // trial past its window is ended already (`is_live`).
+            // A GENE THAT JUST LANDED for this competence and is still settling: ONE
+            // matching rule, the bucket's key (her, this trait, this base), the same rule
+            // the trigger holds the bucket by (Cormac on #4794, point 4: two rules churned
+            // a bucket between them). The signature similarity rides along as a measurement,
+            // never as the decision; past its settling window a gene holds nothing and is
+            // simply resident (`nearest`).
             let on_trial = trials
                 .iter()
                 .filter(hers)
-                .filter(|t| t.base_model_id == p.request.base_model && t.alias == p.request.trait_kind && t.is_live(now_ms))
+                .filter(|t| t.base_model_id == p.request.base_model && t.alias == p.request.trait_kind && t.is_settling(now_ms))
                 .map(|t| crate::genome::competence::Pending {
                     id: t.id,
                     similarity: store.by_path.get(&t.path.display().to_string()).and_then(|s| s.similarity_in(&sig.embedder, &competence.centroid)).unwrap_or(1.0), // 1.0 = the key already says it is this competence; the number is a measurement when the signature exists
