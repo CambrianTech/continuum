@@ -82,7 +82,7 @@ use crate::sdk_codegen::DynCommand;
 
 mod durable;
 pub use durable::{AcceptanceReceipt, DispatchPhase};
-pub(crate) use durable::{DispatchFailure, DispatchResult, RetireReport, RetireSelection};
+pub(crate) use durable::{DispatchFailure, DispatchResolution, DispatchResult, ResolveReport, RetireReport, RetireSelection};
 
 /// Default per-bucket fire threshold. 16 examples is a healthy
 /// THE BOUND ON A HELD BUCKET. A bucket held by a job in flight, a trial open, or her
