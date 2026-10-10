@@ -1727,7 +1727,12 @@ async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_ear
                 }
             }
         } else {
-            mark_rejected(&conn, &persona_name, card_id, &rows).await;
+            // The SUBSTRATE marks her rows, not she: the mark is settlement bookkeeping on her
+            // store, and her own connection resolves to Trusted, where data/update is refused
+            // (modules/grid/acl.rs; card fd47a804). Through her identity every mark failed and a
+            // later pass trained the rejected rows anyway.
+            let substrate = Connection::new(InProcessTransport::new(executor.clone(), None));
+            mark_rejected(&substrate, &persona_name, card_id, &rows).await;
             rows
         };
         let mut submitted = 0usize;
@@ -2057,7 +2062,8 @@ pub(crate) fn pass_admits(rows: &[StagedCredit], failed_earlier: bool) -> PassAd
 }
 
 /// A FAILED verdict marks every row staged on the card so far as rejected, on her own
-/// clock. A row already marked keeps its first mark (a second failure doesn't move it).
+/// core's clock. `conn` must be the SUBSTRATE's (no caller identity): a persona
+/// identity resolves to Trusted, where data/update is refused. A row already marked keeps its first mark (a second failure doesn't move it).
 /// A write that fails is named; that row may then train on a later pass, which is the
 /// old behaviour, never a new one.
 async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[StagedCredit]) {
@@ -2300,6 +2306,19 @@ pub(crate) mod tests {
     // mistake included, as passing work. A live failure marks the rows staged so far, so
     // the pass admits only the correction; a failure her core never saw admits nothing;
     // a card never failed admits all, as before.
+    // what this catches (card fd47a804, the 5090): the rejected mark written through her
+    // own identity. A local persona resolves to Trusted, and data/update is not authorized
+    // there, so every mark was refused (routing.acl.refused) and #4900 trained the rejected
+    // rows anyway. The mark goes through the substrate (Owner). If data/update ever opens
+    // to Trusted this fails, and the substrate connection can be revisited.
+    #[test]
+    fn the_rejected_mark_needs_the_substrates_authority_not_hers() {
+        use crate::modules::grid::acl::is_command_authorized;
+        use crate::modules::grid::node::TrustLevel;
+        assert!(!is_command_authorized("data/update", TrustLevel::Trusted), "her own identity cannot mark the row");
+        assert!(is_command_authorized("data/list", TrustLevel::Trusted), "while she can still read her staged rows");
+    }
+
     #[test]
     fn a_pass_after_a_failure_trains_the_correction_not_the_rejected_turns() {
         let row = |at: u64, rejected: Option<u64>| -> StagedCredit {
