@@ -1171,7 +1171,13 @@ impl EngineRun {
                                 "the refusal could not be recorded in the job's directory; its examples wait for a manual return"
                             );
                         }
-                        match (Footprints { path: self.footprints_path.clone() }).record(&refused, grown, self.job) {
+                        // file I/O that may wait out a Windows sharing violation: off the runtime
+                        let store = Footprints { path: self.footprints_path.clone() };
+                        let (shape, job) = (refused.clone(), self.job);
+                        let recorded = tokio::task::spawn_blocking(move || store.record(&shape, grown, job))
+                            .await
+                            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
+                        match recorded {
                             Ok(()) => crate::probe!(
                                 class = "training.job.footprint_from_refusal",
                                 job = %self.job,

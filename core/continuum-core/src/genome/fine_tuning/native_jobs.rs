@@ -237,7 +237,15 @@ impl NativeJobs {
                     }
                 }
             };
-            let artifact = ended.and_then(|()| finish(started.elapsed().as_millis() as u64));
+            // finish moves the adapter and records its footprint: file I/O, and a footprint rename
+            // may wait out a Windows sharing violation (utils::file_replace), so off the runtime
+            let wall_clock_ms = started.elapsed().as_millis() as u64;
+            let artifact = match ended {
+                Ok(()) => tokio::task::spawn_blocking(move || finish(wall_clock_ms))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("the job's finish did not complete: {e}"))),
+                Err(e) => Err(e),
+            };
             match &artifact {
                 Ok(artifact) => crate::probe!(
                     class = "training.job.finished",
