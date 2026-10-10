@@ -4218,6 +4218,12 @@ pub(crate) mod tests {
                 params["examples"][0]["metadata"]["reviewedSubmission"]["review"]["review_id"],
                 json!(review_id)
             );
+            // what this catches (card 04a5e867): the exact path's examples carry the card
+            // beside the review, so `genome/training-trigger/retire --card` finds them.
+            assert_eq!(
+                params["examples"][0]["metadata"]["cardId"],
+                json!(card_id.as_uuid())
+            );
             Err(ClientError::Transport("destination ACK lost".into()))
         });
         let conn = settlement_connection(executor, persona, submit, None);

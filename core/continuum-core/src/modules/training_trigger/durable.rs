@@ -77,6 +77,42 @@ pub(super) struct Submission {
     batch: PendingBatch,
     is_pending: bool,
     dispatch_id: Option<Uuid>,
+    /// Withdrawn before any dispatch by `genome/training-trigger/retire`: the
+    /// [`Retirement`] receipt that names why. Such a row is never pending again:
+    /// the producer's retry of the same submission id replays as accepted and
+    /// appends nothing (see [`TrainingTriggerState::accept`]). Absent on every
+    /// row written before the verb existed.
+    #[serde(default)]
+    retirement_id: Option<Uuid>,
+}
+
+/// The journaled withdrawal of bucket-pending submissions: what was pulled back
+/// before it could train, and why. One row per `retire` call; the rows it covers
+/// point back at it through `Submission::retirement_id`. Written BEFORE the rows
+/// flip, so a crash between the two leaves a receipt that names rows a rerun
+/// finishes (a rerun of the same selection reports them `already_retired`).
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "training_trigger_retirements")]
+#[entity(index(name = "idx_training_retirement_card", fields = ["cardId"]))]
+pub(super) struct Retirement {
+    #[serde(flatten)]
+    base: BaseEntity,
+    /// The card whose settled turns were withdrawn, when the selection was by card.
+    #[entity(indexed)]
+    card_id: Option<Uuid>,
+    /// The bucket the rows left.
+    persona_id: Uuid,
+    trait_kind: String,
+    base_model: String,
+    /// Every submission this receipt withdrew, in the order they were flipped.
+    submission_ids: Vec<Uuid>,
+    /// Examples those submissions carried: what the next job will NOT train on.
+    examples: u32,
+    reason: String,
+    /// The caller's peer id, when the command carried one.
+    retired_by: Option<Uuid>,
+    retired_at_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -123,6 +159,7 @@ pub(super) struct ActiveDispatch {
 pub(super) struct DurableStore {
     submissions: OrmStore<Submission>,
     dispatches: OrmStore<DispatchIntent>,
+    retirements: OrmStore<Retirement>,
     adapter: Arc<dyn StorageAdapter>,
 }
 
@@ -133,6 +170,9 @@ impl DurableStore {
                 .await
                 .map_err(|e| e.to_string())?,
             dispatches: OrmStore::new(adapter.clone())
+                .await
+                .map_err(|e| e.to_string())?,
+            retirements: OrmStore::new(adapter.clone())
                 .await
                 .map_err(|e| e.to_string())?,
             adapter,
@@ -198,6 +238,54 @@ impl DurableStore {
             .into_iter()
             .map(|row| serde_json::from_value(row.data).map_err(|error| error.to_string())) // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
             .collect()
+    }
+
+    /// Every pending submission, in any bucket, whose examples carry this card: the
+    /// producer stamps `metadata.cardId` on each example it settles from a card. Pages
+    /// the pending index (bounded by what is waiting to train, never by history).
+    async fn pending_rows_on_card(&self, card: Uuid) -> Result<Vec<Submission>, String> {
+        const PAGE: usize = 256;
+        let card = card.to_string();
+        let mut after = 0u64;
+        let mut found = Vec::new();
+        loop {
+            let result = self
+                .adapter
+                .query(
+                    QueryBuilder::new(Submission::COLLECTION)
+                        .filter_eq("isPending", true)
+                        .filter("sequence", QueryOperator::Gt(after.into()))
+                        .sort_asc("sequence")
+                        .limit(PAGE)
+                        .build(),
+                )
+                .await;
+            if !result.success {
+                return Err(result
+                    .error
+                    .unwrap_or_else(|| "training pending query refused".into())); // The query explicitly failed; this supplies its missing diagnostic, never rows.
+            }
+            let rows = result.data.ok_or("training pending query omitted rows")?;
+            let page = rows.len();
+            for row in rows {
+                let row: Submission = serde_json::from_value(row.data).map_err(|error| error.to_string())?; // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
+                after = after.max(row.sequence);
+                let on_card = row.batch.examples.iter().any(|example| {
+                    example
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("cardId"))
+                        .and_then(|c| c.as_str())
+                        .is_some_and(|c| c == card)
+                });
+                if on_card {
+                    found.push(row);
+                }
+            }
+            if page < PAGE {
+                return Ok(found);
+            }
+        }
     }
 
     async fn active_intent(&self, key: &BucketKey) -> Result<Option<DispatchIntent>, String> {
@@ -836,6 +924,7 @@ impl TrainingTriggerState {
             batch,
             is_pending: true,
             dispatch_id: None,
+            retirement_id: None,
         };
         if let Err(error) = store.submissions.save(id, &row).await {
             if !self.buckets.contains_key(key) && !self.active_dispatches.contains_key(key) {
@@ -1393,6 +1482,216 @@ impl TrainingTriggerState {
         } else {
             Err("training bucket recovery is still paging; retry the same submission ID".into())
         }
+    }
+
+    /// Withdraw pending submissions before they train (`genome/training-trigger/retire`).
+    /// Only rows still pending are examined: by card, that is a bounded scan of the
+    /// pending rows across every bucket (a card's dispatched history is not searched;
+    /// a job's examples come back through `return`). Each touched bucket is handled
+    /// under its own submit gate: the receipt is written first, the rows flip to
+    /// retired, and the bucket cache is rebuilt from the rows, so a dispatch racing
+    /// this call sees either the rows or their absence, never a half-flipped bucket.
+    pub(crate) async fn retire(
+        self: &Arc<Self>,
+        selection: RetireSelection,
+        reason: String,
+        retired_by: Option<Uuid>,
+    ) -> Result<RetireReport, (&'static str, String)> {
+        self.require_ready()
+            .map_err(|e| ("PersistenceUnavailable", e))?;
+        let store = self
+            .durable
+            .require()
+            .map_err(|e| ("PersistenceUnavailable", e))?;
+        let mut report = RetireReport::default();
+        // Which rows, grouped by the bucket that owns them.
+        let mut by_key: std::collections::BTreeMap<(Uuid, String, String), Vec<Uuid>> =
+            std::collections::BTreeMap::new();
+        let card = match &selection {
+            RetireSelection::Card(card) => Some(*card),
+            RetireSelection::Submissions(_) => None,
+        };
+        match selection {
+            RetireSelection::Submissions(ids) => {
+                for id in ids {
+                    match store
+                        .submissions
+                        .find_by_id(id)
+                        .await
+                        .map_err(|e| ("PersistenceFailed", e.to_string()))?
+                    {
+                        Some(row) => by_key
+                            .entry((row.persona_id, row.trait_kind.clone(), row.base_model.clone()))
+                            .or_default()
+                            .push(id),
+                        None => report.refused.push((
+                            id,
+                            None,
+                            "no submission with this id on this node".into(),
+                        )),
+                    }
+                }
+            }
+            RetireSelection::Card(card) => {
+                for row in store
+                    .pending_rows_on_card(card)
+                    .await
+                    .map_err(|e| ("PersistenceFailed", e))?
+                {
+                    let id = entity_id(&row.base).map_err(|e| ("PersistenceFailed", e))?;
+                    by_key
+                        .entry((row.persona_id, row.trait_kind.clone(), row.base_model.clone()))
+                        .or_default()
+                        .push(id);
+                }
+            }
+        }
+        for ((persona_id, trait_kind, base_model), ids) in by_key {
+            let key = BucketKey {
+                persona_id,
+                trait_kind,
+                base_model,
+            };
+            let reason = reason.clone();
+            let part = self
+                .run_owned(key, move |state, key| async move {
+                    state.retire_in_bucket(&key, card, ids, reason, retired_by).await
+                })
+                .await
+                .map_err(|e| ("RecoveryRequired", e))?
+                .map_err(|e| ("PersistenceFailed", e))?;
+            report.absorb(part);
+        }
+        Ok(report)
+    }
+
+    /// The gated half of [`Self::retire`] for one bucket: eligibility is judged on the
+    /// rows as persisted NOW (a dispatch may have taken them since the selection),
+    /// the receipt names exactly the rows that flip, and the cache is rebuilt from
+    /// the rows afterwards. A crash after the receipt and before the last flip
+    /// leaves rows a rerun of the same selection finishes under a second receipt,
+    /// reporting the first's rows as `already_retired`.
+    async fn retire_in_bucket(
+        self: Arc<Self>,
+        key: &BucketKey,
+        card: Option<Uuid>,
+        ids: Vec<Uuid>,
+        reason: String,
+        retired_by: Option<Uuid>,
+    ) -> Result<RetireReport, String> {
+        if !self.hydrate_bucket(key).await? {
+            return Err("training bucket recovery is still paging; retry the same retirement".into());
+        }
+        let store = self.durable.require()?;
+        let mut report = RetireReport::default();
+        let mut eligible = Vec::new();
+        for id in ids {
+            match store.submissions.find_by_id(id).await.map_err(|e| e.to_string())? {
+                None => report
+                    .refused
+                    .push((id, None, "no submission with this id on this node".into())),
+                Some(row) if row.key() != *key => report.refused.push((
+                    id,
+                    None,
+                    "the submission belongs to another bucket".into(),
+                )),
+                Some(row) if row.retirement_id.is_some() => report.already_retired.push(id),
+                Some(row) if !row.is_pending => report.refused.push((
+                    id,
+                    row.dispatch_id,
+                    "already carried into a job: its examples come back through genome/training-trigger/return on that job".into(),
+                )),
+                Some(row) => eligible.push((id, row)),
+            }
+        }
+        if eligible.is_empty() {
+            return Ok(report);
+        }
+        let retirement_id = Uuid::new_v4();
+        let examples: u32 = eligible
+            .iter()
+            .map(|(_, row)| row.batch.examples.len() as u32)
+            .sum();
+        let mut base = BaseEntity::for_new_record();
+        base.id = retirement_id.to_string();
+        let receipt = Retirement {
+            base,
+            card_id: card,
+            persona_id: key.persona_id,
+            trait_kind: key.trait_kind.clone(),
+            base_model: key.base_model.clone(),
+            submission_ids: eligible.iter().map(|(id, _)| *id).collect(),
+            examples,
+            reason: reason.clone(),
+            retired_by,
+            retired_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0), // a clock before 1970 stamps 0: the receipt still names its rows and reason
+        };
+        store
+            .retirements
+            .save(retirement_id, &receipt)
+            .await
+            .map_err(|e| e.to_string())?;
+        for (id, mut row) in eligible {
+            let count = row.batch.examples.len() as u32;
+            row.is_pending = false;
+            row.retirement_id = Some(retirement_id);
+            store
+                .submissions
+                .update(id, &row)
+                .await
+                .map_err(|e| format!("submission {id} could not be retired after receipt {retirement_id} was written: {e}; rerun the same retirement to finish"))?;
+            report.retired.push((id, count));
+            report.examples_retired += count;
+        }
+        report.retirement_ids.push(retirement_id);
+        // The cache is rebuilt from the rows, never edited in place.
+        self.restore_pending_bucket(key).await?;
+        crate::probe!(
+            class = "training.trigger.retired",
+            persona = %key.persona_id,
+            trait_kind = %key.trait_kind,
+            card = ?card,
+            retirement = %retirement_id,
+            submissions = report.retired.len(),
+            examples = report.examples_retired,
+            reason = %reason,
+            "pending submissions withdrawn before training; the next job will not see them"
+        );
+        Ok(report)
+    }
+}
+
+/// What [`TrainingTriggerState::retire`] withdraws.
+#[derive(Debug, Clone)]
+pub(crate) enum RetireSelection {
+    /// Every pending submission whose examples were settled from this card.
+    Card(Uuid),
+    /// Exactly these submissions.
+    Submissions(Vec<Uuid>),
+}
+
+/// The crate-internal result of a retirement; the verb projects it onto the wire.
+#[derive(Debug, Default)]
+pub(crate) struct RetireReport {
+    pub(crate) retirement_ids: Vec<Uuid>,
+    /// `(submission, examples it carried)`.
+    pub(crate) retired: Vec<(Uuid, u32)>,
+    pub(crate) already_retired: Vec<Uuid>,
+    /// `(submission, the dispatch that carried it if that is why, why)`.
+    pub(crate) refused: Vec<(Uuid, Option<Uuid>, String)>,
+    pub(crate) examples_retired: u32,
+}
+
+impl RetireReport {
+    fn absorb(&mut self, other: RetireReport) {
+        self.retirement_ids.extend(other.retirement_ids);
+        self.retired.extend(other.retired);
+        self.already_retired.extend(other.already_retired);
+        self.refused.extend(other.refused);
+        self.examples_retired += other.examples_retired;
     }
 }
 
