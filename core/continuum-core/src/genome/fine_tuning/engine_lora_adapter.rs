@@ -201,6 +201,14 @@ struct Shape {
     /// is the one the footprint was measured at.
     #[serde(default = "default_chunk")]
     chunk: u32,
+    /// Per-layer recompute (fork #37) is its own shape: the backward pass keeps only the layer
+    /// outputs and rebuilds the rest, so a chunk's graph is a fraction of the one that keeps
+    /// every layer's activations. Measured on the 5090, 2026-10-10 08:32Z (job 888ce9c6): the
+    /// exact walk at chunk 256 without it needed 5.6 GiB more than the lease under every
+    /// gradient horizon from 1155 down to 256. A footprint measured without recompute is never
+    /// leased for a run with it, nor the reverse.
+    #[serde(default)]
+    recompute: bool,
 }
 
 /// The engine's own default chunk when a caller sends none (`server-train.cpp`,
@@ -265,7 +273,8 @@ impl Shape {
         // default); a chunk the core shrank and the exact walk add their own suffix, so
         // neither lands on the other's row.
         let base = if self.chunk == train_chunk_for(self.window, TRAINING_CHUNK) { base } else { format!("{base}|c{}", self.chunk) };
-        if self.exact { format!("{base}|exact") } else { base }
+        let base = if self.exact { format!("{base}|exact") } else { base };
+        if self.recompute { format!("{base}|rc") } else { base }
     }
 }
 
@@ -459,6 +468,13 @@ struct TrainRequest {
     /// ([`choose_chunk`]). An engine before the key ignores it and takes 512.
     #[serde(skip_serializing_if = "Option::is_none")]
     chunk: Option<u32>,
+    /// Per-layer recompute (fork #37): the backward pass keeps the layer outputs as checkpoints
+    /// and rebuilds each layer's activations from them, so a chunk holds one layer's
+    /// activations instead of every layer's. It is the memory a large model's chunk graph is
+    /// made of (see [`Shape::recompute`]), and it takes the same step: fork #50 measures the
+    /// exact walk with and without it at cosine 1.0000, norm ratio 1.0000. An engine before
+    /// #37 ignores the key.
+    recompute: bool,
 }
 
 /// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
@@ -1442,6 +1458,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             exact: false,
             walk_host_budget_mib: None,
             chunk: None,
+            recompute: true,
         };
         // THE EXACT WALK ONLY WITH A KNOWN BUDGET: unread memory trains the plain walk
         (body.exact, body.walk_host_budget_mib) =
@@ -1465,6 +1482,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             depth,
             exact: body.exact,
             chunk,
+            recompute: body.recompute,
         };
         let governed_free = self.vram_free_for(&format!("genome-train:{id}"));
         let (chunk, measured) = choose_chunk(window, governed_free, |c| self.footprints.get(&shape_at(c)));
@@ -1781,12 +1799,14 @@ mod tests {
         assert_eq!(train_chunk_for(256, 512), 256);
         // the key: a plain walk at the default chunk is the row every older core wrote;
         // the exact walk and any other chunk never land on it
-        let plain = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK };
+        let plain = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
         assert_eq!(plain.key(), "m|w1536|r8|attn_q");
         let exact = Shape { exact: true, ..plain.clone() };
         assert_eq!(exact.key(), "m|w1536|r8|attn_q|exact");
         let small = Shape { chunk: 256, ..exact.clone() };
         assert_eq!(small.key(), "m|w1536|r8|attn_q|c256|exact");
+        let rebuilt = Shape { recompute: true, ..small.clone() };
+        assert_eq!(rebuilt.key(), "m|w1536|r8|attn_q|c256|exact|rc", "a footprint that keeps every layer's activations is never leased for recompute, nor the reverse");
         assert_ne!(exact.key(), plain.key(), "a plain-walk footprint is never leased for the exact walk");
         let one_chunk = Shape { window: 256, chunk: 256, ..plain.clone() };
         assert_eq!(one_chunk.key(), "m|w256|r8|attn_q", "a 256 window's only chunk is the engine's default there: the old key");
@@ -2100,7 +2120,7 @@ mod tests {
         assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(512), "the first dispatch calibrates at the engine's default chunk");
         let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: the refusal filed a footprint")).unwrap();
         let (key, row) = rows.as_object().unwrap().iter().next().expect("test: one row");
-        assert_eq!(key, "ggml-org/Qwen3.8-27B-GGUF|w1536|r8|attn_q,attn_v", "filed under the shape and the chunk that ran (512 is 1536's default: no suffix)");
+        assert_eq!(key, "ggml-org/Qwen3.8-27B-GGUF|w1536|r8|attn_q,attn_v|rc", "filed under the shape and the chunk that ran (512 is 1536's default: no chunk suffix), with recompute");
         assert_eq!(row["bytes"].as_u64(), Some((12_654.1f64 * 1024.0 * 1024.0) as u64), "the graph the preflight measured");
         let h2 = t.create_job(r).await.expect("test: create again");
         let _ = wait_terminal(&t, &h2).await;
@@ -2132,7 +2152,7 @@ mod tests {
         // …and under the chunk that ran: 61,696 is 241 blocks, prime, so the engine's chunk was
         // 256, not the 512 a 15,360 window would take by default; a 15,360 run at 256 is its own
         // (smaller) graph and must never lease a default-chunk row's number (card d6dae498).
-        assert_eq!(keys, vec!["ggml-org/Qwen3.8-27B-GGUF|w15360|r8|attn_q,attn_v|c256"], "filed under the window and the chunk that ran");
+        assert_eq!(keys, vec!["ggml-org/Qwen3.8-27B-GGUF|w15360|r8|attn_q,attn_v|c256|rc"], "filed under the window and the chunk that ran");
         server.abort();
     }
 
@@ -2169,6 +2189,9 @@ mod tests {
         // monitor; here no monitor runs, so the plain walk, with no unbounded exact walk
         assert_eq!(body["exact"], false, "an unread host trains the plain walk");
         assert!(body.get("walk_host_budget_mib").is_none(), "and sends no budget");
+        // what this catches (Kimi's first exact run, the 5090 2026-10-10: refused at chunk 256
+        // needing 5.6 GiB more): fork #37's recompute was built and never asked for
+        assert_eq!(body["recompute"], true, "every run keeps the layer outputs, not every layer's activations");
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
         assert!(path.starts_with(jobs.path()) && path.is_file(), "adapter in the job dir: {}", path.display());
@@ -2250,7 +2273,7 @@ mod tests {
             epochs: 2,
             val_split: SplitPpm::from(0.1),
             model_id: format!("{PROVIDER_ID}:code:{job}"),
-            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK },
+            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let bound = crate::inference::engine_residency::ResidentWork {
             job,
@@ -2293,7 +2316,7 @@ mod tests {
     // depth the engine reported, never the request's.
     #[tokio::test]
     async fn a_finished_run_files_its_graph_and_its_gene_under_the_depth_the_engine_adapted() {
-        for (mode, filed, gene) in [("normal", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v", None), ("depth", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|d8", Some(8))] {
+        for (mode, filed, gene) in [("normal", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|rc", None), ("depth", "ggml-org/Qwen3.8-27B-GGUF|w256|r8|attn_q,attn_v|d8|rc", Some(8))] {
             let train = tempfile::tempdir().expect("test: dir");
             let jobs = tempfile::tempdir().expect("test: dir");
             let (url, server, seen) = fake_lane(train.path().to_path_buf(), mode).await;
@@ -2485,7 +2508,7 @@ mod tests {
     fn a_footprint_keeps_the_largest_observation() {
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints { path: dir.path().join("f.json") };
-        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK };
+        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
         f.record(&s, 900, Uuid::nil()).unwrap();
         f.record(&s, 700, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
@@ -2502,7 +2525,7 @@ mod tests {
     fn a_footprint_answers_only_the_depth_it_was_measured_at() {
         let dir = tempfile::tempdir().expect("test: dir");
         let path = dir.path().join("f.json");
-        let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK };
+        let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
         let top8 = Shape { depth: Some(8), ..full.clone() };
         // a row written before depth existed: the key full depth still reads
         std::fs::write(
