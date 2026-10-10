@@ -438,7 +438,8 @@ impl Footprints {
         }
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
-        std::fs::rename(tmp, &self.path)
+        // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
+        crate::utils::file_replace::replace_file(&tmp, &self.path)
     }
 }
 
@@ -1170,7 +1171,13 @@ impl EngineRun {
                                 "the refusal could not be recorded in the job's directory; its examples wait for a manual return"
                             );
                         }
-                        match (Footprints { path: self.footprints_path.clone() }).record(&refused, grown, self.job) {
+                        // file I/O that may wait out a Windows sharing violation: off the runtime
+                        let store = Footprints { path: self.footprints_path.clone() };
+                        let (shape, job) = (refused.clone(), self.job);
+                        let recorded = tokio::task::spawn_blocking(move || store.record(&shape, grown, job))
+                            .await
+                            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
+                        match recorded {
                             Ok(()) => crate::probe!(
                                 class = "training.job.footprint_from_refusal",
                                 job = %self.job,
