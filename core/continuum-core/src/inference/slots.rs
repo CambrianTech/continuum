@@ -757,15 +757,21 @@ impl SavedLedger {
     /// `incarnation` names: the fingerprint it was written under becomes this ledger's
     /// own, because it is the same process under the same launch contract. Any other
     /// ledger (another process, an unstamped one, none) is not this engine's.
-    fn of_running_engine(page_dir: &std::path::Path, incarnation: (u32, u64)) -> Option<Self> {
-        let bytes = std::fs::read(page_dir.join(SAVED_LEDGER_FILE)).ok()?;
-        let file = serde_json::from_slice::<SavedLedgerFile>(&bytes).ok()?;
-        if file.incarnation != Some(incarnation) {
-            return None;
+    fn of_running_engine(page_dir: &std::path::Path, incarnation: (u32, u64)) -> Result<Self, AdoptRefusal> {
+        let bytes = match std::fs::read(page_dir.join(SAVED_LEDGER_FILE)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(AdoptRefusal::NoLedger),
+            Err(_) => return Err(AdoptRefusal::Unreadable),
+        };
+        let file = serde_json::from_slice::<SavedLedgerFile>(&bytes).map_err(|_| AdoptRefusal::Unreadable)?;
+        match file.incarnation {
+            None => return Err(AdoptRefusal::Unstamped),
+            Some(written_by) if written_by != incarnation => return Err(AdoptRefusal::AnotherProcess),
+            Some(_) => {}
         }
         let ledger = Self::in_dir(page_dir, file.fingerprint);
         let _ = ledger.incarnation.set(incarnation);
-        Some(ledger)
+        Ok(ledger)
     }
 
     /// Atomic replace (write a sibling, then `replace_file`) into a dir that must already
@@ -1535,12 +1541,40 @@ pub(crate) fn stamp_engine_incarnation(root: &str, pid: u32, started_s: u64) {
 /// ledger in `page_dir` stamped with that same process, its confirmed saves become
 /// restorable here (same process, same contract). Returns the keys loaded; `None` when
 /// the ledger is not this engine's.
-pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path, pid: u32, started_s: u64) -> Option<usize> {
+pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path, pid: u32, started_s: u64) -> Result<usize, AdoptRefusal> {
     if started_s == 0 {
-        return None;
+        return Err(AdoptRefusal::NoStartTime);
     }
     let ledger = SavedLedger::of_running_engine(page_dir, (pid, started_s))?;
-    Some(pool.attach_ledger(ledger, true))
+    Ok(pool.attach_ledger(ledger, true))
+}
+
+/// Why an adopted engine's saved pages stay unrestorable: each is a different thing to fix
+/// (Fable on #4923), so the probe names it instead of a bare `adopted=false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdoptRefusal {
+    /// The engine never saved a page under a ledger (nothing to restore, not a fault).
+    NoLedger,
+    /// A ledger is there but could not be read or parsed.
+    Unreadable,
+    /// Written before the spawn stamped its engine: it cannot prove which process it is.
+    Unstamped,
+    /// Stamped by another process (another pid, or the same pid started at another time).
+    AnotherProcess,
+    /// The live engine's start time could not be read, so nothing can be proven about it.
+    NoStartTime,
+}
+
+impl AdoptRefusal {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NoLedger => "no_ledger",
+            Self::Unreadable => "unreadable",
+            Self::Unstamped => "unstamped",
+            Self::AnotherProcess => "another_process",
+            Self::NoStartTime => "no_start_time",
+        }
+    }
 }
 
 /// The one process-wide directory (same scope as the serving resource itself:
@@ -1931,15 +1965,19 @@ mod tests {
         spawned.note_saved(k);
         std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
 
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_000), None, "an unstamped ledger proves no process");
+        let empty = tempfile::tempdir().expect("test: empty dir");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::NoLedger));
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_000), Err(AdoptRefusal::Unstamped), "an unstamped ledger proves no process");
         spawned.stamp_incarnation((4242, 1_700_000_000));
 
         let adopted = KvSlotPool::new("test://adopt", 2);
-        assert_eq!(adopt_engine_ledger(&adopted, dir.path(), 4242, 1_700_000_000), Some(1));
+        assert_eq!(adopt_engine_ledger(&adopted, dir.path(), 4242, 1_700_000_000), Ok(1));
         assert!(adopted.saved.lock().contains(&k), "the same process's confirmed save is restorable after the core restart");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4243, 1_700_000_000), None, "another process");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_999), None, "a recycled pid");
-        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 0), None, "no start time, no proof");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4243, 1_700_000_000), Err(AdoptRefusal::AnotherProcess), "another process");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_999), Err(AdoptRefusal::AnotherProcess), "a recycled pid");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 0), Err(AdoptRefusal::NoStartTime), "no start time, no proof");
+        std::fs::write(empty.path().join(SAVED_LEDGER_FILE), b"not json").expect("test: garbage");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::Unreadable));
     }
 
     // What this catches: same-URL restart must restore saved KV, never trust old
