@@ -48,6 +48,19 @@ pub trait EmbeddingProvider: Send + Sync {
     fn dim(&self) -> usize;
     /// Embed text into a (typically L2-normalized) vector of length `dim()`.
     async fn embed(&self, text: &str) -> Vec<f32>;
+    /// Embed several texts, in order, one vector per text (an empty vector = that text
+    /// failed, as for [`Self::embed`]). The default embeds them one by one; a provider whose
+    /// backend takes a batch overrides it, so N texts cost one call, one lease and one queue
+    /// wait instead of N. Measured on the 5090 2026-10-10: a gene signature minted text by
+    /// text spent ~75 min of a 113-example dispatch in `genome/job-create`, ~1.5 embeds/min,
+    /// each taking its own embed lease behind serving (card d157d382).
+    async fn embed_many(&self, texts: &[String]) -> Vec<Vec<f32>> {
+        let mut out = Vec::with_capacity(texts.len());
+        for text in texts {
+            out.push(self.embed(text).await);
+        }
+        out
+    }
     /// The MEASURED null distribution of this embedder's cosine over UNRELATED
     /// text pairs: `(mean, std)`. Neural embedding spaces are anisotropic —
     /// unrelated texts do NOT score ~0 (Qwen3-Embedding baselines near 0.25–0.3)
@@ -511,6 +524,30 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
             return v.clone(); // hot path: sync map hit, the async cost is paid once
         }
         let v = self.inner.embed(text).await;
+        self.remember(key, &v);
+        v
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Vec<Vec<f32>> {
+        let keys: Vec<_> = texts.iter().map(|t| EmbeddingCache::key(self.inner.id(), t)).collect();
+        let mut out: Vec<Option<Vec<f32>>> = keys.iter().map(|k| self.cache.map.get(k).map(|v| v.clone())).collect();
+        let misses: Vec<usize> = (0..texts.len()).filter(|&i| out[i].is_none()).collect();
+        if !misses.is_empty() {
+            let batch: Vec<String> = misses.iter().map(|&i| texts[i].clone()).collect();
+            let computed = self.inner.embed_many(&batch).await;
+            for (&i, v) in misses.iter().zip(computed) {
+                self.remember(keys[i], &v);
+                out[i] = Some(v);
+            }
+        }
+        out.into_iter().map(Option::unwrap_or_default).collect()
+    }
+}
+
+impl CachingEmbeddingProvider {
+    /// Store one computed vector under its content key: the ONE insert, shared by `embed`
+    /// and `embed_many`, so the failure rule and the eviction lock discipline below live once.
+    fn remember(&self, key: u64, v: &[f32]) {
         // NEVER cache a failed embed. The inner provider degrades a failure to an
         // empty vector (the "no signal" sentinel); caching that would POISON the
         // shared content-addressed cache — a transient embedder hiccup would become
@@ -519,7 +556,7 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
         // so empty unambiguously means "failed this time": skip the cache, let the
         // next miss retry. (The failure itself is surfaced loud by the inner provider.)
         if v.is_empty() {
-            return v;
+            return;
         }
         // Bound memory: evict one arbitrary entry on overflow before inserting a
         // genuinely new key. Hot/recent content re-populates on its next miss.
@@ -542,8 +579,7 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
                 self.cache.map.remove(&victim);
             }
         }
-        self.cache.map.insert(key, v.clone());
-        v
+        self.cache.map.insert(key, v.to_vec());
     }
 }
 
@@ -556,6 +592,10 @@ impl EmbeddingProvider for CachingEmbeddingProvider {
 /// space with the grid embedder serving the same model ("identity is the model,
 /// transport is the policy"). Wrapped in `CachingEmbeddingProvider` in production
 /// so the GPU embed runs once per unique content and every persona reuses it.
+/// The most texts one neural embed request carries. derived-or-floor: a floor that bounds one
+/// request's body and the lane's batch, far above the 1 the per-text path paid per call.
+const NEURAL_EMBED_BATCH: usize = 32;
+
 pub struct NeuralEmbeddingProvider {
     adapter: Arc<dyn AIProviderAdapter>,
     /// The canonical model slug = the embedding space identity + cache key.
@@ -630,6 +670,39 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
                 Vec::new()
             }
         }
+    }
+
+    async fn embed_many(&self, texts: &[String]) -> Vec<Vec<f32>> {
+        let mut out = Vec::with_capacity(texts.len());
+        for chunk in texts.chunks(NEURAL_EMBED_BATCH) {
+            let request = EmbeddingRequest {
+                input: EmbeddingInput::Multiple(chunk.to_vec()),
+                model: Some(self.model_slug.clone()),
+                provider: None,
+            };
+            match self.adapter.create_embedding(request).await {
+                Ok(resp) if resp.embeddings.len() == chunk.len() => out.extend(resp.embeddings),
+                Ok(resp) => {
+                    crate::probe!(
+                        class = "embedding.neural.failed",
+                        model = %self.model_slug,
+                        error = %format!("asked for {} embeddings, got {}", chunk.len(), resp.embeddings.len()),
+                        "neural batch embed returned the wrong count; degrading this chunk to no-relevance"
+                    );
+                    out.extend(std::iter::repeat_with(Vec::new).take(chunk.len()));
+                }
+                Err(e) => {
+                    crate::probe!(
+                        class = "embedding.neural.failed",
+                        model = %self.model_slug,
+                        error = %e,
+                        "neural batch embed failed; degrading this chunk to no-relevance (embedder may be down)"
+                    );
+                    out.extend(std::iter::repeat_with(Vec::new).take(chunk.len()));
+                }
+            }
+        }
+        out
     }
 
     fn unrelated_null(&self) -> Option<(f32, f32)> {
@@ -980,6 +1053,10 @@ impl EmbeddingProvider for LazyRecallEmbedder {
         self.backend().await.embed(text).await
     }
 
+    async fn embed_many(&self, texts: &[String]) -> Vec<Vec<f32>> {
+        self.backend().await.embed_many(texts).await
+    }
+
     fn unrelated_null(&self) -> Option<(f32, f32)> {
         self.resolved.get().and_then(|p| p.unrelated_null())
     }
@@ -1107,12 +1184,14 @@ mod tests {
     struct CountingEmbedder {
         id: &'static str,
         calls: AtomicUsize,
+        batches: AtomicUsize,
     }
     impl CountingEmbedder {
         fn new(id: &'static str) -> Self {
             Self {
                 id,
                 calls: AtomicUsize::new(0),
+                batches: AtomicUsize::new(0),
             }
         }
     }
@@ -1130,6 +1209,41 @@ mod tests {
             let n = text.len() as f32;
             vec![n, n + 1.0, n + 2.0, n + 3.0]
         }
+        async fn embed_many(&self, texts: &[String]) -> Vec<Vec<f32>> {
+            self.batches.fetch_add(1, Ordering::SeqCst);
+            texts.iter().map(|t| {
+                let n = t.len() as f32;
+                vec![n, n + 1.0, n + 2.0, n + 3.0]
+            }).collect()
+        }
+    }
+
+    // what this catches (card d157d382, the 5090 2026-10-10): a gene signature minted text by
+    // text, one embed call (and one lease) per training example, ~75 min of a 113-example
+    // dispatch. Through the cache, a mint of N texts is ONE batched inner call, cached texts
+    // never reach the inner embedder, and the result is in order.
+    #[tokio::test]
+    async fn a_signature_mint_embeds_its_corpus_in_one_batch_through_the_cache() {
+        let inner = Arc::new(CountingEmbedder::new("counting"));
+        let cached = CachingEmbeddingProvider::with_cache(inner.clone(), Arc::new(EmbeddingCache::new()));
+        let warm = cached.embed("already seen").await;
+        let embedder: Arc<dyn EmbeddingProvider> = Arc::new(cached);
+        let texts: Vec<String> = ["already seen", "a", "bb", "ccc"].iter().map(|s| s.to_string()).collect();
+        let corpus = crate::forge::recipe::CorpusRef {
+            name: "test-corpus".into(),
+            content_hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".into(),
+            size_bytes: 4,
+            source_url: None,
+        };
+        crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, 1_000)
+            .await
+            .expect("test: mint");
+        assert_eq!(inner.batches.load(Ordering::SeqCst), 1, "the corpus is embedded in one batched call");
+        assert_eq!(inner.calls.load(Ordering::SeqCst), 1, "only the warm-up went one by one");
+        let again = embedder.embed_many(&texts).await;
+        assert_eq!(inner.batches.load(Ordering::SeqCst), 1, "a second pass is all cache hits");
+        assert_eq!(again[0], warm, "in order, the cached vector first");
+        assert_eq!(again[3], vec![3.0, 4.0, 5.0, 6.0]);
     }
 
     // what this catches: THE OPTIMIZATION — the same content is embedded ONCE;
