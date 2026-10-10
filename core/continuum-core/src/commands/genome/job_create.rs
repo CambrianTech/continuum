@@ -699,14 +699,31 @@ mod tests {
         let job = uuid::Uuid::from_u128(0xcc4f33b7);
         let legacy: Took = serde_json::from_value(serde_json::json!(job.to_string())).expect("a bare id");
         assert_eq!(legacy, Took::Joined { job });
-        for took in [
+        // EVERY variant round-trips through the hand-written wire shape: the list below is
+        // built by a wildcard-free match, so a variant added to `Took` without a line here
+        // (and so, without a `TookTagged` twin) fails to compile instead of becoming a row
+        // nothing can read (Cormac on #4893).
+        let trial = uuid::Uuid::from_u128(5);
+        let gene = GeneRef::Hub { repo: "cambriantech/kimi-code".into() };
+        let every: Vec<Took> = [
             Took::Joined { job },
-            Took::Awaited { trial: uuid::Uuid::from_u128(5) },
+            Took::Awaited { trial },
+            Took::Reused { trial, gene: gene.clone() },
             Took::TrialFileUnreadable,
             Took::Unsurprised { s: 0.25 },
-        ] {
+        ]
+        .into_iter()
+        .map(|took| match took {
+            Took::Joined { job } => Took::Joined { job },
+            Took::Awaited { trial } => Took::Awaited { trial },
+            Took::Reused { trial, gene } => Took::Reused { trial, gene },
+            Took::TrialFileUnreadable => Took::TrialFileUnreadable,
+            Took::Unsurprised { s } => Took::Unsurprised { s },
+        })
+        .collect();
+        for took in every {
             let wire = serde_json::to_value(&took).expect("serialize");
-            assert_eq!(wire.get("kind").and_then(|k| k.as_str()).is_some(), true, "still tagged on the wire: {wire}");
+            assert!(wire.get("kind").and_then(|k| k.as_str()).is_some(), "still tagged on the wire: {wire}");
             assert_eq!(serde_json::from_value::<Took>(wire).expect("round trip"), took);
         }
         // The persisted row, in whatever tag layout DispatchPhase serializes with, with its
