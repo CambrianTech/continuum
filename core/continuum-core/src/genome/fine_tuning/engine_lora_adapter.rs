@@ -190,6 +190,64 @@ struct Shape {
     /// Depth drives the graph (~linear), so a reduced-depth run is its own shape.
     #[serde(default)]
     depth: Option<u32>,
+    /// The exact walk (fork #47) is its own shape: its chunk graph carries GRAD leaves for the
+    /// cached K/V over the gradient horizon, several times the plain walk's. Measured on the
+    /// 5090, 2026-10-10 04:34Z (card d6dae498): a plain-walk footprint of 3418 MiB was leased
+    /// for Kimi's first exact run, whose chunk graph needed 9236 MiB more, and the job refused.
+    #[serde(default)]
+    exact: bool,
+    /// The training chunk (one batch, one ubatch): the chunk graph's activations scale with
+    /// it, so a shape at a smaller chunk is a smaller footprint, and the chunk the core sends
+    /// is the one the footprint was measured at.
+    #[serde(default = "default_chunk")]
+    chunk: u32,
+}
+
+/// The engine's own default chunk when a caller sends none (`server-train.cpp`,
+/// `train_chunk_for(window, 512)`): the chunk every footprint row before `chunk` existed was
+/// measured at.
+const TRAINING_CHUNK: u32 = 512;
+const fn default_chunk() -> u32 {
+    TRAINING_CHUNK
+}
+/// The smallest chunk the engine accepts (`"chunk" >= 256`, a multiple of 256).
+const TRAINING_CHUNK_MIN: u32 = 256;
+
+/// The chunk the engine will actually train at for `window` when asked for `asked`: the
+/// largest multiple of 256 that divides the window and is at most `asked` — the engine's
+/// `train_chunk_for`, mirrored so the shape the core keys its footprint under is the shape
+/// the engine runs.
+fn train_chunk_for(window: u32, asked: u32) -> u32 {
+    let blocks = window / 256;
+    let mut g = blocks.min((asked / 256).max(1));
+    while g >= 1 {
+        if blocks % g == 0 {
+            return g * 256;
+        }
+        g -= 1;
+    }
+    256
+}
+
+/// The chunk a job trains at and the footprint it leases, from the largest chunk down: a
+/// chunk whose measured footprint fits the governed VRAM leases that number; a chunk never
+/// measured is a calibration run (leases everything governed and free, `None`); a chunk
+/// measured too large for what is free is halved and the next shape asked. The smallest
+/// chunk's measurement stands even when it does not fit: the governor then waits for the
+/// capacity rather than this guessing smaller than the engine can run.
+fn choose_chunk(window: u32, available: u64, measured_at: impl Fn(u32) -> Option<u64>) -> (u32, Option<u64>) {
+    let mut chunk = train_chunk_for(window, TRAINING_CHUNK);
+    loop {
+        let measured = measured_at(chunk);
+        let next = if chunk / 2 >= TRAINING_CHUNK_MIN { Some(train_chunk_for(window, chunk / 2)) } else { None };
+        match (measured, next) {
+            (None, _) => return (chunk, None),
+            (Some(bytes), _) if bytes <= available => return (chunk, Some(bytes)),
+            (Some(bytes), None) => return (chunk, Some(bytes)),
+            (Some(_), Some(smaller)) if smaller == chunk => return (chunk, measured),
+            (Some(_), Some(smaller)) => chunk = smaller,
+        }
+    }
 }
 
 impl Shape {
@@ -198,10 +256,16 @@ impl Shape {
     /// can never land on a full-depth row, nor a full-depth lookup on a reduced one.
     fn key(&self) -> String {
         let base = format!("{}|w{}|r{}|{}", self.model, self.window, self.rank, self.targets);
-        match self.depth {
+        let base = match self.depth {
             Some(k) => format!("{base}|d{k}"),
             None => base,
-        }
+        };
+        // The plain walk at the engine's own chunk for this window keeps the key every row
+        // before `chunk`/`exact` existed was written under (all plain, all at the engine's
+        // default); a chunk the core shrank and the exact walk add their own suffix, so
+        // neither lands on the other's row.
+        let base = if self.chunk == train_chunk_for(self.window, TRAINING_CHUNK) { base } else { format!("{base}|c{}", self.chunk) };
+        if self.exact { format!("{base}|exact") } else { base }
     }
 }
 
@@ -391,6 +455,10 @@ struct TrainRequest {
     /// The exact walk's host memory per window (see `TRAINING_HOST_SHARE`).
     #[serde(skip_serializing_if = "Option::is_none")]
     walk_host_budget_mib: Option<u64>,
+    /// The training chunk (one batch, one ubatch), chosen with the lease it fits
+    /// ([`choose_chunk`]). An engine before the key ignores it and takes 512.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chunk: Option<u32>,
 }
 
 /// One `/train` example: a prompt/completion pair, or a served conversation (OpenAI message
@@ -454,6 +522,10 @@ struct TrainStatus {
     /// the training graph the engine measured before allocating it: this shape's footprint
     #[serde(default)]
     graph_mib: Option<f64>,
+    /// The chunk the engine trained at (`state["chunk"]`): the shape its footprint is filed
+    /// under. An engine before the key reports none and the core mirrors its rule.
+    #[serde(default)]
+    chunk: Option<u32>,
     /// fork #28: a pause asked for, and one the worker has reached (a pause is real only when
     /// both are true); waiting on serving slots is a separate, automatic yield
     #[serde(default)]
@@ -1294,13 +1366,6 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         );
         // 0 blocks is no depth at all: every block, as omitted (the engine refuses 0 at parse)
         let depth = lora.top_layers.filter(|&k| k > 0);
-        let shape = Shape {
-            model: request.base_model.clone(),
-            window,
-            rank: lora.rank,
-            targets: targets.clone(),
-            depth,
-        };
         let val = request.dataset.validation_split.clamp(0.0, 0.5);
         let mut body = TrainRequest {
             examples: request.dataset.examples.iter().map(engine_example).collect(),
@@ -1319,6 +1384,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             fit: "middle",
             exact: false,
             walk_host_budget_mib: None,
+            chunk: None,
         };
         // THE EXACT WALK ONLY WITH A KNOWN BUDGET: unread memory trains the plain walk
         (body.exact, body.walk_host_budget_mib) =
@@ -1329,7 +1395,25 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 "the host memory monitor has not read the host: the job trains the plain (chunk-bounded) walk rather than an exact walk with no budget"
             );
         }
-        let measured = self.footprints.get(&shape);
+        // THE CHUNK FITS THE LEASE (card d6dae498): the shape is keyed by the walk it trains
+        // and the chunk it trains at, and the chunk is the largest whose measured footprint
+        // fits the governed VRAM now; a chunk never measured calibrates. Before this, the
+        // engine took 512 for every job and a plain-walk footprint stood in for the exact
+        // walk's (the 5090, 2026-10-10: 3418 MiB leased, 12.6 GB needed, refused in 8 s).
+        let shape_at = |chunk: u32| Shape {
+            model: request.base_model.clone(),
+            window,
+            rank: lora.rank,
+            targets: targets.clone(),
+            depth,
+            exact: body.exact,
+            chunk,
+        };
+        let governed_free = crate::resources::ResourceDaemon::global()
+            .map_or(u64::MAX, |d| d.available_for(&format!("genome-train:{id}"), crate::resources::ResourceKind::Vram)); // map_or: no governor (tests, a CPU host) = nothing to fit, the default chunk
+        let (chunk, measured) = choose_chunk(window, governed_free, |c| self.footprints.get(&shape_at(c)));
+        let shape = shape_at(chunk);
+        body.chunk = Some(chunk);
         let footprints_path = self.footprints.path.clone();
         let http = self.http.clone();
         let holds = self.holds.clone();
@@ -1371,6 +1455,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     base = shape.model.as_str(),
                     window = shape.window as u64,
                     depth = shape.depth.map_or(0, u64::from), // probe field: 0 = every block
+                    exact = shape.exact,
+                    chunk = shape.chunk as u64,
                     measured = measured.is_some(),
                     memory_bytes = bytes,
                     "engine training: the measured footprint for this shape, or (unmeasured) all governed \
@@ -1523,7 +1609,10 @@ fn finish_run(
                 "the engine sized its training graph to the data: the footprint is filed under the window that ran"
             );
         }
-        let measured_shape = Shape { depth: adapted, window: ran_window, ..spec.shape.clone() };
+        // …and under the chunk the engine ran at that window: the engine's rule applied to
+        // the chunk the core asked for (`train_chunk_for`), never the asked number as sent.
+        let ran_chunk = status.chunk.unwrap_or_else(|| train_chunk_for(ran_window, spec.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
+        let measured_shape = Shape { depth: adapted, window: ran_window, chunk: ran_chunk, ..spec.shape.clone() };
         // A depth equal to the model's block count IS full depth (fork #27 refuses one
         // past it): filed under the asked key too, or that request would calibrate on
         // every run (Cormac on #4472).
@@ -1532,7 +1621,7 @@ fn finish_run(
             let store = Footprints { path: footprints_path };
             if asked_full {
                 // the asked depth, at the window that ran
-                let asked_ran = Shape { window: ran_window, ..spec.shape.clone() };
+                let asked_ran = Shape { window: ran_window, chunk: ran_chunk, ..spec.shape.clone() };
                 let _ = store.record(&asked_ran, grown, job); // best effort: the full-depth row below is the one that matters
             }
             if let Err(e) = store.record(&measured_shape, grown, job) {
@@ -1619,6 +1708,41 @@ fn engine_example(e: &TrainingExample) -> EngineExample {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card d6dae498; the 5090, 2026-10-10 04:34Z): a plain-walk footprint
+    // leased for an exact run, or a footprint measured at one chunk leased for another; the
+    // chunk the core keys under differing from the chunk the engine runs; and a lease that
+    // never shrinks the chunk when the measured graph does not fit what is free.
+    #[test]
+    fn the_walk_and_its_chunk_are_the_footprints_shape_and_the_chunk_fits_the_lease() {
+        // the engine's rule, mirrored: the largest multiple of 256 dividing the window
+        assert_eq!(train_chunk_for(1536, 512), 512);
+        assert_eq!(train_chunk_for(1536, 256), 256);
+        assert_eq!(train_chunk_for(1280, 512), 256, "1280 = 5 x 256: 512 does not divide it");
+        assert_eq!(train_chunk_for(66_560, 512), 512);
+        assert_eq!(train_chunk_for(256, 512), 256);
+        // the key: a plain walk at the default chunk is the row every older core wrote;
+        // the exact walk and any other chunk never land on it
+        let plain = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK };
+        assert_eq!(plain.key(), "m|w1536|r8|attn_q");
+        let exact = Shape { exact: true, ..plain.clone() };
+        assert_eq!(exact.key(), "m|w1536|r8|attn_q|exact");
+        let small = Shape { chunk: 256, ..exact.clone() };
+        assert_eq!(small.key(), "m|w1536|r8|attn_q|c256|exact");
+        assert_ne!(exact.key(), plain.key(), "a plain-walk footprint is never leased for the exact walk");
+        let one_chunk = Shape { window: 256, chunk: 256, ..plain.clone() };
+        assert_eq!(one_chunk.key(), "m|w256|r8|attn_q", "a 256 window's only chunk is the engine's default there: the old key");
+        // the chunk: unmeasured calibrates at the default; a measurement that fits leases;
+        // one that does not fit halves the chunk and asks that shape; the smallest stands
+        let gib = 1024u64 * 1024 * 1024;
+        assert_eq!(choose_chunk(1536, 6 * gib, |_| None), (512, None), "never measured: calibrate at the default");
+        assert_eq!(choose_chunk(1536, 6 * gib, |c| (c == 512).then_some(3 * gib)), (512, Some(3 * gib)));
+        let measured = |c: u32| match c { 512 => Some(12 * gib), 256 => Some(5 * gib), _ => None };
+        assert_eq!(choose_chunk(1536, 6 * gib, measured), (256, Some(5 * gib)), "the 5090: 12.6 GB at 512 does not fit 6.2 GB free; 256 does");
+        assert_eq!(choose_chunk(1536, 6 * gib, |c| (c == 512).then_some(12 * gib)), (256, None), "512 too big, 256 never measured: calibrate at 256");
+        assert_eq!(choose_chunk(1536, 1 * gib, measured), (256, Some(5 * gib)), "nothing fits: the smallest chunk's number stands and the governor waits");
+        assert_eq!(choose_chunk(256, 1 * gib, |_| Some(5 * gib)), (256, Some(5 * gib)), "a 256 window has one chunk");
+    }
     use crate::genome::fine_tuning::{LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingSource};
 
     fn request(base: &str) -> TrainingJobRequest {
@@ -1908,7 +2032,10 @@ mod tests {
         assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["window"].as_u64(), Some(61_696), "the served window is sent as the ceiling");
         let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: footprint filed")).unwrap();
         let keys: Vec<&String> = rows.as_object().unwrap().keys().collect();
-        assert_eq!(keys, vec!["ggml-org/Qwen3.8-27B-GGUF|w15360|r8|attn_q,attn_v"], "filed under the window that ran");
+        // …and under the chunk that ran: 61,696 is 241 blocks, prime, so the engine's chunk was
+        // 256, not the 512 a 15,360 window would take by default; a 15,360 run at 256 is its own
+        // (smaller) graph and must never lease a default-chunk row's number (card d6dae498).
+        assert_eq!(keys, vec!["ggml-org/Qwen3.8-27B-GGUF|w15360|r8|attn_q,attn_v|c256"], "filed under the window and the chunk that ran");
         server.abort();
     }
 
@@ -2026,7 +2153,7 @@ mod tests {
             epochs: 2,
             val_split: SplitPpm::from(0.1),
             model_id: format!("{PROVIDER_ID}:code:{job}"),
-            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None },
+            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK },
         };
         let bound = crate::inference::engine_residency::ResidentWork {
             job,
@@ -2261,7 +2388,7 @@ mod tests {
     fn a_footprint_keeps_the_largest_observation() {
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints { path: dir.path().join("f.json") };
-        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None };
+        let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK };
         f.record(&s, 900, Uuid::nil()).unwrap();
         f.record(&s, 700, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
@@ -2278,7 +2405,7 @@ mod tests {
     fn a_footprint_answers_only_the_depth_it_was_measured_at() {
         let dir = tempfile::tempdir().expect("test: dir");
         let path = dir.path().join("f.json");
-        let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None };
+        let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK };
         let top8 = Shape { depth: Some(8), ..full.clone() };
         // a row written before depth existed: the key full depth still reads
         std::fs::write(
