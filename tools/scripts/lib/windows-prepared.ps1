@@ -137,7 +137,8 @@ function Save-CorePreparedRelease {
 }
 
 function Read-CoreReleaseReceipt {
-    param([string]$InstallRoot, [ValidateSet('Prepared', 'Active', 'Previous')][string]$Selection)
+    param([string]$InstallRoot, [ValidateSet('Prepared', 'Active', 'Previous')][string]$Selection,
+        [switch]$RecognizeDamagedLegacyPrevious)
     $path = Join-Path $InstallRoot ("install-{0}.json" -f $Selection.ToLowerInvariant())
     Assert-CorePreparedPath -Path $path -Expected $path -File
     if ((Get-Item -LiteralPath $path).Length -gt 65536) { throw 'Prepared release receipt is oversized.' }
@@ -151,7 +152,11 @@ function Read-CoreReleaseReceipt {
     Assert-CorePreparedRelease -Release $receipt.release -InstallRoot $InstallRoot
     $actual = Get-CoreReleaseHashes -Release $receipt.release
     $legacyPending = $Selection -eq 'Prepared' -and @($receipt.hashes.PSObject.Properties).Count -eq 4
-    $fields = if ($legacyPending) { @('artifact', 'cli', 'launcher', 'engine') } else { @($actual.Keys) }
+    # Historical Previous may predate DLL sealing. This is diagnostic recovery
+    # only: it cannot become a valid rollback, and must prove engine-only damage.
+    $legacyPrevious = $RecognizeDamagedLegacyPrevious -and $Selection -eq 'Previous' -and
+        @($receipt.hashes.PSObject.Properties).Count -eq 4 -and $actual.Count -gt 4
+    $fields = if ($legacyPending -or $legacyPrevious) { @('artifact', 'cli', 'launcher', 'engine') } else { @($actual.Keys) }
     if (@($receipt.hashes.PSObject.Properties).Count -ne $fields.Count) { throw 'Prepared release receipt has an invalid hash set.' }
     $changed = @()
     foreach ($field in $fields) {
@@ -159,6 +164,9 @@ function Read-CoreReleaseReceipt {
             throw 'Prepared release receipt has an invalid hash value.'
         }
         if ($actual[$field] -ne $receipt.hashes.$field) { $changed += $field }
+    }
+    if ($legacyPrevious -and ($changed.Count -ne 1 -or $changed[0] -ne 'engine')) {
+        throw 'Legacy Previous lacks complete sealing and is not engine-only damaged; refusing recovery.'
     }
     return [pscustomobject]@{ Path = $path; Bytes = $bytes; Receipt = $receipt; Actual = $actual; Changed = $changed }
 }
@@ -200,7 +208,7 @@ function Get-CoreDamagedSelectionRecovery {
     }
     $previous = $null
     if (Test-Path -LiteralPath (Join-Path $InstallRoot 'install-previous.json')) {
-        $previous = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Previous
+        $previous = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Previous -RecognizeDamagedLegacyPrevious
     }
     foreach ($snapshot in @($active, $previous)) {
         if ($null -eq $snapshot -or -not $snapshot.Changed.Count) { continue }

@@ -39,3 +39,29 @@ existing boundary. Parser and `git diff --check` passed. Raw local test output:
 
 No installed receipts, slots, tasks or services were changed for this validation.
 Actual installed recovery and successful Kimi operation remain unproven.
+
+## Legacy Previous omission found by real read-only diagnosis
+
+After #4889, BigMama's read-only check of the installed receipts found that
+Previous retained only the four original hashes, predating runtime DLL sealing.
+The original regression used a modern Previous and missed this exact case; the
+reader refused its hash set before engine-only recovery could be diagnosed.
+
+The same receipt reader now recognizes that legacy shape only for the recovery
+diagnostic of Previous. All four original field names, hash formats and bytes
+are checked; exactly the engine must differ, and the existing recovery owner
+still requires its path and actual bytes to match the fully sealed Prepared
+candidate. This proves engine-only damage among historically sealed fields, not
+that previously unsealed DLLs were unchanged. The legacy receipt is archived and
+removed from rollback eligibility.
+Ordinary Previous/Active reads remain strict. An incomplete legacy receipt with
+no engine damage is refused, not declared a valid rollback.
+
+The existing recovery scenario now runs archival failure, partial commit and
+retry against this exact four-hash Previous. It also checks strict ordinary
+rollback refusal and refusal of an incomplete undamaged legacy Previous; the
+modern valid Previous preservation scenario remains intact. No runtime receipt
+was edited to make the check pass. Hosted checks and BigMama's real read-only
+diagnosis remain separate from installed recovery. The complete existing PS5.1
+fixture passed 38 groups on the integrated canary base; raw local output is
+`20261009-legacy-previous-tests.log` in the team-proof directory.

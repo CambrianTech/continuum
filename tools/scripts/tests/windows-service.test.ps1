@@ -831,6 +831,25 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         Save-CorePreparedRelease -Release $second -InstallRoot $resumeRoot
         $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
         if ($plan.Active.Changed.Count -ne 1 -or $plan.Active.Changed[0] -ne 'engine') { throw 'Engine-only damage was not recognized' }
+        # Real readonly diagnosis after #4889 found a legacy Previous with only
+        # four original hashes. Recovery must validate those fields then archive
+        # it as damaged, without making it eligible for ordinary rollback.
+        $legacyPrevious = [Text.Encoding]::UTF8.GetString($previousBytes) | ConvertFrom-Json
+        $legacyPrevious.hashes = [ordered]@{}
+        foreach ($field in @('artifact', 'cli', 'launcher', 'engine')) { $legacyPrevious.hashes[$field] = $plan.Previous.Receipt.hashes.$field }
+        [IO.File]::WriteAllText($previousPath, ($legacyPrevious | ConvertTo-Json -Depth 5))
+        $refused = $false
+        try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Previous | Out-Null } catch { $refused = $_ -match 'invalid hash set' }
+        if (-not $refused) { throw 'Legacy diagnostic widened ordinary rollback integrity' }
+        $plan = Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot
+        if ($plan.Previous.Changed.Count -ne 1 -or $plan.Previous.Changed[0] -ne 'engine') { throw 'Legacy engine-only Previous was not recognized' }
+        $legacyBytes = [IO.File]::ReadAllBytes($previousPath)
+        $legacyPrevious.hashes.engine = $plan.Prepared.Receipt.hashes.engine
+        [IO.File]::WriteAllText($previousPath, ($legacyPrevious | ConvertTo-Json -Depth 5))
+        $refused = $false
+        try { Get-CoreDamagedSelectionRecovery -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'not engine-only damaged' }
+        if (-not $refused) { throw 'Incomplete legacy Previous was falsely treated as valid rollback' }
+        [IO.File]::WriteAllBytes($previousPath, $legacyBytes)
         $refused = $false
         try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'Active release engine changed' }
         if (-not $refused) { throw 'Recovery weakened ordinary Active hash validation' }
