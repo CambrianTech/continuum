@@ -190,9 +190,9 @@ async fn remote_head_tip(root: &Path, head: &str) -> RemoteHead {
             if text.trim().is_empty() {
                 return RemoteHead::Absent; // rc 0 + empty output — origin says "no such ref" (measured on this host, git 2.54)
             }
-            let mut fields = text.lines().next().unwrap_or_default().split_whitespace();
-            let sha = fields.next().unwrap_or_default();
-            let refname = fields.next().unwrap_or_default();
+            let mut fields = text.lines().next().unwrap_or_default().split_whitespace(); // unwrap_or_default: no line = no fields = Unknown below
+            let sha = fields.next().unwrap_or_default(); // unwrap_or_default: empty sha fails the check below → Unknown
+            let refname = fields.next().unwrap_or_default(); // unwrap_or_default: empty refname ≠ expected → Unknown
             if !sha.is_empty() && refname == expected {
                 RemoteHead::Found(sha.to_string())
             } else {
