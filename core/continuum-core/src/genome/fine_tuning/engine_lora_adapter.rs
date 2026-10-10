@@ -613,8 +613,10 @@ fn live_lane_for(base: &str) -> Option<LaneChoice> {
 /// tests drive the run without a governor.
 enum Admission {
     Governed,
+    /// No governor: the free VRAM a chunk is fitted against is what the test says it is
+    /// (`u64::MAX` = nothing to fit against, the default chunk).
     #[cfg(test)]
-    Ungoverned,
+    Ungoverned { vram_free: u64 },
 }
 
 pub struct EngineLoraFineTuner {
@@ -670,6 +672,26 @@ impl EngineLoraFineTuner {
     }
 
     #[cfg(test)]
+    /// [`Self::for_test`] on a host with `vram_free` bytes governed and free, so a chunk is
+    /// chosen against it (card d6dae498).
+    #[cfg(test)]
+    fn for_test_with_vram(lane_url: String, train_dir: PathBuf, footprints: PathBuf, vram_free: u64) -> Self {
+        let mut t = Self::for_test(lane_url, train_dir, footprints);
+        t.admission = Admission::Ungoverned { vram_free };
+        t
+    }
+
+    /// The VRAM a job may fit a chunk into now: the governor's figure for this consumer, or
+    /// what an ungoverned (test) host declares.
+    fn vram_free_for(&self, consumer: &str) -> u64 {
+        match self.admission {
+            Admission::Governed => crate::resources::ResourceDaemon::global()
+                .map_or(0, |d| d.available_for(consumer, crate::resources::ResourceKind::Vram)), // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
+            #[cfg(test)]
+            Admission::Ungoverned { vram_free } => vram_free,
+        }
+    }
+
     fn for_test(lane_url: String, train_dir: PathBuf, footprints: PathBuf) -> Self {
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
@@ -678,7 +700,7 @@ impl EngineLoraFineTuner {
             lane: Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None })),
             train_dir: Some(train_dir),
             footprints: Footprints { path: footprints },
-            admission: Admission::Ungoverned,
+            admission: Admission::Ungoverned { vram_free: u64::MAX },
             holds: TrainingHolds::new(),
             hold_store: None,
             residency_store: None,
@@ -691,6 +713,12 @@ impl EngineLoraFineTuner {
 struct EngineRun {
     http: reqwest::Client,
     lane: String,
+    /// The shape this run trains, and where footprints are filed: a REFUSED run files the
+    /// graph the engine's preflight measured, under the chunk it reports, so the next
+    /// dispatch of this shape chooses a smaller chunk instead of calibrating at the same
+    /// one forever (BigMama on #4894: footprints were filed by a finished run only).
+    shape: Shape,
+    footprints_path: PathBuf,
     /// The run to POST, or `None` for a run this core RE-ATTACHED to: it is already training in
     /// the engine, and POSTing it again would be the duplicate run step 3 exists to prevent.
     start: Option<TrainRequest>,
@@ -1048,6 +1076,32 @@ impl EngineRun {
                 TrainState::Cancelled => return InPlaceEnd::Failed("the engine's run was cancelled by someone else".into()),
                 TrainState::Error => {
                     let why = s.error.as_deref().unwrap_or("no error text"); // unwrap_or: the state alone is the failure
+                    // THE REFUSAL IS THE MEASUREMENT: the preflight sized the graph before refusing
+                    // it, and the engine reports that size on an error too. Filed under the chunk
+                    // the engine ran, so `choose_chunk` steps down on the next dispatch.
+                    let grown = s.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
+                    if grown > 0 {
+                        let ran_window = s.window.unwrap_or(self.shape.window); // unwrap_or: an engine that reports no window ran the one asked
+                        let ran_chunk = s.chunk.unwrap_or_else(|| train_chunk_for(ran_window, self.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
+                        let refused = Shape { window: ran_window, chunk: ran_chunk, ..self.shape.clone() };
+                        match (Footprints { path: self.footprints_path.clone() }).record(&refused, grown, self.job) {
+                            Ok(()) => crate::probe!(
+                                class = "training.job.footprint_from_refusal",
+                                job = %self.job,
+                                window = ran_window as u64,
+                                chunk = ran_chunk as u64,
+                                exact = refused.exact,
+                                graph_bytes = grown,
+                                "the engine refused this shape's graph; its measured size is filed so the next dispatch chooses a smaller chunk"
+                            ),
+                            Err(e) => crate::probe!(
+                                class = "training.job.footprint_unrecorded",
+                                job = %self.job,
+                                error = %e,
+                                "the refused graph's size could not be recorded; the next dispatch calibrates at the same chunk"
+                            ),
+                        }
+                    }
                     return InPlaceEnd::Failed(format!("the engine's training run failed: {why}"));
                 }
                 // idle while ours is named, or a state this core does not know: not a known end
@@ -1241,6 +1295,8 @@ impl EngineLoraFineTuner {
                 }
                 let last = Arc::new(Mutex::new(None));
                 let run = EngineRun {
+                    shape: spec.shape.clone(),
+                    footprints_path: self.footprints.path.clone(),
                     http: self.http.clone(),
                     lane,
                     start: None,
@@ -1409,8 +1465,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             exact: body.exact,
             chunk,
         };
-        let governed_free = crate::resources::ResourceDaemon::global()
-            .map_or(u64::MAX, |d| d.available_for(&format!("genome-train:{id}"), crate::resources::ResourceKind::Vram)); // map_or: no governor (tests, a CPU host) = nothing to fit, the default chunk
+        let governed_free = self.vram_free_for(&format!("genome-train:{id}"));
         let (chunk, measured) = choose_chunk(window, governed_free, |c| self.footprints.get(&shape_at(c)));
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
@@ -1517,6 +1572,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             let run = EngineRun {
                 http,
                 lane,
+                shape: spec.shape.clone(),
+                footprints_path: footprints_path.clone(),
                 start: Some(body),
                 out: out.clone(),
                 adapter_path: spec.adapter_path.clone(),
@@ -1819,6 +1876,14 @@ mod tests {
                     if mode == "cancel_only" || l.polls < 3 {
                         return axum::Json(json!({"state": "running", "out": out, "batch": 1, "batch_max": 4, "epochs": []}));
                     }
+                    // the 5090, 2026-10-10 04:34Z: the device budget refused the chunk graph, and the
+                    // engine reports the size its preflight measured, the chunk and the window it ran
+                    if mode == "refused" {
+                        let body = l.body.clone().unwrap_or(Value::Null);
+                        return axum::Json(json!({"state": "error", "out": out,
+                            "error": "the graph needs 9236.1 MiB more on CUDA0, over the 3418.0 MiB it may add: not allocating it",
+                            "graph_mib": 12_654.1, "chunk": body.get("chunk").cloned().unwrap_or(json!(512)), "window": body.get("window").cloned().unwrap_or(Value::Null)}));
+                    }
                     std::fs::write(dir.join(&out), b"GGUF-lora").unwrap();
                     let mut done = json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out, "graph_mib": 5.0,
                         "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]});
@@ -2008,6 +2073,37 @@ mod tests {
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             assert!(t.create_job(r).await.is_err(), "{why}");
         }
+        server.abort();
+    }
+
+    // what this catches (BigMama on #4894; the 5090, 2026-10-10 04:34Z): a refused calibration
+    // filing nothing, so every later dispatch calibrates at the same chunk and is refused the
+    // same way. The refusal files the graph the engine measured under the chunk it ran; the
+    // next dispatch of the shape chooses the next chunk down against what is free.
+    #[tokio::test]
+    async fn a_refused_run_files_its_graph_and_the_next_dispatch_steps_the_chunk_down() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "refused").await;
+        let footprints = jobs.path().join("footprints.json");
+        let gib = 1024u64 * 1024 * 1024;
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * gib);
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r.clone()).await.expect("test: create");
+        let TrainingStatus::Failed { error } = wait_terminal(&t, &h).await else {
+            panic!("test: the refused run must fail");
+        };
+        assert!(error.contains("it may add"), "the engine's refusal, by name: {error}");
+        assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(512), "the first dispatch calibrates at the engine's default chunk");
+        let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: the refusal filed a footprint")).unwrap();
+        let (key, row) = rows.as_object().unwrap().iter().next().expect("test: one row");
+        assert_eq!(key, "ggml-org/Qwen3.8-27B-GGUF|w1536|r8|attn_q,attn_v", "filed under the shape and the chunk that ran (512 is 1536's default: no suffix)");
+        assert_eq!(row["bytes"].as_u64(), Some((12_654.1f64 * 1024.0 * 1024.0) as u64), "the graph the preflight measured");
+        let h2 = t.create_job(r).await.expect("test: create again");
+        let _ = wait_terminal(&t, &h2).await;
+        assert_eq!(seen.lock().unwrap().clone().expect("test: posted")["chunk"].as_u64(), Some(256), "12.4 GB at 512 does not fit 6 GB free: the next dispatch asks for 256");
         server.abort();
     }
 
