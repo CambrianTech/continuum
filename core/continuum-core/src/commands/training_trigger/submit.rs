@@ -322,7 +322,7 @@ impl SubmitOutcome {
         }
     }
 
-    fn refused(kind: &str, error: String) -> Self {
+    pub(crate) fn refused(kind: &str, error: String) -> Self {
         Self {
             error: Some(error),
             error_kind: Some(kind.into()),
