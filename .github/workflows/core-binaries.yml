@@ -194,6 +194,20 @@ jobs:
             cargo build --manifest-path core/livekit-bridge/Cargo.toml --bin livekit-bridge --release
           fi
 
+      # The published engine is a pure function of the pinned llama.cpp (core/vendor/LLAMA_CPP_PIN),
+      # the scripts that build it, and the CUDA contract the Build step records. Rebuilding it on
+      # every canary merge cost 26.7 min of a ~80 min Windows run (2026-10-11, run 38115399314)
+      # for a byte-identical engine. Restored here, Mod-LlamaServer's own stamp (submodule HEAD,
+      # backend, CUDA targets) still decides whether it is current, so this cache only gives the
+      # one owner its last output back; it never decides currency itself.
+      - name: Restore the published engine (Windows NVIDIA)
+        id: engine-cache
+        if: runner.os == 'Windows'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/published-engine
+          key: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}
+
       - name: Build the receipted inference engine (Windows NVIDIA)
         if: runner.os == 'Windows'
         shell: powershell
@@ -214,6 +228,15 @@ jobs:
           Mod-LlamaServer -RepoRoot $PWD.Path -InstallDirectory $engine -RequireReceipt `
             -PublishedCudaArchitectures $env:CUDA_COMPUTE_CAP -PublishedCpuDefinitions $definitions
           Get-CoreEngineReceipt -Directory $engine | Out-Null
+
+      # Saved as soon as it is built and receipted, not at job end, so a later failing step does
+      # not send the next run back to a 27-minute rebuild.
+      - name: Save the published engine (Windows NVIDIA)
+        if: runner.os == 'Windows' && steps.engine-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/published-engine
+          key: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}
 
       - name: Package
         id: package
