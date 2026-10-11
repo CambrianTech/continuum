@@ -2474,9 +2474,20 @@ impl ServingDaemonModule {
                 let now = vram_physical_used(&self.resource_daemon);
                 match device_delta_beyond_weights(baseline, now, fp.weights_bytes) {
                     Some(delta) => ("device_delta", Some(delta)),
-                    // No spawn baseline (an adopted lane) — ask the engine what it allocated
-                    // (`/props` memory_breakdown, card 27fe9f8b): KV + compute on the device.
-                    None => ("engine_props", engine_beyond_weights().await),
+                    // No spawn baseline (an adopted lane), or a delta that did not exceed the
+                    // weights (the trough already held them: card b5230492) — ask the engine
+                    // what it allocated (`/props` memory_breakdown, card 27fe9f8b): KV +
+                    // compute on the device. The inputs are named so the fallback is readable.
+                    None => {
+                        crate::probe!(
+                            class = "serving.footprint.device_delta_unread",
+                            baseline_bytes = baseline,
+                            now_bytes = now,
+                            weights_bytes = fp.weights_bytes,
+                            "no device delta beyond the weights (no baseline, no reading, or a baseline that already held the weights); the engine's own breakdown speaks instead"
+                        );
+                        ("engine_props", engine_beyond_weights().await)
+                    }
                 }
             }
             _ => (
@@ -2588,7 +2599,9 @@ impl ServingDaemonModule {
                     predicted_beyond_weights = predicted,
                     ratio = anon as f64 / predicted.max(1) as f64,
                     per_token_estimate = fp.kv_per_token,
-                    per_token_measured = measured.unwrap_or(0),
+                    // absent, never 0: a reading that yields no per-token rate is not a rate of
+                    // zero (card b5230492: 0 printed every minute read like a measurement)
+                    per_token_measured = %measured.map_or_else(|| "none".to_string(), |rate| rate.to_string()),
                     "the lane's anonymous footprint, read off its process, against the plan's arithmetic"
                 );
                 "read"
@@ -5801,9 +5814,19 @@ async fn engine_beyond_weights() -> Option<u64> {
 /// The discrete footprint arm: what the lane added to the device beyond its weights.
 /// `None` without a baseline (an adopted lane: this core never saw the spawn) or a
 /// reading — never a delta against zero, which would charge the desktop to the model.
+///
+/// Also `None` when the delta does not EXCEED the weights. A serving lane holds its KV and
+/// compute on the device, so "zero beyond the weights" is not a reading: it means the
+/// baseline trough already held the weights (or another engine), and the subtraction
+/// saturated. On the 5090 (2026-10-11, card b5230492) that printed `anon_bytes=0
+/// per_token_measured=0` every minute for a lane serving 67,584 tokens, and the planner
+/// sized lanes from the estimate while the probe read like a measurement. `None` falls
+/// through to the engine's own `/props` breakdown, which does not depend on a baseline.
 fn device_delta_beyond_weights(baseline: u64, now: u64, weights_bytes: u64) -> Option<u64> {
-    (baseline > 0 && baseline != u64::MAX && now > 0)
-        .then(|| now.saturating_sub(baseline).saturating_sub(weights_bytes))
+    if baseline == 0 || baseline == u64::MAX || now == 0 {
+        return None;
+    }
+    now.checked_sub(baseline)?.checked_sub(weights_bytes).filter(|&beyond| beyond > 0)
 }
 
 fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
@@ -7955,6 +7978,20 @@ pub(crate) mod tests {
             device_delta_beyond_weights(u64::MAX, 31_914 * MIB, weights),
             None,
             "armed but never lowered = could not look"
+        );
+        // card b5230492 (the 5090 2026-10-11: anon_bytes=0 per_token_measured=0 every minute
+        // for a lane serving 67,584 tokens): a trough baseline that already held the weights
+        // makes the delta saturate. Zero or less beyond the weights is not a reading; it
+        // falls through to the engine's own breakdown.
+        assert_eq!(
+            device_delta_beyond_weights(18_000 * MIB, 31_914 * MIB, weights),
+            None,
+            "the baseline held the weights: the delta is below them, so it is no reading"
+        );
+        assert_eq!(
+            device_delta_beyond_weights(752 * MIB, 752 * MIB + weights, weights),
+            None,
+            "exactly the weights beyond the baseline: nothing measured beyond them"
         );
     }
 
