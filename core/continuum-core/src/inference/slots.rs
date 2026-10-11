@@ -277,6 +277,12 @@ pub fn trim_page_store_after_save(just_saved: &str) {
     let Some(dir) = PAGE_DIR.lock().clone() else {
         return;
     };
+    // The page just written IS one mind's whole saved state (tokens, KV, recurrent state, and
+    // the context checkpoints in its sidecar): a measurement of what the host prompt cache
+    // must hold per mind, which the KV estimate alone misses on a hybrid model.
+    let page_bytes = |name: &str| std::fs::metadata(dir.join(name)).map(|m| m.len()).unwrap_or(0); // unwrap_or: an absent sidecar adds nothing
+    let state = page_bytes(just_saved).saturating_add(page_bytes(&format!("{just_saved}.ckpt")));
+    note_state_bytes(state);
     let (removed, freed, kept) =
         trim_page_store(&dir, just_saved, KV_PAGE_STORE_MAX_BYTES, KV_PAGE_MIN_AGE_MS);
     if removed > 0 {
@@ -291,6 +297,32 @@ pub fn trim_page_store_after_save(just_saved: &str) {
              their next return re-prefills once",
         );
     }
+}
+
+/// How many recent saved-state sizes [`measured_state_bytes`] remembers.
+const STATE_SAMPLES: usize = 16;
+static RECENT_STATE_BYTES: parking_lot::Mutex<std::collections::VecDeque<u64>> =
+    parking_lot::Mutex::new(std::collections::VecDeque::new());
+
+fn note_state_bytes(bytes: u64) {
+    if bytes == 0 {
+        return;
+    }
+    let mut recent = RECENT_STATE_BYTES.lock();
+    recent.push_back(bytes);
+    while recent.len() > STATE_SAMPLES {
+        recent.pop_front();
+    }
+}
+
+/// The largest of the last [`STATE_SAMPLES`] saved states on this node (page + checkpoint
+/// sidecar), or `None` before the first save. What one mind's state really costs the host
+/// prompt cache: on the 5090, 2026-10-11, the engine reported states of 4.3-5.8 GB for the
+/// hybrid 27B at a 68k window while the cache was sized from the KV estimate at 4,288 MiB,
+/// so 104 states were skipped and 220 evicted, and two minds on one slot found nothing.
+/// The largest, not a median: the engine refuses any state over the limit outright.
+pub fn measured_state_bytes() -> Option<u64> {
+    RECENT_STATE_BYTES.lock().iter().copied().max()
 }
 
 /// Pure trim: pages (`a-*.bin`) with their `.ckpt` sidecars, oldest mtime first,
