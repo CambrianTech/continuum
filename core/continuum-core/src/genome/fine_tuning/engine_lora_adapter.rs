@@ -837,7 +837,9 @@ impl Footprints {
     /// different things.
     fn record_with(&self, shape: &Shape, bytes: u64, includes_context: bool, job: Uuid) -> std::io::Result<()> {
         let mut all = self.read_all();
-        if all.get(&shape.key()).is_some_and(|r| r.includes_context >= includes_context && r.bytes >= bytes) {
+        // a whole-run row is never replaced by a graph-only one (an engine rolled back before
+        // #52), whatever its size; otherwise the larger measurement stands (Cormac on #4939)
+        if all.get(&shape.key()).is_some_and(|r| (r.includes_context && !includes_context) || (r.includes_context == includes_context && r.bytes >= bytes)) {
             return Ok(());
         }
         all.insert(
@@ -2028,8 +2030,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let rows = self.footprints.rows_like(&family);
         let model = GraphModel::fit(&rows);
         // THE WINDOW THE DATA NEEDS: every example measured at the served window by the engine's
-        // rule gives the smallest window it trains in; the run plans for the largest of those
-        // (every example trains), then the largest chunk that fits it. Only when even the
+        // render gives its whole length; the run plans for the longest (every example trains
+        // whole, as serving saw it), then the largest chunk that fits it. Only when even the
         // smallest chunk cannot hold that window does the window shrink, and the partition parks
         // what no longer fits. Unmeasurable examples plan at the served window, and the
         // partition below ends the job before any run.
@@ -2050,7 +2052,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 governed_free = governed_free,
                 measured_rows = rows.len() as u64,
                 kv_term = model.is_some_and(|m| m.per_pos > 0.0),
-                "the training window: what her examples need (their largest head plus last exchange), shrunk only if even the smallest chunk cannot hold it beside serving"
+                "the training window: what trains her examples whole (the longest of them), shrunk only if even the smallest chunk cannot hold it beside serving"
             );
             body.window = window;
         }
@@ -2373,7 +2375,7 @@ fn finish_run(
         }
         // the measured cost of this run: what the next dispatch of this base is sized by
         if let Some(rates) = super::training_rate::TrainingRates::in_home() {
-            if let Err(e) = rates.record(&spec.shape.model, spec.shape.chunk, spec.corpus_chars, spec.epochs, wall_clock_ms, job) {
+            if let Err(e) = rates.record(&spec.shape.model, ran_chunk, spec.corpus_chars, spec.epochs, wall_clock_ms, job) {
                 crate::probe!(class = "training.job.rate_unrecorded", job = %job, error = %e, "the run's measured cost could not be recorded; the next dispatch of this base calibrates at the bucket's threshold");
             }
         }
@@ -2520,6 +2522,8 @@ mod tests {
         assert!(store.rows_like(&shape).is_empty(), "and is not fitted");
         store.record_with(&shape, 3 * gib, true, Uuid::nil()).expect("test: whole run");
         assert_eq!(store.get(&shape), Some(3 * gib), "a whole-run row replaces it, smaller or not");
+        store.record_with(&shape, 20 * gib, false, Uuid::nil()).expect("test: a rolled-back engine");
+        assert_eq!(store.get(&shape), Some(3 * gib), "and a graph-only row never replaces a whole-run one, larger or not");
     }
 
     // what this catches (the 5090, 2026-10-11): footprints filed from graph_mib alone, while the

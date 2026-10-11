@@ -84,6 +84,9 @@ impl TrainingRates {
             return Ok(());
         }
         let mut all = self.read_all();
+        // a rate from before the chunk key is superseded by the first chunked one: left in place it
+        // would cap every budget at an old, unkeyed rate forever (Cormac on #4939)
+        all.remove(base);
         all.insert(
             format!("{base}|c{chunk}"),
             RateRow {
@@ -180,6 +183,12 @@ mod tests {
         assert_eq!(rates.secs_per_char_epoch("m"), Some(0.004), "the chunk-64 rate, the slower of m's two");
         rates.record("m", 64, 1_000, 1, 2_000, uuid::Uuid::nil()).expect("test: c64 again");
         assert_eq!(rates.secs_per_char_epoch("m"), Some(0.002), "the latest at each chunk stands");
+        // a row from before the chunk key is read until the first chunked record supersedes it
+        let legacy = rates_at(&dir.path().join("legacy.json"));
+        std::fs::write(dir.path().join("legacy.json"), r#"{"m":{"secsPerCharEpoch":9.0,"measuredAtMs":0,"job":"old"}}"#).expect("test: legacy");
+        assert_eq!(legacy.secs_per_char_epoch("m"), Some(9.0), "a pre-chunk rate still counts");
+        legacy.record("m", 256, 1_000, 1, 1_000, uuid::Uuid::nil()).expect("test: chunked");
+        assert_eq!(legacy.secs_per_char_epoch("m"), Some(0.001), "and is gone once a chunked rate is recorded");
     }
 
     #[test]
