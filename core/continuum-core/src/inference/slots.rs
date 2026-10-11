@@ -2086,7 +2086,17 @@ mod tests {
         let other_fp = other.fingerprint().expect("test: fingerprint");
         assert_ne!(other_fp, fp, "the slot count is part of the page format (measured: a p2 page refused into p1)");
         assert_eq!(KvSlotPool::new("test://ledger", 3).attach_ledger(SavedLedger::in_dir(dir.path(), other_fp), true), 0);
-        assert!(KvPageContract { revisions: None, ..contract }.fingerprint().is_none(), "unknown revisions never persist");
+        assert!(KvPageContract { revisions: None, ..contract.clone() }.fingerprint().is_none(), "unknown revisions never persist");
+        // The CPU lane (IntelMac 2026-10-11): f16 is the engine default, launched with no flag.
+        // Its contract names the type the engine runs, so it persists like any other; it never
+        // matches a quantized page; a rebuilt engine is another contract; unknown stays refused.
+        let cpu = KvPageContract { cache_type: Some("f16".into()), ..contract.clone() };
+        let cpu_fp = cpu.fingerprint().expect("test: the engine's default type is a known type");
+        assert_eq!(cpu.clone().fingerprint(), Some(cpu_fp.clone()), "the same launch, the same ledger");
+        assert_ne!(cpu_fp, fp, "an f16 page is never a q8_0 page");
+        let rebuilt = vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH), ("fixture-engine".into(), 9, std::time::SystemTime::UNIX_EPOCH)];
+        assert_ne!(KvPageContract { revisions: Some(rebuilt), ..cpu.clone() }.fingerprint(), Some(cpu_fp), "another engine revision");
+        assert!(KvPageContract { cache_type: None, ..cpu }.fingerprint().is_none(), "an unknown type never persists");
     }
 
     // What this catches (IntelMac, 2026-10-10 20:29Z: the new core ADOPTED the running
