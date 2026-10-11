@@ -611,7 +611,10 @@ pub(crate) async fn kv_page_action(
         // absent when the engine gave no timing (an older engine, or no terminal body)
         engine_ms = %engine_ms.map_or_else(|| "none".to_string(), |v| v.to_string()),
         wait_ms = %engine_ms.map_or_else(|| "none".to_string(), |v| ms.saturating_sub(v).to_string()),
-        bytes = %engine_bytes.map_or_else(|| "none".to_string(), |v| v.to_string()),
+        // the engine counts only the .bin; the sidecars (checkpoints, adapter vector) are read and
+        // written in the same timed switch, so they are named apart (BigMama on #4957)
+        slot_bytes = %engine_bytes.map_or_else(|| "none".to_string(), |v| v.to_string()),
+        sidecar_bytes = %crate::inference::slots::page_sidecar_bytes(&filename).map_or_else(|| "none".to_string(), |v| v.to_string()),
         bound_ms = bound.as_millis() as u64,
         node_p50_ms = p50_ms,
         node_p90_ms = p90_ms,
