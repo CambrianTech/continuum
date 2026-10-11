@@ -106,18 +106,32 @@ impl GeneSignature {
         if corpus_texts.is_empty() {
             return Err("gene signature mint refused: empty corpus (routing by noise)".into());
         }
+        let started = std::time::Instant::now();
+        // One batched pass over the corpus (card d157d382): text by text cost a call and a
+        // lease per example.
+        let embeddings = embedder.embed_many(corpus_texts).await;
         let dim = embedder.dim();
-        let mut embeddings: Vec<Vec<f32>> = Vec::with_capacity(corpus_texts.len());
-        for text in corpus_texts {
-            let e = embedder.embed(text).await;
-            if e.len() != dim {
-                return Err(format!(
-                    "embedder '{}' returned {} dims (declared {dim}) — refusing a corrupt signature",
-                    embedder.id(),
-                    e.len()
-                ));
-            }
-            embeddings.push(e);
+        crate::probe!(
+            class = "genome.signature.embedded",
+            embedder = %embedder.id(),
+            texts = corpus_texts.len() as u64,
+            ms = started.elapsed().as_millis() as u64,
+            "a gene signature's corpus was embedded"
+        );
+        if embeddings.len() != corpus_texts.len() {
+            return Err(format!(
+                "embedder '{}' returned {} vectors for {} texts — refusing a corrupt signature",
+                embedder.id(),
+                embeddings.len(),
+                corpus_texts.len()
+            ));
+        }
+        if let Some(e) = embeddings.iter().find(|e| e.len() != dim) {
+            return Err(format!(
+                "embedder '{}' returned {} dims (declared {dim}) — refusing a corrupt signature",
+                embedder.id(),
+                e.len()
+            ));
         }
         // Centroid: mean of (already-normalized) embeddings, re-normalized.
         let mut centroid = vec![0.0f32; dim];

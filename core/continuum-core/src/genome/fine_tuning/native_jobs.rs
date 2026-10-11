@@ -237,7 +237,15 @@ impl NativeJobs {
                     }
                 }
             };
-            let artifact = ended.and_then(|()| finish(started.elapsed().as_millis() as u64));
+            // finish moves the adapter and records its footprint: file I/O, and a footprint rename
+            // may wait out a Windows sharing violation (utils::file_replace), so off the runtime
+            let wall_clock_ms = started.elapsed().as_millis() as u64;
+            let artifact = match ended {
+                Ok(()) => tokio::task::spawn_blocking(move || finish(wall_clock_ms))
+                    .await
+                    .unwrap_or_else(|e| Err(format!("the job's finish did not complete: {e}"))),
+                Err(e) => Err(e),
+            };
             match &artifact {
                 Ok(artifact) => crate::probe!(
                     class = "training.job.finished",
@@ -448,12 +456,22 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
+/// The learning rate a LoRA run takes when its request names none, for EVERY backend (the
+/// engine, CUDA, MLX and the stand-in actor). It was two numbers that disagreed: 1e-5 here
+/// (from #4322, never measured against working gradients; every gene before 2026-10-07
+/// trained on broken ones) and 1e-4 in the actor. Measured on the 5090 2026-10-10 (job
+/// ff186697, Kimi's 18 'code' examples, the exact walk): at 1e-5 train_loss went 2.7796 ->
+/// 2.7733 over an epoch, -0.2%. The exact walk takes ONE AdamW step per window, so 18
+/// examples x 3 epochs is 54 steps, and at 1e-5 the adapter barely moves. 1e-4 is the
+/// conventional floor of the LoRA range at rank 8.
+pub(super) const DEFAULT_LEARNING_RATE: f64 = 1e-4;
+
 pub(super) fn default_schedule() -> ScheduleParams {
     ScheduleParams {
         epochs: 3,
         batch_size: 4,
         sequence_length: 2048,
-        learning_rate: 1e-5,
+        learning_rate: DEFAULT_LEARNING_RATE,
     }
 }
 
@@ -470,6 +488,40 @@ pub(super) fn default_lora() -> LoRAHyperparams {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the 5090, 2026-10-10, job a7893e09): a calibration run (an unmeasured
+    // shape) planned "all free" while serving was mid-handoff, serving then grew into it, and the
+    // job waited forever for the plan-time number. A calibration admission takes what is free
+    // AT ADMISSION, and its bind sees the bytes actually granted.
+    #[tokio::test]
+    async fn a_calibration_run_takes_what_is_free_at_admission_not_at_plan() {
+        use crate::forge::training_admission::{wait_for_training_memory, wait_for_training_memory_bound, TrainingNeed};
+        use crate::resources::{capacity::MockCapacitySource, DaemonConfig, ResourceDaemon, ResourceKind};
+        use futures::FutureExt;
+        let daemon = ResourceDaemon::start(
+            vec![Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1024))],
+            vec![],
+            DaemonConfig::default(),
+        );
+        let gate = crate::modules::serving_daemon::LifecycleGate::unowned(true);
+        let planned = daemon.available_for("trainer", ResourceKind::Vram);
+        assert_eq!(planned, 1024, "test: everything is free when the run plans");
+        // serving grows into the memory after the plan
+        let _serving = wait_for_training_memory(daemon.clone(), &gate, "serving", 768, |_| {})
+            .await
+            .unwrap();
+        let bound = Arc::new(std::sync::Mutex::new(None));
+        let saw = bound.clone();
+        let admitted = wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate, |_| {}, move |granted| {
+            *saw.lock().unwrap() = Some(granted);
+            Ok(())
+        })
+        .now_or_never()
+        .expect("a calibration admission does not wait for the plan-time number")
+        .expect("test: admitted");
+        assert_eq!(admitted.bytes(), 256, "it leases what is free now");
+        assert_eq!(*bound.lock().unwrap(), Some(256), "and binds with the bytes it was granted");
+    }
 
     // Regression: capacity contention must wait without allocating, wake on
     // release, and cancellation must never turn a queued job into a trainer.

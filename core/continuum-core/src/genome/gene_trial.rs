@@ -34,28 +34,34 @@ pub enum TrialState {
     Promoted,
     /// Out of her genome and out of the serving catalog.
     Retired,
-    /// No verdict within [`TRIAL_WINDOW_MS`] of opening: she did no card work on this base
+    /// Legacy: ended by the old no-verdict expiry (a week with no card verdict), before
+    /// a gene was hers on load (GENE-REUSE-FORK-MINT §3d). Never written anymore; read for
+    /// rows that already carry it. Formerly: she did no card work on this base
     /// in the window (or her cards were judged elsewhere), so the trial is over without a
     /// result. Out of the serving catalog like Retired, but typed apart: the gene was not
     /// found worse, it was not judged. The bucket it held is released.
     Expired,
 }
 
-/// How long an open trial may wait for a verdict. A week: long enough for a citizen's
-/// cards on one base to reach the gate's counts, short enough that a trial on a base she
-/// no longer serves, or a gene file that went away, cannot hold her bucket for a month
-/// (Cormac on #4794: a trial with no verdict held the bucket forever).
-pub const TRIAL_WINDOW_MS: u64 = 7 * 24 * 60 * 60 * 1000;
+/// How long a gene that just landed holds its competence's bucket: her turns are still
+/// telling what it does (GENE-REUSE-FORK-MINT §3d, the world's surprise on the turns it
+/// ran), so the next fill for the same competence waits instead of forking a child of a
+/// gene nobody has used yet (the fork storm, card 17dc0a7b). Two hours, not a week: the
+/// hold is about her next job, never about whether the gene stays in her head. A gene
+/// NEVER leaves her head by silence; only a retirement takes it out (Cormac on #4916:
+/// with the card arm no longer judging, the old seven-day "no verdict" expiry would have
+/// removed every gene a week after it loaded).
+///
+/// INTERIM (Cormac on #4917): the real condition is "this gene has a fitness reading"
+/// (§3d: the world's surprise on the turns it ran, an offline gene-off replay). Until
+/// that number exists this clock stands in for it; it is not a tuned constant and must
+/// not be tuned. When the reading exists, the hold ends on the reading, not on time.
+pub const SETTLE_WINDOW_MS: u64 = 2 * 60 * 60 * 1000;
 
 impl GeneTrial {
-    /// An open trial past its window: expired on read, before the file says so.
-    pub fn is_stale(&self, now_ms: u64) -> bool {
-        self.state == TrialState::Trial && now_ms.saturating_sub(self.opened_at_ms) > TRIAL_WINDOW_MS
-    }
-
-    /// Open AND within its window: the only trial that holds a bucket or awaits a decision.
-    pub fn is_live(&self, now_ms: u64) -> bool {
-        self.state == TrialState::Trial && !self.is_stale(now_ms)
+    /// Landed and still settling: the only trial that holds a bucket or awaits a decision.
+    pub fn is_settling(&self, now_ms: u64) -> bool {
+        self.state == TrialState::Trial && now_ms.saturating_sub(self.opened_at_ms) < SETTLE_WINDOW_MS
     }
 }
 
@@ -253,36 +259,33 @@ impl GeneTrial {
     }
 }
 
-/// PURE: the genes a turn of `persona` runs with on `base`: every promoted gene, plus each
-/// open trial's gene when `card` drew its candidate arm. A turn with no card (a
-/// conversation turn) runs the promoted genome alone: only a card has an outcome to
-/// credit a candidate with.
-pub fn genes_for_turn(
-    trials: &[GeneTrial],
-    persona: Uuid,
-    base: &str,
-    card: Option<Uuid>,
-) -> Vec<ActiveAdapterRequest> {
+/// PURE: the genes a turn of `persona` runs with on `base`: every gene she trained that
+/// has not been retired, on EVERY turn, card or conversation (Joel, 2026-10-10: a gene is
+/// hers once trained and follows her mind, never her workload; the full rule, selection
+/// by distance with two tiers, is GENE-REUSE-FORK-MINT §3d; with one gene there is nothing
+/// to select). The per-card arm (`candidate_arm`) no longer decides what is in her head;
+/// its tallies stop moving, so the old gate never decides again, and the trial row stays
+/// as the gene's receipt and rollback handle.
+pub fn genes_for_turn(trials: &[GeneTrial], persona: Uuid, base: &str) -> Vec<ActiveAdapterRequest> {
     trials
         .iter()
         .filter(|t| t.persona_id == persona && t.base_model_id == base)
         .filter(|t| match t.state {
-            TrialState::Promoted => true,
-            TrialState::Trial => card.is_some_and(|c| t.candidate_arm(c)),
+            TrialState::Promoted | TrialState::Trial => true,
             TrialState::Retired | TrialState::Expired => false,
         })
         .map(GeneTrial::page)
         .collect()
 }
 
-/// The genes her next turn runs with, read from the trial file and the base the node serves
-/// right now. `None` when either cannot be read: the caller then leaves her genome as it is
+/// The genes her next turn runs with (every turn, card or conversation), read from the trial
+/// file and the base the node serves right now. `None` when either cannot be read: the caller then leaves her genome as it is
 /// (never a guessed one), and the reason is on the probe stream.
-pub fn live_genes(persona: Uuid, card: Option<Uuid>) -> Option<Vec<ActiveAdapterRequest>> {
+pub fn live_genes(persona: Uuid) -> Option<Vec<ActiveAdapterRequest>> {
     let base = crate::inference::llama_server::current_serving().active_model?;
     let store = GeneTrials::default_store()?;
     match store.load() {
-        Ok(trials) => Some(genes_for_turn(&trials, persona, &base, card)),
+        Ok(trials) => Some(genes_for_turn(&trials, persona, &base)),
         Err(error) => {
             crate::probe!(
                 class = "genome.trial.unreadable",
@@ -596,42 +599,6 @@ impl GeneTrials {
         Ok(trial)
     }
 
-    /// End every open trial past its window as `Expired` (no verdict: not judged, not worse)
-    /// and take its gene out of serving like a retirement. Returns the rows it ended. Called
-    /// on a cadence by the completion sentinel; the readers that hold a bucket treat a stale
-    /// row as ended before this writes it (`GeneTrial::is_live`).
-    pub fn expire_stale(&self, now_ms: u64) -> Result<Vec<GeneTrial>, String> {
-        let mut all = self.load()?;
-        let mut expired = Vec::new();
-        for t in all.iter_mut().filter(|t| t.is_stale(now_ms)) {
-            t.state = TrialState::Expired;
-            t.decided_at_ms = Some(now_ms);
-            t.verdict = Some(TrialVerdict {
-                candidate: t.candidate,
-                stable: t.stable,
-                reason: format!("no verdict within {} days of opening", TRIAL_WINDOW_MS / (24 * 60 * 60 * 1000)),
-            });
-            expired.push(t.clone());
-        }
-        if !expired.is_empty() {
-            self.save(&all)?;
-            for t in &expired {
-                crate::probe!(
-                    class = "genome.trial.expired",
-                    persona = %t.persona_id,
-                    gene = t.alias.as_str(),
-                    trial = %t.id,
-                    opened_at_ms = t.opened_at_ms,
-                    candidate_settled = t.candidate.settled as u64,
-                    stable_settled = t.stable.settled as u64,
-                    "a trial waited its whole window with no verdict: ended unjudged, its gene out of serving, its bucket released"
-                );
-                apply_decision(t, now_ms);
-            }
-        }
-        Ok(expired)
-    }
-
     /// Credit one settled card to each open trial of `persona` it is evidence about
     /// ([`arm_of`]), once per card. Returns the trials the gate decided on this credit
     /// (already written as decided).
@@ -705,28 +672,23 @@ impl GeneTrials {
 mod tests {
     use super::*;
 
-    // what this catches (Cormac on #4794, point 3): an open trial past its window ends as
-    // Expired on the sentinel's cadence, with a verdict that says it was not judged (not
-    // worse), and a reader treats a stale row as ended before the file says so; a trial
-    // inside its window is untouched.
+    // what this catches (Cormac on #4916): a gene never leaves her head by silence. A gene
+    // that just landed is settling (it holds its competence's bucket while her turns tell
+    // what it does); past the window it holds nothing, and its state is untouched: there is
+    // no expiry to run.
     #[test]
-    fn a_trial_with_no_verdict_in_its_window_expires_unjudged() {
+    fn a_landed_gene_settles_for_a_while_and_is_never_expired() {
         let dir = tempfile::tempdir().unwrap();
         let store = GeneTrials::at(dir.path().join("trials.json"));
         let persona = Uuid::from_u128(0x7);
         let old = store.open(persona, "code", std::path::Path::new("/g/old.gguf"), "base", 1_000).unwrap();
-        let young = store.open(persona, "code", std::path::Path::new("/g/young.gguf"), "base", 1_000 + TRIAL_WINDOW_MS).unwrap();
-        let now = 1_000 + TRIAL_WINDOW_MS + 1;
-        assert!(old.is_stale(now) && !old.is_live(now), "past its window: ended on read");
-        assert!(young.is_live(now));
-        let expired = store.expire_stale(now).unwrap();
-        assert_eq!(expired.iter().map(|t| t.id).collect::<Vec<_>>(), vec![old.id]);
+        let young = store.open(persona, "code", std::path::Path::new("/g/young.gguf"), "base", 1_000 + SETTLE_WINDOW_MS).unwrap();
+        let now = 1_000 + SETTLE_WINDOW_MS + 1;
+        assert!(!old.is_settling(now), "past its window: holds nothing");
+        assert!(young.is_settling(now), "just landed: her next fill waits");
         let all = store.load().unwrap();
-        let o = all.iter().find(|t| t.id == old.id).unwrap();
-        assert_eq!((o.state, o.decided_at_ms), (TrialState::Expired, Some(now)));
-        assert!(o.verdict.as_ref().unwrap().reason.contains("no verdict"), "{:?}", o.verdict);
-        assert_eq!(all.iter().find(|t| t.id == young.id).unwrap().state, TrialState::Trial);
-        assert!(store.expire_stale(now).unwrap().is_empty(), "idempotent");
+        assert!(all.iter().all(|t| t.state == TrialState::Trial), "nothing expired anything: both stay hers");
+        assert_eq!(genes_for_turn(&all, persona, "base").len(), 2, "both are in her head, settling or not");
     }
 
     // what this catches: a card's outcome credited to a genome that did not work it. The arm
@@ -748,13 +710,12 @@ mod tests {
             assert_eq!(t.candidate_arm(*c), t.candidate_arm(*c));
         }
         let trials = store.load().unwrap();
-        let card_on = *cards.iter().find(|c| t.candidate_arm(**c)).unwrap();
-        let card_off = *cards.iter().find(|c| !t.candidate_arm(**c)).unwrap();
-        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", Some(card_on)).len(), 1);
-        assert!(genes_for_turn(&trials, kimi, "qwen-27b", Some(card_off)).is_empty());
-        assert!(genes_for_turn(&trials, kimi, "qwen-27b", None).is_empty(), "no card, no candidate");
-        assert!(genes_for_turn(&trials, kimi, "other-base", Some(card_on)).is_empty());
-        assert!(genes_for_turn(&trials, Uuid::nil(), "qwen-27b", Some(card_on)).is_empty());
+        // what this catches (Joel, 2026-10-10; gene 1 loaded on the 5090 and served zero turns
+        // because she held no card): a trained gene is in her head on every turn; no card,
+        // room or arm is asked (the signature says so).
+        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b").len(), 1, "a turn talks through the gene she trained");
+        assert!(genes_for_turn(&trials, kimi, "other-base").is_empty());
+        assert!(genes_for_turn(&trials, Uuid::nil(), "qwen-27b").is_empty());
 
         let verdict = TrialVerdict { candidate: ArmTally { settled: 6, passed: 4 }, stable: ArmTally { settled: 6, passed: 3 }, reason: "no worse".into() };
         let decided = store.decide(t.id, TrialState::Promoted, verdict.clone(), 30).unwrap().expect("decided");
@@ -772,8 +733,8 @@ mod tests {
         assert!((receipt["lift"].as_f64().expect("test: numeric lift") - 1.0 / 6.0).abs() < 1e-12);
         assert!(store.decide(t.id, TrialState::Retired, verdict, 40).unwrap().is_none(), "decided once");
         let trials = store.load().unwrap();
-        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", None).len(), 1, "promoted runs every turn");
-        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b", Some(card_off))[0].path, "/genes/k1.gguf");
+        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b").len(), 1, "promoted runs every turn, and a retired one never");
+        assert_eq!(genes_for_turn(&trials, kimi, "qwen-27b")[0].path, "/genes/k1.gguf");
     }
 
     // what this catches (Cormac on #4476): a gate that promotes noise. A tie or a small lead

@@ -2559,7 +2559,9 @@ impl ServingDaemonModule {
                     live.lanes,
                     live.served_context_window,
                     anon,
-                    fp.compute_buffer_per_lane(),
+                    // the BASE buffer: the fixed term is derived from this reading
+                    // (`base_compute_buffer_per_lane`, the M5's two-tick flap)
+                    fp.base_compute_buffer_per_lane(),
                     host_cache_bytes,
                 );
                 let Ok(measured) = measured else {
@@ -3347,7 +3349,37 @@ impl ServingDaemonModule {
                     lanes,
                 );
                 let short_of_slots = roster_short_of_slots(live.lanes, lanes);
-                let worth_it = worth_it || short_of_slots;
+                // THE CACHE HOLDS NO STATE (Fable and BigMama, 2026-10-11): `--cache-ram` is fixed
+                // at launch, so a lane launched under a cache smaller than ONE measured state can
+                // keep nothing, and every switch between minds is a full re-prefill until it
+                // relaunches (the 5090: 4,288 MiB against ~5.5 GB states, 114 skips, 76% of
+                // restores cold). That, and only that, is evidence for a re-home on cache size;
+                // a cache that holds at least one state waits for the next relaunch. It earns the
+                // same sustained streak and cooldown as the window evidence, and every hold above
+                // (resident training, an eval) still defers it.
+                let measured_state = crate::inference::slots::measured_state_bytes(
+                    &crate::inference::llama_server::kv_page_dir(desired.as_str(), live.served_context_window),
+                );
+                let cache_holds_no_state = launched_cache_holds_no_state(live.host_prompt_cache_mib, measured_state)
+                    && {
+                        // what a relaunch would launch with: computed only in this rare case
+                        let would_launch_mib = (self.model_resolver)(&desired)
+                            .map(|m| {
+                                derived_prompt_cache_mib(
+                                    &desired,
+                                    footprint_for(&m).as_ref(),
+                                    served_ctx,
+                                    lanes,
+                                    self.system.memory().total_bytes,
+                                    self.system.memory().available_bytes,
+                                    self.system.gpu_memory_mode(),
+                                )
+                                .mib
+                            })
+                            .unwrap_or(0); // unwrap_or: an unresolvable model would launch nothing better, so no relaunch for size
+                        cache_relaunch_needed(live.host_prompt_cache_mib, would_launch_mib, measured_state)
+                    };
+                let worth_it = worth_it || short_of_slots || cache_holds_no_state;
                 // A plan may shrink while the host pages out; it never GROWS into it
                 // (card 628dc958: six relaunches in 75 min at HIGH with swap climbing,
                 // each grow feeding on the memory its own relaunch had just freed). The
@@ -3570,7 +3602,8 @@ impl ServingDaemonModule {
                     // query over the class gets a uniform schema instead of a shape
                     // that changes with the outcome. Symmetry is the point.
                     cooling,
-                    "re-homing lane: the plan exceeded it by a real margin for a sustained run of ticks",
+                    cache_holds_no_state,
+                    "re-homing lane: the plan exceeded it by a real margin, or its launched cache holds no measured state, for a sustained run of ticks",
                 );
                 // Both guards re-armed at the moment we actually commit: the next
                 // re-home must earn a fresh streak AND outlast a fresh cooldown.
@@ -5124,10 +5157,17 @@ impl ServingDaemonModule {
                     }
                 }
                 // Publish the LIVE lane count to the admission gate so its directed-turn
-                // reservation semaphores size by what's actually served (`--parallel
-                // plan.lanes`), not the `MAX_LANES` ceiling — exact once the plan can serve
-                // fewer lanes than the ceiling (#139 compute-buffer fit). ONE source of truth.
-                crate::cognition::resource_admission::set_served_lane_count(plan.lanes as usize);
+                // reservation semaphores size by what's actually served, not the `MAX_LANES`
+                // ceiling (#139 compute-buffer fit). LIVE means the engine's own `--parallel`,
+                // from the serving snapshot: the plan is a proposal the reconcile may never
+                // take. On the M5, 2026-10-11 01:41Z, the plan moved 2,2,1,1,1,1 lanes in 40 s
+                // with no relaunch, and the gate followed it: a 2-lane engine admitted as one
+                // lane, half its seats reserved for directed turns that never came.
+                let admitted = {
+                    let live = self.serving_tx.borrow();
+                    admitted_lanes(live.ready, live.lanes, plan.lanes as u32)
+                };
+                crate::cognition::resource_admission::set_served_lane_count(admitted as usize);
                 // And the prefill throttle's demand facts (#56): the served model's per-spike
                 // transient compute buffer + the lane count. Published HERE, next to the lane
                 // count, so both gates read the one plan — no second path.
@@ -6089,7 +6129,12 @@ fn derived_prompt_cache_mib(
         .map(|(_, d)| (d.last_seen_ms, d.prev_seen_ms))
         .collect();
     let active = rotating_minds(&seen, crate::persona::trace::now_ms(), rotation_window_ms(&seen)).max(warm_floor);
-    let demands = active_cache_states(&population, served_ctx, active);
+    let demands = with_measured_state(
+        active_cache_states(&population, served_ctx, active),
+        fp.map(|f| f.kv_per_token),
+        // the served model's own page dir: the same key the spawn writes its pages under
+        crate::inference::slots::measured_state_bytes(&crate::inference::llama_server::kv_page_dir(model_id, served_ctx)),
+    );
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
     let decision = prompt_cache_decision(
         fp,
@@ -6256,6 +6301,45 @@ pub fn rotating_minds(seen: &[(u64, u64)], now_ms: u64, window_ms: Option<u64>) 
     seen.iter()
         .filter(|(last, _)| *last > 0 && now_ms.saturating_sub(*last) <= window)
         .count()
+}
+
+/// PURE: each mind's cache demand in TOKEN-EQUIVALENTS of the measured saved state, so the
+/// sizing (`lane_args::host_prompt_cache_mib`, `one_conversation_bytes`), which prices a
+/// state as `kv_per_token × tokens`, prices what a state really costs. A hybrid model's
+/// state also holds its recurrent state and context checkpoints: the 5090's 27B saved
+/// 4.3-5.8 GB states that the KV estimate sized at 4,288 MiB. Each demand is raised to at
+/// least the measured state; nothing measured, or no KV rate, leaves the demands as they are.
+pub fn with_measured_state(demands: Vec<u32>, kv_per_token: Option<u64>, measured_state: Option<u64>) -> Vec<u32> {
+    let (Some(kv), Some(state)) = (kv_per_token.filter(|k| *k > 0), measured_state) else {
+        return demands;
+    };
+    let state_tokens = state.div_ceil(kv).min(u32::MAX as u64) as u32;
+    demands.into_iter().map(|t| t.max(state_tokens)).collect()
+}
+
+/// PURE: a lane's launched `--cache-ram` cannot hold even ONE measured saved state. Unknown
+/// (nothing measured, or an unrecorded launch size) is never true: no relaunch on a guess.
+pub fn launched_cache_holds_no_state(launched_mib: u32, measured_state: Option<u64>) -> bool {
+    measured_state.is_some_and(|state| launched_mib > 0 && u64::from(launched_mib) * 1024 * 1024 < state)
+}
+
+/// PURE: whether a relaunch is owed for cache size: the launched cache holds no measured
+/// state AND the cache a relaunch would launch with holds one. Without the second half a
+/// host that cannot afford one state would relaunch every cooldown and gain nothing.
+pub fn cache_relaunch_needed(launched_mib: u32, would_launch_mib: u32, measured_state: Option<u64>) -> bool {
+    launched_cache_holds_no_state(launched_mib, measured_state)
+        && measured_state.is_some_and(|state| u64::from(would_launch_mib) * 1024 * 1024 >= state)
+}
+
+/// PURE: the lane count the admission gate sizes by: the running engine's own lanes when it
+/// is serving, the plan's only before an engine is up (a cold boot has nothing else to go
+/// on). A plan the reconcile has not taken changes nothing the engine serves.
+pub fn admitted_lanes(live_ready: bool, live_lanes: u32, plan_lanes: u32) -> u32 {
+    if live_ready && live_lanes > 0 {
+        live_lanes
+    } else {
+        plan_lanes
+    }
 }
 
 pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize) -> Vec<u32> {
@@ -7573,6 +7657,60 @@ pub(crate) mod tests {
         );
     }
 
+    // what this catches (the 5090, 2026-10-11: --cache-ram 4288 against hybrid-27B states of
+    // 4.3-5.8 GB; 104 states skipped and 220 evicted over the lane's life, two minds on one
+    // slot found nothing): a host prompt cache sized from the KV estimate alone, when a
+    // saved state also carries the recurrent state and the context checkpoints. Each mind's
+    // demand is raised to the measured state, so the cache holds every rotating mind's
+    // state; with nothing measured the KV estimate stands unchanged.
+    #[test]
+    fn the_prompt_cache_holds_each_rotating_minds_measured_state() {
+        let kv = 32_768u64;
+        let mib = 1024 * 1024;
+        let measured = Some(5_511 * mib);
+        let demands = vec![41_318u32, 21_525];
+        assert_eq!(with_measured_state(demands.clone(), Some(kv), None), demands, "nothing measured: the estimate stands");
+        assert_eq!(with_measured_state(demands.clone(), None, measured), demands, "no KV rate: nothing to convert");
+        let raised = with_measured_state(demands.clone(), Some(kv), measured);
+        let plenty = 64 * 1024 * mib;
+        let sized = u64::from(crate::inference::lane_args::host_prompt_cache_mib(&raised, kv, plenty)) * mib;
+        assert!(sized >= 2 * 5_511 * mib, "both minds' measured states fit: {} MiB", sized / mib);
+        let before = u64::from(crate::inference::lane_args::host_prompt_cache_mib(&demands, kv, plenty)) * mib;
+        assert!(before < 5_511 * mib, "the KV estimate alone held less than ONE measured state: {} MiB", before / mib);
+        let afford = 8 * 1024 * mib;
+        assert!(u64::from(crate::inference::lane_args::host_prompt_cache_mib(&raised, kv, afford)) * mib <= afford, "still capped by what the host can afford");
+    }
+
+    // what this catches (the M5, 2026-10-11 01:41Z: the plan moved 2,2,1,1,1,1 lanes in 40 s,
+    // same engine pid, and the admission gate followed every move): admission sized by a plan
+    // the engine never took. A serving engine's own lane count is what the gate counts; the
+    // plan only stands in before an engine is up.
+    #[test]
+    fn the_admission_gate_counts_the_engines_lanes_not_the_plans() {
+        assert_eq!(admitted_lanes(true, 2, 1), 2, "a 2-lane engine is admitted as two lanes whatever the plan says");
+        assert_eq!(admitted_lanes(true, 1, 2), 1, "and a 1-lane engine as one, until the reconcile relaunches it");
+        assert_eq!(admitted_lanes(false, 0, 2), 2, "cold boot: the plan is all there is");
+        assert_eq!(admitted_lanes(true, 0, 2), 2, "a ready snapshot without a lane count is no evidence");
+    }
+
+    // what this catches (the 5090, 2026-10-11: launched --cache-ram 4288 against ~5.5 GB
+    // measured states, 114 skips, 76% of restores cold, and nothing ever relaunched for it):
+    // the agreed rule. A cache that holds no measured state is evidence for a re-home when a
+    // relaunch would hold one; a cache that holds at least one state is never a reason,
+    // however far below the derived target; nothing measured is never a reason; and a host
+    // that cannot afford one state does not relaunch for nothing.
+    #[test]
+    fn a_lane_relaunches_for_cache_size_only_when_its_cache_holds_no_state() {
+        let mib = 1024u64 * 1024;
+        let state = Some(5_511 * mib);
+        assert!(cache_relaunch_needed(4_288, 11_022, state), "the 5090: holds nothing, a relaunch holds two");
+        assert!(!cache_relaunch_needed(6_000, 40_000, state), "holds one state: waits for the next relaunch, however far below target");
+        assert!(!cache_relaunch_needed(4_288, 11_022, None), "nothing measured: no relaunch on a guess");
+        assert!(!cache_relaunch_needed(4_288, 5_000, state), "a relaunch would hold no state either: no futile relaunch");
+        assert!(!cache_relaunch_needed(0, 11_022, state), "an unrecorded launch size is not a measurement");
+        assert!(launched_cache_holds_no_state(4_288, state) && !launched_cache_holds_no_state(5_512, state));
+    }
+
     // what this catches (card 58ba9752): the cache sized for lanes x 2 while more minds
     // rotate. The IntelMac, 2026-10-10: 7 minds turning through 2 lanes against 4 states,
     // so every turn re-prefilled cold. Minds seen within the rotation window count; the
@@ -7989,6 +8127,34 @@ pub(crate) mod tests {
     // computed a negative gain and never relaunched — five residents thrashed
     // two slots at hit_rate 0.0 until an operator cycled the server by hand.
     // The evidence currency is window × lanes.
+    // what this catches (the M5, 2026-10-10 19:58-20:01Z: per-lane compute read 1.93 GB and
+    // 4.40 GB on alternate ticks, and the plan flipped between 2 lanes and 1 every tick): a
+    // lane measurement fed its own derived fixed term. The loop the daemon runs is sample
+    // (anon minus the floor the sampler subtracts) -> fixed term -> next floor. With the
+    // base buffer as that floor, the fixed term is the lane's true fixed residency after
+    // ONE sample and stays there; subtracting compute_buffer_per_lane (base + fixed) gives
+    // fixed(n+1) = C - fixed(n), which alternates and fails this.
+    #[test]
+    fn a_lane_measurement_converges_and_never_feeds_back_its_own_fixed_term() {
+        let header_rate = 32_768u64;
+        let (lanes, window) = (1u32, 56_832u32);
+        let mut fp = crate::cognition::serving_plan::ModelFootprint {
+            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+        };
+        let true_fixed = 3_950_000_000u64; // what the engine really holds per lane beyond KV and the base buffer
+        let anon = (fp.base_compute_buffer_per_lane() + true_fixed + header_rate * u64::from(window)) * u64::from(lanes);
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            let per_token = crate::inference::lane_footprint::per_token_from(anon, lanes, window, fp.base_compute_buffer_per_lane(), 0)
+                .expect("test: a reading");
+            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes: anon, last_ms: 0 };
+            fp.fixed_per_lane_bytes = fixed_per_lane_from(header_rate, &record);
+            seen.push(fp.fixed_per_lane_bytes);
+        }
+        let tolerance = u64::from(window); // integer division loses under one byte per token
+        assert!(seen.iter().all(|f| f.abs_diff(true_fixed) <= tolerance), "converges to the true fixed term at once and holds: {seen:?}");
+    }
+
         // what this catches (2026-09-17, the M5 swapping at 8 × 51,712): a fresh measured
     // per-token cost above the arithmetic raises the plan's kv rate so that kv + kv/D
     // equals the measurement; agreement or a smaller reading leaves the estimate alone.

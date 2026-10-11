@@ -506,7 +506,8 @@ fn gym_verdict(
 /// normalized by the SAME `require_hands_for_code` rule — so the path graded here is
 /// byte-for-byte the path the card told her to write. Verdict is posted into the room;
 /// a missing/empty artifact is an ABSENCE message (never a silent skip or fake fail),
-/// same honesty rule as the SWE arm's infra line.
+/// same honesty rule as the SWE arm's infra line. A workspace task (`dod_shell`) is graded
+/// by running its definition of done, then its held-out check, in her workspace.
 async fn grade_gym_card(
     airc: &std::sync::Arc<airc_lib::Airc>,
     reference: &str,
@@ -519,22 +520,13 @@ async fn grade_gym_card(
         .ok_or_else(|| format!("bench card {task_id} has no owner — nobody worked it"))?
         .to_string();
     let task = normalized_gym_task(reference, task_id)?;
-    let Some(test) = task.test.clone() else {
-        return Ok(()); // expect-graded knowledge task — nothing file-shaped to grade
-    };
-    let lang = task.lang.clone().unwrap_or_else(|| "rust".to_string());
-    let solution_file = task
-        .solution_file
-        .clone()
-        .unwrap_or_else(|| format!("{}.rs", task.id));
     // Her workspace root — the same layout every other per-citizen path uses.
-    let path = crate::commands::benchmark::continuum_home()
+    let workspace = crate::commands::benchmark::continuum_home()
         .map_err(|e| format!("{e:?}"))?
         .join("citizens")
         .join("peers")
         .join(&owner)
-        .join("workspace")
-        .join(&solution_file);
+        .join("workspace");
     // The graded OUTCOME is carried as a value, and the room line is rendered FROM it.
     // It used to be the other way round: the only typed thing was the prose, and the
     // probe recovered the score by reading its own emoji back out of the message. A fact
@@ -542,33 +534,67 @@ async fn grade_gym_card(
     // which is exactly how four real gym passes on this box left no trace anywhere but
     // chat ([[stdout-is-never-a-transport]]).
     //
-    // `None` is an ABSENCE, not a zero: an unwritten or empty artifact means nobody was
-    // measured, and it must never be banked as a failed attempt — the same rule
-    // `record_verdict` already enforces for errored SWE verdicts.
-    let outcome: Option<(bool, String)> = match std::fs::read_to_string(&path) {
-        Ok(code) if !code.trim().is_empty() => {
-            Some(crate::cognition::gym_grader::test_grade(&code, &lang, &test).await)
+    // `None` is an ABSENCE, not a zero: an unwritten or empty artifact, or a grader that
+    // could not run, means nobody was measured, and it must never be banked as a failed
+    // attempt — the same rule `record_verdict` already enforces for errored SWE verdicts.
+    let (outcome, msg): (Option<(bool, String)>, String) = if let Some(dod) = task.dod_shell.clone() {
+        // A WORKSPACE task (the eval's order: a definition of done supersedes `test`): the
+        // card told her the DoD, and the grade runs it, then the held-out check the card
+        // never showed, through the same composition the eval grades with. Before this arm
+        // a dod_shell card closed with no verdict at all, as if it were expect-graded.
+        use crate::cognition::eval::DodVerdict;
+        let verdict = crate::cognition::eval::run_workspace_grade(Some(&workspace), &task, &dod).await;
+        // the DoD's output can run pages; the room gets the head, enough to act on
+        let head: String = verdict.message().chars().take(600).collect();
+        match verdict {
+            DodVerdict::Pass(m) => (
+                Some((true, m)),
+                format!("\u{2705} [bench {bench}] {task_id} RESOLVED — the definition of done passed in your workspace. Nice work."),
+            ),
+            DodVerdict::Fail(m) => (
+                Some((false, m)),
+                format!("\u{274c} [bench {bench}] {task_id} not resolved — {head}"),
+            ),
+            DodVerdict::InfraError(_) => (
+                None,
+                format!("\u{1f9ea} [bench {bench}] {task_id} — the grader could not run here, so this is not scored: {head}"),
+            ),
         }
-        Ok(_) | Err(_) => None,
-    };
-    let msg = match &outcome {
-        Some((true, _)) => format!(
-            "\u{2705} [bench {bench}] {task_id} RESOLVED — `{solution_file}` compiled and \
-             passed the held-out tests. Nice work."
-        ),
-        Some((false, detail)) => {
-            // rustc output can run pages; the room gets the head, enough to act on.
-            let head: String = detail.chars().take(600).collect();
-            format!("\u{274c} [bench {bench}] {task_id} not resolved — `{solution_file}`: {head}")
-        }
-        None if path.exists() => format!(
-            "\u{1f9ea} [bench {bench}] {task_id} — `{solution_file}` exists but is EMPTY; \
-             nothing to grade."
-        ),
-        None => format!(
-            "\u{1f9ea} [bench {bench}] {task_id} — no `{solution_file}` in the owner's workspace. \
-             The card is graded on the file her hands write (code/write); it was never written."
-        ),
+    } else if let Some(test) = task.test.clone() {
+        let lang = task.lang.clone().unwrap_or_else(|| "rust".to_string()); // unwrap_or_else: a row with no lang is rust, the gym's documented default
+        let solution_file = task
+            .solution_file
+            .clone()
+            .unwrap_or_else(|| format!("{}.rs", task.id)); // unwrap_or_else: require_hands_for_code's derived name, the path the card told her
+        let path = workspace.join(&solution_file);
+        let outcome: Option<(bool, String)> = match std::fs::read_to_string(&path) {
+            Ok(code) if !code.trim().is_empty() => {
+                Some(crate::cognition::gym_grader::test_grade(&code, &lang, &test).await)
+            }
+            Ok(_) | Err(_) => None,
+        };
+        let msg = match &outcome {
+            Some((true, _)) => format!(
+                "\u{2705} [bench {bench}] {task_id} RESOLVED — `{solution_file}` compiled and \
+                 passed the held-out tests. Nice work."
+            ),
+            Some((false, detail)) => {
+                // rustc output can run pages; the room gets the head, enough to act on.
+                let head: String = detail.chars().take(600).collect();
+                format!("\u{274c} [bench {bench}] {task_id} not resolved — `{solution_file}`: {head}")
+            }
+            None if path.exists() => format!(
+                "\u{1f9ea} [bench {bench}] {task_id} — `{solution_file}` exists but is EMPTY; \
+                 nothing to grade."
+            ),
+            None => format!(
+                "\u{1f9ea} [bench {bench}] {task_id} — no `{solution_file}` in the owner's workspace. \
+                 The card is graded on the file her hands write (code/write); it was never written."
+            ),
+        };
+        (outcome, msg)
+    } else {
+        return Ok(()); // expect-graded knowledge task — nothing file-shaped to grade
     };
 
     // DURABLE, through the ONE seam every other verdict passes: `record_verdict` stamps

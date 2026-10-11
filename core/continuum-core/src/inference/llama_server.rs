@@ -2723,7 +2723,10 @@ struct PreparedLocalLaunch {
     engine_install: Option<crate::inference::engine_install::EngineInstallReceipt>,
     gguf: PathBuf,
     slot_save_dir: PathBuf,
-    kv_cache_type: Option<String>,
+    /// The KV type the engine RUNS, for the page contract: the plan's effective type, never
+    /// the launcher flag (f16 is passed as no flag at all, which read as "unknown" and cost
+    /// every CPU lane its saved-page ledger, IntelMac 2026-10-11). `None` = genuinely unknown.
+    page_cache_type: Option<String>,
     mmproj: bool,
     // Err retains an ordinary/legacy launch without inventing restoration authority.
     local_inputs: Result<crate::inference::launch_inputs::LocalLaunchInputs, String>,
@@ -5788,7 +5791,7 @@ impl LlamaServerProcess {
             engine_install,
             gguf,
             slot_save_dir,
-            kv_cache_type,
+            page_cache_type: Some(kv_plan.cache_type.clone()),
             mmproj: mmproj.is_some(),
             local_inputs,
             managed_environment,
@@ -5816,7 +5819,7 @@ impl LlamaServerProcess {
         let target = &prepared.target;
         let gguf = prepared.gguf.clone();
         let slot_save_dir = prepared.slot_save_dir.clone();
-        let kv_cache_type = prepared.kv_cache_type.clone();
+        let page_cache_type = prepared.page_cache_type.clone();
         let invocation = &prepared.invocation;
         let engine_install = prepared.engine_install.clone();
         let (_, port) = split_host_port(&self.root);
@@ -6390,12 +6393,19 @@ impl LlamaServerProcess {
                     page_dir: page_dir_ready.then_some(slot_save_dir),
                     context,
                     slots,
-                    cache_type: kv_cache_type,
+                    cache_type: page_cache_type,
                     engine: prepared.engine_program.clone(),
                     revisions,
                 },
             )
             .map_err(LlamaServerError::Spawn)?;
+        // Name this process in its confirmed-save ledger, so a core that adopts this engine
+        // after a deploy restores its saved pages instead of re-prefilling every mind.
+        if let Some(pid) = child_pid {
+            if let Some(started_s) = crate::inference::engine_residency::process_start_s(pid) {
+                crate::inference::slots::stamp_engine_incarnation(&self.root, pid, started_s);
+            }
+        }
         self.record_verified_target(
             &generation,
             target,
@@ -6942,7 +6952,7 @@ mod tests {
                 engine_install: engine_install.clone(),
                 gguf: requested.model.gguf_local_path.clone().unwrap(),
                 slot_save_dir: engine.join("pages"),
-                kv_cache_type: None,
+                page_cache_type: None,
                 mmproj: false,
                 local_inputs: Ok(local_inputs.clone()),
                 managed_environment: Vec::new(),

@@ -91,15 +91,31 @@ pub(crate) fn returned_id(job: Uuid) -> Uuid {
     Uuid::new_v5(&job, b"genome/training-trigger/return")
 }
 
+/// The identity of the `index`-th chunk of a returned job's examples: chunk 0 is
+/// [`returned_id`] (a single-chunk return is unchanged), every later chunk derives from the job
+/// and its index, so re-running the same return replays each chunk instead of copying it.
+/// Chunk 0 sharing the whole-return id is deliberate (Fable on #4936): a job an older core
+/// returned WHOLE, returned again chunked, has chunk 0 refused as a changed replay, loudly,
+/// where fresh ids for every chunk would silently put its examples in her bucket twice.
+pub(crate) fn returned_chunk_id(job: Uuid, index: usize) -> Uuid {
+    if index == 0 {
+        returned_id(job)
+    } else {
+        Uuid::new_v5(&job, format!("genome/training-trigger/return/{index}").as_bytes())
+    }
+}
+
 impl SubmitParams {
     /// A job's examples handed back to her bucket: THE one conversion from a job's request
     /// to a submit, carrying the job's own policy (which [`return_request`] replaces with
-    /// the bucket's when the key already holds one). The batch identity is [`returned_id`]
-    /// of the job: a second return of the same job is a replay the bucket recognises, never
+    /// the bucket's when the key already holds one). The batch identity derives from the
+    /// job: a second return of the same job is a replay the bucket recognises, never
     /// a copy, and the return never wears the identity of the submission it came from.
-    pub(crate) fn returning(request: crate::genome::fine_tuning::types::TrainingJobRequest, job: Uuid) -> Self {
+    /// `id` is [`returned_chunk_id`] of the job: a return larger than the bucket's threshold
+    /// arrives as several chunks, each its own identity.
+    pub(crate) fn returning(request: crate::genome::fine_tuning::types::TrainingJobRequest, id: Uuid) -> Self {
         Self {
-            submission_id: Some(returned_id(job)),
+            submission_id: Some(id),
             persona_id: request.persona_id,
             persona_name: request.persona_name,
             base_model: request.base_model,
@@ -140,7 +156,57 @@ pub(crate) async fn return_request(
     request: crate::genome::fine_tuning::types::TrainingJobRequest,
     job: Uuid,
 ) -> Result<SubmitOutcome, CommandError> {
-    let params = SubmitParams::returning(request, job);
+    // RETURNED IN CHUNKS of the bucket's own threshold, each its own submission: a run's
+    // time budget splits a bucket only at submission boundaries, so a job's examples returned
+    // as ONE submission dispatched whole (the 5090, 2026-10-11 02:15Z: 311 lived conversations
+    // in one submission, a ~100 h run). A refused chunk stops the return; re-running it replays
+    // the accepted chunks by their derived identities and submits the rest.
+    let size = (crate::modules::training_trigger::DEFAULT_MIN_EXAMPLES as usize).max(1);
+    if request.dataset.examples.len() <= size {
+        return return_chunk(state, request, job, returned_id(job)).await;
+    }
+    let mut reported: Option<SubmitOutcome> = None;
+    let chunks = return_chunks(request.dataset.examples.clone(), size);
+    let total = chunks.len();
+    for (index, part) in chunks.into_iter().enumerate() {
+        let mut chunk = request.clone();
+        chunk.dataset.examples = part;
+        let mut outcome = return_chunk(state, chunk, job, returned_chunk_id(job, index)).await?;
+        if !outcome.success {
+            // say how far the return got: the first `index` chunks are in her bucket, and
+            // re-running the return replays them and resumes at this one
+            outcome.error = Some(format!(
+                "{index} of {total} chunks returned before chunk {index} was refused: {}",
+                outcome.error.as_deref().unwrap_or("no reason given") // unwrap_or: a refusal without a message still reports the count
+            ));
+            return Ok(outcome);
+        }
+        // report the chunk that dispatched, if one did; else the last
+        let dispatched = |o: &SubmitOutcome| o.job_handle.is_some();
+        if !reported.as_ref().is_some_and(dispatched) {
+            reported = Some(outcome);
+        }
+    }
+    Ok(reported.unwrap_or_else(|| SubmitOutcome::refused("Empty", "the job carried no examples".into())))
+}
+
+/// A return's examples in arrival order, cut into chunks of `size` (the last may be shorter).
+fn return_chunks<T>(mut examples: Vec<T>, size: usize) -> Vec<Vec<T>> {
+    let mut chunks = Vec::new();
+    while !examples.is_empty() {
+        let rest = examples.split_off(examples.len().min(size));
+        chunks.push(std::mem::replace(&mut examples, rest));
+    }
+    chunks
+}
+
+async fn return_chunk(
+    state: &Arc<TrainingTriggerState>,
+    request: crate::genome::fine_tuning::types::TrainingJobRequest,
+    job: Uuid,
+    id: Uuid,
+) -> Result<SubmitOutcome, CommandError> {
+    let params = SubmitParams::returning(request, id);
     let key = BucketKey {
         persona_id: params.persona_id,
         trait_kind: params.trait_kind.clone(),
@@ -256,7 +322,7 @@ impl SubmitOutcome {
         }
     }
 
-    fn refused(kind: &str, error: String) -> Self {
+    pub(crate) fn refused(kind: &str, error: String) -> Self {
         Self {
             error: Some(error),
             error_kind: Some(kind.into()),
@@ -325,6 +391,7 @@ async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, 
 
     let batch = PendingBatch {
         submission_ids: Vec::new(),
+        submission_examples: Vec::new(),
         persona_name: p.persona_name,
         source: p.source,
         examples: p.examples,
@@ -402,6 +469,24 @@ async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the 5090, 2026-10-11 02:15Z): a job's 311 examples returned as ONE
+    // submission dispatched whole, past the run budget, which splits only at submissions. A return
+    // larger than the threshold is cut into chunks of it, in order; chunk 0 keeps the job's
+    // returned id (a small return is unchanged), every later chunk's id is distinct and derived,
+    // so re-running the same return replays each chunk instead of copying it.
+    #[test]
+    fn a_large_return_is_cut_into_threshold_chunks_with_derived_replayable_ids() {
+        let chunks = return_chunks((0..40).collect::<Vec<u32>>(), 16);
+        assert_eq!(chunks.iter().map(Vec::len).collect::<Vec<_>>(), vec![16, 16, 8]);
+        assert_eq!(chunks.concat(), (0..40).collect::<Vec<u32>>(), "every example once, in order");
+        let job = Uuid::new_v4();
+        assert_eq!(returned_chunk_id(job, 0), returned_id(job), "chunk 0 is the job's returned id");
+        let ids: std::collections::HashSet<Uuid> = (0..3).map(|i| returned_chunk_id(job, i)).collect();
+        assert_eq!(ids.len(), 3, "each chunk its own identity");
+        assert_eq!(returned_chunk_id(job, 2), returned_chunk_id(job, 2), "derived, so a re-run replays");
+        assert_ne!(returned_chunk_id(job, 1), returned_chunk_id(Uuid::new_v4(), 1), "and per job");
+    }
     use crate::commands::training_trigger::test_support::{
         build_runtime_trigger_only, build_runtime_with_trigger_and_genome, ex, submit_params,
     };
@@ -571,6 +656,9 @@ mod tests {
         {
             let batch = next.state.buckets.get(&key).unwrap();
             assert_eq!(batch.submission_ids, vec![first_id, second_id]);
+            // the per-submission counts the run budget splits by are rebuilt from the durable rows
+            // (they are not serialized), so a restart never merges pending chunks into one run
+            assert_eq!(batch.submission_examples, vec![1, 1]);
             assert_eq!(batch.examples[0].prompt, "earlier");
             assert_eq!(
                 batch.examples[0].metadata.as_ref().unwrap()["role"],
@@ -859,13 +947,13 @@ mod tests {
         crate::persona::perception_feed::unregister(persona);
     }
 
-    // what this catches (card 17dc0a7b): a gene of hers ON TRIAL for this bucket's
-    // competence holds the bucket exactly as a job in flight does. Without it, the fill
-    // after a reuse (or after a trained gene opened its trial) reads the gene as resident
-    // and forks it while her cards are still judging it: a fork storm in place of the
-    // mint storm Join closed.
+    // what this catches (card 17dc0a7b, then 70a35a29): a gene of hers that JUST LANDED
+    // for this bucket's competence holds the bucket while it settles, exactly as a job in
+    // flight does. Without it, the next fill reads the gene as resident and forks it before
+    // her turns have told what it does: a fork storm in place of the mint storm Join closed.
+    // Past the settling window the fill decides on its own; the gene stays in her head.
     #[tokio::test]
-    async fn a_fill_while_a_gene_is_on_trial_for_the_competence_is_held_not_forked() {
+    async fn a_fill_while_a_landed_gene_is_settling_is_held_not_forked() {
         let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
         let gene = std::env::temp_dir().join(format!("on-trial-{persona}.gguf"));
@@ -889,11 +977,12 @@ mod tests {
         assert!(trigger.state.test_job_board.snapshot().is_empty(), "no job while the trial is open");
         assert_eq!(fill["heldBy"]["trial"], trial.id.to_string(), "the outcome names the trial the examples wait for: {fill}");
 
-        // Her work decides the trial: the file no longer holds the bucket. (The decided
-        // row is written by the gate; here it is retired by hand, which is the same row.)
+        // The gene has settled (its window passed; moved by hand on the same row the
+        // clock would read): the file no longer holds the bucket, and the gene is still hers.
         let mut all = trigger.state.test_trials.load().unwrap();
-        all[0].state = crate::genome::gene_trial::TrialState::Retired;
+        all[0].opened_at_ms = all[0].opened_at_ms.saturating_sub(crate::genome::gene_trial::SETTLE_WINDOW_MS + 1);
         trigger.state.test_trials.save_for_test(&all).unwrap();
+        assert_eq!(all[0].state, crate::genome::gene_trial::TrialState::Trial, "settling is not a verdict");
         let next = executor
             .execute_json(
                 "genome/training-trigger/submit",
@@ -901,7 +990,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(next["outcome"], "JobDispatched", "a decided trial releases the bucket: {next}");
+        assert_eq!(next["outcome"], "JobDispatched", "a settled gene releases the bucket: {next}");
     }
 
     #[tokio::test]

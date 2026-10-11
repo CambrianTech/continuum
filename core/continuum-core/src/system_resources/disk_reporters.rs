@@ -553,6 +553,19 @@ impl Daemon for DiskUsageScanner {
 mod tests {
     use super::*;
 
+    // what this catches (Fable on the partition, 2026-10-11): a job directory now holds PARKED
+    // examples (partition.json beside request.json) that nobody has trained. No tracked class may
+    // contain a persona's job directories, so no pool's eviction can delete them; one that is
+    // added must first decide what happens to parked examples (move them, or skip such dirs).
+    #[test]
+    fn no_tracked_class_contains_a_persona_job_directory() {
+        let home = std::path::Path::new("/h");
+        let job = home.join(".continuum/genome/Kimi/code_owner/00000000-0000-0000-0000-000000000001");
+        for dir in standard_tracked_dirs(home) {
+            assert!(!job.starts_with(dir.path()), "{} ({}) contains persona job directories", dir.class(), dir.path().display());
+        }
+    }
+
     // what this catches (2026-09-21, the M5 at 97% full): a cargo target tree that has a
     // TrackedDir row but no eviction owner, because the boot registration loop held its
     // OWN literal list of classes and nobody updated both places. `cargo-target-airc`

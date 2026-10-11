@@ -79,12 +79,13 @@ pub fn set_path(continuum_home: &Path, suite: &str) -> Option<PathBuf> {
     is_coursework(suite).then(|| sets_dir(continuum_home).join(format!("{suite}.jsonl")))
 }
 
-/// The canonical JSONL of a lesson set and its name: only TESTED tasks (a lesson without an
-/// oracle cannot be a verdict), sorted by id so the same lessons always hash the same.
+/// The canonical JSONL of a lesson set and its name: only tasks graded by something that runs
+/// ([`EvalTask::has_run_oracle`]: a test, or a definition of done; a lesson without an oracle
+/// cannot be a verdict), sorted by id so the same lessons always hash the same.
 pub fn canonical_set(tasks: &[EvalTask]) -> Result<(String, String), String> {
-    let mut tested: Vec<&EvalTask> = tasks.iter().filter(|t| t.test.is_some()).collect();
+    let mut tested: Vec<&EvalTask> = tasks.iter().filter(|t| t.has_run_oracle()).collect();
     if tested.is_empty() {
-        return Err("no lesson carries a test: a coursework card's verdict is its test, so there is nothing to grade".into());
+        return Err("no lesson carries a test or a definition of done: a coursework card's verdict is its oracle, so there is nothing to grade".into());
     }
     tested.sort_by(|a, b| a.id.cmp(&b.id));
     let mut text = String::new();
@@ -129,19 +130,23 @@ mod tests {
 
     /// what this catches: a lesson set whose name is not its content. §10.2 keys the judge on
     /// TASK IDENTITY: the same lessons must be the same set whatever order the selector
-    /// returned them in, a different lesson must be a different set, and a testless task can
-    /// never become a card (its verdict would be nothing). The name must also read back as
+    /// returned them in, a different lesson must be a different set, and a task with no runnable
+    /// oracle (no test, no definition of done) can never become a card (its verdict would be
+    /// nothing), while a definition-of-done lesson always can. The name must also read back as
     /// coursework, and a lookalike name must not resolve to a path.
     #[test]
     fn a_lesson_set_is_named_by_its_tested_content() {
         let a = lesson("sum_evens", Some("assert_eq!(sum_evens(&[2]), 2);"));
         let b = lesson("max_of", Some("assert_eq!(max_of(&[1, 3]), 3);"));
         let untested = lesson("essay", None);
+        // a workspace lesson (the lc sets, card 47d2ab33): its definition of done is its
+        // oracle, so it is a lesson even with no `test`
+        let workspace = EvalTask { dod_shell: Some("cargo test".into()), ..lesson("env_port", None) };
 
-        let (one, text) = canonical_set(&[a.clone(), b.clone(), untested.clone()]).expect("set");
-        let (two, _) = canonical_set(&[b.clone(), a.clone()]).expect("set");
+        let (one, text) = canonical_set(&[a.clone(), b.clone(), untested.clone(), workspace.clone()]).expect("set");
+        let (two, _) = canonical_set(&[workspace.clone(), b.clone(), a.clone()]).expect("set");
         assert_eq!(one, two, "order and testless rows do not change the set");
-        assert_eq!(text.lines().count(), 2, "only tested lessons are in the set");
+        assert_eq!(text.lines().count(), 3, "every lesson with a runnable oracle is in the set, and only those");
         assert!(is_coursework(&one), "{one} reads back as coursework");
 
         let (other, _) = canonical_set(&[a]).expect("set");

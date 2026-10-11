@@ -84,7 +84,10 @@ impl ToolVerb {
             "code/run" => ToolVerb::Run,
             "code/shell" => ToolVerb::Shell,
             "code/read" => ToolVerb::Read,
-            "work/submit" | "work/review" | "work/note" | "work/create" => ToolVerb::Publish,
+            // the board, and the forge: a PR, its comments and an issue are her output to
+            // the world as surely as a submission is (her #4812 comment counted as reading)
+            "work/submit" | "work/review" | "work/note" | "work/create" | "code/github/pr-create"
+            | "code/github/pr-comment" | "code/github/issue-create" => ToolVerb::Publish,
             "interface/screenshot" | "interface/capture" | "perception/observe"
             | "perception/look" | "vision/look" => ToolVerb::Screenshot,
             _ => ToolVerb::Other,
@@ -340,10 +343,15 @@ mod tests {
 
     // what this catches (Joel, 2026-10-06: "0 writes always a serious plumbing bug"): her
     // submissions, review verdicts, ledger notes and new cards reach no disk, so `wrote`
-    // counted them as reading. They publish; looking at the board does not.
+    // counted them as reading. They publish; looking at the board does not. Regression for
+    // 2026-10-07: Kimi's PR comment on #4812 classified as Other, so a published review read
+    // as no write at all.
     #[test]
     fn board_output_publishes_and_reading_the_board_does_not() {
-        for verb in ["work/submit", "work/review", "work/note", "work/create", "work_submit"] {
+        for verb in [
+            "work/submit", "work/review", "work/note", "work/create", "work_submit",
+            "code/github/pr-create", "code/github/pr-comment", "code/github/issue-create",
+        ] {
             assert!(ToolVerb::classify(verb).publishes(), "{verb}");
             assert!(!ToolVerb::classify(verb).mutates(), "{verb}: the board is not her disk");
         }

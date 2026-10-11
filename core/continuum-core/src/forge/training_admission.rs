@@ -15,6 +15,19 @@ pub(crate) fn request(consumer: &str, bytes: u64) -> LeaseRequest {
     }
 }
 
+/// What a training run asks the governor for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrainingNeed {
+    /// A footprint measured for this shape: exactly these bytes.
+    Measured(u64),
+    /// An unmeasured shape: a calibration run leases everything governed and free, READ AT
+    /// ADMISSION under the serving gate, so nothing grows into it. Not the plan-time number:
+    /// measured on the 5090 2026-10-10 (job a7893e09), a plan read 7.05 GB free while serving
+    /// was mid-handoff at a 6k window, serving then re-homed to 68k, and the job waited for
+    /// 7.05 GB with 4.26 GB free until a hand cancelled it.
+    Calibrate,
+}
+
 /// While the serving lifecycle refuses (unsettled, or an operation holds the gate),
 /// admission retries on this cadence as well as on governor changes: a relaunch that
 /// frees and re-leases can finish with no governor edge, and the gate has no event.
@@ -37,10 +50,11 @@ pub(crate) async fn wait_for_training_memory(
     bytes: u64,
     waiting: impl FnMut(u64),
 ) -> Result<LeaseGuard, String> {
-    wait_for_training_memory_bound(daemon, serving, consumer, bytes, waiting, || Ok(())).await
+    wait_for_training_memory_bound(daemon, serving, consumer, TrainingNeed::Measured(bytes), waiting, |_| Ok(())).await
 }
 
-/// [`wait_for_training_memory`], plus `bind`: run once the lease is granted and BEFORE the
+/// [`wait_for_training_memory`] for a [`TrainingNeed`], plus `bind`: run with the granted
+/// bytes once the lease is granted and BEFORE the
 /// serving gate is released, so whatever it establishes is in place before any relaunch can
 /// take the gate (SHARED-RESIDENT-LIFECYCLE.md step 1: "establish the residency record inside
 /// the existing admission hold, after capacity admission and before dropping that hold").
@@ -51,14 +65,18 @@ pub(crate) async fn wait_for_training_memory_bound(
     daemon: std::sync::Arc<ResourceDaemon>,
     serving: &LifecycleGate,
     consumer: &str,
-    bytes: u64,
+    need: TrainingNeed,
     mut waiting: impl FnMut(u64),
-    bind: impl FnOnce() -> Result<(), String>,
+    bind: impl FnOnce(u64) -> Result<(), String>,
 ) -> Result<LeaseGuard, String> {
     let mut bind = Some(bind);
-    if bytes == 0 {
+    if need == TrainingNeed::Measured(0) {
         return Err("training memory requirement must be measured before admission".into());
     }
+    let mut bytes = match need {
+        TrainingNeed::Measured(bytes) => bytes,
+        TrainingNeed::Calibrate => 0,
+    };
     let mut changes = daemon.subscribe();
     let mut last_available = None;
     let mut serving_refusal_said = None;
@@ -94,10 +112,26 @@ pub(crate) async fn wait_for_training_memory_bound(
             }
         };
         serving_refusal_said = None;
+        if need == TrainingNeed::Calibrate {
+            bytes = daemon.available_for(consumer, ResourceKind::Vram);
+            if bytes == 0 {
+                // nothing governed is free under the gate: wait for the authority to change
+                drop(hold);
+                if last_available != Some(0) {
+                    waiting(0);
+                    last_available = Some(0);
+                }
+                changes
+                    .changed()
+                    .await
+                    .map_err(|_| "training resource authority closed".to_owned())?;
+                continue;
+            }
+        }
         let attempt = daemon.acquire_guarded(&request(consumer, bytes));
         // bound while the gate is still held; a failed bind drops the lease with the error
         let attempt = match attempt {
-            Ok(guard) => match bind.take().map_or(Ok(()), |b| b()) {
+            Ok(guard) => match bind.take().map_or(Ok(()), |b| b(bytes)) {
                 Ok(()) => Ok(guard),
                 Err(why) => {
                     drop(guard);

@@ -202,6 +202,12 @@ pub struct KvSlotPool {
     /// slot pinned waits on before it leases again (card ff9ecfd8), so it never runs unpinned
     /// over a resident's KV. A wake signal, not a queue: the order stays the server's own.
     released: Arc<tokio::sync::Notify>,
+    /// Where [`Self::saved`] persists, set once when the engine is ready under a contract
+    /// that has a page dir and a fingerprint ([`SavedLedger`]). Unset = in-memory only.
+    ledger: std::sync::OnceLock<SavedLedger>,
+    /// Numbers each change of [`Self::saved`] for the ledger, so a write taken outside the
+    /// lock never replaces a newer one ([`Self::ledger_snapshot`]).
+    ledger_generation: AtomicU64,
 }
 
 /// A slot's operation permit. Dropping it wakes turns waiting for a slot
@@ -262,6 +268,60 @@ static PAGE_DIR: parking_lot::Mutex<Option<std::path::PathBuf>> = parking_lot::M
 /// a save can trim the store it just wrote into.
 pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
+    // A restarted core starts with no state samples, so its first cache sizing fell back to the
+    // KV estimate while the pages it would measure sat on disk (IntelMac, 2026-10-11 02:46Z:
+    // derived 1,792 MiB beside states up to 865 MB). Seed them from the newest pages already
+    // here, once per dir: they are exactly the saves a running core would have measured.
+    // Cheap check first, then the dir read with no lock held (Fable on #4933), then insert
+    // only if no save measured this dir meanwhile: a live sample outranks the disk's.
+    if measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), dir).is_some() {
+        return;
+    }
+    let seeded = newest_page_states(dir, STATE_SAMPLES);
+    let mut samples = RECENT_STATE_BYTES.lock();
+    if measured_state_bytes_in(&samples, dir).is_none() {
+        for bytes in seeded {
+            note_state_bytes_in(&mut samples, dir, bytes);
+        }
+    }
+}
+
+/// The engine's sidecars beside each page, saved and restored with it: the context checkpoints
+/// (`.ckpt`) and the adapter vector the state was computed under (`.lora`, card e5eaf9f4). ONE
+/// list, so every scan sizes a page whole and every trim removes it whole.
+const PAGE_SIDECARS: [&str; 2] = [".ckpt", ".lora"];
+
+/// Every page in `dir` (`a-*.bin`), as (page name -> (the page file's mtime, bytes of the page
+/// and its sidecars)). Reads the dir once; anything unreadable is skipped.
+fn pages_in(dir: &std::path::Path) -> std::collections::HashMap<String, (std::time::SystemTime, u64)> {
+    let mut pages = std::collections::HashMap::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return pages;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(md) = e.metadata() else { continue };
+        let sidecar = PAGE_SIDECARS.iter().find_map(|s| name.strip_suffix(s));
+        let page = sidecar.unwrap_or(&name).to_string(); // unwrap_or: a name with no sidecar suffix IS the page name
+        if !md.is_file() || !(page.starts_with("a-") && page.ends_with(".bin")) {
+            continue;
+        }
+        let entry = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));
+        entry.1 += md.len();
+        if sidecar.is_none() {
+            entry.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // unwrap_or: an unreadable mtime sorts oldest, the safe side for an eviction candidate and the least likely sample
+        }
+    }
+    pages
+}
+
+/// The sizes of the newest `n` saved states in `dir` (each page with its sidecars), oldest
+/// first. Anything unreadable is simply not a sample.
+fn newest_page_states(dir: &std::path::Path, n: usize) -> Vec<u64> {
+    let mut by_age: Vec<(std::time::SystemTime, u64)> = pages_in(dir).into_values().filter(|(_, b)| *b > 0).collect();
+    by_age.sort_by_key(|(t, _)| *t);
+    let skip = by_age.len().saturating_sub(n);
+    by_age.into_iter().skip(skip).map(|(_, b)| b).collect()
 }
 
 /// After a successful save of `just_saved` (a page filename), keep the live
@@ -271,6 +331,12 @@ pub fn trim_page_store_after_save(just_saved: &str) {
     let Some(dir) = PAGE_DIR.lock().clone() else {
         return;
     };
+    // The page just written IS one mind's whole saved state (tokens, KV, recurrent state, and
+    // the context checkpoints in its sidecar): a measurement of what the host prompt cache
+    // must hold per mind, which the KV estimate alone misses on a hybrid model.
+    let page_bytes = |name: &str| std::fs::metadata(dir.join(name)).map(|m| m.len()).unwrap_or(0); // unwrap_or: an absent sidecar adds nothing
+    let state = PAGE_SIDECARS.iter().fold(page_bytes(just_saved), |sum, s| sum.saturating_add(page_bytes(&format!("{just_saved}{s}"))));
+    note_state_bytes(&dir, state);
     let (removed, freed, kept) =
         trim_page_store(&dir, just_saved, KV_PAGE_STORE_MAX_BYTES, KV_PAGE_MIN_AGE_MS);
     if removed > 0 {
@@ -287,7 +353,55 @@ pub fn trim_page_store_after_save(just_saved: &str) {
     }
 }
 
-/// Pure trim: pages (`a-*.bin`) with their `.ckpt` sidecars, oldest mtime first,
+/// How many recent saved-state sizes [`measured_state_bytes`] remembers per page dir, and how
+/// many page dirs it remembers (the least recently written is dropped).
+const STATE_SAMPLES: usize = 16;
+const STATE_DIRS: usize = 8;
+/// Recent saved-state sizes, keyed by the PAGE DIR they were written to: a page dir is one
+/// model at one geometry ([`crate::inference::llama_server::kv_page_dir`]), so a second model's
+/// lane on the node is never sized by another model's states (Fable on #4930).
+type StateSamples = std::collections::VecDeque<(std::path::PathBuf, std::collections::VecDeque<u64>)>;
+static RECENT_STATE_BYTES: parking_lot::Mutex<StateSamples> = parking_lot::Mutex::new(std::collections::VecDeque::new());
+
+fn note_state_bytes(dir: &std::path::Path, bytes: u64) {
+    if bytes == 0 {
+        return;
+    }
+    note_state_bytes_in(&mut RECENT_STATE_BYTES.lock(), dir, bytes);
+}
+
+/// PURE: record `bytes` under `dir`, bounded by [`STATE_SAMPLES`] per dir and [`STATE_DIRS`] dirs.
+fn note_state_bytes_in(samples: &mut StateSamples, dir: &std::path::Path, bytes: u64) {
+    let mut recent = match samples.iter().position(|(d, _)| d == dir) {
+        Some(i) => samples.remove(i).map(|(_, r)| r).unwrap_or_default(), // unwrap_or_default: position just found it, so this is always Some
+        None => std::collections::VecDeque::new(),
+    };
+    recent.push_back(bytes);
+    while recent.len() > STATE_SAMPLES {
+        recent.pop_front();
+    }
+    samples.push_back((dir.to_path_buf(), recent));
+    while samples.len() > STATE_DIRS {
+        samples.pop_front();
+    }
+}
+
+/// PURE: the largest recent state recorded under `dir`.
+fn measured_state_bytes_in(samples: &StateSamples, dir: &std::path::Path) -> Option<u64> {
+    samples.iter().find(|(d, _)| d == dir).and_then(|(_, r)| r.iter().copied().max())
+}
+
+/// The largest of the last [`STATE_SAMPLES`] saved states written to `page_dir` (page +
+/// checkpoint sidecar), or `None` before the first save there. What one mind's state really costs the host
+/// prompt cache: on the 5090, 2026-10-11, the engine reported states of 4.3-5.8 GB for the
+/// hybrid 27B at a 68k window while the cache was sized from the KV estimate at 4,288 MiB,
+/// so 104 states were skipped and 220 evicted, and two minds on one slot found nothing.
+/// The largest, not a median: the engine refuses any state over the limit outright.
+pub fn measured_state_bytes(page_dir: &std::path::Path) -> Option<u64> {
+    measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), page_dir)
+}
+
+/// Pure trim: pages (`a-*.bin`) with their sidecars ([`PAGE_SIDECARS`]), oldest mtime first,
 /// until the dir is within `max_bytes`. Returns (pages removed, bytes freed,
 /// bytes kept). The page named `keep` is never removed; neither is any page
 /// younger than `min_age_ms` (an active resident's working set).
@@ -297,28 +411,8 @@ pub fn trim_page_store(
     max_bytes: u64,
     min_age_ms: u64,
 ) -> (usize, u64, u64) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return (0, 0, 0);
-    };
-    // page name → (mtime, bytes incl. sidecar)
-    let mut pages: std::collections::HashMap<String, (std::time::SystemTime, u64)> =
-        std::collections::HashMap::new();
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let Ok(md) = e.metadata() else { continue };
-        if !md.is_file() {
-            continue;
-        }
-        let page = name.strip_suffix(".ckpt").unwrap_or(&name).to_string(); // JUSTIFIED unwrap_or: a name without the sidecar suffix IS the page name
-        if !(page.starts_with("a-") && page.ends_with(".bin")) {
-            continue;
-        }
-        let slot = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));
-        slot.1 += md.len();
-        if !name.ends_with(".ckpt") {
-            slot.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // JUSTIFIED unwrap_or: an unreadable mtime sorts OLDEST — the safe side for an eviction candidate
-        }
-    }
+    // page name → (mtime, bytes incl. sidecars)
+    let pages = pages_in(dir);
     let mut total: u64 = pages.values().map(|v| v.1).sum();
     if total <= max_bytes {
         return (0, 0, total);
@@ -337,7 +431,9 @@ pub fn trim_page_store(
             continue;
         }
         let _ = std::fs::remove_file(dir.join(&name));
-        let _ = std::fs::remove_file(dir.join(format!("{name}.ckpt")));
+        for sidecar in PAGE_SIDECARS {
+            let _ = std::fs::remove_file(dir.join(format!("{name}{sidecar}")));
+        }
         removed += 1;
         freed += bytes;
         total = total.saturating_sub(bytes);
@@ -403,7 +499,43 @@ impl KvSlotPool {
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
+            ledger: std::sync::OnceLock::new(),
+            ledger_generation: AtomicU64::new(0),
         }
+    }
+
+    /// Persist this pool's confirmed-save set to `ledger` from now on. With `load`, the
+    /// ledger's own keys (same fingerprint, page file present) become restorable first:
+    /// a new core restoring the pages the last one saved. Returns the keys loaded.
+    pub(crate) fn attach_ledger(&self, ledger: SavedLedger, load: bool) -> usize {
+        let keys = if load { ledger.load() } else { std::collections::HashSet::new() };
+        let loaded = keys.len();
+        if self.ledger.set(ledger).is_err() {
+            return 0;
+        }
+        let snapshot = {
+            let mut saved = self.saved.lock();
+            saved.extend(keys);
+            self.ledger_snapshot(&saved)
+        };
+        self.persist_ledger(snapshot);
+        loaded
+    }
+
+    /// Stamp the engine process into this pool's ledger and rewrite it, so a core that
+    /// later adopts this engine can prove the ledger is its own. Once per ledger.
+    fn stamp_incarnation(&self, incarnation: (u32, u64)) {
+        let Some(ledger) = self.ledger.get() else {
+            return;
+        };
+        if ledger.incarnation.set(incarnation).is_err() {
+            return;
+        }
+        let snapshot = {
+            let saved = self.saved.lock();
+            self.ledger_snapshot(&saved)
+        };
+        self.persist_ledger(snapshot);
     }
 
     pub fn n_slots(&self) -> u32 {
@@ -611,14 +743,177 @@ impl KvSlotPool {
     /// Record that `key`'s page was successfully written to disk — it becomes
     /// restorable. Called by the adapter AFTER the save HTTP call succeeds.
     pub fn note_saved(&self, key: ActivityKey) {
-        self.saved.lock().insert(key);
+        let snapshot = {
+            let mut saved = self.saved.lock();
+            saved.insert(key);
+            self.ledger_snapshot(&saved)
+        };
+        self.persist_ledger(snapshot);
     }
 
     /// The page turned out unusable (restore failed: file gone, geometry
     /// mismatch) — stop offering it so the turn falls back to a plain prefill
-    /// instead of retrying a dead restore every pin.
+    /// instead of retrying a dead restore every pin. Also called BEFORE a save
+    /// overwrites the page, so an interrupted save is never restorable.
     pub fn note_page_lost(&self, key: &ActivityKey) {
-        self.saved.lock().remove(key);
+        let snapshot = {
+            let mut saved = self.saved.lock();
+            if !saved.remove(key) {
+                return;
+            }
+            self.ledger_snapshot(&saved)
+        };
+        self.persist_ledger(snapshot);
+    }
+
+    /// The set as it stands, numbered under the lock that changed it, so writes taken
+    /// outside that lock can still be applied in the set's order ([`SavedLedger::write`]
+    /// drops a snapshot older than the one already on disk). `None` without a ledger.
+    fn ledger_snapshot(&self, saved: &std::collections::HashSet<ActivityKey>) -> Option<(u64, Vec<(Uuid, Uuid)>)> {
+        self.ledger.get()?;
+        let generation = self.ledger_generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let mut keys: Vec<(Uuid, Uuid)> = saved.iter().map(|k| (k.persona, k.room)).collect();
+        keys.sort_unstable();
+        Some((generation, keys))
+    }
+
+    /// Write a snapshot beside the pages, OUTSIDE the set's lock: the write may retry a
+    /// Windows sharing violation for ~1.6 s (`replace_file`), and a turn's paging must
+    /// never wait on that. Nothing to write without a ledger (no page dir, or a contract
+    /// that cannot be fingerprinted).
+    fn persist_ledger(&self, snapshot: Option<(u64, Vec<(Uuid, Uuid)>)>) {
+        let (Some(ledger), Some((generation, keys))) = (self.ledger.get(), snapshot) else {
+            return;
+        };
+        if let Err(error) = ledger.write(generation, keys) {
+            // The in-memory set stays authoritative for this process; only a restart
+            // loses the eligibility the file would have carried.
+            crate::probe!(
+                class = "inference.kv_page.ledger_unwritten",
+                path = %ledger.path.display(),
+                error = %error,
+                "the confirmed-save ledger could not be written: saved pages stay restorable in this process, a restart will re-prefill them"
+            );
+        }
+    }
+}
+
+/// The confirmed-save set of one page dir, on disk, so it outlives the process
+/// (a deploy). Before this, eligibility lived only in [`KvSlotPool::saved`], which
+/// starts empty in every core: on the M5 2026-10-10 the first turns after the 18:49Z
+/// deploy reused nothing (turn_cached 0 of 31,811 and 27,250) while their pages sat on
+/// disk. The file holds exactly the in-memory set: a key enters only after the engine
+/// confirms its save and leaves before any save overwrites it, so a timed-out or
+/// interrupted save is never in it. It is read back only under the SAME contract
+/// fingerprint it was written with (the exact-contract rule of #4367, unchanged).
+pub(crate) struct SavedLedger {
+    path: std::path::PathBuf,
+    fingerprint: String,
+    /// The generation of the snapshot on disk; a write serializes on this and skips a
+    /// snapshot older than it.
+    written: Mutex<u64>,
+    /// The engine process these pages belong to, stamped by the spawn once the engine is
+    /// ready ([`stamp_engine_incarnation`]) or carried over by an adoption.
+    incarnation: std::sync::OnceLock<(u32, u64)>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SavedLedgerFile {
+    fingerprint: String,
+    keys: Vec<(Uuid, Uuid)>,
+    /// The engine process that wrote these pages: (pid, OS start time). A core that
+    /// ADOPTS a running engine has no launch contract of its own; this is how it proves
+    /// the ledger is that very process's, and so under its contract. Absent on a ledger
+    /// written before the spawn stamped it: such a ledger is never adopted.
+    #[serde(default)]
+    incarnation: Option<(u32, u64)>,
+}
+
+/// The ledger's file name inside a page dir. Not an `a-*.bin` page, so the page
+/// store's trim never counts or removes it; the generation sweep removes it with its dir.
+const SAVED_LEDGER_FILE: &str = "saved-ledger.json";
+
+impl SavedLedger {
+    fn in_dir(page_dir: &std::path::Path, fingerprint: String) -> Self {
+        Self {
+            path: page_dir.join(SAVED_LEDGER_FILE),
+            fingerprint,
+            written: Mutex::new(0),
+            incarnation: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The ledger a running engine left in `page_dir`, if that engine is the process
+    /// `incarnation` names: the fingerprint it was written under becomes this ledger's
+    /// own, because it is the same process under the same launch contract. Any other
+    /// ledger (another process, an unstamped one, none) is not this engine's.
+    fn of_running_engine(page_dir: &std::path::Path, incarnation: (u32, u64)) -> Result<Self, AdoptRefusal> {
+        let bytes = match std::fs::read(page_dir.join(SAVED_LEDGER_FILE)) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(AdoptRefusal::NoLedger),
+            Err(_) => return Err(AdoptRefusal::Unreadable),
+        };
+        let file = serde_json::from_slice::<SavedLedgerFile>(&bytes).map_err(|_| AdoptRefusal::Unreadable)?;
+        match file.incarnation {
+            None => return Err(AdoptRefusal::Unstamped),
+            Some(written_by) if written_by != incarnation => return Err(AdoptRefusal::AnotherProcess),
+            Some(_) => {}
+        }
+        let ledger = Self::in_dir(page_dir, file.fingerprint);
+        let _ = ledger.incarnation.set(incarnation);
+        Ok(ledger)
+    }
+
+    /// Atomic replace (write a sibling, then `replace_file`) into a dir that must already
+    /// exist: the lane creates its page dir; the ledger never creates one. Writes are
+    /// serialized and a snapshot older than the one on disk is dropped, so the file is
+    /// always the newest set even when writers race.
+    fn write(&self, generation: u64, keys: Vec<(Uuid, Uuid)>) -> std::io::Result<()> {
+        let mut written = self.written.lock();
+        if generation <= *written {
+            return Ok(());
+        }
+        let file = SavedLedgerFile { fingerprint: self.fingerprint.clone(), keys, incarnation: self.incarnation.get().copied() };
+        let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
+        let tmp = self.path.with_extension("json.tmp");
+        std::fs::write(&tmp, bytes)?;
+        crate::utils::file_replace::replace_file(&tmp, &self.path)?;
+        *written = generation;
+        Ok(())
+    }
+
+    /// The keys this ledger may restore: written under the same fingerprint, with
+    /// their page file still present. Anything else is no eligibility, never a guess:
+    /// a missing file, another contract's ledger, a malformed one.
+    fn load(&self) -> std::collections::HashSet<ActivityKey> {
+        let Some(dir) = self.path.parent() else {
+            return std::collections::HashSet::new();
+        };
+        let unread = |why: &str| {
+            crate::probe!(
+                class = "inference.kv_page.ledger_unread",
+                path = %self.path.display(),
+                why = why,
+                "no confirmed-save ledger restored: the pages in this dir re-prefill once"
+            );
+            std::collections::HashSet::new()
+        };
+        let bytes = match std::fs::read(&self.path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return std::collections::HashSet::new(),
+            Err(_) => return unread("unreadable"),
+        };
+        let Ok(file) = serde_json::from_slice::<SavedLedgerFile>(&bytes) else {
+            return unread("malformed");
+        };
+        if file.fingerprint != self.fingerprint {
+            return unread("written under another contract");
+        }
+        file.keys
+            .into_iter()
+            .filter_map(|(persona, room)| ActivityKey::new(persona, room))
+            .filter(|k| dir.join(page_filename(k)).is_file())
+            .collect()
     }
 }
 
@@ -644,6 +939,42 @@ pub(crate) struct KvPageContract {
     /// Cold-path revision evidence for the resolved model, adapters and engine.
     /// Unknown revisions refuse saved-page carry-over, never guess compatibility.
     pub revisions: Option<Vec<(std::path::PathBuf, u64, std::time::SystemTime)>>,
+}
+
+impl KvPageContract {
+    /// A stable digest of the whole contract, for the on-disk confirmed-save ledger:
+    /// two contracts with the same fingerprint are equal field for field. `None` under
+    /// the same conditions that refuse in-process carry-over (no page dir, unknown cache
+    /// type, unknown revisions): what cannot be compared exactly is never persisted.
+    pub(crate) fn fingerprint(&self) -> Option<String> {
+        use sha2::Digest;
+        let page_dir = self.page_dir.as_ref()?;
+        let cache_type = self.cache_type.as_ref()?;
+        let revisions = self.revisions.as_ref()?;
+        let mut h = sha2::Sha256::new();
+        let mut field = |label: &str, value: &[u8]| {
+            h.update(label.as_bytes());
+            h.update((value.len() as u64).to_le_bytes());
+            h.update(value);
+        };
+        field("model_id", self.model_id.as_bytes());
+        field("model", self.model.as_os_str().as_encoded_bytes());
+        for a in &self.adapters {
+            field("adapter", a.as_bytes());
+        }
+        field("page_dir", page_dir.as_os_str().as_encoded_bytes());
+        field("context", &self.context.to_le_bytes());
+        field("slots", &self.slots.to_le_bytes());
+        field("cache_type", cache_type.as_bytes());
+        field("engine", self.engine.as_bytes());
+        for (path, size, modified) in revisions {
+            field("revision", path.as_os_str().as_encoded_bytes());
+            field("size", &size.to_le_bytes());
+            let nanos = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).ok()?;
+            field("modified", &nanos.to_le_bytes());
+        }
+        Some(format!("{:x}", h.finalize()))
+    }
 }
 
 struct EndpointState {
@@ -1188,6 +1519,7 @@ impl EndpointTransition {
         // A fresh assignment ledger prevents old Arc holders/pins from affecting
         // the new engine. Copy ONLY saved-page eligibility under an exact contract.
         let pool = Arc::new(KvSlotPool::new(root, contract.slots));
+        let mut carried = false;
         if contract.page_dir.is_some()
             && contract.cache_type.is_some()
             && contract.revisions.is_some()
@@ -1195,7 +1527,22 @@ impl EndpointTransition {
         {
             if let Some(Some(old)) = state.pool.as_ref() {
                 *pool.saved.lock() = old.saved.lock().clone();
+                carried = true;
             }
+        }
+        // The same eligibility across a PROCESS restart: the ledger beside the pages,
+        // read only under the same fingerprint (the same exact contract). In-process
+        // carry-over is the fresher record when there is one, so the disk is read only
+        // when nothing was carried.
+        if let (Some(dir), Some(fingerprint)) = (contract.page_dir.as_ref(), contract.fingerprint()) {
+            let loaded = pool.attach_ledger(SavedLedger::in_dir(dir, fingerprint), !carried);
+            crate::probe!(
+                class = "inference.kv_page.ledger_attached",
+                endpoint = root,
+                carried = carried,
+                loaded = loaded as u64,
+                "confirmed-save ledger attached: pages saved under this exact contract are restorable, across a core restart too"
+            );
         }
         state.pool = Some(Some(pool));
         state.pool_generation = Some(generation.id);
@@ -1268,6 +1615,72 @@ impl SlotDirectory {
     }
 }
 
+/// The spawn's half of adoption: once the engine at `root` is ready, name the process
+/// (pid + OS start time) in its confirmed-save ledger.
+pub(crate) fn stamp_engine_incarnation(root: &str, pid: u32, started_s: u64) {
+    if started_s == 0 {
+        return; // an unreadable start time names no process, so it can prove nothing
+    }
+    if let Some(Some(pool)) = directory().get(root) {
+        pool.stamp_incarnation((pid, started_s));
+    }
+}
+
+/// The adopting core's half: `pool` was installed by props discovery for a running engine
+/// this core did not spawn. If that engine is the live lane `(pid, started_s)` and left a
+/// ledger in `page_dir` stamped with that same process, its confirmed saves become
+/// restorable here (same process, same contract). Returns the keys loaded; `None` when
+/// the ledger is not this engine's.
+pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path, pid: u32, started_s: u64) -> Result<usize, AdoptRefusal> {
+    if started_s == 0 {
+        return Err(AdoptRefusal::NoStartTime);
+    }
+    match SavedLedger::of_running_engine(page_dir, (pid, started_s)) {
+        Ok(ledger) => Ok(pool.attach_ledger(ledger, true)),
+        Err(refusal) => {
+            // Nothing of this process's to restore, but it IS this process (the caller verified
+            // the live lane): start its ledger now, empty, so what it saves from here on is
+            // restorable by the next core that adopts it. Without this, a refused adoption left
+            // the pool with no ledger and the chain never began (IntelMac 2026-10-10 22:35Z:
+            // why=no_ledger on an engine older than the ledger, kept by every deploy since).
+            // Its fingerprint is the incarnation: only an adopter of this same process ever
+            // loads it, and a spawned engine's contract fingerprint never equals it.
+            let ledger = SavedLedger::in_dir(page_dir, format!("incarnation:{pid}:{started_s}"));
+            let _ = ledger.incarnation.set((pid, started_s));
+            pool.attach_ledger(ledger, false);
+            Err(refusal)
+        }
+    }
+}
+
+/// Why an adopted engine's saved pages stay unrestorable: each is a different thing to fix
+/// (Fable on #4923), so the probe names it instead of a bare `adopted=false`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdoptRefusal {
+    /// The engine never saved a page under a ledger (nothing to restore, not a fault).
+    NoLedger,
+    /// A ledger is there but could not be read or parsed.
+    Unreadable,
+    /// Written before the spawn stamped its engine: it cannot prove which process it is.
+    Unstamped,
+    /// Stamped by another process (another pid, or the same pid started at another time).
+    AnotherProcess,
+    /// The live engine's start time could not be read, so nothing can be proven about it.
+    NoStartTime,
+}
+
+impl AdoptRefusal {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::NoLedger => "no_ledger",
+            Self::Unreadable => "unreadable",
+            Self::Unstamped => "unstamped",
+            Self::AnotherProcess => "another_process",
+            Self::NoStartTime => "no_start_time",
+        }
+    }
+}
+
 /// The one process-wide directory (same scope as the serving resource itself:
 /// every adapter instance talking to one server shares one assignment).
 pub fn directory() -> &'static SlotDirectory {
@@ -1280,6 +1693,48 @@ pub fn directory() -> &'static SlotDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (IntelMac, 2026-10-11 02:46Z on #4930: the first sizing after a
+    // restart used the KV estimate, 1,792 MiB, beside saved states of up to 865 MB): a
+    // restarted core measures its states from the pages already on disk. Each sample is a
+    // page plus its checkpoint sidecar; other files are not samples.
+    #[test]
+    fn a_restarted_core_measures_its_states_from_the_pages_on_disk() {
+        let dir = tempfile::tempdir().expect("test: page dir");
+        std::fs::write(dir.path().join("a-p1-r1.bin"), vec![0u8; 700]).expect("test: page");
+        std::fs::write(dir.path().join("a-p1-r1.bin.ckpt"), vec![0u8; 160]).expect("test: sidecar");
+        std::fs::write(dir.path().join("a-p1-r1.bin.lora"), vec![0u8; 5]).expect("test: adapter sidecar");
+        std::fs::write(dir.path().join("a-p2-r2.bin"), vec![0u8; 300]).expect("test: page");
+        std::fs::write(dir.path().join("saved-ledger.json"), vec![0u8; 9_999]).expect("test: not a page");
+        let mut states = newest_page_states(dir.path(), STATE_SAMPLES);
+        states.sort_unstable();
+        assert_eq!(states, vec![300, 865], "each page with its sidecars, the ledger excluded");
+        assert_eq!(newest_page_states(dir.path(), 1).len(), 1, "at most n");
+        assert!(newest_page_states(&dir.path().join("absent"), 4).is_empty(), "no dir, no samples");
+    }
+
+    // what this catches (Fable on #4930): a node-wide sample, where a second model's lane on
+    // the same node would be sized by the hybrid 27B's 4-6 GB states. Samples are per page
+    // dir (one model at one geometry), each dir answers only for itself, and both bounds hold.
+    #[test]
+    fn measured_state_sizes_answer_only_for_their_own_page_dir() {
+        let mut samples = StateSamples::new();
+        let big = std::path::Path::new("/pages/qwen-27b--c49152");
+        let small = std::path::Path::new("/pages/qwen-1.5b--c32768");
+        note_state_bytes_in(&mut samples, big, 5_500_000_000);
+        note_state_bytes_in(&mut samples, small, 120_000_000);
+        assert_eq!(measured_state_bytes_in(&samples, big), Some(5_500_000_000));
+        assert_eq!(measured_state_bytes_in(&samples, small), Some(120_000_000), "never the 27B's size");
+        assert_eq!(measured_state_bytes_in(&samples, std::path::Path::new("/pages/other")), None, "an unwritten dir: nothing measured");
+        for i in 0..(STATE_SAMPLES * 2) {
+            note_state_bytes_in(&mut samples, small, 100 + i as u64);
+        }
+        assert_eq!(measured_state_bytes_in(&samples, small), Some(100 + (STATE_SAMPLES * 2 - 1) as u64), "only the recent samples count");
+        for i in 0..(STATE_DIRS * 2) {
+            note_state_bytes_in(&mut samples, std::path::Path::new(&format!("/pages/m{i}")), 1);
+        }
+        assert!(samples.len() <= STATE_DIRS, "bounded by dirs");
+    }
 
     fn key(p: u128, r: u128) -> ActivityKey {
         ActivityKey::new(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
@@ -1585,6 +2040,111 @@ mod tests {
         assert!(matches!(dir.get("s2"), Some(Some(_))));
     }
 
+    // What this catches (the M5, 2026-10-10 18:49Z: turn_cached 0 of 31,811 after a
+    // deploy, pages on disk): confirmed-save eligibility that dies with the process.
+    // A new pool under the SAME contract restores what the last one saved; a page whose
+    // file is gone, a key lost before its save completed, and any other contract (one
+    // more slot) restore nothing.
+    #[test]
+    fn confirmed_saves_survive_a_restart_only_under_the_same_contract() {
+        let dir = tempfile::tempdir().expect("test: page dir");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some(dir.path().to_path_buf()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
+        };
+        let fp = contract.fingerprint().expect("test: an exact contract fingerprints");
+        let ledger = || SavedLedger::in_dir(dir.path(), fp.clone());
+        let (kept, gone, interrupted) = (key(1, 2), key(3, 4), key(5, 6));
+        let first = KvSlotPool::new("test://ledger", 2);
+        assert_eq!(first.attach_ledger(ledger(), true), 0, "nothing saved yet");
+        for k in [kept, gone, interrupted] {
+            first.note_saved(k);
+            std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
+        }
+        std::fs::remove_file(dir.path().join(page_filename(&gone))).expect("test: page gone");
+        first.note_page_lost(&interrupted); // a save began over it and never confirmed
+
+        let restarted = KvSlotPool::new("test://ledger", 2);
+        assert_eq!(restarted.attach_ledger(ledger(), true), 1);
+        assert!(restarted.saved.lock().contains(&kept), "a confirmed save survives the restart");
+        assert!(!restarted.saved.lock().contains(&gone), "a page whose file is gone is never offered");
+        assert!(!restarted.saved.lock().contains(&interrupted), "an unconfirmed save is never offered");
+
+        let other = KvPageContract { slots: 3, ..contract.clone() };
+        let other_fp = other.fingerprint().expect("test: fingerprint");
+        assert_ne!(other_fp, fp, "the slot count is part of the page format (measured: a p2 page refused into p1)");
+        assert_eq!(KvSlotPool::new("test://ledger", 3).attach_ledger(SavedLedger::in_dir(dir.path(), other_fp), true), 0);
+        assert!(KvPageContract { revisions: None, ..contract.clone() }.fingerprint().is_none(), "unknown revisions never persist");
+        // The CPU lane (IntelMac 2026-10-11): f16 is the engine default, launched with no flag.
+        // Its contract names the type the engine runs, so it persists like any other; it never
+        // matches a quantized page; a rebuilt engine is another contract; unknown stays refused.
+        let cpu = KvPageContract { cache_type: Some("f16".into()), ..contract.clone() };
+        let cpu_fp = cpu.fingerprint().expect("test: the engine's default type is a known type");
+        assert_eq!(cpu.clone().fingerprint(), Some(cpu_fp.clone()), "the same launch, the same ledger");
+        assert_ne!(cpu_fp, fp, "an f16 page is never a q8_0 page");
+        let rebuilt = vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH), ("fixture-engine".into(), 9, std::time::SystemTime::UNIX_EPOCH)];
+        assert_ne!(KvPageContract { revisions: Some(rebuilt), ..cpu.clone() }.fingerprint(), Some(cpu_fp), "another engine revision");
+        assert!(KvPageContract { cache_type: None, ..cpu }.fingerprint().is_none(), "an unknown type never persists");
+    }
+
+    // What this catches (IntelMac, 2026-10-10 20:29Z: the new core ADOPTED the running
+    // engine, and an adopted engine's pool has no launch contract, so #4921's ledger never
+    // attached and every saved page was ignored): an adopting core restores the ledger
+    // its engine left, and ONLY when that ledger names the same process. Another pid,
+    // another start time of the same pid (a recycled number), or a ledger the spawn
+    // never stamped adopts nothing.
+    #[test]
+    fn an_adopted_engine_restores_only_the_ledger_its_own_process_wrote() {
+        let dir = tempfile::tempdir().expect("test: page dir");
+        let contract = KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some(dir.path().to_path_buf()),
+            context: 32768,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            engine: "fixture-engine".into(),
+            revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
+        };
+        let fp = contract.fingerprint().expect("test: fingerprint");
+        let spawned = KvSlotPool::new("test://adopt", 2);
+        spawned.attach_ledger(SavedLedger::in_dir(dir.path(), fp), true);
+        let k = key(7, 8);
+        spawned.note_saved(k);
+        std::fs::write(dir.path().join(page_filename(&k)), b"kv").expect("test: page");
+
+        let empty = tempfile::tempdir().expect("test: empty dir");
+        let first_core = KvSlotPool::new("test://adopt", 2);
+        assert_eq!(adopt_engine_ledger(&first_core, empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::NoLedger));
+        // ...but the adopting core starts this process's ledger, so its saves survive the next deploy
+        let saved_after = key(9, 10);
+        first_core.note_saved(saved_after);
+        std::fs::write(empty.path().join(page_filename(&saved_after)), b"kv").expect("test: page");
+        let next_core = KvSlotPool::new("test://adopt", 2);
+        assert_eq!(adopt_engine_ledger(&next_core, empty.path(), 4242, 1_700_000_000), Ok(1), "the next deploy restores what the adopter saved");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4243, 1_700_000_000), Err(AdoptRefusal::AnotherProcess), "never another process");
+        std::fs::remove_file(empty.path().join(SAVED_LEDGER_FILE)).expect("test: reset for the cases below");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_000), Err(AdoptRefusal::Unstamped), "an unstamped ledger proves no process");
+        spawned.stamp_incarnation((4242, 1_700_000_000));
+
+        let adopted = KvSlotPool::new("test://adopt", 2);
+        assert_eq!(adopt_engine_ledger(&adopted, dir.path(), 4242, 1_700_000_000), Ok(1));
+        assert!(adopted.saved.lock().contains(&k), "the same process's confirmed save is restorable after the core restart");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4243, 1_700_000_000), Err(AdoptRefusal::AnotherProcess), "another process");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 1_700_000_999), Err(AdoptRefusal::AnotherProcess), "a recycled pid");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), dir.path(), 4242, 0), Err(AdoptRefusal::NoStartTime), "no start time, no proof");
+        std::fs::write(empty.path().join(SAVED_LEDGER_FILE), b"not json").expect("test: garbage");
+        assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::Unreadable));
+    }
+
     // What this catches: same-URL restart must restore saved KV, never trust old
     // physical holders; queued/late work cannot reopen or clear a newer generation.
     #[tokio::test]
@@ -1809,13 +2369,14 @@ mod tests {
         };
         write("a-old.bin", 100, 300);
         write("a-old.bin.ckpt", 10, 300);
+        write("a-old.bin.lora", 5, 300); // the adapter-vector sidecar (card e5eaf9f4): part of the page
         write("a-mid.bin", 100, 200);
         write("a-new.bin", 100, 100);
         write("unrelated.txt", 500, 0);
         let (removed, freed, kept) = trim_page_store(&dir, "a-old.bin", 250, 0);
         assert_eq!(removed, 1, "one page over budget: the oldest NOT protected → a-mid");
         assert_eq!(freed, 100);
-        assert_eq!(kept, 210);
+        assert_eq!(kept, 215, "a page counts with both its sidecars");
         assert!(dir.join("a-old.bin").exists() && dir.join("a-old.bin.ckpt").exists(), "the just-saved page is kept");
         assert!(!dir.join("a-mid.bin").exists());
         let (removed, _, _) = trim_page_store(&dir, "a-new.bin", 150, 0);
@@ -1823,6 +2384,7 @@ mod tests {
         assert_eq!(young, 0, "a page younger than the floor is an active resident's: never trimmed");
         assert_eq!(removed, 1, "now a-old goes, sidecar with it");
         assert!(!dir.join("a-old.bin.ckpt").exists());
+        assert!(!dir.join("a-old.bin.lora").exists(), "every sidecar goes with its page: no orphan drains forever");
         assert!(dir.join("unrelated.txt").exists(), "only pages are trimmed");
         let _ = std::fs::remove_dir_all(&dir);
     }

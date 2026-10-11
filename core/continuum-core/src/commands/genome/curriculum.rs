@@ -322,20 +322,10 @@ mod tests {
     fn eval_task(id: &str, with_test: bool) -> EvalTask {
         EvalTask {
             id: id.to_string(),
-            max_acts: None,
             prompt: "write a function that reverses a string".to_string(),
-            expect: String::new(),
-            silence: false,
             test: with_test.then(|| "assert_eq!(rev(\"ab\"), \"ba\");".to_string()),
             lang: Some("rust".to_string()),
-            dod_shell: None,
-            solution_file: None,
-            setup_shell: None,
-            workspace_root: None,
-            ui_checks: Vec::new(),
-            target: None,
-            ui_pass_threshold: None,
-            needs_tools: None,
+            ..Default::default()
         }
     }
 

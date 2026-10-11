@@ -512,14 +512,25 @@ impl ModelFootprint {
             .min(self.context_window)
     }
 
+    /// What a lane costs beyond its KV: the base compute buffer plus the fixed residency a
+    /// measurement attributed to it ([`Self::fixed_per_lane_bytes`]). What the plan sizes with.
     pub fn compute_buffer_per_lane(&self) -> u64 {
+        self.base_compute_buffer_per_lane().saturating_add(self.fixed_per_lane_bytes)
+    }
+
+    /// The compute buffer a lane is assumed to need before anything is measured: what a
+    /// MEASUREMENT of the lane subtracts. Never [`Self::compute_buffer_per_lane`] there:
+    /// the fixed term is derived FROM that measurement, so subtracting it too feeds each
+    /// reading's excess into the next one's floor. With C the lane's true fixed residency,
+    /// fixed(n+1) = C − fixed(n), alternating forever: the M5 on 2026-10-10 19:58–20:01Z
+    /// read 1.93 GB and 4.40 GB of per-lane compute on alternate ticks and its plan flipped
+    /// between 2 lanes and 1 every tick.
+    pub fn base_compute_buffer_per_lane(&self) -> u64 {
         // weights / 16 ≈ 854 MiB for the 24B (1.55× the measured 551 MiB — the safety
         // margin), and scales DOWN for smaller models (a 4B ≈ 140 MiB). Floored so a
         // tiny/degenerate footprint still reserves a real buffer, never zero.
         const COMPUTE_BUFFER_FLOOR: u64 = 256 * 1024 * 1024; // 256 MiB
-        (self.weights_bytes / 16)
-            .max(COMPUTE_BUFFER_FLOOR)
-            .saturating_add(self.fixed_per_lane_bytes)
+        (self.weights_bytes / 16).max(COMPUTE_BUFFER_FLOOR)
     }
 
     /// Total on-device residency for a live server: the weights (shared across

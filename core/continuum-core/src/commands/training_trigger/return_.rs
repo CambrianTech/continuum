@@ -96,6 +96,31 @@ pub(crate) async fn return_job(
     if let Some(root) = &request.local_artifact_dir {
         refuse_trained_job(job_id, &root.join(job_id.to_string()))?;
     }
+    // PARKED examples stay parked: they fit no window this node plans today, and handing them
+    // back would refill her bucket to be skipped again every tick (the partition record)
+    let partition = crate::genome::fine_tuning::engine_lora_adapter::read_partition(&dir).or_else(|| {
+        request.local_artifact_dir.as_ref().and_then(|r| crate::genome::fine_tuning::engine_lora_adapter::read_partition(&r.join(job_id.to_string())))
+    });
+    let request = match partition {
+        Some(p) if !p.parked.is_empty() => {
+            let total = request.dataset.examples.len();
+            let mut request = request;
+            request.dataset.examples = std::mem::take(&mut request.dataset.examples)
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| p.parked.binary_search(i).is_err())
+                .map(|(_, e)| e)
+                .collect();
+            if request.dataset.examples.is_empty() {
+                return Ok(SubmitOutcome::refused(
+                    "Parked",
+                    format!("all {total} of job {job_id}'s examples are parked: none fits window {}, so they wait for a larger one", p.window),
+                ));
+            }
+            request
+        }
+        _ => request,
+    };
     let outcome = return_request(state, request, job_id).await?;
     if outcome.success {
         board.journal_returned(job_id, job_id, &serde_json::json!("genome/training-trigger/return"), 0); // not held by a Took: an operator returned it, named by the verb
@@ -121,6 +146,63 @@ mod tests {
     use crate::commands::training_trigger::test_support::{build_runtime_trigger_only, ex};
     use crate::genome::fine_tuning::job_board::WatchedJob;
     use crate::genome::fine_tuning::types::{JobHandle, TrainingSource, TrainingStatus};
+
+    // what this catches (Astra on the partition, 2026-10-11): `return` handing back a job's
+    // PARKED examples, which fit no window this node plans, so they refill her bucket and are
+    // skipped again every tick. A return carries only the unparked ones, and a job whose
+    // examples are all parked is refused as Parked, returning nothing.
+    #[tokio::test]
+    async fn a_return_never_hands_back_parked_examples() {
+        let (trigger, _executor, _db) = build_runtime_trigger_only().await;
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let board = TrainingJobBoard::with_ledger(Some(dir.path().join("jobs-ledger.jsonl")));
+        let root = dir.path().join("genome");
+        let persona = Uuid::from_u128(11);
+        let ended = |job: Uuid| {
+            board.register(WatchedJob {
+                trigger_dispatch_id: None,
+                handle: JobHandle { provider_id: "engine-local".into(), provider_job_id: "x".into(), local_id: job },
+                persona_id: persona,
+                persona_name: "Kimi".into(),
+                base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+                trait_kind: "code/owner".into(),
+                eval_set: None,
+                signature: None,
+                decision: None,
+            });
+            board.claim(job, &TrainingStatus::Failed { error: "ended before training".into() });
+        };
+        let with_parked = |job: Uuid, parked: Vec<usize>| {
+            let jd = job_dir_under(&root, "Kimi", "code/owner", job);
+            std::fs::create_dir_all(&jd).expect("test: job dir");
+            std::fs::write(jd.join("request.json"), serde_json::json!({
+                "personaId": persona.to_string(), "personaName": "Kimi",
+                "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "traitKind": "code/owner",
+                "dataset": {"examples": [ex("p0", "c"), ex("p1", "c"), ex("p2", "c")], "source": TrainingSource::TeacherSynthesized, "validationSplit": 0.0}
+            }).to_string()).expect("test: request");
+            std::fs::write(jd.join("partition.json"), serde_json::json!({
+                "window": 16896, "sent": [], "parked": parked, "rows": []
+            }).to_string()).expect("test: partition");
+        };
+        let key = crate::modules::training_trigger::BucketKey {
+            persona_id: persona,
+            trait_kind: "code/owner".into(),
+            base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+        };
+        let some = Uuid::new_v4();
+        ended(some);
+        with_parked(some, vec![0, 2]);
+        assert!(return_job(&trigger.state, &board, &root, some).await.expect("test: returned").success);
+        let held: Vec<String> = trigger.state.buckets.get(&key).map(|b| b.examples.iter().map(|e| e.prompt.clone()).collect()).expect("test: bucket");
+        assert_eq!(held, vec!["p1".to_string()], "only the unparked example goes back");
+
+        let all = Uuid::new_v4();
+        ended(all);
+        with_parked(all, vec![0, 1, 2]);
+        let refused = return_job(&trigger.state, &board, &root, all).await.expect("test: answered");
+        assert!(!refused.success && refused.error_kind.as_deref() == Some("Parked"), "{refused:?}");
+        assert_eq!(trigger.state.buckets.get(&key).map(|b| b.examples.len()), Some(1), "nothing was added");
+    }
 
     // what this catches (the 5090, 2026-10-05; and 2026-10-07, a return wearing its submission's id): ~500 of Kimi's examples stranded in the
     // directories of 18 jobs that ended without training, with no path back to her bucket.

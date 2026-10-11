@@ -81,7 +81,7 @@ pub(super) fn default_schedule() -> ScheduleParams {
         epochs: 3,
         batch_size: 4,
         sequence_length: 32,
-        learning_rate: 1e-4,
+        learning_rate: super::native_jobs::DEFAULT_LEARNING_RATE,
     }
 }
 

@@ -646,6 +646,34 @@ impl OpenAICompatibleAdapter {
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
         let pool = dir.ensure_pool(root, n_slots);
+        // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
+        // so its confirmed saves come from the ledger it left, when that ledger names this
+        // very process. A spawned engine already attached its own at readiness and returned
+        // on the fast path above, so this only runs for an engine this core did not spawn.
+        let adoption = match crate::inference::lane_registry::live_lane() {
+            None => Err("no_live_lane_record"),
+            Some(lane) if lane.root_url() != root.trim_end_matches('/') => Err("live_lane_is_another_root"),
+            Some(lane) if crate::inference::engine_residency::process_start_s(lane.pid) != Some(lane.started_s) => {
+                Err("live_lane_is_another_process")
+            }
+            Some(lane) => match lane.page_dir.as_deref() {
+                None => Err("live_lane_has_no_page_dir"),
+                Some(page_dir) => {
+                    // the adopted engine's page dir is this core's to trim and measure too
+                    // (a spawn records it at launch; an adoption never did)
+                    crate::inference::slots::note_page_dir(page_dir);
+                    crate::inference::slots::adopt_engine_ledger(&pool, page_dir, lane.pid, lane.started_s)
+                        .map_err(crate::inference::slots::AdoptRefusal::as_str)
+                }
+            },
+        };
+        crate::probe!(
+            class = "inference.kv_page.ledger_adopted",
+            adopted = adoption.is_ok(),
+            loaded = adoption.unwrap_or(0) as u64, // probe field: 0 when nothing was adopted, `why` names the reason
+            why = adoption.err().unwrap_or("adopted"), // probe field: the refusal, or "adopted" when the ledger was the engine's
+            "an adopted engine's confirmed-save ledger: its saved pages are restorable only when the ledger names this same process"
+        );
         tracing::info!(
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"

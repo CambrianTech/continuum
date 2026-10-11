@@ -5,6 +5,7 @@
 
 pub mod age;
 pub mod audio;
+pub mod file_replace;
 pub mod params;
 pub mod ports;
 pub mod str_case;
