@@ -20,16 +20,7 @@
 /// platform. The Windows arm used to scrape `tasklist` output for the pid as a SUBSTRING, so pid
 /// 42 read alive whenever any pid containing "42" existed (the bug deploy_claim had already
 /// fixed with exactly this lookup).
-pub fn is_alive(pid: u32) -> bool {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    if pid == 0 {
-        return false;
-    }
-    let target = Pid::from_u32(pid);
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[target]), true, ProcessRefreshKind::nothing());
-    sys.process(target).is_some()
-}
+pub use continuum_cli_lifecycle::process::is_alive;
 
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
 #[cfg(unix)]

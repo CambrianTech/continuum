@@ -20,6 +20,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["time", "process", "rt", "macros"] }  # launchd interval + supervisor_install process/timeout — PRODUCTION code, not tests
 sha2 = "0.10"
+sysinfo = "0.33" # process::is_alive, the one pid-liveness check (deploy_claim, lane reaping)
 base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
