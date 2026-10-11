@@ -318,6 +318,12 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // as every row above: a directory the substrate writes unbounded data into gets
         // a row and an eviction decision (deferred, named, in `disk_eviction.rs`).
         TrackedDir::new("k3-container", home.join(".continuum/kimi-k3-container")),
+        // The cognition capture glass box: per-persona prompt captures and workspace traces
+        // (and the replay fixtures beside them). UNTRACKED until card 75dd8bfe, the day the
+        // 5090's C: reached 98% with a 3.0 GB workspace trace in it; IntelMac held 1.3 GB
+        // across 76 trace files. Its writers now bound each persona's files; the total still
+        // scales with persona count, which is why the class needs this row and an owner.
+        TrackedDir::new("fixtures", home.join(".continuum/fixtures")),
         TrackedDir::new("moe-probe", home.join(".continuum/moe-probe")),
         // The substrate's OWN rotation-generation dirs. Registered
         // 2026-08-06 — they had been the two directories continuum

@@ -15,7 +15,7 @@
 //! a write failure is logged and dropped, NEVER fails the cognition turn —
 //! observability is not load-bearing ([[substrate-is-a-good-citizen-on-the-host]]).
 
-use std::fs::{File, OpenOptions};
+use crate::routing::capped_appender::{CappedAppender, MAX_LOG_BYTES};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -34,6 +34,15 @@ use super::workspace::{
 const SCHEMA_VERSION: u32 = 4;
 
 pub(crate) const FIXTURE_DIR: &str = ".continuum/fixtures/workspace-traces";
+
+/// A persona's trace file rotates at the substrate's per-file bound, keeping one older
+/// generation beside the live file: at most `2 x MAX_LOG_BYTES` per persona. Before this the
+/// file was append-only with no bound (card 75dd8bfe). Measured 2026-10-11 15:51Z on IntelMac:
+/// 76 trace files, 1.3 GB, the largest 341 MB; on the 5090, 3.0 GB in one file with C: at 98%.
+/// A record is ~64 KB (median; p90 92 KB) at ~280 KB/hour, so 16 MiB is ~260 records, the last
+/// couple of days. That is what the readers use: replay reads one burst, introspection tails a line.
+const TRACE_MAX_BYTES: u64 = MAX_LOG_BYTES;
+const TRACE_GENERATIONS: usize = 1;
 
 /// One faculty's bid, projected to a serializable shape. The internal
 /// [`Contribution`] is intentionally NOT `Serialize` (it's a live cognition
@@ -132,7 +141,7 @@ struct WorkspaceTraceRecord<'a> {
 pub struct JsonlWorkspaceCaptureSink {
     persona_id: Uuid,
     session_id: Uuid,
-    file: Arc<Mutex<BufWriter<File>>>,
+    file: Arc<Mutex<BufWriter<CappedAppender>>>,
 }
 
 impl JsonlWorkspaceCaptureSink {
@@ -151,16 +160,19 @@ impl JsonlWorkspaceCaptureSink {
     /// `dir` if needed. Returns an error only on filesystem failure; the caller
     /// degrades to `Noop` capture on error (never fails persona spawn).
     pub fn open(dir: &Path, persona_id: Uuid) -> std::io::Result<Self> {
+        Self::open_capped(dir, persona_id, TRACE_MAX_BYTES)
+    }
+
+    /// [`Self::open`] with the size at which the live file rotates.
+    fn open_capped(dir: &Path, persona_id: Uuid, max_bytes: u64) -> std::io::Result<Self> {
         std::fs::create_dir_all(dir)?;
-        let path = dir.join(format!("{persona_id}.jsonl"));
-        static OWNERS: LazyLock<super::prompt_capture::owner::CaptureOwners<BufWriter<File>>> =
+        let file_name = format!("{persona_id}.jsonl");
+        let path = dir.join(&file_name);
+        static OWNERS: LazyLock<super::prompt_capture::owner::CaptureOwners<BufWriter<CappedAppender>>> =
             LazyLock::new(super::prompt_capture::owner::CaptureOwners::default);
-        let file = OWNERS.acquire(&path, |path| {
-            OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-                .map(|file| BufWriter::with_capacity(64 * 1024, file))
+        let file = OWNERS.acquire(&path, |_| {
+            CappedAppender::with_limits(dir, &file_name, max_bytes, TRACE_GENERATIONS)
+                .map(|appender| BufWriter::with_capacity(64 * 1024, appender))
         })?;
         Ok(Self {
             persona_id,
@@ -374,6 +386,50 @@ mod tests {
         sink.record(&mk(Uuid::new_v4()));
         let body = std::fs::read_to_string(dir.join(format!("{persona}.jsonl"))).unwrap();
         assert_eq!(body.lines().count(), 2, "one line per tick");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // what this catches (card 75dd8bfe; the 5090 2026-10-11: one persona's trace at 3.0 GB with C:
+    // at 98%, IntelMac 1.3 GB across 76 files): an append-only trace with no bound. The file
+    // rotates at its cap and keeps one older generation, so a persona's traces stay under
+    // 2 x cap + one record whatever runs; every line in both files is a whole JSON record (a
+    // rotation never splits one); and an oversized file left by an older build is rotated on
+    // the first write instead of growing.
+    #[tokio::test]
+    async fn a_persona_trace_rotates_at_its_cap_and_keeps_one_generation() {
+        let dir = std::env::temp_dir().join(format!("ws-cap-{}", Uuid::new_v4()));
+        let persona = Uuid::new_v4();
+        let live = dir.join(format!("{persona}.jsonl"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&live, vec![b'x'; 50_000]).unwrap(); // a legacy oversized file
+        let cap = 4_096;
+        let sink = JsonlWorkspaceCaptureSink::open_capped(&dir, persona, cap).unwrap();
+        let tick = WorkspaceTrace {
+            cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
+            cause: crate::cognition::workspace::Cause::Synthetic,
+            world_state: "w".repeat(600),
+            room_updates: Default::default(),
+            room_id: Uuid::new_v4(),
+            bids: vec![],
+            context_broadcast: vec![],
+            broadcast: vec![],
+            decision: None,
+            timings: vec![],
+        };
+        for _ in 0..40 {
+            sink.record(&tick);
+        }
+        let older = dir.join(format!("{persona}.jsonl.1"));
+        let names: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names.len(), 2, "the live file and one generation, nothing else: {names:?}");
+        let line_max = std::fs::read_to_string(&live).unwrap().lines().map(str::len).max().unwrap() as u64 + 1;
+        for file in [&live, &older] {
+            let body = std::fs::read_to_string(file).unwrap();
+            assert!(body.len() as u64 <= cap + line_max, "{} holds {} bytes, over the cap", file.display(), body.len());
+            for line in body.lines() {
+                serde_json::from_str::<serde_json::Value>(line).expect("every line is a whole record");
+            }
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
