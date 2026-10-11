@@ -38,10 +38,15 @@ the code, an inference relayed to Joel as a fact. Every one was a claim made fas
 it was checked. Reviewers enforce these on each other; an author does not self-exempt.
 
 - **No guessed numbers.** A timeout, size, rate or threshold cites the measurement it came
-  from (where, when, the value). An engine, hardware or training PR carries a `## Measured`
-  section with real numbers. A reviewer refuses an unmeasured constant.
-- **The reviewer verifies one claim.** Every approval names at least one claim the reviewer
-  checked by running it or by reading the code path, not the PR text.
+  from. An engine, hardware or training PR carries a `## Measured` section of receipts. A
+  receipt carries the build SHA it ran on and a timestamp; a number without a subject and a
+  time is not a receipt. A reviewer refuses an unmeasured constant.
+- **Measured after deploy.** When a change can only be measured after deploy, the Measured
+  section names the check, its owner and its deadline, and the card stays open until the
+  receipt is posted. "Verified by tests" is never a Measured section for a hardware path.
+- **The reviewer verifies one claim, and names it.** Every approval names the claim it
+  verified and how: the command run, or the file:line read. An approval that says only
+  "verified" cannot be audited.
 - **No orphan follow-ups.** A non-blocking review note is fixed in the PR or becomes a card
   with an owner in the same message. Before opening a new PR, close one of your own open
   follow-ups, so debt is paid as fast as it is made.
