@@ -218,8 +218,11 @@ const TRAINING_CHUNK: u32 = 512;
 const fn default_chunk() -> u32 {
     TRAINING_CHUNK
 }
-/// The smallest chunk the engine accepts (`"chunk" >= 256`, a multiple of 256).
-const TRAINING_CHUNK_MIN: u32 = 256;
+/// The smallest chunk the engine accepts (fork #52: 64, 128, or a multiple of 256). Under 256
+/// a step is slower but its explicit attention scores (window x chunk x heads, no flash
+/// backward) shrink with it, and at chunk 256 they were ~75% of Qwen3.8-27B's training graph on
+/// the 5090 (Fable, 2026-10-11), so a window that holds her whole lived turns fits beside serving.
+const TRAINING_CHUNK_MIN: u32 = 64;
 
 /// The chunk the engine will actually train at for `window` when asked for `asked`: the
 /// largest multiple of 256 that divides the window and is at most `asked` — the engine's
@@ -443,14 +446,25 @@ pub(crate) fn read_returnable(job_dir: &Path) -> Option<Returnable> {
     Some(Returnable::EngineRefused(legacy))
 }
 
-/// PURE: whether a refused job has a smaller rung to step down to. At the smallest chunk a
+/// PURE: whether a refused job has a smaller rung to step down to: a smaller chunk, or, at the
+/// smallest chunk, a smaller window (the refusal filed its graph, so the next plan calculates the
+/// window against it instead of repeating it). At the smallest chunk AND the smallest window a
 /// return would only be refused again, forever, so the ladder ends there (the loop guard
 /// `genome/training-trigger/return`'s own doc warns about).
 pub(crate) fn refusal_has_smaller_rung(refusal: &Refusal) -> bool {
-    train_chunk_for(refusal.window, refusal.chunk / 2) < refusal.chunk && refusal.chunk / 2 >= TRAINING_CHUNK_MIN
+    let smaller_chunk = train_chunk_for(refusal.window, refusal.chunk / 2) < refusal.chunk && refusal.chunk / 2 >= TRAINING_CHUNK_MIN;
+    smaller_chunk || refusal.window > TRAINING_WINDOW_MIN
 }
 
 fn train_chunk_for(window: u32, asked: u32) -> u32 {
+    // under 256, 128 or 64 (each divides a window, which is a multiple of 256); the engine's
+    // `train_chunk_for` (fork #52), mirrored so the shape keyed here is the shape that runs
+    if asked < 128 {
+        return 64;
+    }
+    if asked < 256 {
+        return 128;
+    }
     let blocks = window / 256;
     let mut g = blocks.min((asked / 256).max(1));
     while g >= 1 {
@@ -497,17 +511,63 @@ const TRAINING_WINDOW_MIN: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX;
 /// and at window 68608 chunk 512 the engine reported it needed 7.4 GB more than the 2.8 GB it
 /// could add, so the window term dominates long lived conversations, and one point cannot
 /// separate the two terms.
+///
+/// A THIRD term once the rows can identify it: the window's KV cache, which grows with the window
+/// and not with the chunk (~35 KB a position for the 27B at q8, Fable 2026-10-11). At chunk 256
+/// and up it hides inside the window term; at chunk 64 the two-term model would scale it down
+/// four-fold and promise a window that does not fit. It is fitted when the rows span two or more
+/// chunks and two or more windows (three rows at least); until then the engine's preflight
+/// refuses an under-predicted graph and files its true size, which is the row that identifies it.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct GraphModel {
+    /// bytes per window position, whatever the chunk (the KV cache); 0 until identifiable
+    per_pos: f64,
     per_token: f64,
     per_token_per_pos: f64,
 }
 
 impl GraphModel {
+    /// The three-term least-squares fit, `None` when the rows cannot identify it or it is not
+    /// physical (a negative term). Features are scaled to similar magnitudes (a window of tens of
+    /// thousands times a chunk of hundreds) so the normal equations stay well conditioned.
+    fn fit_with_kv(rows: &[(u32, u32, u64)]) -> Option<Self> {
+        let pts: Vec<(f64, f64, f64)> = rows.iter().filter(|(_, c, _)| *c > 0).map(|&(w, c, b)| (f64::from(w), f64::from(c), b as f64)).collect();
+        let distinct = |f: &dyn Fn(&(f64, f64, f64)) -> u64| {
+            let mut v: Vec<u64> = pts.iter().map(f).collect();
+            v.sort_unstable();
+            v.dedup();
+            v.len()
+        };
+        if pts.len() < 3 || distinct(&|p| p.0 as u64) < 2 || distinct(&|p| p.1 as u64) < 2 {
+            return None;
+        }
+        const W: f64 = 1.0e4;
+        const C: f64 = 256.0;
+        // features (w, c, c*w) scaled; y = bytes
+        let mut ata = [[0.0f64; 3]; 3];
+        let mut aty = [0.0f64; 3];
+        for &(w, c, y) in &pts {
+            let f = [w / W, c / C, (c / C) * (w / W)];
+            for i in 0..3 {
+                aty[i] += f[i] * y;
+                for j in 0..3 {
+                    ata[i][j] += f[i] * f[j];
+                }
+            }
+        }
+        let x = solve3(ata, aty)?;
+        let (per_pos, per_token, per_token_per_pos) = (x[0] / W, x[1] / C, x[2] / (C * W));
+        (per_pos >= 0.0 && per_token >= 0.0 && per_token_per_pos > 0.0 && [per_pos, per_token, per_token_per_pos].iter().all(|v| v.is_finite()))
+            .then_some(Self { per_pos, per_token, per_token_per_pos })
+    }
+
     /// A least-squares line through `bytes / chunk` against `window`, over rows at two or more
     /// DISTINCT windows. `None` with fewer, or when the fit has no positive window term (the
     /// window would not be what limits the graph, so no window calculation applies).
     fn fit(rows: &[(u32, u32, u64)]) -> Option<Self> {
+        if let Some(model) = Self::fit_with_kv(rows) {
+            return Some(model);
+        }
         let pts: Vec<(f64, f64)> = rows
             .iter()
             .filter(|(_, c, _)| *c > 0)
@@ -529,12 +589,52 @@ impl GraphModel {
             return None;
         }
         let per_token = (mean_g - per_token_per_pos * mean_w).max(0.0);
-        Some(Self { per_token, per_token_per_pos })
+        Some(Self { per_pos: 0.0, per_token, per_token_per_pos })
     }
 
     fn bytes(&self, window: u32, chunk: u32) -> u64 {
-        (f64::from(chunk) * (self.per_token + self.per_token_per_pos * f64::from(window))) as u64
+        (self.per_pos * f64::from(window) + f64::from(chunk) * (self.per_token + self.per_token_per_pos * f64::from(window))) as u64
     }
+}
+
+/// A 3x3 linear solve by Gaussian elimination with partial pivoting; `None` when singular.
+fn solve3(mut a: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
+    let scale = a.iter().flatten().fold(0.0f64, |m, v| m.max(v.abs()));
+    if scale == 0.0 {
+        return None;
+    }
+    for col in 0..3 {
+        let pivot = (col..3).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs()))?;
+        if a[pivot][col].abs() <= scale * 1e-12 {
+            return None;
+        }
+        a.swap(col, pivot);
+        b.swap(col, pivot);
+        for row in col + 1..3 {
+            let f = a[row][col] / a[col][col];
+            for k in col..3 {
+                a[row][k] -= f * a[col][k];
+            }
+            b[row] -= f * b[col];
+        }
+    }
+    let mut x = [0.0f64; 3];
+    for row in (0..3).rev() {
+        let tail: f64 = (row + 1..3).map(|k| a[row][k] * x[k]).sum();
+        x[row] = (b[row] - tail) / a[row][row];
+    }
+    Some(x)
+}
+
+/// PURE: the training window an example set NEEDS: the largest smallest-window among them
+/// (`tokens_min`, by the engine's own fit rule; an example trains in a window of at least
+/// tokens_min - 1), rounded up to the context granularity, at least [`TRAINING_WINDOW_MIN`],
+/// never above `served`. The window is then planned for the data, and the chunk for the window,
+/// rather than the largest window memory allows at a fixed chunk (Fable, 2026-10-11).
+fn window_for_need(rows: &[MeasuredExample], served: u32) -> u32 {
+    let need = rows.iter().map(|r| r.tokens_min).max().unwrap_or(0).saturating_sub(1);
+    let need = u32::try_from(need).unwrap_or(u32::MAX);
+    need.div_ceil(256).saturating_mul(256).max(TRAINING_WINDOW_MIN).min(served)
 }
 
 /// The training window, CALCULATED before dispatch (Joel, 2026-10-10: "can't it calculate what it
@@ -843,6 +943,18 @@ struct EpochReport {
     eval_loss: Option<f64>,
 }
 
+impl TrainStatus {
+    /// What the run adds on the device: its graph and its context (fork #52), the footprint a
+    /// lease of this shape must cover. 0 when the engine reported no graph (nothing measured);
+    /// an engine before #52 reports no context, and its rows are the graph alone, as before.
+    fn run_bytes(&self) -> u64 {
+        match self.graph_mib {
+            Some(graph) => ((graph + self.context_mib.unwrap_or(0.0)) * 1024.0 * 1024.0) as u64, // unwrap_or: an engine before #52 reports no context
+            None => 0,
+        }
+    }
+}
+
 /// `GET /train`'s body. `state` is required: a body without one does not parse, and an
 /// unparsable status is retried like a lost one, never read as "not ours".
 #[derive(Debug, Clone, Deserialize)]
@@ -862,9 +974,13 @@ struct TrainStatus {
     /// engine before it
     #[serde(default)]
     eval_trainable_tokens: Option<u64>,
-    /// the training graph the engine measured before allocating it: this shape's footprint
+    /// the training graph the engine measured before allocating it
     #[serde(default)]
     graph_mib: Option<f64>,
+    /// what the training context itself held on the device (K/V for the window, compute buffers;
+    /// fork #52), allocated outside the graph's budget; absent on an engine before it
+    #[serde(default)]
+    context_mib: Option<f64>,
     /// The chunk the engine trained at (`state["chunk"]`): the shape its footprint is filed
     /// under. An engine before the key reports none and the core mirrors its rule.
     #[serde(default)]
@@ -1450,7 +1566,7 @@ impl EngineRun {
                     // THE REFUSAL IS THE MEASUREMENT: the preflight sized the graph before refusing
                     // it, and the engine reports that size on an error too. Filed under the chunk
                     // the engine ran, so `choose_chunk` steps down on the next dispatch.
-                    let grown = s.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
+                    let grown = s.run_bytes();
                     if grown > 0 {
                         let ran_window = s.window.unwrap_or(self.shape.window); // unwrap_or: an engine that reports no window ran the one asked
                         let ran_chunk = s.chunk.unwrap_or_else(|| train_chunk_for(ran_window, self.shape.chunk)); // unwrap_or_else: an engine that reports no chunk ran the mirrored rule
@@ -1861,15 +1977,30 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         };
         let rows = self.footprints.rows_like(&family);
         let model = GraphModel::fit(&rows);
-        let window = choose_window(window, governed_free, &rows);
+        // THE WINDOW THE DATA NEEDS: every example measured at the served window by the engine's
+        // rule gives the smallest window it trains in; the run plans for the largest of those
+        // (every example trains), then the largest chunk that fits it. Only when even the
+        // smallest chunk cannot hold that window does the window shrink, and the partition parks
+        // what no longer fits. Unmeasurable examples plan at the served window, and the
+        // partition below ends the job before any run.
+        let served_sent = window;
+        // the render time travels with this, the one measure: /train renders the same examples
+        // before it answers, so the POST's wait is sized by it (post_wait_for; Cormac on #4946)
+        let measure_started = std::time::Instant::now();
+        let at_served = measure_examples(&self.http, &lane, &body.examples, body.fit, served_sent).await;
+        let render_per_example = measure_started.elapsed().div_f64(body.examples.len().max(1) as f64);
+        let need = at_served.as_ref().map_or(served_sent, |rows| window_for_need(rows, served_sent));
+        let window = choose_window(need, governed_free, &rows);
         if window != body.window {
             crate::probe!(
                 class = "training.job.window_calculated",
                 served = u64::from(body.window),
+                needed = u64::from(need),
                 window = u64::from(window),
                 governed_free = governed_free,
                 measured_rows = rows.len() as u64,
-                "the training window the measured graph says fits beside serving (interim: her served window does not fit; fit:middle keeps her head and reply)"
+                kv_term = model.is_some_and(|m| m.per_pos > 0.0),
+                "the training window: what her examples need (their largest head plus last exchange), shrunk only if even the smallest chunk cannot hold it beside serving"
             );
             body.window = window;
         }
@@ -1902,10 +2033,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // none of which fits, ends at once without a run, and records nothing returnable: a
         // dispatch error would be retried, and a return would refill her bucket with examples
         // that fit no window this node can plan today.
-        let measure_started = std::time::Instant::now();
-        let measured_rows = measure_examples(&http, &lane, &body.examples, body.fit, window).await;
-        let render_per_example = measure_started.elapsed().div_f64(body.examples.len().max(1) as f64);
-        let unrunnable = match measured_rows {
+        // the partition at the window that will run: the served measurement already is it when
+        // the window did not move
+        let at_window = match at_served {
+            Ok(rows) if window == served_sent => Ok(rows),
+            Ok(_) => measure_examples(&http, &lane, &body.examples, body.fit, window).await,
+            Err(e) => Err(e),
+        };
+        let unrunnable = match at_window {
             Err(e) => Some(format!("{e}: the examples were not measured at window {window}, so none is sent (an engine before fork #51 has no /train/measure; its next relaunch brings it)")),
             Ok(rows) => {
                 let partition = partition_of(window, rows);
@@ -2112,7 +2247,7 @@ fn finish_run(
         }
         // the footprint this shape needs: the training graph the engine measured before
         // allocating it (exact, where a VRAM sample could miss the peak)
-        let grown = status.graph_mib.map_or(0, |m| (m * 1024.0 * 1024.0) as u64);
+        let grown = status.run_bytes();
         // recorded under the depth the engine ACTUALLY adapted: an engine that
         // ignored top_layers measured a full-depth graph, and that number must never
         // be leased for a reduced-depth run (Codex on #27)
@@ -2295,6 +2430,53 @@ mod tests {
         assert_eq!(post_wait_for(Duration::from_millis(50), 3), POST_WAIT_FLOOR, "a small batch on a fast engine keeps the floor");
     }
 
+    // what this catches (Fable, 2026-10-11): the window planned as the largest memory allowed at a
+    // fixed chunk, so her long turns were skipped while a smaller chunk could have held them. The
+    // window is what her examples need (the largest tokens_min, rounded up to 256), capped at the
+    // served window and floored at the smallest servable one.
+    #[test]
+    fn the_window_is_what_the_examples_need() {
+        let row = |tokens_min| MeasuredExample { index: 0, tokens_full: tokens_min, tokens_min, tokens_trained: 0, fit: ExampleFit::Kept };
+        assert_eq!(window_for_need(&[row(15_000), row(20_433), row(9_707)], 68_608), 20_480, "the largest need, rounded up to 256");
+        assert_eq!(window_for_need(&[row(42_456)], 16_896), 16_896, "never above the served window");
+        assert_eq!(window_for_need(&[row(64)], 68_608), TRAINING_WINDOW_MIN, "never below the smallest servable window");
+        assert_eq!(window_for_need(&[row(20_481)], 68_608), 20_480, "tokens_min - 1 fits a window of exactly 20,480");
+    }
+
+    // what this catches (the 5090, 2026-10-11): footprints filed from graph_mib alone, while the
+    // training context's K/V for the whole window (allocated outside the graph's budget) sat
+    // outside the lease. A run's footprint is its graph AND its context (fork #52); an engine
+    // before #52 reports no context and files the graph, as before; no graph is no measurement.
+    #[test]
+    fn a_runs_footprint_is_its_graph_and_its_context() {
+        let status = |body: Value| serde_json::from_value::<TrainStatus>(body).expect("test: status");
+        let mib = 1024u64 * 1024;
+        assert_eq!(status(json!({"state": "done", "graph_mib": 5.0, "context_mib": 2.0})).run_bytes(), 7 * mib);
+        assert_eq!(status(json!({"state": "done", "graph_mib": 5.0})).run_bytes(), 5 * mib, "an engine before #52: the graph");
+        assert_eq!(status(json!({"state": "error", "context_mib": 2.0})).run_bytes(), 0, "no graph measured: nothing to file");
+    }
+
+    // what this catches (Fable, 2026-10-11): the KV cache grows with the window, not the chunk.
+    // A two-term model folds it into the window term and scales it down with the chunk, so at
+    // chunk 64 it promised a window that does not fit. With rows across two chunks it fits the
+    // third term and predicts an unmeasured small-chunk graph; with rows at one chunk it cannot,
+    // and keeps the two-term fit.
+    #[test]
+    fn the_graph_model_separates_the_kv_cache_from_the_chunk_once_two_chunks_are_measured() {
+        let truth = GraphModel { per_pos: 35_000.0, per_token: 9.6e6, per_token_per_pos: 380.0 };
+        let row = |w: u32, c: u32| (w, c, truth.bytes(w, c));
+        let rows = [row(1_536, 256), row(68_608, 512), row(16_896, 256)];
+        let fitted = GraphModel::fit(&rows).expect("test: fits");
+        let (want, got) = (truth.bytes(40_960, 64) as f64, fitted.bytes(40_960, 64) as f64);
+        assert!((got - want).abs() / want < 0.01, "a chunk-64 graph predicted within 1%: {got} vs {want}");
+        assert!(fitted.per_pos > 0.0, "the KV term is identified");
+        let one_chunk = [row(1_536, 256), row(68_608, 256)];
+        assert_eq!(GraphModel::fit(&one_chunk).map(|m| m.per_pos), Some(0.0), "one chunk cannot separate it: the two-term fit stands");
+        assert_eq!(train_chunk_for(68_608, 64), 64);
+        assert_eq!(train_chunk_for(68_608, 255), 128, "under 256: 128 or 64, never 192");
+        assert_eq!(train_chunk_for(68_608, 512), 512, "256 and up: the old divisor rule, so old keys hold");
+    }
+
     // what this catches (the 5090, 2026-10-11): at a 16,896-token window the engine kept 54 of
     // Kimi's 311 lived turns and skipped 257, which the run then counted as consumed. The
     // measurement's skipped examples are parked, not sent; the RUN's own skipped indices (into
@@ -2333,8 +2515,13 @@ mod tests {
         write_returnable(dir.path(), &replaced).expect("test: write");
         assert_eq!(read_returnable(dir.path()), Some(replaced), "returnable.json wins over the legacy record");
         assert!(refusal_has_smaller_rung(&refused), "512 steps down to 256");
-        assert!(!refusal_has_smaller_rung(&Refusal { chunk: 256, ..refused.clone() }), "256 is the floor");
-        assert!(!refusal_has_smaller_rung(&Refusal { window: 1280, chunk: 256, ..refused }), "a 5x256 window's only chunk is 256");
+        assert!(refusal_has_smaller_rung(&Refusal { chunk: 256, ..refused.clone() }), "256 steps down to 128 (fork #52)");
+        let floor = Refusal { window: TRAINING_WINDOW_MIN, chunk: TRAINING_CHUNK_MIN, ..refused.clone() };
+        assert!(!refusal_has_smaller_rung(&floor), "the smallest chunk at the smallest window is the floor");
+        assert!(
+            refusal_has_smaller_rung(&Refusal { window: 68_608, ..floor }),
+            "at the smallest chunk a larger window still steps down: the refusal filed its graph, so the next plan calculates a smaller window"
+        );
     }
 
     // what this catches (card d6dae498; the 5090, 2026-10-10 04:34Z): a plain-walk footprint
@@ -2367,10 +2554,13 @@ mod tests {
         // window is CALCULATED before dispatch: the largest that fits at the floor chunk, never
         // above served, never under the floor; with fewer, served (the run is the measurement).
         let mib = 1024u64 * 1024;
-        // illustrative second point (the real one was lost to a Windows rename, os error 32)
-        let rows = [(1536, 256, 2598 * mib), (68608, 512, 10_225 * mib)];
-        let model = GraphModel::fit(&rows).expect("test: two windows fit");
-        assert!(model.per_token_per_pos > 0.0, "the window term is real");
+        // three rows across two chunks, so the KV term is identified and the floor chunk's graph
+        // is predicted, not extrapolated (with rows at one chunk the two-term fit is optimistic
+        // under it, and the engine's preflight refusal files the row that corrects it)
+        let truth = GraphModel { per_pos: 35_000.0, per_token: 9.6e6, per_token_per_pos: 380.0 };
+        let rows = [(1536, 256, truth.bytes(1536, 256)), (68608, 512, truth.bytes(68608, 512)), (16896, 256, truth.bytes(16896, 256))];
+        let model = GraphModel::fit(&rows).expect("test: rows fit");
+        assert!(model.per_token_per_pos > 0.0 && model.per_pos > 0.0, "the window and KV terms are real");
         let free = 4142 * mib;
         let w = choose_window(68608, free, &rows);
         assert!(w % 256 == 0 && w < 68608 && w >= TRAINING_WINDOW_MIN, "a smaller 256-multiple window: {w}");
@@ -2401,8 +2591,10 @@ mod tests {
         let measured = |c: u32| match c { 512 => Some(12 * gib), 256 => Some(5 * gib), _ => None };
         assert_eq!(choose_chunk(1536, 6 * gib, measured), (256, Some(5 * gib)), "the 5090: 12.6 GB at 512 does not fit 6.2 GB free; 256 does");
         assert_eq!(choose_chunk(1536, 6 * gib, |c| (c == 512).then_some(12 * gib)), (256, None), "512 too big, 256 never measured: calibrate at 256");
-        assert_eq!(choose_chunk(1536, 1 * gib, measured), (256, Some(5 * gib)), "nothing fits: the smallest chunk's number stands and the governor waits");
-        assert_eq!(choose_chunk(256, 1 * gib, |_| Some(5 * gib)), (256, Some(5 * gib)), "a 256 window has one chunk");
+        assert_eq!(choose_chunk(1536, 1 * gib, measured), (128, None), "512 and 256 too big, 128 never measured: calibrate at 128 (fork #52)");
+        let every = |c: u32| match c { 512 => Some(12 * gib), 256 => Some(5 * gib), 128 => Some(3 * gib), 64 => Some(2 * gib), _ => None };
+        assert_eq!(choose_chunk(1536, 1 * gib, every), (64, Some(2 * gib)), "nothing fits: the smallest chunk's number stands and the governor waits");
+        assert_eq!(choose_chunk(256, 1 * gib, |_| Some(5 * gib)), (64, Some(5 * gib)), "a 256 window steps down to 64 too");
     }
     use crate::genome::fine_tuning::{LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingSource};
 
@@ -2444,10 +2636,13 @@ mod tests {
         let (l1, l2, l3, seen1) = (lane.clone(), lane.clone(), lane.clone(), seen.clone());
         let (l4, l5, l6) = (lane.clone(), lane.clone(), lane.clone());
         let app = axum::Router::new()
-            // fork #51's measure: every example fits the window, as before the partition, except
-            // under "park_odd" (odd indices skipped) and "park_all" (every one skipped)
+            // fork #51's measure: each example needs the whole window it is measured at (so the
+            // planned window is the served one, as before the partition), and fits it, except
+            // under "short_turns" (each needs 3,000), "park_odd" (odd indices skipped) and
+            // "park_all" (every one skipped)
             .route("/train/measure", post(move |axum::Json(b): axum::Json<Value>| async move {
                 let examples = b.get("examples").and_then(Value::as_array).cloned().unwrap_or_default();
+                let at = b["window"].as_u64().unwrap_or(256);
                 let rows: Vec<Value> = examples
                     .iter()
                     .enumerate()
@@ -2455,7 +2650,8 @@ mod tests {
                         // odd by the example's own prompt ("p1"), not its place in the batch
                         let odd = e["prompt"].as_str().and_then(|p| p.chars().last()).and_then(|c| c.to_digit(10)).is_some_and(|d| d % 2 == 1);
                         let skipped = mode == "park_all" || (mode == "park_odd" && odd);
-                        let (min, fit) = if skipped { (40_000, "skipped") } else { (64, "kept") };
+                        let need = if mode == "short_turns" { 3_000 } else { at };
+                        let (min, fit) = if skipped { (at + 40_000, "skipped") } else { (need, "kept") };
                         json!({"index": i, "tokens_full": 64.max(min), "tokens_min": min, "tokens_trained": if skipped { 0 } else { 64 }, "fit": fit})
                     })
                     .collect();
@@ -2745,7 +2941,7 @@ mod tests {
         store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
         store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
-        let free = 4142 * mib;
+        let free = 1000 * mib; // tight enough that even chunk 64 cannot hold the served window (fork #52)
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), free);
         t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 68_608, engine: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
@@ -2756,6 +2952,26 @@ mod tests {
         let (w, c) = (posted["window"].as_u64().expect("test: window") as u32, posted["chunk"].as_u64().expect("test: chunk") as u32);
         assert!(w < 68_608 && w % 256 == 0, "a calculated window under served: {w}");
         assert!(model.bytes(w, c) <= free, "the POSTED window and chunk fit the grant together: w{w} c{c} = {} MiB of {} MiB", model.bytes(w, c) / mib, free / mib);
+        server.abort();
+    }
+
+    // what this catches (Fable, 2026-10-11): a run planned at the served window whatever its
+    // examples need. Short turns (each needing 3,000 tokens) post the window they need, rounded
+    // up to 256, not her 61,696-token served window, so a smaller graph leaves room for a
+    // larger chunk.
+    #[tokio::test]
+    async fn a_dispatch_plans_the_window_its_examples_need() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "short_turns").await;
+        let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        let _ = wait_terminal(&t, &h).await;
+        let posted = seen.lock().unwrap().clone().expect("test: posted");
+        assert_eq!(posted["window"].as_u64(), Some(3_072), "3,000 tokens need a 3,072-token window");
         server.abort();
     }
 
