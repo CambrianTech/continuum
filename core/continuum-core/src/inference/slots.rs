@@ -286,27 +286,39 @@ pub fn note_page_dir(dir: &std::path::Path) {
     }
 }
 
-/// The sizes of the newest `n` saved states in `dir` (each page's `.bin` plus its `.ckpt`),
-/// oldest first. Reads the dir once; anything unreadable is simply not a sample.
-fn newest_page_states(dir: &std::path::Path, n: usize) -> Vec<u64> {
+/// The engine's sidecars beside each page, saved and restored with it: the context checkpoints
+/// (`.ckpt`) and the adapter vector the state was computed under (`.lora`, card e5eaf9f4). ONE
+/// list, so every scan sizes a page whole and every trim removes it whole.
+const PAGE_SIDECARS: [&str; 2] = [".ckpt", ".lora"];
+
+/// Every page in `dir` (`a-*.bin`), as (page name -> (the page file's mtime, bytes of the page
+/// and its sidecars)). Reads the dir once; anything unreadable is skipped.
+fn pages_in(dir: &std::path::Path) -> std::collections::HashMap<String, (std::time::SystemTime, u64)> {
+    let mut pages = std::collections::HashMap::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
+        return pages;
     };
-    let mut pages: std::collections::HashMap<String, (std::time::SystemTime, u64)> = std::collections::HashMap::new();
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let Ok(md) = e.metadata() else { continue };
-        let page = name.strip_suffix(".ckpt").unwrap_or(&name).to_string(); // unwrap_or: a name without the sidecar suffix IS the page name
+        let sidecar = PAGE_SIDECARS.iter().find_map(|s| name.strip_suffix(s));
+        let page = sidecar.unwrap_or(&name).to_string(); // unwrap_or: a name with no sidecar suffix IS the page name
         if !md.is_file() || !(page.starts_with("a-") && page.ends_with(".bin")) {
             continue;
         }
         let entry = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));
         entry.1 += md.len();
-        if !name.ends_with(".ckpt") {
-            entry.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // unwrap_or: an unreadable mtime sorts oldest, the least likely to be kept
+        if sidecar.is_none() {
+            entry.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // unwrap_or: an unreadable mtime sorts oldest, the safe side for an eviction candidate and the least likely sample
         }
     }
-    let mut by_age: Vec<(std::time::SystemTime, u64)> = pages.into_values().filter(|(_, b)| *b > 0).collect();
+    pages
+}
+
+/// The sizes of the newest `n` saved states in `dir` (each page with its sidecars), oldest
+/// first. Anything unreadable is simply not a sample.
+fn newest_page_states(dir: &std::path::Path, n: usize) -> Vec<u64> {
+    let mut by_age: Vec<(std::time::SystemTime, u64)> = pages_in(dir).into_values().filter(|(_, b)| *b > 0).collect();
     by_age.sort_by_key(|(t, _)| *t);
     let skip = by_age.len().saturating_sub(n);
     by_age.into_iter().skip(skip).map(|(_, b)| b).collect()
@@ -323,7 +335,7 @@ pub fn trim_page_store_after_save(just_saved: &str) {
     // the context checkpoints in its sidecar): a measurement of what the host prompt cache
     // must hold per mind, which the KV estimate alone misses on a hybrid model.
     let page_bytes = |name: &str| std::fs::metadata(dir.join(name)).map(|m| m.len()).unwrap_or(0); // unwrap_or: an absent sidecar adds nothing
-    let state = page_bytes(just_saved).saturating_add(page_bytes(&format!("{just_saved}.ckpt")));
+    let state = PAGE_SIDECARS.iter().fold(page_bytes(just_saved), |sum, s| sum.saturating_add(page_bytes(&format!("{just_saved}{s}"))));
     note_state_bytes(&dir, state);
     let (removed, freed, kept) =
         trim_page_store(&dir, just_saved, KV_PAGE_STORE_MAX_BYTES, KV_PAGE_MIN_AGE_MS);
@@ -389,7 +401,7 @@ pub fn measured_state_bytes(page_dir: &std::path::Path) -> Option<u64> {
     measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), page_dir)
 }
 
-/// Pure trim: pages (`a-*.bin`) with their `.ckpt` sidecars, oldest mtime first,
+/// Pure trim: pages (`a-*.bin`) with their sidecars ([`PAGE_SIDECARS`]), oldest mtime first,
 /// until the dir is within `max_bytes`. Returns (pages removed, bytes freed,
 /// bytes kept). The page named `keep` is never removed; neither is any page
 /// younger than `min_age_ms` (an active resident's working set).
@@ -399,28 +411,8 @@ pub fn trim_page_store(
     max_bytes: u64,
     min_age_ms: u64,
 ) -> (usize, u64, u64) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return (0, 0, 0);
-    };
-    // page name → (mtime, bytes incl. sidecar)
-    let mut pages: std::collections::HashMap<String, (std::time::SystemTime, u64)> =
-        std::collections::HashMap::new();
-    for e in entries.flatten() {
-        let name = e.file_name().to_string_lossy().into_owned();
-        let Ok(md) = e.metadata() else { continue };
-        if !md.is_file() {
-            continue;
-        }
-        let page = name.strip_suffix(".ckpt").unwrap_or(&name).to_string(); // JUSTIFIED unwrap_or: a name without the sidecar suffix IS the page name
-        if !(page.starts_with("a-") && page.ends_with(".bin")) {
-            continue;
-        }
-        let slot = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));
-        slot.1 += md.len();
-        if !name.ends_with(".ckpt") {
-            slot.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // JUSTIFIED unwrap_or: an unreadable mtime sorts OLDEST — the safe side for an eviction candidate
-        }
-    }
+    // page name → (mtime, bytes incl. sidecars)
+    let pages = pages_in(dir);
     let mut total: u64 = pages.values().map(|v| v.1).sum();
     if total <= max_bytes {
         return (0, 0, total);
@@ -439,7 +431,9 @@ pub fn trim_page_store(
             continue;
         }
         let _ = std::fs::remove_file(dir.join(&name));
-        let _ = std::fs::remove_file(dir.join(format!("{name}.ckpt")));
+        for sidecar in PAGE_SIDECARS {
+            let _ = std::fs::remove_file(dir.join(format!("{name}{sidecar}")));
+        }
         removed += 1;
         freed += bytes;
         total = total.saturating_sub(bytes);
@@ -1708,12 +1702,13 @@ mod tests {
     fn a_restarted_core_measures_its_states_from_the_pages_on_disk() {
         let dir = tempfile::tempdir().expect("test: page dir");
         std::fs::write(dir.path().join("a-p1-r1.bin"), vec![0u8; 700]).expect("test: page");
-        std::fs::write(dir.path().join("a-p1-r1.bin.ckpt"), vec![0u8; 165]).expect("test: sidecar");
+        std::fs::write(dir.path().join("a-p1-r1.bin.ckpt"), vec![0u8; 160]).expect("test: sidecar");
+        std::fs::write(dir.path().join("a-p1-r1.bin.lora"), vec![0u8; 5]).expect("test: adapter sidecar");
         std::fs::write(dir.path().join("a-p2-r2.bin"), vec![0u8; 300]).expect("test: page");
         std::fs::write(dir.path().join("saved-ledger.json"), vec![0u8; 9_999]).expect("test: not a page");
         let mut states = newest_page_states(dir.path(), STATE_SAMPLES);
         states.sort_unstable();
-        assert_eq!(states, vec![300, 865], "each page with its sidecar, the ledger excluded");
+        assert_eq!(states, vec![300, 865], "each page with its sidecars, the ledger excluded");
         assert_eq!(newest_page_states(dir.path(), 1).len(), 1, "at most n");
         assert!(newest_page_states(&dir.path().join("absent"), 4).is_empty(), "no dir, no samples");
     }
@@ -2374,13 +2369,14 @@ mod tests {
         };
         write("a-old.bin", 100, 300);
         write("a-old.bin.ckpt", 10, 300);
+        write("a-old.bin.lora", 5, 300); // the adapter-vector sidecar (card e5eaf9f4): part of the page
         write("a-mid.bin", 100, 200);
         write("a-new.bin", 100, 100);
         write("unrelated.txt", 500, 0);
         let (removed, freed, kept) = trim_page_store(&dir, "a-old.bin", 250, 0);
         assert_eq!(removed, 1, "one page over budget: the oldest NOT protected → a-mid");
         assert_eq!(freed, 100);
-        assert_eq!(kept, 210);
+        assert_eq!(kept, 215, "a page counts with both its sidecars");
         assert!(dir.join("a-old.bin").exists() && dir.join("a-old.bin.ckpt").exists(), "the just-saved page is kept");
         assert!(!dir.join("a-mid.bin").exists());
         let (removed, _, _) = trim_page_store(&dir, "a-new.bin", 150, 0);
@@ -2388,6 +2384,7 @@ mod tests {
         assert_eq!(young, 0, "a page younger than the floor is an active resident's: never trimmed");
         assert_eq!(removed, 1, "now a-old goes, sidecar with it");
         assert!(!dir.join("a-old.bin.ckpt").exists());
+        assert!(!dir.join("a-old.bin.lora").exists(), "every sidecar goes with its page: no orphan drains forever");
         assert!(dir.join("unrelated.txt").exists(), "only pages are trimmed");
         let _ = std::fs::remove_dir_all(&dir);
     }
