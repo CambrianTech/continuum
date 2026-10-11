@@ -4476,6 +4476,28 @@ impl ServingDaemonModule {
                 return None;
             }
         }
+        // NEVER DECODE ON A RESIDENT'S ONLY SLOT (card 9e3350bd, the 5090 2026-10-11): with no
+        // scratch slot the smoke probe lands on the slot a resident's live KV occupies; the
+        // 72-token prompt replaced a 53,980-token conversation and the next save wrote that as
+        // her page, so every restore after it re-prefilled from ~0. A quiet lane with a seated
+        // resident is not probed: a wedge there surfaces on her next real turn, which the
+        // real-turn-failure arm above already condemns.
+        // This check is the CHEAP early-out; the authority is the slot permit taken in the spawned
+        // probe below (Codex on #4960: a check here races a turn that seats a resident before the
+        // probe's POST).
+        let live_root = self.serving_tx.borrow().base_url.strip_suffix("/v1").map(str::to_string);
+        let live_pool = live_root.as_deref().and_then(|root| crate::inference::slots::directory().get(root)).flatten();
+        if let Some(pool) = live_pool.as_ref() {
+            if pool.smoke_would_overwrite_a_resident() {
+                crate::probe!(
+                    class = "serving.health",
+                    via = "skipped_resident_slot",
+                    "no scratch slot and a resident is seated: the smoke probe would overwrite her KV and \
+                     her next saved page, so it is skipped; her next real turn proves the lane"
+                );
+                return None;
+            }
+        }
         // Never race the reconcile's own spawn/kill/swap, and never stack heartbeat probes.
         if self.reconciling.load(Ordering::Acquire) {
             return None;
@@ -4495,6 +4517,39 @@ impl ServingDaemonModule {
             // distinguishes a healthy lane from an OOM-poisoned one (control-plane reads
             // stay 200 on a wedged backend). `decode_smoke_ok` is already bounded by
             // `DECODE_SMOKE_TIMEOUT`, so a wedged compute path resolves to `false` fast.
+            //
+            // THE SLOT PERMIT IS THE AUTHORITY (Codex on #4960). On a ONE-slot pool with no
+            // scratch slot, the unpinned probe can only land on slot 0, so holding slot 0's
+            // operation permit across BOTH smoke attempts (the ThinkStarved retry included)
+            // excludes a turn from seating a resident mid-probe, and the resident check is
+            // repeated under it. A 2-slot no-scratch pool would need the probe PINNED to the
+            // reserved slot; that is card 030ffc01. The pool is read AGAIN here, not
+            // taken from before the spawn: a first turn may have installed it since (Codex). An
+            // engine whose pool is still undiscovered has seated no turn yet; a first turn that
+            // discovers it DURING the probe is the remaining window, open on card 030ffc01 (the
+            // fix is the probe going through the shared /props discovery before its POST).
+            let live_pool = live_root.as_deref().and_then(|root| crate::inference::slots::directory().get(root)).flatten();
+            let _reserved = match live_pool.as_ref().filter(|p| p.scratch_slot().is_none() && p.n_slots() == 1) {
+                Some(pool) => match pool.acquire_slot(0).await {
+                    Ok(permit) if !pool.smoke_would_overwrite_a_resident() => Some(permit),
+                    Ok(_) => {
+                        crate::probe!(
+                            class = "serving.health",
+                            via = "skipped_resident_slot",
+                            under_permit = true,
+                            "a resident was seated while the probe waited for the slot: skipped under the permit"
+                        );
+                        health_probing.store(false, Ordering::Release);
+                        return;
+                    }
+                    Err(e) => {
+                        crate::probe!(class = "serving.health", via = "skipped_no_permit", error = %e, "the slot permit could not be taken; no probe this tick");
+                        health_probing.store(false, Ordering::Release);
+                        return;
+                    }
+                },
+                None => None,
+            };
             let ok = server.decode_smoke_ok().await;
             if ok {
                 health_fails.store(0, Ordering::Relaxed);
