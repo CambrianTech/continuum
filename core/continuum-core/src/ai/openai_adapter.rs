@@ -1643,6 +1643,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 persona = request.persona_id.as_deref(),
                 room = request.room_id.as_deref(),
                 traffic = class.as_str(),
+                // the caller, so an unmapped purpose that defaults to Background can be named and
+                // mapped (BigMama, the 5090 2026-10-11: 41 background requests on a one-slot lane,
+                // each saving the resident and forcing a re-prefill, with no way to say whose)
+                purpose = request.purpose.as_deref().unwrap_or("none"), // unwrap_or: an unset purpose is itself the fact to see
                 pinned = placement.is_some(),
                 slot = placement.map(|s| s as u64),
                 "id_slot decision — Turn pins its activity slot; every other class lands on scratch"

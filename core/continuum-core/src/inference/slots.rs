@@ -561,6 +561,15 @@ impl KvSlotPool {
         self.scratch
     }
 
+    /// Whether a synthetic decode (the serving heartbeat's smoke probe) could only run on a slot
+    /// holding a resident's live KV: no scratch slot, and some slot attributed to an activity.
+    /// The probe must not run then (card 9e3350bd, the 5090 2026-10-11: on a one-slot lane the
+    /// 72-token smoke prompt replaced a 53,980-token resident and the next save wrote that as
+    /// her page, 0 checkpoints; every restore after it re-prefilled from ~0).
+    pub(crate) fn smoke_would_overwrite_a_resident(&self) -> bool {
+        self.scratch.is_none() && !self.holders.lock().is_empty()
+    }
+
     /// The citizen slot transient traffic borrows on a server with NO scratch slot:
     /// a slot nobody's KV warms if there is one, else the resident whose page is the
     /// cheapest to lose — the smallest `tail_tokens`, the priced eviction's own cost
@@ -1705,6 +1714,24 @@ pub fn directory() -> &'static SlotDirectory {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (card 9e3350bd; the 5090 2026-10-11, build 6148): the heartbeat's smoke
+    // probe ran on a one-slot lane's only slot, replacing the resident's KV, and the next save
+    // wrote the probe's 72 tokens as her page. With no scratch slot and a resident seated, the
+    // probe must not run; with a scratch slot, or nobody seated, it may.
+    #[test]
+    fn the_smoke_probe_never_runs_on_a_seated_residents_only_slot() {
+        let one = KvSlotPool::new("test://one-slot", 1);
+        assert_eq!(one.scratch_slot(), None, "test: a one-slot pool has no scratch");
+        assert!(!one.smoke_would_overwrite_a_resident(), "nobody seated: probing costs no one");
+        one.holders.lock().insert(0, key(1, 2));
+        assert!(one.smoke_would_overwrite_a_resident(), "a seated resident on the only slot");
+        let many = KvSlotPool::new("test://four-slot", 4);
+        if many.scratch_slot().is_some() {
+            many.holders.lock().insert(0, key(1, 2));
+            assert!(!many.smoke_would_overwrite_a_resident(), "a scratch slot takes the probe");
+        }
+    }
     use super::*;
 
     // what this catches (IntelMac, 2026-10-11 02:46Z on #4930: the first sizing after a

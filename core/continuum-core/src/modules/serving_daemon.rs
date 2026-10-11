@@ -4476,6 +4476,24 @@ impl ServingDaemonModule {
                 return None;
             }
         }
+        // NEVER DECODE ON A RESIDENT'S ONLY SLOT (card 9e3350bd, the 5090 2026-10-11): with no
+        // scratch slot the smoke probe lands on the slot a resident's live KV occupies; the
+        // 72-token prompt replaced a 53,980-token conversation and the next save wrote that as
+        // her page, so every restore after it re-prefilled from ~0. A quiet lane with a seated
+        // resident is not probed: a wedge there surfaces on her next real turn, which the
+        // real-turn-failure arm above already condemns.
+        let live_root = self.serving_tx.borrow().base_url.strip_suffix("/v1").map(str::to_string);
+        if let Some(Some(pool)) = live_root.as_deref().map(|root| crate::inference::slots::directory().get(root)) {
+            if pool.smoke_would_overwrite_a_resident() {
+                crate::probe!(
+                    class = "serving.health",
+                    via = "skipped_resident_slot",
+                    "no scratch slot and a resident is seated: the smoke probe would overwrite her KV and \
+                     her next saved page, so it is skipped; her next real turn proves the lane"
+                );
+                return None;
+            }
+        }
         // Never race the reconcile's own spawn/kill/swap, and never stack heartbeat probes.
         if self.reconciling.load(Ordering::Acquire) {
             return None;
