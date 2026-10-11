@@ -4523,7 +4523,12 @@ impl ServingDaemonModule {
             // operation permit across BOTH smoke attempts (the ThinkStarved retry included)
             // excludes a turn from seating a resident mid-probe, and the resident check is
             // repeated under it. A 2-slot no-scratch pool would need the probe PINNED to the
-            // reserved slot; that remains open on card 9e3350bd.
+            // reserved slot; that is card 030ffc01. The pool is read AGAIN here, not
+            // taken from before the spawn: a first turn may have installed it since (Codex). An
+            // engine whose pool is still undiscovered has seated no turn yet; a first turn that
+            // discovers it DURING the probe is the remaining window, open on card 030ffc01 (the
+            // fix is the probe going through the shared /props discovery before its POST).
+            let live_pool = live_root.as_deref().and_then(|root| crate::inference::slots::directory().get(root)).flatten();
             let _reserved = match live_pool.as_ref().filter(|p| p.scratch_slot().is_none() && p.n_slots() == 1) {
                 Some(pool) => match pool.acquire_slot(0).await {
                     Ok(permit) if !pool.smoke_would_overwrite_a_resident() => Some(permit),
