@@ -360,16 +360,15 @@ const POST_WAIT_FLOOR: Duration = Duration::from_secs(120);
 /// 205 s (~13 s each beside serving), and the 11 sent outlasted the old fixed 120 s wait, so the
 /// core failed job 97e081e2 while the engine trained it, unadoptable (card 93ffc555).
 fn post_wait_for(render_per_example: Duration, sent: usize) -> Duration {
-    (render_per_example * u32::try_from(sent).unwrap_or(u32::MAX) * 2).max(POST_WAIT_FLOOR)
+    render_per_example.mul_f64(sent as f64 * 2.0).max(POST_WAIT_FLOOR)
 }
 
 /// What a lost POST /train turns out to have been, from the engine's status afterwards.
 #[derive(Debug, PartialEq)]
 enum LostPost {
-    /// the engine has this job's run (preparing, starting, running or done): watch it
+    /// the engine has this job's run, in any state but cancelled (an error included): the watch
+    /// loop takes it, and handles its end as it would any other
     Watch,
-    /// the engine refused this job's run during its prepare, with this reason
-    EngineRefused(String),
     /// no status, or the engine shows another run or none: it never started there
     NeverStarted,
 }
@@ -378,9 +377,6 @@ enum LostPost {
 /// this job's run (its `out`).
 fn after_lost_post(status: Option<&TrainStatus>, ours: impl Fn(&TrainStatus) -> bool) -> LostPost {
     match status {
-        Some(s) if ours(s) && s.state == TrainState::Error => {
-            LostPost::EngineRefused(s.error.clone().unwrap_or_else(|| "no reason reported".into())) // unwrap_or_else: an engine that names no reason still refused this job
-        }
         Some(s) if ours(s) && s.state != TrainState::Cancelled => LostPost::Watch,
         _ => LostPost::NeverStarted,
     }
@@ -1333,9 +1329,11 @@ impl EngineRun {
                 }
                 // LOST ON THE WAY BACK, RECONCILED BY THE RUN'S ID (card 93ffc555): the engine may
                 // have the run (fork #55 claims and shows it 'preparing' before its long prepare),
-                // so its status decides, never a clock: this job's run is watched to its end and
-                // adopted; this job's refusal fails it with the engine's reason; anything else
-                // means it never started there, and it fails as before.
+                // so its status decides, never a clock: this job's run, in ANY state including its
+                // error, is handed to the watch loop below, whose arms already file a refused
+                // graph's footprint and its returnable record (Cormac on #4946: a shortcut here
+                // dropped both, which is 97e081e2 again); anything else means it never started
+                // there, and it fails as before.
                 Err(e) => {
                     let status = self.status().await.ok();
                     match after_lost_post(status.as_ref(), |s| self.ours(s)) {
@@ -1345,7 +1343,6 @@ impl EngineRun {
                             error = %e,
                             "the POST was lost on the way back but the engine reports this job's run: it is watched to its end, not failed"
                         ),
-                        LostPost::EngineRefused(why) => return InPlaceEnd::Failed(format!("the engine refused the training run: {why}")),
                         LostPost::NeverStarted => return self.failed(format!("POST /train on {}: {e}", self.lane)).await,
                     }
                 }
@@ -1907,7 +1904,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // that fit no window this node can plan today.
         let measure_started = std::time::Instant::now();
         let measured_rows = measure_examples(&http, &lane, &body.examples, body.fit, window).await;
-        let render_per_example = measure_started.elapsed() / u32::try_from(body.examples.len().max(1)).unwrap_or(u32::MAX);
+        let render_per_example = measure_started.elapsed().div_f64(body.examples.len().max(1) as f64);
         let unrunnable = match measured_rows {
             Err(e) => Some(format!("{e}: the examples were not measured at window {window}, so none is sent (an engine before fork #51 has no /train/measure; its next relaunch brings it)")),
             Ok(rows) => {
@@ -2268,8 +2265,8 @@ mod tests {
 
     // what this catches (card 93ffc555; the 5090, 2026-10-11 10:08Z, job 97e081e2): a POST lost on
     // the way back failed a job the engine then trained, unadoptable. The engine's status after
-    // the loss decides by the run's id: this job's run preparing or running is watched; this
-    // job's refusal fails with the engine's reason; another run, none, or no answer: never started.
+    // the loss decides by the run's id: this job's run in any state (its refusal included) is
+    // watched, so its end is handled and filed; another run, none, or no answer: never started.
     #[test]
     fn a_lost_post_is_reconciled_by_the_runs_id() {
         let status = |body: Value| serde_json::from_value::<TrainStatus>(body).expect("test: status");
@@ -2278,8 +2275,9 @@ mod tests {
             assert_eq!(after_lost_post(Some(&status(json!({"state": state, "out": "job.gguf"}))), ours), LostPost::Watch, "{state}");
         }
         assert_eq!(
-            after_lost_post(Some(&status(json!({"state": "error", "out": "job.gguf", "error": "no example fits"}))), ours),
-            LostPost::EngineRefused("no example fits".into())
+            after_lost_post(Some(&status(json!({"state": "error", "out": "job.gguf", "graph_mib": 6200.2}))), ours),
+            LostPost::Watch,
+            "this job's refusal goes to the watch loop, which files its graph and its returnable (Cormac on #4946)"
         );
         assert_eq!(after_lost_post(Some(&status(json!({"state": "running", "out": "other.gguf"}))), ours), LostPost::NeverStarted, "another run");
         assert_eq!(after_lost_post(Some(&status(json!({"state": "idle"}))), ours), LostPost::NeverStarted);
