@@ -678,8 +678,9 @@ pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work:
         format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
     } else {
         format!(
-            "Submitted as {submission}. Nothing more to do on this card: the grade fires when a reviewer passes \
-             this submission. No state you set triggers it; do not submit again unless a review sends it back."
+            "Submitted as {submission}. Nothing more to do on this card: the grade fires when its review (on a \
+             bench card, the test oracle) passes this submission. No state you set triggers it; submit again \
+             only if a review, or a failed grade line in the room, sends it back."
         )
     })
 }
@@ -1506,8 +1507,10 @@ mod tests {
         use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
         let id = uuid::Uuid::new_v4();
         let waiting = super::next_after_submission(Some(id), &[]).expect("submitted");
-        assert!(waiting.contains(&short8(id)) && waiting.contains("Nothing more to do") && waiting.contains("reviewer passes"), "{waiting}");
-        assert!(waiting.contains("do not submit again"), "{waiting}");
+        assert!(waiting.contains(&short8(id)) && waiting.contains("Nothing more to do") && waiting.contains("test oracle"), "{waiting}");
+        // an oracle's FAIL is not yet a WorkReview (card 2c756670), so the waiting line must
+        // not forbid a resubmit outright: it names the failed grade line as a send-back too
+        assert!(waiting.contains("submit again only if") && waiting.contains("failed grade"), "{waiting}");
         assert_eq!(super::next_after_submission(Some(id), &[Unknown]), Some(waiting.clone()), "an unknown verdict is still waiting");
         let back = super::next_after_submission(Some(id), &[Failed]).expect("sent back");
         assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
