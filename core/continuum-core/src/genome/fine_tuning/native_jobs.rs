@@ -513,7 +513,7 @@ mod tests {
             .unwrap();
         let bound = Arc::new(std::sync::Mutex::new(None));
         let saw = bound.clone();
-        let admitted = wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate, |_| {}, move |granted| {
+        let admitted = wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: None }, |_| {}, move |granted| {
             *saw.lock().unwrap() = Some(granted);
             Ok(())
         })
@@ -530,10 +530,18 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate, |_| {}, |_| Ok(()))
+            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: None }, |_| {}, |_| Ok(()))
                 .now_or_never()
                 .is_none(),
             "512 KiB free: the calibration waits, it is not granted"
+        );
+        // and a family that once measured a whole run waits for at least that much (Cormac on #4949)
+        drop(_rest);
+        assert!(
+            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate { at_least: Some(300 * mib) }, |_| {}, |_| Ok(()))
+                .now_or_never()
+                .is_none(),
+            "256 MiB free under a 300 MiB measured floor: it waits"
         );
     }
 
