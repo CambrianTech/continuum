@@ -143,6 +143,10 @@ pub(crate) struct PendingBatch {
     /// Durable submission identities; payloads are stored separately, once each.
     #[serde(skip)]
     pub(crate) submission_ids: Vec<Uuid>,
+    /// How many of `examples` each of `submission_ids` brought, in the same order, so a
+    /// dispatch can take whole submissions (a time-budgeted run, `training_rate`).
+    #[serde(skip)]
+    pub(crate) submission_examples: Vec<u32>,
     pub(crate) persona_name: String,
     pub(crate) source: TrainingSource,
     pub(crate) examples: Vec<TrainingExample>,

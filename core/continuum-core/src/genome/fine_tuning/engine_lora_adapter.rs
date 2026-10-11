@@ -450,6 +450,10 @@ pub struct EngineRunSpec {
     model_id: String,
     /// The footprint key the run was planned under, for filing what it measured.
     shape: Shape,
+    /// The characters of example payload the run trains (`training_rate::example_chars`), so its
+    /// finish files the measured wall seconds per character the next dispatch is sized by.
+    #[serde(default)]
+    corpus_chars: u64,
 }
 
 /// The window a run trains at: the engine's training context is n_ctx, which rounds up to a
@@ -1701,6 +1705,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             val_split: SplitPpm::from(val),
             model_id,
             shape: shape.clone(),
+            corpus_chars: request.dataset.examples.iter().map(super::training_rate::example_chars).sum(),
         };
         Ok(self.jobs.prepare(id, move |progress| async move {
             let consumer = format!("genome-train:{id}");
@@ -1915,6 +1920,12 @@ fn finish_run(
                     "the measured engine-training footprint could not be recorded; the next run of \
                      this shape calibrates again"
                 );
+            }
+        }
+        // the measured cost of this run: what the next dispatch of this base is sized by
+        if let Some(rates) = super::training_rate::TrainingRates::in_home() {
+            if let Err(e) = rates.record(&spec.shape.model, spec.corpus_chars, spec.epochs, wall_clock_ms, job) {
+                crate::probe!(class = "training.job.rate_unrecorded", job = %job, error = %e, "the run's measured cost could not be recorded; the next dispatch of this base calibrates at the bucket's threshold");
             }
         }
         Ok(TrainingArtifact {
@@ -2568,6 +2579,7 @@ mod tests {
             epochs: 2,
             val_split: SplitPpm::from(0.1),
             model_id: format!("{PROVIDER_ID}:code:{job}"),
+            corpus_chars: 0,
             shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let bound = crate::inference::engine_residency::ResidentWork {
