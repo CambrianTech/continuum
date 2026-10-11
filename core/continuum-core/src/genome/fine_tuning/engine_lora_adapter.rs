@@ -610,10 +610,11 @@ fn solve3(mut a: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
         }
         a.swap(col, pivot);
         b.swap(col, pivot);
+        let pivot_row = a[col];
         for row in col + 1..3 {
-            let f = a[row][col] / a[col][col];
-            for k in col..3 {
-                a[row][k] -= f * a[col][k];
+            let f = a[row][col] / pivot_row[col];
+            for (x, p) in a[row][col..].iter_mut().zip(&pivot_row[col..]) {
+                *x -= f * p;
             }
             b[row] -= f * b[col];
         }
@@ -2591,10 +2592,10 @@ mod tests {
         let measured = |c: u32| match c { 512 => Some(12 * gib), 256 => Some(5 * gib), _ => None };
         assert_eq!(choose_chunk(1536, 6 * gib, measured), (256, Some(5 * gib)), "the 5090: 12.6 GB at 512 does not fit 6.2 GB free; 256 does");
         assert_eq!(choose_chunk(1536, 6 * gib, |c| (c == 512).then_some(12 * gib)), (256, None), "512 too big, 256 never measured: calibrate at 256");
-        assert_eq!(choose_chunk(1536, 1 * gib, measured), (128, None), "512 and 256 too big, 128 never measured: calibrate at 128 (fork #52)");
+        assert_eq!(choose_chunk(1536, gib, measured), (128, None), "512 and 256 too big, 128 never measured: calibrate at 128 (fork #52)");
         let every = |c: u32| match c { 512 => Some(12 * gib), 256 => Some(5 * gib), 128 => Some(3 * gib), 64 => Some(2 * gib), _ => None };
-        assert_eq!(choose_chunk(1536, 1 * gib, every), (64, Some(2 * gib)), "nothing fits: the smallest chunk's number stands and the governor waits");
-        assert_eq!(choose_chunk(256, 1 * gib, |_| Some(5 * gib)), (64, Some(5 * gib)), "a 256 window steps down to 64 too");
+        assert_eq!(choose_chunk(1536, gib, every), (64, Some(2 * gib)), "nothing fits: the smallest chunk's number stands and the governor waits");
+        assert_eq!(choose_chunk(256, gib, |_| Some(5 * gib)), (64, Some(5 * gib)), "a 256 window steps down to 64 too");
     }
     use crate::genome::fine_tuning::{LoRAHyperparams, ScheduleParams, TrainingDataset, TrainingSource};
 
