@@ -2474,6 +2474,10 @@ impl ServingDaemonModule {
         // what the delta holds beyond everything the engine claims is probed as UNATTRIBUTED and
         // never enters this model's record. The delta still speaks for an engine that predates
         // `memory_breakdown`.
+        // On a HYBRID model the context buffer also holds each slot's fixed recurrent state, so the
+        // rate is an UPPER bound by that state spread over the slot's tokens, and a plan for more,
+        // shorter slots is short one recurrent state per extra slot (BigMama on #4961). Splitting
+        // it out needs the engine to report it per sequence: card c8b2e1df.
         let placement = crate::inference::llama_server::main_lane_placement();
         let (source, beyond_weights, allocated) = match (placement, self.system.gpu_memory_mode()) {
             (
@@ -2495,7 +2499,8 @@ impl ServingDaemonModule {
                             engine_beyond_weights = ctx.beyond_weights,
                             device_delta_read = delta.is_some(),
                             device_delta_beyond_weights = delta.unwrap_or(0), // unwrap_or: probe label; `device_delta_read` says whether it exists
-                            unattributed_bytes = delta.map_or(0, |d| d.saturating_sub(ctx.beyond_weights)), // probe label, same
+                            // absent, never 0: an unread delta is not "nothing unattributed" (BigMama on #4961)
+                            unattributed_bytes = %delta.map_or_else(|| "none".to_string(), |d| d.saturating_sub(ctx.beyond_weights).to_string()),
                             "the device's growth beyond the weights against what the engine says it holds: the excess is other tenants or engine overhead, never this model's per-token cost"
                         );
                         ("engine_context", Some(ctx.context_bytes), Some(ctx))
