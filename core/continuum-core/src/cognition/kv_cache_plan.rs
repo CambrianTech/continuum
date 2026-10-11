@@ -208,7 +208,8 @@ impl KvCachePlan {
     ///
     /// f16 IS llama.cpp's default, so omitting the flag is byte-identical to passing
     /// it — and omitting keeps the invocation identical to every pre-decision launch
-    /// on an unsupported backend.
+    /// on an unsupported backend. A flag form only: the KV page contract records
+    /// `cache_type` itself, because "no flag" is not "unknown type".
     pub fn launcher_cache_type(&self) -> Option<&str> {
         if self.cache_type == F16 {
             None
