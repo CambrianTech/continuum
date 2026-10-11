@@ -2480,6 +2480,33 @@ mod tests {
         server.abort();
     }
 
+    // what this catches (card 3cef97ef, Cormac on #4939; job 97e081e2's 6.2 GB went unfiled): a
+    // lost POST whose run the engine then REFUSED. The job fails, and the two records a shortcut
+    // once dropped are both written: the refused graph's footprint (so the next plan knows it) and
+    // returnable.json (so the examples go back for a smaller chunk instead of stranding).
+    #[tokio::test]
+    async fn a_lost_post_whose_run_is_refused_files_its_graph_and_its_returnable() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "lost_post_refused").await;
+        let footprints = jobs.path().join("footprints.json");
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * 1024 * 1024 * 1024);
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        let end = wait_terminal(&t, &h).await;
+        assert!(matches!(end, TrainingStatus::Failed { .. }), "refused: {end:?}");
+        let rows: Value = serde_json::from_slice(&std::fs::read(&footprints).expect("test: the refusal filed a footprint")).expect("test: json");
+        let filed: Vec<u64> = rows.as_object().expect("test: rows").values().filter_map(|r| r["bytes"].as_u64()).collect();
+        assert_eq!(filed, vec![(12_654.1f64 * 1024.0 * 1024.0) as u64], "the refused graph is filed");
+        assert!(
+            matches!(read_returnable(&jobs.path().join(h.local_id.to_string())), Some(Returnable::EngineRefused(_))),
+            "and the job is returnable, so its examples go back for a smaller chunk"
+        );
+        server.abort();
+    }
+
     // what this catches (card 93ffc555; the 5090, 2026-10-11 10:08Z, job 97e081e2): a POST lost on
     // the way back failed a job the engine then trained, unadoptable. The engine's status after
     // the loss decides by the run's id: this job's run in any state (its refusal included) is
@@ -2792,7 +2819,7 @@ mod tests {
                     }
                     // "lost_post": the engine takes the run, then its answer outlasts the POST's
                     // wait (a long prepare), so the core must reconcile by the run's id
-                    if mode == "lost_post" {
+                    if mode == "lost_post" || mode == "lost_post_refused" {
                         tokio::time::sleep(Duration::from_secs(3)).await;
                     }
                     axum::Json(json!({"ok": true}))
@@ -2825,7 +2852,7 @@ mod tests {
                     }
                     // the 5090, 2026-10-10 04:34Z: the device budget refused the chunk graph, and the
                     // engine reports the size its preflight measured, the chunk and the window it ran
-                    if mode == "refused" {
+                    if mode == "refused" || mode == "lost_post_refused" {
                         let body = l.body.clone().unwrap_or(Value::Null);
                         return axum::Json(json!({"state": "error", "out": out,
                             "error": "the graph needs 9236.1 MiB more on CUDA0, over the 3418.0 MiB it may add: not allocating it",
