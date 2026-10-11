@@ -650,10 +650,21 @@ fn window_for_need(rows: &[MeasuredExample], served: u32) -> u32 {
 /// there is nothing to calculate from: `served`, and that run's footprint (or refusal) is the
 /// measurement. The window is in the footprint key, so a later engine that fits climbs back up.
 fn choose_window(served: u32, available: u64, rows: &[(u32, u32, u64)]) -> u32 {
+    // A MEASUREMENT IS A HARD BOUND (Cormac on #4939): a window measured at the smallest chunk
+    // that did not fit what is free now cannot fit at it, nor at any larger window, whatever the
+    // fit predicts. Without the cap a non-physical or single-chunk fit could plan the refused
+    // window again, and the refusal ladder's return would loop. Each floor refusal files its row
+    // and lowers the cap, so the ladder always moves down, and ends at the smallest window.
+    let cap = rows
+        .iter()
+        .filter(|&&(_, c, b)| c == TRAINING_CHUNK_MIN && b > available)
+        .map(|&(w, _, _)| train_window(w.saturating_sub(256).max(TRAINING_WINDOW_MIN)))
+        .min()
+        .map_or(served, |cap| cap.min(served));
     let Some(model) = GraphModel::fit(rows) else {
-        return served;
+        return cap;
     };
-    let mut window = served;
+    let mut window = cap;
     while window > TRAINING_WINDOW_MIN && model.bytes(window, TRAINING_CHUNK_MIN) > available {
         window = train_window(window.saturating_sub(256).max(TRAINING_WINDOW_MIN));
     }
@@ -755,6 +766,12 @@ struct FootprintRow {
     bytes: u64,
     measured_at_ms: i64,
     job: String,
+    /// The row is the run's graph AND its context (fork #52's context_mib), the whole of what a
+    /// lease must cover. A row from before it is the graph alone: it under-states a lease by the
+    /// context's K/V, and mixed into one fit with whole-run rows it bends the model, so it is
+    /// kept but never read, and its shape counts as unmeasured until re-measured (Cormac on #4939).
+    #[serde(default)]
+    includes_context: bool,
 }
 
 impl Footprints {
@@ -765,7 +782,7 @@ impl Footprints {
         }
     }
     fn get(&self, shape: &Shape) -> Option<u64> {
-        self.read_all().get(&shape.key()).map(|r| r.bytes)
+        self.read_all().get(&shape.key()).filter(|r| r.includes_context).map(|r| r.bytes)
     }
     /// Every measured `(window, chunk, bytes)` of `shape`'s family (the same model, rank, targets,
     /// depth, walk and recompute, at any window and chunk): what [`choose_window`] fits. A key is
@@ -782,15 +799,22 @@ impl Footprints {
                 let window = num('w')?;
                 let chunk = num('c').unwrap_or_else(|| train_chunk_for(window, TRAINING_CHUNK));
                 let candidate = Shape { window, chunk, ..shape.clone() };
-                (candidate.key() == key).then_some((window, chunk, row.bytes))
+                (candidate.key() == key && row.includes_context).then_some((window, chunk, row.bytes))
             })
             .collect()
     }
-    /// Keeps the LARGEST footprint observed for a shape: the peak is sampled on the governor's
-    /// scan cadence, which can miss the true peak but never invents one (Cormac on #4443).
+    /// A whole-run footprint (graph and context): [`Self::record_with`].
     fn record(&self, shape: &Shape, bytes: u64, job: Uuid) -> std::io::Result<()> {
+        self.record_with(shape, bytes, true, job)
+    }
+
+    /// Keeps the LARGEST footprint observed for a shape: the peak is sampled on the governor's
+    /// scan cadence, which can miss the true peak but never invents one (Cormac on #4443). A
+    /// whole-run row always replaces a graph-only one, whatever their sizes: they measure
+    /// different things.
+    fn record_with(&self, shape: &Shape, bytes: u64, includes_context: bool, job: Uuid) -> std::io::Result<()> {
         let mut all = self.read_all();
-        if all.get(&shape.key()).is_some_and(|r| r.bytes >= bytes) {
+        if all.get(&shape.key()).is_some_and(|r| r.includes_context >= includes_context && r.bytes >= bytes) {
             return Ok(());
         }
         all.insert(
@@ -799,6 +823,7 @@ impl Footprints {
                 bytes,
                 measured_at_ms: chrono::Utc::now().timestamp_millis(),
                 job: job.to_string(),
+                includes_context,
             },
         );
         if let Some(dir) = self.path.parent() {
@@ -1585,7 +1610,8 @@ impl EngineRun {
                         // file I/O that may wait out a Windows sharing violation: off the runtime
                         let store = Footprints { path: self.footprints_path.clone() };
                         let (shape, job) = (refused.clone(), self.job);
-                        let recorded = tokio::task::spawn_blocking(move || store.record(&shape, grown, job))
+                        let whole = s.context_mib.is_some();
+                        let recorded = tokio::task::spawn_blocking(move || store.record_with(&shape, grown, whole, job))
                             .await
                             .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
                         match recorded {
@@ -2306,9 +2332,9 @@ fn finish_run(
             if asked_full {
                 // the asked depth, at the window that ran
                 let asked_ran = Shape { window: ran_window, chunk: ran_chunk, ..spec.shape.clone() };
-                let _ = store.record(&asked_ran, grown, job); // best effort: the full-depth row below is the one that matters
+                let _ = store.record_with(&asked_ran, grown, status.context_mib.is_some(), job); // best effort: the full-depth row below is the one that matters
             }
-            if let Err(e) = store.record(&measured_shape, grown, job) {
+            if let Err(e) = store.record_with(&measured_shape, grown, status.context_mib.is_some(), job) {
                 crate::probe!(
                     class = "training.job.footprint_unrecorded",
                     job = %job,
@@ -2320,7 +2346,7 @@ fn finish_run(
         }
         // the measured cost of this run: what the next dispatch of this base is sized by
         if let Some(rates) = super::training_rate::TrainingRates::in_home() {
-            if let Err(e) = rates.record(&spec.shape.model, spec.corpus_chars, spec.epochs, wall_clock_ms, job) {
+            if let Err(e) = rates.record(&spec.shape.model, spec.shape.chunk, spec.corpus_chars, spec.epochs, wall_clock_ms, job) {
                 crate::probe!(class = "training.job.rate_unrecorded", job = %job, error = %e, "the run's measured cost could not be recorded; the next dispatch of this base calibrates at the bucket's threshold");
             }
         }
@@ -2442,6 +2468,31 @@ mod tests {
         assert_eq!(window_for_need(&[row(42_456)], 16_896), 16_896, "never above the served window");
         assert_eq!(window_for_need(&[row(64)], 68_608), TRAINING_WINDOW_MIN, "never below the smallest servable window");
         assert_eq!(window_for_need(&[row(20_481)], 68_608), 20_480, "tokens_min - 1 fits a window of exactly 20,480");
+    }
+
+    // what this catches (Cormac on #4939): a refusal at the floor chunk returned for a smaller
+    // window that the fit did not predict, so the same window planned again and the return
+    // looped; and graph-only rows mixed into whole-run fits. A floor-chunk measurement over what
+    // is free caps the next window below it whatever the fit says (with no fit at all, too), and
+    // a graph-only row is never read, while a whole-run row replaces it.
+    #[test]
+    fn a_floor_refusal_caps_the_next_window_and_graph_only_rows_are_never_read() {
+        let gib = 1024u64 * 1024 * 1024;
+        let free = 4 * gib;
+        let refused = [(40_960, TRAINING_CHUNK_MIN, 5 * gib)];
+        assert_eq!(choose_window(68_608, free, &refused), 40_704, "under the refused window, with no fit to say so");
+        let optimistic = [(1_536, 256, gib / 4), (68_608, 512, gib), (40_960, TRAINING_CHUNK_MIN, 5 * gib)];
+        assert!(choose_window(68_608, free, &optimistic) <= 40_704, "under it even when the fit says the served window fits");
+        let at_floor = [(TRAINING_WINDOW_MIN, TRAINING_CHUNK_MIN, 5 * gib)];
+        assert_eq!(choose_window(68_608, free, &at_floor), TRAINING_WINDOW_MIN, "never under the smallest window");
+        let dir = tempfile::tempdir().expect("test: dir");
+        let store = Footprints { path: dir.path().join("fp.json") };
+        let shape = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
+        store.record_with(&shape, 9 * gib, false, Uuid::nil()).expect("test: graph-only");
+        assert_eq!(store.get(&shape), None, "a graph-only row leases nothing: the shape calibrates");
+        assert!(store.rows_like(&shape).is_empty(), "and is not fitted");
+        store.record_with(&shape, 3 * gib, true, Uuid::nil()).expect("test: whole run");
+        assert_eq!(store.get(&shape), Some(3 * gib), "a whole-run row replaces it, smaller or not");
     }
 
     // what this catches (the 5090, 2026-10-11): footprints filed from graph_mib alone, while the
@@ -2700,10 +2751,10 @@ mod tests {
                         let body = l.body.clone().unwrap_or(Value::Null);
                         return axum::Json(json!({"state": "error", "out": out,
                             "error": "the graph needs 9236.1 MiB more on CUDA0, over the 3418.0 MiB it may add: not allocating it",
-                            "graph_mib": 12_654.1, "chunk": body.get("chunk").cloned().unwrap_or(json!(512)), "window": body.get("window").cloned().unwrap_or(Value::Null)}));
+                            "graph_mib": 12_654.1, "context_mib": 0.0, "chunk": body.get("chunk").cloned().unwrap_or(json!(512)), "window": body.get("window").cloned().unwrap_or(Value::Null)}));
                     }
                     std::fs::write(dir.join(&out), b"GGUF-lora").unwrap();
-                    let mut done = json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out, "graph_mib": 5.0,
+                    let mut done = json!({"state": "done", "out": out, "trainable_tokens": 40, "adapter": out, "graph_mib": 5.0, "context_mib": 0.0,
                         "epochs": [{"epoch": 0, "train_loss": 2.5, "eval_loss": 2.6}, {"epoch": 1, "train_loss": 2.1, "eval_loss": 2.4}]});
                     // an engine with fork #27 reports the depth it adapted; one without says nothing
                     if mode == "depth" {
@@ -3419,10 +3470,11 @@ mod tests {
         let path = dir.path().join("f.json");
         let full = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
         let top8 = Shape { depth: Some(8), ..full.clone() };
-        // a row written before depth existed: the key full depth still reads
+        // a row written before depth existed: the key full depth still reads (a whole-run row, so
+        // only the depth question is under test here)
         std::fs::write(
             &path,
-            serde_json::to_vec(&serde_json::json!({ "m|w1536|r8|attn_q": { "bytes": 41_500, "measuredAtMs": 0, "job": "legacy" } })).unwrap(),
+            serde_json::to_vec(&serde_json::json!({ "m|w1536|r8|attn_q": { "bytes": 41_500, "measuredAtMs": 0, "job": "legacy", "includesContext": true } })).unwrap(),
         )
         .unwrap();
         let f = Footprints { path: path.clone() };
