@@ -34,8 +34,11 @@ struct RateRow {
     job: String,
 }
 
-/// Measured training rates, one row per base model, in one small JSON file beside the
-/// footprints (bounded by the number of base models ever trained, not by runs).
+/// Measured training rates, one row per (base model, chunk), in one small JSON file beside the
+/// footprints (bounded by the bases and the handful of chunks ever trained, not by runs). Keyed by
+/// chunk because a step's cost per token depends on it: a chunk-64 step is several times slower
+/// per token than a chunk-256 one (Fable on #4939), and the trigger sizes a run before the adapter
+/// has chosen its chunk.
 pub(crate) struct TrainingRates {
     path: PathBuf,
 }
@@ -59,20 +62,33 @@ impl TrainingRates {
         }
     }
 
-    /// Wall seconds per character per epoch for `base`, as last measured.
+    /// Wall seconds per character per epoch for `base`: the SLOWEST measured at any chunk (each as
+    /// last measured). The trigger sizes a run before its chunk is chosen, so it budgets at the
+    /// slowest the base has run: a run then ends within the budget whatever chunk it gets (the safe
+    /// direction, as an over-counted character is). A row from before the chunk key counts too.
     pub(crate) fn secs_per_char_epoch(&self, base: &str) -> Option<f64> {
-        self.read_all().get(base).map(|r| r.secs_per_char_epoch).filter(|r| r.is_finite() && *r > 0.0)
+        let chunked = format!("{base}|c");
+        self.read_all()
+            .iter()
+            .filter(|(key, _)| key.as_str() == base || key.starts_with(&chunked))
+            .map(|(_, r)| r.secs_per_char_epoch)
+            .filter(|r| r.is_finite() && *r > 0.0)
+            .reduce(f64::max)
     }
 
-    /// Record a finished run: `chars` of example payload trained for `epochs` in `wall_ms`.
-    /// The LATEST run's rate stands (the node, the model and serving's share all drift).
-    pub(crate) fn record(&self, base: &str, chars: u64, epochs: u32, wall_ms: u64, job: uuid::Uuid) -> std::io::Result<()> {
+    /// Record a finished run at `chunk`: `chars` of example payload trained for `epochs` in
+    /// `wall_ms`. The LATEST run's rate at that chunk stands (the node, the model and serving's
+    /// share all drift).
+    pub(crate) fn record(&self, base: &str, chunk: u32, chars: u64, epochs: u32, wall_ms: u64, job: uuid::Uuid) -> std::io::Result<()> {
         if chars == 0 || epochs == 0 || wall_ms == 0 {
             return Ok(());
         }
         let mut all = self.read_all();
+        // a rate from before the chunk key is superseded by the first chunked one: left in place it
+        // would cap every budget at an old, unkeyed rate forever (Cormac on #4939)
+        all.remove(base);
         all.insert(
-            base.to_string(),
+            format!("{base}|c{chunk}"),
             RateRow {
                 secs_per_char_epoch: (wall_ms as f64 / 1000.0) / (chars as f64 * f64::from(epochs)),
                 measured_at_ms: chrono::Utc::now().timestamp_millis(),
@@ -154,6 +170,27 @@ mod tests {
     // what this catches (the 5090, 2026-10-10): a bucket that filled all day dispatched as ONE
     // ~100-hour run. A run takes the newest submissions that fit the budget at the measured rate,
     // never zero, and all of them when they fit; and the rate is what a finished run measured.
+    // what this catches (Fable on #4939): one rate per base, so the first chunk-64 run was budgeted
+    // at a chunk-256 rate (several times too fast) and overran its hour. Rates are kept per chunk,
+    // and the trigger, which sizes a run before its chunk is chosen, budgets at the slowest.
+    #[test]
+    fn a_run_is_budgeted_at_the_slowest_chunk_the_base_has_run() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let rates = rates_at(&dir.path().join("rates.json"));
+        rates.record("m", 256, 1_000, 1, 1_000, uuid::Uuid::nil()).expect("test: c256");
+        rates.record("m", 64, 1_000, 1, 4_000, uuid::Uuid::nil()).expect("test: c64");
+        rates.record("other", 64, 1_000, 1, 9_000, uuid::Uuid::nil()).expect("test: other base");
+        assert_eq!(rates.secs_per_char_epoch("m"), Some(0.004), "the chunk-64 rate, the slower of m's two");
+        rates.record("m", 64, 1_000, 1, 2_000, uuid::Uuid::nil()).expect("test: c64 again");
+        assert_eq!(rates.secs_per_char_epoch("m"), Some(0.002), "the latest at each chunk stands");
+        // a row from before the chunk key is read until the first chunked record supersedes it
+        let legacy = rates_at(&dir.path().join("legacy.json"));
+        std::fs::write(dir.path().join("legacy.json"), r#"{"m":{"secsPerCharEpoch":9.0,"measuredAtMs":0,"job":"old"}}"#).expect("test: legacy");
+        assert_eq!(legacy.secs_per_char_epoch("m"), Some(9.0), "a pre-chunk rate still counts");
+        legacy.record("m", 256, 1_000, 1, 1_000, uuid::Uuid::nil()).expect("test: chunked");
+        assert_eq!(legacy.secs_per_char_epoch("m"), Some(0.001), "and is gone once a chunked rate is recorded");
+    }
+
     #[test]
     fn a_run_takes_the_oldest_submissions_that_fit_its_budget() {
         let hour = Duration::from_secs(3600);
@@ -164,7 +201,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("test: dir");
         let rates = rates_at(&dir.path().join("rates.json"));
         assert_eq!(rates.secs_per_char_epoch("m"), None, "unmeasured: none");
-        rates.record("m", 1_000, 2, 4_000, uuid::Uuid::nil()).expect("test: record");
+        rates.record("m", 256, 1_000, 2, 4_000, uuid::Uuid::nil()).expect("test: record");
         assert_eq!(rates.secs_per_char_epoch("m"), Some(0.002), "4 s over 1000 chars x 2 epochs");
         let ex = TrainingExample { prompt: "p".into(), completion: "a reply".into(), metadata: None, lived: None };
         let mut encoded = Vec::new();
