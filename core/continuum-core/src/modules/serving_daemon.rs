@@ -6101,7 +6101,8 @@ fn derived_prompt_cache_mib(
     let demands = with_measured_state(
         active_cache_states(&population, served_ctx, active),
         fp.map(|f| f.kv_per_token),
-        crate::inference::slots::measured_state_bytes(),
+        // the served model's own page dir: the same key the spawn writes its pages under
+        crate::inference::slots::measured_state_bytes(&crate::inference::llama_server::kv_page_dir(model_id, served_ctx)),
     );
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
     let decision = prompt_cache_decision(
