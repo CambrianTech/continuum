@@ -349,6 +349,43 @@ const MEASURE_BATCH: usize = 1;
 /// lane fails the job within minutes, not hours.
 const MEASURE_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The floor on the wait for `/train` to accept a run: what the core waited before this was
+/// derived, kept so a small batch on a fast engine is never given less.
+const POST_WAIT_FLOOR: Duration = Duration::from_secs(120);
+
+/// PURE: how long the POST of a run may take. `/train` renders and tokenizes every example it
+/// is sent before it answers, the same work `/train/measure` just did for each, so the wait is
+/// the measured per-example render time times the examples sent, doubled for headroom, at least
+/// [`POST_WAIT_FLOOR`]. MEASURED on the 5090, 2026-10-11 10:06Z: 16 lived turns measured in
+/// 205 s (~13 s each beside serving), and the 11 sent outlasted the old fixed 120 s wait, so the
+/// core failed job 97e081e2 while the engine trained it, unadoptable (card 93ffc555).
+fn post_wait_for(render_per_example: Duration, sent: usize) -> Duration {
+    (render_per_example * u32::try_from(sent).unwrap_or(u32::MAX) * 2).max(POST_WAIT_FLOOR)
+}
+
+/// What a lost POST /train turns out to have been, from the engine's status afterwards.
+#[derive(Debug, PartialEq)]
+enum LostPost {
+    /// the engine has this job's run (preparing, starting, running or done): watch it
+    Watch,
+    /// the engine refused this job's run during its prepare, with this reason
+    EngineRefused(String),
+    /// no status, or the engine shows another run or none: it never started there
+    NeverStarted,
+}
+
+/// PURE: [`LostPost`] for `status` (None: unreadable), where `ours` says whether a status is
+/// this job's run (its `out`).
+fn after_lost_post(status: Option<&TrainStatus>, ours: impl Fn(&TrainStatus) -> bool) -> LostPost {
+    match status {
+        Some(s) if ours(s) && s.state == TrainState::Error => {
+            LostPost::EngineRefused(s.error.clone().unwrap_or_else(|| "no reason reported".into())) // unwrap_or_else: an engine that names no reason still refused this job
+        }
+        Some(s) if ours(s) && s.state != TrainState::Cancelled => LostPost::Watch,
+        _ => LostPost::NeverStarted,
+    }
+}
+
 /// Every example measured at `window` by the engine's own fit rule, by request index.
 async fn measure_examples(
     http: &reqwest::Client,
@@ -791,6 +828,8 @@ enum EngineExample {
 #[serde(rename_all = "snake_case")]
 enum TrainState {
     Idle,
+    /// claimed and preparing its examples, before it is accepted (fork #55)
+    Preparing,
     Starting,
     Running,
     Done,
@@ -1035,6 +1074,10 @@ struct EngineRun {
     /// The run to POST, or `None` for a run this core RE-ATTACHED to: it is already training in
     /// the engine, and POSTing it again would be the duplicate run step 3 exists to prevent.
     start: Option<TrainRequest>,
+    /// How long the POST of `start` may take: the engine prepares (renders and tokenizes) every
+    /// example before it answers, so the wait derives from this job's measured render time
+    /// ([`post_wait_for`]), never a constant that a larger batch outlasts.
+    post_wait: Duration,
     /// The engine's name for the run (`/train`'s `out`), what every status is matched on.
     out: String,
     /// where the engine writes this job's adapter (removed if a cancel races a finish)
@@ -1278,7 +1321,7 @@ impl EngineRun {
                 .http
                 .post(format!("{}/train", self.lane))
                 .json(body)
-                .timeout(Duration::from_secs(120))
+                .timeout(self.post_wait)
                 .send()
                 .await
             {
@@ -1288,8 +1331,24 @@ impl EngineRun {
                     let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
                     return InPlaceEnd::Failed(format!("the engine refused the training run: {why}"));
                 }
-                // lost on the way back: the run may have started, so it is stopped before failing
-                Err(e) => return self.failed(format!("POST /train on {}: {e}", self.lane)).await,
+                // LOST ON THE WAY BACK, RECONCILED BY THE RUN'S ID (card 93ffc555): the engine may
+                // have the run (fork #55 claims and shows it 'preparing' before its long prepare),
+                // so its status decides, never a clock: this job's run is watched to its end and
+                // adopted; this job's refusal fails it with the engine's reason; anything else
+                // means it never started there, and it fails as before.
+                Err(e) => {
+                    let status = self.status().await.ok();
+                    match after_lost_post(status.as_ref(), |s| self.ours(s)) {
+                        LostPost::Watch => crate::probe!(
+                            class = "training.job.post_reconciled",
+                            job = %self.job,
+                            error = %e,
+                            "the POST was lost on the way back but the engine reports this job's run: it is watched to its end, not failed"
+                        ),
+                        LostPost::EngineRefused(why) => return InPlaceEnd::Failed(format!("the engine refused the training run: {why}")),
+                        LostPost::NeverStarted => return self.failed(format!("POST /train on {}: {e}", self.lane)).await,
+                    }
+                }
             }
         }
         let mut tick = tokio::time::interval(POLL);
@@ -1326,7 +1385,7 @@ impl EngineRun {
                 *last = Some(s.clone());
             }
             match s.state {
-                TrainState::Starting | TrainState::Running => {
+                TrainState::Preparing | TrainState::Starting | TrainState::Running => {
                     let (pct, epoch) = progress_of(&s, self.epochs);
                     progress.running(pct, epoch);
                     // held: pause at the next window, keeping everything; released: resume. The
@@ -1631,6 +1690,7 @@ impl EngineLoraFineTuner {
                     http: self.http.clone(),
                     lane,
                     start: None,
+                    post_wait: POST_WAIT_FLOOR, // a re-attached run is never POSTed
                     out: work.out.clone(),
                     adapter_path: spec.adapter_path.clone(),
                     job_dir: spec.job_dir.clone(),
@@ -1845,7 +1905,10 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // none of which fits, ends at once without a run, and records nothing returnable: a
         // dispatch error would be retried, and a return would refill her bucket with examples
         // that fit no window this node can plan today.
-        let unrunnable = match measure_examples(&http, &lane, &body.examples, body.fit, window).await {
+        let measure_started = std::time::Instant::now();
+        let measured_rows = measure_examples(&http, &lane, &body.examples, body.fit, window).await;
+        let render_per_example = measure_started.elapsed() / u32::try_from(body.examples.len().max(1)).unwrap_or(u32::MAX);
+        let unrunnable = match measured_rows {
             Err(e) => Some(format!("{e}: the examples were not measured at window {window}, so none is sent (an engine before fork #51 has no /train/measure; its next relaunch brings it)")),
             Ok(rows) => {
                 let partition = partition_of(window, rows);
@@ -1993,6 +2056,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 lane,
                 shape: spec.shape.clone(),
                 footprints_path: footprints_path.clone(),
+                post_wait: post_wait_for(render_per_example, body.examples.len()),
                 start: Some(body),
                 out: out.clone(),
                 adapter_path: spec.adapter_path.clone(),
@@ -2201,6 +2265,37 @@ fn engine_example(e: &TrainingExample) -> EngineExample {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 93ffc555; the 5090, 2026-10-11 10:08Z, job 97e081e2): a POST lost on
+    // the way back failed a job the engine then trained, unadoptable. The engine's status after
+    // the loss decides by the run's id: this job's run preparing or running is watched; this
+    // job's refusal fails with the engine's reason; another run, none, or no answer: never started.
+    #[test]
+    fn a_lost_post_is_reconciled_by_the_runs_id() {
+        let status = |body: Value| serde_json::from_value::<TrainStatus>(body).expect("test: status");
+        let ours = |s: &TrainStatus| s.out.as_deref() == Some("job.gguf");
+        for state in ["preparing", "starting", "running", "done"] {
+            assert_eq!(after_lost_post(Some(&status(json!({"state": state, "out": "job.gguf"}))), ours), LostPost::Watch, "{state}");
+        }
+        assert_eq!(
+            after_lost_post(Some(&status(json!({"state": "error", "out": "job.gguf", "error": "no example fits"}))), ours),
+            LostPost::EngineRefused("no example fits".into())
+        );
+        assert_eq!(after_lost_post(Some(&status(json!({"state": "running", "out": "other.gguf"}))), ours), LostPost::NeverStarted, "another run");
+        assert_eq!(after_lost_post(Some(&status(json!({"state": "idle"}))), ours), LostPost::NeverStarted);
+        assert_eq!(after_lost_post(None, ours), LostPost::NeverStarted, "no answer");
+    }
+
+    // what this catches (the 5090, 2026-10-11 10:08Z, job 97e081e2): a fixed 120 s wait for
+    // /train to accept a run that renders 11 lived turns at ~13 s each, so the core failed a job
+    // the engine went on to train, and nothing adopted its gene. The wait is the measured render
+    // time per example times the examples sent, doubled, never under the old 120 s.
+    #[test]
+    fn the_post_wait_is_the_measured_render_of_what_was_sent() {
+        let measured = Duration::from_millis(205_000 / 16); // 16 measured in 205 s
+        assert_eq!(post_wait_for(measured, 11), Duration::from_millis(205_000 / 16 * 11 * 2), "11 sent: ~282 s, past the ~143 s they take");
+        assert_eq!(post_wait_for(Duration::from_millis(50), 3), POST_WAIT_FLOOR, "a small batch on a fast engine keeps the floor");
+    }
 
     // what this catches (the 5090, 2026-10-11): at a 16,896-token window the engine kept 54 of
     // Kimi's 311 lived turns and skipped 257, which the run then counted as consumed. The
