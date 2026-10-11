@@ -658,8 +658,13 @@ impl OpenAICompatibleAdapter {
             }
             Some(lane) => match lane.page_dir.as_deref() {
                 None => Err("live_lane_has_no_page_dir"),
-                Some(page_dir) => crate::inference::slots::adopt_engine_ledger(&pool, page_dir, lane.pid, lane.started_s)
-                    .map_err(crate::inference::slots::AdoptRefusal::as_str),
+                Some(page_dir) => {
+                    // the adopted engine's page dir is this core's to trim and measure too
+                    // (a spawn records it at launch; an adoption never did)
+                    crate::inference::slots::note_page_dir(page_dir);
+                    crate::inference::slots::adopt_engine_ledger(&pool, page_dir, lane.pid, lane.started_s)
+                        .map_err(crate::inference::slots::AdoptRefusal::as_str)
+                }
             },
         };
         crate::probe!(

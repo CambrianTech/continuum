@@ -6091,7 +6091,11 @@ fn derived_prompt_cache_mib(
         .map(|(_, d)| (d.last_seen_ms, d.prev_seen_ms))
         .collect();
     let active = rotating_minds(&seen, crate::persona::trace::now_ms(), rotation_window_ms(&seen)).max(warm_floor);
-    let demands = active_cache_states(&population, served_ctx, active);
+    let demands = with_measured_state(
+        active_cache_states(&population, served_ctx, active),
+        fp.map(|f| f.kv_per_token),
+        crate::inference::slots::measured_state_bytes(),
+    );
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
     let decision = prompt_cache_decision(
         fp,
@@ -6258,6 +6262,20 @@ pub fn rotating_minds(seen: &[(u64, u64)], now_ms: u64, window_ms: Option<u64>) 
     seen.iter()
         .filter(|(last, _)| *last > 0 && now_ms.saturating_sub(*last) <= window)
         .count()
+}
+
+/// PURE: each mind's cache demand in TOKEN-EQUIVALENTS of the measured saved state, so the
+/// sizing (`lane_args::host_prompt_cache_mib`, `one_conversation_bytes`), which prices a
+/// state as `kv_per_token × tokens`, prices what a state really costs. A hybrid model's
+/// state also holds its recurrent state and context checkpoints: the 5090's 27B saved
+/// 4.3-5.8 GB states that the KV estimate sized at 4,288 MiB. Each demand is raised to at
+/// least the measured state; nothing measured, or no KV rate, leaves the demands as they are.
+pub fn with_measured_state(demands: Vec<u32>, kv_per_token: Option<u64>, measured_state: Option<u64>) -> Vec<u32> {
+    let (Some(kv), Some(state)) = (kv_per_token.filter(|k| *k > 0), measured_state) else {
+        return demands;
+    };
+    let state_tokens = state.div_ceil(kv).min(u32::MAX as u64) as u32;
+    demands.into_iter().map(|t| t.max(state_tokens)).collect()
 }
 
 pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize) -> Vec<u32> {
@@ -7573,6 +7591,30 @@ pub(crate) mod tests {
             "demand-sized ({} MiB), not the afford ({afford_mib} MiB)",
             decision.desired_mib
         );
+    }
+
+    // what this catches (the 5090, 2026-10-11: --cache-ram 4288 against hybrid-27B states of
+    // 4.3-5.8 GB; 104 states skipped and 220 evicted over the lane's life, two minds on one
+    // slot found nothing): a host prompt cache sized from the KV estimate alone, when a
+    // saved state also carries the recurrent state and the context checkpoints. Each mind's
+    // demand is raised to the measured state, so the cache holds every rotating mind's
+    // state; with nothing measured the KV estimate stands unchanged.
+    #[test]
+    fn the_prompt_cache_holds_each_rotating_minds_measured_state() {
+        let kv = 32_768u64;
+        let mib = 1024 * 1024;
+        let measured = Some(5_511 * mib);
+        let demands = vec![41_318u32, 21_525];
+        assert_eq!(with_measured_state(demands.clone(), Some(kv), None), demands, "nothing measured: the estimate stands");
+        assert_eq!(with_measured_state(demands.clone(), None, measured), demands, "no KV rate: nothing to convert");
+        let raised = with_measured_state(demands.clone(), Some(kv), measured);
+        let plenty = 64 * 1024 * mib;
+        let sized = u64::from(crate::inference::lane_args::host_prompt_cache_mib(&raised, kv, plenty)) * mib;
+        assert!(sized >= 2 * 5_511 * mib, "both minds' measured states fit: {} MiB", sized / mib);
+        let before = u64::from(crate::inference::lane_args::host_prompt_cache_mib(&demands, kv, plenty)) * mib;
+        assert!(before < 5_511 * mib, "the KV estimate alone held less than ONE measured state: {} MiB", before / mib);
+        let afford = 8 * 1024 * mib;
+        assert!(u64::from(crate::inference::lane_args::host_prompt_cache_mib(&raised, kv, afford)) * mib <= afford, "still capped by what the host can afford");
     }
 
     // what this catches (card 58ba9752): the cache sized for lanes x 2 while more minds
