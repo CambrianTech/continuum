@@ -201,13 +201,26 @@ jobs:
       # backend, CUDA targets) still decides whether it is current, so this cache only gives the
       # one owner its last output back; it never decides currency itself. The runner image is in
       # the key too (Fable): a new image's compiler rebuilds it once, never reuses an old build.
+      # The runner image's version is in the runner's process environment, which the `env`
+      # context does not see (Cormac on #4941), so it is read into a step output; empty fails
+      # here rather than keying every image the same.
+      - name: Read the runner image (Windows)
+        id: runner-image
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${ImageVersion:-}" ] || { echo "::error::the runner exports no ImageVersion; the engine cache cannot key on its toolchain"; exit 1; }
+          echo "version=$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "runner image $ImageVersion"
+
       - name: Restore the published engine (Windows NVIDIA)
         id: engine-cache
         if: runner.os == 'Windows'
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/published-engine
-          key: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ env.ImageVersion }}
+          key: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
 
       - name: Build the receipted inference engine (Windows NVIDIA)
         if: runner.os == 'Windows'
@@ -237,7 +250,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/published-engine
-          key: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ env.ImageVersion }}
+          key: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
 
       - name: Package
         id: package
