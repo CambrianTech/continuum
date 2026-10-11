@@ -282,7 +282,7 @@ pub fn trim_page_store_after_save(just_saved: &str) {
     // must hold per mind, which the KV estimate alone misses on a hybrid model.
     let page_bytes = |name: &str| std::fs::metadata(dir.join(name)).map(|m| m.len()).unwrap_or(0); // unwrap_or: an absent sidecar adds nothing
     let state = page_bytes(just_saved).saturating_add(page_bytes(&format!("{just_saved}.ckpt")));
-    note_state_bytes(state);
+    note_state_bytes(&dir, state);
     let (removed, freed, kept) =
         trim_page_store(&dir, just_saved, KV_PAGE_STORE_MAX_BYTES, KV_PAGE_MIN_AGE_MS);
     if removed > 0 {
@@ -299,30 +299,52 @@ pub fn trim_page_store_after_save(just_saved: &str) {
     }
 }
 
-/// How many recent saved-state sizes [`measured_state_bytes`] remembers.
+/// How many recent saved-state sizes [`measured_state_bytes`] remembers per page dir, and how
+/// many page dirs it remembers (the least recently written is dropped).
 const STATE_SAMPLES: usize = 16;
-static RECENT_STATE_BYTES: parking_lot::Mutex<std::collections::VecDeque<u64>> =
-    parking_lot::Mutex::new(std::collections::VecDeque::new());
+const STATE_DIRS: usize = 8;
+/// Recent saved-state sizes, keyed by the PAGE DIR they were written to: a page dir is one
+/// model at one geometry ([`crate::inference::llama_server::kv_page_dir`]), so a second model's
+/// lane on the node is never sized by another model's states (Fable on #4930).
+type StateSamples = std::collections::VecDeque<(std::path::PathBuf, std::collections::VecDeque<u64>)>;
+static RECENT_STATE_BYTES: parking_lot::Mutex<StateSamples> = parking_lot::Mutex::new(std::collections::VecDeque::new());
 
-fn note_state_bytes(bytes: u64) {
+fn note_state_bytes(dir: &std::path::Path, bytes: u64) {
     if bytes == 0 {
         return;
     }
-    let mut recent = RECENT_STATE_BYTES.lock();
+    note_state_bytes_in(&mut RECENT_STATE_BYTES.lock(), dir, bytes);
+}
+
+/// PURE: record `bytes` under `dir`, bounded by [`STATE_SAMPLES`] per dir and [`STATE_DIRS`] dirs.
+fn note_state_bytes_in(samples: &mut StateSamples, dir: &std::path::Path, bytes: u64) {
+    let mut recent = match samples.iter().position(|(d, _)| d == dir) {
+        Some(i) => samples.remove(i).map(|(_, r)| r).unwrap_or_default(), // unwrap_or_default: position just found it, so this is always Some
+        None => std::collections::VecDeque::new(),
+    };
     recent.push_back(bytes);
     while recent.len() > STATE_SAMPLES {
         recent.pop_front();
     }
+    samples.push_back((dir.to_path_buf(), recent));
+    while samples.len() > STATE_DIRS {
+        samples.pop_front();
+    }
 }
 
-/// The largest of the last [`STATE_SAMPLES`] saved states on this node (page + checkpoint
-/// sidecar), or `None` before the first save. What one mind's state really costs the host
+/// PURE: the largest recent state recorded under `dir`.
+fn measured_state_bytes_in(samples: &StateSamples, dir: &std::path::Path) -> Option<u64> {
+    samples.iter().find(|(d, _)| d == dir).and_then(|(_, r)| r.iter().copied().max())
+}
+
+/// The largest of the last [`STATE_SAMPLES`] saved states written to `page_dir` (page +
+/// checkpoint sidecar), or `None` before the first save there. What one mind's state really costs the host
 /// prompt cache: on the 5090, 2026-10-11, the engine reported states of 4.3-5.8 GB for the
 /// hybrid 27B at a 68k window while the cache was sized from the KV estimate at 4,288 MiB,
 /// so 104 states were skipped and 220 evicted, and two minds on one slot found nothing.
 /// The largest, not a median: the engine refuses any state over the limit outright.
-pub fn measured_state_bytes() -> Option<u64> {
-    RECENT_STATE_BYTES.lock().iter().copied().max()
+pub fn measured_state_bytes(page_dir: &std::path::Path) -> Option<u64> {
+    measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), page_dir)
 }
 
 /// Pure trim: pages (`a-*.bin`) with their `.ckpt` sidecars, oldest mtime first,
@@ -1635,6 +1657,29 @@ pub fn directory() -> &'static SlotDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Fable on #4930): a node-wide sample, where a second model's lane on
+    // the same node would be sized by the hybrid 27B's 4-6 GB states. Samples are per page
+    // dir (one model at one geometry), each dir answers only for itself, and both bounds hold.
+    #[test]
+    fn measured_state_sizes_answer_only_for_their_own_page_dir() {
+        let mut samples = StateSamples::new();
+        let big = std::path::Path::new("/pages/qwen-27b--c49152");
+        let small = std::path::Path::new("/pages/qwen-1.5b--c32768");
+        note_state_bytes_in(&mut samples, big, 5_500_000_000);
+        note_state_bytes_in(&mut samples, small, 120_000_000);
+        assert_eq!(measured_state_bytes_in(&samples, big), Some(5_500_000_000));
+        assert_eq!(measured_state_bytes_in(&samples, small), Some(120_000_000), "never the 27B's size");
+        assert_eq!(measured_state_bytes_in(&samples, std::path::Path::new("/pages/other")), None, "an unwritten dir: nothing measured");
+        for i in 0..(STATE_SAMPLES * 2) {
+            note_state_bytes_in(&mut samples, small, 100 + i as u64);
+        }
+        assert_eq!(measured_state_bytes_in(&samples, small), Some(100 + (STATE_SAMPLES * 2 - 1) as u64), "only the recent samples count");
+        for i in 0..(STATE_DIRS * 2) {
+            note_state_bytes_in(&mut samples, std::path::Path::new(&format!("/pages/m{i}")), 1);
+        }
+        assert!(samples.len() <= STATE_DIRS, "bounded by dirs");
+    }
 
     fn key(p: u128, r: u128) -> ActivityKey {
         ActivityKey::new(Uuid::from_u128(p), Uuid::from_u128(r)).expect("non-nil test ids")
