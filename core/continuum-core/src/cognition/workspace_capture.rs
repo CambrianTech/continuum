@@ -393,8 +393,8 @@ mod tests {
     // at 98%, IntelMac 1.3 GB across 76 files): an append-only trace with no bound. The file
     // rotates at its cap and keeps one older generation, so a persona's traces stay under
     // 2 x cap + one record whatever runs; every line in both files is a whole JSON record (a
-    // rotation never splits one); and an oversized file left by an older build is rotated on
-    // the first write instead of growing.
+    // rotation never splits one); and an oversized file left by an older build is cut to its
+    // newest whole lines on open (CappedAppender), never parked as a generation.
     #[tokio::test]
     async fn a_persona_trace_rotates_at_its_cap_and_keeps_one_generation() {
         let dir = std::env::temp_dir().join(format!("ws-cap-{}", Uuid::new_v4()));
