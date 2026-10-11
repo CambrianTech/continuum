@@ -10,6 +10,10 @@ source: string,
  */
 passages: number, 
 /**
+ * Files under your paths left out: not source or prose, secret-shaped, or not UTF-8.
+ */
+skipped: number, 
+/**
  * What the bucket did with them (filled toward its threshold, or dispatched training).
  */
 outcome: string, };

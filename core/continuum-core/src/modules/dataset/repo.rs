@@ -30,6 +30,30 @@ use crate::code::git_bridge::{origin_repo_slug, run_git};
 /// job_create.rs 4.18). The densest bounds a chunk's tokens from above.
 const SOURCE_BYTES_PER_TOKEN: f64 = 3.53;
 
+/// What a corpus reads when its caller names no extensions: source and prose a reader quotes.
+/// An ALLOWLIST, never a deny-list: its output is an adapter that can reproduce what it read,
+/// so the unknown (a key with no extension, a token in a config file) is refused, not admitted
+/// (Cormac and BigMama on #4953). Data formats that carry credentials (json, yaml, env) are out.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "mjs", "py", "go", "java", "kt", "swift", "c", "h", "cc", "cpp", "hpp",
+    "cs", "rb", "md", "toml", "sql", "html", "css", "proto", "wgsl", "metal", "cu", "cuh",
+];
+
+/// A path that must never become training text, whatever extensions the caller names: key
+/// material and credential stores by their conventional names.
+fn is_secret_shaped(path: &str) -> bool {
+    path.split('/').any(|part| {
+        let p = part.to_ascii_lowercase();
+        p.starts_with(".env")
+            || p.starts_with("id_rsa")
+            || p.starts_with("id_ed25519")
+            || p.starts_with("id_ecdsa")
+            || [".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".asc", ".gpg"].iter().any(|e| p.ends_with(e))
+            || [".npmrc", ".netrc", ".pypirc", ".git-credentials", "credentials"].contains(&p.as_str())
+            || p.contains("secret")
+    })
+}
+
 /// Params for `dataset/from-repo`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -43,8 +67,8 @@ pub struct FromRepoParams {
     /// Pathspecs under the repository root to include. Empty: the whole tree.
     #[serde(default)]
     pub paths: Vec<String>,
-    /// File extensions to include, without the dot (`["rs", "md"]`). Empty: every file
-    /// that is valid UTF-8.
+    /// File extensions to include, without the dot (`["rs", "md"]`). Empty: the source and
+    /// prose allowlist. Secret-shaped paths are refused either way.
     #[serde(default)]
     pub extensions: Vec<String>,
     /// Dataset name (subdirectory under the datasets root).
@@ -141,11 +165,14 @@ pub(crate) struct Corpus {
     pub sha: String,
     /// (prompt, completion): `<label>@<sha9>:<path> lines a-b`, then that span.
     pub examples: Vec<(String, String)>,
+    /// Files under the named paths left out: not on the allowlist, secret-shaped, or not UTF-8.
+    pub skipped: usize,
 }
 
 impl Corpus {
     /// Read `paths` (pathspecs; empty = the whole tree) of `repo` at `revision`, keeping files
-    /// whose extension is in `extensions` (empty = every UTF-8 file), each cut into spans of at
+    /// whose extension is in `extensions` (empty = [`SOURCE_EXTENSIONS`]) and whose path is not
+    /// secret-shaped, each cut into spans of at
     /// most `max_tokens` (bounded by [`SOURCE_BYTES_PER_TOKEN`]).
     pub(crate) fn read(
         repo: &Path,
@@ -165,19 +192,28 @@ impl Corpus {
         ls.extend(paths.iter().map(String::as_str));
         let listing = run_git(repo, &ls).map_err(|e| format!("listing {sha}: {e}"))?;
         let wanted = |path: &str| {
-            extensions.is_empty()
-                || Path::new(path)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|e| extensions.iter().any(|w| w == e))
+            !is_secret_shaped(path)
+                && Path::new(path).extension().and_then(|e| e.to_str()).is_some_and(|e| {
+                    if extensions.is_empty() {
+                        SOURCE_EXTENSIONS.contains(&e)
+                    } else {
+                        extensions.iter().any(|w| w == e)
+                    }
+                })
         };
         let max_bytes = (f64::from(max_tokens) * SOURCE_BYTES_PER_TOKEN) as usize;
         let label = repo_label(repo);
         let short = sha[..sha.len().min(9)].to_string();
         let mut examples = Vec::new();
-        for path in listing.split('\0').filter(|s| !s.is_empty() && wanted(s)) {
+        let mut skipped = 0;
+        for path in listing.split('\0').filter(|s| !s.is_empty()) {
+            if !wanted(path) {
+                skipped += 1;
+                continue;
+            }
             // a file that is not UTF-8 is not source a reader quotes: skipped, never mangled
             let Ok(source) = run_git(repo, &["show", &format!("{sha}:{path}")]) else {
+                skipped += 1;
                 continue;
             };
             for span in spans(&source, max_bytes) {
@@ -190,7 +226,7 @@ impl Corpus {
                 repo.display()
             ));
         }
-        Ok(Self { label, sha, examples })
+        Ok(Self { label, sha, examples, skipped })
     }
 }
 
@@ -257,6 +293,35 @@ mod tests {
         assert!(got.len() > 1);
         assert!(got.iter().all(|s| s.text.len() <= 64));
         assert_eq!(got.iter().map(|s| s.text.as_str()).collect::<String>(), src);
+    }
+
+    // what this catches: a corpus that trains an adapter on key material. With no extensions
+    // named only allowlisted source is read; a secret-shaped path is refused even when its
+    // extension is asked for by name; and the refusals are counted, never silent.
+    #[test]
+    fn keys_and_unknown_files_never_reach_a_corpus() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        let git = |args: &[&str]| run_git(repo, args).unwrap();
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "t@t"]);
+        git(&["config", "user.name", "t"]);
+        for (name, body) in [
+            ("lib.rs", "fn ok() {}\n"),
+            ("id_ed25519", "-----BEGIN OPENSSH PRIVATE KEY-----\n"),
+            (".env", "TOKEN=abc\n"),
+            ("config.json", "{\"token\": \"abc\"}\n"),
+            ("deploy_secret.rs", "const TOKEN: &str = \"abc\";\n"),
+        ] {
+            std::fs::write(repo.join(name), body).unwrap();
+        }
+        git(&["add", "."]);
+        git(&["-c", "commit.gpgsign=false", "commit", "-q", "-m", "one"]);
+        let all = Corpus::read(repo, "HEAD", &[], &[], default_example_tokens()).unwrap();
+        assert_eq!(all.examples.len(), 1, "only lib.rs is allowlisted source");
+        assert_eq!(all.skipped, 4);
+        let named = Corpus::read(repo, "HEAD", &[], &["rs".into()], default_example_tokens()).unwrap();
+        assert!(named.examples.iter().all(|(p, _)| !p.contains("secret")), "a secret-shaped .rs is refused by name too");
     }
 
     // what this catches: a corpus read from the working tree instead of the named commit. A

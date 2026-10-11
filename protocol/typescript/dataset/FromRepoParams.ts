@@ -17,8 +17,8 @@ revision: string,
  */
 paths: Array<string>, 
 /**
- * File extensions to include, without the dot (`["rs", "md"]`). Empty: every file
- * that is valid UTF-8.
+ * File extensions to include, without the dot (`["rs", "md"]`). Empty: the source and
+ * prose allowlist. Secret-shaped paths are refused either way.
  */
 extensions: Array<string>, 
 /**

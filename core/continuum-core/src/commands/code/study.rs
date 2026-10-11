@@ -42,6 +42,9 @@ pub struct CodeStudyResult {
     /// How many passages went into your study bucket.
     #[ts(type = "number")]
     pub passages: usize,
+    /// Files under your paths left out: not source or prose, secret-shaped, or not UTF-8.
+    #[ts(type = "number")]
+    pub skipped: usize,
     /// What the bucket did with them (filled toward its threshold, or dispatched training).
     pub outcome: String,
 }
@@ -98,6 +101,7 @@ impl ActionCommand for CodeStudy {
         .map_err(CommandError::Invalid)?;
         let source = format!("{}@{}", corpus.label, corpus.sha);
         let passages = corpus.examples.len();
+        let skipped = corpus.skipped;
         let examples: Vec<serde_json::Value> = corpus
             .examples
             .into_iter()
@@ -133,6 +137,7 @@ impl ActionCommand for CodeStudy {
         Ok(CodeStudyResult {
             source,
             passages,
+            skipped,
             outcome: receipt.outcome.unwrap_or_else(|| "accepted".into()), // unwrap_or_else: an accepting receipt without an outcome label is still an acceptance
         })
     }
