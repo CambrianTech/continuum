@@ -5126,10 +5126,17 @@ impl ServingDaemonModule {
                     }
                 }
                 // Publish the LIVE lane count to the admission gate so its directed-turn
-                // reservation semaphores size by what's actually served (`--parallel
-                // plan.lanes`), not the `MAX_LANES` ceiling — exact once the plan can serve
-                // fewer lanes than the ceiling (#139 compute-buffer fit). ONE source of truth.
-                crate::cognition::resource_admission::set_served_lane_count(plan.lanes as usize);
+                // reservation semaphores size by what's actually served, not the `MAX_LANES`
+                // ceiling (#139 compute-buffer fit). LIVE means the engine's own `--parallel`,
+                // from the serving snapshot: the plan is a proposal the reconcile may never
+                // take. On the M5, 2026-10-11 01:41Z, the plan moved 2,2,1,1,1,1 lanes in 40 s
+                // with no relaunch, and the gate followed it: a 2-lane engine admitted as one
+                // lane, half its seats reserved for directed turns that never came.
+                let admitted = {
+                    let live = self.serving_tx.borrow();
+                    admitted_lanes(live.ready, live.lanes, plan.lanes as u32)
+                };
+                crate::cognition::resource_admission::set_served_lane_count(admitted as usize);
                 // And the prefill throttle's demand facts (#56): the served model's per-spike
                 // transient compute buffer + the lane count. Published HERE, next to the lane
                 // count, so both gates read the one plan — no second path.
@@ -6276,6 +6283,17 @@ pub fn with_measured_state(demands: Vec<u32>, kv_per_token: Option<u64>, measure
     };
     let state_tokens = state.div_ceil(kv).min(u32::MAX as u64) as u32;
     demands.into_iter().map(|t| t.max(state_tokens)).collect()
+}
+
+/// PURE: the lane count the admission gate sizes by: the running engine's own lanes when it
+/// is serving, the plan's only before an engine is up (a cold boot has nothing else to go
+/// on). A plan the reconcile has not taken changes nothing the engine serves.
+pub fn admitted_lanes(live_ready: bool, live_lanes: u32, plan_lanes: u32) -> u32 {
+    if live_ready && live_lanes > 0 {
+        live_lanes
+    } else {
+        plan_lanes
+    }
 }
 
 pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize) -> Vec<u32> {
@@ -7615,6 +7633,18 @@ pub(crate) mod tests {
         assert!(before < 5_511 * mib, "the KV estimate alone held less than ONE measured state: {} MiB", before / mib);
         let afford = 8 * 1024 * mib;
         assert!(u64::from(crate::inference::lane_args::host_prompt_cache_mib(&raised, kv, afford)) * mib <= afford, "still capped by what the host can afford");
+    }
+
+    // what this catches (the M5, 2026-10-11 01:41Z: the plan moved 2,2,1,1,1,1 lanes in 40 s,
+    // same engine pid, and the admission gate followed every move): admission sized by a plan
+    // the engine never took. A serving engine's own lane count is what the gate counts; the
+    // plan only stands in before an engine is up.
+    #[test]
+    fn the_admission_gate_counts_the_engines_lanes_not_the_plans() {
+        assert_eq!(admitted_lanes(true, 2, 1), 2, "a 2-lane engine is admitted as two lanes whatever the plan says");
+        assert_eq!(admitted_lanes(true, 1, 2), 1, "and a 1-lane engine as one, until the reconcile relaunches it");
+        assert_eq!(admitted_lanes(false, 0, 2), 2, "cold boot: the plan is all there is");
+        assert_eq!(admitted_lanes(true, 0, 2), 2, "a ready snapshot without a lane count is no evidence");
     }
 
     // what this catches (card 58ba9752): the cache sized for lanes x 2 while more minds
