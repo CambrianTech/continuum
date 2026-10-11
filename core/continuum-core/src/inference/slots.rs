@@ -291,6 +291,19 @@ pub fn note_page_dir(dir: &std::path::Path) {
 /// list, so every scan sizes a page whole and every trim removes it whole.
 const PAGE_SIDECARS: [&str; 2] = [".ckpt", ".lora"];
 
+/// The bytes of a page's sidecars (`.ckpt` + `.lora`) in the live page dir, or `None` when no dir
+/// is registered or none exists. A save or restore reads and writes them with the page, and the
+/// engine's own `n_read`/`n_written` count only the `.bin`, so a probe that times the whole switch
+/// names them separately (BigMama on #4957: ~1.2-1.6 GB of checkpoints on Kimi's page).
+pub fn page_sidecar_bytes(page: &str) -> Option<u64> {
+    let dir = PAGE_DIR.lock().clone()?;
+    let sizes: Vec<u64> = PAGE_SIDECARS
+        .iter()
+        .filter_map(|s| std::fs::metadata(dir.join(format!("{page}{s}"))).ok().map(|m| m.len()))
+        .collect();
+    (!sizes.is_empty()).then(|| sizes.iter().sum())
+}
+
 /// Every page in `dir` (`a-*.bin`), as (page name -> (the page file's mtime, bytes of the page
 /// and its sidecars)). Reads the dir once; anything unreadable is skipped.
 fn pages_in(dir: &std::path::Path) -> std::collections::HashMap<String, (std::time::SystemTime, u64)> {
