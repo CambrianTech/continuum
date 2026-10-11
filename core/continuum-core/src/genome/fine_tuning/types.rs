@@ -289,6 +289,9 @@ pub enum TrainingSource {
     /// Another persona's curriculum shared via the
     /// [[mesh-of-lessons-cross-persona-curricula]] mesh.
     MeshInherited,
+    /// Source text she chose to study (`code/study`): a repository's files at a named
+    /// commit, read from her own workspace. Not her output and not a teacher's.
+    Studied,
 }
 
 // ─── Hyperparams ─────────────────────────────────────────────────────

@@ -23,6 +23,7 @@ use ts_rs::TS;
 mod candidate;
 mod repo;
 pub use repo::FromRepoParams;
+pub(crate) use repo::{default_example_tokens, Corpus};
 pub use candidate::{CandidateReservation, DatasetCandidate};
 
 /// Manifest persisted alongside imported datasets.

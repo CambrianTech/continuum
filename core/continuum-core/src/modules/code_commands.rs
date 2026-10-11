@@ -2048,6 +2048,7 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeHistory {
             state: state.clone(),
         }),
+        Arc::new(crate::commands::code::study::CodeStudy { state: state.clone() }),
         Arc::new(CodeCreateWorkspace { state }),
     ]
 }

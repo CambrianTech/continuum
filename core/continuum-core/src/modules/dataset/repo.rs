@@ -14,7 +14,7 @@
 //! The byte budget only sizes chunks: the training run measures each example's true token
 //! count in the engine and parks what its window cannot hold (`/train/measure`, #4937).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -66,7 +66,7 @@ pub struct FromRepoParams {
 fn default_revision() -> String {
     "HEAD".to_string()
 }
-fn default_example_tokens() -> u32 {
+pub(crate) fn default_example_tokens() -> u32 {
     16_384
 }
 fn default_corpus_split() -> f64 {
@@ -132,57 +132,91 @@ fn spans(source: &str, max_bytes: usize) -> Vec<Span> {
     out
 }
 
-impl DatasetService {
-    /// Build a training dataset from a repository's source at one revision.
-    pub fn from_repo(&self, p: &FromRepoParams) -> Result<DatasetManifest, String> {
-        let repo = PathBuf::from(&p.repo_dir);
+/// A repository's source at one commit, cut into examples: the one reader both the operator's
+/// `dataset/from-repo` and a citizen's `code/study` use.
+pub(crate) struct Corpus {
+    /// `owner/name` of `origin`, else the directory name.
+    pub label: String,
+    /// The commit every file was read at.
+    pub sha: String,
+    /// (prompt, completion): `<label>@<sha9>:<path> lines a-b`, then that span.
+    pub examples: Vec<(String, String)>,
+}
+
+impl Corpus {
+    /// Read `paths` (pathspecs; empty = the whole tree) of `repo` at `revision`, keeping files
+    /// whose extension is in `extensions` (empty = every UTF-8 file), each cut into spans of at
+    /// most `max_tokens` (bounded by [`SOURCE_BYTES_PER_TOKEN`]).
+    pub(crate) fn read(
+        repo: &Path,
+        revision: &str,
+        paths: &[String],
+        extensions: &[String],
+        max_tokens: u32,
+    ) -> Result<Self, String> {
         if !repo.is_dir() {
-            return Err(format!("repoDir not found: {}", repo.display()));
+            return Err(format!("repository not found: {}", repo.display()));
         }
-        let sha = run_git(&repo, &["rev-parse", "--verify", &format!("{}^{{commit}}", p.revision)])
-            .map_err(|e| format!("revision {:?} does not name a commit in {}: {e}", p.revision, repo.display()))?
+        let sha = run_git(repo, &["rev-parse", "--verify", &format!("{revision}^{{commit}}")])
+            .map_err(|e| format!("revision {revision:?} does not name a commit in {}: {e}", repo.display()))?
             .trim()
             .to_string();
         let mut ls = vec!["ls-tree", "-r", "-z", "--name-only", sha.as_str(), "--"];
-        ls.extend(p.paths.iter().map(String::as_str));
-        let listing = run_git(&repo, &ls).map_err(|e| format!("listing {sha}: {e}"))?;
+        ls.extend(paths.iter().map(String::as_str));
+        let listing = run_git(repo, &ls).map_err(|e| format!("listing {sha}: {e}"))?;
         let wanted = |path: &str| {
-            p.extensions.is_empty()
+            extensions.is_empty()
                 || Path::new(path)
                     .extension()
                     .and_then(|e| e.to_str())
-                    .is_some_and(|e| p.extensions.iter().any(|w| w == e))
+                    .is_some_and(|e| extensions.iter().any(|w| w == e))
         };
-        let max_bytes = (f64::from(p.max_tokens_per_example) * SOURCE_BYTES_PER_TOKEN) as usize;
-        let label = repo_label(&repo);
-        let short = &sha[..sha.len().min(9)];
-
-        let mut examples: Vec<Value> = Vec::new();
+        let max_bytes = (f64::from(max_tokens) * SOURCE_BYTES_PER_TOKEN) as usize;
+        let label = repo_label(repo);
+        let short = sha[..sha.len().min(9)].to_string();
+        let mut examples = Vec::new();
         for path in listing.split('\0').filter(|s| !s.is_empty() && wanted(s)) {
             // a file that is not UTF-8 is not source a reader quotes: skipped, never mangled
-            let Ok(source) = run_git(&repo, &["show", &format!("{sha}:{path}")]) else {
+            let Ok(source) = run_git(repo, &["show", &format!("{sha}:{path}")]) else {
                 continue;
             };
             for span in spans(&source, max_bytes) {
-                let prompt = format!("{label}@{short}:{path} lines {}-{}", span.first, span.last);
-                examples.push(json!({ "messages": [
-                    { "role": "user", "content": prompt },
-                    { "role": "assistant", "content": span.text },
-                ]}));
+                examples.push((format!("{label}@{short}:{path} lines {}-{}", span.first, span.last), span.text));
             }
         }
         if examples.is_empty() {
             return Err(format!(
-                "no source in {} at {short} under {:?} with extensions {:?}: nothing to train on",
-                repo.display(),
-                p.paths,
-                p.extensions
+                "no source in {} at {short} under {paths:?} with extensions {extensions:?}: nothing to study",
+                repo.display()
             ));
         }
+        Ok(Self { label, sha, examples })
+    }
+}
 
+impl DatasetService {
+    /// Build a training dataset from a repository's source at one revision.
+    pub fn from_repo(&self, p: &FromRepoParams) -> Result<DatasetManifest, String> {
+        let corpus = Corpus::read(
+            Path::new(&p.repo_dir),
+            &p.revision,
+            &p.paths,
+            &p.extensions,
+            p.max_tokens_per_example,
+        )?;
+        let examples: Vec<Value> = corpus
+            .examples
+            .iter()
+            .map(|(prompt, completion)| {
+                json!({ "messages": [
+                    { "role": "user", "content": prompt },
+                    { "role": "assistant", "content": completion },
+                ]})
+            })
+            .collect();
         let output_dir = self.resolve_root(p.output_dir.as_deref()).join(&p.name);
         let mut manifest = Self::split_and_write(&p.name, &output_dir, &examples, p.split_ratio, None)?;
-        manifest.source = Some(format!("repo:{label}@{sha}"));
+        manifest.source = Some(format!("repo:{}@{}", corpus.label, corpus.sha));
         manifest.write_to(&output_dir)?;
         Ok(manifest)
     }
