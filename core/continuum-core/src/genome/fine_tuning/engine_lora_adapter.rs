@@ -362,8 +362,8 @@ const POST_WAIT_FLOOR: Duration = Duration::from_secs(120);
 /// [`POST_WAIT_FLOOR`]. MEASURED on the 5090, 2026-10-11 10:06Z: 16 lived turns measured in
 /// 205 s (~13 s each beside serving), and the 11 sent outlasted the old fixed 120 s wait, so the
 /// core failed job 97e081e2 while the engine trained it, unadoptable (card 93ffc555).
-fn post_wait_for(render_per_example: Duration, sent: usize) -> Duration {
-    render_per_example.mul_f64(sent as f64 * 2.0).max(POST_WAIT_FLOOR)
+fn post_wait_for(render_per_example: Duration, sent: usize, floor: Duration) -> Duration {
+    render_per_example.mul_f64(sent as f64 * 2.0).max(floor)
 }
 
 /// What a lost POST /train turns out to have been, from the engine's status afterwards.
@@ -656,9 +656,10 @@ fn refit_middle(rows: Vec<MeasuredExample>, window: u32) -> Vec<MeasuredExample>
 /// down to an example's tokens_min) or parks what no longer fits. The window is planned for the
 /// data, and the chunk for the window (Fable, 2026-10-11).
 fn window_for_need(rows: &[MeasuredExample], served: u32) -> u32 {
-    let need = rows.iter().map(|r| r.tokens_full).max().unwrap_or(0).saturating_sub(1);
-    let need = u32::try_from(need).unwrap_or(u32::MAX);
-    need.div_ceil(256).saturating_mul(256).max(TRAINING_WINDOW_MIN).min(served)
+    // in u64 throughout, clamped to `served` (a u32) before narrowing, so the cast cannot truncate
+    let need = rows.iter().fold(0u64, |most, r| most.max(r.tokens_full.saturating_sub(1)));
+    let window = need.div_ceil(256).saturating_mul(256).max(u64::from(TRAINING_WINDOW_MIN)).min(u64::from(served));
+    window as u32
 }
 
 /// The training window, CALCULATED before dispatch (Joel, 2026-10-10: "can't it calculate what it
@@ -1154,6 +1155,9 @@ pub struct EngineLoraFineTuner {
     /// the binding is released. The lease was in the dead core's memory; the engine's
     /// allocation was not, so until this re-takes it a second job could be admitted into it.
     resident_leases: Arc<Mutex<BTreeMap<Uuid, crate::resources::LeaseGuard>>>,
+    /// The least a run's POST may wait ([`post_wait_for`]): [`POST_WAIT_FLOOR`], or a test's
+    /// shorter one, so a lost POST can be exercised without a two-minute wait.
+    post_wait_floor: Duration,
 }
 
 impl Default for EngineLoraFineTuner {
@@ -1182,6 +1186,7 @@ impl EngineLoraFineTuner {
                 .ok()
                 .map(|home| crate::inference::engine_residency::store_path(&home)),
             resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
+            post_wait_floor: POST_WAIT_FLOOR,
         }
     }
 
@@ -1220,6 +1225,7 @@ impl EngineLoraFineTuner {
             hold_store: None,
             residency_store: None,
             resident_leases: Arc::new(Mutex::new(BTreeMap::new())),
+            post_wait_floor: Duration::from_secs(1),
         }
     }
 }
@@ -2068,6 +2074,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
         let footprints_path = self.footprints.path.clone();
+        let post_wait_floor = self.post_wait_floor;
         let http = self.http.clone();
         let holds = self.holds.clone();
         let hold_store = self.hold_store.clone();
@@ -2244,7 +2251,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 lane,
                 shape: spec.shape.clone(),
                 footprints_path: footprints_path.clone(),
-                post_wait: post_wait_for(render_per_example, body.examples.len()),
+                post_wait: post_wait_for(render_per_example, body.examples.len(), post_wait_floor),
                 start: Some(body),
                 out: out.clone(),
                 adapter_path: spec.adapter_path.clone(),
@@ -2454,6 +2461,25 @@ fn engine_example(e: &TrainingExample) -> EngineExample {
 mod tests {
     use super::*;
 
+    // what this catches (Cormac's chain test on #4946, card 3cef97ef; job 97e081e2): the WHOLE
+    // path of a POST lost after the engine took the run. The engine's answer outlasts the POST's
+    // wait, the core asks GET /train, finds this job's run, watches it to its end, and the job
+    // completes with its adapter collected: not failed while the engine trains, unadoptable.
+    #[tokio::test]
+    async fn a_run_whose_post_is_lost_is_watched_to_its_end_and_completes() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "lost_post").await;
+        let t = EngineLoraFineTuner::for_test(url, train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        let h = t.create_job(r).await.expect("test: create");
+        let end = wait_terminal(&t, &h).await;
+        assert!(seen.lock().unwrap().is_some(), "the run was posted");
+        assert!(matches!(end, TrainingStatus::Completed { .. }), "reconciled and watched to its end: {end:?}");
+        server.abort();
+    }
+
     // what this catches (card 93ffc555; the 5090, 2026-10-11 10:08Z, job 97e081e2): a POST lost on
     // the way back failed a job the engine then trained, unadoptable. The engine's status after
     // the loss decides by the run's id: this job's run in any state (its refusal included) is
@@ -2482,8 +2508,8 @@ mod tests {
     #[test]
     fn the_post_wait_is_the_measured_render_of_what_was_sent() {
         let measured = Duration::from_millis(205_000 / 16); // 16 measured in 205 s
-        assert_eq!(post_wait_for(measured, 11), Duration::from_millis(205_000 / 16 * 11 * 2), "11 sent: ~282 s, past the ~143 s they take");
-        assert_eq!(post_wait_for(Duration::from_millis(50), 3), POST_WAIT_FLOOR, "a small batch on a fast engine keeps the floor");
+        assert_eq!(post_wait_for(measured, 11, POST_WAIT_FLOOR), Duration::from_millis(205_000 / 16 * 11 * 2), "11 sent: ~282 s, past the ~143 s they take");
+        assert_eq!(post_wait_for(Duration::from_millis(50), 3, POST_WAIT_FLOOR), POST_WAIT_FLOOR, "a small batch on a fast engine keeps the floor");
     }
 
     // what this catches (Fable, 2026-10-11): the window planned as the largest memory allowed at a
@@ -2758,10 +2784,17 @@ mod tests {
                 let lane = l1.clone();
                 let seen = seen1.clone();
                 async move {
-                    let mut l = lane.lock().unwrap();
-                    l.out = b.get("out").and_then(Value::as_str).map(str::to_owned);
-                    *seen.lock().unwrap() = Some(b.clone());
-                    l.body = Some(b);
+                    {
+                        let mut l = lane.lock().unwrap();
+                        l.out = b.get("out").and_then(Value::as_str).map(str::to_owned);
+                        *seen.lock().unwrap() = Some(b.clone());
+                        l.body = Some(b);
+                    }
+                    // "lost_post": the engine takes the run, then its answer outlasts the POST's
+                    // wait (a long prepare), so the core must reconcile by the run's id
+                    if mode == "lost_post" {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                    }
                     axum::Json(json!({"ok": true}))
                 }
             }))
