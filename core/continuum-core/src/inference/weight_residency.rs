@@ -111,9 +111,31 @@ pub struct EngineContext {
     pub n_ctx_per_slot: u32,
 }
 
+/// What an answering engine's `/props` says about its context. Three answers, because only the
+/// first two have a fallback (Codex on #4961): an engine that predates the field is measured by
+/// the device delta, but one whose breakdown or slot geometry is present and unusable is no
+/// reading at all. Feeding that to the delta would write the tenant-charged rate back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineContextReading {
+    Read(EngineContext),
+    /// No `memory_breakdown`: an engine older than fork #25.
+    Absent,
+    /// A breakdown is there, but it or the slot geometry does not parse, overflows, or is zero.
+    Invalid,
+}
+
+impl EngineContextReading {
+    pub fn of(props: &serde_json::Value) -> Self {
+        if props.get("memory_breakdown").is_none() {
+            return Self::Absent;
+        }
+        EngineContext::from_props(props).map_or(Self::Invalid, Self::Read)
+    }
+}
+
 impl EngineContext {
     /// `None` when the engine predates `memory_breakdown`, or reports no slots, no context, or
-    /// no KV on an accelerator (a CPU-placed lane: the process reading speaks there).
+    /// no KV on an accelerator. [`EngineContextReading::of`] tells those apart.
     pub fn from_props(props: &serde_json::Value) -> Option<Self> {
         let memory = EngineMemory::from_props(props)?;
         let slots = u32::try_from(props.get("total_slots")?.as_u64()?).ok()?;
@@ -163,7 +185,23 @@ mod tests {
         let ctx = EngineContext::from_props(&with_slots).expect("reads");
         assert_eq!((ctx.context_bytes, ctx.slots, ctx.n_ctx_per_slot), (117440512, 2, 2048));
         assert_eq!(ctx.beyond_weights, 117440512 + 66594944);
-        assert_eq!(EngineContext::from_props(&props), None, "no slot geometry is no reading");
+        assert_eq!(EngineContextReading::of(&with_slots), EngineContextReading::Read(ctx));
+        // present but unusable is no reading, never the legacy fallback (Codex on #4961)
+        assert_eq!(EngineContextReading::of(&props), EngineContextReading::Invalid, "no slot geometry");
+        let mut zero_slots = with_slots.clone();
+        zero_slots["total_slots"] = 0.into();
+        assert_eq!(EngineContextReading::of(&zero_slots), EngineContextReading::Invalid);
+        let mut overflow = with_slots.clone();
+        overflow["default_generation_settings"]["n_ctx"] = (u64::from(u32::MAX) + 1).into();
+        assert_eq!(EngineContextReading::of(&overflow), EngineContextReading::Invalid);
+        let mut malformed = with_slots.clone();
+        malformed["memory_breakdown"] = "not a list".into();
+        assert_eq!(EngineContextReading::of(&malformed), EngineContextReading::Invalid);
+        // only an engine without the field is the device delta's to measure
+        assert_eq!(
+            EngineContextReading::of(&serde_json::json!({"total_slots": 1, "default_generation_settings": {"n_ctx": 4096}})),
+            EngineContextReading::Absent
+        );
     }
 
     #[test]

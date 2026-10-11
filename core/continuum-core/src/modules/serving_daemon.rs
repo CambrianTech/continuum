@@ -2490,8 +2490,8 @@ impl ServingDaemonModule {
                 // An engine that did not ANSWER is an unavailable observation, not an engine
                 // without the field: falling to the delta there would write the tenant-charged
                 // rate back under the same record on one 500 ms miss (Codex on #4961). Only an
-                // engine that answered without a context reading (one predating
-                // `memory_breakdown`) is measured by the delta.
+                // engine that answered WITHOUT `memory_breakdown` (one predating it) is measured
+                // by the delta; a breakdown or geometry that is present but unusable is no reading.
                 let Some(props) = engine_props().await else {
                     crate::probe!(
                         class = "serving.footprint.unmeasured",
@@ -2502,9 +2502,19 @@ impl ServingDaemonModule {
                     );
                     return;
                 };
-                let engine = crate::inference::weight_residency::EngineContext::from_props(&props);
-                match (engine, delta) {
-                    (Some(ctx), _) => {
+                use crate::inference::weight_residency::EngineContextReading;
+                match (EngineContextReading::of(&props), delta) {
+                    (EngineContextReading::Invalid, _) => {
+                        crate::probe!(
+                            class = "serving.footprint.unmeasured",
+                            leg = "engine_breakdown_invalid",
+                            model = %active,
+                            pid = pid as u64,
+                            "the engine reports a memory breakdown, but it or its slot geometry is unusable: no reading this sample, and the device delta does not stand in for it"
+                        );
+                        return;
+                    }
+                    (EngineContextReading::Read(ctx), _) => {
                         crate::probe!(
                             class = "serving.footprint.device_residual",
                             model = %active,
@@ -2518,8 +2528,8 @@ impl ServingDaemonModule {
                         );
                         ("engine_context", Some(ctx.context_bytes), Some(ctx))
                     }
-                    (None, Some(delta)) => ("device_delta", Some(delta), None),
-                    (None, None) => {
+                    (EngineContextReading::Absent, Some(delta)) => ("device_delta", Some(delta), None),
+                    (EngineContextReading::Absent, None) => {
                         crate::probe!(
                             class = "serving.footprint.device_delta_unread",
                             baseline_bytes = baseline,
