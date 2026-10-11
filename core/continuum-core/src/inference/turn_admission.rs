@@ -562,33 +562,36 @@ pub(crate) async fn kv_page_action(
 
     // Headers alone are not a terminal receipt. A disconnected waiter can leave
     // a queued restore behind; malformed/truncated/default responses fail closed.
-    let outcome = match resp {
-        Some(response) => match response.json::<serde_json::Value>().await {
-            Ok(body)
-                if (200..300).contains(&status)
-                    && body["id_slot"].as_u64() == Some(slot as u64)
-                    && body["filename"].as_str() == Some(filename.as_str())
-                    && body[if action == "save" {
-                        "n_saved"
-                    } else {
-                        "n_restored"
-                    }]
-                    .as_u64()
-                    .is_some() =>
-            {
-                PageOutcome::Completed
-            }
-            Ok(body)
-                if status == 400
-                    && body["error"]["code"].as_u64() == Some(400)
-                    && body["error"]["type"].as_str() == Some("invalid_request_error")
-                    && body["error"]["message"].as_str().is_some() =>
-            {
-                PageOutcome::Rejected
-            }
-            _ => PageOutcome::Uncertain,
-        },
-        None => PageOutcome::Uncertain,
+    // The engine's OWN load time and bytes (`timings.{save,restore}_ms`, `n_written`/`n_read`):
+    // its clock starts after a busy slot's deferral, so `ms - engine_ms` is the wait and
+    // engine_ms the load (card a40e1bbf; the 5090 2026-10-11: Kimi's restores took 6-7.5 min
+    // and nothing could say how much was waiting for the slot and how much was reading).
+    let body = match resp {
+        Some(response) => response.json::<serde_json::Value>().await.ok(),
+        None => None,
+    };
+    let engine_ms = body.as_ref().and_then(|b| {
+        b["timings"][if action == "save" { "save_ms" } else { "restore_ms" }].as_f64().map(|ms| ms as u64)
+    });
+    let engine_bytes = body.as_ref().and_then(|b| b[if action == "save" { "n_written" } else { "n_read" }].as_u64());
+    let outcome = match body {
+        Some(body)
+            if (200..300).contains(&status)
+                && body["id_slot"].as_u64() == Some(slot as u64)
+                && body["filename"].as_str() == Some(filename.as_str())
+                && body[if action == "save" { "n_saved" } else { "n_restored" }].as_u64().is_some() =>
+        {
+            PageOutcome::Completed
+        }
+        Some(body)
+            if status == 400
+                && body["error"]["code"].as_u64() == Some(400)
+                && body["error"]["type"].as_str() == Some("invalid_request_error")
+                && body["error"]["message"].as_str().is_some() =>
+        {
+            PageOutcome::Rejected
+        }
+        _ => PageOutcome::Uncertain,
     };
     let ok = outcome == PageOutcome::Completed;
     let ms = started.elapsed().as_millis() as u64;
@@ -605,6 +608,10 @@ pub(crate) async fn kv_page_action(
         terminal = outcome != PageOutcome::Uncertain,
         status = status as u64,
         ms,
+        // absent when the engine gave no timing (an older engine, or no terminal body)
+        engine_ms = %engine_ms.map_or_else(|| "none".to_string(), |v| v.to_string()),
+        wait_ms = %engine_ms.map_or_else(|| "none".to_string(), |v| ms.saturating_sub(v).to_string()),
+        bytes = %engine_bytes.map_or_else(|| "none".to_string(), |v| v.to_string()),
         bound_ms = bound.as_millis() as u64,
         node_p50_ms = p50_ms,
         node_p90_ms = p90_ms,
