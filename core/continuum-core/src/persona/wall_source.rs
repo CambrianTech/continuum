@@ -111,42 +111,55 @@ pub trait WallReader: Send + Sync {
     }
 }
 
-/// The work board's cards by id: (title, wire state).
-pub type CardLabels = std::collections::HashMap<uuid::Uuid, (String, &'static str)>;
+/// The work board's cards by id: (title, state).
+pub type CardLabels = std::collections::HashMap<uuid::Uuid, (String, airc_work::CardState)>;
 
-/// PURE: each card-ledger post's body led by one line naming the card it is about: its
-/// short id, title and board state, or that it is not on this room's board. Nothing is
-/// dropped or reordered (PERSONA-COGNITION-PIPELINE.md §5: the substrate provides context,
-/// she decides relevance), and the index of every post is unchanged, so a continuation
-/// cursor still points at the same post. Stored posts are never touched: this decorates
-/// the copy the context renders.
+/// PURE: the card ledgers a persona's context carries, from the board as read. A ledger
+/// whose card is CONCLUDED on this room's board (merged or closed, `work::is_concluded`)
+/// leaves the context; every other ledger leads with one line naming the card it is
+/// about (short id, title, board state), or that it is not on this room's board. Other
+/// categories, and an unreadable ledger, pass through verbatim. Stored posts are never
+/// touched: this shapes the copy the context renders, and a concluded card's ledger stays
+/// readable on the wall and by id.
 ///
-/// What this catches (card 4cfd4530; the 5090 2026-10-11): Kimi's failed work/submit on
-/// 27f133e4 passed a staged revision lifted from another card's ledger (1f58fc16) that
-/// sat beside her active card's, labelled only `[card-ledger]` with the card's id buried
-/// in JSON. She called it a cross-contamination error.
-fn label_ledgers(posts: Vec<WallPostPublished>, labels: Option<&CardLabels>) -> Vec<WallPostPublished> {
-    // the board could not be read: say nothing about any card rather than "not on the board"
+/// Why the concluded ones leave (Kimi's call from inside, card 7c8c44a1, 2026-10-11): 10 of
+/// the 14 ledgers on her wall (14,386 of 25,802 chars) were for merged or closed cards,
+/// re-prefilled every turn while her history was cut to fit. Their live value was "don't
+/// re-take a finished lane" (the board says that) and provenance (git and the submission
+/// record, reachable by id). A ledger for a card still open, claimed, blocked or in review
+/// is her resumption state and stays. This is her decision about her own context, carried
+/// out by the substrate (PERSONA-COGNITION-PIPELINE.md §5), not a relevance heuristic.
+///
+/// Why each kept ledger is labelled (card 4cfd4530): her failed work/submit on 27f133e4
+/// passed a staged revision lifted from another card's ledger (1f58fc16) that sat beside
+/// her active card's, labelled only `[card-ledger]` with the card's id buried in JSON.
+///
+/// Board unread (`None`): every post renders verbatim. Nothing is dropped and nothing is
+/// labelled, since a board that could not be read cannot say a card is over or gone.
+fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels>) -> Vec<WallPostPublished> {
     let Some(labels) = labels else {
         return posts;
     };
     posts
         .into_iter()
-        .map(|mut post| {
+        .filter_map(|mut post| {
             if post.category != crate::experience::ledger::LEDGER_WALL_CATEGORY {
-                return post;
+                return Some(post);
             }
             let Ok(ledger) = serde_json::from_str::<crate::experience::ledger::CardLedger>(&post.body) else {
-                return post; // an unreadable ledger renders as it is, unlabelled
+                return Some(post); // an unreadable ledger renders as it is, unlabelled
             };
             let short = ledger.card_id.simple().to_string();
             let short = &short[..8];
             let head = match labels.get(&ledger.card_id) {
-                Some((title, state)) => format!("ledger of card {short} \"{title}\" ({state})\n"),
+                Some((_, state)) if crate::modules::work::is_concluded(state) => return None,
+                Some((title, state)) => {
+                    format!("ledger of card {short} \"{title}\" ({})\n", crate::modules::work::state_str(state))
+                }
                 None => format!("ledger of card {short} (not on this room's board)\n"),
             };
             post.body = head + &post.body;
-            post
+            Some(post)
         })
         .collect()
 }
@@ -230,7 +243,7 @@ impl WallReader for airc_lib::Airc {
             .snapshot()
             .cards
             .iter()
-            .map(|card| (card.card_id.as_uuid(), (card.title.clone(), crate::modules::work::state_str(&card.state))))
+            .map(|card| (card.card_id.as_uuid(), (card.title.clone(), card.state)))
             .collect())
     }
 }
@@ -529,7 +542,7 @@ impl RagSource for WallSource {
         // Ledgers, standings, recipes, child announcements and activity bundles are
         // append-only records whose owners say newest wins: only the records still in
         // force spend the context budget (one rule, `experience::wall_records`).
-        let posts = label_ledgers(
+        let posts = ledgers_for_context(
             crate::experience::wall_records::current_wall_records(posts),
             self.reader.card_labels(effective_room).await.as_ref(),
         );
@@ -599,7 +612,7 @@ impl RagSource for WallSource {
         // Re-read the wall: the projection is cheap (a transcript window) and
         // re-reading keeps the cursor honest against a wall edited between
         // turns, rather than caching a snapshot that can drift.
-        let posts = label_ledgers(
+        let posts = ledgers_for_context(
             crate::experience::wall_records::current_wall_records(self.reader.wall_posts(effective_room).await.ok()?),
             self.reader.card_labels(effective_room).await.as_ref(),
         );
@@ -618,18 +631,20 @@ impl RagSource for WallSource {
 #[cfg(test)]
 mod tests {
 
-    // what this catches (card 4cfd4530; the 5090 2026-10-11): Kimi lifted a staged revision from
-    // ANOTHER card's ledger into her submit, because every ledger read only `[card-ledger]` with
-    // its card id buried in JSON. Each ledger now leads with the card it is about: its short id,
-    // title and board state, or that it is off this room's board. Nothing is dropped or
-    // reordered (PERSONA-COGNITION-PIPELINE.md §5), so indices are unchanged; other categories
-    // and an unreadable ledger pass through verbatim.
+    // what this catches (cards 4cfd4530 and 7c8c44a1; the 5090 2026-10-11): Kimi lifted a staged
+    // revision from ANOTHER card's ledger into her submit, because every ledger read only
+    // `[card-ledger]`; and 10 of her 14 ledgers were for merged or closed cards, re-prefilled
+    // every turn. A concluded card's ledger leaves her context (her call); every other ledger
+    // leads with the card it is about, or that it is off this room's board. Order is kept; other
+    // categories and an unreadable ledger pass through verbatim; an unread board changes nothing.
     #[test]
-    fn each_card_ledger_names_the_card_it_is_about() {
+    fn each_card_ledger_names_its_card_and_a_concluded_cards_ledger_leaves_the_context() {
         use crate::experience::ledger::{CardLedger, LEDGER_WALL_CATEGORY};
         let mine = uuid::Uuid::parse_str("27f133e4-0000-4000-8000-000000000001").unwrap();
         let other = uuid::Uuid::parse_str("1f58fc16-0000-4000-8000-000000000002").unwrap();
         let gone = uuid::Uuid::parse_str("deadbeef-0000-4000-8000-000000000003").unwrap();
+        let reviewed = uuid::Uuid::parse_str("4972ba91-0000-4000-8000-000000000004").unwrap();
+        let merged = uuid::Uuid::parse_str("d61513e4-0000-4000-8000-000000000005").unwrap();
         let ledger = |card_id| {
             serde_json::to_string(&CardLedger { card_id, next_test: "run it".into(), ..Default::default() }).unwrap()
         };
@@ -639,25 +654,38 @@ mod tests {
             post(LEDGER_WALL_CATEGORY, &ledger(other)),
             post(LEDGER_WALL_CATEGORY, &ledger(gone)),
             post(LEDGER_WALL_CATEGORY, "not json"),
+            post(LEDGER_WALL_CATEGORY, &ledger(reviewed)),
+            post(LEDGER_WALL_CATEGORY, &ledger(merged)),
         ];
         let mut labels = CardLabels::new();
-        labels.insert(mine, ("RenameIndex crashes".to_string(), "in_progress"));
-        labels.insert(other, ("Q() objects".to_string(), "closed"));
-        let out = label_ledgers(posts.clone(), Some(&labels));
-        assert_eq!(out.len(), posts.len(), "nothing dropped");
-        assert_eq!(out.iter().map(|p| p.post_id).collect::<Vec<_>>(), posts.iter().map(|p| p.post_id).collect::<Vec<_>>(), "nothing reordered: a cursor index still names the same post");
+        labels.insert(mine, ("RenameIndex crashes".to_string(), airc_work::CardState::InProgress));
+        labels.insert(other, ("Q() objects".to_string(), airc_work::CardState::Closed));
+        labels.insert(reviewed, ("under review".to_string(), airc_work::CardState::Review));
+        labels.insert(merged, ("landed".to_string(), airc_work::CardState::Merged));
+        let out = ledgers_for_context(posts.clone(), Some(&labels));
+        // the closed (index 2) and merged (index 6) cards' ledgers leave; order is kept
+        let kept = [0usize, 1, 3, 4, 5];
+        assert_eq!(
+            out.iter().map(|p| p.post_id).collect::<Vec<_>>(),
+            kept.iter().map(|&i| posts[i].post_id).collect::<Vec<_>>(),
+            "concluded cards' ledgers leave; everything else stays, in order"
+        );
         assert_eq!(out[0].body, "be kind", "other categories pass through verbatim");
         assert!(out[1].body.starts_with("ledger of card 27f133e4 \"RenameIndex crashes\" (in_progress)\n{"), "{}", out[1].body);
-        assert!(out[2].body.starts_with("ledger of card 1f58fc16 \"Q() objects\" (closed)\n"), "{}", out[2].body);
-        assert!(out[3].body.starts_with("ledger of card deadbeef (not on this room's board)\n"), "{}", out[3].body);
-        assert_eq!(out[4].body, "not json", "an unreadable ledger renders as it is");
+        assert!(out[2].body.starts_with("ledger of card deadbeef (not on this room's board)\n"), "{}", out[2].body);
+        assert_eq!(out[3].body, "not json", "an unreadable ledger renders as it is");
+        assert!(
+            out[4].body.starts_with("ledger of card 4972ba91 \"under review\" (review)\n"),
+            "a card in REVIEW is live work: its ledger is her resumption state and stays: {}",
+            out[4].body
+        );
         assert!(out[1].body.ends_with(&posts[1].body), "the ledger itself is unchanged after its label line");
         // BigMama on #4959: a board that could not be read says nothing about any card, never
         // "not on this room's board" for all of them
-        let unread = label_ledgers(posts.clone(), None);
+        let unread = ledgers_for_context(posts.clone(), None);
         assert_eq!(unread.iter().map(|p| &p.body).collect::<Vec<_>>(), posts.iter().map(|p| &p.body).collect::<Vec<_>>(), "an unread board renders every post verbatim");
         // and a board that was read but holds no cards does say so
-        let empty = label_ledgers(posts.clone(), Some(&CardLabels::new()));
+        let empty = ledgers_for_context(posts.clone(), Some(&CardLabels::new()));
         assert!(empty[1].body.starts_with("ledger of card 27f133e4 (not on this room's board)\n"), "{}", empty[1].body);
     }
     use super::*;

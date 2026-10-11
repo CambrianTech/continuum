@@ -2227,7 +2227,7 @@ pub(crate) async fn advance_card_state_effective(
     actor: Option<Uuid>,
 ) -> Result<CardState, String> {
     use crate::cognition::bench_round as round;
-    let finishing = matches!(state, CardState::Closed | CardState::Merged);
+    let finishing = is_concluded(&state);
     // THE GATE READS THE ROOM (card fa4aaaaa): a room that declares a review policy
     // decides; one that declares none keeps the round's gate (bench rooms, until their
     // recipes declare the policy). Read only on transitions that can finish.
@@ -2778,6 +2778,15 @@ pub(crate) fn state_str(s: &CardState) -> &'static str {
         CardState::Merged => "merged",
         CardState::Closed => "closed",
     }
+}
+
+/// Is this card CONCLUDED: merged or closed, its lane over. Narrower than airc's
+/// `CardState::is_settled`, which also counts Review (past claiming, but a card in review
+/// is still live work: its holder's ledger is her resumption state). The one place that
+/// says which states end a card's lane here (the transition gate's `finishing`, and which
+/// card ledgers leave a persona's context).
+pub(crate) fn is_concluded(s: &CardState) -> bool {
+    matches!(s, CardState::Merged | CardState::Closed)
 }
 
 /// The board's displayed 8-char short form of an id — what every surface
