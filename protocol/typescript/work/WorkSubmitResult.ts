@@ -13,4 +13,8 @@ base_sha: string, instance: string, artifact: WorkArtifactReference, submitted_a
 /**
  * Present only after the selected copy and reservations were persisted.
  */
-bound_staged_revision_id: string | null, };
+bound_staged_revision_id: string | null, 
+/**
+ * What happens next, in one line: after a submit, nothing more on this card (card aff659aa).
+ */
+next: string, };

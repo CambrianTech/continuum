@@ -3480,6 +3480,11 @@ pub struct WorkGetResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub ledger: Option<crate::experience::ledger::CardLedger>,
+    /// What happens next once this card has a submission (`submission::next_after_submission`):
+    /// after submitting, nothing more on the card; the grade fires on a reviewer's pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub next: Option<String>,
 }
 
 /// PURE: whole seconds until a claim expiring at `expires_at_ms` lapses, seen at `now_ms`;
@@ -3525,6 +3530,14 @@ impl WorkGet {
             .flat_map(|s| board.submission_reviews_for(s.submission_id))
             .filter(|r| r.card_id == parent.card_id)
             .map(submission::WorkReviewResult::from).collect();
+        // the holder's card only: a review card's next step is its verdict, not a submission
+        if card.reviews.is_none() {
+            let latest = card.submissions.last().map(|s| s.submission_id);
+            let outcomes: Vec<_> = latest
+                .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
+                .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
+            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes);
+        }
         Ok(receipt)
     }
 
@@ -3559,6 +3572,7 @@ impl WorkGet {
             owner: card.owner.map(|o| short8(o.as_uuid())),
             claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
             ledger,
+            next: None,
         }
     }
 }

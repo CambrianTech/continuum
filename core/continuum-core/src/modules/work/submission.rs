@@ -658,6 +658,30 @@ pub struct WorkSubmitResult {
     /// Present only after the selected copy and reservations were persisted.
     #[ts(type = "string | null")]
     pub bound_staged_revision_id: Option<Uuid>,
+    /// What happens next, in one line: after a submit, nothing more on this card (card aff659aa).
+    pub next: String,
+}
+
+/// PURE: what happens next for the holder of a card whose latest submission is `latest`, given
+/// the outcomes its reviews have reached. The ONE place this is said, read by both `work/submit`'s
+/// receipt and `work/get`. `None` before anything is submitted.
+///
+/// What this exists for (card aff659aa; the 5090 2026-10-11): Kimi spent ~5 h of work turns on an
+/// already-submitted card asking which state transition triggers grading. None does: the grade
+/// fires when a reviewer's verdict passes the submission (the verdict path, `a pass closes the
+/// parent`), and nothing she could read said so.
+pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome]) -> Option<String> {
+    let submission = short8(latest?);
+    Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
+        format!("Submission {submission} passed review: the grade fired. Nothing more to do on this card.")
+    } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
+        format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
+    } else {
+        format!(
+            "Submitted as {submission}. Nothing more to do on this card: the grade fires when a reviewer passes \
+             this submission. No state you set triggers it; do not submit again unless a review sends it back."
+        )
+    })
 }
 
 #[async_trait]
@@ -927,6 +951,7 @@ impl ActionCommand for WorkSubmit {
             artifact: (&published.artifact).into(),
             submitted_at_ms: published.submitted_at_ms,
             bound_staged_revision_id,
+            next: next_after_submission(Some(published.submission_id.as_uuid()), &[]).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
         })
     }
 }
@@ -1386,6 +1411,11 @@ impl ActionCommand for WorkSubmission {
             Ok(value) => (Some(value), None),
             Err(e) => (None, Some(e.to_string())),
         };
+        let outcomes: Vec<_> = board
+            .submission_reviews_for(submitted.submission_id)
+            .filter(|r| r.card_id == submitted.card_id)
+            .map(|r| r.outcome)
+            .collect();
         let reviews = board
             .submission_reviews_for(submitted.submission_id)
             .filter(|r| r.card_id == submitted.card_id)
@@ -1403,6 +1433,7 @@ impl ActionCommand for WorkSubmission {
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
+                next: next_after_submission(Some(submission_uuid), &outcomes).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
             },
             claim_id: submitted.claim_id.as_uuid(),
             base_sha: submitted.base_sha.to_string(),
@@ -1464,6 +1495,26 @@ mod tests {
     // and a repo worktree names the card; a worktree with no base to diff against is a
     // named refusal, never a diff against HEAD.
     use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
+
+    // what this catches (card aff659aa; the 5090 2026-10-11, Kimi on 27f133e4): ~5 h of work
+    // turns asking which state transition triggers grading, on a card she had already submitted.
+    // None does: once submitted, the receipt says there is nothing more to do and that the grade
+    // fires on a reviewer's pass; a send-back tells her to revise and submit; a pass says it fired;
+    // before any submission there is nothing to say.
+    #[test]
+    fn after_a_submit_the_receipt_says_what_happens_next() {
+        use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
+        let id = uuid::Uuid::new_v4();
+        let waiting = super::next_after_submission(Some(id), &[]).expect("submitted");
+        assert!(waiting.contains(&short8(id)) && waiting.contains("Nothing more to do") && waiting.contains("reviewer passes"), "{waiting}");
+        assert!(waiting.contains("do not submit again"), "{waiting}");
+        assert_eq!(super::next_after_submission(Some(id), &[Unknown]), Some(waiting.clone()), "an unknown verdict is still waiting");
+        let back = super::next_after_submission(Some(id), &[Failed]).expect("sent back");
+        assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
+        let done = super::next_after_submission(Some(id), &[Failed, Passed]).expect("passed");
+        assert!(done.contains("passed review") && done.contains("grade fired"), "a pass outranks an earlier send-back: {done}");
+        assert_eq!(super::next_after_submission(None, &[]), None, "nothing submitted, nothing to say");
+    }
 
     // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a
     // second submission, including across a re-taken claim (her a0bc9421 then 5656d7eb
