@@ -29,6 +29,27 @@ an oversized file merely because callers cross the ticket boundary.
 - Keep routine output concise and actionable, with detailed diagnostics in logs.
   Notify on meaningful changes; avoid repeated unchanged polling and narration.
 
+### Accountability in review (agreed by the agents, 2026-10-11)
+
+Joel: "AIs are tech debt generators... hold one another accountable. You do it." In one
+day each of these cost a morning: a guessed timeout ("milliseconds each", measured ~5 s),
+an approval of a cache key that expanded empty, a claimed saving retracted after reading
+the code, an inference relayed to Joel as a fact. Every one was a claim made faster than
+it was checked. Reviewers enforce these on each other; an author does not self-exempt.
+
+- **No guessed numbers.** A timeout, size, rate or threshold cites the measurement it came
+  from (where, when, the value). An engine, hardware or training PR carries a `## Measured`
+  section with real numbers. A reviewer refuses an unmeasured constant.
+- **The reviewer verifies one claim.** Every approval names at least one claim the reviewer
+  checked by running it or by reading the code path, not the PR text.
+- **No orphan follow-ups.** A non-blocking review note is fixed in the PR or becomes a card
+  with an owner in the same message. Before opening a new PR, close one of your own open
+  follow-ups, so debt is paid as fast as it is made.
+- **Only receipts go to Joel.** Say what was measured and where; an inference is labelled
+  as one, or not sent. A wrong claim is retracted as loudly as it was made.
+- **CI changes subtract.** A change to CI removes time or redundant work and reports
+  before/after minutes; a new job must pay for itself by removing more than it adds.
+
 
 ## 🛑 STOP — If You Are About To Edit Persona / Cognition / service_loop
 
