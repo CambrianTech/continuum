@@ -498,16 +498,17 @@ mod tests {
         use crate::forge::training_admission::{wait_for_training_memory, wait_for_training_memory_bound, TrainingNeed};
         use crate::resources::{capacity::MockCapacitySource, DaemonConfig, ResourceDaemon, ResourceKind};
         use futures::FutureExt;
+        let mib = 1024u64 * 1024;
         let daemon = ResourceDaemon::start(
-            vec![Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1024))],
+            vec![Arc::new(MockCapacitySource::new(ResourceKind::Vram, 1024 * mib))],
             vec![],
             DaemonConfig::default(),
         );
         let gate = crate::modules::serving_daemon::LifecycleGate::unowned(true);
         let planned = daemon.available_for("trainer", ResourceKind::Vram);
-        assert_eq!(planned, 1024, "test: everything is free when the run plans");
+        assert_eq!(planned, 1024 * mib, "test: everything is free when the run plans");
         // serving grows into the memory after the plan
-        let _serving = wait_for_training_memory(daemon.clone(), &gate, "serving", 768, |_| {})
+        let _serving = wait_for_training_memory(daemon.clone(), &gate, "serving", 768 * mib, |_| {})
             .await
             .unwrap();
         let bound = Arc::new(std::sync::Mutex::new(None));
@@ -519,8 +520,21 @@ mod tests {
         .now_or_never()
         .expect("a calibration admission does not wait for the plan-time number")
         .expect("test: admitted");
-        assert_eq!(admitted.bytes(), 256, "it leases what is free now");
-        assert_eq!(*bound.lock().unwrap(), Some(256), "and binds with the bytes it was granted");
+        assert_eq!(admitted.bytes(), 256 * mib, "it leases what is free now");
+        assert_eq!(*bound.lock().unwrap(), Some(256 * mib), "and binds with the bytes it was granted");
+        // what this catches (the 5090, 2026-10-11 14:08Z, job 61b782cd): a sliver under the engine's
+        // smallest budget was granted, posted as memory_budget_mib=0 and refused unreturnably.
+        // With less than 1 MiB free, a calibration admission waits instead of granting it.
+        drop(admitted);
+        let _rest = wait_for_training_memory(daemon.clone(), &gate, "serving-2", 256 * mib - 512 * 1024, |_| {})
+            .await
+            .unwrap();
+        assert!(
+            wait_for_training_memory_bound(daemon.clone(), &gate, "trainer", TrainingNeed::Calibrate, |_| {}, |_| Ok(()))
+                .now_or_never()
+                .is_none(),
+            "512 KiB free: the calibration waits, it is not granted"
+        );
     }
 
     // Regression: capacity contention must wait without allocating, wake on

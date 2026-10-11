@@ -648,6 +648,13 @@ fn refit_middle(rows: Vec<MeasuredExample>, window: u32) -> Vec<MeasuredExample>
         .collect()
 }
 
+/// PURE: whether the exact walk is measured NOT to fit `window` in `available`: a whole-run row of
+/// its family at this window or a smaller one, at any chunk, already exceeded it. Its graph grows
+/// with the window and not the chunk, so no smaller chunk rescues it (the 5090, 2026-10-11).
+fn exact_ruled_out(exact_rows: &[(u32, u32, u64)], window: u32, available: u64) -> bool {
+    exact_rows.iter().any(|&(w, _, bytes)| w <= window && bytes > available)
+}
+
 /// PURE: the training window an example set NEEDS: the window that trains every one of them
 /// WHOLE (the largest `tokens_full`, by the engine's own render; an example fits a window of at
 /// least tokens_full - 1), rounded up to the context granularity, at least
@@ -2023,7 +2030,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // engine took 512 for every job and a plain-walk footprint stood in for the exact
         // walk's (the 5090, 2026-10-10: 3418 MiB leased, 12.6 GB needed, refused in 8 s).
         let governed_free = self.vram_free_for(&format!("genome-train:{id}"));
-        let family = Shape {
+        let mut family = Shape {
             model: request.base_model.clone(),
             window,
             rank: lora.rank,
@@ -2033,8 +2040,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             chunk: TRAINING_CHUNK_MIN,
             recompute: body.recompute,
         };
-        let rows = self.footprints.rows_like(&family);
-        let model = GraphModel::fit(&rows);
+        let mut rows = self.footprints.rows_like(&family);
+        let mut model = GraphModel::fit(&rows);
         // THE WINDOW THE DATA NEEDS: every example measured at the served window by the engine's
         // render gives its whole length; the run plans for the longest (every example trains
         // whole, as serving saw it), then the largest chunk that fits it. Only when even the
@@ -2048,6 +2055,27 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let at_served = measure_examples(&self.http, &lane, &body.examples, body.fit, served_sent).await;
         let render_per_example = measure_started.elapsed().div_f64(body.examples.len().max(1) as f64);
         let need = at_served.as_ref().map_or(served_sent, |rows| window_for_need(rows, served_sent));
+        // THE WALK THE WINDOW ALLOWS (Cormac, (iii)): the exact walk carries its gradient across
+        // the whole window, so its graph does not shrink with the chunk (the 5090, 2026-10-11:
+        // 18,198 MiB at window 67,584 for chunks 512, 256 and 128 alike). When a measurement
+        // already rules it out for the window her examples need, she trains them WHOLE on the
+        // plain walk instead of truncated or parked on the exact one: a step at cosine 0.81 on her
+        // whole turns over one at 0.998 on a fraction of them (Joel: working training beats data
+        // purity; she can unlearn).
+        if body.exact && exact_ruled_out(&rows, need, governed_free) {
+            crate::probe!(
+                class = "training.job.walk_plain",
+                job = %id,
+                needed = u64::from(need),
+                governed_free = governed_free,
+                "the exact walk is measured not to fit the window her examples need; the plain walk trains them whole"
+            );
+            body.exact = false;
+            body.walk_host_budget_mib = None;
+            family.exact = false;
+            rows = self.footprints.rows_like(&family);
+            model = GraphModel::fit(&rows);
+        }
         let window = choose_window(need, governed_free, &rows);
         if window != body.window {
             crate::probe!(
@@ -2603,6 +2631,22 @@ mod tests {
         assert_eq!(fits, vec![ExampleFit::Kept, ExampleFit::Truncated, ExampleFit::Skipped, ExampleFit::Kept], "20,481 tokens fit a 20,480 window (window + 1)");
         assert_eq!(refit[1].tokens_trained, 8_000, "a truncated one reports its smallest length");
         assert_eq!(refit[2].tokens_trained, 0);
+    }
+
+    // what this catches (the 5090, 2026-10-11 14:02-14:08Z, jobs ef43162c, b96af9d4, ab3f2874): the
+    // exact walk refused at window 67,584 with the same 18,198 MiB graph at chunks 512, 256 and 128,
+    // so stepping the chunk down could never fit it. A measurement at or under the needed window
+    // that exceeded what is free rules it out (the plain walk then trains her turns whole); one at
+    // a larger window, or one that fit, does not.
+    #[test]
+    fn the_exact_walk_is_ruled_out_by_a_measurement_at_or_under_the_window() {
+        let gib = 1024u64 * 1024 * 1024;
+        let measured = [(67_584, 512, 20 * gib), (67_584, 128, 20 * gib)];
+        assert!(exact_ruled_out(&measured, 67_584, 4 * gib), "measured at the needed window, over what is free");
+        assert!(exact_ruled_out(&[(20_000, 64, 6 * gib)], 48_000, 4 * gib), "over at a smaller window: a larger one is over too");
+        assert!(!exact_ruled_out(&[(67_584, 512, 20 * gib)], 16_896, 4 * gib), "over at a LARGER window says nothing about a smaller one");
+        assert!(!exact_ruled_out(&[(1_536, 256, gib)], 67_584, 4 * gib), "a run that fit rules nothing out");
+        assert!(!exact_ruled_out(&[], 67_584, 4 * gib), "nothing measured: the exact walk calibrates");
     }
 
     // what this catches (Fable, 2026-10-11): the KV cache grows with the window, not the chunk.

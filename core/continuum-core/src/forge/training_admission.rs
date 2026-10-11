@@ -15,6 +15,11 @@ pub(crate) fn request(consumer: &str, bytes: u64) -> LeaseRequest {
     }
 }
 
+/// The smallest calibration grant worth dispatching: the engine's own minimum training budget
+/// (`/train` refuses `memory_budget_mib` under 1, fork server-train.cpp), so a smaller grant would
+/// only post a run the engine must refuse.
+const CALIBRATION_GRANT_MIN: u64 = 1024 * 1024;
+
 /// What a training run asks the governor for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrainingNeed {
@@ -114,8 +119,12 @@ pub(crate) async fn wait_for_training_memory_bound(
         serving_refusal_said = None;
         if need == TrainingNeed::Calibrate {
             bytes = daemon.available_for(consumer, ResourceKind::Vram);
-            if bytes == 0 {
-                // nothing governed is free under the gate: wait for the authority to change
+            if bytes < CALIBRATION_GRANT_MIN {
+                // less than the engine accepts as a budget is free under the gate (nothing, or a
+                // sliver a previous run has not yet released): wait for the authority to change.
+                // The 5090, 2026-10-11 14:08Z, job 61b782cd: a sub-MiB grant became
+                // memory_budget_mib=0, the engine refused it ('memory_budget_mib must be >= 1'),
+                // and a refusal of the request itself is not returnable, so its examples stranded
                 drop(hold);
                 if last_available != Some(0) {
                     waiting(0);
