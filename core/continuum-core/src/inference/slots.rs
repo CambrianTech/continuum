@@ -272,9 +272,15 @@ pub fn note_page_dir(dir: &std::path::Path) {
     // KV estimate while the pages it would measure sat on disk (IntelMac, 2026-10-11 02:46Z:
     // derived 1,792 MiB beside states up to 865 MB). Seed them from the newest pages already
     // here, once per dir: they are exactly the saves a running core would have measured.
+    // Cheap check first, then the dir read with no lock held (Fable on #4933), then insert
+    // only if no save measured this dir meanwhile: a live sample outranks the disk's.
+    if measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), dir).is_some() {
+        return;
+    }
+    let seeded = newest_page_states(dir, STATE_SAMPLES);
     let mut samples = RECENT_STATE_BYTES.lock();
     if measured_state_bytes_in(&samples, dir).is_none() {
-        for bytes in newest_page_states(dir, STATE_SAMPLES) {
+        for bytes in seeded {
             note_state_bytes_in(&mut samples, dir, bytes);
         }
     }
