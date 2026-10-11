@@ -336,14 +336,18 @@ pub(crate) fn read_partition(job_dir: &Path) -> Option<Partition> {
     serde_json::from_slice(&std::fs::read(job_dir.join(PARTITION_FILE)).ok()?).ok()
 }
 
-/// Examples per `/train/measure` call. derived-or-floor: a floor on the request's size, not a
-/// cadence. The engine renders and tokenizes each example twice to measure it, and one POST of
-/// Kimi's 311 lived turns already outlasted the 120 s `/train` waits (Fable on #51), so the
-/// measure goes in batches small enough that each answers in seconds.
-const MEASURE_BATCH: usize = 16;
-/// The wait for one batch's measurement. derived-or-floor: a floor, well past 16 examples'
-/// render time (milliseconds each on the 5090) and short enough that a dead lane fails the job.
-const MEASURE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Examples per `/train/measure` call: ONE, so a slow example can never fail a batch's wait.
+/// MEASURED on the 5090, 2026-10-11 07:20Z: the engine renders and tokenizes a lived turn
+/// (~48k tokens, 36 tools) at its window, and again with its history dropped, in ~5 s each
+/// (1 example 4.8 s, 4 in 20.9 s). The first release batched 16 under a 60 s wait, on a guess of
+/// milliseconds each, so every dispatch's measure timed out at 60 s and failed its job (jobs
+/// f2a2f89e and cc1583a2, with their examples left untrained and returnable). One example per call
+/// costs one more request each, and keeps every wait proportional to one example.
+const MEASURE_BATCH: usize = 1;
+/// The wait for one example's measurement. derived-or-floor: a floor, ~24x the measured ~5 s for
+/// a 48k-token lived turn, so an example twice that long still answers; short enough that a dead
+/// lane fails the job within minutes, not hours.
+const MEASURE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Every example measured at `window` by the engine's own fit rule, by request index.
 async fn measure_examples(
@@ -2350,10 +2354,14 @@ mod tests {
             // fork #51's measure: every example fits the window, as before the partition, except
             // under "park_odd" (odd indices skipped) and "park_all" (every one skipped)
             .route("/train/measure", post(move |axum::Json(b): axum::Json<Value>| async move {
-                let n = b.get("examples").and_then(Value::as_array).map_or(0, Vec::len);
-                let rows: Vec<Value> = (0..n)
-                    .map(|i| {
-                        let skipped = mode == "park_all" || (mode == "park_odd" && i % 2 == 1);
+                let examples = b.get("examples").and_then(Value::as_array).cloned().unwrap_or_default();
+                let rows: Vec<Value> = examples
+                    .iter()
+                    .enumerate()
+                    .map(|(i, e)| {
+                        // odd by the example's own prompt ("p1"), not its place in the batch
+                        let odd = e["prompt"].as_str().and_then(|p| p.chars().last()).and_then(|c| c.to_digit(10)).is_some_and(|d| d % 2 == 1);
+                        let skipped = mode == "park_all" || (mode == "park_odd" && odd);
                         let (min, fit) = if skipped { (40_000, "skipped") } else { (64, "kept") };
                         json!({"index": i, "tokens_full": 64.max(min), "tokens_min": min, "tokens_trained": if skipped { 0 } else { 64 }, "fit": fit})
                     })
