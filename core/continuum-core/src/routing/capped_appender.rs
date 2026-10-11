@@ -103,6 +103,7 @@ impl CappedAppender {
     ) -> io::Result<Self> {
         std::fs::create_dir_all(dir)?;
         let path = dir.join(file_name);
+        keep_tail_of_oversized(&path, max_bytes)?;
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
         // Adopt whatever is already on disk: a restart must not reset the accounting and
         // let the file grow by another full cap per boot.
@@ -157,6 +158,37 @@ impl CappedAppender {
         name.push(format!(".{generation}"));
         self.path.with_file_name(name)
     }
+}
+
+/// A file already over `max_bytes` when adopted (left by a build that wrote it without a bound)
+/// keeps only its newest `max_bytes`, from the first line boundary in them. Rotating it whole would
+/// park the oversized file as a generation until the live file next filled, so the bound the
+/// writer advertises would not hold (BigMama on #4951: a 3.0 GB workspace trace on the 5090 at
+/// 98% would have stayed as `.1` for days). The tail is what the rotation keeps anyway: the
+/// newest bytes. Bytes before it are dropped once.
+fn keep_tail_of_oversized(path: &Path, max_bytes: u64) -> io::Result<()> {
+    use std::io::{Read, Seek, SeekFrom};
+    let len = match std::fs::metadata(path) {
+        Ok(meta) => meta.len(),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    if len <= max_bytes {
+        return Ok(());
+    }
+    let mut tail = Vec::with_capacity(max_bytes as usize);
+    {
+        let mut file = File::open(path)?;
+        file.seek(SeekFrom::Start(len - max_bytes))?;
+        file.take(max_bytes).read_to_end(&mut tail)?;
+    }
+    // start at a line boundary: a partial first line is not a record
+    let start = tail.iter().position(|&b| b == b'\n').map_or(tail.len(), |i| i + 1);
+    let mut staged = path.as_os_str().to_os_string();
+    staged.push(".tail");
+    let staged = PathBuf::from(staged);
+    std::fs::write(&staged, &tail[start..])?;
+    std::fs::rename(&staged, path)
 }
 
 impl Write for CappedAppender {
@@ -243,6 +275,25 @@ mod tests {
             !live.contains(&"o".repeat(60)),
             "the old generation moved aside, it did not stay live"
         );
+    }
+
+    // what this catches (BigMama on #4951; the 5090 2026-10-11, a 3.0 GB workspace trace with C:
+    // at 98%): a file already over the cap when adopted. Rotating it whole parks it as `.1` until
+    // the live file next fills, so the bound does not hold for days. It keeps only its newest
+    // bytes, from a line boundary, so every surviving line is whole.
+    #[test]
+    fn an_oversized_file_keeps_only_its_newest_whole_lines_when_adopted() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let path = dir.path().join("legacy.jsonl");
+        let lines: String = (0..200).map(|i| format!("{{\"n\":{i}}}\n")).collect();
+        std::fs::write(&path, &lines).expect("seed");
+        let appender = CappedAppender::with_limits(dir.path(), "legacy.jsonl", 256, 1).expect("open");
+        let kept = std::fs::read_to_string(&path).expect("read");
+        assert!(kept.len() <= 256, "within the cap: {} bytes", kept.len());
+        assert!(kept.ends_with("{\"n\":199}\n"), "the newest line survives");
+        assert!(kept.lines().all(|l| l.starts_with("{\"n\":") && l.ends_with('}')), "every line whole: {kept}");
+        assert_eq!(appender.written, kept.len() as u64, "accounting adopts what was kept");
+        assert_eq!(std::fs::read_dir(dir.path()).expect("dir").count(), 1, "no generation and no staging file left behind");
     }
 
     // what this catches: a restart must not reset the byte accounting. Re-opening with a
