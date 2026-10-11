@@ -670,21 +670,22 @@ pub struct WorkSubmitResult {
 /// What this exists for (card aff659aa; the 5090 2026-10-11): Kimi spent ~5 h of work turns on an
 /// already-submitted card asking which state transition triggers grading. The answer differs by
 /// card, and this says the right one:
-/// - a BENCH card (`[bench <name>] ...`) is graded by its test oracle the moment it is submitted
-///   (`work/submit` spawns `grade_submission`), and marking it done (`work/state <id> done`) also
+/// - a card graded at submit (`benchmark_grade::graded_at_submit`: a known SWE bench card) is graded
+///   by its test oracle the moment it is submitted (`work/submit` spawns `grade_submission`, which
+///   grades by the same predicate), and marking it done (`work/state <id> done`) also
 ///   runs the grade (grade-on-done). The verdict posts to the room. The bench card's own text says
 ///   the same, so this must never contradict it (#4954: the first wording said "no state you set
 ///   triggers it", which is false here);
 /// - any other card is graded when a reviewer's verdict passes the submission.
 /// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
 /// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
-pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], bench: bool) -> Option<String> {
+pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool) -> Option<String> {
     let submission = short8(latest?);
     Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
         format!("Submission {submission} passed review: the grade fired. Nothing more to do on this card.")
     } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
         format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
-    } else if bench {
+    } else if graded_at_submit {
         format!(
             "Submitted as {submission}. The test oracle grades it now and posts the verdict in the room \
              (marking the card done runs the same grade). A failed grade: revise and work/submit again. \
@@ -939,7 +940,7 @@ impl ActionCommand for WorkSubmit {
             bound_staged_revision_id = Some(binding.selection.staged_revision_id);
         }
         let grade_title = card.title.clone();
-        let bench = crate::commands::benchmark::parse_card_title(&grade_title).is_some();
+        let bench = crate::modules::benchmark_grade::graded_at_submit(&grade_title);
         let grade_hash = candidate.artifact.hash.to_string();
         let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
@@ -1448,7 +1449,7 @@ impl ActionCommand for WorkSubmission {
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
-                next: next_after_submission(Some(submission_uuid), &outcomes, crate::commands::benchmark::parse_card_title(&card.title).is_some()).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                next: next_after_submission(Some(submission_uuid), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title)).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
             },
             claim_id: submitted.claim_id.as_uuid(),
             base_sha: submitted.base_sha.to_string(),
