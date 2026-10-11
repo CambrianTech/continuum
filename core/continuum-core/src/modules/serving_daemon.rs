@@ -2487,9 +2487,22 @@ impl ServingDaemonModule {
                 let baseline = self.spawn_baseline_vram.load(Ordering::Relaxed);
                 let now = vram_physical_used(&self.resource_daemon);
                 let delta = device_delta_beyond_weights(baseline, now, fp.weights_bytes);
-                let engine = engine_props()
-                    .await
-                    .and_then(|props| crate::inference::weight_residency::EngineContext::from_props(&props));
+                // An engine that did not ANSWER is an unavailable observation, not an engine
+                // without the field: falling to the delta there would write the tenant-charged
+                // rate back under the same record on one 500 ms miss (Codex on #4961). Only an
+                // engine that answered without a context reading (one predating
+                // `memory_breakdown`) is measured by the delta.
+                let Some(props) = engine_props().await else {
+                    crate::probe!(
+                        class = "serving.footprint.unmeasured",
+                        leg = "engine_unanswered",
+                        model = %active,
+                        pid = pid as u64,
+                        "the engine's /props did not answer in time: no reading this sample, and the device delta does not stand in for it"
+                    );
+                    return;
+                };
+                let engine = crate::inference::weight_residency::EngineContext::from_props(&props);
                 match (engine, delta) {
                     (Some(ctx), _) => {
                         crate::probe!(
