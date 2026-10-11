@@ -296,6 +296,10 @@ mod tests {
         std::fs::write(&tmp, b"{}").expect("test: tmp");
         std::fs::rename(&tmp, dir.join("footprints.json")).expect("a rename beside the pinned input succeeds");
         assert!(std::fs::rename(&input, dir.join("moved.gguf")).is_err(), "the input itself cannot be renamed");
+        let swap = dir.join("swap.gguf");
+        std::fs::write(&swap, b"not the gene").expect("test: swap");
+        assert!(std::fs::rename(&swap, &input).is_err(), "nor can another file be renamed OVER it (the swap the pin exists to stop)");
+        assert_eq!(std::fs::read(&input).expect("test: read"), b"gene", "the verified bytes are untouched");
         assert!(std::fs::rename(&dir, root.path().join("moved")).is_err(), "nor the directory on its path");
     }
 
