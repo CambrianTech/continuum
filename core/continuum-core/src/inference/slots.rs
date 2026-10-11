@@ -268,6 +268,42 @@ static PAGE_DIR: parking_lot::Mutex<Option<std::path::PathBuf>> = parking_lot::M
 /// a save can trim the store it just wrote into.
 pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
+    // A restarted core starts with no state samples, so its first cache sizing fell back to the
+    // KV estimate while the pages it would measure sat on disk (IntelMac, 2026-10-11 02:46Z:
+    // derived 1,792 MiB beside states up to 865 MB). Seed them from the newest pages already
+    // here, once per dir: they are exactly the saves a running core would have measured.
+    let mut samples = RECENT_STATE_BYTES.lock();
+    if measured_state_bytes_in(&samples, dir).is_none() {
+        for bytes in newest_page_states(dir, STATE_SAMPLES) {
+            note_state_bytes_in(&mut samples, dir, bytes);
+        }
+    }
+}
+
+/// The sizes of the newest `n` saved states in `dir` (each page's `.bin` plus its `.ckpt`),
+/// oldest first. Reads the dir once; anything unreadable is simply not a sample.
+fn newest_page_states(dir: &std::path::Path, n: usize) -> Vec<u64> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut pages: std::collections::HashMap<String, (std::time::SystemTime, u64)> = std::collections::HashMap::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(md) = e.metadata() else { continue };
+        let page = name.strip_suffix(".ckpt").unwrap_or(&name).to_string(); // unwrap_or: a name without the sidecar suffix IS the page name
+        if !md.is_file() || !(page.starts_with("a-") && page.ends_with(".bin")) {
+            continue;
+        }
+        let entry = pages.entry(page).or_insert((std::time::SystemTime::UNIX_EPOCH, 0));
+        entry.1 += md.len();
+        if !name.ends_with(".ckpt") {
+            entry.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // unwrap_or: an unreadable mtime sorts oldest, the least likely to be kept
+        }
+    }
+    let mut by_age: Vec<(std::time::SystemTime, u64)> = pages.into_values().filter(|(_, b)| *b > 0).collect();
+    by_age.sort_by_key(|(t, _)| *t);
+    let skip = by_age.len().saturating_sub(n);
+    by_age.into_iter().skip(skip).map(|(_, b)| b).collect()
 }
 
 /// After a successful save of `just_saved` (a page filename), keep the live
@@ -1657,6 +1693,24 @@ pub fn directory() -> &'static SlotDirectory {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (IntelMac, 2026-10-11 02:46Z on #4930: the first sizing after a
+    // restart used the KV estimate, 1,792 MiB, beside saved states of up to 865 MB): a
+    // restarted core measures its states from the pages already on disk. Each sample is a
+    // page plus its checkpoint sidecar; other files are not samples.
+    #[test]
+    fn a_restarted_core_measures_its_states_from_the_pages_on_disk() {
+        let dir = tempfile::tempdir().expect("test: page dir");
+        std::fs::write(dir.path().join("a-p1-r1.bin"), vec![0u8; 700]).expect("test: page");
+        std::fs::write(dir.path().join("a-p1-r1.bin.ckpt"), vec![0u8; 165]).expect("test: sidecar");
+        std::fs::write(dir.path().join("a-p2-r2.bin"), vec![0u8; 300]).expect("test: page");
+        std::fs::write(dir.path().join("saved-ledger.json"), vec![0u8; 9_999]).expect("test: not a page");
+        let mut states = newest_page_states(dir.path(), STATE_SAMPLES);
+        states.sort_unstable();
+        assert_eq!(states, vec![300, 865], "each page with its sidecar, the ledger excluded");
+        assert_eq!(newest_page_states(dir.path(), 1).len(), 1, "at most n");
+        assert!(newest_page_states(&dir.path().join("absent"), 4).is_empty(), "no dir, no samples");
+    }
 
     // what this catches (Fable on #4930): a node-wide sample, where a second model's lane on
     // the same node would be sized by the hybrid 27B's 4-6 GB states. Samples are per page
