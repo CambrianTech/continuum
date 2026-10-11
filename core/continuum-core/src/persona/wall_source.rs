@@ -462,9 +462,10 @@ impl RagSource for WallSource {
             return empty(resolution);
         }
 
-        // Ledger updates are durable wall records, not separate current guidance.
-        // Fold them through their existing owner before spending the context budget.
-        let posts = crate::experience::ledger::current_wall_records(posts);
+        // Ledgers, standings, recipes, child announcements and activity bundles are
+        // append-only records whose owners say newest wins: only the records still in
+        // force spend the context budget (one rule, `experience::wall_records`).
+        let posts = crate::experience::wall_records::current_wall_records(posts);
         let (items, used, next) = Self::pack(&posts, 0, budget);
         if items.is_empty() {
             // Budget too small to carry even a truncated first post.
@@ -531,7 +532,7 @@ impl RagSource for WallSource {
         // Re-read the wall: the projection is cheap (a transcript window) and
         // re-reading keeps the cursor honest against a wall edited between
         // turns, rather than caching a snapshot that can drift.
-        let posts = crate::experience::ledger::current_wall_records(
+        let posts = crate::experience::wall_records::current_wall_records(
             self.reader.wall_posts(effective_room).await.ok()?,
         );
         if start >= posts.len() {
