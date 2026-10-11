@@ -627,13 +627,36 @@ fn solve3(mut a: [[f64; 3]; 3], mut b: [f64; 3]) -> Option<[f64; 3]> {
     Some(x)
 }
 
-/// PURE: the training window an example set NEEDS: the largest smallest-window among them
-/// (`tokens_min`, by the engine's own fit rule; an example trains in a window of at least
-/// tokens_min - 1), rounded up to the context granularity, at least [`TRAINING_WINDOW_MIN`],
-/// never above `served`. The window is then planned for the data, and the chunk for the window,
-/// rather than the largest window memory allows at a fixed chunk (Fable, 2026-10-11).
+/// PURE: `rows` (measured at a larger window) as the engine's "middle" rule meets `window`: kept
+/// whole when its full length fits (tokens_full <= window + 1), truncated when its smallest
+/// does (tokens_min <= window + 1, the head plus her last exchange), skipped otherwise. The
+/// trained length of a truncated one is not known without a render, so it reports its smallest
+/// (a lower bound).
+fn refit_middle(rows: Vec<MeasuredExample>, window: u32) -> Vec<MeasuredExample> {
+    let holds = u64::from(window) + 1;
+    rows.into_iter()
+        .map(|mut r| {
+            (r.fit, r.tokens_trained) = if r.tokens_full <= holds {
+                (ExampleFit::Kept, r.tokens_full)
+            } else if r.tokens_min <= holds {
+                (ExampleFit::Truncated, r.tokens_min)
+            } else {
+                (ExampleFit::Skipped, 0)
+            };
+            r
+        })
+        .collect()
+}
+
+/// PURE: the training window an example set NEEDS: the window that trains every one of them
+/// WHOLE (the largest `tokens_full`, by the engine's own render; an example fits a window of at
+/// least tokens_full - 1), rounded up to the context granularity, at least
+/// [`TRAINING_WINDOW_MIN`], never above `served`. Learning sees what serving saw (Joel); only when
+/// memory cannot hold that window does it shrink, and then the partition truncates (fit:middle,
+/// down to an example's tokens_min) or parks what no longer fits. The window is planned for the
+/// data, and the chunk for the window (Fable, 2026-10-11).
 fn window_for_need(rows: &[MeasuredExample], served: u32) -> u32 {
-    let need = rows.iter().map(|r| r.tokens_min).max().unwrap_or(0).saturating_sub(1);
+    let need = rows.iter().map(|r| r.tokens_full).max().unwrap_or(0).saturating_sub(1);
     let need = u32::try_from(need).unwrap_or(u32::MAX);
     need.div_ceil(256).saturating_mul(256).max(TRAINING_WINDOW_MIN).min(served)
 }
@@ -2064,6 +2087,10 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // the window did not move
         let at_window = match at_served {
             Ok(rows) if window == served_sent => Ok(rows),
+            // an example's full and smallest lengths do not depend on the window, so under
+            // "middle" its fit at a smaller window is arithmetic, not another ~5 s render each
+            // (Cormac on #4940); the run's skipped_indices stay the authority on what trained
+            Ok(rows) if body.fit == "middle" => Ok(refit_middle(rows, window)),
             Ok(_) => measure_examples(&http, &lane, &body.examples, body.fit, window).await,
             Err(e) => Err(e),
         };
@@ -2459,12 +2486,12 @@ mod tests {
 
     // what this catches (Fable, 2026-10-11): the window planned as the largest memory allowed at a
     // fixed chunk, so her long turns were skipped while a smaller chunk could have held them. The
-    // window is what her examples need (the largest tokens_min, rounded up to 256), capped at the
-    // served window and floored at the smallest servable one.
+    // window is what trains her examples WHOLE (the largest tokens_full, rounded up to 256),
+    // capped at the served window and floored at the smallest servable one.
     #[test]
     fn the_window_is_what_the_examples_need() {
-        let row = |tokens_min| MeasuredExample { index: 0, tokens_full: tokens_min, tokens_min, tokens_trained: 0, fit: ExampleFit::Kept };
-        assert_eq!(window_for_need(&[row(15_000), row(20_433), row(9_707)], 68_608), 20_480, "the largest need, rounded up to 256");
+        let row = |tokens_full| MeasuredExample { index: 0, tokens_full, tokens_min: 64, tokens_trained: 0, fit: ExampleFit::Kept };
+        assert_eq!(window_for_need(&[row(15_000), row(20_433), row(9_707)], 68_608), 20_480, "the longest example whole, rounded up to 256");
         assert_eq!(window_for_need(&[row(42_456)], 16_896), 16_896, "never above the served window");
         assert_eq!(window_for_need(&[row(64)], 68_608), TRAINING_WINDOW_MIN, "never below the smallest servable window");
         assert_eq!(window_for_need(&[row(20_481)], 68_608), 20_480, "tokens_min - 1 fits a window of exactly 20,480");
@@ -2506,6 +2533,19 @@ mod tests {
         assert_eq!(status(json!({"state": "done", "graph_mib": 5.0, "context_mib": 2.0})).run_bytes(), 7 * mib);
         assert_eq!(status(json!({"state": "done", "graph_mib": 5.0})).run_bytes(), 5 * mib, "an engine before #52: the graph");
         assert_eq!(status(json!({"state": "error", "context_mib": 2.0})).run_bytes(), 0, "no graph measured: nothing to file");
+    }
+
+    // what this catches (Cormac on #4940): a second ~5 s render per example to partition at a
+    // window smaller than the one measured. Under "middle" the fit is arithmetic on the measured
+    // lengths: whole, cut to its head and last exchange, or skipped, as the engine would decide.
+    #[test]
+    fn a_fit_at_a_smaller_window_is_arithmetic_on_the_measured_lengths() {
+        let row = |index, full, min| MeasuredExample { index, tokens_full: full, tokens_min: min, tokens_trained: full, fit: ExampleFit::Kept };
+        let refit = refit_middle(vec![row(0, 10_000, 4_000), row(1, 30_000, 8_000), row(2, 30_000, 25_000), row(3, 20_481, 9_000)], 20_480);
+        let fits: Vec<ExampleFit> = refit.iter().map(|r| r.fit).collect();
+        assert_eq!(fits, vec![ExampleFit::Kept, ExampleFit::Truncated, ExampleFit::Skipped, ExampleFit::Kept], "20,481 tokens fit a 20,480 window (window + 1)");
+        assert_eq!(refit[1].tokens_trained, 8_000, "a truncated one reports its smallest length");
+        assert_eq!(refit[2].tokens_trained, 0);
     }
 
     // what this catches (Fable, 2026-10-11): the KV cache grows with the window, not the chunk.
@@ -2688,10 +2728,10 @@ mod tests {
         let (l1, l2, l3, seen1) = (lane.clone(), lane.clone(), lane.clone(), seen.clone());
         let (l4, l5, l6) = (lane.clone(), lane.clone(), lane.clone());
         let app = axum::Router::new()
-            // fork #51's measure: each example needs the whole window it is measured at (so the
-            // planned window is the served one, as before the partition), and fits it, except
-            // under "short_turns" (each needs 3,000), "park_odd" (odd indices skipped) and
-            // "park_all" (every one skipped)
+            // fork #51's measure: each example is as long as the window it is measured at (so the
+            // planned window is the served one, as before the partition) and trains in any window
+            // once its history is dropped (tokens_min 64), except under "short_turns" (each 3,000
+            // whole), "park_odd" (odd prompts fit no window) and "park_all" (none fits)
             .route("/train/measure", post(move |axum::Json(b): axum::Json<Value>| async move {
                 let examples = b.get("examples").and_then(Value::as_array).cloned().unwrap_or_default();
                 let at = b["window"].as_u64().unwrap_or(256);
@@ -2702,9 +2742,10 @@ mod tests {
                         // odd by the example's own prompt ("p1"), not its place in the batch
                         let odd = e["prompt"].as_str().and_then(|p| p.chars().last()).and_then(|c| c.to_digit(10)).is_some_and(|d| d % 2 == 1);
                         let skipped = mode == "park_all" || (mode == "park_odd" && odd);
-                        let need = if mode == "short_turns" { 3_000 } else { at };
-                        let (min, fit) = if skipped { (at + 40_000, "skipped") } else { (need, "kept") };
-                        json!({"index": i, "tokens_full": 64.max(min), "tokens_min": min, "tokens_trained": if skipped { 0 } else { 64 }, "fit": fit})
+                        let full = if mode == "short_turns" { 3_000 } else { at };
+                        let min = if mode == "short_turns" { 3_000 } else { 64 };
+                        let (full, min, fit) = if skipped { (at + 40_000, at + 40_000, "skipped") } else { (full, min, "kept") };
+                        json!({"index": i, "tokens_full": full, "tokens_min": min, "tokens_trained": if skipped { 0 } else { full }, "fit": fit})
                     })
                     .collect();
                 axum::Json(json!({"ok": true, "window": b["window"], "examples": rows}))
