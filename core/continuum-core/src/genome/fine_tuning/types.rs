@@ -516,6 +516,18 @@ pub struct TrainingArtifact {
 /// Per-job observed metrics. Substrate-side telemetry +
 /// reputation signal input
 /// ([[forge-alloy-secures-commodity-zero-trust-plus-reputation]]).
+/// The walk an in-engine run trained by (fork #47). `Exact`: one step per window on the gradient
+/// carried back through every chunk's cached K/V. `Plain`: a step per chunk with the gradient
+/// stopped at each chunk boundary, bounded per chunk, so it fits windows the exact walk cannot;
+/// `reason` says why it was chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/fine_tuning/TrainingWalk.ts")]
+#[serde(tag = "walk", rename_all = "snake_case")]
+pub enum TrainingWalk {
+    Exact,
+    Plain { reason: String },
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
 #[ts(
     export,
@@ -523,6 +535,11 @@ pub struct TrainingArtifact {
 )]
 #[serde(rename_all = "camelCase")]
 pub struct JobMetrics {
+    /// Which walk trained the adapter, and why (an in-engine run; None from other trainers): the
+    /// receipt an eval compares plain-walk adapters against exact ones by (Cormac on #4949).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub walk: Option<TrainingWalk>,
     #[ts(type = "number")]
     pub trained_tokens: u64,
     /// Validation loss at the end of training. Lower is better; the

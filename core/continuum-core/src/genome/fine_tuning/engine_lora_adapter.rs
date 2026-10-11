@@ -648,6 +648,25 @@ fn refit_middle(rows: Vec<MeasuredExample>, window: u32) -> Vec<MeasuredExample>
         .collect()
 }
 
+/// PURE: the least a calibration run of (`window`, `chunk`) can need, by measurement: the largest
+/// whole-run row of the SAME family (the walk being planned) at a window and a chunk no larger
+/// than the candidate's. That the graph and its context grow with both is a PLANNER ASSUMPTION (what
+/// the 5090's CUDA rows show), not a proven bound for every backend or allocator; under it such a row
+/// is a lower bound. A floor that is never met waits visibly (the job reports waiting_for_capacity),
+/// exactly as a measured shape's admission does;
+/// a row at a larger window or chunk, or of the other walk, bounds nothing for this candidate and
+/// would keep it from ever calibrating (Astra on #4949). `None`: nothing bounds it.
+fn calibration_floor(rows: &[(u32, u32, u64)], window: u32, chunk: u32) -> Option<u64> {
+    rows.iter().filter(|&&(w, c, _)| w <= window && c <= chunk).map(|&(_, _, bytes)| bytes).max()
+}
+
+/// PURE: whether the exact walk is measured NOT to fit `window` in `available`: a whole-run row of
+/// its family at this window or a smaller one, at any chunk, already exceeded it. Its graph grows
+/// with the window and not the chunk, so no smaller chunk rescues it (the 5090, 2026-10-11).
+fn exact_ruled_out(exact_rows: &[(u32, u32, u64)], window: u32, available: u64) -> bool {
+    exact_rows.iter().any(|&(w, _, bytes)| w <= window && bytes > available)
+}
+
 /// PURE: the training window an example set NEEDS: the window that trains every one of them
 /// WHOLE (the largest `tokens_full`, by the engine's own render; an example fits a window of at
 /// least tokens_full - 1), rounded up to the context granularity, at least
@@ -754,6 +773,9 @@ pub struct EngineRunSpec {
     model_id: String,
     /// The footprint key the run was planned under, for filing what it measured.
     shape: Shape,
+    /// Which walk the run trains by, and why: carried to the finished artifact's metrics.
+    #[serde(default)]
+    walk: Option<super::types::TrainingWalk>,
     /// The characters of example payload the run trains (`training_rate::example_chars`), so its
     /// finish files the measured wall seconds per character the next dispatch is sized by.
     #[serde(default)]
@@ -2023,7 +2045,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // engine took 512 for every job and a plain-walk footprint stood in for the exact
         // walk's (the 5090, 2026-10-10: 3418 MiB leased, 12.6 GB needed, refused in 8 s).
         let governed_free = self.vram_free_for(&format!("genome-train:{id}"));
-        let family = Shape {
+        let mut walk_reason = "the host memory monitor had not read the host, so no exact-walk budget could be set".to_owned();
+        let mut family = Shape {
             model: request.base_model.clone(),
             window,
             rank: lora.rank,
@@ -2033,8 +2056,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             chunk: TRAINING_CHUNK_MIN,
             recompute: body.recompute,
         };
-        let rows = self.footprints.rows_like(&family);
-        let model = GraphModel::fit(&rows);
+        let mut rows = self.footprints.rows_like(&family);
+        let mut model = GraphModel::fit(&rows);
         // THE WINDOW THE DATA NEEDS: every example measured at the served window by the engine's
         // render gives its whole length; the run plans for the longest (every example trains
         // whole, as serving saw it), then the largest chunk that fits it. Only when even the
@@ -2048,6 +2071,28 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let at_served = measure_examples(&self.http, &lane, &body.examples, body.fit, served_sent).await;
         let render_per_example = measure_started.elapsed().div_f64(body.examples.len().max(1) as f64);
         let need = at_served.as_ref().map_or(served_sent, |rows| window_for_need(rows, served_sent));
+        // THE WALK THE WINDOW ALLOWS (Cormac, (iii)): the exact walk carries its gradient across
+        // the whole window, so its graph does not shrink with the chunk (the 5090, 2026-10-11:
+        // 18,198 MiB at window 67,584 for chunks 512, 256 and 128 alike). When a measurement
+        // already rules it out for the window her examples need, she trains them WHOLE on the
+        // plain walk instead of truncated or parked on the exact one: a step at cosine 0.81 on her
+        // whole turns over one at 0.998 on a fraction of them (Joel: working training beats data
+        // purity; she can unlearn).
+        if body.exact && exact_ruled_out(&rows, need, governed_free) {
+            crate::probe!(
+                class = "training.job.walk_plain",
+                job = %id,
+                needed = u64::from(need),
+                governed_free = governed_free,
+                "the exact walk is measured not to fit the window her examples need; the plain walk trains them whole"
+            );
+            body.exact = false;
+            body.walk_host_budget_mib = None;
+            walk_reason = format!("the exact walk was measured not to fit window {need} in {governed_free} governed free bytes");
+            family.exact = false;
+            rows = self.footprints.rows_like(&family);
+            model = GraphModel::fit(&rows);
+        }
         let window = choose_window(need, governed_free, &rows);
         if window != body.window {
             crate::probe!(
@@ -2074,6 +2119,14 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
         let footprints_path = self.footprints.path.clone();
+        // what this candidate cannot be under, by measurement (Astra and Cormac on #4949): a
+        // calibration grant below it is a guaranteed refusal
+        let calibration_floor = calibration_floor(&rows, window, chunk);
+        let walk = if body.exact {
+            super::types::TrainingWalk::Exact
+        } else {
+            super::types::TrainingWalk::Plain { reason: walk_reason.clone() }
+        };
         let post_wait_floor = self.post_wait_floor;
         let http = self.http.clone();
         let holds = self.holds.clone();
@@ -2150,6 +2203,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             model_id,
             shape: shape.clone(),
             corpus_chars,
+            walk: Some(walk),
         };
         Ok(self.jobs.prepare(id, move |progress| async move {
             if let Some(why) = unrunnable {
@@ -2166,7 +2220,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 // probe and the wait's report; the lease the engine runs under is what was granted.
                 let need = match measured {
                     Some(bytes) => crate::forge::training_admission::TrainingNeed::Measured(bytes),
-                    None => crate::forge::training_admission::TrainingNeed::Calibrate,
+                    None => crate::forge::training_admission::TrainingNeed::Calibrate { at_least: calibration_floor },
                 };
                 let bytes = match measured {
                     Some(bytes) => bytes,
@@ -2391,6 +2445,7 @@ fn finish_run(
             local_path: Some(adapter),
             format: ArtifactFormat::GgufLora,
             metrics: JobMetrics {
+                walk: spec.walk.clone(),
                 trained_tokens: trainable * status.epochs.len() as u64,
                 final_loss,
                 final_validation_loss,
@@ -2603,6 +2658,35 @@ mod tests {
         assert_eq!(fits, vec![ExampleFit::Kept, ExampleFit::Truncated, ExampleFit::Skipped, ExampleFit::Kept], "20,481 tokens fit a 20,480 window (window + 1)");
         assert_eq!(refit[1].tokens_trained, 8_000, "a truncated one reports its smallest length");
         assert_eq!(refit[2].tokens_trained, 0);
+    }
+
+    // what this catches (Astra and Cormac on #4949): a calibration floor taken from rows that bound
+    // nothing for the candidate. Only a row at a window AND chunk no larger than the candidate's is a
+    // lower bound, and the floor is the largest of those; a larger window's row would keep a smaller
+    // candidate from ever calibrating.
+    #[test]
+    fn a_calibration_floor_comes_only_from_rows_no_larger_than_the_candidate() {
+        let rows = [(16_896, 64, 3_000), (16_896, 256, 9_000), (67_584, 64, 20_000)];
+        assert_eq!(calibration_floor(&rows, 40_960, 64), Some(3_000), "the w16896 c64 row bounds a w40960 c64 run; w67584's does not");
+        assert_eq!(calibration_floor(&rows, 40_960, 256), Some(9_000), "the largest of the rows no larger than it");
+        assert_eq!(calibration_floor(&rows, 8_192, 64), None, "every row is at a larger window: nothing bounds it");
+        assert_eq!(calibration_floor(&[], 67_584, 64), None);
+    }
+
+    // what this catches (the 5090, 2026-10-11 14:02-14:08Z, jobs ef43162c, b96af9d4, ab3f2874): the
+    // exact walk refused at window 67,584 with the same 18,198 MiB graph at chunks 512, 256 and 128,
+    // so stepping the chunk down could never fit it. A measurement at or under the needed window
+    // that exceeded what is free rules it out (the plain walk then trains her turns whole); one at
+    // a larger window, or one that fit, does not.
+    #[test]
+    fn the_exact_walk_is_ruled_out_by_a_measurement_at_or_under_the_window() {
+        let gib = 1024u64 * 1024 * 1024;
+        let measured = [(67_584, 512, 20 * gib), (67_584, 128, 20 * gib)];
+        assert!(exact_ruled_out(&measured, 67_584, 4 * gib), "measured at the needed window, over what is free");
+        assert!(exact_ruled_out(&[(20_000, 64, 6 * gib)], 48_000, 4 * gib), "over at a smaller window: a larger one is over too");
+        assert!(!exact_ruled_out(&[(67_584, 512, 20 * gib)], 16_896, 4 * gib), "over at a LARGER window says nothing about a smaller one");
+        assert!(!exact_ruled_out(&[(1_536, 256, gib)], 67_584, 4 * gib), "a run that fit rules nothing out");
+        assert!(!exact_ruled_out(&[], 67_584, 4 * gib), "nothing measured: the exact walk calibrates");
     }
 
     // what this catches (Fable, 2026-10-11): the KV cache grows with the window, not the chunk.
@@ -3239,6 +3323,9 @@ mod tests {
         // what this catches (Kimi's first exact run, the 5090 2026-10-10: refused at chunk 256
         // needing 5.6 GiB more): fork #37's recompute was built and never asked for
         assert_eq!(body["recompute"], true, "every run keeps the layer outputs, not every layer's activations");
+        // what this catches (Cormac on #4949): the walk a run trained by, and why, reaches the artifact's
+        // record (a probe rotates out); with no host memory read, the plain walk, with that reason
+        assert!(matches!(&artifact.metrics.walk, Some(super::super::types::TrainingWalk::Plain { reason }) if reason.contains("host memory")), "{:?}", artifact.metrics.walk);
         let path = artifact.local_path.expect("test: path");
         assert_eq!(artifact.format, ArtifactFormat::GgufLora);
         assert!(path.starts_with(jobs.path()) && path.is_file(), "adapter in the job dir: {}", path.display());
@@ -3321,6 +3408,7 @@ mod tests {
             val_split: SplitPpm::from(0.1),
             model_id: format!("{PROVIDER_ID}:code:{job}"),
             corpus_chars: 0,
+            walk: None,
             shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
         };
         let bound = crate::inference::engine_residency::ResidentWork {
