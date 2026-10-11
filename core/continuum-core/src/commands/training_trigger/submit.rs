@@ -94,6 +94,9 @@ pub(crate) fn returned_id(job: Uuid) -> Uuid {
 /// The identity of the `index`-th chunk of a returned job's examples: chunk 0 is
 /// [`returned_id`] (a single-chunk return is unchanged), every later chunk derives from the job
 /// and its index, so re-running the same return replays each chunk instead of copying it.
+/// Chunk 0 sharing the whole-return id is deliberate (Fable on #4936): a job an older core
+/// returned WHOLE, returned again chunked, has chunk 0 refused as a changed replay, loudly,
+/// where fresh ids for every chunk would silently put its examples in her bucket twice.
 pub(crate) fn returned_chunk_id(job: Uuid, index: usize) -> Uuid {
     if index == 0 {
         returned_id(job)
@@ -163,11 +166,19 @@ pub(crate) async fn return_request(
         return return_chunk(state, request, job, returned_id(job)).await;
     }
     let mut reported: Option<SubmitOutcome> = None;
-    for (index, part) in return_chunks(request.dataset.examples.clone(), size).into_iter().enumerate() {
+    let chunks = return_chunks(request.dataset.examples.clone(), size);
+    let total = chunks.len();
+    for (index, part) in chunks.into_iter().enumerate() {
         let mut chunk = request.clone();
         chunk.dataset.examples = part;
-        let outcome = return_chunk(state, chunk, job, returned_chunk_id(job, index)).await?;
+        let mut outcome = return_chunk(state, chunk, job, returned_chunk_id(job, index)).await?;
         if !outcome.success {
+            // say how far the return got: the first `index` chunks are in her bucket, and
+            // re-running the return replays them and resumes at this one
+            outcome.error = Some(format!(
+                "{index} of {total} chunks returned before chunk {index} was refused: {}",
+                outcome.error.as_deref().unwrap_or("no reason given") // unwrap_or: a refusal without a message still reports the count
+            ));
             return Ok(outcome);
         }
         // report the chunk that dispatched, if one did; else the last
