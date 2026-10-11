@@ -2464,35 +2464,59 @@ impl ServingDaemonModule {
         // CPU-placed lane (#3729) holds nothing on the device whatever the host class,
         // so the device delta would read zero for a lane whose KV fills system RAM —
         // the process read is the one that sees it.
+        //
+        // ON A DISCRETE GPU THE ENGINE'S OWN KV SPEAKS FIRST (card 03cdeee3; BigMama's 5090
+        // receipt and Codex's design, 2026-10-11). The device delta holds every tenant of the
+        // GPU (the embedding lane's 1.75 GiB lease) and the engine's unreported overhead; divided
+        // by tokens it read 85.8 KB/token where this engine's own context bytes read 46.4 KB, and
+        // the plan carried the excess as fixed bytes PER LANE, so every extra lane paid for the
+        // other tenants again. The reading is now the engine's KV over the tokens it allocated;
+        // what the delta holds beyond everything the engine claims is probed as UNATTRIBUTED and
+        // never enters this model's record. The delta still speaks for an engine that predates
+        // `memory_breakdown`.
         let placement = crate::inference::llama_server::main_lane_placement();
-        let (source, beyond_weights) = match (placement, self.system.gpu_memory_mode()) {
+        let (source, beyond_weights, allocated) = match (placement, self.system.gpu_memory_mode()) {
             (
                 crate::inference::llama_server::LanePlacement::Gpu,
                 Some(crate::gpu::monitor::MemoryMode::Discrete),
             ) => {
                 let baseline = self.spawn_baseline_vram.load(Ordering::Relaxed);
                 let now = vram_physical_used(&self.resource_daemon);
-                match device_delta_beyond_weights(baseline, now, fp.weights_bytes) {
-                    Some(delta) => ("device_delta", Some(delta)),
-                    // No spawn baseline (an adopted lane), or a delta that did not exceed the
-                    // weights (the trough already held them: card b5230492) — ask the engine
-                    // what it allocated (`/props` memory_breakdown, card 27fe9f8b): KV +
-                    // compute on the device. The inputs are named so the fallback is readable.
-                    None => {
+                let delta = device_delta_beyond_weights(baseline, now, fp.weights_bytes);
+                let engine = engine_props()
+                    .await
+                    .and_then(|props| crate::inference::weight_residency::EngineContext::from_props(&props));
+                match (engine, delta) {
+                    (Some(ctx), _) => {
+                        crate::probe!(
+                            class = "serving.footprint.device_residual",
+                            model = %active,
+                            engine_context_bytes = ctx.context_bytes,
+                            engine_beyond_weights = ctx.beyond_weights,
+                            device_delta_read = delta.is_some(),
+                            device_delta_beyond_weights = delta.unwrap_or(0), // unwrap_or: probe label; `device_delta_read` says whether it exists
+                            unattributed_bytes = delta.map_or(0, |d| d.saturating_sub(ctx.beyond_weights)), // probe label, same
+                            "the device's growth beyond the weights against what the engine says it holds: the excess is other tenants or engine overhead, never this model's per-token cost"
+                        );
+                        ("engine_context", Some(ctx.context_bytes), Some(ctx))
+                    }
+                    (None, Some(delta)) => ("device_delta", Some(delta), None),
+                    (None, None) => {
                         crate::probe!(
                             class = "serving.footprint.device_delta_unread",
                             baseline_bytes = baseline,
                             now_bytes = now,
                             weights_bytes = fp.weights_bytes,
-                            "no device delta beyond the weights (no baseline, no reading, or a baseline that already held the weights); the engine's own breakdown speaks instead"
+                            "neither the engine's breakdown nor a device delta beyond the weights (no baseline, no reading, or a baseline that already held the weights)"
                         );
-                        ("engine_props", engine_beyond_weights().await)
+                        ("device_delta", None, None)
                     }
                 }
             }
             _ => (
                 "process_anon",
                 crate::inference::lane_footprint::anon_footprint_of(pid),
+                None,
             ),
         };
         let outcome = match beyond_weights {
@@ -2545,10 +2569,22 @@ impl ServingDaemonModule {
                 "unmeasured"
             }
             Some(anon) => {
-                let predicted = fp
-                    .kv_at(live.served_context_window)
-                    .saturating_mul(live.lanes as u64)
-                    .saturating_add(fp.prefill_compute_reserve(live.served_context_window, live.lanes));
+                // The engine's KV is decomposed over the geometry the ENGINE holds (its slots, a
+                // scratch slot included, at its per-slot context) with no compute floor: the
+                // reading holds no compute. Every other source is the plan's own decomposition.
+                let (lanes, window, compute_floor) = match allocated {
+                    Some(ctx) => (ctx.slots, ctx.n_ctx_per_slot, 0),
+                    // the BASE buffer: the fixed term is derived from this reading
+                    // (`base_compute_buffer_per_lane`, the M5's two-tick flap)
+                    None => (live.lanes, live.served_context_window, fp.base_compute_buffer_per_lane()),
+                };
+                let predicted = match allocated {
+                    Some(_) => fp.kv_at(window).saturating_mul(lanes as u64),
+                    None => fp
+                        .kv_at(window)
+                        .saturating_mul(lanes as u64)
+                        .saturating_add(fp.prefill_compute_reserve(window, lanes)),
+                };
                 // The host prompt cache the ENGINE was launched with (`--cache-ram`, on
                 // the snapshot as a fact about the process): it fills the same anonymous
                 // footprint over the serve's life and is not per-token cost — subtracted
@@ -2557,7 +2593,7 @@ impl ServingDaemonModule {
                 // 07:52Z that cell went 14,396 → 256 MiB under a running 2-lane engine
                 // and the reading here went 33k → 262k B/token, saved to disk.
                 // `--cache-ram` lives in HOST RAM: only a process reading contains it. The device
-                // readings (device_delta, engine_props) never saw it, so subtracting it there
+                // readings (device_delta, engine_context) never saw it, so subtracting it there
                 // would undercount the per-token cost or retire the record (Cormac on #4459).
                 let host_cache_bytes = if source == "process_anon" {
                     (live.host_prompt_cache_mib as u64) * 1024 * 1024
@@ -2567,12 +2603,10 @@ impl ServingDaemonModule {
                 let measured = crate::inference::lane_footprint::observe(
                     token,
                     &active,
-                    live.lanes,
-                    live.served_context_window,
+                    lanes,
+                    window,
                     anon,
-                    // the BASE buffer: the fixed term is derived from this reading
-                    // (`base_compute_buffer_per_lane`, the M5's two-tick flap)
-                    fp.base_compute_buffer_per_lane(),
+                    compute_floor,
                     host_cache_bytes,
                 );
                 let Ok(measured) = measured else {
@@ -2592,8 +2626,8 @@ impl ServingDaemonModule {
                     model = %active,
                     pid = pid as u64,
                     source,
-                    lanes = live.lanes as u64,
-                    window = live.served_context_window as u64,
+                    lanes = lanes as u64,
+                    window = window as u64,
                     anon_bytes = anon,
                     host_cache_bytes,
                     predicted_beyond_weights = predicted,
@@ -2602,7 +2636,7 @@ impl ServingDaemonModule {
                     // absent, never 0: a reading that yields no per-token rate is not a rate of
                     // zero (card b5230492: 0 printed every minute read like a measurement)
                     per_token_measured = %measured.map_or_else(|| "none".to_string(), |rate| rate.to_string()),
-                    "the lane's anonymous footprint, read off its process, against the plan's arithmetic"
+                    "the lane's footprint (its process, or on a discrete GPU the engine's own KV) against the plan's arithmetic"
                 );
                 "read"
             }
@@ -5830,40 +5864,29 @@ fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
         .unwrap_or(0)
 }
 
-/// The lane's bytes beyond its weights on the device, as the engine reports its own allocation.
-/// Bounded: a localhost read of cached meta, taken only on the sampler's interval; `None` when the
-/// lane does not answer in time or its engine predates `memory_breakdown`.
+/// The serving engine's `/props`. Bounded: a localhost read of cached meta, taken only on the
+/// sampler's interval; `None` when the lane does not answer in time.
+async fn engine_props() -> Option<serde_json::Value> {
+    let url = format!("{}/props", crate::inference::llama_server::serving_root());
+    reqwest::Client::new()
+        .get(url)
+        .timeout(std::time::Duration::from_millis(500))
+        .send()
+        .await
+        .ok()?
+        .json::<serde_json::Value>()
+        .await
+        .ok()
+}
+
 /// What the serving engine holds on the accelerator, by its own account (`/props`): its
 /// weights there plus its KV and compute buffers. `None` when the engine does not answer or
 /// predates either field.
 async fn engine_device_bytes() -> Option<u64> {
-    let url = format!("{}/props", crate::inference::llama_server::serving_root());
-    let body = reqwest::Client::new()
-        .get(url)
-        .timeout(std::time::Duration::from_millis(500))
-        .send()
-        .await
-        .ok()?
-        .json::<serde_json::Value>()
-        .await
-        .ok()?;
+    let body = engine_props().await?;
     let weights = crate::inference::weight_residency::WeightResidency::from_props(&body)?.accelerator_bytes();
     let buffers = crate::inference::weight_residency::EngineMemory::from_props(&body)?.accelerator_beyond_weights();
     Some(weights.saturating_add(buffers))
-}
-
-async fn engine_beyond_weights() -> Option<u64> {
-    let url = format!("{}/props", crate::inference::llama_server::serving_root());
-    let body = reqwest::Client::new()
-        .get(url)
-        .timeout(std::time::Duration::from_millis(500))
-        .send()
-        .await
-        .ok()?
-        .json::<serde_json::Value>()
-        .await
-        .ok()?;
-    crate::inference::weight_residency::EngineMemory::from_props(&body).map(|m| m.accelerator_beyond_weights())
 }
 
 /// The discrete footprint arm: what the lane added to the device beyond its weights.

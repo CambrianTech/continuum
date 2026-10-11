@@ -87,6 +87,45 @@ impl EngineMemory {
             .map(|b| b.context_bytes + b.compute_bytes)
             .sum()
     }
+
+    /// The KV (context) bytes alone on accelerators, compute buffers excluded.
+    pub fn accelerator_context(&self) -> u64 {
+        self.per_buffer.iter().filter(|b| !is_host_backend(&b.buffer_type)).map(|b| b.context_bytes).sum()
+    }
+}
+
+/// The lane's KV on the device and the tokens it was allocated for, by the engine's own account:
+/// the one per-token reading whose subject is this lane. A device delta also holds every other
+/// tenant of the GPU and the engine's unreported overhead, and divided by tokens it charged them
+/// to each served token (the 5090, build 6148, 2026-10-11: 85.8 KB/token by device delta, 46.4 KB
+/// by this engine's own context bytes; card 03cdeee3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineContext {
+    /// KV (context) bytes on accelerator buffers.
+    pub context_bytes: u64,
+    /// KV plus compute buffers on accelerators: everything the engine says it holds beyond weights.
+    pub beyond_weights: u64,
+    pub slots: u32,
+    /// Each slot's context. The lane passes `--parallel` explicitly, so the cache is never unified
+    /// and the engine holds `slots × n_ctx_per_slot` tokens.
+    pub n_ctx_per_slot: u32,
+}
+
+impl EngineContext {
+    /// `None` when the engine predates `memory_breakdown`, or reports no slots, no context, or
+    /// no KV on an accelerator (a CPU-placed lane: the process reading speaks there).
+    pub fn from_props(props: &serde_json::Value) -> Option<Self> {
+        let memory = EngineMemory::from_props(props)?;
+        let slots = u32::try_from(props.get("total_slots")?.as_u64()?).ok()?;
+        let n_ctx_per_slot = u32::try_from(props.pointer("/default_generation_settings/n_ctx")?.as_u64()?).ok()?;
+        let context_bytes = memory.accelerator_context();
+        (slots > 0 && n_ctx_per_slot > 0 && context_bytes > 0).then(|| Self {
+            context_bytes,
+            beyond_weights: memory.accelerator_beyond_weights(),
+            slots,
+            n_ctx_per_slot,
+        })
+    }
 }
 
 fn is_host_backend(name: &str) -> bool {
@@ -116,6 +155,15 @@ mod tests {
         let m = EngineMemory::from_props(&props).expect("parses");
         assert_eq!(m.accelerator_beyond_weights(), 117440512 + 66594944);
         assert!(EngineMemory::from_props(&serde_json::json!({"model_weight_buffers": []})).is_none());
+        // and the per-token subject is the engine's KV over the tokens it holds (-np 2 → 2 × 2,048),
+        // never compute or pinned host memory (card 03cdeee3)
+        let mut with_slots = props.clone();
+        with_slots["total_slots"] = 2.into();
+        with_slots["default_generation_settings"] = serde_json::json!({"n_ctx": 2048});
+        let ctx = EngineContext::from_props(&with_slots).expect("reads");
+        assert_eq!((ctx.context_bytes, ctx.slots, ctx.n_ctx_per_slot), (117440512, 2, 2048));
+        assert_eq!(ctx.beyond_weights, 117440512 + 66594944);
+        assert_eq!(EngineContext::from_props(&props), None, "no slot geometry is no reading");
     }
 
     #[test]
