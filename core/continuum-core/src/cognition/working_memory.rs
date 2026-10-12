@@ -2377,6 +2377,39 @@ mod tests {
         assert!(restored.recent_results_messages().join("\n").contains(
             &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
         ));
+
+        // Regression 735a3183: Kimi's 274-line read disappeared after a poll;
+        // other reads survived only as their last ~36 lines. A retained handle
+        // must replace the body as a unit, never decorate an arbitrary suffix.
+        let read = (387..=660)
+            .map(|line| format!("{line}: complete source line with enough context to exceed the old per-entry share\n"))
+            .collect::<String>();
+        let memory = WorkingMemory::new(8);
+        memory.set_served_window(16_384);
+        let mut read_observation = observation("read-274", "code/read", Some("read-274-output"));
+        read_observation.output.result.content = read.clone();
+        memory.record_receipt_typed(&[read_observation], &read, Some(room_a));
+        memory.record_receipt_typed(
+            &[observation("poll-next", "shell/poll", None)],
+            "process still running",
+            Some(room_a),
+        );
+        let assert_whole_or_handle = |memory: &WorkingMemory| {
+            let view = memory.recent_results_messages().join("\n");
+            assert!(view.contains("read-274-output"), "the read remains addressable");
+            assert!(view.contains(&room_a.to_string()), "the view retains its room");
+            assert!(
+                !view.contains("660: complete source line") || view.contains(&read),
+                "a suffix of a source read must never masquerade as the retained result"
+            );
+        };
+        assert_whole_or_handle(&memory);
+        memory.record_settlement("work remains on this card");
+        assert_whole_or_handle(&memory);
+        let restarted = WorkingMemory::new(8);
+        restarted.set_served_window(16_384);
+        restarted.restore(memory.snapshot());
+        assert_whole_or_handle(&restarted);
     }
 
     // e731: pre-result-ring snapshots have a full body but no room/operation
