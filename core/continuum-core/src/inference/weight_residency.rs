@@ -87,6 +87,84 @@ impl EngineMemory {
             .map(|b| b.context_bytes + b.compute_bytes)
             .sum()
     }
+
+    /// The KV (context) bytes alone on accelerators, compute buffers excluded.
+    pub fn accelerator_context(&self) -> u64 {
+        self.per_buffer.iter().filter(|b| !is_host_backend(&b.buffer_type)).map(|b| b.context_bytes).sum()
+    }
+}
+
+/// The lane's KV on the device and the tokens it was allocated for, by the engine's own account:
+/// the one per-token reading whose subject is this lane. A device delta also holds every other
+/// tenant of the GPU and the engine's unreported overhead, and divided by tokens it charged them
+/// to each served token (the 5090, build 6148, 2026-10-11: 85.8 KB/token by device delta, 46.4 KB
+/// by this engine's own context bytes; card 03cdeee3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineContext {
+    /// KV (context) bytes on accelerator buffers.
+    pub context_bytes: u64,
+    /// KV plus compute buffers on accelerators: everything the engine says it holds beyond weights.
+    pub beyond_weights: u64,
+    pub slots: u32,
+    /// Each slot's context. The lane passes `--parallel` explicitly, so the cache is never unified
+    /// and the engine holds `slots × n_ctx_per_slot` tokens.
+    pub n_ctx_per_slot: u32,
+}
+
+/// What an answering engine's `/props` says about its context. Three answers, because only the
+/// first two have a fallback (Codex on #4961): an engine that predates the field is measured by
+/// the device delta, but one whose breakdown or slot geometry is present and unusable is no
+/// reading at all. Feeding that to the delta would write the tenant-charged rate back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EngineContextReading {
+    Read(EngineContext),
+    /// A well-formed props document with no `memory_breakdown`: an engine older than fork #25.
+    Absent,
+    /// Not a props document (null, an error envelope), or a breakdown or slot geometry that
+    /// does not parse, overflows, or is zero.
+    Invalid,
+}
+
+impl EngineContextReading {
+    pub fn of(props: &serde_json::Value) -> Self {
+        // Only a WELL-FORMED props document can be an engine that predates the field: every
+        // llama-server answers `/props` with its slot geometry. A `null`, an error envelope
+        // (`{"error": …}`), or a geometry that is missing, null or zero is not an old engine,
+        // and a missing breakdown there is no reading (Codex on #4961). The same parse decides
+        // here and in `from_props`, so the two cannot disagree about what a geometry is.
+        if slot_geometry(props).is_none() {
+            return Self::Invalid;
+        }
+        if props.get("memory_breakdown").is_none() {
+            return Self::Absent;
+        }
+        EngineContext::from_props(props).map_or(Self::Invalid, Self::Read)
+    }
+}
+
+impl EngineContext {
+    /// `None` when the engine predates `memory_breakdown`, or reports no slots, no context, or
+    /// no KV on an accelerator. [`EngineContextReading::of`] tells those apart.
+    pub fn from_props(props: &serde_json::Value) -> Option<Self> {
+        let memory = EngineMemory::from_props(props)?;
+        let (slots, n_ctx_per_slot) = slot_geometry(props)?;
+        let context_bytes = memory.accelerator_context();
+        (context_bytes > 0).then(|| Self {
+            context_bytes,
+            beyond_weights: memory.accelerator_beyond_weights(),
+            slots,
+            n_ctx_per_slot,
+        })
+    }
+}
+
+/// The slot geometry an engine reports on `/props`: `total_slots` and each slot's `n_ctx`, both
+/// present, in range and nonzero. `None` otherwise. ONE parse, shared by the reading and by
+/// the legacy test, so "a valid props document" means one thing.
+fn slot_geometry(props: &serde_json::Value) -> Option<(u32, u32)> {
+    let slots = u32::try_from(props.get("total_slots")?.as_u64()?).ok()?;
+    let n_ctx = u32::try_from(props.pointer("/default_generation_settings/n_ctx")?.as_u64()?).ok()?;
+    (slots > 0 && n_ctx > 0).then_some((slots, n_ctx))
 }
 
 fn is_host_backend(name: &str) -> bool {
@@ -116,6 +194,43 @@ mod tests {
         let m = EngineMemory::from_props(&props).expect("parses");
         assert_eq!(m.accelerator_beyond_weights(), 117440512 + 66594944);
         assert!(EngineMemory::from_props(&serde_json::json!({"model_weight_buffers": []})).is_none());
+        // and the per-token subject is the engine's KV over the tokens it holds (-np 2 → 2 × 2,048),
+        // never compute or pinned host memory (card 03cdeee3)
+        let mut with_slots = props.clone();
+        with_slots["total_slots"] = 2.into();
+        with_slots["default_generation_settings"] = serde_json::json!({"n_ctx": 2048});
+        let ctx = EngineContext::from_props(&with_slots).expect("reads");
+        assert_eq!((ctx.context_bytes, ctx.slots, ctx.n_ctx_per_slot), (117440512, 2, 2048));
+        assert_eq!(ctx.beyond_weights, 117440512 + 66594944);
+        assert_eq!(EngineContextReading::of(&with_slots), EngineContextReading::Read(ctx));
+        // present but unusable is no reading, never the legacy fallback (Codex on #4961)
+        assert_eq!(EngineContextReading::of(&props), EngineContextReading::Invalid, "no slot geometry");
+        let mut zero_slots = with_slots.clone();
+        zero_slots["total_slots"] = 0.into();
+        assert_eq!(EngineContextReading::of(&zero_slots), EngineContextReading::Invalid);
+        let mut overflow = with_slots.clone();
+        overflow["default_generation_settings"]["n_ctx"] = (u64::from(u32::MAX) + 1).into();
+        assert_eq!(EngineContextReading::of(&overflow), EngineContextReading::Invalid);
+        let mut malformed = with_slots.clone();
+        malformed["memory_breakdown"] = "not a list".into();
+        assert_eq!(EngineContextReading::of(&malformed), EngineContextReading::Invalid);
+        // only an engine without the field is the device delta's to measure
+        assert_eq!(
+            EngineContextReading::of(&serde_json::json!({"total_slots": 1, "default_generation_settings": {"n_ctx": 4096}})),
+            EngineContextReading::Absent
+        );
+        // and what is not a props document at all is no reading, never a legacy engine
+        assert_eq!(EngineContextReading::of(&serde_json::Value::Null), EngineContextReading::Invalid, "null");
+        assert_eq!(
+            EngineContextReading::of(&serde_json::json!({"error": {"code": 503, "message": "Loading model", "type": "unavailable_error"}})),
+            EngineContextReading::Invalid,
+            "an error envelope"
+        );
+        assert_eq!(
+            EngineContextReading::of(&serde_json::json!({"total_slots": 1, "default_generation_settings": null})),
+            EngineContextReading::Invalid,
+            "a null geometry is not a legacy engine"
+        );
     }
 
     #[test]
