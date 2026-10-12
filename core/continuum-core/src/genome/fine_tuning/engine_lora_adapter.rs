@@ -494,6 +494,19 @@ impl Footprints {
     /// read back by rebuilding the shape it names and comparing keys, so the parse can never
     /// accept a row of a different family.
     fn rows_like(&self, shape: &Shape) -> Vec<(u32, u32, u64)> {
+        self.family_rows(shape, true)
+    }
+    /// Every measured row of `shape`'s family, a graph-only refusal included: LOWER bounds on
+    /// what each shape needs. They cap a plan (a graph alone over what is free means the whole
+    /// run is over it too) but never fit the model, which reads whole-run rows only (#4939).
+    fn bound_rows_like(&self, shape: &Shape) -> Vec<(u32, u32, u64)> {
+        self.family_rows(shape, false)
+    }
+    /// A shape's measured lower bound: its whole-run row, else its graph-only one.
+    fn bound(&self, shape: &Shape) -> Option<u64> {
+        self.read_all().get(&shape.key()).map(|r| r.bytes)
+    }
+    fn family_rows(&self, shape: &Shape, whole_only: bool) -> Vec<(u32, u32, u64)> {
         self.read_all()
             .into_iter()
             .filter_map(|(key, row)| {
@@ -504,7 +517,7 @@ impl Footprints {
                 let window = num('w')?;
                 let chunk = num('c').unwrap_or_else(|| train_chunk_for(window, TRAINING_CHUNK));
                 let candidate = Shape { window, chunk, ..shape.clone() };
-                (candidate.key() == key && row.includes_context).then_some((window, chunk, row.bytes))
+                (candidate.key() == key && (row.includes_context || !whole_only)).then_some((window, chunk, row.bytes))
             })
             .collect()
     }
@@ -1752,7 +1765,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             rows = self.footprints.rows_like(&family);
             model = GraphModel::fit(&rows);
         }
-        let plan = choose_window(need, governed_free, &rows);
+        let bounds = self.footprints.bound_rows_like(&family);
+        let plan = choose_window(need, governed_free, &rows, &bounds);
         let window = plan.window;
         // ONE evaluation, ONE probe (Cormac on #4972): a predicted no-fit floor is reported as the
         // prediction it is, and never as window_calculated's "what trains her examples whole". The window is set
@@ -1789,8 +1803,16 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // an unmeasured (window, chunk): a calculated window with a chunk left to the default
         // would refuse by construction (Cormac on #4920). The LEASE is only ever a measurement:
         // a chunk known only by prediction is a calibration run, leasing all governed free VRAM.
+        // A chunk's need is the larger of what is known (the whole-run row, else the model's
+        // prediction) and its measured LOWER bound: a graph-only refusal at this chunk still
+        // rules it out, so the ladder steps down instead of re-dispatching it (card 030d70f0).
         let (chunk, _) = choose_chunk(window, governed_free, |c| {
-            self.footprints.get(&shape_at(c)).or_else(|| model.map(|m| m.bytes(window, c)))
+            let shape = shape_at(c);
+            let bound = self.footprints.bound(&shape);
+            match self.footprints.get(&shape).or_else(|| model.map(|m| m.bytes(window, c))) {
+                Some(bytes) => Some(bytes.max(bound.unwrap_or(0))), // unwrap_or: no measured bound adds nothing to the known need
+                None => bound,
+            }
         });
         let measured = self.footprints.get(&shape_at(chunk));
         let shape = shape_at(chunk);
@@ -2275,23 +2297,32 @@ mod tests {
     // window that the fit did not predict, so the same window planned again and the return
     // looped; and graph-only rows mixed into whole-run fits. A floor-chunk measurement over what
     // is free caps the next window below it whatever the fit says (with no fit at all, too), and
-    // a graph-only row is never read, while a whole-run row replaces it.
+    // a graph-only row is never fitted (it still bounds the plan), while a whole-run row replaces it.
     #[test]
-    fn a_floor_refusal_caps_the_next_window_and_graph_only_rows_are_never_read() {
+    fn a_floor_refusal_caps_the_next_window_and_graph_only_rows_bound_but_never_fit() {
         let gib = 1024u64 * 1024 * 1024;
         let free = 4 * gib;
         let refused = [(40_960, TRAINING_CHUNK_MIN, 5 * gib)];
-        assert_eq!(choose_window(68_608, free, &refused).window, 40_704, "under the refused window, with no fit to say so");
+        assert_eq!(choose_window(68_608, free, &refused, &refused).window, 40_704, "under the refused window, with no fit to say so");
         let optimistic = [(1_536, 256, gib / 4), (68_608, 512, gib), (40_960, TRAINING_CHUNK_MIN, 5 * gib)];
-        assert!(choose_window(68_608, free, &optimistic).window <= 40_704, "under it even when the fit says the served window fits");
+        assert!(choose_window(68_608, free, &optimistic, &optimistic).window <= 40_704, "under it even when the fit says the served window fits");
         let at_floor = [(TRAINING_WINDOW_MIN, TRAINING_CHUNK_MIN, 5 * gib)];
-        assert_eq!(choose_window(68_608, free, &at_floor).window, TRAINING_WINDOW_MIN, "never under the smallest window");
+        assert_eq!(choose_window(68_608, free, &at_floor, &at_floor).window, TRAINING_WINDOW_MIN, "never under the smallest window");
         let dir = tempfile::tempdir().expect("test: dir");
         let store = Footprints { path: dir.path().join("fp.json") };
         let shape = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
         store.record_with(&shape, 9 * gib, false, Uuid::nil()).expect("test: graph-only");
         assert_eq!(store.get(&shape), None, "a graph-only row leases nothing: the shape calibrates");
         assert!(store.rows_like(&shape).is_empty(), "and is not fitted");
+        // regression for card 030d70f0 (the 5090, 84 of 108 jobs failed): her refusals were filed
+        // graph-only, so the cap never saw them and window 68,608 was re-dispatched 73 times. A
+        // graph alone over what is free is a LOWER bound the plan obeys, though the fit ignores it.
+        assert_eq!(store.bound(&shape), Some(9 * gib), "a graph-only row still bounds its shape");
+        let served = Shape { window: 68_608, chunk: TRAINING_CHUNK_MIN, ..shape.clone() };
+        store.record_with(&served, 13 * gib, false, Uuid::nil()).expect("test: graph-only refusal at the served window");
+        let (rows, bounds) = (store.rows_like(&served), store.bound_rows_like(&served));
+        assert!(rows.is_empty(), "the refusal is not fitted");
+        assert!(choose_window(68_608, free, &rows, &bounds).window < 68_608, "but the next plan steps under the refused window");
         store.record_with(&shape, 3 * gib, true, Uuid::nil()).expect("test: whole run");
         assert_eq!(store.get(&shape), Some(3 * gib), "a whole-run row replaces it, smaller or not");
         store.record_with(&shape, 20 * gib, false, Uuid::nil()).expect("test: a rolled-back engine");
