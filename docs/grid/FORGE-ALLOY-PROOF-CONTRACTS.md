@@ -102,6 +102,31 @@ The two halves of "mathematically sound work":
 
 ## 3. Trust progression — start permissive
 
+### Economic acceptance boundary (2026-10-02)
+
+The proof contract is also the evidence boundary for the
+[grid economy](../architecture/ECONOMY-ARCHITECTURE.md#2026-10-02-clarification-currency-participates-in-allocation).
+Its existing `settlement.trust_mode` describes proof acceptance, not a complete
+currency wire schema. Economic integration must bind the contract and execution
+identity to the agreed offer, currency/unit, authorized spend, metered usage,
+acceptance decision and settlement identity. Extend the existing contract and
+ledger types after auditing them; these are requirements, not claims of shipped
+fields or a second contract format.
+
+Payment transfers an agreed amount; minting creates supply for accepted useful
+contribution under the issuance policy. Keep them distinguishable. Repeated AIRC
+delivery or execution retries must not repeat either financial effect. Reconcile
+reservations on completion, refusal and cancellation; timeout alone proves neither
+remote termination nor accepted work.
+
+Self-sealing remains the low-ceremony provenance path below. It does not prove
+that measurements are true, that demand is legitimate, or that a claim deserves
+new currency. Mint eligibility requires the declared economic acceptance policy;
+verification must address fabricated demand, collusive acceptance and replay.
+No hash race, idle cycles or deliberately inefficient execution qualifies as work
+merely because it consumed resources. Forge-Alloy remains independently usable
+without a currency implementation.
+
 The contract's `settlement.trust_mode` is the dial.
 
 ### v1 — `self-seal`

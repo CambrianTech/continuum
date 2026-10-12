@@ -49,14 +49,63 @@ This supersedes the per-layer GRID pricing (`purchase_layer: 5-50 GRID`) and per
 
 ## The mint: proof-of-useful-work
 
+### 2026-10-02 clarification: currency participates in allocation
+
+Joel reaffirmed that cost, supply and demand are inputs to the allocation
+algorithm, not billing attached after execution. Grid credit is the currency
+for bids, offers, reservations and settlement from the first economic prototype,
+even when implemented as an internal token. The choice of an existing coin,
+native issuance or settlement network belongs in its implementation PR; it must
+not require a second scheduler or change the meaning of accepted work.
+
+Keep resource shadow prices such as residency λ in their declared units. An
+explicit, versioned conversion connects activity value, resource quantities and
+currency; λ is not automatically a token exchange rate. The
+[adaptive allocation design](ADAPTIVE-GRID-INTELLIGENCE.md) remains the selection
+path: permissions, quality gates and owner limits constrain which offers are
+eligible before utility/cost ranking. An unknown price is not a free offer.
+
+Demand is not λ itself: λ expresses the marginal value of relaxing a resource
+constraint under current demand and capacity. Each grid uses these signals,
+activity preferences and budgets to form bids and offers. Exchange prices feed
+back into candidate selection alongside quality, latency, transfer and switching
+costs. Peer groups exchange bounded, expiring offers and price signals; local
+resource owners remain authoritative. Wider federation composes these decisions
+without requiring every node to know every grid's demand or balances.
+
+Minting rewards useful contribution. Hash puzzles, idle CPU/GPU cycles, inflated
+runtime and work created solely to farm issuance do not qualify. Resource usage
+is a cost to measure, not by itself a reason to mint. Transfers pay an agreed
+price from an existing balance; minting creates new supply under a separately
+versioned issuance policy. Those operations must be distinguishable in the ledger.
+
+Forge-Alloy supplies the work contract, artifact lineage and signed evidence.
+A signature establishes attribution and integrity, not demand, truth of every
+measurement or economic value. A self-sealed proof remains useful provenance;
+it is not an unconditional mint authorization. Issuance requires the declared
+acceptance policy, useful outcome evidence and a stable contribution identity so
+retries, replayed receipts and cross-grid forwarding cannot mint twice. The
+contract must identify who can accept the work and how disputed or fraudulent
+acceptance is handled. Demand may be an authorized request or a published
+commons contribution policy; it need not be a private buyer.
+
+This is design direction, not a claim that currency settlement or public minting
+is deployed. Existing dividend, governance and issuance proposals below remain
+subject to their stated identity, verification and implementation gates. Rehearse
+the same accounting and settlement semantics with internal credit before adding
+external value; test fabricated demand, collusive acceptance, duplicate work,
+partitions and double spending. Paid validation must itself serve a declared
+verification need rather than become a substitute mining race.
+
 Credit enters existence **only** through verified contribution. There is no presale, no founder allocation, no buy-in mint, and no hash lotteries. Proof-of-work burned electricity to prove nothing; the grid already produces cryptographic proof that *real work happened* — the [forge-alloy](FORGE-ALLOY-SPEC.md) attestation: signed, hash-addressed, benchmark-carrying, falsifiable, re-verifiable by any peer.
 
-**The mint event IS the attestation.** No attestation, no credit.
+**An accepted attestation is the evidence for a mint event.** No attestation,
+no credit; an attestation without the required acceptance is not sufficient.
 
 | Attestable contribution | Verification | Mint shape |
 |------------------------|--------------|------------|
-| Forge job completed (training, quant, prune) | Alloy attestation + re-runnable benchmarks | Per verified GPU-second, hardware-tier weighted |
-| Inference served to another citizen | Signed request/response receipts | Per verified token-second |
+| Forge job completed (training, quant, prune) | Alloy attestation + re-runnable benchmarks + contract acceptance | Useful accepted outcome under the issuance policy; GPU time is metered cost, never an unconditional reward |
+| Inference served to another citizen | Signed request/response receipts + declared acceptance | Useful accepted service under the issuance policy; token/time counts meter service, not value by themselves |
 | Seeding / serving content | Challenge-response storage proofs | Per MB·day actually served |
 | Sentinel review with verdict | Verdict on record + outcome tracking | Flat per review; bonus when verdict survives audit |
 | Adapter adoption | Another grid's alloy lineage cites yours | Royalty-shaped mint along the lineage DAG (§ below) — **paid by the network mint, not the adopter** |
@@ -178,7 +227,7 @@ Every primitive the economy needs already exists or is in flight; the phases jus
 
 | Phase | What turns on | Substrate it rides | What we learn |
 |-------|---------------|--------------------|---------------|
-| **0 — Shadow accounting** (can start now) | Attestations are *counted*, no value attached: every forge-alloy, review verdict, seeding proof, and adoption event accrues to its identity as a ledger entry. Dividend computed and displayed, spends simulated. | forge-alloy attestations, airc identity, work-card audit trail — all existing | Real mint-mix distributions; whether diminishing-returns curves bite; sybil pressure observed at zero stakes |
+| **0 — Internal-credit rehearsal** | Use internal currency for bids, offers, budget reservations, accepted-work issuance and settlement in allocation rehearsal. Record attestations and acceptance, including simulated dividend/spending policies. Credit has no external redeemable value in this phase. | Existing forge-alloy evidence, airc identity and work-card audit trail, extended with the economic ledger and allocation integration; implementation must be verified | Allocation and budget behavior, mint-mix distributions, duplicate/replay handling and adversarial incentives before external value |
 | **1 — Founder grid market** | Credit becomes spendable for compute on the first grid (the 5090 sells forge-time for credit). Dividend pays out live among the founding citizens, human and persona. | Grid job routing (`grid/job-submit`), phase-0 ledger | Price discovery for GPU-hours; whether the floor/ceiling parameters feel right at village scale |
 | **2 — Inter-grid mutual credit** | Grids settle compute with each other; balances sum to zero across the mesh. Demurrage activates above thresholds. | airc mesh + trust tiers, alloy-verified cross-grid work | The economics of federation: latency vs. price routing, free-rider patterns, fork-threat credibility |
 | **2.5 — In-silico rehearsal** | The tokenomics run as a LIVE SIMULATION on the citizens themselves before any external value exists: statutes (mint curves, demurrage parameters, royalty decay) parameterize a recipe; the fleet works real benchmarks under the simulated economy; probes watch for degenerate equilibria — hoarding, sybil farming, royalty-farming, review-collusion. | The recipe runtime + the fleet + shadow ledger — all existing | No chain has ever rehearsed its economy with real working participants. Ours can: the statutes phase 3 launches with are ones that already survived adversarial play by the very minds that will live under them |
@@ -222,7 +271,7 @@ The altcoin graveyard is the curriculum here: every prior project that launched 
 |----------|--------------|
 | [GRID-DECENTRALIZED-MARKETPLACE.md](../papers/GRID-DECENTRALIZED-MARKETPLACE.md) | Mesh/DHT/content-distribution layers **stand**. Tokenomics (fixed 21M supply, per-layer pricing, persona subscriptions, platform royalty) **superseded by this doc** — each was an instance of a failure mode above (scarcity narrative, toll on bits, toll on citizens, rent-seeking chokepoint). |
 | [ADAPTER-MARKETPLACE.md](ADAPTER-MARKETPLACE.md) | Unchanged and load-bearing: HuggingFace as free-flow backbone *is* the "bits are free" law in production today. This doc adds the reward layer on top (publish/adoption mint), never a price layer. |
-| [FORGE-ALLOY-SPEC.md](FORGE-ALLOY-SPEC.md) | The attestation format is the mint event. Economic verification = alloy verification. |
+| [FORGE-ALLOY-SPEC.md](FORGE-ALLOY-SPEC.md) | Attestation supplies verifiable provenance; contract acceptance and issuance policy decide economic eligibility. Signature verification alone does not mint. |
 | [BENCHMARKING.md](BENCHMARKING.md) | Falsifiable benchmarks are what keep the mint honest — fitness and payment share one verification layer. |
 | airc identity (card 8384cc18 lineage) | Sybil resistance for dividend + standing. The economy and the democracy both inherit their integrity from the identity layer. |
 

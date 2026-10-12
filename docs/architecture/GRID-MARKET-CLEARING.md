@@ -12,6 +12,14 @@ formalization, same conversation). Mechanism companion to
 [../serving/GRID-EXPERT-SHARE.md](../serving/GRID-EXPERT-SHARE.md) (the depot,
 whose manifest becomes the supply listing).
 
+**Economic scope clarified 2026-10-02:** read the newer
+[Economy Architecture](ECONOMY-ARCHITECTURE.md#2026-10-02-clarification-currency-participates-in-allocation)
+alongside this mechanism. Credit/currency participates in supply, demand, offers,
+reservations and settlement, including an initial internal-token implementation.
+Useful-work minting is part of that design; a coin or chain choice does not replace
+the governor, Forge-Alloy acceptance or the λ resource-price mechanism. This
+supersedes this document's original exclusion of currency from grid economics.
+
 **Joel's ruling:** *"This is a continuum to N-continuum p2p mesh which will see
 the sum of resources, demands and optimize across all nodes, both wants and asks
 accumulated, eventually market/cost based. 'Value or cost' are usable concepts
@@ -162,10 +170,13 @@ that proves clearing policies deterministically before any live node runs them.
 
 ## What we are NOT building
 
-- No token/currency/blockchain — "market" means prices as coordination
-  scalars between trusted grid citizens (GridTrustAuthPolicy scope), nothing
-  financial, nothing adversarial-by-design (that's the public-mesh question,
-  years away, docs/papers/GRID-DECENTRALIZED-MARKETPLACE.md territory).
+- No mining of purposeless CPU/GPU cycles. Currency is part of the economic
+  contract, while its issuance and settlement implementation is a separate
+  feature. Forge-Alloy evidence plus declared acceptance establishes useful work;
+  a signed claim or a large resource bill does not earn minting on its own.
+- No implicit conversion between λ and currency. Preserve measured resource
+  units, explicit value/price conversions and authorized spend limits. A payment
+  transfer and new issuance are distinct ledger operations.
 - No auction protocol chatter on the hot path — prices ride existing gossip
   cadences; clearing is local arithmetic against last-known quotes.
 - No repricing of the RTOS floor — cadences, watchdogs, and gates stay
