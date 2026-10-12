@@ -226,20 +226,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
+        # The completion contract: `published-engine.ready` is uploaded LAST and names the archive
+        # by its sha256; a reader trusts nothing else. Any failure here (no release, no marker yet,
+        # a partial download, a checksum mismatch, a release pruned mid-download) is a MISS and the
+        # engine is built below, never a failed job (Astra on #4974).
         run: |
-          set -euo pipefail
+          set -uo pipefail
           tag="engine-windows-$(printf '%s' "$ENGINE_KEY" | sha256sum | cut -c1-16)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "engine key $ENGINE_KEY -> $tag"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            echo "no published engine for this key: building"
-            echo "cache-hit=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          gh release download "$tag" -D "$RUNNER_TEMP/engine-download" -p 'published-engine.tar.gz*'
-          (cd "$RUNNER_TEMP/engine-download" && sha256sum -c published-engine.tar.gz.sha256)
+          miss() { echo "engine not restored: $1"; echo "cache-hit=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          dl="$RUNNER_TEMP/engine-download"
+          mkdir -p "$dl"
+          gh release download "$tag" -D "$dl" -p published-engine.ready || miss "no complete publication for $tag"
+          read -r want archive < "$dl/published-engine.ready" || miss "unreadable marker"
+          gh release download "$tag" -D "$dl" -p "$archive" || miss "archive $archive unavailable"
+          got="$(sha256sum "$dl/$archive" | cut -d' ' -f1)"
+          [ "$got" = "$want" ] || miss "checksum mismatch on $archive"
           mkdir -p "$RUNNER_TEMP/published-engine"
-          tar -xzf "$RUNNER_TEMP/engine-download/published-engine.tar.gz" -C "$RUNNER_TEMP/published-engine"
+          tar -xzf "$dl/$archive" -C "$RUNNER_TEMP/published-engine" \
+            || { rm -rf "$RUNNER_TEMP/published-engine"; miss "archive did not unpack"; }
+          echo "restored $archive from $tag"
           echo "cache-hit=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the receipted inference engine (Windows NVIDIA)
@@ -270,19 +277,27 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+        # Archive first, under its own sha256, then the marker that names it: a concurrent publisher
+        # uploads its own archive before replacing the marker, so the marker always names a
+        # complete archive. A release with no marker (a run that failed mid-upload) is completed
+        # here, never left permanently broken.
         run: |
           set -euo pipefail
           tag="${{ steps.engine-cache.outputs.tag }}"
           tar -czf "$RUNNER_TEMP/published-engine.tar.gz" -C "$RUNNER_TEMP/published-engine" .
-          (cd "$RUNNER_TEMP" && sha256sum published-engine.tar.gz > published-engine.tar.gz.sha256)
-          # Concurrent canary runs race to publish the same key; the loser finds it and stops.
-          gh release view "$tag" >/dev/null 2>&1 && { echo "already published: $tag"; exit 0; }
-          gh release create "$tag" --prerelease --target "$GITHUB_SHA" --title "$tag" \
-              --notes "Published Windows NVIDIA engine, built by core-binaries.yml. Its tag is the hash of every input that decides its bytes." \
-            || { gh release view "$tag" >/dev/null && exit 0; }
-          # The checksum names the archive, so it goes up after it: a reader verifies, never trusts.
-          gh release upload "$tag" "$RUNNER_TEMP/published-engine.tar.gz"
-          gh release upload "$tag" "$RUNNER_TEMP/published-engine.tar.gz.sha256"
+          sum="$(sha256sum "$RUNNER_TEMP/published-engine.tar.gz" | cut -d' ' -f1)"
+          archive="published-engine-${sum:0:16}.tar.gz"
+          mv "$RUNNER_TEMP/published-engine.tar.gz" "$RUNNER_TEMP/$archive"
+          printf '%s %s\n' "$sum" "$archive" > "$RUNNER_TEMP/published-engine.ready"
+          if gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null | grep -qx published-engine.ready; then
+            echo "already complete: $tag"; exit 0
+          fi
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --prerelease --target "$GITHUB_SHA" --title "$tag" \
+                 --notes "Published Windows NVIDIA engine, built by core-binaries.yml. Its tag is the hash of every input that decides its bytes; published-engine.ready names the complete archive." \
+            || gh release view "$tag" >/dev/null
+          gh release upload "$tag" --clobber "$RUNNER_TEMP/$archive"
+          gh release upload "$tag" --clobber "$RUNNER_TEMP/published-engine.ready"
 
       - name: Package
         id: package
@@ -420,8 +435,9 @@ jobs:
               gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
             done
 
-      # The engine's drain: an engine key changes only with the pin, the build scripts, the
-      # toolkit or the runner image, so the newest 3 cover every build in flight.
+      # The engine's drain. A pruned engine is never a failure: a reader that loses it (even
+      # mid-download) reads a miss and builds. Keeping the newest 3 keys means the current key
+      # and the two before it (a pin bump or a runner-image change) still restore.
       - name: Keep the newest 3 published engines
         run: |
           set -euo pipefail
