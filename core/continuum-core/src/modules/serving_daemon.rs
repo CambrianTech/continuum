@@ -5264,6 +5264,11 @@ impl ServingDaemonModule {
                             "host-fit"
                         },
                         demand_measured = demand.measured,
+                        // WHAT chose the lane count, from the planner's own decision. `bound_by`
+                        // above says only whether the WINDOW came out below demand, whatever
+                        // budget did it ("host-fit" is not a host-RAM finding); this names the
+                        // term that decided `lanes` (card eb8d1839).
+                        lanes_bound = ?plan.lanes_bound,
                         "serving plan recomputed",
                     );
                     // Warm-slot oversubscription for the ADOPTED plan (#266) —
@@ -11296,6 +11301,7 @@ pub(crate) mod tests {
             resident_models: 1,
             fits_on_gpu: true,
             rationale: String::new(),
+            lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
         };
         // The 5090: 32 GB × 0.80 physical. The floor is the 27B — even though the
         // plan that asked was computed over a candidate list the unload had emptied
@@ -11366,6 +11372,7 @@ pub(crate) mod tests {
             resident_models: 1,
             fits_on_gpu: true,
             rationale: String::new(),
+            lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
         };
         let both = vec![devstral.clone(), tiny.clone()];
 
