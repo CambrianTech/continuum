@@ -3509,7 +3509,7 @@ mod tests {
         assert_eq!(f.get(&full), Some(41_500), "the legacy row is full depth");
         assert_eq!(f.get(&top8), None, "a reduced-depth lookup never falls back to the legacy row");
         f.record(&top8, 5_200, Uuid::nil()).unwrap();
-        let reloaded = Footprints { path };
+        let reloaded = Footprints::at(path);
         assert_eq!(reloaded.get(&top8), Some(5_200));
         assert_eq!(reloaded.get(&full), Some(41_500), "the reduced row never answers for full depth");
         // what the engine reported decides the recorded depth: an engine that says nothing
