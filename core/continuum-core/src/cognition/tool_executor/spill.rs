@@ -58,14 +58,39 @@ pub fn withdraw_live_handles(holder: u64) {
     live_handles().lock().remove(&holder);
 }
 
-/// Whether a spill file at `path` is referenced by a live mind. The eviction guard the
-/// spill directory's pool is built with: a file named `<handle>.log` whose handle any
-/// holder references is never deleted under pressure.
+/// Whether a spill file at `path` is referenced by a mind. The eviction guard the spill
+/// directory's pool is built with: a file `<persona>/<handle>.log` is never deleted under
+/// pressure while a live working memory references its handle, OR while that persona's
+/// persisted checkpoint does. The second closes the restart gap: across the restart a deploy
+/// performs, before her mind restores, her references are on disk (Astra on card 9197cd01).
+/// An unreadable checkpoint fails closed: nothing of that persona's is evicted.
 pub fn is_live(path: &Path) -> bool {
     let Some(handle) = path.file_stem().and_then(|s| s.to_str()) else {
         return false;
     };
-    live_handles().lock().values().any(|set| set.contains(handle))
+    if live_handles().lock().values().any(|set| set.contains(handle)) {
+        return true;
+    }
+    let Some(persona_id) = path
+        .parent()
+        .and_then(|dir| dir.file_name())
+        .and_then(|name| name.to_str())
+        .and_then(|name| Uuid::parse_str(name).ok())
+    else {
+        return false;
+    };
+    match crate::cognition::persona_workspace::persisted_result_handles(persona_id) {
+        Ok(handles) => handles.contains(handle),
+        Err(error) => {
+            crate::probe!(
+                class = "tool.output.evict_fail_closed",
+                persona_id = %persona_id,
+                error = %error,
+                "a persona's checkpoint could not be read; its saved results are not evicted"
+            );
+            true
+        }
+    }
 }
 
 /// A spilled tool result: the content-addressed handle (the filename stem the

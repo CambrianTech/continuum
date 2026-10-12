@@ -1975,10 +1975,63 @@ fn save_volatile(
 /// Load the previous life's volatile tier under the same owner lock as saves
 /// and adoption. Only an absent checkpoint permits a fresh resident; inability
 /// to read or decode an existing one must reach the registration caller.
+/// The spill handles a persona's PERSISTED working memory still points at: its checkpoint's
+/// results ring. Disk-pressure eviction protects these as well as the live minds' handles, so
+/// a saved result survives the restart a deploy performs, a mind that has not restored yet,
+/// and a persona that is offline (Astra on card 9197cd01). Cached per persona by the
+/// checkpoint's modification time, so an eviction pass over many files reads each checkpoint
+/// once and a new checkpoint is always seen. An unreadable checkpoint is an `Err`: the caller
+/// fails closed and evicts nothing of that persona's.
+pub(crate) fn persisted_result_handles(
+    persona_id: Uuid,
+) -> std::io::Result<std::sync::Arc<std::collections::HashSet<String>>> {
+    result_handles_at(&volatile_path(persona_id)?)
+}
+
+/// [`persisted_result_handles`] for the checkpoint at `path` (the filesystem seam).
+fn result_handles_at(
+    path: &std::path::Path,
+) -> std::io::Result<std::sync::Arc<std::collections::HashSet<String>>> {
+    type Cached = (std::time::SystemTime, std::sync::Arc<std::collections::HashSet<String>>);
+    static CACHE: std::sync::OnceLock<
+        parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, Cached>>,
+    > = std::sync::OnceLock::new();
+    let modified = match std::fs::metadata(path) {
+        Ok(meta) => meta.modified()?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Default::default());
+        }
+        Err(error) => return Err(error),
+    };
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some((at, handles)) = cache.lock().get(path) {
+        if *at == modified {
+            return Ok(std::sync::Arc::clone(handles));
+        }
+    }
+    let handles: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
+        load_volatile_at(path)?
+            .map(|persisted| {
+                persisted
+                    .wm
+                    .recent_results
+                    .into_iter()
+                    .filter_map(|(_, _, _, _, handle)| handle)
+                    .collect()
+            })
+            .unwrap_or_default(),
+    );
+    cache.lock().insert(path.to_path_buf(), (modified, std::sync::Arc::clone(&handles)));
+    Ok(handles)
+}
+
 fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<PersistedVolatile>> {
-    let path = volatile_path(persona_id)?;
-    let _lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
-    let bytes = match std::fs::read(&path) {
+    load_volatile_at(&volatile_path(persona_id)?)
+}
+
+fn load_volatile_at(path: &std::path::Path) -> std::io::Result<Option<PersistedVolatile>> {
+    let _lock = checkpoint_adoption::lock_checkpoint(path, true)?;
+    let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
@@ -2115,6 +2168,46 @@ mod tests {
         save_volatile(persona, SaveReason::Seam, None, &again).unwrap();
         let settled = load_volatile(persona).unwrap().expect("checkpoint written");
         assert_eq!(settled.wm.acting_card, None, "answered beliefs are not resurrected");
+    }
+
+    // what this catches: the restart gap (Astra on card 9197cd01). Across the restart a deploy
+    // performs, before a mind restores, its references exist only in its persisted checkpoint;
+    // the spill guard must read them from there. A newer checkpoint is seen (the cache keys on
+    // its modification time), and an unreadable one is an error the guard fails closed on.
+    #[test]
+    fn a_persisted_checkpoint_s_result_handles_are_readable_before_restore() {
+        let dir = std::env::temp_dir().join(format!("volatile-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("volatile.json");
+        let write = |handle: &str, age_secs: u64| {
+            let memory = WorkingMemory::new(8);
+            memory.record_receipt_typed(
+                &[],
+                "a saved result",
+                None,
+                crate::ai::types::ResultCustody::Whole { handle: handle.into() },
+            );
+            let persisted = PersistedVolatile {
+                wm: memory.snapshot(),
+                own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),
+            };
+            std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs))
+                .unwrap();
+        };
+        write("0123456789abcdef", 100);
+        assert!(result_handles_at(&path).unwrap().contains("0123456789abcdef"));
+        write("fedcba9876543210", 10);
+        let handles = result_handles_at(&path).unwrap();
+        assert!(handles.contains("fedcba9876543210") && !handles.contains("0123456789abcdef"));
+        std::fs::write(&path, b"not a checkpoint").unwrap();
+        assert!(result_handles_at(&path).is_err(), "unreadable: the guard fails closed");
+        assert!(result_handles_at(&dir.join("absent.json")).unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     // Uses the real persisted schema and WorkingMemory writer, not a second
