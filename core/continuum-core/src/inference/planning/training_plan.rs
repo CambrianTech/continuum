@@ -409,7 +409,8 @@ pub(crate) struct Partition {
     pub window: u32,
     /// request indices sent to the engine, in order: the run's own example indices index this
     pub sent: Vec<usize>,
-    /// request indices parked, ascending: skipped by the measure, or by the run itself
+    /// request indices parked, ascending: not whole at the window by the measure (cut or not
+    /// held), or skipped by the run itself
     pub parked: Vec<usize>,
     /// every example's measurement, by request index
     pub rows: Vec<MeasuredExample>,
@@ -436,28 +437,15 @@ pub(crate) enum ExampleFit {
     Skipped,
 }
 
-/// PURE: the partition a measurement at `window` implies. Kept and truncated examples are
-/// sent, in request order; skipped ones are parked.
+/// PURE: the partition a measurement at `window` implies. Only an example that trains WHOLE at
+/// the window (`Kept`) is sent, in request order. One the window would cut (`Truncated`: her
+/// history dropped to fit) or cannot hold at all (`Skipped`) is parked until a window that holds
+/// it whole: she learns from whole experiences only, on every path (Codex on #4988; Joel: no
+/// clipping).
 pub(crate) fn partition_of(window: u32, rows: Vec<MeasuredExample>) -> Partition {
-    let sent = rows.iter().filter(|r| r.fit != ExampleFit::Skipped).map(|r| r.index).collect();
-    let parked = rows.iter().filter(|r| r.fit == ExampleFit::Skipped).map(|r| r.index).collect();
+    let sent = rows.iter().filter(|r| r.fit == ExampleFit::Kept).map(|r| r.index).collect();
+    let parked = rows.iter().filter(|r| r.fit != ExampleFit::Kept).map(|r| r.index).collect();
     Partition { window, sent, parked, rows }
-}
-
-/// PURE: `partition` with every example that does not train WHOLE at its window parked: one the
-/// measure would cut (`Truncated`, her history dropped) is not sent. For a window raised to the
-/// shortest whole example because memory allows no more (card de9e1342; Codex on #4988): the
-/// longer examples wait for a larger window, never train cut.
-pub(crate) fn whole_only(mut partition: Partition) -> Partition {
-    let cut: Vec<usize> = partition.rows.iter().filter(|r| r.fit != ExampleFit::Kept).map(|r| r.index).collect();
-    partition.sent.retain(|i| !cut.contains(i));
-    for i in cut {
-        if !partition.parked.contains(&i) {
-            partition.parked.push(i);
-        }
-    }
-    partition.parked.sort_unstable();
-    partition
 }
 
 /// PURE: `partition` amended with the examples the RUN skipped (its own indices, into `sent`):
@@ -478,17 +466,6 @@ pub(crate) fn with_run_skipped(mut partition: Partition, run_skipped: &[usize]) 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // what this catches (Codex on #4988): a window raised to the shortest WHOLE example sending
-    // the longer ones cut through the middle fit. Only Kept examples are sent; Truncated and
-    // Skipped are parked, in order.
-    #[test]
-    fn a_whole_only_partition_parks_every_example_it_would_cut() {
-        let row = |index, fit| MeasuredExample { index, tokens_full: 0, tokens_min: 0, tokens_trained: 0, fit };
-        let p = partition_of(3_072, vec![row(0, ExampleFit::Kept), row(1, ExampleFit::Truncated), row(2, ExampleFit::Skipped), row(3, ExampleFit::Kept)]);
-        let whole = whole_only(p);
-        assert_eq!((whole.sent, whole.parked), (vec![0, 3], vec![1, 2]));
-    }
 
     // what this catches: a serving reserve or a chunk plan read off the fit alone, under a
     // refusal the engine already measured (card 030d70f0), or a lower bound reported as if a

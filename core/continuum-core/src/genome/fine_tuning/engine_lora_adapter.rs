@@ -33,7 +33,7 @@ use super::{
 use crate::inference::planning::training_plan::{
     calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle,
     train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample,
-    need, whole_only, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
+    need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
 };
 
 /// What the trainer is governed to have free for `consumer`: the governor's VRAM budget net of
@@ -1875,7 +1875,6 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .filter(|&useful| useful <= served_sent);
         // Checked whatever the plan chose (Codex on #4988): a measured no-fit at a window equal to
         // `useful`, the floor included, would otherwise dispatch again.
-        let planned = window;
         let window = match useful {
             Some(useful) => {
                 let at_useful = Shape { window: useful, chunk: TRAINING_CHUNK_MIN, ..family.clone() };
@@ -1957,14 +1956,12 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let unrunnable = match at_window {
             Err(e) => Some(format!("{e}: the examples were not measured at window {window}, so none is sent (an engine before fork #51 has no /train/measure; its next relaunch brings it)")),
             Ok(rows) => {
-                // a window raised to the shortest WHOLE example sends only what trains whole there
-                let raised = useful.is_some_and(|useful| planned < useful && window == useful);
-                let partition = if raised { whole_only(partition_of(window, rows)) } else { partition_of(window, rows) };
+                let partition = partition_of(window, rows);
                 let shortest_parked = partition
                     .rows
                     .iter()
-                    .filter(|r| r.fit == ExampleFit::Skipped)
-                    .map(|r| r.tokens_min)
+                    .filter(|r| r.fit != ExampleFit::Kept)
+                    .map(|r| r.tokens_full)
                     .min()
                     .unwrap_or(0); // probe field: 0 = nothing parked
                 crate::probe!(
@@ -1983,7 +1980,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 match written {
                     Err(e) => Some(format!("the partition could not be recorded ({e}): no run, so no example is counted as trained that was not")),
                     Ok(()) if sent.is_empty() => Some(format!(
-                        "none of the {} examples fits window {window}: her system and tool head plus her last exchange need at least {shortest_parked} tokens; all are parked in {}",
+                        "none of the {} examples trains whole at window {window}: the shortest needs {shortest_parked} tokens whole; all are parked in {}",
                         request.dataset.examples.len(),
                         job_dir.join(PARTITION_FILE).display()
                     )),
@@ -2488,11 +2485,11 @@ mod tests {
             16_896,
             vec![row(0, ExampleFit::Kept), row(1, ExampleFit::Skipped), row(2, ExampleFit::Truncated), row(3, ExampleFit::Skipped), row(4, ExampleFit::Kept)],
         );
-        assert_eq!(p.sent, vec![0, 2, 4], "kept and truncated are sent, in request order");
-        assert_eq!(p.parked, vec![1, 3], "skipped ones are parked");
+        assert_eq!(p.sent, vec![0, 4], "only examples that train whole are sent, in request order");
+        assert_eq!(p.parked, vec![1, 2, 3], "a cut example is parked with the skipped ones, never sent cut");
         let amended = with_run_skipped(p.clone(), &[1, 9]);
-        assert_eq!(amended.parked, vec![1, 2, 3], "the run's index 1 is request index 2; an index past what was sent is ignored");
-        assert_eq!(with_run_skipped(amended.clone(), &[1]).parked, vec![1, 2, 3], "parking twice is once");
+        assert_eq!(amended.parked, vec![1, 2, 3, 4], "the run's index 1 is request index 4; an index past what was sent is ignored");
+        assert_eq!(with_run_skipped(amended.clone(), &[1]).parked, vec![1, 2, 3, 4], "parking twice is once");
         let dir = tempfile::tempdir().expect("test: dir");
         assert_eq!(read_partition(dir.path()), None, "a job from before the record has none");
         write_partition(dir.path(), &amended).expect("test: written");
@@ -2876,14 +2873,15 @@ mod tests {
 
     // what this catches (Cormac and Astra on #4920; the 5090 2026-10-10, job 00431d4d): the WHOLE
     // planner, not its parts. With two windows of the family measured and a lane serving more
-    // than the graph can hold, the dispatch POSTS a calculated window under served AND a chunk
+    // than the graph can hold, the dispatch POSTS a calculated window under served (her examples
+    // need far less than served, and only whole examples are sent: Codex on #4988) AND a chunk
     // whose modelled graph fits the same grant (a window sized for the floor chunk sent at the
     // default 512 refuses by construction).
     #[tokio::test]
     async fn a_dispatch_the_served_window_cannot_hold_posts_a_window_and_chunk_that_fit() {
         let train = tempfile::tempdir().expect("test: dir");
         let jobs = tempfile::tempdir().expect("test: dir");
-        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "short_turns").await;
         let footprints = jobs.path().join("footprints.json");
         let mib = 1024u64 * 1024;
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
@@ -2891,7 +2889,9 @@ mod tests {
         store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
         store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
-        let free = 1000 * mib; // tight enough that even chunk 64 cannot hold the served window (fork #52)
+        // her examples are 3,000 tokens whole: the window they need (3,072) is far under served, and
+        // the grant holds it at the floor chunk but not at the served window
+        let free = model.bytes(3_072, TRAINING_CHUNK_MIN);
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), free);
         t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 68_608, engine: None, build: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
@@ -2939,39 +2939,47 @@ mod tests {
         server.abort();
     }
 
-    // what this catches (Codex on #4988): a window raised to the shortest WHOLE example (memory
-    // is predicted, not measured, too small for more) sending the longer examples cut through the
-    // middle fit. Here p1 is 6,000 tokens whole; at the raised 3,072 window it would train with
-    // its history dropped, so it is parked and only p0 and p2 are posted.
+    // what this catches (Codex on #4988): an example sent CUT through the middle fit. p1 is 6,000
+    // tokens whole, the others 3,000. Whatever window memory allows between them (raised to the
+    // shortest whole example, equal to it, or between it and the longest), p1 would train with its
+    // history dropped, so it is parked and only p0 and p2 are posted, whole.
     #[tokio::test]
-    async fn a_window_raised_to_the_shortest_whole_example_sends_only_whole_examples() {
-        let train = tempfile::tempdir().expect("test: dir");
-        let jobs = tempfile::tempdir().expect("test: dir");
-        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "mixed_turns").await;
-        let footprints = jobs.path().join("footprints.json");
+    async fn only_whole_examples_are_sent_at_every_window_memory_allows() {
         let mib = 1024u64 * 1024;
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
-        let store = Footprints::at(footprints.clone());
-        store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
-        store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
-        let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
-        let free = model.bytes(3_072, TRAINING_CHUNK_MIN) - 1; // predicted, never measured, just short of 3,072
-        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, free);
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
-        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
-        r.local_artifact_dir = Some(jobs.path().to_path_buf());
-        r.dataset.examples = (0..3)
-            .map(|i| TrainingExample { prompt: format!("p{i}"), completion: "c".into(), metadata: None, lived: None })
-            .collect();
-        let h = t.create_job(r).await.expect("test: a prediction calibrates, never parks");
-        let _ = wait_terminal(&t, &h).await;
-        let posted = seen.lock().unwrap().clone().expect("test: posted");
-        assert_eq!(posted["window"].as_u64(), Some(3_072), "raised to the shortest whole example");
-        let got: Vec<&str> = posted["examples"].as_array().expect("test: examples").iter().map(|e| e["prompt"].as_str().unwrap_or("")).collect();
-        assert_eq!(got, vec!["p0", "p2"], "the 6,000-token example is parked, never sent cut");
-        let partition = read_partition(&jobs.path().join(h.local_id.to_string())).expect("test: partition");
-        assert_eq!(partition.parked, vec![1]);
-        server.abort();
+        let probe_dir = tempfile::tempdir().expect("test: dir");
+        let probe = Footprints::at(probe_dir.path().join("fp.json"));
+        probe.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
+        probe.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        let model = GraphModel::fit(&probe.rows_like(&fam)).expect("test: two windows");
+        for (case, free) in [
+            ("raised", model.bytes(3_072, TRAINING_CHUNK_MIN) - 1),
+            ("equal", model.bytes(3_072, TRAINING_CHUNK_MIN)),
+            ("between", model.bytes(4_608, TRAINING_CHUNK_MIN)),
+        ] {
+            let train = tempfile::tempdir().expect("test: dir");
+            let jobs = tempfile::tempdir().expect("test: dir");
+            let (url, server, seen) = fake_lane(train.path().to_path_buf(), "mixed_turns").await;
+            let footprints = jobs.path().join("footprints.json");
+            std::fs::copy(probe_dir.path().join("fp.json"), &footprints).expect("test: rows");
+            let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, free);
+            t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            r.dataset.examples = (0..3)
+                .map(|i| TrainingExample { prompt: format!("p{i}"), completion: "c".into(), metadata: None, lived: None })
+                .collect();
+            let h = t.create_job(r).await.expect("test: a prediction calibrates, never parks");
+            let _ = wait_terminal(&t, &h).await;
+            let posted = seen.lock().unwrap().clone().expect("test: posted");
+            let window = posted["window"].as_u64().expect("test: window");
+            assert!((3_072..6_144).contains(&window), "{case}: a window between the shortest and the longest whole example: {window}");
+            let got: Vec<&str> = posted["examples"].as_array().expect("test: examples").iter().map(|e| e["prompt"].as_str().unwrap_or("")).collect();
+            assert_eq!(got, vec!["p0", "p2"], "{case}: the 6,000-token example is parked, never sent cut");
+            let partition = read_partition(&jobs.path().join(h.local_id.to_string())).expect("test: partition");
+            assert_eq!(partition.parked, vec![1], "{case}");
+            server.abort();
+        }
     }
 
     // Codex's three cases on #4988, through the same create_job: (1) the useful window EQUAL to
