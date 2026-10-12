@@ -31,7 +31,7 @@ use super::{
     ReattachOutcome, TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus,
 };
 use super::engine_plan::{
-    calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle,
+    calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, nothing_fits, partition_of, refit_middle,
     train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample,
     Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
 };
@@ -1753,6 +1753,19 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             model = GraphModel::fit(&rows);
         }
         let window = choose_window(need, governed_free, &rows);
+        // NO WINDOW FITS is a finding, not a plan (card 030d70f0): say so, so the stop that follows
+        // (every example parked at the floor) reads as the measurement it is
+        if let Some(at_floor) = nothing_fits(governed_free, &rows) {
+            crate::probe!(
+                class = "training.job.no_window_fits",
+                job = %id,
+                needed = u64::from(need),
+                governed_free = governed_free,
+                predicted_at_floor = at_floor,
+                floor_window = u64::from(window),
+                "the fitted graph exceeds governed free even at the floor window and chunk: no window trains her examples beside serving now, so they park"
+            );
+        }
         if window != body.window {
             crate::probe!(
                 class = "training.job.window_calculated",
