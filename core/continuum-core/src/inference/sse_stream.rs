@@ -363,6 +363,8 @@ pub(crate) async fn consume_sse_stream(
     // actually targeting the published serving lane.
 
     let mut sse_buf: Vec<u8> = Vec::new();
+    // The raw payloads, kept only when a capture armed this request (card fb6d7912).
+    let mut wire = crate::inference::wire_tap::WireTap::open(request.request_id.as_deref());
     let mut acc_content = String::new();
     let mut acc_reasoning = String::new();
     let mut acc_tools: Vec<StreamToolAccum> = Vec::new();
@@ -663,6 +665,7 @@ pub(crate) async fn consume_sse_stream(
                     continue;
                 };
                 let data = data.trim();
+                wire.push(data);
                 if data.is_empty() || data == "[DONE]" {
                     continue;
                 }
