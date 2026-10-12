@@ -310,6 +310,7 @@ mod tests {
             context_window: 262_144,
             capability_rank: 9,
             fixed_per_lane_bytes: 0,
+            learning: None,
         }
     }
 
@@ -321,6 +322,7 @@ mod tests {
             context_window: 131_072,
             capability_rank: 4,
             fixed_per_lane_bytes: 0,
+            learning: None,
         }
     }
 

@@ -7360,6 +7360,7 @@ pub(crate) mod tests {
             context_window: 131_072,
             capability_rank: 18,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let small = ModelFootprint {
             model_id: "continuum-ai/qwen2.5-coder-14b-instruct-GGUF".into(),
@@ -7368,6 +7369,7 @@ pub(crate) mod tests {
             context_window: 32_768,
             capability_rank: 11,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let physical = HostBudget { usable_bytes: 44 * GB, perf_cores: 12 };
         let demand = ServingDemand::new(2, Some(30_000));
@@ -7539,6 +7541,7 @@ pub(crate) mod tests {
             context_window: 262_144,
             capability_rank: 1,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let physical = 64u64 << 30;
         let decision = prompt_cache_decision(Some(&fp), &states, 23, 67_072, 2, physical, fp.peak_resident_bytes(67_072, 2), 40u64 << 30);
@@ -7652,6 +7655,7 @@ pub(crate) mod tests {
             context_window: 65536,
             capability_rank: 1,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, 0);
         assert_eq!(missing.reason, "prior_missing_footprint");
@@ -7773,6 +7777,7 @@ pub(crate) mod tests {
             context_window: 262_144,
             capability_rank: 1,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let physical = 63u64 << 30;
         let (ctx, lanes) = (144_530u32, 1u32);
@@ -7888,6 +7893,7 @@ pub(crate) mod tests {
             context_window: 67_340,
             capability_rank: 1,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let physical = 64u64 << 30;
         let demands = [67_340u32; 16]; // sixteen seeds on disk: the want is far past any box
@@ -7918,6 +7924,7 @@ pub(crate) mod tests {
             context_window: 262_144,
             capability_rank: 1,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let physical = 63u64 << 30;
         let demands = [115_000u32, 115_000]; // ~58 GB wanted
@@ -8352,6 +8359,7 @@ pub(crate) mod tests {
             context_window: 32768,
             capability_rank: rank,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let candidate = footprint("devstral-24b", 14, 8);
         let incumbent = footprint("qwen-32b", 20, 10);
@@ -8407,7 +8415,7 @@ pub(crate) mod tests {
         assert_eq!(plan_fill(small, comfort, true), (small as f64 * comfort) as u64, "a small box: the band would leave less than Eco does; the mode alone");
         // The M5's own fit at that ceiling: two 67k lanes of the 27B, never three.
         let m5 = ModelFootprint {
-            model_id: "qwen-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+            model_id: "qwen-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0, learning: None,
         };
         let floor = 64_052; // typical prompt 51,242 × 1.25
         assert!(m5.window_within(fill, 2) >= floor, "two lanes clear the floor: {}", m5.window_within(fill, 2));
@@ -11290,6 +11298,7 @@ pub(crate) mod tests {
             context_window: 32768,
             capability_rank: rank,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let big = footprint("qwen3.8-27b", 17, 9);
         let tiny = footprint("qwen-0.5b", 1, 1);
@@ -11363,6 +11372,7 @@ pub(crate) mod tests {
             context_window: 32768,
             capability_rank: rank,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let devstral = footprint("devstral-24b", 14, 8);
         let tiny = footprint("qwen-0.5b", 1, 1);

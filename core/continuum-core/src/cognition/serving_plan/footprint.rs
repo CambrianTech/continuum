@@ -68,6 +68,8 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     // The excess is a real fixed term — named on the probe below so a fixed-residency
     // model can learn it — never a per-token one.
     let mut fp = fp;
+    // What one dream step measured on this host: a base is chosen only if she can dream on it here.
+    fp.learning = crate::genome::fine_tuning::engine_lora_adapter::measured_learning(&fp.model_id);
     let measured = crate::inference::lane_footprint::measured_record(&fp.model_id);
     fp.kv_per_token = kv_rate_for_plan(
         header_rate.is_some(),
@@ -254,6 +256,7 @@ pub(crate) fn footprint_from_parts(
         context_window: context_window.max(MIN_SERVE_CTX),
         capability_rank,
         fixed_per_lane_bytes: 0,
+        learning: None,
     })
 }
 
@@ -276,7 +279,7 @@ mod tests {
         let header_rate = 32_768u64;
         let (lanes, window) = (1u32, 56_832u32);
         let mut fp = ModelFootprint {
-            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0, learning: None,
         };
         let true_fixed = 3_950_000_000u64; // what the engine really holds per lane beyond KV and the base buffer
         let anon = (fp.base_compute_buffer_per_lane() + true_fixed + header_rate * u64::from(window)) * u64::from(lanes);
@@ -315,7 +318,7 @@ mod tests {
         assert!((1_500_000_000..1_620_000_000).contains(&fixed), "{fixed} B per lane");
         assert_eq!(fixed_per_lane_from(65_536, &record), 0, "a sample under the rate carries nothing");
         let base = ModelFootprint {
-            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
+            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0, learning: None,
         };
         let carried = ModelFootprint { fixed_per_lane_bytes: fixed, ..base.clone() };
         let raised = ModelFootprint { kv_per_token: 44_740, ..base.clone() };

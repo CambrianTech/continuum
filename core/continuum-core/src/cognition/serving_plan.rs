@@ -456,12 +456,40 @@ pub struct ModelFootprint {
     #[serde(skip)]
     #[ts(skip)]
     pub fixed_per_lane_bytes: u64,
+    /// One dream step on this host, MEASURED: `None` until the engine measured a training run
+    /// of this model here (its preflight files the row even when it refuses). A dream runs in
+    /// her idle gaps, never beside a turn (Joel, 2026-10-12, in a user's shoes: "the best coder
+    /// at a full window while she talks, better over time without noticing"), and where it runs
+    /// is the trainer state walk: here, a GPU on the grid, the CPU here
+    /// (`genome::fine_tuning::coordinator`). So it is a PEAK the base must reach on this host,
+    /// never a reservation carved out of her lanes. Runtime-learned, never on the wire.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub learning: Option<LearningCost>,
+}
+
+/// One dream step on a model, measured by the engine on this host (graph and training context
+/// together, `engine-footprints.json`): `fixed_bytes + per_pos_bytes × window` at the smallest
+/// chunk measured. Linear in the window: the step's context holds the prefix its chunks attend to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LearningCost {
+    pub fixed_bytes: u64,
+    pub per_pos_bytes: u64,
 }
 
 impl ModelFootprint {
     /// KV-cache bytes for ONE lane at `ctx` tokens.
     pub fn kv_at(&self, ctx: u32) -> u64 {
         self.kv_per_token.saturating_mul(ctx as u64)
+    }
+
+    /// What one dream step holds beside the weights at window `ctx`: the measured step, never
+    /// less than a lane's KV at that window (the step's own context). Unmeasured, exactly a lane.
+    pub fn dream_at(&self, ctx: u32) -> u64 {
+        let kv = self.kv_at(ctx);
+        self.learning.map_or(kv, |l| {
+            l.fixed_bytes.saturating_add(l.per_pos_bytes.saturating_mul(ctx as u64)).max(kv)
+        }) // map_or: unmeasured = the step's context alone, no graph claimed
     }
 
     /// The transient Metal **prefill compute buffer** ONE lane allocates while it is
@@ -783,8 +811,11 @@ pub fn plan_serving(
     // moving measured p95 — coupling model CHOICE to a jittering demand signal is
     // the 718-replan flap that wedged three benchmark runs (see the lane floor's
     // own note). The served window still refines with measurement below.
+    // A turn and a dream take turns with the memory past the weights, so the base must reach
+    // the LARGER of the two here, never their sum (card 3b8fb153): she serves at full strength
+    // and still learns on this machine alone, on every tier.
     let fits_one_lane_at = |m: &ModelFootprint, ctx: u32| {
-        m.weights_bytes.saturating_add(m.kv_at(ctx)) <= host.usable_bytes
+        m.weights_bytes.saturating_add(m.kv_at(ctx).max(m.dream_at(ctx))) <= host.usable_bytes
     };
 
     // How many of the DEMANDED lanes this candidate can serve at a one-turn
@@ -1321,6 +1352,7 @@ mod tests {
             context_window: 262_144,
             capability_rank: 9,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let host = HostBudget { usable_bytes: 30 * GB, perf_cores: 8 };
         let two = vec![
@@ -1429,7 +1461,39 @@ mod tests {
             context_window: ctx,
             capability_rank: rank,
             fixed_per_lane_bytes: 0,
+            learning: None,
         }
+    }
+
+    // what this catches (card 3b8fb153): a dream is a PEAK the base must reach here, never a
+    // reservation carved from her lanes. A base whose measured dream step cannot fit this host
+    // is never chosen, on every tier; a base whose step fits serves exactly the lanes and window
+    // it would with no learning at all (the old sum cut the M5's 27B from 2 lanes to 1).
+    #[test]
+    fn a_base_must_reach_its_dream_here_but_never_pays_for_it_while_she_talks() {
+        let dreaming = |m: ModelFootprint, fixed_gb: u64| ModelFootprint {
+            learning: Some(LearningCost { fixed_bytes: fixed_gb * GB, per_pos_bytes: m.kv_per_token }),
+            ..m
+        };
+        let big = fp("big-27b", 19, 32_768, 262_144, 9);
+        let mid = fp("mid-14b", 9, 32_768, 131_072, 5);
+        let small = fp("small-4b", 3, 16_384, 131_072, 2);
+        let one = ServingDemand::new(1, None);
+        let pick = |usable_gb: u64, c: &[ModelFootprint]| {
+            plan_serving(&HostBudget { usable_bytes: usable_gb * GB, perf_cores: 8 }, c, &one).expect("plan")
+        };
+        let too_big_a_dream = [dreaming(big.clone(), 4), dreaming(mid.clone(), 2), dreaming(small.clone(), 1)];
+        assert_eq!(pick(22, &too_big_a_dream).base_model.model_id, "mid-14b", "the 27B's dream overruns 22 GB");
+        assert_eq!(pick(40, &too_big_a_dream).base_model.model_id, "big-27b", "a roomier tier dreams on the 27B");
+        assert_eq!(pick(8, &too_big_a_dream).base_model.model_id, "small-4b", "a small tier still gets a base it learns on");
+        let fits = pick(22, &[dreaming(big.clone(), 1)]);
+        let unmeasured = pick(22, std::slice::from_ref(&big));
+        assert_eq!(fits.base_model.model_id, "big-27b");
+        assert_eq!(
+            (fits.lanes, fits.served_context_window),
+            (unmeasured.lanes, unmeasured.served_context_window),
+            "a dream that fits costs her turns nothing"
+        );
     }
 
     // what this catches: the lane-axis twin of the window-collapse selection bug
@@ -2784,6 +2848,7 @@ mod tests {
             context_window: 262_144,
             capability_rank: 9,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let at_rest = HostBudget {
             usable_bytes: 32 * GB, // the ledger's replace-myself budget, capped at the card
@@ -2818,6 +2883,7 @@ mod tests {
             context_window: 262_144,
             capability_rank: 9,
             fixed_per_lane_bytes: 0,
+            learning: None,
         };
         let physical = HostBudget {
             usable_bytes: (33.6 * GB as f64 * 0.80) as u64,
@@ -2902,6 +2968,7 @@ mod tests {
             context_window: 262_144,
             capability_rank: 42,
             fixed_per_lane_bytes: 922_859_520,
+            learning: None,
         };
         let models = std::slice::from_ref(&model);
         // A typical prompt of ~60k: two lanes on a tight host cannot each clear that floor.

@@ -216,6 +216,14 @@ impl GraphModel {
         Some(Self { per_pos: 0.0, per_token, per_token_per_pos })
     }
 
+    /// The fit at one chunk as a line in the window: `(fixed, per_pos)` with
+    /// `bytes(window, chunk) == fixed + per_pos × window`, for a caller that sizes a window
+    /// against it (the serving planner's dream peak).
+    pub(crate) fn line_at(&self, chunk: u32) -> (u64, u64) {
+        let c = f64::from(chunk);
+        ((c * self.per_token).ceil() as u64, (self.per_pos + c * self.per_token_per_pos).ceil() as u64)
+    }
+
     pub(crate) fn bytes(&self, window: u32, chunk: u32) -> u64 {
         (self.per_pos * f64::from(window) + f64::from(chunk) * (self.per_token + self.per_token_per_pos * f64::from(window))) as u64
     }

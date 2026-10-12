@@ -216,6 +216,7 @@ mod tests {
                 context_window: 8192,
                 capability_rank: 0,
                 fixed_per_lane_bytes: 0,
+                learning: None,
             },
             served_context_window: 8192,
             lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,

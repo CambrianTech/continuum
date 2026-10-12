@@ -242,6 +242,7 @@ mod tests {
             context_window: 32_768,
             capability_rank: 5,
             fixed_per_lane_bytes: 0,
+            learning: None,
         }
     }
 

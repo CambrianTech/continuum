@@ -558,8 +558,84 @@ impl Footprints {
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
         // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
-        crate::utils::file_replace::replace_file(&tmp, &self.path)
+        crate::utils::file_replace::replace_file(&tmp, &self.path)?;
+        if self.path == engine_footprints_path() {
+            if let Ok(mut cached) = HOST_FOOTPRINTS.lock() {
+                *cached = None; // the planner's next read sees the new measurement
+            }
+        }
+        Ok(())
     }
+}
+
+/// Where this host files its measured training footprints: THE one name for the file the tuner
+/// writes and the serving planner reads. Without a home the relative path re-measures (a
+/// calibration run), never a guessed footprint.
+pub(crate) fn engine_footprints_path() -> PathBuf {
+    dirs::home_dir().unwrap_or_default().join(".continuum/genome/engine-footprints.json") // unwrap_or_default: see the doc: no home = re-measure
+}
+
+/// The host's footprint rows as last read, for [`measured_learning`]: the serving planner asks on
+/// the governor's tick, and the only writer is this process's [`Footprints::record_with`], which
+/// drops the cache when it writes the host's file. A process that never trained reads the file
+/// once.
+static HOST_FOOTPRINTS: Mutex<Option<Arc<BTreeMap<String, FootprintRow>>>> = Mutex::new(None);
+
+/// One dream step on `model` as measured on this host, for the serving planner's dream peak
+/// ([`crate::cognition::serving_plan::ModelFootprint::learning`]): whole-run rows (graph and
+/// training context), PLAIN walk (the walk a run falls back to when the exact one does not fit,
+/// so the least learning costs), at the smallest chunk measured. Over every adapter shape filed
+/// for the model the largest is kept, so the plan never assumes less than a run of hers measured.
+/// A shape measured at one window only scales with the window from that one point. `None` when
+/// nothing of this model was measured here.
+pub(crate) fn measured_learning(model: &str) -> Option<crate::cognition::serving_plan::LearningCost> {
+    let rows = {
+        let Ok(mut cached) = HOST_FOOTPRINTS.lock() else {
+            return None; // a poisoned cache measures nothing: the plan keeps the KV floor
+        };
+        cached
+            .get_or_insert_with(|| Arc::new(Footprints { path: engine_footprints_path() }.read_all()))
+            .clone()
+    };
+    let mut families: BTreeMap<String, Vec<(u32, u32, u64)>> = BTreeMap::new();
+    for (key, row) in rows.iter().filter(|(_, r)| r.includes_context) {
+        let mut segs = key.split('|');
+        if segs.next() != Some(model) {
+            continue;
+        }
+        let (mut window, mut chunk, mut family) = (None, None, Vec::new());
+        for seg in segs {
+            let num = |p: char| seg.strip_prefix(p).filter(|v| !v.is_empty() && v.chars().all(|c| c.is_ascii_digit())).and_then(|v| v.parse::<u32>().ok());
+            if let Some(w) = num('w') {
+                window = Some(w);
+            } else if let Some(c) = num('c') {
+                chunk = Some(c);
+            } else {
+                family.push(seg);
+            }
+        }
+        if family.contains(&"exact") {
+            continue;
+        }
+        let Some(window) = window else { continue };
+        let chunk = chunk.unwrap_or_else(|| train_chunk_for(window, TRAINING_CHUNK));
+        families.entry(family.join("|")).or_default().push((window, chunk, row.bytes));
+    }
+    let widest = families.values().flatten().map(|r| r.0).max()?;
+    families
+        .values()
+        .filter_map(|rows| {
+            let chunk = rows.iter().map(|r| r.1).min()?;
+            let (fixed_bytes, per_pos_bytes) = match GraphModel::fit(rows) {
+                Some(model) => model.line_at(chunk),
+                None => {
+                    let &(w, _, bytes) = rows.iter().filter(|r| r.1 == chunk).max_by_key(|r| r.2)?;
+                    (0, bytes.div_ceil(u64::from(w.max(1))))
+                }
+            };
+            Some(crate::cognition::serving_plan::LearningCost { fixed_bytes, per_pos_bytes })
+        })
+        .max_by_key(|l| l.fixed_bytes.saturating_add(l.per_pos_bytes.saturating_mul(u64::from(widest))))
 }
 
 /// How much slower her decoding may run while training runs on her lane, parts per million.
@@ -868,9 +944,7 @@ impl Default for EngineLoraFineTuner {
 
 impl EngineLoraFineTuner {
     pub fn new() -> Self {
-        let footprints = dirs::home_dir()
-            .unwrap_or_default() // Without a home the relative path re-measures (a calibration run) — never a guessed footprint.
-            .join(".continuum/genome/engine-footprints.json");
+        let footprints = engine_footprints_path();
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
