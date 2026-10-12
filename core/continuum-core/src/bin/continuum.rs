@@ -1394,23 +1394,18 @@ struct CoreServiceTask {
     installed: Option<continuum_cli_lifecycle::installed_release::Envelope>,
 }
 
-/// The staged core's path as the installer's receipt names it, resolved the SAME way
-/// [`CoreServiceTask::validate`] resolves the descriptor's artifact. The receipt holds an
-/// ordinary `C:\...` path while a resolved one carries Windows' verbatim `\\?\` prefix, so
-/// comparing the receipt raw refused every unattended deploy on the 5090 (ce84f63ac,
-/// 2026-10-12 19:31Z; Codex traced it to the raw receipt).
+/// A path the ContinuumCore descriptor or the installer's receipt names, absolute and resolved,
+/// or why not. THE one resolver for both sides of [`CoreServiceTask::validate`]'s comparison:
+/// a receipt holds an ordinary `C:\...` path while a resolved one carries Windows' verbatim
+/// `\\?\` prefix, so a receipt compared raw refused every unattended deploy on the 5090
+/// (ce84f63ac, 2026-10-12 19:31Z; Codex traced it).
 #[cfg(any(windows, test))]
-fn staged_core_path(receipt_artifact: &Path) -> Result<PathBuf, String> {
-    resolve_service_path(&receipt_artifact.display().to_string())
-}
-
-/// A path the ContinuumCore descriptor names, absolute and resolved, or why not.
-#[cfg(any(windows, test))]
-fn resolve_service_path(path: &str) -> Result<PathBuf, String> {
-    if !Path::new(path).is_absolute() {
-        return Err(format!("ContinuumCore path must be absolute: {path}"));
+fn resolve_service_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+    let path = path.as_ref();
+    if !path.is_absolute() {
+        return Err(format!("ContinuumCore path must be absolute: {}", path.display()));
     }
-    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {path} cannot be resolved: {e}"))
+    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {} cannot be resolved: {e}", path.display()))
 }
 
 #[cfg(any(windows, test))]
@@ -1753,7 +1748,7 @@ impl PreparedCoreService {
                 repo=quote(&repo), socket=socket.replace('\'', "''"), receipt=quote(&receipt.0),
             );
             Self::run_installer_script(&script)?;
-            let staged_path=staged_core_path(&receipt.artifact()?)?;
+            let staged_path=resolve_service_path(receipt.artifact()?)?;
             let sha=binary_build_sha(&staged_path).await?;
             if !sha_matches(&sha,&built.build_sha) { return Err("staged core revision differs from validated prebuilt".into()); }
             PrebuiltCore::from_report(staged_path,sha,None)
@@ -7776,20 +7771,29 @@ mod tests {
         task.enabled = true;
         assert!(task.validate(&candidate, "different.sock", &shell).unwrap_err().contains("different.sock"), "the socket refusal names both sockets");
         // regression for the 5090 2026-10-12 19:31Z (ce84f63ac; Codex traced it): the staged
-        // core's path, as the installer's receipt names it, raw. A receipt path that is not
-        // already canonical (here through a symlinked directory; on Windows the verbatim
-        // prefix) must still be the core the descriptor selects once resolved the one way.
-        #[cfg(unix)]
-        {
-            let link = directory.join("via-link");
-            std::os::unix::fs::symlink(&directory, &link).unwrap();
-            let raw = link.join(artifact.file_name().unwrap());
-            let staged = super::PrebuiltCore { path: super::staged_core_path(&raw).unwrap(), build_sha: "123456789".to_string() };
-            task.validate(&staged, &socket, &shell).unwrap();
-            let unresolved = super::PrebuiltCore { path: raw.clone(), build_sha: "123456789".to_string() };
-            let refused = task.validate(&unresolved, &socket, &shell).unwrap_err();
-            assert!(refused.contains("selects artifact") && refused.contains("via-link"), "the artifact refusal names both paths: {refused}");
-        }
+        // core's path as the installer's receipt names it, RAW, and not already canonical. On
+        // Windows that is the ordinary path, whose resolved form carries the verbatim `\\?\`
+        // prefix (the failing case); elsewhere a symlinked directory gives the same shape. Once
+        // resolved the one way it is the core the descriptor selects; raw, it is refused, and
+        // the refusal names both paths.
+        let raw = {
+            #[cfg(windows)]
+            {
+                artifact.clone()
+            }
+            #[cfg(unix)]
+            {
+                let link = directory.join("via-link");
+                std::os::unix::fs::symlink(&directory, &link).unwrap();
+                link.join(artifact.file_name().unwrap())
+            }
+        };
+        assert_ne!(raw, super::resolve_service_path(&raw).unwrap(), "the receipt path is not already canonical");
+        let staged = super::PrebuiltCore { path: super::resolve_service_path(&raw).unwrap(), build_sha: "123456789".to_string() };
+        task.validate(&staged, &socket, &shell).unwrap();
+        let unresolved = super::PrebuiltCore { path: raw.clone(), build_sha: "123456789".to_string() };
+        let refused = task.validate(&unresolved, &socket, &shell).unwrap_err();
+        assert!(refused.contains("selects artifact") && refused.contains(&raw.display().to_string()), "the artifact refusal names both paths: {refused}");
         let mut old_description = description;
         old_description["artifact"] = serde_json::json!(stale);
         task.description = old_description.to_string();
