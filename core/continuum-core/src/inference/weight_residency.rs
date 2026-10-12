@@ -128,10 +128,11 @@ pub enum EngineContextReading {
 impl EngineContextReading {
     pub fn of(props: &serde_json::Value) -> Self {
         // Only a WELL-FORMED props document can be an engine that predates the field: every
-        // llama-server answers `/props` with its `default_generation_settings`. A `null`, an
-        // error envelope (`{"error": …}`) or anything else without it is not an old engine,
-        // and a missing breakdown there is no reading (Codex on #4961).
-        if props.get("default_generation_settings").is_none() {
+        // llama-server answers `/props` with its slot geometry. A `null`, an error envelope
+        // (`{"error": …}`), or a geometry that is missing, null or zero is not an old engine,
+        // and a missing breakdown there is no reading (Codex on #4961). The same parse decides
+        // here and in `from_props`, so the two cannot disagree about what a geometry is.
+        if slot_geometry(props).is_none() {
             return Self::Invalid;
         }
         if props.get("memory_breakdown").is_none() {
@@ -146,16 +147,24 @@ impl EngineContext {
     /// no KV on an accelerator. [`EngineContextReading::of`] tells those apart.
     pub fn from_props(props: &serde_json::Value) -> Option<Self> {
         let memory = EngineMemory::from_props(props)?;
-        let slots = u32::try_from(props.get("total_slots")?.as_u64()?).ok()?;
-        let n_ctx_per_slot = u32::try_from(props.pointer("/default_generation_settings/n_ctx")?.as_u64()?).ok()?;
+        let (slots, n_ctx_per_slot) = slot_geometry(props)?;
         let context_bytes = memory.accelerator_context();
-        (slots > 0 && n_ctx_per_slot > 0 && context_bytes > 0).then(|| Self {
+        (context_bytes > 0).then(|| Self {
             context_bytes,
             beyond_weights: memory.accelerator_beyond_weights(),
             slots,
             n_ctx_per_slot,
         })
     }
+}
+
+/// The slot geometry an engine reports on `/props`: `total_slots` and each slot's `n_ctx`, both
+/// present, in range and nonzero. `None` otherwise. ONE parse, shared by the reading and by
+/// the legacy test, so "a valid props document" means one thing.
+fn slot_geometry(props: &serde_json::Value) -> Option<(u32, u32)> {
+    let slots = u32::try_from(props.get("total_slots")?.as_u64()?).ok()?;
+    let n_ctx = u32::try_from(props.pointer("/default_generation_settings/n_ctx")?.as_u64()?).ok()?;
+    (slots > 0 && n_ctx > 0).then_some((slots, n_ctx))
 }
 
 fn is_host_backend(name: &str) -> bool {
@@ -216,6 +225,11 @@ mod tests {
             EngineContextReading::of(&serde_json::json!({"error": {"code": 503, "message": "Loading model", "type": "unavailable_error"}})),
             EngineContextReading::Invalid,
             "an error envelope"
+        );
+        assert_eq!(
+            EngineContextReading::of(&serde_json::json!({"total_slots": 1, "default_generation_settings": null})),
+            EngineContextReading::Invalid,
+            "a null geometry is not a legacy engine"
         );
     }
 
