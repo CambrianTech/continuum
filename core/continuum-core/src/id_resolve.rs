@@ -116,24 +116,46 @@ pub fn resolve_handle(s: &str, candidates: &[Uuid], label: &str) -> Result<Uuid,
     if let Ok(id) = Uuid::parse_str(s) {
         return Ok(id);
     }
-    if !(MIN_PREFIX_HEX..32).contains(&s.len()) || !s.bytes().all(|c| c.is_ascii_hexdigit()) {
+    let Some(needle) = handle_prefix(s) else {
         return Err(format!("'{s}' is not a usable {label} handle — give a full UUID or at least {MIN_PREFIX_HEX} leading hex characters"));
-    }
-    resolve_prefix(&s.to_ascii_lowercase(), candidates, label)
+    };
+    resolve_prefix(&needle, candidates, label)
 }
 
-fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+/// The strict handle reading of `s`, with no repair: a full UUID as its simple hex, or
+/// [`MIN_PREFIX_HEX`]..32 hex digits and nothing else, lowercased. `None` for anything else, so a
+/// verb whose field is NOT an id (a room name) can tell when the caller typed an id there without
+/// mistaking a word for one (`academy` is not a handle; [`normalize`] would read `acade`). Card
+/// 7d03cef2; `resolve_handle` decides from the same reading.
+pub fn handle_prefix(s: &str) -> Option<String> {
+    let s = s.trim();
+    if let Ok(id) = Uuid::parse_str(s) {
+        return Some(id.simple().to_string());
+    }
+    ((MIN_PREFIX_HEX..32).contains(&s.len()) && s.bytes().all(|c| c.is_ascii_hexdigit())).then(|| s.to_ascii_lowercase())
+}
+
+/// Every DISTINCT candidate whose simple-hex form starts with `needle` (lowercase hex), sorted.
+/// The one prefix match [`resolve`] and [`resolve_handle`] decide from, exposed so a caller that
+/// must REPORT the matches (rather than pick one) uses the same rule.
+pub fn prefix_matches(needle: &str, candidates: &[Uuid]) -> Vec<Uuid> {
     // Candidates are a SET: the same id folded from two boards (a card visible
     // from two subscribed rooms, 2026-09-05, #3722 review) is one card, never an
     // ambiguity between two.
-    let mut matches: Vec<&Uuid> = candidates
+    let mut matches: Vec<Uuid> = candidates
         .iter()
         .filter(|id| id.simple().to_string().starts_with(needle))
+        .copied()
         .collect();
     matches.sort();
     matches.dedup();
+    matches
+}
+
+fn resolve_prefix(needle: &str, candidates: &[Uuid], label: &str) -> Result<Uuid, String> {
+    let matches = prefix_matches(needle, candidates);
     match matches.as_slice() {
-        [one] => Ok(**one),
+        [one] => Ok(*one),
         // Zero match — the live failure mode (2026-07-13: a persona claimed a
         // FABRICATED id and a peer had to hand it the right one). "Check the id you
         // were shown" isn't actionable when the persona never held a real id; ENUMERATE
