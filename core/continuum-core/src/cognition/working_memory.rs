@@ -440,6 +440,37 @@ pub struct VolatileSnapshot {
     pub receipt_children: BTreeMap<String, Vec<String>>,
 }
 
+impl VolatileSnapshot {
+    /// Save every restored receipt that has no handle (a snapshot written before results were
+    /// saved, #4963) through one pin held until the restored memory publishes, and re-file each
+    /// newly saved receipt's dependencies under its new key: from `seq:N` to its handle, or the
+    /// next publish would prune them as belonging to no receipt (Codex on #4987).
+    pub fn retain_handleless(&mut self, persona_id: Uuid) -> crate::cognition::tool_executor::spill::LivePin {
+        let unsaved = self.unsaved_receipts();
+        let pin = crate::cognition::tool_executor::spill::retain_handleless(
+            persona_id,
+            self.recent_results.iter_mut().map(|(_, _, text, _, handle)| (text.as_str(), handle)),
+        );
+        self.refile_children(&unsaved);
+        pin
+    }
+
+    fn unsaved_receipts(&self) -> Vec<u64> {
+        self.recent_results.iter().filter(|(.., handle)| handle.is_none()).map(|(seq, ..)| *seq).collect()
+    }
+
+    /// Move each of `unsaved`'s dependencies from its `seq:N` key to the handle it now has.
+    fn refile_children(&mut self, unsaved: &[u64]) {
+        for (seq, .., handle) in &self.recent_results {
+            if let (true, Some(handle)) = (unsaved.contains(seq), handle) {
+                if let Some(children) = self.receipt_children.remove(&receipt_key(*seq, None)) {
+                    self.receipt_children.insert(handle.clone(), children);
+                }
+            }
+        }
+    }
+}
+
 /// The key a receipt's dependencies are filed under: its saved handle, or `seq:N` for a
 /// receipt whose save failed (it is held whole in the ring and never collapses).
 fn receipt_key(seq: u64, handle: Option<&str>) -> String {
@@ -2034,11 +2065,58 @@ mod tests {
         let snapshot = wm.snapshot();
         let checkpointed = reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children);
         assert!(children.iter().all(|c| checkpointed.contains(c)), "the checkpoint names each child");
+        // Through the checkpoint's own encoding, not just in memory.
+        let written = serde_json::to_string(&snapshot).expect("test: encode");
+        let read: VolatileSnapshot = serde_json::from_str(&written).expect("test: decode");
+        assert_eq!(read.receipt_children, snapshot.receipt_children, "the dependencies survive the checkpoint's serde");
         drop(wm);
         assert!(children.iter().all(|c| !live(c)), "released with the mind");
+
+        // Real child files through the guarded eviction the spill pool runs under pressure.
+        use crate::paging::filesystem_tier_pool::Removal;
+        let root = std::env::temp_dir().join(format!("wm-deps-{}", Uuid::new_v4()));
+        let dir = root.join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).expect("test: dir");
+        let files: Vec<std::path::PathBuf> = children.iter().map(|c| dir.join(format!("{c}.log"))).collect();
+        for (file, child) in files.iter().zip(&children) {
+            std::fs::write(file, child).expect("test: child file");
+        }
         let restored = WorkingMemory::new(2);
-        restored.restore(snapshot);
-        assert!(children.iter().all(|c| live(c)), "and held again by the restored mind");
+        restored.restore(read);
+        assert!(children.iter().all(|c| live(c)), "held again by the restored mind");
+        for file in &files {
+            let evict = crate::cognition::tool_executor::spill::evict_unless_live(file);
+            assert!(matches!(evict, Removal::Protected) && file.exists(), "pressure cannot evict a restored receipt's child");
+        }
+        drop(restored);
+        for file in &files {
+            let evict = crate::cognition::tool_executor::spill::evict_unless_live(file);
+            assert!(matches!(evict, Removal::Removed) && !file.exists(), "released, it is evictable");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // what this catches (Codex on #4987): a legacy receipt with no handle files its children
+    // under `seq:N`; restore saves it and it takes a handle, so the children must move to that
+    // key or the next publish prunes them as belonging to no receipt.
+    #[test]
+    fn a_restored_legacy_receipt_keeps_its_children_under_its_new_handle() {
+        let child = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let mut snapshot = WorkingMemory::new(8).snapshot();
+        snapshot.recent_results.push((7, None, "a legacy receipt".into(), "code/read".into(), None));
+        snapshot.receipt_children.insert(receipt_key(7, None), vec![child.clone()]);
+        let unsaved = snapshot.unsaved_receipts();
+        let handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        snapshot.recent_results[0].4 = Some(handle.clone()); // what a successful save sets
+        snapshot.refile_children(&unsaved);
+        assert_eq!(snapshot.receipt_children.get(&handle), Some(&vec![child.clone()]), "re-filed under its handle");
+        assert!(!snapshot.receipt_children.contains_key("seq:7"));
+        let wm = WorkingMemory::new(8);
+        wm.restore(snapshot);
+        assert!(
+            crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{child}.log"))),
+            "and still reachable after the restore's publish"
+        );
     }
 
     // what this catches (card 12b080c3): a call's own saved result, shown to her as a pointer
