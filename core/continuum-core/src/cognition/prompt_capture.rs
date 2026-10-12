@@ -206,20 +206,23 @@ struct TerminalRecord<'a> {
     /// (card fb6d7912). Absent when no stream was watched.
     #[serde(skip_serializing_if = "Option::is_none")]
     wire: Option<crate::inference::wire_tap::Wire>,
-    /// Why a watched stream is NOT in this entry, when it is not: a stream too large for the
-    /// capture's row limit is dropped from the entry, never allowed to make the response
-    /// itself unrecordable, and the drop is said.
+    /// Why a watched stream is NOT in this entry, when it is not: a stream that would push the
+    /// entry past the capture's row limit is dropped from it, so it is never the cause of an
+    /// unrecordable entry, and the drop is said.
     #[serde(skip_serializing_if = "Option::is_none")]
     wire_omitted: Option<String>,
 }
-/// The terminal record, kept within the capture's row limit by dropping its raw stream (never
-/// the response) and saying so. Measured on the serialized record itself.
+/// The terminal record, kept within the capture's row limit by dropping its raw stream and
+/// saying so, measured with the store's own row contract (JSON plus newline). It removes the
+/// wire as a cause of an unrecordable entry; it cannot make an entry recordable whose response
+/// alone exceeds the limit, or survive a storage failure. An omitted wire is diagnostic
+/// incompleteness, never retention of the whole experience.
 fn within_row_limit(mut record: TerminalRecord<'_>, limit: u64) -> TerminalRecord<'_> {
     if record.wire.is_none() {
         return record;
     }
     let bytes = serde_json::to_vec(&record).map_or(u64::MAX, |v| v.len() as u64);
-    if bytes > limit {
+    if store::row_bytes(bytes) > limit {
         record.wire = None;
         record.wire_omitted = Some(format!(
             "the raw stream made this entry {bytes} bytes, over the capture's {limit}-byte row limit"
@@ -765,7 +768,7 @@ mod tests {
         // make the response itself unrecordable.
         let header_ref = PayloadRef { generation: Uuid::nil(), offset: 0, bytes: 0 };
         let status = CallStatus::Completed;
-        let big = TerminalRecord {
+        let big = || TerminalRecord {
             schema_version: 4,
             event: &status,
             captured_at_ms: 0,
@@ -781,9 +784,12 @@ mod tests {
             }),
             wire_omitted: None,
         };
-        let kept = within_row_limit(big, 1024);
-        assert!(kept.wire.is_none());
-        assert!(kept.wire_omitted.as_deref().is_some_and(|why| why.contains("1024-byte row limit")));
+        let json = serde_json::to_vec(&big()).expect("json").len() as u64;
+        let at_json = within_row_limit(big(), json);
+        assert!(at_json.wire.is_none(), "JSON exactly at the limit: its newline does not fit");
+        assert!(at_json.wire_omitted.as_deref().is_some_and(|why| why.contains("row limit")));
+        let with_newline = within_row_limit(big(), store::row_bytes(json));
+        assert!(with_newline.wire.is_some() && with_newline.wire_omitted.is_none(), "JSON plus newline fits");
 
         let private_id = format!("wire-{}", Uuid::new_v4());
         let mind = crate::persona::mind_room::mind_room_id(persona);
