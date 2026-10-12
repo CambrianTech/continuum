@@ -2928,7 +2928,7 @@ mod tests {
     async fn a_dispatch_the_core_stopped_inside_recovers_by_asking_the_trainers_for_its_job() {
         let interrupted = Uuid::new_v4();
         let (adapter, key, id, _dir) = interrupted_dispatch(Some(interrupted)).await;
-        let (next, executor) = build_runtime(adapter, true).await;
+        let (next, _executor) = build_runtime(adapter, true).await;
         next.tick().await.unwrap();
         // the tick that hydrated it asked the trainers (none runs the job) and dispatched it
         let intent = next.state.durable.require().unwrap().dispatches.find_by_id(id).await.unwrap().expect("the intent");
