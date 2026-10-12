@@ -1394,13 +1394,18 @@ struct CoreServiceTask {
     installed: Option<continuum_cli_lifecycle::installed_release::Envelope>,
 }
 
-/// A path the ContinuumCore descriptor names, absolute and resolved, or why not.
+/// A path the ContinuumCore descriptor or the installer's receipt names, absolute and resolved,
+/// or why not. THE one resolver for both sides of [`CoreServiceTask::validate`]'s comparison:
+/// a receipt holds an ordinary `C:\...` path while a resolved one carries Windows' verbatim
+/// `\\?\` prefix, so a receipt compared raw refused every unattended deploy on the 5090
+/// (ce84f63ac, 2026-10-12 19:31Z; Codex traced it).
 #[cfg(any(windows, test))]
-fn resolve_service_path(path: &str) -> Result<PathBuf, String> {
-    if !Path::new(path).is_absolute() {
-        return Err(format!("ContinuumCore path must be absolute: {path}"));
+fn resolve_service_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+    let path = path.as_ref();
+    if !path.is_absolute() {
+        return Err(format!("ContinuumCore path must be absolute: {}", path.display()));
     }
-    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {path} cannot be resolved: {e}"))
+    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {} cannot be resolved: {e}", path.display()))
 }
 
 #[cfg(any(windows, test))]
@@ -1442,12 +1447,35 @@ impl CoreServiceTask {
         let description = self.runtime_paths_resolve()?;
         if self.installed.is_some() { description.installer_root()?; }
         let resolve = resolve_service_path;
-        if !self.enabled
-            || resolve(&description.artifact)? != candidate.path
-            || description.socket != socket
-            || (self.installed.is_none() && resolve(&self.command)? != shell.canonicalize().map_err(|e| e.to_string())?)
-        {
-            return Err("ContinuumCore does not select the requested artifact/socket or is disabled; rerun the installer".to_string());
+        // Each refusal names its condition and both values: one message for four conditions
+        // left the 5090's deploy log unable to say which held (card f5fd64ad).
+        if !self.enabled {
+            return Err("ContinuumCore's scheduled task is disabled; rerun the installer".to_string());
+        }
+        let selected = resolve(&description.artifact)?;
+        if selected != candidate.path {
+            return Err(format!(
+                "ContinuumCore selects artifact {} but the requested core is {}; rerun the installer",
+                selected.display(),
+                candidate.path.display()
+            ));
+        }
+        if description.socket != socket {
+            return Err(format!(
+                "ContinuumCore selects socket {} but the requested socket is {socket}; rerun the installer",
+                description.socket
+            ));
+        }
+        if self.installed.is_none() {
+            let command = resolve(&self.command)?;
+            let shell = shell.canonicalize().map_err(|e| e.to_string())?;
+            if command != shell {
+                return Err(format!(
+                    "ContinuumCore's task runs {} but this host's shell is {}; rerun the installer",
+                    command.display(),
+                    shell.display()
+                ));
+            }
         }
         // Paired host/launcher files live in the same installed slot, never in
         // the mutable build cache or a different release's directory.
@@ -1720,7 +1748,7 @@ impl PreparedCoreService {
                 repo=quote(&repo), socket=socket.replace('\'', "''"), receipt=quote(&receipt.0),
             );
             Self::run_installer_script(&script)?;
-            let staged_path=receipt.artifact()?;
+            let staged_path=resolve_service_path(receipt.artifact()?)?;
             let sha=binary_build_sha(&staged_path).await?;
             if !sha_matches(&sha,&built.build_sha) { return Err("staged core revision differs from validated prebuilt".into()); }
             PrebuiltCore::from_report(staged_path,sha,None)
@@ -7648,8 +7676,11 @@ mod tests {
     // BEFORE stopping the live core, even when its description names the new image.
     #[test]
     fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
-        let directory = tempfile::tempdir().unwrap();
-        let directory = directory.path().canonicalize().unwrap();
+        let tempdir = tempfile::tempdir().unwrap();
+        // The directory as an installer receipt names it, BEFORE resolution: on Windows an
+        // ordinary path, whose resolved form carries the verbatim `\\?\` prefix.
+        let ordinary = tempdir.path().to_path_buf();
+        let directory = ordinary.canonicalize().unwrap();
         #[cfg(windows)]
         {
             // Receipt migration and direct reboot share the installer's real
@@ -7739,12 +7770,37 @@ mod tests {
         task.arguments = arguments;
         assert!(task.validate(&candidate, "different.sock", &shell).is_err());
         task.enabled = false;
-        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        assert!(task.validate(&candidate, &socket, &shell).unwrap_err().contains("disabled"));
         task.enabled = true;
+        assert!(task.validate(&candidate, "different.sock", &shell).unwrap_err().contains("different.sock"), "the socket refusal names both sockets");
+        // regression for the 5090 2026-10-12 19:31Z (ce84f63ac; Codex traced it): the staged
+        // core's path as the installer's receipt names it, RAW, and not already canonical. On
+        // Windows that is the ordinary path, whose resolved form carries the verbatim `\\?\`
+        // prefix (the failing case); elsewhere a symlinked directory gives the same shape. Once
+        // resolved the one way it is the core the descriptor selects; raw, it is refused, and
+        // the refusal names both paths.
+        let raw = {
+            #[cfg(windows)]
+            {
+                ordinary.join(artifact.file_name().unwrap())
+            }
+            #[cfg(unix)]
+            {
+                let link = directory.join("via-link");
+                std::os::unix::fs::symlink(&ordinary, &link).unwrap();
+                link.join(artifact.file_name().unwrap())
+            }
+        };
+        assert_ne!(raw, super::resolve_service_path(&raw).unwrap(), "the receipt path is not already canonical");
+        let staged = super::PrebuiltCore { path: super::resolve_service_path(&raw).unwrap(), build_sha: "123456789".to_string() };
+        task.validate(&staged, &socket, &shell).unwrap();
+        let unresolved = super::PrebuiltCore { path: raw.clone(), build_sha: "123456789".to_string() };
+        let refused = task.validate(&unresolved, &socket, &shell).unwrap_err();
+        assert!(refused.contains("selects artifact") && refused.contains(&raw.display().to_string()), "the artifact refusal names both paths: {refused}");
         let mut old_description = description;
         old_description["artifact"] = serde_json::json!(stale);
         task.description = old_description.to_string();
-        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        assert!(task.validate(&candidate, &socket, &shell).unwrap_err().contains("selects artifact"));
     }
 
     // what this catches: card 67f53b63 — provenance is checked before a
