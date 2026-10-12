@@ -201,10 +201,31 @@ struct TerminalRecord<'a> {
     elapsed_ms: u64,
     response: Option<&'a TextGenerationResponse>,
     error: Option<&'a str>,
-    /// The raw SSE `data:` payloads the response was parsed from, verbatim and in arrival
-    /// order (card fb6d7912). Absent for a call whose stream never started.
+    /// The raw stream the response was parsed from: each attempt's SSE events as received
+    /// (normalization named in `inference::wire_tap`), the last attempt being the response's
+    /// (card fb6d7912). Absent when no stream was watched.
     #[serde(skip_serializing_if = "Option::is_none")]
-    wire: Option<Vec<String>>,
+    wire: Option<crate::inference::wire_tap::Wire>,
+    /// Why a watched stream is NOT in this entry, when it is not: a stream too large for the
+    /// capture's row limit is dropped from the entry, never allowed to make the response
+    /// itself unrecordable, and the drop is said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wire_omitted: Option<String>,
+}
+/// The terminal record, kept within the capture's row limit by dropping its raw stream (never
+/// the response) and saying so. Measured on the serialized record itself.
+fn within_row_limit(mut record: TerminalRecord<'_>, limit: u64) -> TerminalRecord<'_> {
+    if record.wire.is_none() {
+        return record;
+    }
+    let bytes = serde_json::to_vec(&record).map_or(u64::MAX, |v| v.len() as u64);
+    if bytes > limit {
+        record.wire = None;
+        record.wire_omitted = Some(format!(
+            "the raw stream made this entry {bytes} bytes, over the capture's {limit}-byte row limit"
+        ));
+    }
+    record
 }
 #[derive(Serialize)]
 struct LegacyRecord<'a> {
@@ -356,7 +377,9 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             response,
             error,
             wire: crate::inference::wire_tap::take(&header.request_id),
+            wire_omitted: None,
         };
+        let record = within_row_limit(record, store::MAX_PAYLOAD_BYTES);
         self.append(&record, header.clone(), true)
             .map(|recorded| recorded.cursor)
             .filter(|cursor| !cursor.is_empty())
@@ -730,10 +753,37 @@ mod tests {
             .expect("read back")
             .terminal
             .expect("terminal entry");
-        let wire = terminal["wire"].as_array().expect("the raw stream is in the entry");
-        assert_eq!(wire.len(), 2);
-        assert!(wire[1].as_str().unwrap().contains("work/create"), "verbatim, in order");
+        let attempts = terminal["wire"]["attempts"].as_array().expect("the raw stream is in the entry");
+        assert_eq!(attempts.len(), 1, "one attempt");
+        let events = attempts[0].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[1].as_str().unwrap().contains("work/create"), "as received, in order");
+        assert_eq!(terminal["wire"]["open_at_end"], false);
         assert_eq!(crate::inference::wire_tap::take(&request_id), None, "released when the call ended");
+
+        // A stream too large for a row is dropped from the entry and said, never allowed to
+        // make the response itself unrecordable.
+        let header_ref = PayloadRef { generation: Uuid::nil(), offset: 0, bytes: 0 };
+        let status = CallStatus::Completed;
+        let big = TerminalRecord {
+            schema_version: 4,
+            event: &status,
+            captured_at_ms: 0,
+            session_id: Uuid::nil(),
+            request_id: "r",
+            request_ref: &header_ref,
+            elapsed_ms: 0,
+            response: None,
+            error: None,
+            wire: Some(crate::inference::wire_tap::Wire {
+                attempts: vec![vec!["data: ".to_string() + &"t".repeat(4096)]],
+                open_at_end: false,
+            }),
+            wire_omitted: None,
+        };
+        let kept = within_row_limit(big, 1024);
+        assert!(kept.wire.is_none());
+        assert!(kept.wire_omitted.as_deref().is_some_and(|why| why.contains("1024-byte row limit")));
 
         let private_id = format!("wire-{}", Uuid::new_v4());
         let mind = crate::persona::mind_room::mind_room_id(persona);

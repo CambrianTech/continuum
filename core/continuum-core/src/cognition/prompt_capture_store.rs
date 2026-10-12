@@ -12,7 +12,7 @@ const MAX_ENTRIES: u32 = 1024;
 // Rotate before the next row at this threshold; one row is independently
 // bounded by the same amount. Each segment is therefore <= 2 * this bound,
 // and two retained segments consume <= 256 MiB plus 4 MiB of fixed metadata.
-const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 pub const PAGE_LIMIT: usize = 40;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

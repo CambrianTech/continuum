@@ -363,7 +363,7 @@ pub(crate) async fn consume_sse_stream(
     // actually targeting the published serving lane.
 
     let mut sse_buf: Vec<u8> = Vec::new();
-    // The raw payloads, kept only when a capture armed this request (card fb6d7912).
+    // Each raw event, kept only when a capture armed this request (card fb6d7912).
     let mut wire = crate::inference::wire_tap::WireTap::open(request.request_id.as_deref());
     let mut acc_content = String::new();
     let mut acc_reasoning = String::new();
@@ -660,12 +660,12 @@ pub(crate) async fn consume_sse_stream(
         while let Some(pos) = sse_buf.windows(2).position(|w| w == b"\n\n") {
             let event_bytes: Vec<u8> = sse_buf.drain(..pos + 2).collect();
             let event = String::from_utf8_lossy(&event_bytes);
+            wire.push(&event);
             for line in event.lines() {
                 let Some(data) = line.trim_start().strip_prefix("data:") else {
                     continue;
                 };
                 let data = data.trim();
-                wire.push(data);
                 if data.is_empty() || data == "[DONE]" {
                     continue;
                 }
@@ -838,6 +838,59 @@ pub(crate) async fn consume_sse_stream(
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    // what this catches (Astra on #4978): a captured retry replayed as one stream. The
+    // accumulator starts fresh on every attempt, so an interrupted attempt's index-0
+    // arguments merged with its retry's would replay arguments the response never held.
+    // Each captured attempt replays through the real fold on its own; the last is the
+    // response's.
+    #[test]
+    fn a_captured_retry_replays_per_attempt_never_merged() {
+        let replay = |events: &[String]| {
+            let mut acc = Vec::new();
+            for event in events {
+                for line in event.lines() {
+                    let Some(data) = line.trim_start().strip_prefix("data:") else { continue };
+                    let data = data.trim();
+                    if data.is_empty() || data == "[DONE]" {
+                        continue;
+                    }
+                    let chunk: OpenAIStreamChunk = serde_json::from_str(data).expect("test: chunk");
+                    for choice in chunk.choices {
+                        for tc in choice.delta.and_then(|d| d.tool_calls).unwrap_or_default() {
+                            accumulate_stream_tool_call(&mut acc, tc);
+                        }
+                    }
+                }
+            }
+            acc
+        };
+        let fragment = |name: Option<&str>, args: &str| {
+            let function = match name {
+                Some(n) => serde_json::json!({"name": n, "arguments": args}),
+                None => serde_json::json!({"arguments": args}),
+            };
+            format!(
+                "data: {}",
+                serde_json::json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":function}]}}]})
+            )
+        };
+        let id = format!("replay-{}", uuid::Uuid::new_v4());
+        crate::inference::wire_tap::arm(&id);
+        let mut interrupted = crate::inference::wire_tap::WireTap::open(Some(&id));
+        interrupted.push(&fragment(Some("work/note"), "{\"note\":\"clo"));
+        drop(interrupted);
+        let mut retry = crate::inference::wire_tap::WireTap::open(Some(&id));
+        retry.push(&fragment(Some("work/note"), "{\"note\":"));
+        retry.push(&fragment(None, "\"closed\"}"));
+        retry.push("data: [DONE]");
+        drop(retry);
+        let wire = crate::inference::wire_tap::take(&id).expect("captured");
+        let last = replay(wire.attempts.last().expect("the response's attempt"));
+        assert_eq!((last[0].name.as_str(), last[0].arguments.as_str()), ("work/note", "{\"note\":\"closed\"}"));
+        let merged = replay(&wire.attempts.concat());
+        assert_ne!(merged[0].arguments, last[0].arguments, "merging attempts invents arguments");
+    }
 
     // what this catches (card 115f9a14; the IntelMac, 2026-09-28 05:07Z): a turn at 96% prefill
     // failed at the 90 s idle bound while slot 4 prefilled for the whole window. A lane that did
