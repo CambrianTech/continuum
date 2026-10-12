@@ -510,14 +510,14 @@ fn node_quiescence(home: &Path) -> Result<(), String> {
         return Err(format!("citizen_turn_in_flight: {turns}"));
     }
     let now_ms = crate::persona::trace::now_ms();
-    if crate::runtime::deploy_claim::in_flight(home, now_ms).excludes_deploy() {
+    if continuum_cli_lifecycle::deploy_claim::in_flight(home, now_ms).excludes_deploy() {
         return Err("deploy_in_flight".to_string());
     }
     let mut sys = sysinfo::System::new();
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     if let Some((pid, name)) = sys.processes().iter().find_map(|(pid, p)| {
         let name = p.name().to_string_lossy().into_owned();
-        crate::runtime::deploy_claim::is_compiler(&name).then(|| (pid.as_u32(), name))
+        continuum_cli_lifecycle::deploy_claim::is_compiler(&name).then(|| (pid.as_u32(), name))
     }) {
         return Err(format!("compiler_running: {name} (pid {pid})"));
     }

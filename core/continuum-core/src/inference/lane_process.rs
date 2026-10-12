@@ -20,7 +20,6 @@
 /// platform. The Windows arm used to scrape `tasklist` output for the pid as a SUBSTRING, so pid
 /// 42 read alive whenever any pid containing "42" existed (the bug deploy_claim had already
 /// fixed with exactly this lookup).
-pub use continuum_cli_lifecycle::process::is_alive;
 
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
 #[cfg(unix)]
@@ -465,21 +464,6 @@ pub fn launch_kv_in(argv: &[String]) -> LaunchKv {
 mod tests {
     use super::*;
 
-    // what this catches: the one liveness check lying either way — this process is alive, pid 0
-    // is never alive (it is not a process; signalling it hits the caller's group), and a pid no
-    // process holds is dead even when live pids CONTAIN its digits (the tasklist substring
-    // scrape read pid 42 alive whenever a pid like 4213 existed).
-    #[test]
-    fn liveness_is_the_process_table_not_a_text_match() {
-        let me = std::process::id();
-        assert!(is_alive(me));
-        assert!(!is_alive(0));
-        let dead = (1..u32::MAX / 4).map(|k| me.wrapping_mul(10).wrapping_add(k % 10) + k * 1000)
-            .find(|p| !sysinfo::System::new_all().process(sysinfo::Pid::from_u32(*p)).is_some())
-            .expect("an unused pid");
-        assert!(!is_alive(dead));
-    }
-
     // what this catches: the Windows port-owner lookup returning None for a port
     // that IS held. Regression for the 2026-09-05 wedge on BigMama — `lsof` does
     // not exist on Windows, so `pid_listening_on_port` returned None for every
@@ -529,14 +513,6 @@ mod tests {
 ";
         assert_eq!(parse_tasklist_image_name(miss), None);
         assert_eq!(parse_tasklist_image_name(""), None);
-    }
-
-    // what this catches: is_alive is true for our own process — the liveness check
-    // underpins every reclaim/sweep decision, so a broken one silently disarms the
-    // whole orphan-reaping machinery.
-    #[test]
-    fn is_alive_true_for_self() {
-        assert!(is_alive(std::process::id()));
     }
 
     // what this catches: THE safety invariant shared by both callers — our own

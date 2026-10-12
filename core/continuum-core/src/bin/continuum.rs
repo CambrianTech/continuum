@@ -2966,14 +2966,14 @@ fn now_ms() -> u64 {
 /// Consult the deploy claim before minting a core, and REPORT what it found.
 ///
 /// Returns `Err` only while a deploy is genuinely in flight. See
-/// [`continuum_core::runtime::deploy_claim`] for the incident: mid-build there is no core
+/// [`continuum_cli_lifecycle::deploy_claim`] for the incident: mid-build there is no core
 /// answering AND the installed image is still the PREVIOUS build, so any autostart in that
 /// window launches stale code, wins the socket, and defeats the deploy.
 ///
 /// A claim whose owner is gone or that has aged out is swept and announced rather than
 /// silently obeyed — a claim must never be able to wedge the machine (#355's failure mode).
 fn deploy_gate(verb: &str) -> Result<(), String> {
-    use continuum_core::runtime::deploy_claim::{self, DeployGate};
+    use continuum_cli_lifecycle::deploy_claim::{self, DeployGate};
     let Ok(root) = continuum_root() else {
         return Ok(()); // no HOME → no claim file → nothing to honour
     };
@@ -3051,7 +3051,7 @@ impl DeployClaimGuard {
     /// task: the warm build waits on a blocking `Command::status()` inside this async fn,
     /// and the renewal must not depend on which runtime worker that blocks.
     fn take(target_sha: &str) -> Option<Self> {
-        use continuum_core::runtime::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
+        use continuum_cli_lifecycle::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
         let root = continuum_root().ok()?;
         let pid = std::process::id() as i32;
         let started = now_ms();
@@ -3105,7 +3105,7 @@ impl DeployClaimGuard {
 /// compiler busy anywhere on the host (an owner blocked on the shared cargo lock is waiting on
 /// progress). Card 80ead731.
 fn deploy_working(sys: &mut sysinfo::System, pid: i32) -> bool {
-    use continuum_core::runtime::deploy_claim;
+    use continuum_cli_lifecycle::deploy_claim;
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cpu());
     let procs: Vec<(i32, Option<i32>, f32)> = sys
@@ -3129,8 +3129,8 @@ impl Drop for DeployClaimGuard {
         if let Some(renewer) = self.renewer.take() {
             let _ = renewer.join();
         }
-        let _ = continuum_core::runtime::deploy_claim::clear_waiting(&self.root, self.pid);
-        let _ = continuum_core::runtime::deploy_claim::clear(&self.root, self.pid);
+        let _ = continuum_cli_lifecycle::deploy_claim::clear_waiting(&self.root, self.pid);
+        let _ = continuum_cli_lifecycle::deploy_claim::clear(&self.root, self.pid);
     }
 }
 
@@ -4306,9 +4306,9 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
     // claim is swept (by `reboot` itself).
     let gate = continuum_root()
-        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()))
+        .map(|root| continuum_cli_lifecycle::deploy_claim::in_flight(&root, now_ms()))
         .ok(); // no root = no claim file = nothing in flight
-    if let Some(continuum_core::runtime::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
+    if let Some(continuum_cli_lifecycle::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
         .as_ref()
         .filter(|g| g.excludes_deploy())
     {
@@ -4401,7 +4401,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // engine and swaps the core, which the claim must block. A marker that cannot
                 // be removed ends this attempt rather than let a swap read as a wait.
                 if let Ok(root) = continuum_root() {
-                    continuum_core::runtime::deploy_claim::clear_waiting(&root, std::process::id() as i32)
+                    continuum_cli_lifecycle::deploy_claim::clear_waiting(&root, std::process::id() as i32)
                         .map_err(|e| format!("deploy-consume: cannot clear the wait marker: {e}"))?;
                 }
                 let prebuilt = match ci_core {
@@ -4525,8 +4525,8 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                 if let Ok(root) = continuum_root() {
                     let pid = std::process::id() as i32;
                     let now = now_ms();
-                    let _ = continuum_core::runtime::deploy_claim::renew(&root, pid, now, true);
-                    if let Err(e) = continuum_core::runtime::deploy_claim::mark_waiting(&root, pid, now) {
+                    let _ = continuum_cli_lifecycle::deploy_claim::renew(&root, pid, now, true);
+                    if let Err(e) = continuum_cli_lifecycle::deploy_claim::mark_waiting(&root, pid, now) {
                         deploy_note(&format!(
                             "deploy-consume: could not mark the wait ({e}); the claim keeps blocking as a build would"
                         ));
@@ -5663,7 +5663,7 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
 /// Windows has no signals — query the task list for the pid.
 fn pid_alive(pid: i32) -> bool {
     // ONE enumerator, shared with the core's own read of the claim (`deploy_claim::in_flight`).
-    continuum_core::runtime::deploy_claim::owner_alive(pid)
+    continuum_cli_lifecycle::deploy_claim::owner_alive(pid)
 }
 
 /// Spawn the pure-Rust start script detached and wait until the core answers

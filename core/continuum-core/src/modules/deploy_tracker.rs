@@ -412,7 +412,7 @@ impl ServiceModule for DeployTrackerModule {
         };
         // a live owner excludes a new deploy even past its claim's expiry (card 634f644d)
         let build_in_flight =
-            crate::runtime::deploy_claim::in_flight(&self.root, now).excludes_deploy();
+            continuum_cli_lifecycle::deploy_claim::in_flight(&self.root, now).excludes_deploy();
         let tip_build_key = match &tip_sha {
             Some(tip) => self.source.build_key(tip).await,
             None => None,

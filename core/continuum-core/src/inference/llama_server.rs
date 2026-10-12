@@ -1444,7 +1444,7 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0); // unwrap_or: a clock before the epoch reads as age 0, which keeps a live claim blocking
-    if crate::runtime::deploy_claim::in_flight(&home, now_ms).blocks() {
+    if continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks() {
         return false;
     }
     match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch(&root)) {

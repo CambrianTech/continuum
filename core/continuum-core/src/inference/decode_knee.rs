@@ -32,7 +32,7 @@
 //!    `rustc -j18` for the reboot's warm build read 2 in flight at 0.18 of catalog and
 //!    the knee fell 4 → 2. Two windows are known facts, not guesses, and samples inside
 //!    them are skipped with a probe: the deploy in flight (the CLI's deploy claim,
-//!    published before its warm build — `runtime::deploy_claim::in_flight`) and the
+//!    published before its warm build — `continuum_cli_lifecycle::deploy_claim::in_flight`) and the
 //!    boot window (`runtime::boot_clock`, [`BOOT_QUIET`]: board projections rebuilding,
 //!    the roster reseating, the desktop dist building). No load-average heuristic: on a
 //!    CPU-decode tier the serving lane IS the load (Cormac measured 14 on 12 cores with
@@ -277,7 +277,7 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
 /// the boot window. Named so the skip probe says which.
 pub(crate) fn own_transient(now: u64) -> Option<&'static str> {
     if let Some(root) = crate::paths::continuum_home().ok() {
-        if crate::runtime::deploy_claim::in_flight(&root, now).blocks() {
+        if continuum_cli_lifecycle::deploy_claim::in_flight(&root, now).blocks() {
             return Some("deploy_in_flight");
         }
     }
