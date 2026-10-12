@@ -659,15 +659,18 @@ pub struct ServingPlan {
 pub enum LanesBound {
     /// No candidate fit one lane on the budget: the whole demand is off-box.
     NoFit,
-    /// The requirements allocator chose lanes and window together: `served` minds got a warm
-    /// slot at their requirement, and `unserved` could not be held at theirs within
-    /// `budget_bytes` (the geometry it chose costs `device_bytes`). That is why there are not
-    /// more lanes.
+    /// The requirements allocator chose lanes and window together. It would consider at most
+    /// `lane_cap` lanes, a cap `lane_cap_by` set before any packing. With `lanes < lane_cap` the
+    /// budget packed fewer (the geometry costs `device_bytes` of `budget_bytes`); with
+    /// `lanes == lane_cap` the cap decided, and `unserved` minds were never offered a lane,
+    /// whatever the budget (Codex on #4971).
     #[serde(rename_all = "camelCase")]
     Allocator {
         served: u32,
         unserved: u32,
         window: u32,
+        lane_cap: u32,
+        lane_cap_by: LaneCapBy,
         #[ts(type = "number")]
         device_bytes: u64,
         #[ts(type = "number")]
@@ -692,6 +695,22 @@ pub enum LanesBound {
     },
     /// A cold boot's remembered lane count capped the plan (it only ever lowers it).
     BootGeometry,
+}
+
+/// What capped the lanes the requirements allocator would consider, before packing: the
+/// smallest of the four wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/serving/LaneCapBy.ts")]
+#[serde(rename_all = "camelCase")]
+pub enum LaneCapBy {
+    /// One lane per mind with a requirement: no more minds to seat.
+    Requirements,
+    /// The host's performance cores.
+    Cores,
+    /// The `MAX_LANES` safety ceiling.
+    MaxLanes,
+    /// The demanded lane count (residents plus leased-in, knee-bounded).
+    Demand,
 }
 
 /// Which term set the per-lane floor: the largest of the four wins.
@@ -974,6 +993,8 @@ pub fn plan_serving(
                 served: a.served.len() as u32,
                 unserved: a.unserved.len() as u32,
                 window: a.window,
+                lane_cap: a.lane_cap,
+                lane_cap_by: a.lane_cap_by,
                 device_bytes: a.device_bytes,
                 budget_bytes: host.usable_bytes,
             },

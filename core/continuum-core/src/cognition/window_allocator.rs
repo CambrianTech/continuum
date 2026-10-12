@@ -165,6 +165,10 @@ pub struct Allocation {
     pub unserved: Vec<Uuid>,
     /// Bytes this geometry costs on the device (weights + KV + compute reserve).
     pub device_bytes: u64,
+    /// The most lanes the allocator would consider, and what set that cap. `lanes < lane_cap`
+    /// means the budget packed fewer; `lanes == lane_cap` means the cap decided.
+    pub lane_cap: u32,
+    pub lane_cap_by: crate::cognition::serving_plan::LaneCapBy,
 }
 
 /// Why nothing could be allocated.
@@ -242,7 +246,18 @@ pub fn allocate(
     let largest_known = largest_known(requirements);
     let mut sorted: Vec<&LaneRequirement> = requirements.iter().collect();
     sorted.sort_by_key(|r| (r.window.unwrap_or(u32::MAX), r.persona));
-    let lane_cap = (requirements.len() as u32).min(budget.perf_cores.max(1)).min(MAX_LANES).min(max_lanes).max(1);
+    // The lane cap and what set it, chosen together (ties to the earlier term), so a caller can
+    // tell a cap from a budget refusal (Codex on #4971): with more minds than `lane_cap`, the
+    // unserved were never offered a lane, whatever the budget.
+    let (lane_cap, lane_cap_by) = [
+        (requirements.len() as u32, crate::cognition::serving_plan::LaneCapBy::Requirements),
+        (budget.perf_cores.max(1), crate::cognition::serving_plan::LaneCapBy::Cores),
+        (MAX_LANES, crate::cognition::serving_plan::LaneCapBy::MaxLanes),
+        (max_lanes, crate::cognition::serving_plan::LaneCapBy::Demand),
+    ]
+    .into_iter()
+    .fold((u32::MAX, crate::cognition::serving_plan::LaneCapBy::Requirements), |best, term| if term.0 < best.0 { term } else { best });
+    let lane_cap = lane_cap.max(1);
 
     let mut best: Option<(&ModelFootprint, u32, u32)> = None;
     for fp in candidates {
@@ -274,6 +289,8 @@ pub fn allocate(
         served,
         unserved,
         device_bytes: device_bytes(fp, window, lanes),
+        lane_cap,
+        lane_cap_by,
     })
 }
 
@@ -313,6 +330,21 @@ mod tests {
 
     fn minds(windows: &[u32]) -> Vec<LaneRequirement> {
         windows.iter().map(|w| LaneRequirement::declared(Uuid::new_v4(), *w)).collect()
+    }
+
+    // what this catches (Codex on #4971): a cap read as a budget refusal. With a roomy budget,
+    // one performance core and two minds, the second mind is unserved because the CORE cap
+    // offered one lane, not because the budget refused it; the allocation says which.
+    #[test]
+    fn an_allocation_names_the_cap_that_limited_its_lanes() {
+        let roomy_one_core = HostBudget { usable_bytes: 200 * GB, perf_cores: 1 };
+        let a = allocate(&minds(&[40_000, 40_000]), &[qwen27b()], &roomy_one_core, 8).expect("allocation");
+        assert_eq!((a.lanes, a.lane_cap, a.lane_cap_by), (1, 1, crate::cognition::serving_plan::LaneCapBy::Cores));
+        assert_eq!(a.unserved.len(), 1, "unserved by the cap, whatever the budget");
+        // On a tight budget the cap stays at two minds, and the BUDGET packs fewer.
+        let a = allocate(&minds(&[40_000, 40_000]), &[qwen27b()], &budget(23), 8).expect("allocation");
+        assert_eq!((a.lane_cap, a.lane_cap_by), (2, crate::cognition::serving_plan::LaneCapBy::Requirements));
+        assert!(a.lanes < a.lane_cap, "the budget packed {} of {}", a.lanes, a.lane_cap);
     }
 
     // what this catches: the 5090 as it stood (2026-09-20) — two coders at ~56k with
