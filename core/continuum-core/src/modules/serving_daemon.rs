@@ -5893,7 +5893,7 @@ fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
 }
 
 /// The serving engine's `/props`. Bounded: a localhost read of cached meta, taken only on the
-/// sampler's interval; `None` when the lane does not answer in time.
+/// sampler's interval; `None` when the lane does not answer in time or answers with an error.
 async fn engine_props() -> Option<serde_json::Value> {
     let url = format!("{}/props", crate::inference::llama_server::serving_root());
     reqwest::Client::new()
@@ -5901,6 +5901,10 @@ async fn engine_props() -> Option<serde_json::Value> {
         .timeout(std::time::Duration::from_millis(500))
         .send()
         .await
+        .ok()?
+        // a 503 while loading, or a 500, is an engine that did not ANSWER its props, never
+        // an engine that predates a field (Codex on #4961): its error body must not be read
+        .error_for_status()
         .ok()?
         .json::<serde_json::Value>()
         .await

@@ -118,14 +118,22 @@ pub struct EngineContext {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineContextReading {
     Read(EngineContext),
-    /// No `memory_breakdown`: an engine older than fork #25.
+    /// A well-formed props document with no `memory_breakdown`: an engine older than fork #25.
     Absent,
-    /// A breakdown is there, but it or the slot geometry does not parse, overflows, or is zero.
+    /// Not a props document (null, an error envelope), or a breakdown or slot geometry that
+    /// does not parse, overflows, or is zero.
     Invalid,
 }
 
 impl EngineContextReading {
     pub fn of(props: &serde_json::Value) -> Self {
+        // Only a WELL-FORMED props document can be an engine that predates the field: every
+        // llama-server answers `/props` with its `default_generation_settings`. A `null`, an
+        // error envelope (`{"error": …}`) or anything else without it is not an old engine,
+        // and a missing breakdown there is no reading (Codex on #4961).
+        if props.get("default_generation_settings").is_none() {
+            return Self::Invalid;
+        }
         if props.get("memory_breakdown").is_none() {
             return Self::Absent;
         }
@@ -201,6 +209,13 @@ mod tests {
         assert_eq!(
             EngineContextReading::of(&serde_json::json!({"total_slots": 1, "default_generation_settings": {"n_ctx": 4096}})),
             EngineContextReading::Absent
+        );
+        // and what is not a props document at all is no reading, never a legacy engine
+        assert_eq!(EngineContextReading::of(&serde_json::Value::Null), EngineContextReading::Invalid, "null");
+        assert_eq!(
+            EngineContextReading::of(&serde_json::json!({"error": {"code": 503, "message": "Loading model", "type": "unavailable_error"}})),
+            EngineContextReading::Invalid,
+            "an error envelope"
         );
     }
 
