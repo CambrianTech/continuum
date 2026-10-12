@@ -326,8 +326,19 @@ fn assemble_workspace_cycle(
     ));
     // Persistence belongs to resident registration, independently of whether
     // recall runs inline or deferred. Constructing a fork grants no disk access.
-    if let Some(persisted) = restored {
+    if let Some(mut persisted) = restored {
         let n = persisted.wm.entries.len();
+        // Results restored from a snapshot written before results were saved (#4963) carry no
+        // handle: they predate custody, they are not failed saves. Save them now, so they
+        // collapse within the share like any saved result and the "save failed" probe names
+        // only a real failure (BigMama's live receipt on the 5090, card df0035bf).
+        for (_, _, text, _, handle) in persisted.wm.recent_results.iter_mut() {
+            if handle.is_none() {
+                *handle = crate::cognition::tool_executor::spill::retain(cfg.persona_id, text)
+                    .handle()
+                    .map(str::to_owned);
+            }
+        }
         // The previous life's handoff re-seeds this one: her ledger and card are known at
         // the NEXT seam too, without a wall read (card 49b5e806).
         if let Some(handoff) = persisted.wm.handoff.as_ref() {
