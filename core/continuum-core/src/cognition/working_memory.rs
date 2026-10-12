@@ -619,9 +619,11 @@ impl WorkingMemory {
         // wall_source.rs 25+ times in four hours and landed no edit because every earlier
         // read reached her next turn as its last ~2,100 chars (Joel: "the clipping I've
         // yelled about for months"). The budget decides how many WHOLE results fit
-        // (`recent_results_chars`); the rest collapse to pointers at settlement.
+        // (`recent_results_chars`); the rest collapse to pointers at settlement. One
+        // result larger than its share is kept as the same pointer the latest slot
+        // shows, so the ring holds units, never a fragment and never an unbounded body.
         {
-            let tail = a.to_string();
+            let tail = clip_action_full(a, &self.budget()).into_owned();
             // A receipt can contain several operations. Retain their typed names
             // in order instead of attributing the whole batch to its first call.
             let mut label = String::new();
