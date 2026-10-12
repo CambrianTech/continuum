@@ -241,7 +241,7 @@ pub(crate) fn footprint_from_parts(
     // proxy is only for models nobody measured, and it caps below any measured
     // frontier so the planner's "most capable that fits" means capable, not big.
     let proxy_rank = gb.saturating_add(tool_bonus).min(u16::from(UNMEASURED_RANK_CAP)) as u8;
-    let capability_rank = measured_capability.unwrap_or(proxy_rank);
+    let capability_rank = measured_capability.unwrap_or(proxy_rank); // unwrap_or: measured beats proxy, the proxy ranks only a model nobody measured
 
     Some(ModelFootprint {
         model_id: id.to_string(),

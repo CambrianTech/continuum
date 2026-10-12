@@ -26,7 +26,7 @@ pub(crate) mod academy_batch;
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
-use crate::cognition::serving_plan::footprint::{apply_kv_quantization, footprint_for};
+use crate::cognition::serving_plan::footprint::{footprint_for, footprint_from_parts};
 use crate::cognition::serving_plan::{
     plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint,
     ServingDemand, ServingPlan,
@@ -8122,7 +8122,7 @@ pub(crate) mod tests {
         );
     }
     use super::*;
-    use crate::cognition::serving_plan::footprint::footprint_from_parts;
+    use crate::cognition::serving_plan::footprint::apply_kv_quantization;
     use crate::cognition::serving_plan::MIN_SERVE_CTX;
     use crate::model_registry::types::Capability;
 
