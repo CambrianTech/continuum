@@ -199,8 +199,9 @@ impl ActionCommand for ToolOutput {
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         let content = std::fs::read_to_string(&path).map_err(|_| {
             CommandError::Invalid(format!(
-                "no saved output with id `{}` — it may have aged out, or the id is \
-                 mistyped. Use the `outputId` from the most recent elision marker.",
+                "no saved output with id `{}`: the id is mistyped, or it was deleted under \
+                 disk pressure after no working memory pointed at it any more. Use an \
+                 `outputId` from a pointer still in view.",
                 params.handle
             ))
         })?;

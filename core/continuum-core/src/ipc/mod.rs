@@ -1751,11 +1751,15 @@ pub fn start_server(
         const SPILL_POOL_SOFT_CAP_BYTES: u64 = 1024 * 1024 * 1024;
         match crate::cognition::tool_executor::spill::spill_root() {
             Ok(spill_dir) => {
-                broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
-                    "tool-output-spill",
-                    spill_dir,
-                    SPILL_POOL_SOFT_CAP_BYTES,
-                ))
+                broker.register(Arc::new(
+                    crate::paging::FilesystemTierPool::new(
+                        "tool-output-spill",
+                        spill_dir,
+                        SPILL_POOL_SOFT_CAP_BYTES,
+                    )
+                    // A handle a live mind still points at is never evicted (card 9197cd01).
+                    .protecting(Arc::new(crate::cognition::tool_executor::spill::is_live)),
+                )
                     as Arc<dyn crate::paging::pool::ResourcePool>);
                 log_info!(
                     "ipc",

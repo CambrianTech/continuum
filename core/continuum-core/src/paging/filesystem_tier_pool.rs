@@ -61,6 +61,10 @@ pub struct FilesystemTierPool {
     /// read may also refresh; the lock window is small and contention
     /// is bounded by the broker's tick interval anyway.
     snapshot: Mutex<Option<DirSnapshot>>,
+    /// Files this guard names are never evicted, whatever their age: a cache whose entries
+    /// something live still points at (the tool-output spill: a handle in a mind's working
+    /// memory). `None` evicts purely oldest-first.
+    protect: Option<std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync>>,
 }
 
 impl FilesystemTierPool {
@@ -75,7 +79,14 @@ impl FilesystemTierPool {
             dir,
             max_bytes,
             snapshot: Mutex::new(None),
+            protect: None,
         }
+    }
+
+    /// Never evict a file `protect` names. Oldest-first still orders the rest.
+    pub fn protecting(mut self, protect: std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync>) -> Self {
+        self.protect = Some(protect);
+        self
     }
 
     /// Recompute or reuse the cached directory snapshot.
@@ -128,6 +139,15 @@ impl ResourcePool for FilesystemTierPool {
         for (path, size, _mtime) in &snap.files {
             if freed >= want_bytes {
                 break;
+            }
+            if self.protect.as_ref().is_some_and(|protect| protect(path)) {
+                crate::probe!(
+                    class = "pool.evict_protected",
+                    tier = %self.tier_name,
+                    path = %path.display(),
+                    "a file something live still points at is not evicted"
+                );
+                continue;
             }
             match fs::remove_file(path) {
                 Ok(()) => {
@@ -277,6 +297,33 @@ mod tests {
             "oldest two files deleted"
         );
         assert!(paths[2].exists(), "newest file preserved");
+    }
+
+    /// What this catches: eviction deleting a file something live still points at (card
+    /// 9197cd01: a spill a mind's working memory references). The protected OLDEST file
+    /// survives; eviction moves on to the next-oldest instead.
+    #[test]
+    fn a_protected_file_is_never_evicted_however_old() {
+        let dir = tempdir().unwrap();
+        let now = SystemTime::now();
+        let paths: Vec<PathBuf> = (0..3)
+            .map(|i| {
+                let path = dir.path().join(format!("h{i}.log"));
+                fs::write(&path, vec![b'.'; 1000]).unwrap();
+                fs::File::open(&path)
+                    .unwrap()
+                    .set_modified(now - Duration::from_secs(100 - i * 40))
+                    .unwrap();
+                path
+            })
+            .collect();
+        let oldest = paths[0].clone();
+        let pool = FilesystemTierPool::new("guarded", dir.path().to_path_buf(), 10_000)
+            .protecting(std::sync::Arc::new(move |p: &Path| p == oldest));
+        assert_eq!(pool.evict_at_least(1000), 1000);
+        assert!(paths[0].exists(), "the protected oldest file survives");
+        assert!(!paths[1].exists(), "the next-oldest goes instead");
+        assert!(paths[2].exists());
     }
 
     /// What this catches: a pool pointed at a non-existent dir

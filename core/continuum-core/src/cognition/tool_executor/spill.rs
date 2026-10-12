@@ -29,6 +29,45 @@ use uuid::Uuid;
 
 use crate::ai::types::ResultCustody;
 
+/// The handles live minds still point at, one set per holder (a working memory's instance).
+/// Disk-pressure eviction of the spill directory never deletes one of these
+/// ([`is_live`]): saving a result is custody only if the file outlives every pointer to it
+/// (Astra on #4963). One owner: working memory republishes its whole set whenever its ring
+/// changes and withdraws it when it drops, so no reference count can drift.
+static LIVE_HANDLES: std::sync::OnceLock<
+    parking_lot::Mutex<std::collections::HashMap<u64, std::collections::HashSet<String>>>,
+> = std::sync::OnceLock::new();
+
+fn live_handles(
+) -> &'static parking_lot::Mutex<std::collections::HashMap<u64, std::collections::HashSet<String>>> {
+    LIVE_HANDLES.get_or_init(Default::default)
+}
+
+/// Replace `holder`'s set of referenced handles.
+pub fn publish_live_handles(holder: u64, handles: std::collections::HashSet<String>) {
+    let mut live = live_handles().lock();
+    if handles.is_empty() {
+        live.remove(&holder);
+    } else {
+        live.insert(holder, handles);
+    }
+}
+
+/// `holder` references nothing any more (its working memory dropped).
+pub fn withdraw_live_handles(holder: u64) {
+    live_handles().lock().remove(&holder);
+}
+
+/// Whether a spill file at `path` is referenced by a live mind. The eviction guard the
+/// spill directory's pool is built with: a file named `<handle>.log` whose handle any
+/// holder references is never deleted under pressure.
+pub fn is_live(path: &Path) -> bool {
+    let Some(handle) = path.file_stem().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    live_handles().lock().values().any(|set| set.contains(handle))
+}
+
 /// A spilled tool result: the content-addressed handle (the filename stem the
 /// persona quotes back to `tool/output`), where it landed, and how big it was.
 #[derive(Debug, Clone)]
@@ -454,6 +493,22 @@ mod tests {
         std::fs::write(&blocked, b"x").unwrap();
         assert_eq!(retain_in(&blocked, persona, batch), ResultCustody::Unsaved);
         std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // what this catches: eviction erasing evidence a mind still points at (Astra on #4963).
+    // A published handle is live; withdrawing the holder releases it; a path that is not a
+    // spill file is never mistaken for one.
+    #[test]
+    fn a_referenced_handle_is_live_until_its_holder_withdraws() {
+        let holder = u64::MAX - 7;
+        let handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let path = std::path::PathBuf::from(format!("/spill/p/{handle}.log"));
+        assert!(!is_live(&path));
+        publish_live_handles(holder, [handle.clone()].into_iter().collect());
+        assert!(is_live(&path));
+        withdraw_live_handles(holder);
+        assert!(!is_live(&path));
+        assert!(!is_live(std::path::Path::new("/")));
     }
 
     // what this catches: a round-trip through the root-injected core — spill
