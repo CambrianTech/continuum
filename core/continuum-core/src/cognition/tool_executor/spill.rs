@@ -68,30 +68,23 @@ pub fn withdraw_live_handles(holder: u64) {
 }
 
 /// THE atomic retain-and-pin: a save that is live from before its file exists until a working
-/// memory has published a set naming it. [`LivePin::retain`] enters the handle (a content hash,
+/// memory has published a set naming it. `LivePin::retain_in` enters the handle (a content hash,
 /// known before the write) into the same live set eviction reads ([`is_live`]), under the same
 /// lock, and only then writes the file. So no evictor, sequential or concurrent, ever sees a new
 /// file unpinned (Codex on #4982). Dropping the pin withdraws its set; hold it until the memory
 /// that references the results has published. The restore path uses it here; the live path
 /// (command executor, act/observe) adopting it is card 12b080c3.
 #[must_use = "the saved handles are unprotected once this drops; hold it until a memory has published them"]
-pub struct LivePin(LiveHolder);
+pub(crate) struct LivePin(LiveHolder);
 
 impl LivePin {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         LivePin(LiveHolder::Pin(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
     }
 
     /// Save `content` exactly, pinned before it is written: `Whole{handle}`, or `Unsaved` when
     /// the save failed (probed; the caller keeps the text whole).
-    pub fn retain(&self, persona_id: Uuid, content: &str) -> ResultCustody {
-        match spill_root() {
-            Ok(root) => self.retain_in(&root, persona_id, content),
-            Err(e) => unretained(content, &e),
-        }
-    }
-
     fn retain_in(&self, root: &Path, persona_id: Uuid, content: &str) -> ResultCustody {
         let handle = handle_of(content);
         let entered = self.hold(&handle);
@@ -131,7 +124,7 @@ impl Drop for LivePin {
 /// the mind saw it through one [`LivePin`], pinned before its write (the persisted checkpoint is
 /// the old snapshot and names none of them). A save that fails leaves its handle `None` and its
 /// text whole (probed `Unsaved`).
-pub fn retain_handleless<'a>(
+pub(crate) fn retain_handleless<'a>(
     persona_id: Uuid,
     results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
 ) -> LivePin {
