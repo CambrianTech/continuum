@@ -127,7 +127,7 @@ pub struct ToolResult {
     #[ts(optional)]
     pub is_error: Option<bool>, // True if tool execution failed
     /// Where the WHOLE result lives and what `content` is, set by its producer
-    /// (`spill::whole_or_handle`). Never on the provider wire (`skip`): it exists so
+    /// (`spill::LivePin::whole_or_handle`). Never on the provider wire (`skip`): it exists so
     /// working memory can leave a pointer that RESOLVES when this result leaves view
     /// (collapse, never delete — 2026-08-24), and so a reader can tell the whole result
     /// from a pointer to it without guessing from the text.

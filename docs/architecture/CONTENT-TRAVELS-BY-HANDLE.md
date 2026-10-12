@@ -10,7 +10,7 @@
 >
 > | want | use | where |
 > |---|---|---|
-> | park an oversized tool result and hand back a reference | `spill::spill()` | `cognition/tool_executor/spill.rs` |
+> | park an oversized tool result and hand back a reference | `spill::LivePin::whole_or_handle()` | `cognition/tool_executor/spill.rs` |
 > | let a citizen page / grep it | **`tool/output`** | `commands/tool/output.rs` |
 >
 > `spill` is content-addressed, per-persona-scoped *by directory layout* (hex-only handle
@@ -231,7 +231,7 @@ the one-prompt constraint lifts, it is encoding the constraint instead of the in
    rule, applied honestly).
 3. ~~Working memory re-cuts a handle-backed result~~ — **done (card 735a3183,
    2026-10-12).** The handle travels as DATA (`NativeToolResult.spill_handle`), and
-   `spill::whole_or_handle` is the ONE decision: a result within the window's share for one
+   `spill::LivePin::whole_or_handle` is the ONE decision: a result within the window's share for one
    result is shown whole; over it, it is saved whole and the mind is shown a pointer naming
    the handle and the `tool/output` filters, never a head, a tail or a head+tail. The
    executor's head+tail fold, the recency head cut and the recent-results tail-keep are
@@ -242,6 +242,15 @@ the one-prompt constraint lifts, it is encoding the constraint instead of the in
    fact cuts, and working memory's collapsed-pointer ring, which still keeps a fixed 12
    pointers and drops the oldest. Each goes through `whole_or_handle` or the budget, or names
    why its unit differs.
+5. **Custody is pinned from before the write (cards 12b080c3, df0035bf, 2026-10-12).** Every
+   save goes through one `LivePin`, one per batch: the handle (a content hash) enters the
+   live set before its file is written, and eviction (`evict_unless_live`) decides and deletes
+   under that same lock. The act seam holds the batch's pin until working memory has recorded
+   the batch, and working memory publishes the receipt's handle and each call's own.
+   **Still open, owner Cormac (card 12b080c3):** a call's custody is `#[serde(skip)]` on
+   `ToolResult`, so after a restart the checkpoint names a receipt's handle but not the
+   per-call handles its saved text points at. A pointer inside a saved receipt has to keep its
+   target alive as long as the receipt is.
 
 ## Forbidden moves
 

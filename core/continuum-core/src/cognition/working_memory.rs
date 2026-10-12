@@ -583,7 +583,7 @@ impl WorkingMemory {
     /// `room` scopes the archived head to the room the act was FOR (the act
     /// path passes it; legacy text callers don't have it) — the steps ledger
     /// renders this-room acts first (CAUSAL-MEMORY-GRAPH.md slice B).
-    /// `custody` is where `rendered` itself is saved (`spill::retain`): the handle the results
+    /// `custody` is where `rendered` itself is saved (`spill::LivePin::retain`): the handle the results
     /// ring's pointer names when this entry collapses. `Unsaved` entries never collapse.
     pub fn record_receipt_typed(
         &self,
@@ -623,7 +623,7 @@ impl WorkingMemory {
         // wall_source.rs 25+ times in four hours and landed no edit because every earlier
         // read reached her next turn as its last ~2,100 chars (Joel: "the clipping I've
         // yelled about for months"). The producer already fitted it (whole, or its
-        // handle: `spill::whole_or_handle`); the budget decides how many of these units
+        // handle: `spill::LivePin::whole_or_handle`); the budget decides how many of these units
         // fit (`recent_results_chars`) and the rest collapse to pointers at settlement.
         {
             let tail = a.to_string();
@@ -652,7 +652,6 @@ impl WorkingMemory {
             // ([`Self::record_settlement`] → `collapse_results_over_cap`), the
             // boundary where the prompt re-prefills anyway.
         }
-        self.publish_live_handles();
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
@@ -695,6 +694,11 @@ impl WorkingMemory {
         while e.len() > self.capacity {
             e.pop_front();
         }
+        drop(e);
+        // After BOTH the ring and the entry carrying this batch's acts: the set published
+        // here names the receipt's handle and each call's, which is what lets the act seam
+        // drop the pin that held them since before they were written (card 12b080c3).
+        self.publish_live_handles();
     }
 
     /// Append one receipt head line to the proprioception archive and evict oldest-first
@@ -1377,6 +1381,15 @@ impl WorkingMemory {
             .filter_map(|(_, _, _, _, handle)| handle.clone())
             .collect();
         handles.extend(self.evicted_pointers.lock().iter().map(|(_, handle)| handle.clone()));
+        // Each call's own saved result: a receipt shows a pointer to it, so it is referenced
+        // for as long as the entry holding that act is (card 12b080c3).
+        handles.extend(
+            self.entries
+                .lock()
+                .iter()
+                .flat_map(|entry| entry.acts.iter())
+                .filter_map(|act| act.output.result.custody.handle().map(str::to_owned)),
+        );
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
     }
 
@@ -1849,7 +1862,7 @@ impl Drop for WorkingMemory {
 mod tests {
     use super::*;
 
-    /// A receipt saved under `handle` (what `spill::retain` returns in production).
+    /// A receipt saved under `handle` (what `spill::LivePin::retain` returns in production).
     fn saved(handle: &str) -> crate::ai::types::ResultCustody {
         crate::ai::types::ResultCustody::Whole { handle: handle.into() }
     }
@@ -1922,6 +1935,43 @@ mod tests {
         assert!(live(&file), "still referenced by its pointer");
         drop(wm);
         assert!(!live(&file), "released when the mind drops");
+    }
+
+    // what this catches (card 12b080c3): a call's own saved result, shown to her as a pointer
+    // inside its receipt, left out of the live set, so eviction could delete it while the
+    // receipt still names it, and the act seam's pin released before it was published.
+    #[test]
+    fn each_call_s_saved_result_is_live_once_its_receipt_is_recorded() {
+        use crate::ai::types::{ResultCustody, ToolCall, ToolResult};
+        use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+        let call_handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let act = Observation {
+            call: ToolCall { id: "c1".into(), name: "code/read".into(), input: serde_json::json!({}) },
+            output: ToolOutput {
+                image: None,
+                additional_images: None,
+                result: ToolResult {
+                    tool_use_id: "c1".into(),
+                    content: format!("[saved as output `{call_handle}`]"),
+                    is_error: None,
+                    custody: ResultCustody::Pointer { handle: call_handle.clone() },
+                },
+                verb: ToolVerb::classify("code/read"),
+                paths: Vec::new(),
+                verdict: Default::default(),
+            },
+            status: ActStatus::Executed,
+        };
+        let file = std::path::PathBuf::from(format!("/spill/p/{call_handle}.log"));
+        let wm = WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        wm.record_receipt_typed(&[act], "read it", None, ResultCustody::Unsaved);
+        assert!(
+            crate::cognition::tool_executor::spill::is_live(&file),
+            "published by the record itself, before the act seam drops its pin"
+        );
+        drop(wm);
+        assert!(!crate::cognition::tool_executor::spill::is_live(&file), "released with the mind");
     }
 
     // what this catches (BigMama's live receipt of #4963 on the 5090, card df0035bf): restore
@@ -2773,7 +2823,7 @@ mod tests {
     }
 
     // what this catches: a consumer re-cut (the #392 pinned-block clip until 2026-10-12). The
-    // producer fits a result (`spill::whole_or_handle`: whole, or its handle, or whole with
+    // producer fits a result (`spill::LivePin::whole_or_handle`: whole, or its handle, or whole with
     // a failed save said first); working memory shows exactly that, never a head of it,
     // even when it is over the window's share.
     #[tokio::test]

@@ -250,10 +250,13 @@ pub async fn apply_act(
     // shell window hands back handles long before this) — firing means a
     // substrate hang, and the receipt says so.
     const TOOL_BATCH_CEILING: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    // Every result this batch saves stays live from before its file is written until working
+    // memory has recorded the batch below (card 12b080c3).
+    let pin = crate::cognition::tool_executor::spill::LivePin::new();
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         body.executor
-            .execute_native_batch(&fg_calls, &ctx, budget.latest_action_chars()),
+            .execute_native_batch_pinned(&fg_calls, &ctx, budget.latest_action_chars(), &pin),
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
@@ -726,10 +729,12 @@ pub async fn apply_act(
     // one-time recency rendering; `acts` are the id-correlated typed observations.
     // The ring keeps this exact text; save THAT, so the pointer it leaves when it collapses
     // resolves to what she saw, every call of the batch included.
-    let custody =
-        crate::cognition::tool_executor::spill::retain(body.persona_id, observation.trim());
+    let custody = pin.retain(body.persona_id, observation.trim());
     body.working_memory
         .record_receipt_typed(&acts, &observation, Some(room_id), custody);
+    // Recorded and published: working memory now names every handle this batch saved, its
+    // receipt's and each call's, so the pin that held them since before they were written can go.
+    drop(pin);
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }

@@ -67,37 +67,64 @@ pub fn withdraw_live_handles(holder: u64) {
     live_handles().lock().remove(&LiveHolder::Memory(holder));
 }
 
-/// THE atomic retain-and-pin: a save that is live from before its file exists until a working
-/// memory has published a set naming it. `LivePin::retain_in` enters the handle (a content hash,
-/// known before the write) into the same live set eviction reads ([`is_live`]), under the same
-/// lock, and only then writes the file. So no evictor, sequential or concurrent, ever sees a new
-/// file unpinned (Codex on #4982). Dropping the pin withdraws its set; hold it until the memory
-/// that references the results has published. The restore path uses it here; the live path
-/// (command executor, act/observe) adopting it is card 12b080c3. The other half of the
-/// atomicity is eviction's: [`evict_unless_live`] decides and deletes under this same lock.
+/// THE only way a result is saved: a save that is live from before its file exists until a
+/// working memory has published a set naming it. [`LivePin::save_in`] enters the handle (a
+/// content hash, known before the write) into the same live set eviction reads, under the same
+/// lock, and only then writes the file; [`evict_unless_live`] decides and deletes under that same
+/// lock. So no evictor, sequential or concurrent, ever deletes a file a pin holds, new or
+/// existing (Codex on #4982). Dropping the pin withdraws its set: hold it until the memory that
+/// references the results has published them. One pin per batch: the act seam (card 12b080c3)
+/// and the restore path.
 #[must_use = "the saved handles are unprotected once this drops; hold it until a memory has published them"]
-pub(crate) struct LivePin(LiveHolder);
+pub struct LivePin(LiveHolder);
 
 impl LivePin {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         LivePin(LiveHolder::Pin(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
     }
 
-    /// Save `content` exactly, pinned before it is written: `Whole{handle}`, or `Unsaved` when
-    /// the save failed (probed; the caller keeps the text whole).
-    fn retain_in(&self, root: &Path, persona_id: Uuid, content: &str) -> ResultCustody {
+    /// Whole, or saved whole and pointed at: the one place a tool result is fitted to a mind's
+    /// window. `share` is the window's share for one result
+    /// ([`crate::cognition::context_budget::ContextBudget::latest_action_chars`]), the same share
+    /// working memory shows it at, so nothing reaches working memory too big for its view without
+    /// a handle. EVERY result is saved, not only the oversized ones: a result that fits now still
+    /// leaves view later (a settlement collapse, a restore into a smaller window), and the pointer
+    /// it leaves must resolve (Astra on #4963). Saves are content-addressed, so a repeated read
+    /// reuses its file, and the directory is evicted under disk pressure like every spill.
+    pub fn whole_or_handle(&self, full: String, share: usize, persona_id: Uuid) -> Fitted {
+        match spill_root() {
+            Ok(root) => whole_or_handle_in(&root, full, share, persona_id, self),
+            Err(e) => unsaved_whole(full, share, &e),
+        }
+    }
+
+    /// Save `content` exactly as given and name its custody: `Whole{handle}` (it resolves
+    /// byte-identical through `tool/output`), or `Unsaved` when the save failed (probed).
+    /// Working memory's results ring keeps a batch's rendered text; this saves THAT text, so a
+    /// pointer the ring leaves later resolves to what the mind saw, every call of the batch
+    /// included (Astra on #4963).
+    pub fn retain(&self, persona_id: Uuid, content: &str) -> ResultCustody {
+        match spill_root() {
+            Ok(root) => retain_in(&root, persona_id, content, self),
+            Err(e) => unretained(content, &e),
+        }
+    }
+
+    /// THE save: content-addressed, pinned before it is written, unpinned again if the write
+    /// fails (only an entry this save added; an identical result this pin already holds stays).
+    fn save_in(&self, root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
         let handle = handle_of(content);
         let entered = self.hold(&handle);
         match write_in(root, persona_id, &handle, content) {
-            Ok(_) => ResultCustody::Whole { handle },
+            Ok(path) => Ok(SpillRef { bytes: content.len(), lines: content.lines().count(), handle, path }),
             Err(e) => {
                 if entered {
                     if let Some(set) = live_handles().lock().get_mut(&self.0) {
                         set.remove(&handle);
                     }
                 }
-                unretained(content, &e)
+                Err(e)
             }
         }
     }
@@ -131,7 +158,7 @@ pub(crate) fn retain_handleless<'a>(
 ) -> LivePin {
     let pin = LivePin::new();
     match spill_root() {
-        Ok(root) => retain_handleless_with(|text| pin.retain_in(&root, persona_id, text), results),
+        Ok(root) => retain_handleless_with(|text| retain_in(&root, persona_id, text, &pin), results),
         Err(e) => retain_handleless_with(|text| unretained(text, &e), results),
     }
     pin
@@ -252,13 +279,6 @@ pub fn spill_root() -> std::io::Result<PathBuf> {
     Ok(home.join(".continuum").join("tool-output"))
 }
 
-/// Spill `content` for `persona_id` and return its [`SpillRef`]. Content-
-/// addressed: the handle is derived from the bytes, so re-spilling identical
-/// output is idempotent (same file, no duplication).
-pub fn spill(persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
-    spill_in(&spill_root()?, persona_id, content)
-}
-
 /// How a tool result reached a mind: the three custody states, and the only text a mind is
 /// ever shown for one. A consumer renders these; it never invents a recovery from a raw string.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,35 +307,8 @@ impl Fitted {
     }
 }
 
-/// Whole, or saved whole and pointed at: the one place a tool result is fitted to a mind's
-/// window. `share` is the window's share for one result
-/// ([`crate::cognition::context_budget::ContextBudget::latest_action_chars`]), the same share
-/// working memory shows it at, so nothing reaches working memory too big for its view without
-/// a handle. EVERY result is saved, not only the oversized ones: a result that fits now still
-/// leaves view later (a settlement collapse, a restore into a smaller window), and the pointer
-/// it leaves must resolve (Astra on #4963). Saves are content-addressed, so a repeated read
-/// reuses its file, and the directory is evicted under disk pressure like every spill.
-pub fn whole_or_handle(full: String, share: usize, persona_id: Uuid) -> Fitted {
-    match spill_root() {
-        Ok(root) => whole_or_handle_in(&root, full, share, persona_id),
-        Err(e) => unsaved_whole(full, share, &e),
-    }
-}
-
-/// Save `content` exactly as given and name its custody: `Whole{handle}` (it resolves
-/// byte-identical through `tool/output`), or `Unsaved` when the save failed (probed). Working
-/// memory's results ring keeps a batch's rendered text; this saves THAT text, so a pointer the
-/// ring leaves later resolves to what the mind saw, every call of the batch included (Astra on
-/// #4963: one call's handle for a multi-call batch implied the rest were recoverable).
-pub fn retain(persona_id: Uuid, content: &str) -> ResultCustody {
-    match spill_root() {
-        Ok(root) => retain_in(&root, persona_id, content),
-        Err(e) => unretained(content, &e),
-    }
-}
-
-fn retain_in(root: &Path, persona_id: Uuid, content: &str) -> ResultCustody {
-    match spill_in(root, persona_id, content) {
+fn retain_in(root: &Path, persona_id: Uuid, content: &str, pin: &LivePin) -> ResultCustody {
+    match pin.save_in(root, persona_id, content) {
         Ok(r) => ResultCustody::Whole { handle: r.handle },
         Err(e) => unretained(content, &e),
     }
@@ -362,20 +355,9 @@ fn write_in(root: &Path, persona_id: Uuid, handle: &str, content: &str) -> std::
     Ok(path)
 }
 
-fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
-    let handle = handle_of(content);
-    let path = write_in(root, persona_id, &handle, content)?;
-    Ok(SpillRef {
-        handle,
-        path,
-        bytes: content.len(),
-        lines: content.lines().count(),
-    })
-}
-
-fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid) -> Fitted {
+fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid, pin: &LivePin) -> Fitted {
     let chars = full.chars().count();
-    match spill_in(root, persona_id, &full) {
+    match pin.save_in(root, persona_id, &full) {
         Ok(r) if chars <= share => Fitted::Complete {
             text: full,
             handle: r.handle,
@@ -598,7 +580,7 @@ mod tests {
             ("third result".to_string(), None),
         ];
         let pin = LivePin::new();
-        retain_handleless_with(|t| pin.retain_in(&tmp, persona, t), results.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        retain_handleless_with(|t| retain_in(&tmp, persona, t, &pin), results.iter_mut().map(|(t, h)| (t.as_str(), h)));
         for (text, handle) in [&results[0], &results[2]] {
             let handle = handle.as_deref().expect("a handle-less result is saved");
             assert_eq!(std::fs::read_to_string(resolve_in(&tmp, persona, handle).unwrap()).unwrap(), *text, "byte-identical");
@@ -615,7 +597,7 @@ mod tests {
         std::fs::write(&blocked, b"not a directory").unwrap();
         let mut failed = vec![("kept whole".to_string(), None::<String>)];
         let failing = LivePin::new();
-        retain_handleless_with(|t| failing.retain_in(&blocked, persona, t), failed.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        retain_handleless_with(|t| retain_in(&blocked, persona, t, &failing), failed.iter_mut().map(|(t, h)| (t.as_str(), h)));
         assert_eq!(failed[0], ("kept whole".to_string(), None), "a failed save keeps its text and claims no handle");
         assert!(live_handles().lock().get(&failing.0).is_none_or(|set| set.is_empty()), "and pins nothing");
 
@@ -626,7 +608,7 @@ mod tests {
         assert!(ordered.hold(&handle), "entered");
         let path = persona_dir(&tmp, persona).join(format!("{handle}.log"));
         assert!(!path.exists() && live_handles().lock().values().any(|set| set.contains(&handle)), "live before written");
-        assert!(matches!(ordered.retain_in(&tmp, persona, "pinned first"), ResultCustody::Whole { .. }) && path.exists());
+        assert!(matches!(retain_in(&tmp, persona, "pinned first", &ordered), ResultCustody::Whole { .. }) && path.exists());
 
         // THE INTERLEAVING (Codex on #4982): a content-addressed file that already exists is
         // never deleted while pinned. Eviction decides and deletes in one critical section, so a
@@ -639,7 +621,7 @@ mod tests {
         });
         assert!(matches!(removal, Removal::Removed) && !path.exists(), "unpinned: removed");
         let again = LivePin::new();
-        assert!(matches!(again.retain_in(&tmp, persona, "pinned first"), ResultCustody::Whole { .. }) && path.exists(), "a pin after the delete rewrites the file");
+        assert!(matches!(retain_in(&tmp, persona, "pinned first", &again), ResultCustody::Whole { .. }) && path.exists(), "a pin after the delete rewrites the file");
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_file(&blocked);
     }
@@ -653,7 +635,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
         let persona = Uuid::new_v4();
         let small = "ok: 2 passed".to_string();
-        let Fitted::Complete { text, handle } = whole_or_handle_in(&tmp, small.clone(), 600, persona)
+        let Fitted::Complete { text, handle } = whole_or_handle_in(&tmp, small.clone(), 600, persona, &LivePin::new())
         else {
             panic!("a fitting result is complete")
         };
@@ -662,7 +644,7 @@ mod tests {
         assert_eq!(std::fs::read_to_string(path).unwrap(), small, "and saved, so it stays reachable");
 
         let body = format!("HEAD-MARK\n{}TAIL-MARK error: boom\n", "compiling module\n".repeat(5000));
-        let Fitted::Stored { shown, handle } = whole_or_handle_in(&tmp, body.clone(), 600, persona)
+        let Fitted::Stored { shown, handle } = whole_or_handle_in(&tmp, body.clone(), 600, persona, &LivePin::new())
         else {
             panic!("an over-share result is saved")
         };
@@ -677,20 +659,20 @@ mod tests {
         std::fs::write(&blocked, b"file where the persona dir must go").unwrap();
         let unsaved_body = "UNSAVED-HEAD ".repeat(100);
         let Fitted::RetentionFailed { shown } =
-            whole_or_handle_in(&blocked, unsaved_body.clone(), 64, persona)
+            whole_or_handle_in(&blocked, unsaved_body.clone(), 64, persona, &LivePin::new())
         else {
             panic!("a failed save is its own state")
         };
         assert!(shown.contains("saving this") && shown.ends_with(&unsaved_body), "kept whole: {shown}");
         let Fitted::RetentionFailed { shown } =
-            whole_or_handle_in(&blocked, "ok".to_string(), 64, persona)
+            whole_or_handle_in(&blocked, "ok".to_string(), 64, persona, &LivePin::new())
         else {
             panic!("a fitting result whose save failed says so too")
         };
         assert!(shown.contains("cannot be reopened") && shown.ends_with("ok"), "{shown}");
 
         // Multibyte bodies measure in chars, the unit the share is in, and never split.
-        let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona).into_parts();
+        let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona, &LivePin::new()).into_parts();
         assert!(!shown.contains('α'));
         std::fs::remove_dir_all(&tmp).ok();
     }
@@ -703,14 +685,14 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
         let persona = Uuid::new_v4();
         let batch = "code/read(a.rs)\nResult:\nfn a() {}\n\ncode/run(t)\nResult:\nerror[E0601]\n";
-        let ResultCustody::Whole { handle } = retain_in(&tmp, persona, batch) else {
+        let ResultCustody::Whole { handle } = retain_in(&tmp, persona, batch, &LivePin::new()) else {
             panic!("the batch is saved")
         };
         let saved = std::fs::read_to_string(resolve_in(&tmp, persona, &handle).unwrap()).unwrap();
         assert_eq!(saved, batch, "both results, byte-identical");
         let blocked = tmp.join("not-a-dir");
         std::fs::write(&blocked, b"x").unwrap();
-        assert_eq!(retain_in(&blocked, persona, batch), ResultCustody::Unsaved);
+        assert_eq!(retain_in(&blocked, persona, batch, &LivePin::new()), ResultCustody::Unsaved);
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -738,7 +720,7 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
         let persona = Uuid::new_v4();
         let body = "line one\nline two\nthe error is here\n";
-        let r = spill_in(&tmp, persona, body).expect("spill");
+        let r = LivePin::new().save_in(&tmp, persona, body).expect("spill");
         assert_eq!(r.handle.len(), 16);
         assert!(r.handle.chars().all(|c| c.is_ascii_hexdigit()));
         let path = resolve_in(&tmp, persona, &r.handle).expect("resolve");
