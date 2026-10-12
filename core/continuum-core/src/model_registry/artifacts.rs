@@ -275,6 +275,25 @@ pub fn resolve_hf_source_for_model_id(model_id: &str) -> Result<String, String> 
     })
 }
 
+/// Whether a request naming `requested` as its base names the model `served_id` serves: the
+/// served row's own id, or the trainable HF base that row declares (`Model::hf_source`). One
+/// row is two spellings: the catalog id that serves it and the HF repo it trains from, and a
+/// training request carrying the second still means the first (card e8a15ab0: Kimi's restored
+/// request named `Qwen/Qwen3.8-27B`, the lane served `ggml-org/Qwen3.8-27B-GGUF`, and the
+/// in-engine trainer was filtered out for a separate trainer that needed the whole weights).
+/// Anchored at the SERVED row, so an HF repo two rows share never picks a row for the caller.
+pub fn names_the_same_base(served_id: &str, requested: &str) -> bool {
+    names_the_same_base_in(crate::model_registry::try_global(), served_id, requested)
+}
+
+fn names_the_same_base_in(registry: Option<&crate::model_registry::Registry>, served_id: &str, requested: &str) -> bool {
+    served_id == requested
+        || registry
+            .and_then(|registry| registry.model(served_id))
+            .and_then(|row| row.hf_source.as_deref())
+            .is_some_and(|hf| hf == requested)
+}
+
 pub fn resolve_local_model_dir_for_model_id(model_id: &str) -> Option<PathBuf> {
     resolve_from_local_model_roots(model_id).and_then(|gguf| gguf.parent().map(Path::to_path_buf))
 }
@@ -684,6 +703,27 @@ pub(crate) fn with_test_home<T>(home: &Path, f: impl FnOnce() -> T) -> T {
 
 #[cfg(test)]
 mod tests {
+    // what this catches: card e8a15ab0. A training request naming a served model by its HF
+    // base (Kimi's restored request: `Qwen/Qwen3.8-27B`) must match the lane serving that row
+    // (`ggml-org/Qwen3.8-27B-GGUF`); an exact string compare filtered the in-engine trainer
+    // out and left a separate trainer waiting on 29.9 GB that never frees. And it must not
+    // over-match: another base, or no registry, is not the same base.
+    #[test]
+    fn a_request_naming_the_served_rows_hf_base_names_that_base() {
+        const SERVED: &str = "ggml-org/Qwen3.8-27B-GGUF";
+        let row = crate::model_registry::catalog::models()
+            .into_iter()
+            .find(|m| m.id == SERVED)
+            .expect("the catalog serves Qwen3.8-27B");
+        let hf = row.hf_source.clone().expect("the row declares its trainable base");
+        let registry = crate::model_registry::Registry::from_catalog(vec![row], crate::model_registry::catalog::providers())
+            .expect("one catalog row loads");
+        assert!(names_the_same_base_in(Some(&registry), SERVED, SERVED), "the catalog id is its own base");
+        assert!(names_the_same_base_in(Some(&registry), SERVED, &hf), "the row's HF base names the same base");
+        assert!(!names_the_same_base_in(Some(&registry), SERVED, "Qwen/Qwen3-32B"), "another base does not");
+        assert!(!names_the_same_base_in(None, SERVED, &hf), "with no registry only the exact id matches");
+    }
+
     // what this catches: the embedded-MTP capability signal lying in either
     // direction. A false positive would push `--spec-type draft-mtp` onto a
     // model with no nextn head (llama-server may refuse or misbehave); a false
