@@ -290,13 +290,22 @@ pub(super) struct WindowPlan {
     pub(super) fit: WindowFit,
 }
 
-pub(super) fn choose_window(served: u32, available: u64, rows: &[(u32, u32, u64)]) -> WindowPlan {
+/// `rows` are whole-run footprints, what the model is fitted to. `bounds` are every measured row,
+/// a graph-only refusal included: a graph alone over `available` proves the whole run is over it
+/// too, so it caps the window whichever it included (card 030d70f0, where the 5090's graph-only
+/// refusals were invisible to every plan read).
+pub(super) fn choose_window(
+    served: u32,
+    available: u64,
+    rows: &[(u32, u32, u64)],
+    bounds: &[(u32, u32, u64)],
+) -> WindowPlan {
     // A MEASUREMENT IS A HARD BOUND (Cormac on #4939): a window measured at the smallest chunk
     // that did not fit what is free now cannot fit at it, nor at any larger window, whatever the
     // fit predicts. Without the cap a non-physical or single-chunk fit could plan the refused
     // window again, and the refusal ladder's return would loop. Each floor refusal files its row
     // and lowers the cap, so the ladder always moves down, and ends at the smallest window.
-    let cap = rows
+    let cap = bounds
         .iter()
         .filter(|&&(_, c, b)| c == TRAINING_CHUNK_MIN && b > available)
         .map(|&(w, _, _)| train_window(w.saturating_sub(256).max(TRAINING_WINDOW_MIN)))
@@ -486,14 +495,14 @@ mod tests {
             (66_304, 256, 15_282_871_936),
         ];
         let free = 4_552_916_992;
-        let plan = choose_window(67_584, free, &rows);
+        let plan = choose_window(67_584, free, &rows, &rows);
         assert_eq!(plan.window, TRAINING_WINDOW_MIN, "the window bottoms out at the floor");
         let WindowFit::PredictedNoFit { predicted_at_floor } = plan.fit else {
             panic!("the 5090's rows: the model predicts no window fits beside serving, got {:?}", plan.fit);
         };
         assert!(predicted_at_floor > free, "the prediction at the floor exceeds what is free: {predicted_at_floor}");
-        assert_eq!(choose_window(67_584, free, &rows[..4]).fit, WindowFit::Unmodelled, "one window measured: no model, no claim");
-        assert_eq!(choose_window(67_584, u64::MAX, &rows).fit, WindowFit::Fits, "with room for it, the window fits");
+        assert_eq!(choose_window(67_584, free, &rows[..4], &rows[..4]).fit, WindowFit::Unmodelled, "one window measured: no model, no claim");
+        assert_eq!(choose_window(67_584, u64::MAX, &rows, &rows).fit, WindowFit::Fits, "with room for it, the window fits");
     }
 
     // what this catches (card d6dae498, and the 5090 2026-10-10 job 00431d4d): the chunk the core
@@ -521,17 +530,17 @@ mod tests {
         let model = GraphModel::fit(&rows).expect("test: rows fit");
         assert!(model.per_token_per_pos > 0.0 && model.per_pos > 0.0, "the window and KV terms are real");
         let free = 4142 * mib;
-        let w = choose_window(68608, free, &rows).window;
+        let w = choose_window(68608, free, &rows, &rows).window;
         assert!(w % 256 == 0 && w < 68608 && w >= TRAINING_WINDOW_MIN, "a smaller 256-multiple window: {w}");
         assert!(model.bytes(w, TRAINING_CHUNK_MIN) <= free, "that fits");
         assert!(model.bytes(w + 256, TRAINING_CHUNK_MIN) > free || w == 68608, "and is the largest that does");
-        assert_eq!(choose_window(68608, free, &rows[..1]).window, 68608, "one window measured: nothing to calculate, served");
+        assert_eq!(choose_window(68608, free, &rows[..1], &rows[..1]).window, 68608, "one window measured: nothing to calculate, served");
         // and the chunk at that window comes from the same model, never the default 512 that the
         // window was not sized for (Cormac on #4920)
         let (c, _) = choose_chunk(w, free, |c| Some(model.bytes(w, c)));
         assert!(model.bytes(w, c) <= free, "the chunk at the calculated window fits too: {c}");
-        assert_eq!(choose_window(1536, free, &rows).window, 1536, "never above served");
-        assert_eq!(choose_window(68608, 1, &rows).window, TRAINING_WINDOW_MIN, "never under the floor");
+        assert_eq!(choose_window(1536, free, &rows, &rows).window, 1536, "never above served");
+        assert_eq!(choose_window(68608, 1, &rows, &rows).window, TRAINING_WINDOW_MIN, "never under the floor");
         // the chunk: unmeasured calibrates at the default; a measurement that fits leases;
         // one that does not fit halves the chunk and asks that shape; the smallest stands
         let gib = 1024u64 * 1024 * 1024;
