@@ -123,7 +123,7 @@ impl ContextBudget {
     }
 
     /// Like [`Self::live`], but an unknown window resolves to the substrate's own declared
-    /// minimum ([`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX)) instead of
+    /// minimum ([`MIN_SERVE_CTX`](crate::inference::planning::MIN_SERVE_CTX)) instead of
     /// "no bound".
     ///
     /// Use this ONLY where an unbounded value would break assembly rather than be trimmed
@@ -141,7 +141,7 @@ impl ContextBudget {
         if live.total_chars.is_some() {
             live
         } else {
-            Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX)
+            Self::from_window(crate::inference::planning::MIN_SERVE_CTX)
         }
     }
 
@@ -169,7 +169,7 @@ fn affordable_for_rate(
     match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
         Some(tps) => crate::inference::prefill_rate::affordable_prompt_tokens(
             tps,
-            crate::cognition::serving_plan::MIN_SERVE_CTX,
+            crate::inference::planning::MIN_SERVE_CTX,
             served,
             audience,
         ),
@@ -446,7 +446,7 @@ const RECALL_DENOM: usize = 10;
         match self.total_chars {
             Some(_) => self.fraction(16),
             None => {
-                Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX).fraction(16)
+                Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(16)
             }
         }
     }
@@ -475,7 +475,7 @@ const RECALL_DENOM: usize = 10;
         match self.total_chars {
             Some(_) => self.fraction(4),
             None => {
-                Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX).fraction(4)
+                Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(4)
             }
         }
     }
@@ -512,7 +512,7 @@ mod tests {
         let got = afford(MeasuredRate { tps: Some(12.5), source: RateSource::Stale });
         assert_eq!(
             got,
-            crate::cognition::serving_plan::MIN_SERVE_CTX,
+            crate::inference::planning::MIN_SERVE_CTX,
             "last hour's rate is still evidence about this box — it must bound the prompt, not be discarded"
         );
         assert!(got < served, "the whole window is what the cancel loop was made of");

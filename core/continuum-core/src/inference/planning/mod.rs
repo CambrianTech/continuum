@@ -7,3 +7,15 @@
 pub mod adaptive_throughput;
 pub mod service_rate;
 pub mod throughput_lease;
+pub mod training_plan;
+
+/// Bare-minimum served window for a model to be runnable at ALL — a hardware
+/// reality floor, NOT a serving target or a cheapening cap. The served window is
+/// sized UP from here to the largest that fits the host budget, capped by BOTH
+/// the model's own trained `context_window` AND the DEMAND ceiling
+/// (`BOOTSTRAP_WORKING_SET` / measured p95) — a lane is provisioned for what
+/// personas actually USE, never maximized to fill RAM. A model whose weights + KV
+/// at even this floor won't fit the GPU budget is simply not a serving option on
+/// this host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
+// context-budget-exempt: the hardware FLOOR the whole serving stack sizes UP from — the one substrate-owned minimum every other bound derives against, and never a cap on anything
+pub const MIN_SERVE_CTX: u32 = 2048;

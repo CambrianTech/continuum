@@ -151,7 +151,7 @@ pub fn plan_for_roles(
             lanes: 1,
             // Runnable floor until the serving daemon publishes a host-fit
             // window.
-            served_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            served_context_window: crate::inference::planning::MIN_SERVE_CTX,
         })
         .collect()
     // TODO #133 slice 14: host every declared role after RoleAwareProvider +
@@ -232,7 +232,7 @@ impl PersonaSpawnerModule {
             serving_base_model: None,
             serving_lanes: 1,
             remembered_lanes: None,
-            serving_context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            serving_context_window: crate::inference::planning::MIN_SERVE_CTX,
             population: 1,
             citizens: vec![RoleId::Helper],
             grid_roster: None,
@@ -306,7 +306,7 @@ impl PersonaSpawnerModule {
             self.serving_lanes = p.lanes.max(1);
             self.serving_context_window = p
                 .served_context_window
-                .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+                .max(crate::inference::planning::MIN_SERVE_CTX);
         }
         self
     }
@@ -321,7 +321,7 @@ impl PersonaSpawnerModule {
                 self.serving_lanes = p.lanes.max(1);
                 self.serving_context_window = p
                     .served_context_window
-                    .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+                    .max(crate::inference::planning::MIN_SERVE_CTX);
             }
             // A live plan that does NOT fit the GPU (a CPU-tier node, or a runtime
             // downgrade) must never leave the seat count on a stale GPU plan's lanes

@@ -479,7 +479,7 @@ mod tests {
                 embedder: None,
                 tool_executor: None,
                 experience: None,
-                context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+                context_window: crate::inference::planning::MIN_SERVE_CTX,
                 defer_recall: false,
                 defer_grounding: false,
                 suppress_recall: false,
@@ -548,7 +548,7 @@ mod tests {
         );
         assert_eq!(
             loadout.context_window,
-            Some(crate::cognition::serving_plan::MIN_SERVE_CTX),
+            Some(crate::inference::planning::MIN_SERVE_CTX),
             "the effective served window rides the loadout"
         );
     }

@@ -30,10 +30,10 @@ use super::{
     ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle, JobMetrics,
     ReattachOutcome, TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus,
 };
-use super::engine_plan::{
+use crate::inference::planning::training_plan::{
     calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle,
     train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample,
-    Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
+    need, Need, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -506,17 +506,11 @@ impl Footprints {
     fn bound(&self, shape: &Shape) -> Option<u64> {
         self.read_all().get(&shape.key()).map(|r| r.bytes)
     }
-    /// What a shape needs, for [`choose_chunk`]: the larger of what is known (its whole-run row,
-    /// else `predicted` by the fit) and its measured lower bound. A graph-only refusal at this
-    /// chunk still rules it out, so the ladder steps down instead of calibrating the refused
-    /// shape again (card 030d70f0: the 5090 held a graph-only row at window 68,608 and the
-    /// engine's default chunk, the window it re-dispatched in its failure run).
-    fn need(&self, shape: &Shape, predicted: Option<u64>) -> Option<u64> {
-        let bound = self.bound(shape);
-        match self.get(shape).or(predicted) {
-            Some(bytes) => Some(bytes.max(bound.unwrap_or(0))), // unwrap_or: no measured bound adds nothing to the known need
-            None => bound,
-        }
+    /// What a shape needs ([`need`] over this store's rows): a graph-only refusal
+    /// at a chunk still rules it out, so the ladder steps down instead of calibrating the
+    /// refused shape again.
+    fn need(&self, shape: &Shape, predicted: Option<u64>) -> Option<Need> {
+        need(self.get(shape), self.bound(shape), predicted)
     }
     fn family_rows(&self, shape: &Shape, whole_only: bool) -> Vec<(u32, u32, u64)> {
         self.read_all()
@@ -1783,7 +1777,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // ONE evaluation, ONE probe (Cormac on #4972): a predicted no-fit floor is reported as the
         // prediction it is, and never as window_calculated's "what trains her examples whole". The window is set
         // either way: the probe changes, the flow does not.
-        let no_fit = if let super::engine_plan::WindowFit::PredictedNoFit { predicted_at_floor } = plan.fit {
+        let no_fit = if let crate::inference::planning::training_plan::WindowFit::PredictedNoFit { predicted_at_floor } = plan.fit {
             crate::probe!(
                 class = "training.job.no_window_fits_predicted",
                 job = %id,
@@ -1815,7 +1809,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // an unmeasured (window, chunk): a calculated window with a chunk left to the default
         // would refuse by construction (Cormac on #4920). The LEASE is only ever a measurement:
         // a chunk known only by prediction is a calibration run, leasing all governed free VRAM.
-        let (chunk, _) = choose_chunk(window, governed_free, |c| self.footprints.need(&shape_at(c), model.map(|m| m.bytes(window, c))));
+        let (chunk, _) = choose_chunk(window, governed_free, |c| {
+            self.footprints.need(&shape_at(c), model.map(|m| m.bytes(window, c))).and_then(|n| n.decides(governed_free))
+        });
         let measured = self.footprints.get(&shape_at(chunk));
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
@@ -2331,9 +2327,9 @@ mod tests {
         let default_chunk = Shape { window: 68_608, chunk: train_chunk_for(68_608, TRAINING_CHUNK), ..shape.clone() };
         store.record_with(&default_chunk, 18_587_879_424, false, Uuid::nil()).expect("test: the 5090's row");
         let at = |c: u32| Shape { chunk: c, ..default_chunk.clone() };
-        let (chunk, _) = choose_chunk(68_608, free, |c| store.need(&at(c), None));
+        let (chunk, _) = choose_chunk(68_608, free, |c| store.need(&at(c), None).and_then(|n| n.decides(free)));
         assert!(chunk < default_chunk.chunk, "the refused default chunk is never calibrated again");
-        assert_eq!(store.need(&at(default_chunk.chunk), Some(gib)), Some(18_587_879_424), "a measured bound outranks an optimistic fit");
+        assert_eq!(store.need(&at(default_chunk.chunk), Some(gib)).map(|n| (n.bytes, n.source)), Some((18_587_879_424, crate::inference::planning::training_plan::NeedSource::LowerBound)), "a measured bound outranks an optimistic fit");
         store.record_with(&shape, 3 * gib, true, Uuid::nil()).expect("test: whole run");
         assert_eq!(store.get(&shape), Some(3 * gib), "a whole-run row replaces it, smaller or not");
         store.record_with(&shape, 20 * gib, false, Uuid::nil()).expect("test: a rolled-back engine");
@@ -2403,7 +2399,7 @@ mod tests {
     // what this catches (card d6dae498; the 5090, 2026-10-10 04:34Z): a plain-walk footprint
     // leased for an exact run, or a footprint measured at one chunk leased for another, and a
     // store that answers one family with another's rows. (The chunk rule, the window and the
-    // chunk ladder are the planner's: engine_plan's tests.)
+    // chunk ladder are the planner's: training_plan's tests.)
     #[test]
     fn the_walk_and_its_chunk_are_the_footprints_shape_and_the_chunk_fits_the_lease() {
         // the key: a plain walk at the default chunk is the row every older core wrote;

@@ -82,7 +82,7 @@ const GROUNDING_WINDOW_FRACTION: u32 = 4;
 /// so a faculty built without a window (tests) still gets a sane ceiling derived
 /// from a substrate constant, never a fresh magic number.
 pub fn grounding_budget_for(served_window: u32) -> u32 {
-    use crate::cognition::serving_plan::MIN_SERVE_CTX;
+    use crate::inference::planning::MIN_SERVE_CTX;
     (served_window / GROUNDING_WINDOW_FRACTION).max(MIN_SERVE_CTX / GROUNDING_WINDOW_FRACTION)
 }
 
@@ -222,7 +222,7 @@ impl RagSourceFaculty {
             // Floor default (derived from the substrate serving floor, not a magic
             // number). Production overrides via `with_budget(grounding_budget_for(
             // cfg.context_window))` so the ceiling tracks the LIVE served window.
-            budget: grounding_budget_for(crate::cognition::serving_plan::MIN_SERVE_CTX),
+            budget: grounding_budget_for(crate::inference::planning::MIN_SERVE_CTX),
             clock: wall_clock(),
             // Not cold-start-critical until the assembler says so. The safe
             // direction for a LOUDNESS contract is the opposite of the safe

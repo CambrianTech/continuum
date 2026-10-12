@@ -3791,8 +3791,8 @@ impl ServingDaemonModule {
             .and_then(|live| footprint_for(&live.model))
             .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
         {
-            Some(fits) if floored > fits.max(crate::cognition::serving_plan::MIN_SERVE_CTX) => {
-                let bound = fits.max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+            Some(fits) if floored > fits.max(crate::inference::planning::MIN_SERVE_CTX) => {
+                let bound = fits.max(crate::inference::planning::MIN_SERVE_CTX);
                 crate::probe!(
                     class = "serving.reconcile.window",
                     decision = "kept-window-exceeds-physical-fit",

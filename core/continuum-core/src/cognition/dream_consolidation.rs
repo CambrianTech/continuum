@@ -121,7 +121,7 @@ pub fn default_max_observation_chars() -> usize {
     let window = if live.ready && live.served_context_window > 0 {
         live.served_context_window
     } else {
-        crate::cognition::serving_plan::MIN_SERVE_CTX
+        crate::inference::planning::MIN_SERVE_CTX
     };
     crate::cognition::context_budget::ContextBudget::from_window(window).latest_action_chars()
 }
@@ -1641,7 +1641,7 @@ fn distiller_for(reflector: &PersonaReflector) -> SemanticDistiller {
         let window = if live.ready && live.served_context_window > 0 {
             live.served_context_window
         } else {
-            crate::cognition::serving_plan::MIN_SERVE_CTX
+            crate::inference::planning::MIN_SERVE_CTX
         };
         let completion_reserve = window / 4;
         (window.saturating_sub(completion_reserve) as usize).saturating_mul(4)
