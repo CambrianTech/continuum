@@ -78,6 +78,7 @@ pub mod throughput_expectation;
 pub mod turn_admission;
 pub mod turn_bound;
 pub mod placement_watch;
+pub mod planning;
 pub mod weight_residency;
 pub mod vendored;
 pub mod vision_sidecar;

@@ -180,11 +180,6 @@ pub mod ledger;
 pub mod mode_policy;
 pub mod placement;
 
-pub use crate::cognition::{
-    ResourceClass, TargetSilicon, ThroughputLease, ThroughputLeaseError, ThroughputLeaseRegistry,
-    ThroughputLeaseRevocationPolicy, ThroughputLeaseSnapshot,
-};
-
 pub use broker::{
     ResourceAdmissionReport, ResourceBroker, ResourceBrokerConfig, ResourceDemand,
     ResourceLaneBudget, ResourceRefusalReason,

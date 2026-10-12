@@ -1,6 +1,6 @@
-use crate::resources::{
-    ResourceClass, TargetSilicon, ThroughputLease, ThroughputLeaseError, ThroughputLeaseRegistry,
-    ThroughputLeaseRevocationPolicy,
+use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
+use crate::inference::planning::throughput_lease::{
+    ThroughputLease, ThroughputLeaseError, ThroughputLeaseRegistry, ThroughputLeaseRevocationPolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -198,7 +198,7 @@ impl ResourceBroker {
         self.budgets.values().copied().collect()
     }
 
-    pub fn active_leases(&self, now_ms: u64) -> crate::resources::ThroughputLeaseSnapshot {
+    pub fn active_leases(&self, now_ms: u64) -> crate::inference::planning::throughput_lease::ThroughputLeaseSnapshot {
         self.leases.snapshot(now_ms)
     }
 

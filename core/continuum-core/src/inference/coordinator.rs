@@ -16,7 +16,7 @@
 //!
 //! ### Composition (no reinvention)
 //!
-//! - `plan_adaptive_throughput` from `cognition::adaptive_throughput`
+//! - `plan_adaptive_throughput` from `inference::planning::adaptive_throughput`
 //!   makes admission decisions keyed by `target_silicon`.
 //! - `FootprintRegistry::acquire_lease` / `release_lease` from
 //!   `inference::footprint_registry` mirrors the lease into byte
@@ -48,11 +48,11 @@ use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::ActiveAdapterRequest;
-use crate::cognition::adaptive_throughput::{
+use crate::inference::planning::adaptive_throughput::{
     plan_adaptive_throughput, AdaptiveThroughputRequest, ResourceClass, TargetSilicon,
     ThroughputJob, ThroughputLaneBudget,
 };
-use crate::cognition::throughput_lease::ThroughputLease;
+use crate::inference::planning::throughput_lease::ThroughputLease;
 use crate::governor::classify_hardware;
 use crate::governor::types::TargetSilicon as GovernorSilicon;
 use crate::identity::PeerId;

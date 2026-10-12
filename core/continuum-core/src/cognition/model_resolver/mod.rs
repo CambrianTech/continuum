@@ -39,7 +39,7 @@ pub use types::{
     ResolvedModel, SiliconResidencyRequirement,
 };
 
-use crate::cognition::adaptive_throughput::TargetSilicon;
+use crate::inference::planning::adaptive_throughput::TargetSilicon;
 use crate::model_registry::types::{Capability, Model, Provider, ProviderKind};
 use std::collections::HashMap;
 

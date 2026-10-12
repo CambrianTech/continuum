@@ -39,13 +39,13 @@
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
-use crate::cognition::adaptive_throughput::{ResourceClass, TargetSilicon};
+use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
 use crate::cognition::resource_admission::{
     ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy,
     ResourceAdmissionRequest,
 };
 use crate::cognition::should_respond::AIDecisionContext;
-use crate::cognition::throughput_lease::ThroughputLeaseRevocationPolicy;
+use crate::inference::planning::throughput_lease::ThroughputLeaseRevocationPolicy;
 use crate::modules::ai_provider::global_registry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

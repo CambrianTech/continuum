@@ -36,7 +36,7 @@ pub use types::{
     RegistrySnapshot, ResourceType,
 };
 
-use crate::cognition::{
+use crate::inference::planning::throughput_lease::{
     ThroughputLease, ThroughputLeaseError, ThroughputLeaseRevocationPolicy, ThroughputLeaseSnapshot,
 };
 use crate::paging::broker::PressureTier;
@@ -501,9 +501,8 @@ pub fn try_global() -> Option<&'static FootprintRegistry> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::{
-        ResourceClass, TargetSilicon, ThroughputLease, ThroughputLeaseRevocationPolicy,
-    };
+    use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
+    use crate::inference::planning::throughput_lease::{ThroughputLease, ThroughputLeaseRevocationPolicy};
     use crate::gpu::MockMonitor;
     use crate::inference::kv_quant::Residency;
     // PressureTier is already in scope via `use super::*` (module-scope import).

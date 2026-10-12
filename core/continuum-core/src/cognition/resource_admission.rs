@@ -7,8 +7,8 @@
 //! admits or denies before work starts and returns an RAII guard that
 //! releases the lease on every exit path.
 
-use crate::cognition::adaptive_throughput::{ResourceClass, TargetSilicon};
-use crate::cognition::throughput_lease::{
+use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
+use crate::inference::planning::throughput_lease::{
     ThroughputLease, ThroughputLeaseError, ThroughputLeaseRegistry, ThroughputLeaseRevocationPolicy,
 };
 use serde::{Deserialize, Serialize};
