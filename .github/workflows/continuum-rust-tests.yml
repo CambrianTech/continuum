@@ -155,7 +155,8 @@ jobs:
           set -o pipefail
           for test in \
             tests::prebuilt_reboot_options_are_explicit_and_strict \
-            tests::service_reboot_rejects_stale_action_and_artifact_before_teardown; do
+            tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
+            tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running; do
             cargo test -p continuum-core --bin continuum --profile dev-fast "$test" -- --exact 2>&1 | tee cli-handoff.log
             if ! grep -q 'test result: ok. 1 passed;' cli-handoff.log; then
               echo "::error::The exact CLI handoff regression did not execute: $test"
