@@ -1042,7 +1042,7 @@ fn list_meta_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn is_process_alive(pid: i32) -> bool {
-    u32::try_from(pid).is_ok_and(crate::inference::lane_process::is_alive)
+    u32::try_from(pid).is_ok_and(continuum_cli_lifecycle::process::is_alive)
 }
 
 enum JobSignal {
