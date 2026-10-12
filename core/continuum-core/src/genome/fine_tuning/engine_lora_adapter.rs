@@ -33,7 +33,7 @@ use super::{
 use crate::inference::planning::training_plan::{
     calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle,
     train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample,
-    need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
+    need, whole_only, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
 };
 
 /// What the trainer is governed to have free for `consumer`: the governor's VRAM budget net of
@@ -503,7 +503,7 @@ impl Footprints {
     }
     /// This store, as evidence about the engine `build`.
     fn for_engine(&self, build: Option<String>) -> Self {
-        Footprints::at(self.path.clone(), engine: build)
+        Footprints { path: self.path.clone(), engine: build }
     }
     /// Whether `row` is evidence about this view's engine.
     fn measured_here(&self, row: &FootprintRow) -> bool {
@@ -524,6 +524,15 @@ impl Footprints {
     /// accept a row of a different family.
     fn rows_like(&self, shape: &Shape) -> Vec<(u32, u32, u64)> {
         self.family_rows(shape, true)
+    }
+    /// The whole-run rows of `shape`'s family measured on THIS engine: what a hard floor reads
+    /// (a calibration grant's minimum, the exact walk ruled out). Another engine's rows predict,
+    /// through the model, and never set a floor here (Codex on #4988).
+    fn measured_rows_like(&self, shape: &Shape) -> Vec<(u32, u32, u64)> {
+        self.family_rows(shape, true)
+            .into_iter()
+            .filter(|&(window, chunk, _)| self.get(&Shape { window, chunk, ..shape.clone() }).is_some())
+            .collect()
     }
     /// Every measured row of `shape`'s family, a graph-only refusal included: LOWER bounds on
     /// what each shape needs. They cap a plan (a graph alone over what is free means the whole
@@ -1801,7 +1810,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // plain walk instead of truncated or parked on the exact one: a step at cosine 0.81 on her
         // whole turns over one at 0.998 on a fraction of them (Joel: working training beats data
         // purity; she can unlearn).
-        if body.exact && exact_ruled_out(&rows, need, governed_free) {
+        if body.exact && exact_ruled_out(&footprints.measured_rows_like(&family), need, governed_free) {
             crate::probe!(
                 class = "training.job.walk_plain",
                 job = %id,
@@ -1866,6 +1875,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .filter(|&useful| useful <= served_sent);
         // Checked whatever the plan chose (Codex on #4988): a measured no-fit at a window equal to
         // `useful`, the floor included, would otherwise dispatch again.
+        let planned = window;
         let window = match useful {
             Some(useful) => {
                 let at_useful = Shape { window: useful, chunk: TRAINING_CHUNK_MIN, ..family.clone() };
@@ -1909,7 +1919,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let job_footprints = footprints.clone();
         // what this candidate cannot be under, by measurement (Astra and Cormac on #4949): a
         // calibration grant below it is a guaranteed refusal
-        let calibration_floor = calibration_floor(&rows, window, chunk);
+        let calibration_floor = calibration_floor(&footprints.measured_rows_like(&family), window, chunk);
         let walk = if body.exact {
             super::types::TrainingWalk::Exact
         } else {
@@ -1947,7 +1957,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         let unrunnable = match at_window {
             Err(e) => Some(format!("{e}: the examples were not measured at window {window}, so none is sent (an engine before fork #51 has no /train/measure; its next relaunch brings it)")),
             Ok(rows) => {
-                let partition = partition_of(window, rows);
+                // a window raised to the shortest WHOLE example sends only what trains whole there
+                let raised = useful.is_some_and(|useful| planned < useful && window == useful);
+                let partition = if raised { whole_only(partition_of(window, rows)) } else { partition_of(window, rows) };
                 let shortest_parked = partition
                     .rows
                     .iter()
@@ -2575,6 +2587,9 @@ mod tests {
                         // 3,000 whole but 64 once its history is dropped (whole and min apart)
                         let (full, min) = match mode {
                             "short_turns" => (3_000, 3_000),
+                            // "mixed_turns": p1 is 6,000 whole (64 once cut), the others 3,000 whole
+                            "mixed_turns" if odd => (6_000, 64),
+                            "mixed_turns" => (3_000, 3_000),
                             "tiny_turns" => (2_000, 2_000),
                             "truncatable_turns" => (3_000, 64),
                             _ => (at, 64),
@@ -2921,6 +2936,41 @@ mod tests {
             other => panic!("expected a capacity park, got {other:?}"),
         }
         assert!(seen.lock().unwrap().is_none(), "no run was posted");
+        server.abort();
+    }
+
+    // what this catches (Codex on #4988): a window raised to the shortest WHOLE example (memory
+    // is predicted, not measured, too small for more) sending the longer examples cut through the
+    // middle fit. Here p1 is 6,000 tokens whole; at the raised 3,072 window it would train with
+    // its history dropped, so it is parked and only p0 and p2 are posted.
+    #[tokio::test]
+    async fn a_window_raised_to_the_shortest_whole_example_sends_only_whole_examples() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "mixed_turns").await;
+        let footprints = jobs.path().join("footprints.json");
+        let mib = 1024u64 * 1024;
+        let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
+        let store = Footprints::at(footprints.clone());
+        store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
+        store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
+        let free = model.bytes(3_072, TRAINING_CHUNK_MIN) - 1; // predicted, never measured, just short of 3,072
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, free);
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        r.dataset.examples = (0..3)
+            .map(|i| TrainingExample { prompt: format!("p{i}"), completion: "c".into(), metadata: None, lived: None })
+            .collect();
+        let h = t.create_job(r).await.expect("test: a prediction calibrates, never parks");
+        let _ = wait_terminal(&t, &h).await;
+        let posted = seen.lock().unwrap().clone().expect("test: posted");
+        assert_eq!(posted["window"].as_u64(), Some(3_072), "raised to the shortest whole example");
+        let got: Vec<&str> = posted["examples"].as_array().expect("test: examples").iter().map(|e| e["prompt"].as_str().unwrap_or("")).collect();
+        assert_eq!(got, vec!["p0", "p2"], "the 6,000-token example is parked, never sent cut");
+        let partition = read_partition(&jobs.path().join(h.local_id.to_string())).expect("test: partition");
+        assert_eq!(partition.parked, vec![1]);
         server.abort();
     }
 
