@@ -383,6 +383,19 @@ mod tests {
     // A future refactor that flips this to "best-rank-wins regardless
     // of preference" would silently route operator-locked traffic
     // (e.g. EU-data-residency Mistral) to a non-preferred provider.
+    // what this catches (card a6703c24; IntelMac, x86_64 with a Radeon over Metal): an Intel
+    // Mac's GPU reports Metal, and the MLX trainer, which needs Apple Silicon, passed the hardware
+    // gate and outranked the CPU trainer, so every dispatch wedged on a trainer that cannot run
+    // there. On Apple Silicon it still runs.
+    #[test]
+    fn the_mlx_trainer_needs_apple_silicon_not_just_metal() {
+        let intel_mac = HardwareProfile { platform: "macos-x86_64-macbookpro15".into(), ..host(true, false, false) };
+        let apple = HardwareProfile { platform: "macos-arm64-m5pro".into(), ..host(true, false, false) };
+        assert!(!TrainerHardware::Metal.satisfied_by(&intel_mac), "Metal on an Intel Mac is not Apple Silicon");
+        assert!(TrainerHardware::Metal.satisfied_by(&apple));
+        assert!(TrainerHardware::Any.satisfied_by(&intel_mac), "the CPU trainer still runs there");
+    }
+
     #[test]
     fn preferred_provider_wins_when_capable() {
         let reg = registry_with(vec![
