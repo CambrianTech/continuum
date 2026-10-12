@@ -178,6 +178,24 @@ mod tests {
         assert!(return_job(&trigger.state, &board, &root, all).await.expect("test: returned").success);
         let held: Vec<String> = trigger.state.buckets.get(&key).map(|b| b.examples.iter().map(|e| e.prompt.clone()).collect()).expect("test: bucket");
         assert_eq!(held, vec!["p0".to_string(), "p1".to_string(), "p2".to_string()], "every example goes back, parked ones too");
+
+        // what this catches (Codex on #4992): a MIXED job returned before this change carried
+        // only its unparked examples under the job's returned id. Returning it again, now whole,
+        // must be refused explicitly (the id already binds different content), never accepted as
+        // already-returned while its parked rows are silently lost. Such a job needs its own
+        // named recovery; this change does not claim the history is repaired.
+        let earlier = Uuid::new_v4();
+        ended(earlier);
+        with_parked(earlier, vec![0, 2]);
+        let jd = job_dir_under(&root, "Kimi", "code/owner", earlier);
+        let mut unparked_only = read_job_request(&jd).expect("test: request");
+        unparked_only.dataset.examples.retain(|e| e.prompt == "p1");
+        assert!(return_request(&trigger.state, unparked_only, earlier).await.expect("test: the old return").success);
+        let before = trigger.state.buckets.get(&key).map(|b| b.examples.len());
+        let again = return_job(&trigger.state, &board, &root, earlier).await.expect("test: answered");
+        assert!(!again.success, "a different payload under the same returned id is refused: {again:?}");
+        assert!(again.error_kind.is_some() && again.error.is_some(), "the refusal is typed and says why: {again:?}");
+        assert_eq!(trigger.state.buckets.get(&key).map(|b| b.examples.len()), before, "nothing was added");
     }
 
     // what this catches (the 5090, 2026-10-05; and 2026-10-07, a return wearing its submission's id): ~500 of Kimi's examples stranded in the
