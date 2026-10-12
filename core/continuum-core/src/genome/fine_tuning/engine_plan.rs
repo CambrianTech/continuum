@@ -265,7 +265,32 @@ pub(super) fn window_for_need(rows: &[MeasuredExample], served: u32) -> u32 {
 /// serving fits her perception every turn. With fewer than two windows of this shape measured
 /// there is nothing to calculate from: `served`, and that run's footprint (or refusal) is the
 /// measurement. The window is in the footprint key, so a later engine that fits climbs back up.
-pub(super) fn choose_window(served: u32, available: u64, rows: &[(u32, u32, u64)]) -> u32 {
+/// Why `choose_window` chose its window, from the SAME evaluation that chose it (Cormac on #4972:
+/// a second evaluation of one decision can drift from the first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum WindowFit {
+    /// The fitted model says the window holds at the floor chunk.
+    Fits,
+    /// The rows can't identify a model yet (one window measured): the window is the cap, and the
+    /// run is the measurement.
+    Unmodelled,
+    /// The fitted model PREDICTS that even the floor window at the floor chunk exceeds what is free.
+    /// A prediction extrapolated from the measured windows, not a measured impossibility (Codex on
+    /// #4972: the 5090's two measured windows were 67,584 and 66,304, far from the 2,048 floor), so
+    /// the window is the bottom of the range, not a plan; a refusal measured at the exact shape is a
+    /// separate, measured fact (card 030d70f0; 2026-10-11: window_calculated reported 2048 for 16
+    /// examples none of which could train there).
+    PredictedNoFit { predicted_at_floor: u64 },
+}
+
+/// The planned window and why.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct WindowPlan {
+    pub(super) window: u32,
+    pub(super) fit: WindowFit,
+}
+
+pub(super) fn choose_window(served: u32, available: u64, rows: &[(u32, u32, u64)]) -> WindowPlan {
     // A MEASUREMENT IS A HARD BOUND (Cormac on #4939): a window measured at the smallest chunk
     // that did not fit what is free now cannot fit at it, nor at any larger window, whatever the
     // fit predicts. Without the cap a non-physical or single-chunk fit could plan the refused
@@ -278,13 +303,20 @@ pub(super) fn choose_window(served: u32, available: u64, rows: &[(u32, u32, u64)
         .min()
         .map_or(served, |cap| cap.min(served));
     let Some(model) = GraphModel::fit(rows) else {
-        return cap;
+        return WindowPlan { window: cap, fit: WindowFit::Unmodelled };
     };
     let mut window = cap;
     while window > TRAINING_WINDOW_MIN && model.bytes(window, TRAINING_CHUNK_MIN) > available {
         window = train_window(window.saturating_sub(256).max(TRAINING_WINDOW_MIN));
     }
-    window
+    let at_window = model.bytes(window, TRAINING_CHUNK_MIN);
+    let fit = if at_window > available {
+        // the loop only stops above `available` at the floor: the model predicts no window fits
+        WindowFit::PredictedNoFit { predicted_at_floor: at_window }
+    } else {
+        WindowFit::Fits
+    };
+    WindowPlan { window, fit }
 }
 
 /// The window a run trains at: the engine's training context is n_ctx, which rounds up to a
@@ -438,6 +470,32 @@ mod tests {
         assert_eq!(train_chunk_for(68_608, 512), 512, "256 and up: the old divisor rule, so old keys hold");
     }
 
+    // what this catches (card 030d70f0; the 5090, 2026-10-11): the floor window reported as a plan
+    // when the model PREDICTS nothing fits (extrapolated from two measured windows, not measured at
+    // the floor). These are that night's real plain-walk rows (whole-run bytes): four chunks
+    // refused at 67,584 and one at 66,304, the graph flat across the two windows, against 4.55 GB
+    // governed free. By the model, nothing fits at any window, so the floor is the bottom of the range, not a plan.
+    // One window measured cannot identify a model, so it never claims nothing fits.
+    #[test]
+    fn the_window_plan_names_the_no_fit_case_on_the_measured_rows() {
+        let rows = [
+            (67_584, 512, 19_531_543_168),
+            (67_584, 256, 15_327_436_416),
+            (67_584, 128, 14_567_221_888),
+            (67_584, 64, 13_587_430_016),
+            (66_304, 256, 15_282_871_936),
+        ];
+        let free = 4_552_916_992;
+        let plan = choose_window(67_584, free, &rows);
+        assert_eq!(plan.window, TRAINING_WINDOW_MIN, "the window bottoms out at the floor");
+        let WindowFit::PredictedNoFit { predicted_at_floor } = plan.fit else {
+            panic!("the 5090's rows: the model predicts no window fits beside serving, got {:?}", plan.fit);
+        };
+        assert!(predicted_at_floor > free, "the prediction at the floor exceeds what is free: {predicted_at_floor}");
+        assert_eq!(choose_window(67_584, free, &rows[..4]).fit, WindowFit::Unmodelled, "one window measured: no model, no claim");
+        assert_eq!(choose_window(67_584, u64::MAX, &rows).fit, WindowFit::Fits, "with room for it, the window fits");
+    }
+
     // what this catches (card d6dae498, and the 5090 2026-10-10 job 00431d4d): the chunk the core
     // keys under differing from the chunk the engine runs; a window planned that the measured
     // graph cannot hold at the floor chunk; and a chunk ladder that never shrinks when the
@@ -463,17 +521,17 @@ mod tests {
         let model = GraphModel::fit(&rows).expect("test: rows fit");
         assert!(model.per_token_per_pos > 0.0 && model.per_pos > 0.0, "the window and KV terms are real");
         let free = 4142 * mib;
-        let w = choose_window(68608, free, &rows);
+        let w = choose_window(68608, free, &rows).window;
         assert!(w % 256 == 0 && w < 68608 && w >= TRAINING_WINDOW_MIN, "a smaller 256-multiple window: {w}");
         assert!(model.bytes(w, TRAINING_CHUNK_MIN) <= free, "that fits");
         assert!(model.bytes(w + 256, TRAINING_CHUNK_MIN) > free || w == 68608, "and is the largest that does");
-        assert_eq!(choose_window(68608, free, &rows[..1]), 68608, "one window measured: nothing to calculate, served");
+        assert_eq!(choose_window(68608, free, &rows[..1]).window, 68608, "one window measured: nothing to calculate, served");
         // and the chunk at that window comes from the same model, never the default 512 that the
         // window was not sized for (Cormac on #4920)
         let (c, _) = choose_chunk(w, free, |c| Some(model.bytes(w, c)));
         assert!(model.bytes(w, c) <= free, "the chunk at the calculated window fits too: {c}");
-        assert_eq!(choose_window(1536, free, &rows), 1536, "never above served");
-        assert_eq!(choose_window(68608, 1, &rows), TRAINING_WINDOW_MIN, "never under the floor");
+        assert_eq!(choose_window(1536, free, &rows).window, 1536, "never above served");
+        assert_eq!(choose_window(68608, 1, &rows).window, TRAINING_WINDOW_MIN, "never under the floor");
         // the chunk: unmeasured calibrates at the default; a measurement that fits leases;
         // one that does not fit halves the chunk and asks that shape; the smallest stands
         let gib = 1024u64 * 1024 * 1024;

@@ -1752,8 +1752,26 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             rows = self.footprints.rows_like(&family);
             model = GraphModel::fit(&rows);
         }
-        let window = choose_window(need, governed_free, &rows);
-        if window != body.window {
+        let plan = choose_window(need, governed_free, &rows);
+        let window = plan.window;
+        // ONE evaluation, ONE probe (Cormac on #4972): a predicted no-fit floor is reported as the
+        // prediction it is, and never as window_calculated's "what trains her examples whole". The window is set
+        // either way: the probe changes, the flow does not.
+        let no_fit = if let super::engine_plan::WindowFit::PredictedNoFit { predicted_at_floor } = plan.fit {
+            crate::probe!(
+                class = "training.job.no_window_fits_predicted",
+                job = %id,
+                needed = u64::from(need),
+                governed_free = governed_free,
+                predicted_at_floor = predicted_at_floor,
+                floor_window = u64::from(window),
+                "the fitted model PREDICTS the graph exceeds governed free even at the floor window and chunk (extrapolated from the measured windows, not measured there), so her examples park"
+            );
+            true
+        } else {
+            false
+        };
+        if window != body.window && !no_fit {
             crate::probe!(
                 class = "training.job.window_calculated",
                 served = u64::from(body.window),
@@ -1764,8 +1782,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 kv_term = model.is_some_and(|m| m.kv_term_identified()),
                 "the training window: what trains her examples whole (the longest of them), shrunk only if even the smallest chunk cannot hold it beside serving"
             );
-            body.window = window;
         }
+        body.window = window;
         let shape_at = |chunk: u32| Shape { window, chunk, ..family.clone() };
         // The chunk is chosen against the measured graph, else the fitted model's prediction for
         // an unmeasured (window, chunk): a calculated window with a chunk left to the default
@@ -2263,11 +2281,11 @@ mod tests {
         let gib = 1024u64 * 1024 * 1024;
         let free = 4 * gib;
         let refused = [(40_960, TRAINING_CHUNK_MIN, 5 * gib)];
-        assert_eq!(choose_window(68_608, free, &refused), 40_704, "under the refused window, with no fit to say so");
+        assert_eq!(choose_window(68_608, free, &refused).window, 40_704, "under the refused window, with no fit to say so");
         let optimistic = [(1_536, 256, gib / 4), (68_608, 512, gib), (40_960, TRAINING_CHUNK_MIN, 5 * gib)];
-        assert!(choose_window(68_608, free, &optimistic) <= 40_704, "under it even when the fit says the served window fits");
+        assert!(choose_window(68_608, free, &optimistic).window <= 40_704, "under it even when the fit says the served window fits");
         let at_floor = [(TRAINING_WINDOW_MIN, TRAINING_CHUNK_MIN, 5 * gib)];
-        assert_eq!(choose_window(68_608, free, &at_floor), TRAINING_WINDOW_MIN, "never under the smallest window");
+        assert_eq!(choose_window(68_608, free, &at_floor).window, TRAINING_WINDOW_MIN, "never under the smallest window");
         let dir = tempfile::tempdir().expect("test: dir");
         let store = Footprints { path: dir.path().join("fp.json") };
         let shape = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
