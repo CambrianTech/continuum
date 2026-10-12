@@ -94,7 +94,7 @@ pub(crate) fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measu
     // planner's lane clamp is derived from it (`inference::decode_knee`).
     crate::inference::decode_knee::observe(
         model_id,
-        crate::cognition::resource_admission::inflight_model_calls() as u32,
+        crate::inference::seat_load::inflight_model_calls() as u32,
         measured_tps,
         expected,
     );
@@ -122,7 +122,7 @@ pub(crate) fn warn_if_decode_collapsed(model_id: &str, decode_tokens: u32, measu
         // Reuses the existing gauge (`resource_admission::inflight_model_calls`,
         // "lane-queue + prefill + decode") rather than counting again — the
         // concurrency sibling of the window axis on `ThroughputBaseline`.
-        let inflight = crate::cognition::resource_admission::inflight_model_calls();
+        let inflight = crate::inference::seat_load::inflight_model_calls();
         tracing::warn!(
             probe_class = "serving.throughput.degraded",
             model = model_id,

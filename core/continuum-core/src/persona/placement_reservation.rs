@@ -90,8 +90,8 @@ fn lease_id_of(mind: Uuid) -> String {
 /// Slots this seat has in flight right now, every source: its own residents' turns and
 /// the generates it serves for other nodes.
 fn busy_slots() -> u32 {
-    let busy = crate::cognition::resource_admission::inflight_model_calls()
-        .saturating_add(crate::cognition::resource_admission::leased_in_calls());
+    let busy = crate::inference::seat_load::inflight_model_calls()
+        .saturating_add(crate::inference::seat_load::leased_in_calls());
     busy.min(u32::MAX as usize) as u32
 }
 

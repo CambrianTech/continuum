@@ -557,7 +557,7 @@ impl WorkingSetRegistry {
     }
     /// The typical prompt over the residents' sent peaks PLUS `extra` samples — the prompt
     /// sizes of the generates this seat served for minds hosted on other nodes
-    /// ([`crate::cognition::resource_admission::leased_in_sent_samples`]). ONE median for
+    /// ([`crate::inference::seat_load::leased_in_sent_samples`]). ONE median for
     /// the seat's whole demand pool: a seat that plans lanes for leased-in minds must size
     /// those lanes to the prompts they actually send, not to one local resident's. Zeros
     /// are not samples on either side.

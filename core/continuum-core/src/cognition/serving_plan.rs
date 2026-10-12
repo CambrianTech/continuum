@@ -203,7 +203,7 @@ pub struct ServingDemand {
     /// Concurrent lanes this seat serves for minds hosted on OTHER nodes — the `ai/generate`
     /// a peer sends here when its placement spills a mind onto this seat — measured at the
     /// seat's own admission as the peak per plan tick
-    /// ([`crate::cognition::resource_admission::take_leased_in_peak`]). Added to `lanes` when
+    /// ([`crate::inference::seat_load::take_leased_in_peak`]). Added to `lanes` when
     /// the plan sizes the slot count: a seat's demand is the minds it SERVES, not only the
     /// minds it HOSTS. Measured 2026-09-18 (card c84d885a): the 5090's 27B seat served the
     /// M5's four coders and IntelMac's eight on ONE slot — lane wait p50 216 s, p90 1,387 s,

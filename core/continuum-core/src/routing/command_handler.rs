@@ -392,7 +392,7 @@ impl CommandRequestHandler {
         // saw only its own roster while it served three nodes' coders on one slot —
         // lane wait p50 216 s, p90 1,387 s, max 7,058 s — and no receipt said why.
         let _leased_in = (parsed.request.path == STREAMED_GENERATE_PATH)
-            .then(crate::cognition::resource_admission::LeasedInCall::enter);
+            .then(crate::inference::seat_load::LeasedInCall::enter);
         Self::execute_command_request(executor, &parsed.request, caller).await
     }
 
@@ -1255,7 +1255,7 @@ mod tests {
     // Read relative to a baseline taken before, never as an absolute (the #1960 flake class).
     #[tokio::test]
     async fn an_inbound_generate_is_counted_as_leased_in_demand_for_the_whole_dispatch() {
-        use crate::cognition::resource_admission::leased_in_calls;
+        use crate::inference::seat_load::leased_in_calls;
         use crate::routing::{ClosurePolicy, RouteDecision};
         use std::sync::{Arc as StdArc, Mutex};
         let seen: StdArc<Mutex<Vec<(String, usize)>>> = StdArc::new(Mutex::new(Vec::new()));
