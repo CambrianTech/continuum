@@ -348,7 +348,7 @@ impl Inner {
         let rank_of = |id: &str| -> Option<u8> {
             crate::model_registry::global()
                 .model(id)
-                .and_then(crate::modules::serving_daemon::footprint_for)
+                .and_then(crate::cognition::serving_plan::footprint::footprint_for)
                 .map(|f| f.capability_rank)
         };
         // This node's plan, read as an offer: the published plan's shape with the decode
@@ -375,7 +375,7 @@ impl Inner {
         let local_plan = LanePlan::serving(
             &serving,
             rank_of(serving.active_model.as_deref().unwrap_or("")) // unwrap_or: no model = no row anyway; `serving` returns None below
-                .unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, exactly as a peer's would
+                .unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, exactly as a peer's would
             // The SAME rate this node beacons to its peers (own curve, fresh or stale), so
             // local and foreign rows are measured by one definition (card 86fef3c3).
             serving.active_model.as_deref().and_then(|model| {
@@ -395,7 +395,7 @@ impl Inner {
                         model_id: model.clone(),
                         // The registry's measured rank, else the planner's own unmeasured
                         // proxy cap — the same number this node's plan would carry.
-                        capability_rank: rank_of(model).unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, the planner's number
+                        capability_rank: rank_of(model).unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, the planner's number
                         window: o.served_context_window,
                         lanes: o.lanes,
                         // The peer's measured speed, off its beacon (card 86fef3c3); None from a

@@ -190,7 +190,7 @@ pub fn local_cognitive_rank() -> Option<u8> {
     }
     let rank = crate::model_registry::global()
         .model(&model)
-        .and_then(crate::modules::serving_daemon::footprint_for)
+        .and_then(crate::cognition::serving_plan::footprint::footprint_for)
         .map(|f| f.capability_rank);
     *MEMO.write().unwrap_or_else(|p| p.into_inner()) = Some((model, rank));
     rank

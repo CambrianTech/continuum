@@ -5430,7 +5430,7 @@ impl LlamaServerProcess {
         // flags with: if these two ever disagreed, the box would over- or under-commit
         // its whole budget by 2×.
         let engine_advertised = crate::cognition::kv_cache_plan::engine_quantized_kv_support();
-        let planned_kv_per_token = crate::modules::serving_daemon::footprint_for(&target.model)
+        let planned_kv_per_token = crate::cognition::serving_plan::footprint::footprint_for(&target.model)
             .map(|fp| fp.kv_per_token)
             .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
         crate::probe!(

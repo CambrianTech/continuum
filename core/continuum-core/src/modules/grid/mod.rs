@@ -417,7 +417,7 @@ impl ServiceModule for GridModule {
                     .active_model
                     .as_deref()
                     .and_then(rank_of)
-                    .unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
+                    .unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
             };
             for line in crate::persona::placement_switch::follow_the_fleet(now, peers, local, &rank_of).await {
                 say_in_org_room(&line).await;

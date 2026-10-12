@@ -136,7 +136,7 @@ fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
 /// memory authority `plan_serving` sizes against, never a raw GPU probe. `None` when the host is
 /// ungoverned or the model can't be sized, which the caller reads as "no cap".
 fn exam_fit_window(base: &crate::model_registry::Model) -> Option<u32> {
-    let fp = crate::modules::serving_daemon::footprint_for(base)?;
+    let fp = crate::cognition::serving_plan::footprint::footprint_for(base)?;
     if fp.kv_per_token == 0 {
         return None;
     }
@@ -3606,7 +3606,7 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
     else {
         return ExamServingContext::ludicrous_fallback().await;
     };
-    let Some(fp) = crate::modules::serving_daemon::footprint_for(&model) else {
+    let Some(fp) = crate::cognition::serving_plan::footprint::footprint_for(&model) else {
         return ExamServingContext::ludicrous_fallback().await;
     };
     // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured
