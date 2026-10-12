@@ -241,7 +241,10 @@ jobs:
           gh release download "$tag" -D "$dl" -p published-engine.ready || miss "no complete publication for $tag"
           read -r want archive < "$dl/published-engine.ready" || miss "unreadable marker"
           gh release download "$tag" -D "$dl" -p "$archive" || miss "archive $archive unavailable"
-          got="$(sha256sum "$dl/$archive" | cut -d' ' -f1)"
+          # Relative name from inside the directory: GNU sha256sum (Git for Windows) prefixes
+          # its line with a backslash when the path holds one (D:\a\_temp), which read back as
+          # a "\<hex>" digest in run 38238808902.
+          got="$(cd "$dl" && sha256sum "$archive" | cut -d' ' -f1)"
           [ "$got" = "$want" ] || miss "checksum mismatch on $archive"
           mkdir -p "$RUNNER_TEMP/published-engine"
           # Relative names from inside the directory, as Package does below: GNU tar (Git for
@@ -276,6 +279,11 @@ jobs:
       # not send the next run back to a 27-minute rebuild.
       - name: Save the published engine (Windows NVIDIA)
         if: runner.os == 'Windows' && steps.engine-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        # The engine cache is an optimization; the core binary is the product. A failed save
+        # shows as this step failing (and the run annotated), never as an unpublished binary:
+        # run 38238808902 built the engine and core for the 5090 and published neither,
+        # because this step failed (card 5793d2c6).
+        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -289,7 +297,8 @@ jobs:
           # Relative names from inside the directory: GNU tar (Git for Windows) reads `D:\...` as
           # host:path, which failed canary run 38223974097 at exactly this line.
           (cd "$RUNNER_TEMP/published-engine" && tar -czf ../published-engine.tar.gz .)
-          sum="$(sha256sum "$RUNNER_TEMP/published-engine.tar.gz" | cut -d' ' -f1)"
+          # Relative name, for the same backslash-escape reason as the restore's check above.
+          sum="$(cd "$RUNNER_TEMP" && sha256sum published-engine.tar.gz | cut -d' ' -f1)"
           archive="published-engine-${sum:0:16}.tar.gz"
           mv "$RUNNER_TEMP/published-engine.tar.gz" "$RUNNER_TEMP/$archive"
           printf '%s %s\n' "$sum" "$archive" > "$RUNNER_TEMP/published-engine.ready"
