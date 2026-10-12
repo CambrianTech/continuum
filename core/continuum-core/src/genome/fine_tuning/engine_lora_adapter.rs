@@ -506,6 +506,17 @@ impl Footprints {
     fn bound(&self, shape: &Shape) -> Option<u64> {
         self.read_all().get(&shape.key()).map(|r| r.bytes)
     }
+    /// What a shape needs, for [`choose_chunk`]: the larger of what is known (its whole-run row,
+    /// else `predicted` by the fit) and its measured lower bound. A graph-only refusal at this
+    /// chunk still rules it out, so the ladder steps down instead of calibrating the refused
+    /// shape again (card 030d70f0: 73 runs at window 68,608 and the engine's default chunk).
+    fn need(&self, shape: &Shape, predicted: Option<u64>) -> Option<u64> {
+        let bound = self.bound(shape);
+        match self.get(shape).or(predicted) {
+            Some(bytes) => Some(bytes.max(bound.unwrap_or(0))), // unwrap_or: no measured bound adds nothing to the known need
+            None => bound,
+        }
+    }
     fn family_rows(&self, shape: &Shape, whole_only: bool) -> Vec<(u32, u32, u64)> {
         self.read_all()
             .into_iter()
@@ -1803,17 +1814,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // an unmeasured (window, chunk): a calculated window with a chunk left to the default
         // would refuse by construction (Cormac on #4920). The LEASE is only ever a measurement:
         // a chunk known only by prediction is a calibration run, leasing all governed free VRAM.
-        // A chunk's need is the larger of what is known (the whole-run row, else the model's
-        // prediction) and its measured LOWER bound: a graph-only refusal at this chunk still
-        // rules it out, so the ladder steps down instead of re-dispatching it (card 030d70f0).
-        let (chunk, _) = choose_chunk(window, governed_free, |c| {
-            let shape = shape_at(c);
-            let bound = self.footprints.bound(&shape);
-            match self.footprints.get(&shape).or_else(|| model.map(|m| m.bytes(window, c))) {
-                Some(bytes) => Some(bytes.max(bound.unwrap_or(0))), // unwrap_or: no measured bound adds nothing to the known need
-                None => bound,
-            }
-        });
+        let (chunk, _) = choose_chunk(window, governed_free, |c| self.footprints.need(&shape_at(c), model.map(|m| m.bytes(window, c))));
         let measured = self.footprints.get(&shape_at(chunk));
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
@@ -2323,6 +2324,15 @@ mod tests {
         let (rows, bounds) = (store.rows_like(&served), store.bound_rows_like(&served));
         assert!(rows.is_empty(), "the refusal is not fitted");
         assert!(choose_window(68_608, free, &rows, &bounds).window < 68_608, "but the next plan steps under the refused window");
+        // The 5090's actual row (Codex, read from its footprints file): graph-only at the
+        // engine's DEFAULT chunk, 18.6 GB, so the floor-chunk cap never sees it. The chunk ladder
+        // must: it read None there and calibrated chunk 512 again each time.
+        let default_chunk = Shape { window: 68_608, chunk: train_chunk_for(68_608, TRAINING_CHUNK), ..shape.clone() };
+        store.record_with(&default_chunk, 18_587_879_424, false, Uuid::nil()).expect("test: the 5090's row");
+        let at = |c: u32| Shape { chunk: c, ..default_chunk.clone() };
+        let (chunk, _) = choose_chunk(68_608, free, |c| store.need(&at(c), None));
+        assert!(chunk < default_chunk.chunk, "the refused default chunk is never calibrated again");
+        assert_eq!(store.need(&at(default_chunk.chunk), Some(gib)), Some(18_587_879_424), "a measured bound outranks an optimistic fit");
         store.record_with(&shape, 3 * gib, true, Uuid::nil()).expect("test: whole run");
         assert_eq!(store.get(&shape), Some(3 * gib), "a whole-run row replaces it, smaller or not");
         store.record_with(&shape, 20 * gib, false, Uuid::nil()).expect("test: a rolled-back engine");
