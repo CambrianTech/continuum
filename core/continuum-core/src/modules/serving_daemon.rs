@@ -5648,13 +5648,36 @@ pub(crate) mod tests {
     /// call deleted — a check that cannot fail, which is the exact class this repo keeps
     /// getting bitten by ([[success-signal-that-cannot-report-failure]]). Caught here by
     /// a sibling assertion tripping over the same self-reference.
+    /// The daemon's production source: this file up to its test mod, plus every file of
+    /// the package. A source assertion must see a seam wherever it was moved to.
     fn production_source() -> &'static str {
-        let src = include_str!("serving_daemon.rs");
-        let cut = src
-            .find("
+        static SRC: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+            let src = include_str!("serving_daemon.rs");
+            let cut = src
+                .find("
 #[cfg(test)]")
-            .expect("this file has a test mod, so the marker must exist");
-        &src[..cut]
+                .expect("this file has a test mod, so the marker must exist");
+            [
+                &src[..cut],
+                include_str!("serving_daemon/academy_batch.rs"),
+                include_str!("serving_daemon/lane_demand.rs"),
+                include_str!("serving_daemon/gates.rs"),
+                include_str!("serving_daemon/host_budget.rs"),
+                include_str!("serving_daemon/vram.rs"),
+                include_str!("serving_daemon/prompt_cache.rs"),
+                include_str!("serving_daemon/candidates.rs"),
+                include_str!("serving_daemon/snapshot.rs"),
+                include_str!("serving_daemon/wiring.rs"),
+                include_str!("serving_daemon/intent.rs"),
+                include_str!("serving_daemon/plan.rs"),
+                include_str!("serving_daemon/measure.rs"),
+                include_str!("serving_daemon/reconcile.rs"),
+                include_str!("serving_daemon/health.rs"),
+                include_str!("serving_daemon/publish.rs"),
+            ]
+            .concat()
+        });
+        &SRC
     }
 
     /// A stored pin must never be able to take the node dark. Nested per the one-mod rule.
