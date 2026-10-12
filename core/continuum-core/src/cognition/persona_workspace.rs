@@ -326,14 +326,24 @@ fn assemble_workspace_cycle(
     ));
     // Persistence belongs to resident registration, independently of whether
     // recall runs inline or deferred. Constructing a fork grants no disk access.
-    if let Some(persisted) = restored {
+    if let Some(mut persisted) = restored {
         let n = persisted.wm.entries.len();
+        // Results restored from a snapshot written before results were saved (#4963) carry no
+        // handle: they predate custody, they are not failed saves. Save them now, so they
+        // collapse within the share like any saved result and the "save failed" probe names
+        // only a real failure (BigMama's live receipt on the 5090, card df0035bf). The pin
+        // holds them live until `restore` below publishes the memory's own set.
+        let restore_pin = crate::cognition::tool_executor::spill::retain_handleless(
+            cfg.persona_id,
+            persisted.wm.recent_results.iter_mut().map(|(_, _, text, _, handle)| (text.as_str(), handle)),
+        );
         // The previous life's handoff re-seeds this one: her ledger and card are known at
         // the NEXT seam too, without a wall read (card 49b5e806).
         if let Some(handoff) = persisted.wm.handoff.as_ref() {
             crate::cognition::handoff::reload(cfg.persona_id, handoff);
         }
         working_memory.restore(persisted.wm);
+        drop(restore_pin);
         let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
         match &persisted.own_speech {
             OwnSpeechPersisted::ByRoom(by_room) => {

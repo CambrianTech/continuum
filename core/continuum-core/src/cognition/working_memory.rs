@@ -929,7 +929,13 @@ impl WorkingMemory {
             ptrs.clear();
             ptrs.extend(snap.evicted_pointers);
         }
-        self.collapse_results_over_cap();
+        // Collapse only against the REAL window. Before set_served_window the budget is the
+        // floor (cap 1,536 measured at restore on the 5090), which would fold results the
+        // served window holds; the next settlement collapses against the window she is
+        // actually served with (card df0035bf).
+        if self.served_window.load(Ordering::Relaxed) != 0 {
+            self.collapse_results_over_cap();
+        }
         self.publish_live_handles();
         {
             let mut f = self.action_fps.lock();
@@ -1916,6 +1922,42 @@ mod tests {
         assert!(live(&file), "still referenced by its pointer");
         drop(wm);
         assert!(!live(&file), "released when the mind drops");
+    }
+
+    // what this catches (BigMama's live receipt of #4963 on the 5090, card df0035bf): restore
+    // collapsing against the FLOOR budget. Restore runs before the served window is known, so
+    // its budget is the floor (a 1,536-char share measured there) and it folded results her
+    // real window holds. With no window yet, restore keeps the ring as saved; once a window is
+    // set, the same snapshot collapses against it.
+    #[test]
+    fn restore_collapses_only_against_a_known_window() {
+        let source = WorkingMemory::new(8);
+        source.set_served_window(65_536);
+        let share = source.budget().recent_results_chars();
+        for i in 0..4 {
+            source.record_receipt_typed(
+                &[],
+                &format!("r{i} {}", "w".repeat(share / 3)),
+                None,
+                saved(&format!("restore-{i}")),
+            );
+        }
+        let snapshot = source.snapshot();
+        let entries = |wm: &WorkingMemory| {
+            wm.recent_results_messages().iter().filter(|m| m.starts_with("[result ")).count()
+        };
+
+        // The source settles against its own window as it records, so the count to keep is
+        // what it held, not how many were recorded.
+        let held = entries(&source);
+        let unknown = WorkingMemory::new(8);
+        unknown.restore(snapshot.clone());
+        assert_eq!(entries(&unknown), held, "no window yet: nothing folds against the floor");
+
+        let known = WorkingMemory::new(8);
+        known.set_served_window(16_384);
+        known.restore(snapshot);
+        assert!(entries(&known) < held, "a known smaller window collapses on restore");
     }
 
     // what this catches: an unsaved result dropped at collapse (Astra on #4963 at 4840af859:

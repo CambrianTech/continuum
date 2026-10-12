@@ -35,11 +35,20 @@ use crate::ai::types::ResultCustody;
 /// (Astra on #4963). One owner: working memory republishes its whole set whenever its ring
 /// changes and withdraws it when it drops, so no reference count can drift.
 static LIVE_HANDLES: std::sync::OnceLock<
-    parking_lot::Mutex<std::collections::HashMap<u64, std::collections::HashSet<String>>>,
+    parking_lot::Mutex<std::collections::HashMap<LiveHolder, std::collections::HashSet<String>>>,
 > = std::sync::OnceLock::new();
 
+/// Who holds a set of live handles: a working memory (its instance), or a [`LivePin`] holding
+/// results saved but not yet published by a memory, in separate key spaces so neither can
+/// replace the other's set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LiveHolder {
+    Memory(u64),
+    Pin(u64),
+}
+
 fn live_handles(
-) -> &'static parking_lot::Mutex<std::collections::HashMap<u64, std::collections::HashSet<String>>> {
+) -> &'static parking_lot::Mutex<std::collections::HashMap<LiveHolder, std::collections::HashSet<String>>> {
     LIVE_HANDLES.get_or_init(Default::default)
 }
 
@@ -47,15 +56,96 @@ fn live_handles(
 pub fn publish_live_handles(holder: u64, handles: std::collections::HashSet<String>) {
     let mut live = live_handles().lock();
     if handles.is_empty() {
-        live.remove(&holder);
+        live.remove(&LiveHolder::Memory(holder));
     } else {
-        live.insert(holder, handles);
+        live.insert(LiveHolder::Memory(holder), handles);
     }
 }
 
 /// `holder` references nothing any more (its working memory dropped).
 pub fn withdraw_live_handles(holder: u64) {
-    live_handles().lock().remove(&holder);
+    live_handles().lock().remove(&LiveHolder::Memory(holder));
+}
+
+/// THE atomic retain-and-pin: a save that is live from before its file exists until a working
+/// memory has published a set naming it. `LivePin::retain_in` enters the handle (a content hash,
+/// known before the write) into the same live set eviction reads ([`is_live`]), under the same
+/// lock, and only then writes the file. So no evictor, sequential or concurrent, ever sees a new
+/// file unpinned (Codex on #4982). Dropping the pin withdraws its set; hold it until the memory
+/// that references the results has published. The restore path uses it here; the live path
+/// (command executor, act/observe) adopting it is card 12b080c3. The other half of the
+/// atomicity is eviction's: [`evict_unless_live`] decides and deletes under this same lock.
+#[must_use = "the saved handles are unprotected once this drops; hold it until a memory has published them"]
+pub(crate) struct LivePin(LiveHolder);
+
+impl LivePin {
+    pub(crate) fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        LivePin(LiveHolder::Pin(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
+
+    /// Save `content` exactly, pinned before it is written: `Whole{handle}`, or `Unsaved` when
+    /// the save failed (probed; the caller keeps the text whole).
+    fn retain_in(&self, root: &Path, persona_id: Uuid, content: &str) -> ResultCustody {
+        let handle = handle_of(content);
+        let entered = self.hold(&handle);
+        match write_in(root, persona_id, &handle, content) {
+            Ok(_) => ResultCustody::Whole { handle },
+            Err(e) => {
+                if entered {
+                    if let Some(set) = live_handles().lock().get_mut(&self.0) {
+                        set.remove(&handle);
+                    }
+                }
+                unretained(content, &e)
+            }
+        }
+    }
+
+    /// Enter `handle` into this pin's live set; whether it was newly entered.
+    fn hold(&self, handle: &str) -> bool {
+        live_handles().lock().entry(self.0).or_default().insert(handle.to_owned())
+    }
+}
+
+impl Default for LivePin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for LivePin {
+    fn drop(&mut self) {
+        live_handles().lock().remove(&self.0);
+    }
+}
+
+/// Save every restored result that has no handle: those from a snapshot written before results
+/// were saved (#4963). They predate custody; they are not failed saves. Each is saved exactly as
+/// the mind saw it through one [`LivePin`], pinned before its write (the persisted checkpoint is
+/// the old snapshot and names none of them). A save that fails leaves its handle `None` and its
+/// text whole (probed `Unsaved`).
+pub(crate) fn retain_handleless<'a>(
+    persona_id: Uuid,
+    results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
+) -> LivePin {
+    let pin = LivePin::new();
+    match spill_root() {
+        Ok(root) => retain_handleless_with(|text| pin.retain_in(&root, persona_id, text), results),
+        Err(e) => retain_handleless_with(|text| unretained(text, &e), results),
+    }
+    pin
+}
+
+fn retain_handleless_with<'a>(
+    mut save: impl FnMut(&str) -> ResultCustody,
+    results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
+) {
+    for (text, handle) in results {
+        if handle.is_none() {
+            *handle = save(text).handle().map(str::to_owned);
+        }
+    }
 }
 
 /// Whether a spill file at `path` is referenced by a mind. The eviction guard the spill
@@ -68,9 +158,43 @@ pub fn is_live(path: &Path) -> bool {
     let Some(handle) = path.file_stem().and_then(|s| s.to_str()) else {
         return false;
     };
-    if live_handles().lock().values().any(|set| set.contains(handle)) {
-        return true;
+    live_handles().lock().values().any(|set| set.contains(handle)) || checkpoint_protects(path, handle)
+}
+
+/// Evict one spill file unless a mind points at it: the pool's remover. Liveness in memory and
+/// the delete happen in ONE critical section of the live-set lock, the lock [`LivePin`] enters a
+/// handle under. So a pin either lands first (the file is protected) or after the delete (and
+/// its write recreates the file): it can never land between the check and the delete, which is
+/// how a content-addressed file that already existed could be deleted while pinned (Codex on
+/// #4982). The persisted checkpoint is read first, outside the lock.
+pub fn evict_unless_live(path: &Path) -> crate::paging::filesystem_tier_pool::Removal {
+    evict_unless_live_with(path, || {})
+}
+
+fn evict_unless_live_with(
+    path: &Path,
+    inside_the_section: impl FnOnce(),
+) -> crate::paging::filesystem_tier_pool::Removal {
+    use crate::paging::filesystem_tier_pool::Removal;
+    let Some(handle) = path.file_stem().and_then(|s| s.to_str()) else {
+        return fs::remove_file(path).into();
+    };
+    if checkpoint_protects(path, handle) {
+        return Removal::Protected;
     }
+    let live = live_handles().lock();
+    if live.values().any(|set| set.contains(handle)) {
+        return Removal::Protected;
+    }
+    inside_the_section();
+    let removal = fs::remove_file(path).into();
+    drop(live);
+    removal
+}
+
+/// Whether the persisted checkpoint of the persona owning `path` names `handle`. An unreadable
+/// checkpoint fails closed.
+fn checkpoint_protects(path: &Path, handle: &str) -> bool {
     let Some(persona_id) = path
         .parent()
         .and_then(|dir| dir.file_name())
@@ -222,14 +346,25 @@ fn persona_dir(root: &Path, persona_id: Uuid) -> PathBuf {
     root.join(persona_id.to_string())
 }
 
-fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
-    let dir = persona_dir(root, persona_id);
-    fs::create_dir_all(&dir)?;
+/// The content address a result is saved under: 16 hex chars of its SHA-256, known before any
+/// write, which is what lets [`LivePin`] pin a file before it exists.
+fn handle_of(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
-    let handle = format!("{:x}", hasher.finalize())[..16].to_string();
+    format!("{:x}", hasher.finalize())[..16].to_string()
+}
+
+fn write_in(root: &Path, persona_id: Uuid, handle: &str, content: &str) -> std::io::Result<PathBuf> {
+    let dir = persona_dir(root, persona_id);
+    fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{handle}.log"));
     fs::write(&path, content.as_bytes())?;
+    Ok(path)
+}
+
+fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
+    let handle = handle_of(content);
+    let path = write_in(root, persona_id, &handle, content)?;
     Ok(SpillRef {
         handle,
         path,
@@ -449,6 +584,65 @@ fn bound(s: String, max: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Codex on #4982): the restore retain loop untested, a restored
+    // handle that does not resolve to the exact bytes the mind saw, a failed save that drops
+    // the text or leaves a pin, and a new file visible to eviction before it is pinned.
+    #[test]
+    fn a_restore_saves_handleless_results_exactly_and_pins_them_until_published() {
+        let tmp = std::env::temp_dir().join(format!("spill-restore-{}", Uuid::new_v4()));
+        let persona = Uuid::new_v4();
+        let mut results = vec![
+            ("first result\nline two".to_string(), None),
+            ("already saved".to_string(), Some("feedfacefeedface".to_string())),
+            ("third result".to_string(), None),
+        ];
+        let pin = LivePin::new();
+        retain_handleless_with(|t| pin.retain_in(&tmp, persona, t), results.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        for (text, handle) in [&results[0], &results[2]] {
+            let handle = handle.as_deref().expect("a handle-less result is saved");
+            assert_eq!(std::fs::read_to_string(resolve_in(&tmp, persona, handle).unwrap()).unwrap(), *text, "byte-identical");
+        }
+        assert_eq!(results[1].1.as_deref(), Some("feedfacefeedface"), "a saved result keeps its handle");
+        let live: std::collections::HashSet<String> = live_handles().lock().get(&pin.0).cloned().unwrap_or_default();
+        assert!(results.iter().filter(|(t, _)| t != "already saved").all(|(_, h)| live.contains(h.as_ref().unwrap())), "each is pinned as it is saved");
+        let holder = pin.0;
+        drop(pin);
+        assert!(!live_handles().lock().contains_key(&holder), "the pin withdraws once the memory has published");
+
+        // A root that is a FILE: every save fails, and the text stays whole with no handle.
+        let blocked = std::env::temp_dir().join(format!("spill-blocked-{}", Uuid::new_v4()));
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let mut failed = vec![("kept whole".to_string(), None::<String>)];
+        let failing = LivePin::new();
+        retain_handleless_with(|t| failing.retain_in(&blocked, persona, t), failed.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        assert_eq!(failed[0], ("kept whole".to_string(), None), "a failed save keeps its text and claims no handle");
+        assert!(live_handles().lock().get(&failing.0).is_none_or(|set| set.is_empty()), "and pins nothing");
+
+        // THE ORDER (Codex on #4982): the handle is live before its file exists, under the lock
+        // eviction reads, so no evictor can see the new file unpinned.
+        let ordered = LivePin::new();
+        let handle = handle_of("pinned first");
+        assert!(ordered.hold(&handle), "entered");
+        let path = persona_dir(&tmp, persona).join(format!("{handle}.log"));
+        assert!(!path.exists() && live_handles().lock().values().any(|set| set.contains(&handle)), "live before written");
+        assert!(matches!(ordered.retain_in(&tmp, persona, "pinned first"), ResultCustody::Whole { .. }) && path.exists());
+
+        // THE INTERLEAVING (Codex on #4982): a content-addressed file that already exists is
+        // never deleted while pinned. Eviction decides and deletes in one critical section, so a
+        // pin cannot enter between them: inside it, the lock a pin needs is held.
+        use crate::paging::filesystem_tier_pool::Removal;
+        assert!(matches!(evict_unless_live(&path), Removal::Protected) && path.exists(), "pinned: protected");
+        drop(ordered);
+        let removal = evict_unless_live_with(&path, || {
+            assert!(live_handles().try_lock().is_none(), "no pin can enter between the check and the delete");
+        });
+        assert!(matches!(removal, Removal::Removed) && !path.exists(), "unpinned: removed");
+        let again = LivePin::new();
+        assert!(matches!(again.retain_in(&tmp, persona, "pinned first"), ResultCustody::Whole { .. }) && path.exists(), "a pin after the delete rewrites the file");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_file(&blocked);
+    }
 
     // what this catches: the head+tail fold (the executor's tier 1 until 2026-10-12) and
     // every other fragment. A result within its share is returned byte-identical; one over
