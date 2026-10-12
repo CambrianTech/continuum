@@ -42,17 +42,11 @@ pub(crate) async fn resolve_room(airc: &Airc, named: Option<&str>) -> Result<air
     // A CARD ID WHERE A ROOM GOES (card 7d03cef2): Kimi passed her card's id `db0aa5b2` as
     // work/create's room twice on 2026-10-12 and the refusal never said what she had done. Only an
     // id-shaped name is looked up, on the refusal path, across the boards she can read.
-    let cards = if looks_like_an_id(wanted) {
-        cards_on_the_boards(airc, &rooms, wanted).await
-    } else {
-        Vec::new()
+    let cards = match crate::id_resolve::handle_prefix(wanted) {
+        Some(needle) => cards_on_the_boards(airc, &rooms, &needle).await,
+        None => Vec::new(),
     };
     Err(CommandError::Invalid(not_in_reach(named, wanted, &names, &cards)))
-}
-
-/// A name shaped like an id (eight or more hex digits, dashes allowed), not a room name.
-fn looks_like_an_id(name: &str) -> bool {
-    name.len() >= 8 && name.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
 /// One card a name matched: its id, title and the room whose board holds it.
@@ -62,22 +56,29 @@ struct CardMatch {
     room: String,
 }
 
-/// EVERY card on `rooms`' boards whose id starts with `prefix`. A short prefix is not unique
-/// across dozens of boards (BigMama on #4973), so the refusal names a card only when exactly one
-/// matches, and lists them otherwise; a first match could name the wrong one.
-async fn cards_on_the_boards(airc: &Airc, rooms: &[airc_lib::Room], prefix: &str) -> Vec<CardMatch> {
-    let prefix = prefix.to_ascii_lowercase();
-    let mut found = Vec::new();
+/// EVERY card on `rooms`' boards whose id starts with `needle`, matched by id_resolve's one rule
+/// (BigMama on #4973: short ids have an owner, and a first match could name the wrong card, so
+/// the refusal names a card only when exactly one matches, and lists them otherwise).
+async fn cards_on_the_boards(airc: &Airc, rooms: &[airc_lib::Room], needle: &str) -> Vec<CardMatch> {
+    let mut seen: Vec<(uuid::Uuid, String, String)> = Vec::new();
     for room in rooms {
         let Ok(board) = airc.work_board_in(room).await else { continue };
         for card in board.snapshot().cards.iter() {
-            let id = card.card_id.as_uuid().to_string();
-            if id.starts_with(&prefix) {
-                found.push(CardMatch { id, title: card.title.clone(), room: room.name.clone() });
-            }
+            seen.push((card.card_id.as_uuid(), card.title.clone(), room.name.clone()));
         }
     }
-    found
+    let ids: Vec<uuid::Uuid> = seen.iter().map(|(id, _, _)| *id).collect();
+    crate::id_resolve::prefix_matches(needle, &ids)
+        .into_iter()
+        .filter_map(|id| {
+            // a card visible from two rooms is one card: its first room names it
+            seen.iter().find(|(seen_id, _, _)| *seen_id == id).map(|(id, title, room)| CardMatch {
+                id: id.to_string(),
+                title: title.clone(),
+                room: room.clone(),
+            })
+        })
+        .collect()
 }
 
 /// PURE: the refusal for a room the caller is not in, leading with the room she most likely
@@ -220,7 +221,9 @@ mod tests {
         let text = not_in_reach("db0aa5b2", "db0aa5b2", &names, &two);
         assert!(text.contains("is the start of 2 card ids"), "{text}");
         assert!(text.contains("\"one\"") && text.contains("\"two\""), "both are listed, neither is guessed: {text}");
-        assert!(looks_like_an_id("db0aa5b2") && looks_like_an_id("db0aa5b2-9bba-4168"));
-        assert!(!looks_like_an_id("academy") && !looks_like_an_id("abc"), "a room name or a short word is never looked up");
+        // what decides a lookup is id_resolve's strict handle reading, never a parse of our own
+        assert_eq!(crate::id_resolve::handle_prefix("db0aa5b2").as_deref(), Some("db0aa5b2"));
+        assert_eq!(crate::id_resolve::handle_prefix("academy"), None, "a room name is never looked up");
+        assert_eq!(crate::id_resolve::handle_prefix("abc"), None, "nor a short word");
     }
 }
