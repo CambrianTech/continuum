@@ -148,8 +148,8 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
         self.captures.lock().unwrap().push(request.clone());
         Ok(JobHandle {
             provider_id: RECORDING_PROVIDER_ID.to_string(),
-            provider_job_id: format!("recording-{}", Uuid::new_v4()),
-            local_id: Uuid::new_v4(),
+            provider_job_id: format!("recording-{}", request.job_id),
+            local_id: request.job_id,
         })
     }
 
@@ -194,6 +194,7 @@ mod tests {
             trait_kind: "t".into(),
             resume_from: None,
             parent: None,
+            job_id: Uuid::new_v4(),
             dataset: TrainingDataset {
                 examples: vec![ex(prompt, "c")],
                 source: TrainingSource::OperatorCurated,

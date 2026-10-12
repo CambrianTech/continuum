@@ -165,7 +165,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             )));
         }
 
-        let local_id = Uuid::new_v4();
+        let local_id = request.job_id;
         let python = self.python.clone();
         Ok(self.jobs.prepare(local_id, move |progress| async move {
             let log = runtime::logger(PROVIDER_ID);
@@ -547,6 +547,7 @@ mod tests {
             trait_kind: "coder-test".into(),
             resume_from: None,
             parent: None,
+            job_id: Uuid::new_v4(),
             dataset: TrainingDataset {
                 examples: examples
                     .into_iter()

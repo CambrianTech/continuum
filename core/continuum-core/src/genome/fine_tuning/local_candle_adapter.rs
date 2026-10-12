@@ -155,7 +155,7 @@ impl FineTuningAdapter for LocalCandleFineTuner {
         // — when the caller doesn't pin one, default to that under
         // the user's home dir. The full directory tree is created
         // lazily by the safetensors writeout.
-        let local_id = Uuid::new_v4();
+        let local_id = request.job_id;
         let output_path = match request.local_artifact_dir {
             Some(dir) => dir.join(format!("{local_id}.safetensors")),
             None => default_output_path(&request.persona_name, &request.trait_kind, local_id)?,
@@ -295,6 +295,7 @@ mod tests {
             trait_kind: "stand-in".into(),
             resume_from: None,
             parent: None,
+            job_id: Uuid::new_v4(),
             dataset: small_dataset(),
             eval_set: None,
             lora: Some(LoRAHyperparams {

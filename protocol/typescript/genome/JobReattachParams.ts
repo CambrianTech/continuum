@@ -5,9 +5,11 @@
  */
 export type JobReattachParams = { 
 /**
- * The adapter that created the job (the ledger's `provider_id`).
+ * The adapter that created the job (the ledger's `provider_id`). Absent when the caller
+ * knows the job's id but not which trainer took it: a training dispatch interrupted
+ * before job-create answered. Then every registered trainer is asked.
  */
-providerId: string, 
+providerId?: string, 
 /**
  * The job's substrate-side id (`JobHandle::local_id`).
  */
