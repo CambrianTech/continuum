@@ -1809,7 +1809,9 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // an unmeasured (window, chunk): a calculated window with a chunk left to the default
         // would refuse by construction (Cormac on #4920). The LEASE is only ever a measurement:
         // a chunk known only by prediction is a calibration run, leasing all governed free VRAM.
-        let (chunk, _) = choose_chunk(window, governed_free, |c| self.footprints.need(&shape_at(c), model.map(|m| m.bytes(window, c))).map(|n| n.bytes));
+        let (chunk, _) = choose_chunk(window, governed_free, |c| {
+            self.footprints.need(&shape_at(c), model.map(|m| m.bytes(window, c))).and_then(|n| n.decides(governed_free))
+        });
         let measured = self.footprints.get(&shape_at(chunk));
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
@@ -2325,7 +2327,7 @@ mod tests {
         let default_chunk = Shape { window: 68_608, chunk: train_chunk_for(68_608, TRAINING_CHUNK), ..shape.clone() };
         store.record_with(&default_chunk, 18_587_879_424, false, Uuid::nil()).expect("test: the 5090's row");
         let at = |c: u32| Shape { chunk: c, ..default_chunk.clone() };
-        let (chunk, _) = choose_chunk(68_608, free, |c| store.need(&at(c), None).map(|n| n.bytes));
+        let (chunk, _) = choose_chunk(68_608, free, |c| store.need(&at(c), None).and_then(|n| n.decides(free)));
         assert!(chunk < default_chunk.chunk, "the refused default chunk is never calibrated again");
         assert_eq!(store.need(&at(default_chunk.chunk), Some(gib)).map(|n| (n.bytes, n.source)), Some((18_587_879_424, crate::inference::planning::training_plan::NeedSource::LowerBound)), "a measured bound outranks an optimistic fit");
         store.record_with(&shape, 3 * gib, true, Uuid::nil()).expect("test: whole run");

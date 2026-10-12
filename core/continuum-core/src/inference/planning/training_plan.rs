@@ -86,6 +86,20 @@ pub(crate) struct Need {
     pub(crate) source: NeedSource,
 }
 
+impl Need {
+    /// The bytes this need DECIDES against `available`, or `None` when it decides nothing. A
+    /// whole run or the fit's prediction decides either way. A lower bound only DISQUALIFIES:
+    /// over `available` it proves the shape does not fit, but under it proves nothing (the whole
+    /// run needs at least that much, perhaps more), so the shape is still unknown and calibrates,
+    /// never leasing the bound as if it were the need (Codex on #4985; #4984 leased it).
+    pub(crate) fn decides(self, available: u64) -> Option<u64> {
+        match self.source {
+            NeedSource::LowerBound if self.bytes <= available => None,
+            _ => Some(self.bytes),
+        }
+    }
+}
+
 /// A shape's need: what is known (its whole-run row, else the fit's prediction), raised to its
 /// measured lower bound when that is larger. A graph-only refusal therefore rules its shape out
 /// even where the fit is optimistic (card 030d70f0: the 5090 held a graph-only row of 18.6 GB at
@@ -451,6 +465,12 @@ mod tests {
         assert_eq!(need(None, None, Some(5 << 30)), Some(Need { bytes: 5 << 30, source: NeedSource::Predicted }));
         assert_eq!(need(None, Some(1 << 30), Some(5 << 30)).map(|n| n.source), Some(NeedSource::Predicted), "a smaller bound adds nothing");
         assert_eq!(need(None, None, None), None, "nothing known: calibrate");
+        // what this catches (Codex on #4985): a lower bound under what is free leased as the
+        // need, or read by serving eligibility as proof the reserve suffices.
+        let bound = Need { bytes: 3 << 30, source: NeedSource::LowerBound };
+        assert_eq!(bound.decides(4 << 30), None, "under free, a bound proves nothing: calibrate");
+        assert_eq!(bound.decides(2 << 30), Some(3 << 30), "over free, it disqualifies");
+        assert_eq!(Need { bytes: 3 << 30, source: NeedSource::Predicted }.decides(4 << 30), Some(3 << 30));
     }
 
     // what this catches (Fable, 2026-10-11): the window planned as the largest memory allowed at a
