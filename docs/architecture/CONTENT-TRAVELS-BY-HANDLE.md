@@ -239,7 +239,9 @@ the one-prompt constraint lifts, it is encoding the constraint instead of the in
    result at, so nothing reaches working memory over its view without a handle.
 4. **Still cutting, owner to settle:** the `tool/output` grep-window cut in `spill::bound`,
    the dispatch-result head cut in `dispatch_listener::summarize_result`, and the act/wall
-   fact cuts. Each goes through `whole_or_handle` or names why its unit differs.
+   fact cuts, and working memory's collapsed-pointer ring, which still keeps a fixed 12
+   pointers and drops the oldest. Each goes through `whole_or_handle` or the budget, or names
+   why its unit differs.
 
 ## Forbidden moves
 

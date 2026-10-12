@@ -293,7 +293,7 @@ pub struct WorkingMemory {
     /// Bounded ring; when IT overflows, the oldest pointer drops silently (a
     /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
     /// message ahead of the recent-results banner.
-    evicted_pointers: Mutex<VecDeque<String>>,
+    evicted_pointers: Mutex<VecDeque<(String, String)>>,
     /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
     /// still inside the act→observe loop that produced it and hasn't yet spoken. The
     /// full raw result exists to answer "what next" the moment the hands fetch it; once
@@ -420,6 +420,12 @@ pub struct VolatileSnapshot {
     /// snapshots from before this field and for a citizen at home with nothing to hand.
     #[serde(default)]
     pub handoff: Option<crate::cognition::handoff::Handoff>,
+    /// The collapsed results' pointers, each with the handle it reopens: what a result
+    /// leaves when it collapses out of the ring is HOW she reaches it again, so it survives
+    /// a restart exactly as the ring does (Astra on #4963: a read collapsed at settlement
+    /// lost its only handle on restart). Empty on snapshots written before this field.
+    #[serde(default)]
+    pub evicted_pointers: Vec<(String, String)>,
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -866,6 +872,7 @@ impl WorkingMemory {
                 .filter(|d| d.status == DispatchStatus::Running)
                 .map(|d| d.label.clone())
                 .collect(),
+            evicted_pointers: self.evicted_pointers.lock().iter().cloned().collect(),
         }
     }
 
@@ -914,6 +921,11 @@ impl WorkingMemory {
             let mut rr = self.recent_results.lock();
             rr.clear();
             rr.extend(snap.recent_results);
+        }
+        {
+            let mut ptrs = self.evicted_pointers.lock();
+            ptrs.clear();
+            ptrs.extend(snap.evicted_pointers);
         }
         self.collapse_results_over_cap();
         {
@@ -1267,7 +1279,7 @@ impl WorkingMemory {
             if !ptrs.is_empty() {
                 out.push(format!(
                     "Older results, collapsed to pointers (query to expand):\n{}",
-                    ptrs.iter().cloned().collect::<Vec<_>>().join("\n")
+                    ptrs.iter().map(|(pointer, _)| pointer.as_str()).collect::<Vec<_>>().join("\n")
                 ));
             }
         }
@@ -1397,7 +1409,7 @@ impl WorkingMemory {
                 spill_handle: Some(handle),
             };
             let mut ptrs = self.evicted_pointers.lock();
-            ptrs.push_back(format!("[result {attribution} — collapsed]"));
+            ptrs.push_back((format!("[result {attribution} — collapsed]"), handle.to_owned()));
             while ptrs.len() > 12 {
                 ptrs.pop_front();
             }
@@ -2200,6 +2212,7 @@ mod tests {
             receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
             recent_results: Vec::new(),
             handoff: None,
+            evicted_pointers: Vec::new(),
         });
         assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
         let q = quiet.pinned_facts();
