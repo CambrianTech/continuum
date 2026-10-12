@@ -21,6 +21,9 @@ use std::sync::Arc;
 use ts_rs::TS;
 
 mod candidate;
+mod repo;
+pub use repo::FromRepoParams;
+pub(crate) use repo::{default_example_tokens, Corpus};
 pub use candidate::{CandidateReservation, DatasetCandidate};
 
 /// Manifest persisted alongside imported datasets.
@@ -54,6 +57,15 @@ pub struct DatasetManifest {
     #[ts(optional, type = "number")]
     pub post_cutoff: Option<usize>,
     pub imported_at: String,
+}
+
+impl DatasetManifest {
+    /// Write this manifest as `<dir>/manifest.json`: the one writer, for a fresh dataset and
+    /// for one whose source the importer sets after the split.
+    pub fn write_to(&self, dir: &Path) -> Result<(), String> {
+        let json = serde_json::to_string_pretty(self).map_err(|e| format!("Failed to serialize manifest: {e}"))?;
+        std::fs::write(dir.join("manifest.json"), json).map_err(|e| format!("Failed to write manifest: {e}"))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -752,11 +764,7 @@ impl DatasetService {
         manifest.post_cutoff = Some(post_cutoff);
 
         // Re-write manifest with source metadata
-        let manifest_path = output_dir.join("manifest.json");
-        let manifest_json = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| format!("Failed to serialize manifest: {e}"))?;
-        std::fs::write(&manifest_path, &manifest_json)
-            .map_err(|e| format!("Failed to write manifest: {e}"))?;
+        manifest.write_to(&output_dir)?;
 
         Ok(manifest)
     }
@@ -856,12 +864,7 @@ impl DatasetService {
             imported_at: chrono::Utc::now().to_rfc3339(),
         };
 
-        let manifest_path = output_dir.join("manifest.json");
-        let manifest_json = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| format!("Failed to serialize manifest: {e}"))?;
-        std::fs::write(&manifest_path, &manifest_json)
-            .map_err(|e| format!("Failed to write manifest: {e}"))?;
-
+        manifest.write_to(output_dir)?;
         Ok(manifest)
     }
 }

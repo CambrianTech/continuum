@@ -5,4 +5,4 @@
  * for layers trained from teacher-synthesized data is distinct from
  * layers trained from raw operator-supplied corpora.
  */
-export type TrainingSource = "teacher_synthesized" | "operator_curated" | "raw" | "mesh_inherited";
+export type TrainingSource = "teacher_synthesized" | "operator_curated" | "raw" | "mesh_inherited" | "studied";

@@ -646,12 +646,7 @@ impl TurnCreditCapture {
         credit: CapturedCredit,
     ) -> Self {
         Self {
-            conn: Connection::new(InProcessTransport::new(
-                executor,
-                Some(CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(persona_id),
-                )),
-            )),
+            conn: persona_hands(executor, persona_id),
             persona_id,
             persona_name,
             prompt,
@@ -885,12 +880,7 @@ pub fn produce_with_id(
         // `@persona:{name}` handle these writes target resolves AS this persona,
         // so a connection without her `LocalPersona` would stage her credit
         // somewhere other than her own store.
-        let conn = Connection::new(InProcessTransport::new(
-            executor,
-            Some(CallerIdentity::local_persona(
-                crate::identity::PeerId::from_uuid(persona_id),
-            )),
-        ));
+        let conn = persona_hands(executor, persona_id);
         let (lived, complete) =
             read_lived(persona_id, &persona_name, &generation_receipts, Vec::new()).await;
         let lived = complete.then_some(lived);
@@ -1187,15 +1177,7 @@ async fn submit_plan(
     plan: SubmitPlan,
     provenance: &'static str,
 ) {
-    // The persona's own hands: a Connection carrying its LocalPersona identity through
-    // the wired executor, so the Privileged submit is gated AS the persona
-    // ([[persona-is-a-client]]). `persona_id` IS the airc `peer_id` (equal by invariant).
-    let conn = Connection::new(InProcessTransport::new(
-        executor,
-        Some(CallerIdentity::local_persona(
-            crate::identity::PeerId::from_uuid(persona_id),
-        )),
-    ));
+    let conn = persona_hands(executor, persona_id);
     let params = build_submit_params(persona_id, &persona_name, &base_model, &plan, provenance);
     match submit_training(&conn, params).await {
         Ok(receipt) if receipt.success => {
@@ -1571,6 +1553,25 @@ fn storage_ok(
     })
 }
 
+/// The persona's own hands: a Connection carrying her LocalPersona identity through the
+/// wired executor, so a Privileged submit is gated AS her ([[persona-is-a-client]]).
+/// `persona_id` IS the airc `peer_id` (equal by invariant).
+pub(crate) fn persona_hands(executor: Arc<CommandExecutor>, persona_id: Uuid) -> Connection<InProcessTransport> {
+    Connection::new(InProcessTransport::new(
+        executor,
+        Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona_id))),
+    ))
+}
+
+/// Submit a batch into a persona's bucket with her own hands, from a verb SHE called
+/// (`code/study`): the same gate and the same trigger her lived turns go through.
+pub(crate) async fn submit_as(persona_id: Uuid, params: serde_json::Value) -> Result<SubmitOutcome, String> {
+    let executor = EXECUTOR
+        .cloned()
+        .ok_or_else(|| "the training executor is not installed yet (the core is still booting)".to_string())?;
+    submit_training(&persona_hands(executor, persona_id), params).await.map_err(|e| e.to_string())
+}
+
 pub(crate) async fn submit_training<T: Transport>(
     conn: &Connection<T>,
     params: serde_json::Value,
@@ -1645,12 +1646,7 @@ async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_ear
     };
     for (persona_name, persona_id) in registry.roster_snapshot() {
         let handle = format!("@persona:{persona_name}");
-        let conn = Connection::new(InProcessTransport::new(
-            executor.clone(),
-            Some(CallerIdentity::local_persona(
-                crate::identity::PeerId::from_uuid(persona_id),
-            )),
-        ));
+        let conn = persona_hands(executor.clone(), persona_id);
         // The SUBSTRATE does the bookkeeping on her store (the rejected mark, shedding a
         // transferred row's lived copy); her own identity resolves to Trusted, where
         // data/update is refused (modules/grid/acl.rs; cards fd47a804, 44aee459). Her acts
@@ -3161,12 +3157,7 @@ pub(crate) mod tests {
     }
 
     fn conn_as(executor: Arc<CommandExecutor>, persona: Uuid) -> Connection<InProcessTransport> {
-        Connection::new(InProcessTransport::new(
-            executor,
-            Some(CallerIdentity::local_persona(
-                crate::identity::PeerId::from_uuid(persona),
-            )),
-        ))
+        persona_hands(executor, persona)
     }
 
     fn receipt(id: &str) -> crate::cognition::provenance::GenerationReceipt {

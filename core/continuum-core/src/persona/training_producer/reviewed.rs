@@ -60,12 +60,7 @@ pub(crate) async fn bridge_review(event: &airc_core::TranscriptEvent, observer: 
         let executor = EXECUTOR.cloned().ok_or_else(|| {
             crate::sdk_codegen::CommandError::Internal("credit executor is not ready".into())
         })?;
-        let conn = Connection::new(InProcessTransport::new(
-            executor,
-            Some(CallerIdentity::local_persona(
-                crate::identity::PeerId::from_uuid(observer),
-            )),
-        ));
+        let conn = persona_hands(executor, observer);
         consume_observed_review(
             &conn,
             runtime.agent_name(),
@@ -184,12 +179,7 @@ pub(crate) async fn consume_as_publisher(
     }
     // The publisher must actually inhabit this activity; never substitute focus.
     crate::modules::room_resolve::resolve_room(runtime.airc(), Some(&room_id.to_string())).await?;
-    let conn = Connection::new(InProcessTransport::new(
-        executor,
-        Some(CallerIdentity::local_persona(
-            crate::identity::PeerId::from_uuid(runtime.persona_id()),
-        )),
-    ));
+    let conn = persona_hands(executor, runtime.persona_id());
     consume_review(
         &conn,
         runtime.agent_name(),
