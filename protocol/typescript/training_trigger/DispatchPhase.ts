@@ -2,4 +2,8 @@
 import type { Took } from "../genome/Took";
 import type { JobHandle } from "../genome/fine_tuning/JobHandle";
 
-export type DispatchPhase = { "state": "prepared" } | { "state": "dispatching" } | { "state": "retryable", error: string, } | { "state": "recovery_required", error: string, } | { "state": "dispatched", handle: JobHandle, provider: string, } | { "state": "held", took: Took, };
+export type DispatchPhase = { "state": "prepared" } | { "state": "dispatching", job?: string, } | { "state": "retryable", error: string, } | { "state": "recovery_required", error: string, 
+/**
+ * The job id the interrupted dispatch recorded, carried so recovery can ask for it.
+ */
+job?: string, } | { "state": "dispatched", handle: JobHandle, provider: string, } | { "state": "held", took: Took, };

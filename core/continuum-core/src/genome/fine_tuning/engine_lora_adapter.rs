@@ -1616,7 +1616,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             .train_dir
             .clone()
             .ok_or_else(|| failure("no engine train dir (no home directory): /train is off on every lane"))?;
-        let id = Uuid::new_v4();
+        let id = request.job_id;
         let out = format!("{id}.gguf");
         if let Some(parent) = &request.parent {
             // A fork trains from the base today: the engine's /train has no warm start from
@@ -2407,6 +2407,7 @@ mod tests {
             local_artifact_dir: None,
             resume_from: None,
             parent: None,
+            job_id: Uuid::new_v4(),
         }
     }
 

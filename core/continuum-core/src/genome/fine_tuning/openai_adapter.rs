@@ -32,7 +32,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::secrets::get_secret;
 
@@ -164,6 +163,7 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
 
     async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {
         let api_key = self.require_api_key()?;
+        let local_id = request.job_id;
 
         // Stage 1: upload the dataset.
         let training_file_id = self.upload_dataset(api_key, &request).await?;
@@ -206,7 +206,7 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
         Ok(JobHandle {
             provider_id: PROVIDER_ID.to_string(),
             provider_job_id: parsed.id,
-            local_id: Uuid::new_v4(),
+            local_id,
         })
     }
 
@@ -482,7 +482,7 @@ mod tests {
         let bad_handle = JobHandle {
             provider_id: "mistral".into(),
             provider_job_id: "job-xyz".into(),
-            local_id: Uuid::nil(),
+            local_id: uuid::Uuid::nil(),
         };
         let err = adapter.poll(&bad_handle).await.expect_err("must reject");
         assert!(matches!(err, FineTuningError::UnknownHandle(_)));

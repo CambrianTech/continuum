@@ -101,4 +101,12 @@ resumeFrom?: string,
  * into its signature at adoption. A trainer that can warm-start from it does; one
  * that cannot trains from the base and says so on its probe. Absent on a mint.
  */
-parent?: GeneRef, };
+parent?: GeneRef, 
+/**
+ * This job's substrate-side id ([`JobHandle::local_id`]), chosen BEFORE any trainer is
+ * asked: the training trigger records it on its dispatch intent first, so a core that
+ * stops mid-dispatch leaves the id behind and the next core asks the trainers whether a
+ * job of that id exists (`genome/job-reattach`) instead of waiting for a hand. Every
+ * trainer names its job by it. A wire caller that omits it gets one minted here.
+ */
+jobId?: string, };

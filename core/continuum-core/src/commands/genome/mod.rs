@@ -191,6 +191,7 @@ pub(crate) mod test_support {
             trait_kind: "test-trait".into(),
             resume_from: None,
             parent: None,
+            job_id: uuid::Uuid::new_v4(),
             dataset: dataset(),
             eval_set: None,
             lora: None,

@@ -96,6 +96,14 @@ pub struct TrainingJobRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub parent: Option<crate::genome::competence::GeneRef>,
+    /// This job's substrate-side id ([`JobHandle::local_id`]), chosen BEFORE any trainer is
+    /// asked: the training trigger records it on its dispatch intent first, so a core that
+    /// stops mid-dispatch leaves the id behind and the next core asks the trainers whether a
+    /// job of that id exists (`genome/job-reattach`) instead of waiting for a hand. Every
+    /// trainer names its job by it. A wire caller that omits it gets one minted here.
+    #[serde(default = "Uuid::new_v4")]
+    #[ts(as = "Option<String>", optional)]
+    pub job_id: Uuid,
 }
 
 // ─── Dataset ─────────────────────────────────────────────────────────

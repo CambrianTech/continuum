@@ -123,9 +123,23 @@ pub(super) struct Retirement {
 )]
 pub enum DispatchPhase {
     Prepared,
-    Dispatching,
+    /// job-create is being asked for the job of this id. The id is written here BEFORE any
+    /// trainer is called (the write-ahead), so a core that stops inside the call leaves it
+    /// behind and the next one asks the trainers about exactly this job. Absent only on an
+    /// intent written before the id was.
+    Dispatching {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, as = "Option<String>")]
+        job: Option<Uuid>,
+    },
     Retryable { error: String },
-    RecoveryRequired { error: String },
+    RecoveryRequired {
+        error: String,
+        /// The job id the interrupted dispatch recorded, carried so recovery can ask for it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional, as = "Option<String>")]
+        job: Option<Uuid>,
+    },
     Dispatched { handle: JobHandle, provider: String },
     /// The fill was held without a job (a job of hers already training this competence,
     /// a trial judging it, or an existing gene adopted for trial): nothing was created,
@@ -425,7 +439,7 @@ fn entity_id(base: &BaseEntity) -> Result<Uuid, String> {
 impl PendingBatch {
     /// The immutable request a dispatch sends, also used to recover a native job
     /// which ended before its adapter wrote any files.
-    pub(crate) fn training_request(&self, persona_id: Uuid, trait_kind: &str, base_model: &str) -> crate::genome::fine_tuning::types::TrainingJobRequest {
+    pub(crate) fn training_request(&self, persona_id: Uuid, trait_kind: &str, base_model: &str, job_id: Uuid) -> crate::genome::fine_tuning::types::TrainingJobRequest {
         crate::genome::fine_tuning::types::TrainingJobRequest {
             persona_id,
             persona_name: self.persona_name.clone(),
@@ -433,6 +447,7 @@ impl PendingBatch {
             trait_kind: trait_kind.to_string(),
             resume_from: None,
             parent: None,
+            job_id,
             dataset: crate::genome::fine_tuning::types::TrainingDataset {
                 examples: self.examples.clone(), source: self.source, validation_split: self.validation_split,
             },
@@ -715,10 +730,10 @@ impl TrainingTriggerState {
                 let batch = progress
                     .active_batch
                     .ok_or("active dispatch has no examples")?;
-                if matches!(intent.phase, DispatchPhase::Dispatching) {
+                if let DispatchPhase::Dispatching { job } = intent.phase {
                     intent.phase = DispatchPhase::RecoveryRequired {
-                        error: "core stopped during dispatch; awaiting exact JobBoard evidence"
-                            .into(),
+                        error: "core stopped during dispatch; asking the trainers for its job".into(),
+                        job,
                     };
                 }
                 self.active_dispatches.insert(
@@ -842,7 +857,7 @@ impl TrainingTriggerState {
             append_batch(&mut batch, *id, row.batch)?;
         }
         let batch = batch.ok_or_else(|| format!("dispatch {dispatch} has no submitted examples"))?;
-        Ok(batch.training_request(key.persona_id, &key.trait_kind, &key.base_model))
+        Ok(batch.training_request(key.persona_id, &key.trait_kind, &key.base_model, job))
     }
 
     /// Bridge the old return identity without accepting its examples twice on upgrade.
@@ -1179,7 +1194,8 @@ impl TrainingTriggerState {
                 self.active_dispatches.remove(key);
                 return Ok(DispatchResult::Empty);
             }
-            DispatchPhase::Dispatching | DispatchPhase::RecoveryRequired { .. } => {
+            DispatchPhase::Dispatching { job } | DispatchPhase::RecoveryRequired { job, .. } => {
+                let job = *job;
                 let cursor = active.journal_cursor;
                 #[cfg(test)]
                 let board = self.test_job_board.clone();
@@ -1190,7 +1206,7 @@ impl TrainingTriggerState {
                 })
                 .await
                 .map_err(|e| format!("training dispatch evidence read: {e}"))??;
-                match lookup {
+                let nothing_ran = match lookup {
                     DispatchLookup::Observed(handle) => {
                         let provider = handle.provider_id.clone();
                         return self.finish_dispatch(key, &active, handle, provider).await;
@@ -1204,8 +1220,27 @@ impl TrainingTriggerState {
                                 journal_cursor: next_offset,
                             }),
                         );
+                        false
                     }
-                    DispatchLookup::NotObserved => {}
+                    // The whole ledger was read and no job is registered under this dispatch.
+                    // Its intent recorded the job's id before any trainer was called, so the
+                    // trainers say whether that job exists; none holding it means nothing ran,
+                    // and the same examples dispatch again with no hand (Joel: genes come
+                    // automatically from her own cognition's inputs).
+                    DispatchLookup::NotObserved => match job {
+                        Some(job) => match self.settle_unregistered_job(id, job).await {
+                            Ok(()) => true,
+                            Err(error) => {
+                                return Ok(DispatchResult::Failed { kind: "RecoveryRequired", error });
+                            }
+                        },
+                        None => {
+                            return Ok(DispatchResult::Failed {
+                                kind: "RecoveryRequired",
+                                error: format!("dispatch {id} has no confirmed result and predates the recorded job id, so no trainer can be asked for it; it was not repeated (genome/training-trigger/resolve settles it)"),
+                            });
+                        }
+                    },
                     DispatchLookup::Corrupt {
                         observed,
                         malformed,
@@ -1228,16 +1263,19 @@ impl TrainingTriggerState {
                             error: format!("dispatch {id}: {malformed} unreadable journal rows; evidence remains uncertain, not repeated"),
                         });
                     }
+                };
+                if !nothing_ran {
+                    return Ok(DispatchResult::Failed {
+                        kind: "RecoveryRequired",
+                        error: format!("dispatch {id} has no confirmed result yet; the ledger is still being read"),
+                    });
                 }
-                return Ok(DispatchResult::Failed {
-                    kind: "RecoveryRequired",
-                    error: format!("dispatch {id} has no confirmed result; it was not repeated"),
-                });
             }
             DispatchPhase::Prepared | DispatchPhase::Retryable { .. } => {}
         }
+        let job = Uuid::new_v4();
         let mut intent = active.intent.clone();
-        intent.phase = DispatchPhase::Dispatching;
+        intent.phase = DispatchPhase::Dispatching { job: Some(job) };
         let active = Arc::new(ActiveDispatch {
             intent,
             batch: active.batch.clone(),
@@ -1268,6 +1306,7 @@ impl TrainingTriggerState {
                 &key.base_model,
                 &active.batch,
                 id,
+                job,
             )
             .await
         {
@@ -1285,6 +1324,7 @@ impl TrainingTriggerState {
                     DispatchFailure::Uncertain(error) => (
                         DispatchPhase::RecoveryRequired {
                             error: error.clone(),
+                            job: Some(job),
                         },
                         "RecoveryRequired",
                         error,
@@ -1554,6 +1594,34 @@ impl TrainingTriggerState {
         }
     }
 
+    /// An interrupted dispatch whose job no registration claims: may its examples go again?
+    /// `Ok` when no trainer runs that job (nothing ran, or its engine is gone), or when one
+    /// still ran it unclaimed and it was cancelled (nothing would have watched it to an end).
+    /// `Err` while a trainer cannot rule it out: the intent waits and is asked again.
+    async fn settle_unregistered_job(&self, dispatch: Uuid, job: Uuid) -> Result<(), String> {
+        use crate::genome::fine_tuning::ReattachOutcome;
+        let outcome = self.reattach_dispatched_job(job).await?;
+        let found = match &outcome {
+            ReattachOutcome::NotResident => "no trainer holds it",
+            ReattachOutcome::EngineGone { .. } => "its engine is gone",
+            ReattachOutcome::Attached { handle } => {
+                self.cancel_unclaimed_job(handle).await?;
+                "a trainer ran it unclaimed and it was cancelled"
+            }
+            ReattachOutcome::Uncertain { reason } => {
+                return Err(format!("dispatch {dispatch}: job {job} may still be training ({reason}); asked again next tick"));
+            }
+        };
+        crate::probe!(
+            class = "training.dispatch.recovered",
+            dispatch = %dispatch,
+            job = %job,
+            found = found,
+            "a dispatch the core stopped inside: its recorded job was asked for, nothing of it runs, and the same examples dispatch again"
+        );
+        Ok(())
+    }
+
     /// Settle a dispatch intent recovery cannot confirm (`genome/training-trigger/resolve`).
     /// Recovery confirms Dispatching / RecoveryRequired only by a job registered under the
     /// intent and otherwise refuses forever, which is right: it must never re-create a job
@@ -1624,7 +1692,7 @@ impl TrainingTriggerState {
             })?;
         if !matches!(
             active.intent.phase,
-            DispatchPhase::Dispatching | DispatchPhase::RecoveryRequired { .. }
+            DispatchPhase::Dispatching { .. } | DispatchPhase::RecoveryRequired { .. }
         ) {
             return Err((
                 "Invalid",
@@ -2504,7 +2572,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(matches!(intent.phase, DispatchPhase::Dispatching));
+        assert!(matches!(intent.phase, DispatchPhase::Dispatching { job: Some(_) }));
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
         let waiting = executor.execute_json("genome/training-trigger/submit", request);
@@ -2729,7 +2797,7 @@ mod tests {
             trait_kind: key.trait_kind.clone(),
             base_model: key.base_model.clone(),
             submission_ids: batch.submission_ids,
-            phase: DispatchPhase::Dispatching,
+            phase: DispatchPhase::Dispatching { job: None },
             is_active: true,
         };
         let id = entity_id(&intent.base).unwrap();
@@ -2800,15 +2868,9 @@ mod tests {
         assert!(registration_from(&board, Uuid::new_v4(), past).is_err(), "a malformed row after the cursor still refuses");
     }
 
-    /// The fixture every resolve test starts from: an intent persisted mid-dispatch by one
-    /// core, found RecoveryRequired by the next, with no job registered under it.
-    async fn recovery_required_intent() -> (
-        Arc<crate::modules::training_trigger::TrainingTriggerModule>,
-        Arc<crate::runtime::CommandExecutor>,
-        BucketKey,
-        Uuid,
-        tempfile::TempDir,
-    ) {
+    /// One core persists an intent mid-dispatch (`Dispatching { job }`) over five examples,
+    /// with no job registered under it, and stops. Returns the store the next core opens.
+    async fn interrupted_dispatch(job: Option<Uuid>) -> (Arc<dyn crate::orm::StorageAdapter>, BucketKey, Uuid, tempfile::TempDir) {
         let (adapter, dir) = crate::orm::store::fresh_adapter().await;
         let (old, executor) = build_runtime(adapter.clone(), false).await;
         let persona = Uuid::new_v4();
@@ -2829,19 +2891,57 @@ mod tests {
             trait_kind: key.trait_kind.clone(),
             base_model: key.base_model.clone(),
             submission_ids: batch.submission_ids,
-            phase: DispatchPhase::Dispatching,
+            phase: DispatchPhase::Dispatching { job },
             is_active: true,
         };
         let id = entity_id(&intent.base).unwrap();
         let store = old.state.durable.require().unwrap();
         store.dispatches.save(id, &intent).await.unwrap();
         store.assign(&intent).await.unwrap();
+        (adapter, key, id, dir)
+    }
+
+    /// The fixture every resolve test starts from: an intent persisted mid-dispatch by one
+    /// core before the job id was recorded, found RecoveryRequired by the next, with no job
+    /// registered under it.
+    async fn recovery_required_intent() -> (
+        Arc<crate::modules::training_trigger::TrainingTriggerModule>,
+        Arc<crate::runtime::CommandExecutor>,
+        BucketKey,
+        Uuid,
+        tempfile::TempDir,
+    ) {
+        let (adapter, key, id, dir) = interrupted_dispatch(None).await;
         let (next, executor) = build_runtime(adapter, true).await;
         next.tick().await.unwrap();
         let active = next.state.active_dispatches.get(&key).unwrap();
         assert!(matches!(active.intent.phase, DispatchPhase::RecoveryRequired { .. }));
         drop(active);
         (next, executor, key, id, dir)
+    }
+
+    // what this catches (card d360fc34, the M5 on 2026-10-12: Demetri's code bucket, 16 of 16,
+    // sat in recovery_required until a hand resolved it): a dispatch the core stopped inside
+    // recorded its job id before any trainer was called, so the next core asks the trainers,
+    // finds no run of that job, and the SAME batch dispatches again with no hand.
+    #[tokio::test]
+    async fn a_dispatch_the_core_stopped_inside_recovers_by_asking_the_trainers_for_its_job() {
+        let interrupted = Uuid::new_v4();
+        let (adapter, key, id, _dir) = interrupted_dispatch(Some(interrupted)).await;
+        let (next, _executor) = build_runtime(adapter, true).await;
+        next.tick().await.unwrap();
+        // the tick that hydrated it asked the trainers (none runs the job) and dispatched it
+        let intent = next.state.durable.require().unwrap().dispatches.find_by_id(id).await.unwrap().expect("the intent");
+        // the same intent (its own submissions), dispatched as a NEW job: the interrupted id is
+        // never reused, so it cannot collide with anything the stopped core left behind
+        assert!(
+            matches!(&intent.phase, DispatchPhase::Dispatched { handle, .. } if handle.local_id != interrupted),
+            "{:?}",
+            intent.phase
+        );
+        assert!(next.state.active_dispatches.get(&key).is_none(), "nothing is left waiting");
+        let settled = next.state.resolve_dispatch(id, DispatchResolution::NotDispatched, "late".into(), None).await;
+        assert!(matches!(settled, Err(("Invalid", _))), "recovery finished the intent; nothing is left for a hand: {settled:?}");
     }
 
     // what this catches (card d24e3f25, the 5090 on 2026-10-10: 113 examples held on

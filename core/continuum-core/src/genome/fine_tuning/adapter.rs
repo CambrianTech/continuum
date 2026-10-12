@@ -320,6 +320,7 @@ mod tests {
             trait_kind: "test-trait".into(),
             resume_from: None,
             parent: None,
+            job_id: Uuid::new_v4(),
             dataset: TrainingDataset {
                 examples: vec![],
                 source: TrainingSource::TeacherSynthesized,

@@ -612,6 +612,33 @@ impl TrainingTriggerState {
         serde_json::from_value(answer).map_err(|e| format!("genome/job-reattach answered an unreadable outcome: {e}"))
     }
 
+    /// Ask every trainer whether a job of this id exists: a dispatch the core stopped inside,
+    /// whose intent recorded the job's id before any trainer was called. No provider is named
+    /// because job-create had not said which trainer took it.
+    pub(crate) async fn reattach_dispatched_job(&self, job: Uuid) -> Result<crate::genome::fine_tuning::ReattachOutcome, String> {
+        let executor = self.executor.require()?;
+        let answer = executor
+            .execute_json("genome/job-reattach", serde_json::json!({ "localId": job }))
+            .await
+            .map_err(|e| e.to_string())?;
+        serde_json::from_value(answer).map_err(|e| format!("genome/job-reattach answered an unreadable outcome: {e}"))
+    }
+
+    /// Cancel a job a trainer is still running under this handle: a dispatch's run that no
+    /// registration ever claimed, so nothing would watch it to an end.
+    pub(crate) async fn cancel_unclaimed_job(&self, handle: &crate::genome::fine_tuning::JobHandle) -> Result<(), String> {
+        let executor = self.executor.require()?;
+        let answer = executor
+            .execute_json("genome/job-cancel", serde_json::json!({ "jobHandle": handle }))
+            .await
+            .map_err(|e| e.to_string())?;
+        if answer["success"] == Value::Bool(true) {
+            Ok(())
+        } else {
+            Err(format!("genome/job-cancel: {}", answer["error"]))
+        }
+    }
+
     pub(crate) async fn dispatch_job_create(
         &self,
         persona_id: Uuid,
@@ -619,13 +646,14 @@ impl TrainingTriggerState {
         base_model: &str,
         batch: &PendingBatch,
         dispatch_id: Uuid,
+        job: Uuid,
     ) -> Result<Created, DispatchFailure> {
         let executor = self
             .executor
             .require()
             .map_err(DispatchFailure::Retryable)?;
 
-        let request = batch.training_request(persona_id, trait_kind, base_model);
+        let request = batch.training_request(persona_id, trait_kind, base_model, job);
 
         let mut params = serde_json::to_value(&request).map_err(|e| {
             DispatchFailure::Retryable(format!("serialize TrainingJobRequest: {e}"))
@@ -698,6 +726,9 @@ pub(crate) fn read_job_request(dir: &std::path::Path) -> Result<TrainingJobReque
     if let Some(canonical) = spec.get("canonicalBase").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
         request.base_model = canonical.to_string();
     }
+    // A job started again from its input is a new job: the id on disk named the old one,
+    // whose directory and engine run it would otherwise collide with.
+    request.job_id = Uuid::new_v4();
     Ok(request)
 }
 
