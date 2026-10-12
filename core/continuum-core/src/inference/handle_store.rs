@@ -49,9 +49,9 @@
 //! - [[rust-is-the-core-node-is-the-shell]] — handle store lives in
 //!   Rust; TS commands route through the eventual ServiceModule
 
+use crate::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use uuid::Uuid;
@@ -230,7 +230,7 @@ impl InferenceHandleStore {
         request: OpenSessionRequest,
     ) -> HandleRef {
         let provider_id = adapter.provider_id().to_string();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let handle = HandleRef::mint(HANDLE_OWNER, HANDLE_TYPE_TAG);
         let session = Arc::new(InferenceSession {
             adapter,
@@ -303,7 +303,7 @@ impl InferenceHandleStore {
 
         // Update telemetry before invoking the adapter so observers
         // see the session as in-flight even if generation fails.
-        session.last_used_ms.store(now_ms(), Ordering::Relaxed);
+        session.last_used_ms.store(EpochMs::now().millis(), Ordering::Relaxed);
         session.generation_count.fetch_add(1, Ordering::Relaxed);
 
         session.adapter.generate_text(request).await.map_err(|e| {
@@ -402,13 +402,6 @@ impl HandleStoreError {
         );
         self
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

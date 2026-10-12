@@ -3,8 +3,9 @@
 //! Each handler takes GridState + params, returns CommandResult.
 //! Separated from the ServiceModule impl for testability and clarity.
 
+use crate::time::EpochMs;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
-use super::frame::{self, GridFrame, GridPayload};
+use super::frame::{GridFrame, GridPayload};
 use super::helpers::{correlation_id, find_transport_for_address, parse_trust_level};
 use super::node::{GridNode, TransportAddress};
 use super::router::RouteDecision;
@@ -213,7 +214,7 @@ pub async fn dispatch_to_node(
     let _ = state
         .audit
         .log(&AuditEntry {
-            timestamp: frame::now_millis(),
+            timestamp: EpochMs::now().millis(),
             direction: AuditDirection::Outbound,
             remote_node: node.node_id.clone(),
             command: remote_command.to_string(),
@@ -319,7 +320,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         addresses: vec![address],
         capabilities: capabilities.clone(),
         trust_level: trust,
-        last_seen: frame::now_millis(),
+        last_seen: EpochMs::now().millis(),
         latency_ms: None,
         peer_id,
         build_sha: None,
@@ -410,7 +411,7 @@ pub async fn handle_node_status(
         "jobs": jobs,
         "queue": queue,
         "nodeId": hostname,
-        "timestamp": chrono_now_iso(),
+        "timestamp": crate::time::EpochMs::now().rfc3339(),
     })))
 }
 
@@ -446,11 +447,8 @@ pub async fn handle_job_submit(
 
     let job_id = format!(
         "job-{}-{:06x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-        rand_u32() & 0xFFFFFF
+        crate::time::EpochMs::now().millis(),
+        rand::random::<u32>() & 0xFFFFFF
     );
 
     let alloy_path = running_dir.join(format!("{job_id}.alloy.json"));
@@ -519,7 +517,7 @@ pub async fn handle_job_submit(
         "logPath": log_path.to_string_lossy(),
         "state": if pid > 0 { "running" } else { "queued" },
         "priority": priority,
-        "startedAt": chrono_now_iso(),
+        "startedAt": crate::time::EpochMs::now().rfc3339(),
         "alloyName": alloy_name,
     });
     std::fs::write(
@@ -533,7 +531,7 @@ pub async fn handle_job_submit(
         "jobId": job_id,
         "position": 0,
         "nodeId": gethostname(),
-        "estimatedStart": chrono_now_iso(),
+        "estimatedStart": crate::time::EpochMs::now().rfc3339(),
     })))
 }
 
@@ -902,38 +900,6 @@ fn gethostname() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-fn chrono_now_iso() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
-    // Manual ISO 8601 without chrono dependency
-    let days_since_epoch = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-    // Compute year/month/day from days since epoch (1970-01-01)
-    let (year, month, day) = days_to_ymd(days_since_epoch);
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    // Algorithm from https://howardhinnant.github.io/date_algorithms.html
-    days += 719468;
-    let era = days / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
 fn find_alloy_executor() -> Option<std::path::PathBuf> {
     // 1. Explicit env var override (highest priority)
     if let Ok(path) = std::env::var("ALLOY_EXECUTOR") {
@@ -1080,14 +1046,6 @@ fn job_signal(pid: i32, signal: JobSignal) -> Result<(), String> {
             ),
         }
     }
-}
-
-fn rand_u32() -> u32 {
-    // Simple random without pulling in rand crate
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos()
 }
 
 /// grid/setup-check — comprehensive grid setup diagnostics.

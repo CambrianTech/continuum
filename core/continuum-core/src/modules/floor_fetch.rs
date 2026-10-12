@@ -25,6 +25,7 @@
 //! refused) from hammering HF every tick — it stays degraded, which is the honest state
 //! (a weak node hosts orchestration, not a coder — [[weak-nodes-host-orchestration-phenotypes]]).
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -107,12 +108,6 @@ impl FloorFetchModule {
         }
     }
 
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
-    }
 }
 
 #[async_trait]
@@ -146,7 +141,7 @@ impl ServiceModule for FloorFetchModule {
             return Ok(()); // a serveable model is up (or degraded for another reason) — nothing to do
         }
 
-        let now = Self::now_ms();
+        let now = EpochMs::now().millis();
         let wait_ms = self.tracker.lock().wait_ms(now);
         let cooldown_elapsed =
             now.saturating_sub(self.last_attempt_ms.load(Ordering::Relaxed)) >= FLOOR_FETCH_COOLDOWN.as_millis() as u64;
@@ -252,7 +247,7 @@ async fn fetch_floor(
                 // the window and we never earn a ban.
                 tracker
                     .lock()
-                    .observe_wait_ms(wait_ms, FloorFetchModule::now_ms());
+                    .observe_wait_ms(wait_ms, EpochMs::now().millis());
                 crate::probe!(
                     class = "provisioning.floor_fetch.rate_limited",
                     repo = r.as_str(),

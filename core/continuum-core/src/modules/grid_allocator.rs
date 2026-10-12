@@ -27,10 +27,8 @@
 //! Nothing here holds a node, a model or a number of Joel's grid: a node that joins is
 //! one more offer; a bigger box is a better plan in its offer.
 
-use crate::cognition::grid_allocation::{
-    allocate, inputs_key, roles_from, GridAllocation, GridInputs, GridRoster, Hold, LanePlan,
-    ask_within, Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats, Role,
-};
+use crate::time::EpochMs;
+use crate::cognition::grid_allocation::{allocate, inputs_key, roles_from, GridAllocation, GridInputs, GridRoster, Hold, LanePlan, ask_within, Mind, NodeOffer, OfferBook, OfferTerms, OpenSeats, Role};
 use crate::cognition::serving_plan::ServingPlan;
 use crate::cognition::window_allocator::{largest_known, requirements_for};
 use crate::experience::recipe::CitizenRecipe;
@@ -328,17 +326,10 @@ impl GridAllocatorModule {
     }
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a pre-epoch clock reads 0, as every other now_ms in the substrate
-}
-
 impl Inner {
     /// Gather the pass's facts: cheap reads of pre-staged state, no probe, no await.
     fn gather(&self) -> GridFacts {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let serving = crate::inference::llama_server::current_serving();
         // THE ONE RANK: the serving plan's own footprint rank — measured (the AA index)
         // when the row carries it, else the weights-GB proxy. Reading `measured_capability`

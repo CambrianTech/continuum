@@ -70,14 +70,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::genome::fine_tuning::types::{
-    JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample,
-    TrainingJobRequest, TrainingSource,
-};
-use crate::runtime::{
-    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
-    PerKeyGate, ServiceModule,
-};
+use crate::genome::fine_tuning::types::{JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingJobRequest, TrainingSource};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, PerKeyGate, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 
 mod durable;
@@ -435,7 +429,7 @@ impl TrainingTriggerState {
             return; // not installed yet: try again next tick, the orphans wait on the board
         };
         let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
-        let now = crate::persona::trace::now_ms();
+        let now = crate::time::EpochMs::now().millis();
         // the held ones whose time to ask again has come, and (once) the boot's orphans
         let mut due = self.take_due_orphans(now);
         if !self.resumed_orphans.swap(true, Ordering::AcqRel) {

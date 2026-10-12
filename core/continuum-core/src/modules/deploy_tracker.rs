@@ -22,6 +22,7 @@
 //! guess. `gh` manages its own rate-limiting, so the reqwest rate-limit primitive
 //! (`provisioning::rate_limit`, for direct HF calls) is not threaded here.
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,10 +32,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::modules::deploy_actuator::{ActuateOutcome, DeployActuator};
-use continuum_cli_lifecycle::deploy_tracker::{
-    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold,
-    RequestOutcome, TickInputs,
-};
+use continuum_cli_lifecycle::deploy_tracker::{decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, RequestOutcome, TickInputs};
 use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
 /// The deploy tracker checks the tip on this cadence.
@@ -291,8 +289,8 @@ fn read_hold(state_dir: &std::path::Path) -> Option<Hold> {
     let created_ms = std::fs::metadata(state_dir.join("deploy-hold"))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
+        .and_then(|t| crate::time::EpochMs::of(t).ok())
+        .map(crate::time::EpochMs::millis)
         .unwrap_or(0); // unwrap_or: an unreadable mtime = epoch 0 = immediately stale, which is loud not silent
     Some(Hold { reason: text.trim().chars().take(200).collect(), created_ms, ttl_ms: None })
 }
@@ -351,13 +349,6 @@ impl DeployTrackerModule {
         }
     }
 
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0) // unwrap_or: a clock before 1970 = 0; the decision degrades safely
-    }
-
     fn tree_dirty(&self) -> bool {
         // The same per-tick resolution the source uses; no checkout = nothing to be dirty.
         let Some(dir) = checkout_now().ok().map(|p| p.to_string_lossy().into_owned()) else {
@@ -399,12 +390,13 @@ impl ServiceModule for DeployTrackerModule {
     async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
         // The last actuation, graded against the build now running: landed / stale /
         // unknown, once per boot, on the receipt (`deploy.actuate.outcome`).
-        self.actuator.report_boot_outcome(running_sha(), Self::now_ms());
+        // A pre-1970 clock reads 0 here: the decision degrades safely.
+        self.actuator.report_boot_outcome(running_sha(), EpochMs::now().millis());
         Ok(())
     }
 
     async fn tick(&self) -> Result<(), String> {
-        let now = Self::now_ms();
+        let now = EpochMs::now().millis();
         let (tip_sha, source_error, checks) = match self.source.tip().await {
             Ok(Some((sha, checks))) => (Some(sha), None, checks),
             Ok(None) => (None, Some("branch has no tip".to_string()), Checks::Unknown),

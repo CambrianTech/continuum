@@ -555,10 +555,7 @@ fn append_batch(
 /// strip; the same number job-create decides on, read here so a fill that would only
 /// come back unsurprised is never dispatched.
 fn unsurprised(persona: Uuid) -> Option<f32> {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0); // pre-epoch clock: every tally reads outside its window = not measured
+    let now_ms = crate::time::EpochMs::now().millis(); // pre-epoch clock: every tally reads outside its window = not measured
     crate::persona::perception_feed::awareness_of(persona, now_ms)
         .and_then(|a| a.verdict_surprise())
         .map(|v| v.s)
@@ -1073,10 +1070,7 @@ impl TrainingTriggerState {
                 return Err(());
             }
         };
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0); // pre-epoch clock: every landed gene reads as settling, the conservative side
+        let now_ms = crate::time::EpochMs::now().millis(); // pre-epoch clock: every landed gene reads as settling, the conservative side
         Ok(all
             .iter()
             .find(|t| t.persona_id == key.persona_id && t.alias == key.trait_kind && t.base_model_id == key.base_model && t.is_settling(now_ms))
@@ -1942,10 +1936,7 @@ impl TrainingTriggerState {
             examples,
             reason: reason.clone(),
             retired_by,
-            retired_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0), // a clock before 1970 stamps 0: the receipt still names its rows and reason
+            retired_at_ms: crate::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its rows and reason
         };
         store
             .retirements

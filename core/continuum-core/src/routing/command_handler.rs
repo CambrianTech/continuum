@@ -61,8 +61,8 @@
 //! local AuthPolicy → local module → reply. Symmetric with the
 //! AircTransport's outbound path.
 
+use crate::time::EpochMs;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use airc_core::{Body, PeerId, TranscriptEvent};
 use airc_lib::adapter::{AdapterError, ConsumerAdapter};
@@ -76,21 +76,8 @@ use tracing::{debug, warn};
 use uuid::Uuid;
 
 use super::grid_capability::{GrantAuthOutcome, GrantAuthorizer};
-use super::{
-    AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, COMMAND_REQUEST_BODY_HINT,
-    COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT,
-};
+use super::{AircCommandRequest, AircCommandResponse, CallerIdentity, CommandUri, COMMAND_REQUEST_BODY_HINT, COMMAND_RESPONSE_BODY_HINT, HEADER_COMMAND_STATUS, HEADER_CONTINUUM_BODY_HINT};
 use crate::runtime::{CommandExecutor, CommandResult};
-
-/// Current wall-clock epoch-ms (for grant expiry + replay checks). `unwrap_or(0)`
-/// only on a pre-1970 clock — which reads as "everything is expired", the
-/// fail-closed direction for a capability check.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 /// Stable adapter name. Registered in the airc adapter registry so
 /// operators can introspect what's consuming command envelopes.
@@ -359,7 +346,7 @@ impl CommandRequestHandler {
             return Vec::new();
         };
         match authorizer
-            .authorize_command(grant, &presenting, &parsed.request.path, now_ms())
+            .authorize_command(grant, &presenting, &parsed.request.path, EpochMs::now().millis())
             .await
         {
             GrantAuthOutcome::Authorized => grant.grant.capabilities.clone(),

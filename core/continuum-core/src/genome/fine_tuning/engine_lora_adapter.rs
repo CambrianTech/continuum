@@ -22,19 +22,9 @@
 //! - the artifact leaves the lanes' `--train-dir` (`engine-train`, swept of every file whose job
 //!   is not live) for the job's own directory BEFORE the job goes terminal (Fable's invariant on
 //!   #4438), and is a [`ArtifactFormat::GgufLora`].
-use super::native_jobs::{
-    default_lora, default_schedule, job_dir_for, Execution, InPlaceEnd, InPlaceRun, NativeJobs, PreparedJob,
-    RunProgress,
-};
-use super::{
-    ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle, JobMetrics,
-    ReattachOutcome, TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus,
-};
-use crate::inference::planning::training_plan::{
-    calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle,
-    train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample,
-    need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
-};
+use super::native_jobs::{default_lora, default_schedule, job_dir_for, Execution, InPlaceEnd, InPlaceRun, NativeJobs, PreparedJob, RunProgress};
+use super::{ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle, JobMetrics, ReattachOutcome, TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus};
+use crate::inference::planning::training_plan::{calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle, train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample, need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN};
 
 /// What the trainer is governed to have free for `consumer`: the governor's VRAM budget net of
 /// every reservation. ONE reader, for the plan here and for the trigger deciding whether a
@@ -487,7 +477,7 @@ struct FootprintRow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     engine: Option<String>,
     bytes: u64,
-    measured_at_ms: i64,
+    measured_at_ms: u64,
     job: String,
     /// The row is the run's graph AND its context (fork #52's context_mib), the whole of what a
     /// lease must cover. A row from before it is the graph alone: it under-states a lease by the
@@ -590,7 +580,7 @@ impl Footprints {
             FootprintRow {
                 engine: self.engine.clone(),
                 bytes,
-                measured_at_ms: chrono::Utc::now().timestamp_millis(),
+                measured_at_ms: crate::time::EpochMs::now().millis(),
                 job: job.to_string(),
                 includes_context,
             },
@@ -1218,7 +1208,7 @@ impl InPlaceRun for EngineRun {
         // the re-attach path that does not exist yet (see training_hold_store).
         if let Some(store) = store {
             let released = tokio::task::spawn_blocking(move || {
-                super::training_hold_store::release_job(&store, job, super::training_hold_store::now_ms())
+                super::training_hold_store::release_job(&store, job, crate::time::EpochMs::now().millis())
             })
             .await;
             if !matches!(released, Ok(Ok(_))) {
@@ -1314,7 +1304,9 @@ impl EngineRun {
                     let mut reasons = holds_on(&holds.borrow(), &self.lane);
                     // a pause asked through genome/job-pause, read every tick: it outlives the core
                     if let Some(store) = &self.hold_store {
-                        let now = super::training_hold_store::now_ms();
+                        // Holds are created and expire in wall time, which a core restart keeps. A pre-1970
+                        // clock reads 0 here: every hold reads as live, never as expired early.
+                        let now = crate::time::EpochMs::now().millis();
                         match super::training_hold_store::live_on(store, self.job, now).await {
                             Ok(persisted) => reasons.extend(persisted.into_iter().map(|h| h.reason)),
                             // unreadable intent holds: a paused job is never resumed on a guess
@@ -2051,7 +2043,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     out: out.clone(),
                     engine: chosen,
                     base_model: base_model.clone(),
-                    created_ms: crate::persona::trace::now_ms(),
+                    created_ms: crate::time::EpochMs::now().millis(),
                     consumer: consumer.clone(),
                     reserved_bytes: bytes,
                     interrupted: None,
@@ -2312,6 +2304,7 @@ fn engine_example(e: &TrainingExample) -> EngineExample {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::EpochMs;
 
     // what this catches (Cormac's chain test on #4946, card 3cef97ef; job 97e081e2): the WHOLE
     // path of a POST lost after the engine took the run. The engine's answer outlasts the POST's
@@ -3391,7 +3384,7 @@ mod tests {
         };
         let state = tempfile::tempdir().expect("test: dir");
         let holds = store::store_path(state.path());
-        let bystander = store::add(&holds, Uuid::from_u128(9), "another job's pause", 60_000, store::now_ms()).expect("test: add");
+        let bystander = store::add(&holds, Uuid::from_u128(9), "another job's pause", 60_000, EpochMs::now().millis()).expect("test: add");
         for mode in ["release", "cancel"] {
             let train = tempfile::tempdir().expect("test: dir");
             let jobs = tempfile::tempdir().expect("test: dir");
@@ -3401,22 +3394,22 @@ mod tests {
             let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             let h = t.create_job(r).await.expect("test: create");
-            store::add(&holds, h.local_id, "test: an operator paused it", 60_000, store::now_ms()).expect("test: add");
+            store::add(&holds, h.local_id, "test: an operator paused it", 60_000, EpochMs::now().millis()).expect("test: add");
             paused(url.clone()).await;
             assert!(matches!(t.poll(&h).await.unwrap(), TrainingStatus::Running { .. }), "{mode}: a paused run is still running");
             if mode == "release" {
-                assert_eq!(store::release_job(&holds, h.local_id, store::now_ms()).unwrap(), 1);
+                assert_eq!(store::release_job(&holds, h.local_id, EpochMs::now().millis()).unwrap(), 1);
                 let TrainingStatus::Completed { .. } = wait_terminal(&t, &h).await else {
                     panic!("test: the run did not finish after its pause was released");
                 };
             } else {
                 t.cancel(&h).await.expect("test: cancel");
                 assert!(matches!(wait_terminal(&t, &h).await, TrainingStatus::Cancelled));
-                assert!(store::live_on(&holds, h.local_id, store::now_ms()).await.unwrap().is_empty(), "the job's end took its pause with it");
+                assert!(store::live_on(&holds, h.local_id, EpochMs::now().millis()).await.unwrap().is_empty(), "the job's end took its pause with it");
             }
             server.abort();
         }
-        let left = store::live_on(&holds, bystander.job, store::now_ms()).await.unwrap();
+        let left = store::live_on(&holds, bystander.job, EpochMs::now().millis()).await.unwrap();
         assert_eq!(left.len(), 1, "another job's pause stands");
     }
 

@@ -62,6 +62,7 @@ pub mod recipes;
 
 pub use recipes::HeuristicIsMemorable;
 
+use crate::time::EpochMs;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
@@ -69,11 +70,8 @@ use uuid::Uuid;
 // Re-exported pub so submodules (`recipes`) can import via `super::`
 // without reaching across to `crate::persona::engram` for every type.
 use super::engram::Engram;
-pub use super::engram::{
-    AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, EngramKind,
-    EngramOrigin, TrustState,
-};
-use super::trace::{now_ms, CognitionTrace, SEAM_ADMISSION};
+pub use super::engram::{AdmissionDecision, AdmissionDropReason, AdmissionError, AircMessageRef, EngramKind, EngramOrigin, TrustState};
+use super::trace::{CognitionTrace, SEAM_ADMISSION};
 
 //=============================================================================
 // CANDIDATE: input to the admission pipeline
@@ -218,7 +216,7 @@ impl<'a> AdmissionContext<'a> {
     ) -> Self {
         Self {
             config,
-            now_ms: now_ms(),
+            now_ms: EpochMs::now().millis(),
             context_id: None,
             seen_content,
             seen_events,
@@ -305,7 +303,7 @@ impl AdmissionGate {
         // Wrap the optional trace in a reference cell so the per-step
         // `record_seam` call sites stay uniform (one borrow API regardless
         // of whether the caller wanted a trace). When None, all
-        // record-side work is skipped — no `now_ms()`, no `serde_json::json!`
+        // record-side work is skipped — no `EpochMs::now().millis()`, no `serde_json::json!`
         // Map allocation, no String allocations for seam name/metadata.
         // continuum#1213 follow-up: cuts ~7 allocations per chat turn per
         // persona on the admission hot path. Trace-using callers (TS-IPC
@@ -315,7 +313,7 @@ impl AdmissionGate {
         // by #1213 passes `None` because it doesn't propagate the trace
         // anywhere.
         let mut trace = trace;
-        let started = now_ms();
+        let started = EpochMs::now().millis();
 
         // Step 1: Envelope structure
         if let Err(err) = verify_envelope(&candidate.origin) {
@@ -470,7 +468,7 @@ fn wire_event_id(origin: &EngramOrigin) -> Option<String> {
 ///
 /// When `trace` is `None` (the in-process hot-path admission gate added
 /// by continuum#1213, which doesn't propagate the trace), this function
-/// is a complete no-op — no `now_ms()` syscall, no `serde_json::json!`
+/// is a complete no-op — no `EpochMs::now().millis()` syscall, no `serde_json::json!`
 /// Map allocation, no String allocations. Cuts ~7 allocations per chat
 /// turn per persona on the admission hot path.
 fn record_seam(
@@ -483,7 +481,7 @@ fn record_seam(
     let Some(trace) = trace else {
         return;
     };
-    let duration_ms = now_ms().saturating_sub(started_ms);
+    let duration_ms = EpochMs::now().millis().saturating_sub(started_ms);
     let metadata = match decision {
         Some(label) => serde_json::json!({
             "recipe": recipe_id,

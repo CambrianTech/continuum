@@ -599,17 +599,11 @@ pub fn analyze_burst(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::EpochMs;
     use crate::persona::message_cache::{CachedMessage, SenderCategory};
     use crate::rag::RagEngine;
     use std::sync::Arc;
     use tokio::sync::watch;
-
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
 
     fn test_engine(name: &str) -> (PersonaCognitionEngine, Uuid) {
         let rag_engine = Arc::new(RagEngine::new());
@@ -632,7 +626,7 @@ mod tests {
             sender_name: "test-user".into(),
             sender_type: SenderType::Human,
             content: "Hello everyone".into(),
-            timestamp: now_ms(),
+            timestamp: EpochMs::now().millis(),
             is_voice: false,
             voice_session_id: None,
             sender_is_human: true,
@@ -655,7 +649,7 @@ mod tests {
         let mut rate_limiter = RateLimiterState::new(10.0, 3);
 
         let room_id = request.room_id;
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         rate_limiter.track_response(room_id, now - 30_000);
         rate_limiter.track_response(room_id, now - 20_000);
         rate_limiter.track_response(room_id, now - 11_000); // 11s ago — well past rate-limit window
@@ -690,7 +684,7 @@ mod tests {
         let sleep = SleepState::default();
         let mut rate_limiter = RateLimiterState::new(10.0, 50);
 
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         // Response 5 seconds ago — within 10s window
         rate_limiter.track_response(request.room_id, now - 5_000);
 
@@ -723,7 +717,7 @@ mod tests {
         let sleep = SleepState {
             mode: SleepMode::Sleeping,
             reason: "Taking a break".into(),
-            set_at_ms: now_ms() - 60_000,
+            set_at_ms: EpochMs::now().millis() - 60_000,
             wake_at_ms: None,
         };
         let rate_limiter = RateLimiterState::default();
@@ -734,7 +728,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         assert!(!result.should_respond);
         assert_eq!(result.gate, "sleep_mode");
@@ -748,7 +742,7 @@ mod tests {
         let sleep = SleepState {
             mode: SleepMode::MentionedOnly,
             reason: "Focus mode".into(),
-            set_at_ms: now_ms() - 60_000,
+            set_at_ms: EpochMs::now().millis() - 60_000,
             wake_at_ms: None,
         };
         let rate_limiter = RateLimiterState::default();
@@ -759,7 +753,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         // Should pass sleep gate (mentioned) and reach fast_path
         assert!(result.should_respond);
@@ -770,7 +764,7 @@ mod tests {
     fn test_gate_4_sleep_auto_wake() {
         let (engine, persona_id) = test_engine("TestBot");
         let request = test_request(persona_id, "TestBot");
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let sleep = SleepState {
             mode: SleepMode::Sleeping,
             reason: "Nap time".into(),
@@ -808,7 +802,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         // NOT hard-blocked — the LLM will see the signal and decide
         let signals = result.social_signals.unwrap();
@@ -838,7 +832,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         assert!(!result.should_respond);
         assert_eq!(result.gate, "fast_path");
@@ -858,7 +852,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         // Human sender + recent message = high priority → should respond
         assert!(result.should_respond);
@@ -873,7 +867,7 @@ mod tests {
         request.sender_name = "airc-bridge".into();
         request.content = "[airc:mac-claude] please respond if you see this".into();
 
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let mut cache = RecentMessageCache::new();
         for i in 0..2 {
             cache.push(
@@ -917,7 +911,7 @@ mod tests {
             &SleepState::default(),
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
 
         assert!(!result.should_respond);
@@ -933,7 +927,7 @@ mod tests {
         request.sender_name = "airc-bridge".into();
         request.content = "@TestBot please respond if you see this".into();
 
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let mut cache = RecentMessageCache::new();
         for i in 0..5 {
             cache.push(
@@ -978,7 +972,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         assert!(result.should_respond);
     }
@@ -996,7 +990,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         assert!(result.should_respond);
         // The wall-clock assertion that used to live here (`decision_time_ms < 10.0`)
@@ -1022,7 +1016,7 @@ mod tests {
         let sleep = SleepState {
             mode: SleepMode::UntilTopic,
             reason: "Waiting for new topic".into(),
-            set_at_ms: now_ms() - 60_000,
+            set_at_ms: EpochMs::now().millis() - 60_000,
             wake_at_ms: None,
         };
         let rate_limiter = RateLimiterState::default();
@@ -1033,7 +1027,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         assert!(!result.should_respond);
         assert_eq!(result.gate, "sleep_mode");
@@ -1048,7 +1042,7 @@ mod tests {
         let sleep = SleepState {
             mode: SleepMode::UntilTopic,
             reason: "Waiting for new topic".into(),
-            set_at_ms: now_ms() - 60_000,
+            set_at_ms: EpochMs::now().millis() - 60_000,
             wake_at_ms: None,
         };
         let rate_limiter = RateLimiterState::default();
@@ -1059,7 +1053,7 @@ mod tests {
             &sleep,
             &engine,
             &RecentMessageCache::new(),
-            now_ms(),
+            EpochMs::now().millis(),
         );
         // Should pass sleep gate (new topic) and reach fast_path
         assert_ne!(result.gate, "sleep_mode");
@@ -1100,7 +1094,7 @@ mod tests {
                         &sleep,
                         &engine,
                         &RecentMessageCache::new(),
-                        now_ms(),
+                        EpochMs::now().millis(),
                     )
                     .decision_time_ms
                 })

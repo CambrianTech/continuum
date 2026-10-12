@@ -682,10 +682,7 @@ mod router_integration {
                 vram_mb: Some(32768),
             }],
             trust_level: TrustLevel::Owner,
-            last_seen: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64,
+            last_seen: crate::time::EpochMs::now().millis(),
             latency_ms: Some(47),
             peer_id: None,
             build_sha: None,

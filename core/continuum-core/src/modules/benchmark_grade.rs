@@ -795,10 +795,7 @@ async fn sweep_lapsed_bench_cards(
         .subscription_set()
         .await
         .map_err(|e| format!("subscription set: {e}"))?;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis() as u64;
+    let now_ms = crate::time::EpochMs::read().map_err(|e| e.to_string())?.millis();
 
     let mut closed = 0usize;
     for room in set.all().map(|sub| sub.as_room()) {

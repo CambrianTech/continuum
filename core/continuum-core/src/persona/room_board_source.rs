@@ -52,6 +52,7 @@
 //!   than paginates; pagination can be added later without changing the seam if
 //!   boards grow past a single budget.
 
+use crate::time::EpochMs;
 use std::sync::Arc;
 
 use airc_lib::AircError;
@@ -59,9 +60,7 @@ use airc_work::BoardSnapshot;
 use async_trait::async_trait;
 use serde_json::json;
 
-use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
-};
+use crate::persona::rag_budget::{ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference};
 
 /// Source identifier — the deliberation faculty renders this delivery under a
 /// `[room-kanban]` header (generic `[<source_id>]` projection). Distinct from
@@ -147,7 +146,7 @@ const SLOW_BOARD_READ_MS: u64 = 100;
 fn board_read_mark_due(room: uuid::Uuid) -> bool {
     static LAST: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<uuid::Uuid, u64>>> =
         std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-    let now = crate::modules::chat::now_ms();
+    let now = EpochMs::now().millis();
     let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
     let due = last.get(&room).is_none_or(|t| now.saturating_sub(*t) >= 60_000);
     if due {
@@ -373,13 +372,6 @@ fn held_card_line(card: &airc_work::WorkCard, checkout: Option<&std::path::Path>
     }
 }
 
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[async_trait]
 impl RagSource for RoomBoardSource {
     fn source_id(&self) -> &'static str {
@@ -482,7 +474,7 @@ impl RagSource for RoomBoardSource {
         let mut dropped: usize = 0;
         // One clock reading per delivery — every lease judgment in this block
         // (held / lapsed / available) agrees on the same instant.
-        let now_ms = now_unix_ms();
+        let now_ms = crate::time::EpochMs::now().millis();
 
         // YOUR-WORK SALIENCE (2026-07-11, "did they wander off and forget they
         // can work on things?"): all three personas held claimed cards, zero
@@ -848,7 +840,7 @@ mod tests {
             owner,
             claim_provenance: None,
             claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
-            claim_expires_at_ms: claimed.then(|| now_unix_ms() + 60_000),
+            claim_expires_at_ms: claimed.then(|| crate::time::EpochMs::now().millis() + 60_000),
             last_heartbeat_at_ms: None,
             pull_request: None,
             created_by: airc_core::PeerId::new(),
@@ -1106,7 +1098,7 @@ mod tests {
             CardState::Claimed,
             Some(airc_core::PeerId::from_uuid(me)),
         );
-        held.claim_expires_at_ms = Some(now_unix_ms() + 60_000);
+        held.claim_expires_at_ms = Some(crate::time::EpochMs::now().millis() + 60_000);
         let open_a = card("Claimable one", CardState::Open, None);
         let open_b = card("Claimable two", CardState::Open, None);
 
@@ -1143,7 +1135,7 @@ mod tests {
     async fn a_peers_card_names_the_peer_live_and_lapsed_never_bare_hex() {
         let asha = airc_core::PeerId::new();
         let mut live = card("Wire the projector", CardState::InProgress, Some(asha));
-        live.claim_expires_at_ms = Some(now_unix_ms() + 60_000);
+        live.claim_expires_at_ms = Some(crate::time::EpochMs::now().millis() + 60_000);
         let mut lapsed = card("Windows blocker #1", CardState::Claimed, Some(asha));
         lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
 

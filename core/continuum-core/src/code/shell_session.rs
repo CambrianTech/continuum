@@ -138,7 +138,7 @@ impl CompiledSentinel {
 
     /// Classify a single output line. Returns None if the line should be suppressed.
     pub fn classify(&self, text: &str, stream: &str, line_num: u64) -> Option<ClassifiedLine> {
-        let ts = now();
+        let ts = crate::time::EpochMs::now().millis();
 
         if self.rules.is_empty() {
             // No sentinel configured — pass everything through as Info
@@ -353,7 +353,7 @@ impl ShellSession {
         self.gc();
 
         let execution_id = Uuid::new_v4().to_string();
-        let now_ms = now();
+        let now_ms = crate::time::EpochMs::now().millis();
 
         let notify = Arc::new(Notify::new());
         let state = Arc::new(Mutex::new(ExecutionState {
@@ -593,7 +593,7 @@ impl ShellSession {
 
         // Signal kill — the tokio task will detect this and kill the child
         state.status = ShellExecutionStatus::Killed;
-        state.finished_at = Some(now());
+        state.finished_at = Some(crate::time::EpochMs::now().millis());
 
         // Also send SIGKILL via the stored PID for immediate effect
         if let Some(pid) = state.pid {
@@ -673,7 +673,7 @@ impl ShellSession {
             if let Ok(mut state) = state_arc.lock() {
                 if state.status == ShellExecutionStatus::Running {
                     state.status = ShellExecutionStatus::Killed;
-                    state.finished_at = Some(now());
+                    state.finished_at = Some(crate::time::EpochMs::now().millis());
                     if let Some(pid) = state.pid {
                         kill_process(pid);
                     }
@@ -834,7 +834,7 @@ async fn run_shell_command(
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("no usable shell: {why}"));
-                s.finished_at = Some(now());
+                s.finished_at = Some(crate::time::EpochMs::now().millis());
                 s.output_notify.notify_one();
             }
             return;
@@ -919,7 +919,7 @@ async fn run_shell_command(
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("Failed to spawn bash: {e}"));
-                s.finished_at = Some(now());
+                s.finished_at = Some(crate::time::EpochMs::now().millis());
                 s.output_notify.notify_one();
             }
             return;
@@ -1008,7 +1008,7 @@ async fn run_shell_command(
                         if s.status == ShellExecutionStatus::Running {
                             s.status = ShellExecutionStatus::TimedOut;
                             s.stderr_lines.push(format!("Timed out after {timeout}ms"));
-                            s.finished_at = Some(now());
+                            s.finished_at = Some(crate::time::EpochMs::now().millis());
                             s.output_notify.notify_one();
                         }
                     }
@@ -1054,7 +1054,7 @@ async fn run_shell_command(
                 } else {
                     ShellExecutionStatus::Failed
                 };
-                s.finished_at = Some(now());
+                s.finished_at = Some(crate::time::EpochMs::now().millis());
                 // Wake any blocked watch() calls to deliver final status
                 s.output_notify.notify_one();
                 // PUSHED COMPLETION (2026-08-24): a handed-back execution's
@@ -1130,13 +1130,6 @@ fn kill_process(pid: u32) {
     let _ = std::process::Command::new("kill")
         .args(["-9", &pid.to_string()])
         .output();
-}
-
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 // ============================================================================

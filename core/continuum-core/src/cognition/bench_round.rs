@@ -26,6 +26,7 @@
 //! decision is made once at dispatch and read later at claim time — in a different verb,
 //! on a different task, with nothing threaded between them.
 
+use crate::time::EpochMs;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
@@ -252,7 +253,7 @@ impl BenchRound {
         Self {
             round_id,
             run_room_name: String::new(),
-            opened_at_ms: crate::modules::chat::now_ms(),
+            opened_at_ms: EpochMs::now().millis(),
             benchmark: benchmark.to_string(),
             cards: card_ids.iter().map(|c| (*c, None)).collect(),
             stage: RoundStage::Working,
@@ -2117,10 +2118,7 @@ mod tests {
 
     #[test]
     fn a_citizen_held_work_turn_makes_the_round_read_working() {
-        use super::{
-            card_last_act_ms, enrich_rounds, no_healthy_working_round, record_card_worked,
-            RoundCardSnapshot, RoundSnapshot,
-        };
+        use super::{card_last_act_ms, enrich_rounds, no_healthy_working_round, record_card_worked, RoundCardSnapshot, RoundSnapshot};
         let now_ms: u64 = 20_000_000_000;
         let card_uuid = Uuid::new_v4();
         // She drove a held-work turn 30s ago — no run-ledger fact exists.

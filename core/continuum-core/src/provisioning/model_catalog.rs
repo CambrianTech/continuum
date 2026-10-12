@@ -192,10 +192,7 @@ pub async fn list_repo_ggufs(
     // Read the host's own rate-limit signal BEFORE error_for_status turns a 429 into an
     // opaque HTTP error: honor Retry-After / x-ratelimit-* so the caller waits exactly as
     // told instead of hammering into a ban (`provisioning::rate_limit`, the one primitive).
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let now_ms = crate::time::EpochMs::now().millis();
     let limit = super::rate_limit::RateLimit::from_response(resp.status().as_u16(), resp.headers(), now_ms);
     let wait = limit.remaining_wait_ms(now_ms);
     if wait > 0 {

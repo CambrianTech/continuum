@@ -3,6 +3,7 @@
 //! self-cycle speaks from. Pure text builders — no I/O, fully testable — carved
 //! out of `service_loop` 2026-09-05.
 
+use crate::time::EpochMs;
 use uuid::Uuid;
 
 /// Diagnostic interval for an advisory progress checkpoint. This never grants an
@@ -444,7 +445,7 @@ pub(crate) fn note_hold_boundary(peer: uuid::Uuid) {
     HOLD_BOUNDARY_MS
         .lock()
         .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
-        .insert(peer, crate::modules::chat::now_ms());
+        .insert(peer, EpochMs::now().millis());
 }
 
 /// Her last hold boundary (ms), 0 if none this boot (every row counts).

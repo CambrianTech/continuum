@@ -23,6 +23,7 @@
 //! so it only ever corrects the estimate upward. The same shape as the decode knee:
 //! a measured fact over a catalog guess, one probe when it moves.
 
+use crate::time::EpochMs;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -185,7 +186,8 @@ pub fn observe(
     compute_floor_per_lane: u64,
     host_cache_bytes: u64,
 ) -> Result<Option<u64>, ResidencyChanged> {
-    let now = now_ms();
+    // A pre-1970 clock reads 0 here: every record is stale, so the estimate rules.
+    let now = EpochMs::now().millis();
     let sample = per_token_from(anon_bytes, lanes, window, compute_floor_per_lane, host_cache_bytes)
         .map(|per_token| MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes, last_ms: now });
     use std::sync::atomic::Ordering;
@@ -227,7 +229,7 @@ pub fn retire(model: &str) -> bool {
     let gone = apply_sample(&mut costs, model, None);
     if gone {
         save_all(&costs);
-        LAST_SAVE_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+        LAST_SAVE_MS.store(EpochMs::now().millis(), std::sync::atomic::Ordering::Relaxed);
     }
     gone
 }
@@ -249,7 +251,7 @@ pub fn retire_if_sampled_since(model: &str, since_ms: u64) -> bool {
     let gone = retire_sampled_since(&mut costs, model, since_ms);
     if gone {
         save_all(&costs);
-        LAST_SAVE_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+        LAST_SAVE_MS.store(EpochMs::now().millis(), std::sync::atomic::Ordering::Relaxed);
     }
     gone
 }
@@ -257,7 +259,7 @@ pub fn retire_if_sampled_since(model: &str, since_ms: u64) -> bool {
 /// The fresh measured record for `model`, if any — per-token AND the geometry it was
 /// taken at, so a caller can turn an excess over a known rate into fixed bytes.
 pub fn measured_record(model: &str) -> Option<MeasuredCost> {
-    let now = now_ms();
+    let now = EpochMs::now().millis();
     COSTS.lock().get(model).filter(|c| c.fresh_at(now)).cloned()
 }
 
@@ -277,7 +279,7 @@ pub fn anon_footprint_of(pid: u32) -> Option<u64> {
     let reading = anon_footprint_impl(pid)?;
     let process = (pid, crate::inference::engine_residency::process_start_s(pid).unwrap_or(0)); // unwrap_or: an unreadable start time keys by pid alone, as before
     let mut windows = RECENT_FOOTPRINTS.lock();
-    Some(recent_max(&mut windows, process, now_ms(), reading))
+    Some(recent_max(&mut windows, process, EpochMs::now().millis(), reading))
 }
 
 /// How far back the recent maximum looks: longer than a pager dip (about a minute measured),
@@ -461,13 +463,6 @@ fn process_args(_pid: u32) -> Option<Vec<String>> {
     None
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a clock before 1970 makes every record stale — the estimate rules
-}
-
 fn default_path() -> Option<PathBuf> {
     crate::paths::continuum_home()
         .ok()
@@ -547,7 +542,7 @@ mod tests {
         let model = "trapped-fixture";
         COSTS.lock().insert(
             model.to_string(),
-            MeasuredCost { per_token_bytes: per_token, lanes: 1, window: 2_048, anon_bytes: 500_000_000, last_ms: now_ms() },
+            MeasuredCost { per_token_bytes: per_token, lanes: 1, window: 2_048, anon_bytes: 500_000_000, last_ms: EpochMs::now().millis() },
         );
         assert!(measured_record(model).is_some(), "the trap record rules before retirement");
         assert!(retire(model), "a record was there to retire");

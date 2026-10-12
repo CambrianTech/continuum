@@ -10,6 +10,7 @@
 //!
 //! The pool's "bytes" are descriptors: the broker's arithmetic is unit-agnostic
 //! (usage/capacity), and a descriptor freed is the quantity this tier owns.
+use crate::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
@@ -85,12 +86,6 @@ impl FdPressurePool {
         Self { relief, capacity: capacity.max(1), cooldown_ms, last_acted_ms: AtomicU64::new(0) }
     }
 
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0) // unwrap_or: a pre-epoch clock reads as 0 — the cooldown then always allows, the safe side
-    }
 }
 
 impl ResourcePool for FdPressurePool {
@@ -104,7 +99,8 @@ impl ResourcePool for FdPressurePool {
         open_fds().map_or(0, |n| n as u64)
     }
     fn evict_at_least(&self, _want: u64) -> u64 {
-        let now = Self::now_ms();
+        // A pre-1970 clock reads 0 here: the cooldown always allows, the safe side.
+        let now = EpochMs::now().millis();
         let last = self.last_acted_ms.load(Ordering::SeqCst);
         if last != 0 && now.saturating_sub(last) < self.cooldown_ms {
             crate::probe!(

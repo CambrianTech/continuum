@@ -26,6 +26,7 @@
 //!   and saving is serialized in-process: one core owns its node's ports.
 //! - She sees her leases in her grounding (`WorkspaceMapSource`), so she never guesses a port.
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::collections::BTreeSet;
 use std::sync::{Arc, OnceLock};
@@ -237,7 +238,7 @@ impl PortLeases {
     pub async fn lease(&self, holder: PeerId, service: &str) -> Result<(PortLease, bool), PortLeaseError> {
         let _serialized = self.write.lock().await;
         let node = (self.node)().ok_or(PortLeaseError::NodeUnknown)?;
-        let now = crate::persona::trace::now_ms();
+        let now = EpochMs::now().millis();
         let on_node = self.on_this_node();
         // the probe connects to loopback per candidate (blocking, up to a few hundred ms on
         // Windows), so the decision runs off the async runtime
@@ -302,7 +303,7 @@ impl PortLeases {
         let Some(mut lease) = self.on_this_node().into_iter().find(|l| l.holder == holder && l.service == service && l.active()) else {
             return Ok(None);
         };
-        lease.released_at_ms = Some(crate::persona::trace::now_ms());
+        lease.released_at_ms = Some(EpochMs::now().millis());
         self.store.update(row_id(&lease)?, &lease).await.map_err(|e| PortLeaseError::Store(e.to_string()))?;
         self.remember(&lease);
         crate::probe!(

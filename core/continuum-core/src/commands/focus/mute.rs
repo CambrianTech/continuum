@@ -16,13 +16,13 @@
 //! decision half of "navigate away without going numb" — she owns where her attention
 //! turns; the substrate still guarantees perception of a direct address.
 
+use crate::time::EpochMs;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::persona::focus::{self, MuteLevel};
-use crate::persona::recall_metadata::now_ms;
 use crate::routing::CallerSource;
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx};
 
@@ -142,7 +142,7 @@ impl ActionCommand for FocusMute {
         };
         let expires_at_ms = p
             .duration_secs
-            .map(|s| now_ms().saturating_add(s.saturating_mul(1_000)));
+            .map(|s| EpochMs::now().millis().saturating_add(s.saturating_mul(1_000)));
         state.mute(lane, level, expires_at_ms);
 
         Ok(FocusMuteResult {
@@ -188,7 +188,7 @@ mod tests {
         // The SAME state the serve loop reads now carries the mute.
         let state = focus::registry().handle(persona);
         assert_eq!(
-            state.lock().unwrap().active_mute(room, now_ms()),
+            state.lock().unwrap().active_mute(room, EpochMs::now().millis()),
             Some(MuteLevel::Soft),
         );
 
@@ -203,7 +203,7 @@ mod tests {
             .await
             .expect("ok");
         assert_eq!(cleared.level, "none");
-        assert_eq!(state.lock().unwrap().active_mute(room, now_ms()), None);
+        assert_eq!(state.lock().unwrap().active_mute(room, EpochMs::now().millis()), None);
     }
 
     // what this catches: a hard snooze sets a future expiry and suppresses AMBIENT wake
@@ -214,7 +214,7 @@ mod tests {
     async fn hard_snooze_sets_expiry_and_preserves_the_floor() {
         let persona = Uuid::from_u128(0xC3);
         let lane = Uuid::from_u128(0xD4);
-        let before = now_ms();
+        let before = EpochMs::now().millis();
         let out = FocusMute
             .run(
                 // explicit lane (no room context) to prove `lane` overrides the default

@@ -444,10 +444,10 @@ async fn holder_of(
         return HolderRead::Unavailable("board read failed");
     };
     let board = board.snapshot();
-    let Ok(now) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+    let Ok(now) = crate::time::EpochMs::read() else {
         return HolderRead::Unavailable("clock before the epoch");
     };
-    let now_ms = now.as_millis() as u64;
+    let now_ms = now.millis();
     let Some(found) = board.cards.iter().find(|c| c.card_id.as_uuid() == card) else {
         return HolderRead::Unavailable("card not on the board");
     };

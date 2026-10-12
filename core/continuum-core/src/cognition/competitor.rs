@@ -27,6 +27,7 @@
 //! Continuum's native arm is the existing [`crate::cognition::eval`] cognition path;
 //! it is wrapped into the same runner in the follow-up slice.
 
+use crate::time::EpochMs;
 use crate::cognition::eval::EvalTask;
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -564,7 +565,7 @@ pub async fn run_competition(
             );
             emit_arm(
                 "benchmark:arm:skipped",
-                serde_json::json!({ "arm": name, "reason": "unavailable (CLI/dep not present)", "atMs": now_ms() }),
+                serde_json::json!({ "arm": name, "reason": "unavailable (CLI/dep not present)", "atMs": EpochMs::now().millis() }),
             );
             board.skipped.push(name.to_string());
             continue;
@@ -572,7 +573,7 @@ pub async fn run_competition(
 
         emit_arm(
             "benchmark:arm:start",
-            serde_json::json!({ "arm": name, "model": model, "endpoint": resolved, "total": total, "atMs": now_ms() }),
+            serde_json::json!({ "arm": name, "model": model, "endpoint": resolved, "total": total, "atMs": EpochMs::now().millis() }),
         );
 
         let mut results: Vec<ArmTaskResult> = Vec::with_capacity(total);
@@ -615,7 +616,7 @@ pub async fn run_competition(
                     "done": i + 1,
                     "total": total,
                     "pass": pass,
-                    "atMs": now_ms(),
+                    "atMs": EpochMs::now().millis(),
                 }),
             );
             results.push(result);
@@ -638,7 +639,7 @@ pub async fn run_competition(
                 "score": pass,
                 "total": total,
                 "class": class.label(),
-                "atMs": now_ms(),
+                "atMs": EpochMs::now().millis(),
             }),
         );
         board.arms.push(ArmScore {
@@ -660,11 +661,6 @@ fn emit_arm(event: &str, payload: serde_json::Value) {
     if let Some(bus) = crate::runtime::MessageBus::global() {
         bus.publish_async_only(event, payload);
     }
-}
-
-/// Millisecond wall clock for event timestamps, shared with the eval harness.
-fn now_ms() -> u64 {
-    crate::persona::trace::now_ms()
 }
 
 #[cfg(test)]

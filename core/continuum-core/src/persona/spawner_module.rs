@@ -642,7 +642,7 @@ async fn draw_intents(
         }
         crate::persona::resting_seat::note_seated(
             &intent.agent_name,
-            chrono::Utc::now().timestamp_millis().max(0) as u64,
+            crate::time::EpochMs::now().millis(),
         );
         intents.push(intent);
     }

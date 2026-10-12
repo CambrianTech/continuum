@@ -471,10 +471,7 @@ impl ChannelModule {
         task_id: Option<Uuid>,
         persona_id: &Uuid,
     ) -> Option<TaskQueueItem> {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = crate::time::EpochMs::now().millis();
 
         Some(TaskQueueItem {
             id: Uuid::new_v4(),

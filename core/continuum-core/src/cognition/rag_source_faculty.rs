@@ -129,15 +129,12 @@ impl SaliencePolicy {
 }
 
 /// Wall-clock seam — injectable so tests are deterministic. ms since unix epoch,
-/// matching the `now_ms()` convention across cognition (and `RecallFaculty`).
+/// matching the `EpochMs::now().millis()` convention across cognition (and `RecallFaculty`).
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 fn wall_clock() -> Clock {
     Arc::new(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+        crate::time::EpochMs::now().millis()
     })
 }
 
@@ -465,9 +462,7 @@ impl Faculty for RagSourceFaculty {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::rag_budget::{
-        ContinuationCursor, RagDelivery, RagItem, ResolutionPreference,
-    };
+    use crate::persona::rag_budget::{ContinuationCursor, RagDelivery, RagItem, ResolutionPreference};
     use std::sync::Mutex;
 
     fn persona() -> Uuid {
@@ -944,9 +939,7 @@ mod tests {
     // in the assembled broadcast the decider reads in phase 2.
     #[tokio::test]
     async fn bridged_grounding_reaches_the_broadcast() {
-        use crate::cognition::workspace::{
-            Contribution, Decision, SalienceArbiter, WorkspaceCycle,
-        };
+        use crate::cognition::workspace::{Contribution, Decision, SalienceArbiter, WorkspaceCycle};
 
         // A deliberation faculty that proves it saw the bridged doctrine.
         struct SeesDoctrine;
@@ -1053,10 +1046,7 @@ mod tests {
     // bridge ships with.)
     #[tokio::test]
     async fn standing_framing_present_even_when_outsalienced() {
-        use crate::cognition::workspace::{
-            Contribution, FacultyId as FId, SalienceArbiter, Workspace as Ws, WorkspaceCaptureSink,
-            WorkspaceCycle, WorkspaceTrace,
-        };
+        use crate::cognition::workspace::{Contribution, FacultyId as FId, SalienceArbiter, Workspace as Ws, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
 
         // A retrieved-tier faculty that bids ABOVE the standing-framing floor
         // (a very relevant memory) — the adversarial case for the canary.

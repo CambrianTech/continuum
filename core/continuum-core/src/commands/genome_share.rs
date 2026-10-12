@@ -26,6 +26,7 @@
 //! ([`passes_publish_lift_gate`]) then refuses measured-harm genes. Only
 //! measured-positive experience enters the commons under our name.
 
+use crate::time::EpochMs;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -179,7 +180,8 @@ impl ActionCommand for GenomeSharing {
     ) -> Result<GenomeSharingResult, CommandError> {
         match p.agree {
             Some(true) => {
-                let receipt = format!("{}@{}", COVENANT_VERSION, now_ms());
+                // A pre-1970 clock reads 0 here: decay saturates instead of the verb failing.
+                let receipt = format!("{}@{}", COVENANT_VERSION, EpochMs::now().millis());
                 crate::config_env::upsert(CONSENT_KEY, &receipt)
                     .map_err(CommandError::Invalid)?;
                 crate::probe!(class = "genome.sharing.agreed", receipt = %receipt,
@@ -267,7 +269,7 @@ impl ActionCommand for GenomeList {
             crate::genome::signature::signature_store_path().map_err(CommandError::Invalid)?;
         let signatures = crate::genome::signature::SignatureStore::load_at(&sig_path)
             .map_err(CommandError::Invalid)?;
-        let now_ms = now_ms();
+        let now_ms = EpochMs::now().millis();
         let fitness = crate::genome::fitness_ledger::GeneFitnessIndex::default_dir()
             .map(|d| crate::genome::fitness_ledger::GeneFitnessIndex::load(&d, now_ms))
             .unwrap_or_default(); // no HOME: empty index — genes list as unmeasured, honestly
@@ -376,7 +378,7 @@ impl ActionCommand for GenomePush {
                     p.gene
                 ))
             })?;
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let fitness = crate::genome::fitness_ledger::GeneFitnessIndex::default_dir()
             .map(|d| crate::genome::fitness_ledger::GeneFitnessIndex::load(&d, now))
             .unwrap_or_default(); // no HOME: empty index → the receipts gate below refuses, correctly
@@ -902,13 +904,6 @@ pub fn spawn_bootstrap(base_model: String) {
         })
         .await;
     });
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // pre-epoch clock: decay saturates instead of the verb failing
 }
 
 #[cfg(test)]

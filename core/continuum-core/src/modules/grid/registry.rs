@@ -3,6 +3,7 @@
 //! Persisted to .continuum/grid/known_nodes.json.
 //! Updated by discovery, manual pairing, and periodic health checks.
 
+use crate::time::EpochMs;
 use super::node::{DiscoveredNode, GridNode, TransportAddress, TrustLevel};
 use crate::identity::PeerId;
 use dashmap::DashMap;
@@ -78,7 +79,7 @@ impl NodeRegistry {
 
     /// Get online nodes (seen within the last 5 minutes).
     pub fn online_nodes(&self) -> Vec<GridNode> {
-        let cutoff = now_millis().saturating_sub(5 * 60 * 1000);
+        let cutoff = EpochMs::now().millis().saturating_sub(5 * 60 * 1000);
         self.nodes
             .iter()
             .filter(|r| r.value().last_seen >= cutoff)
@@ -107,7 +108,7 @@ impl NodeRegistry {
                 if discovered.name.is_some() {
                     existing.node_name = discovered.name.clone();
                 }
-                existing.last_seen = now_millis();
+                existing.last_seen = EpochMs::now().millis();
             })
             .or_insert_with(|| GridNode {
                 node_id,
@@ -115,7 +116,7 @@ impl NodeRegistry {
                 addresses: vec![discovered.address],
                 capabilities: discovered.capabilities,
                 trust_level: TrustLevel::default(), // Blocked until manually trusted
-                last_seen: now_millis(),
+                last_seen: EpochMs::now().millis(),
                 latency_ms: None,
                 peer_id: None, // learned later via set_peer_id (pairing/gossip correlation, #2228)
                 build_sha: None,
@@ -246,7 +247,7 @@ impl NodeRegistry {
                 addresses: vec![],
                 capabilities,
                 trust_level: TrustLevel::default(), // discovery ≠ authorization (#38)
-                last_seen: now_millis(),
+                last_seen: EpochMs::now().millis(),
                 latency_ms: None,
                 peer_id: Some(peer),
                 build_sha: None,
@@ -272,7 +273,7 @@ impl NodeRegistry {
             .get_mut(node_id)
             .map(|mut r| {
                 r.value_mut().peer_id = Some(peer_id);
-                r.value_mut().last_seen = now_millis();
+                r.value_mut().last_seen = EpochMs::now().millis();
             })
             .ok_or_else(|| format!("Unknown node: {node_id}"))
     }
@@ -291,7 +292,7 @@ impl NodeRegistry {
     pub fn update_latency(&self, node_id: &str, latency_ms: u64) {
         if let Some(mut r) = self.nodes.get_mut(node_id) {
             r.value_mut().latency_ms = Some(latency_ms);
-            r.value_mut().last_seen = now_millis();
+            r.value_mut().last_seen = EpochMs::now().millis();
         }
     }
 
@@ -377,13 +378,6 @@ fn address_to_node_id(address: &TransportAddress) -> String {
     }
 }
 
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::node::NodeCapability;
@@ -399,7 +393,7 @@ mod tests {
         let reg = NodeRegistry::new(&dir);
         let peer = PeerId::from_uuid(uuid::Uuid::from_u128(11));
         assert!(reg.ensure_peer_node(peer, None));
-        let t0 = now_millis();
+        let t0 = EpochMs::now().millis();
         let six_h = 6 * 3600 * 1000;
         assert!(reg.fold_liveness(t0 + six_h * 200, six_h, 5309).is_empty(), "no beacon, no address: not a fleet member");
         reg.note_peer_build(&peer, Some("8d1282271".into()), 5249, t0);
@@ -415,7 +409,7 @@ mod tests {
         let reg = NodeRegistry::new(&dir);
         let peer = PeerId::from_uuid(uuid::Uuid::from_u128(21));
         assert!(reg.ensure_peer_node(peer, None));
-        let t0 = now_millis();
+        let t0 = EpochMs::now().millis();
         reg.note_peer_beacon(&peer, Some("269cefdec".into()), 5322, Some("Qwen3.8-27B".into()), 2, 0, t0);
         let n = reg.all_nodes().into_iter().find(|n| n.peer_id == Some(peer)).expect("node");
         assert_eq!((n.served_model.as_deref(), n.lanes, n.residents), (Some("Qwen3.8-27B"), 2, 0));
@@ -432,7 +426,7 @@ mod tests {
         let reg = NodeRegistry::new(&dir);
         let peer = PeerId::from_uuid(uuid::Uuid::from_u128(13));
         assert!(reg.ensure_peer_node(peer, None));
-        let t0 = now_millis();
+        let t0 = EpochMs::now().millis();
         reg.note_peer_build(&peer, Some("5109f2bba".into()), 5310, t0);
         assert!(reg.fold_liveness(t0 + 1000, 6 * 3600 * 1000, 5309).is_empty(), "a higher number is ahead, not behind");
         reg.note_peer_build(&peer, Some("ce3f6cebc".into()), 5308, t0 + 2000);
@@ -447,7 +441,7 @@ mod tests {
         assert!(reg.ensure_peer_node(peer, None));
         // The registry stamps last_seen with the real clock on creation; the fold is
         // relative to that, so the test's clock starts there.
-        let t0 = now_millis();
+        let t0 = EpochMs::now().millis();
         reg.note_peer_build(&peer, Some("8d1282271".into()), 5249, t0);
         let six_h = 6 * 3600 * 1000;
         let first = reg.fold_liveness(t0 + 1000, six_h, 5309);

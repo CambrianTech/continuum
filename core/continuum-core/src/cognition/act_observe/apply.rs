@@ -3,6 +3,7 @@
 //! return the observation text so the caller can fold it into the next perception.
 //! Extracted verbatim from `act_observe` (pure code-motion, #386 decomposition).
 
+use crate::time::EpochMs;
 use uuid::Uuid;
 
 use crate::ai::types::{ToolCall, ToolResult};
@@ -10,7 +11,6 @@ use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
 use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
-use super::settle::now_ms;
 
 /// Recall salience for an action-observation receipt (#166). Below the neutral
 /// default (0.5) so genuine findings/facts win recall, but well above zero so the
@@ -448,10 +448,7 @@ pub async fn apply_act(
         .command_executor()
         .and_then(|e| e.message_bus())
     {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = EpochMs::now().millis();
         for obs in &acts {
             // The human OBJECT of the act: the first extracted path (reads,
             // writes, edits), else the shell command head, else empty —
@@ -634,7 +631,7 @@ pub async fn apply_act(
     // result-as-memory choice: next tick, recall can surface "I ran X → got Y" the
     // same way it surfaces anything else the persona knows. Best-effort — an
     // admission hiccup must never wedge the act→observe loop.
-    let now_ms = now_ms();
+    let now_ms = EpochMs::now().millis();
     // Admit the outcome as a TOOL-ORIGIN Episodic engram via the self-produced path.
     // The origin is load-bearing (#166): a tool receipt is PROPRIOCEPTION, and
     // `recall_candidates` now gates `EngramOrigin::Tool` OUT of the SEMANTIC recall

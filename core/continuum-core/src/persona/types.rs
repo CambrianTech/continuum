@@ -253,10 +253,7 @@ impl PersonaState {
 
         // Update counts
         self.response_count += 1;
-        self.last_activity_time = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        self.last_activity_time = crate::time::EpochMs::now().millis();
 
         // Recalculate mood
         self.calculate_mood();

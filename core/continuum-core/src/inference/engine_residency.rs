@@ -27,6 +27,7 @@
 //! terminal or cancel acknowledgment or on verified death. A dropped controller future, a
 //! lost HTTP connection or a timeout releases nothing.
 
+use crate::time::EpochMs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -276,7 +277,7 @@ static FIRST_ASKED_MS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
 fn on_released(work: &ResidentWork) {
     // first: a footprint sample in flight across the work's residency is refused
     super::lane_footprint::residency_changed();
-    LAST_RELEASE_MS.store(crate::persona::trace::now_ms(), std::sync::atomic::Ordering::Relaxed);
+    LAST_RELEASE_MS.store(EpochMs::now().millis(), std::sync::atomic::Ordering::Relaxed);
     let retired = super::lane_footprint::retire_if_sampled_since(&work.base_model, work.created_ms);
     crate::probe!(
         class = "serving.residency.released",
@@ -559,7 +560,7 @@ mod tests {
         let w = work(9, 25280, 1_000, 58057);
         record(&path, w.clone()).expect("record");
         assert!(release(&path, &w).expect("release"));
-        assert!(released_within(crate::persona::trace::now_ms(), 60_000), "noted for the sampler's settle");
+        assert!(released_within(EpochMs::now().millis(), 60_000), "noted for the sampler's settle");
     }
 
     // what this catches (Codex on #4536): a footprint sample that checked occupancy while the

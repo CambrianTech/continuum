@@ -8,20 +8,13 @@
 //! Each item carries all data needed for TS processing after dequeue.
 //! Serialization via to_json() sends full item data through IPC.
 
+use crate::time::EpochMs;
 use super::channel_types::{ActivityDomain, QueueItemBehavior};
 use super::types::SenderType;
 use serde::{Deserialize, Serialize};
 use std::any::Any;
-use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 use uuid::Uuid;
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 //=============================================================================
 // MEDIA ITEM (for native multimodal — images, audio attached to a message)
@@ -543,7 +536,7 @@ impl QueueItemBehavior for TaskQueueItem {
 
     // Urgent if past due date
     fn is_urgent(&self) -> bool {
-        self.due_date.is_some_and(|d| d < now_ms())
+        self.due_date.is_some_and(|d| d < EpochMs::now().millis())
     }
 
     // Don't kick in-progress tasks
@@ -805,7 +798,7 @@ impl ChannelEnqueueRequest {
     /// Convert IPC request to a boxed queue item.
     /// Returns Err if UUIDs are invalid.
     pub fn to_queue_item(&self) -> Result<std::sync::Arc<dyn QueueItemBehavior>, String> {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         match self {
             ChannelEnqueueRequest::Voice {
                 id,
@@ -961,8 +954,8 @@ mod tests {
             sender_name: "test-user".into(),
             sender_type: SenderType::Human,
             voice_session_id: Uuid::new_v4(),
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority: 1.0,
             media: Vec::new(),
         }
@@ -977,8 +970,8 @@ mod tests {
             sender_name: "User".into(),
             sender_type: SenderType::Human,
             mentions,
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority,
             consolidated_context: Vec::new(),
             media: Vec::new(),
@@ -1000,8 +993,8 @@ mod tests {
             description: "Test task".into(),
             priority: 0.5,
             status: "pending".into(),
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             due_date: None,
             estimated_duration: None,
             depends_on: Vec::new(),
@@ -1080,10 +1073,10 @@ mod tests {
         let mut task = make_task("code", ctx);
         assert!(!task.is_urgent()); // No due date
 
-        task.due_date = Some(now_ms() + 60_000); // Due in 1 min
+        task.due_date = Some(EpochMs::now().millis() + 60_000); // Due in 1 min
         assert!(!task.is_urgent()); // Not yet overdue
 
-        task.due_date = Some(now_ms() - 1000); // 1 second overdue
+        task.due_date = Some(EpochMs::now().millis() - 1000); // 1 second overdue
         assert!(task.is_urgent());
     }
 
@@ -1118,7 +1111,7 @@ mod tests {
         let room = Uuid::new_v4();
         let chat = make_chat(room, false, 0.3);
 
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let enqueued = now; // Just enqueued — no aging
         let p0 = chat.effective_priority(now, enqueued);
         assert!((p0 - 0.3).abs() < 0.01, "No aging expected, got {p0}");
@@ -1142,7 +1135,7 @@ mod tests {
     #[test]
     fn test_voice_no_aging() {
         let voice = make_voice();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let p0 = voice.effective_priority(now, now);
         let p60 = voice.effective_priority(now + 60_000, now);
         assert_eq!(p0, 1.0);
@@ -1166,7 +1159,7 @@ mod tests {
             sender_name: "test-user".into(),
             sender_type: "human".into(),
             mentions: true,
-            timestamp: now_ms(),
+            timestamp: EpochMs::now().millis(),
             priority: 0.8,
             media: Vec::new(),
         };
@@ -1192,7 +1185,7 @@ mod tests {
             sender_name: "operator".into(),
             sender_type: "human".into(),
             mentions: false,
-            timestamp: now_ms(),
+            timestamp: EpochMs::now().millis(),
             priority: 0.5,
             media: vec![MediaItemRequest {
                 kind: "image".into(),
@@ -1239,8 +1232,8 @@ mod tests {
             sender_name: "test-sender".into(),
             sender_type: SenderType::Human,
             mentions: false,
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority: 0.5,
             consolidated_context: Vec::new(),
             media: Vec::new(),
@@ -1289,8 +1282,8 @@ mod tests {
             sender_name: "test-sender".into(),
             sender_type: SenderType::Human,
             mentions: false,
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority: 0.5,
             consolidated_context: Vec::new(),
             media: Vec::new(),

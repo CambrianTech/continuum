@@ -314,7 +314,7 @@ impl AIProviderAdapter for AnthropicAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", chrono::Utc::now().timestamp_millis()));
+            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis()));
         let model = request.model.as_deref().unwrap_or(&self.default_model);
 
         // Build messages and extract system prompt
@@ -499,7 +499,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                 api_available: false,
                 response_time_ms: 0,
                 error_rate: 1.0,
-                last_checked: chrono::Utc::now().timestamp_millis() as u64,
+                last_checked: crate::time::EpochMs::now().millis(),
                 message: Some("Anthropic API key not configured".to_string()),
             };
         }
@@ -530,7 +530,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                 api_available: true,
                 response_time_ms,
                 error_rate: 0.0,
-                last_checked: chrono::Utc::now().timestamp_millis() as u64,
+                last_checked: crate::time::EpochMs::now().millis(),
                 message: Some("Anthropic API is accessible".to_string()),
             },
             Ok(resp) => {
@@ -545,7 +545,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                     api_available: false,
                     response_time_ms,
                     error_rate: 1.0,
-                    last_checked: chrono::Utc::now().timestamp_millis() as u64,
+                    last_checked: crate::time::EpochMs::now().millis(),
                     message: Some(format!("Anthropic returned {}", status)),
                 }
             }
@@ -554,7 +554,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                 api_available: false,
                 response_time_ms,
                 error_rate: 1.0,
-                last_checked: chrono::Utc::now().timestamp_millis() as u64,
+                last_checked: crate::time::EpochMs::now().millis(),
                 message: Some(format!("Anthropic error: {}", e)),
             },
         }

@@ -944,10 +944,7 @@ impl WorkingMemory {
             receipt_head_rooms,
             recent_results: self.recent_results.lock().iter().cloned().collect(),
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
-            saved_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
+            saved_at_ms: crate::time::EpochMs::now().millis(),
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
             // Stamped by `save_volatile`, which knows WHOSE memory this is; the memory
             // itself carries no persona id.
@@ -1043,10 +1040,7 @@ impl WorkingMemory {
         // wake's turn and the one that acts on it. The build compared is the one that
         // BOOTED, so a deploy that failed to land is said as such (Kimi's #3).
         if let Some(handoff) = snap.handoff.as_ref() {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
+            let now_ms = crate::time::EpochMs::now().millis();
             self.pin_fact_for_turns(
                 "handoff",
                 &crate::cognition::handoff::render_on_wake(
@@ -1062,10 +1056,7 @@ impl WorkingMemory {
         // NEWEST thing in her window when she wakes. A fact, never an instruction.
         let checkpoint_age = (snap.saved_at_ms > 0)
             .then(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| (d.as_millis() as u64).saturating_sub(snap.saved_at_ms))
-                    .ok()
+                crate::time::EpochMs::read().map(|now| now.millis().saturating_sub(snap.saved_at_ms)).ok()
             })
             .flatten()
             .map(|ms| {

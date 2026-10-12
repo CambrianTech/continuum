@@ -150,8 +150,8 @@ impl SelfTaskGenerator {
             "description": description,
             "priority": priority,
             "status": "pending",
-            "createdAt": chrono_now_iso(),
-            "updatedAt": chrono_now_iso(),
+            "createdAt": crate::time::EpochMs::now().rfc3339(),
+            "updatedAt": crate::time::EpochMs::now().rfc3339(),
         }))
     }
 
@@ -202,7 +202,7 @@ impl SelfTaskGenerator {
             None => return Ok(Vec::new()),
         };
 
-        let now_ms = now_epoch_ms();
+        let now_ms = crate::time::EpochMs::now().millis();
         let threshold = now_ms.saturating_sub(self.config.unfinished_work_threshold_ms);
         let mut resume_tasks = Vec::new();
 
@@ -373,71 +373,6 @@ impl SelfTaskGenerator {
 
 // ── Utility functions ──────────────────────────────────────────────────────
 
-fn now_epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn chrono_now_iso() -> String {
-    // Simple ISO 8601 timestamp without external crate
-    let duration = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = duration.as_secs();
-    // Approximate: good enough for task timestamps
-    "1970-01-01T00:00:00.000Z"
-        .to_string() // Placeholder — overwritten by DB on insert
-        .replace("1970-01-01T00:00:00.000Z", &format_epoch_secs(secs))
-}
-
-fn format_epoch_secs(secs: u64) -> String {
-    // Convert epoch seconds to ISO 8601 (approximate, no leap seconds)
-    let days = secs / 86400;
-    let time_secs = secs % 86400;
-    let hours = time_secs / 3600;
-    let minutes = (time_secs % 3600) / 60;
-    let seconds = time_secs % 60;
-
-    // Calculate year/month/day from days since epoch (simplified)
-    let (year, month, day) = days_to_ymd(days);
-
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.000Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    // Simplified date calculation from epoch days
-    let mut year = 1970u64;
-
-    loop {
-        let days_in_year = if is_leap_year(year) { 366 } else { 365 };
-        if days < days_in_year {
-            break;
-        }
-        days -= days_in_year;
-        year += 1;
-    }
-
-    let leap = is_leap_year(year);
-    let month_days: [u64; 12] = if leap {
-        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    } else {
-        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    };
-
-    let mut month = 1u64;
-    for &md in &month_days {
-        if days < md {
-            break;
-        }
-        days -= md;
-        month += 1;
-    }
-
-    (year, month, days + 1)
-}
-
 fn is_leap_year(year: u64) -> bool {
     (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
@@ -498,14 +433,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_days_to_ymd() {
-        // Jan 1, 1970 = day 0
-        assert_eq!(days_to_ymd(0), (1970, 1, 1));
-        // Feb 1, 1970 = day 31
-        assert_eq!(days_to_ymd(31), (1970, 2, 1));
-    }
-
-    #[test]
     fn test_parse_iso_to_epoch_ms() {
         // 1970-01-01T00:00:00.000Z = 0
         assert_eq!(parse_iso_to_epoch_ms("1970-01-01T00:00:00.000Z"), Some(0));
@@ -516,12 +443,6 @@ mod tests {
         );
         // Invalid
         assert_eq!(parse_iso_to_epoch_ms("not-a-date"), None);
-    }
-
-    #[test]
-    fn test_format_epoch_secs() {
-        let s = format_epoch_secs(0);
-        assert_eq!(s, "1970-01-01T00:00:00.000Z");
     }
 
     #[test]

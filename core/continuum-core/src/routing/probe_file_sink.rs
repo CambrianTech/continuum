@@ -74,7 +74,6 @@ use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tracing::field::{Field, Visit};
@@ -368,10 +367,7 @@ where
             fields: visitor.fields,
         };
 
-        let captured_at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let captured_at_ms = crate::time::EpochMs::now().millis();
 
         self.write_one(captured_at_ms, &probe_event);
     }
@@ -419,10 +415,7 @@ where
             return;
         }
 
-        let captured_at_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let captured_at_ms = crate::time::EpochMs::now().millis();
 
         self.write_one(captured_at_ms, &probe_event);
     }

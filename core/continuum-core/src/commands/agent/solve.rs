@@ -14,6 +14,7 @@
 //! (`fork_eval_cycle_with_adapter` → `drive_to_settle`), minus the grader — the external harness
 //! grades. One drive, two consumers (eval scores; agent/solve emits a patch).
 
+use crate::time::EpochMs;
 use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -1914,7 +1915,7 @@ impl AgentSolve {
                     tokens: 0,
                     metadata: serde_json::json!({
                         "peer_id": "peer",
-                        "occurred_at_ms": crate::persona::trace::now_ms(),
+                        "occurred_at_ms": EpochMs::now().millis(),
                     }),
                 }],
                 tokens_used: 0,
@@ -2024,14 +2025,11 @@ impl AgentSolve {
                             // to the one path where the hardest work happens.
                             crate::persona::cognition_pulse::touch(
                                 persona_uuid,
-                                std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .map(|d| d.as_millis() as u64)
-                                    // safe: Err only if the clock is before 1970. 0 then means
+                                // safe: Err only if the clock is before 1970. 0 then means
                                     // "never pulsed", which DENIES a renewal — the conservative
                                     // direction, and the same state as no stamp at all. A wall
                                     // clock behind the epoch must not hand out lease extensions.
-                                    .unwrap_or_default(), // safe: see the 4 lines above
+                                    crate::time::EpochMs::now().millis(),
                             );
                             // Best-effort by construction: a failed pulse must never
                             // disturb the work it is only reporting on.
@@ -2430,7 +2428,7 @@ fn transfer_solve_experience(
             parent_engram_id: Uuid::nil(),
         },
         recall_keys,
-        admitted_at_ms: crate::persona::trace::now_ms(),
+        admitted_at_ms: EpochMs::now().millis(),
         trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
         admission_trace_id: None,
     };
@@ -2514,7 +2512,7 @@ async fn redrive_with_fact(
             tokens: 0,
             metadata: serde_json::json!({
                 "peer_id": "peer",
-                "occurred_at_ms": crate::persona::trace::now_ms(),
+                "occurred_at_ms": EpochMs::now().millis(),
             }),
         }],
         tokens_used: 0,

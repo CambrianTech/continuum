@@ -38,14 +38,9 @@ use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
-use super::workspace::{
-    Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace,
-};
+use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
-use crate::ai::types::{
-    ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
-    TextGenerationResponse,
-};
+use crate::ai::types::{ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
 
 /// Ambient deliberation yields to measured foreground work. Human opportunity
 /// keeps its existing turn class even when the message did not name the persona.
@@ -1460,10 +1455,7 @@ impl LlmDeliberationFaculty {
             // generation is her thinking this instant, the strongest witness there is.
             crate::persona::cognition_pulse::touch(
                 self.persona_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0), // JUSTIFIED unwrap_or: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
+                crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
             );
             crate::ipc::vitals_emitter::record_reasoning(self.persona_id);
             crate::probe!(
@@ -5549,7 +5541,7 @@ fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &s
         return;
     }
     let row = serde_json::json!({
-        "ts_ms": crate::persona::trace::now_ms(),
+        "ts_ms": crate::time::EpochMs::now().millis(),
         "persona": persona_name,
         "messages": request
             .messages
@@ -11408,9 +11400,7 @@ mod tests {
         #[tokio::test]
         async fn directed_turn_withholds_the_silence_escape() {
             use crate::ai::types::MessageContent;
-            use crate::cognition::workspace::{
-                SalienceArbiter, Situation, TurnFraming, WorkspaceCycle,
-            };
+            use crate::cognition::workspace::{SalienceArbiter, Situation, TurnFraming, WorkspaceCycle};
             use crate::inference::slots::SlotClass;
             use crate::persona::persona_identity::PersonaIdentity;
             let adapter = Arc::new(ScriptedAdapter::new(vec![]));

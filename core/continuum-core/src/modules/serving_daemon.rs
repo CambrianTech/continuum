@@ -23,20 +23,15 @@
 
 pub(crate) mod academy_batch;
 
+use crate::time::EpochMs;
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
 use crate::cognition::serving_plan::footprint::{footprint_for, footprint_from_parts};
-use crate::cognition::serving_plan::{
-    plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint,
-    ServingDemand, ServingPlan,
-};
+use crate::cognition::serving_plan::{plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint, ServingDemand, ServingPlan};
 use crate::gpu::GpuMemoryManager;
 use crate::inference::lane_registry::LaneRecord;
-use crate::inference::llama_server::{
-    ensure_model_serving_if_current, serving_v1_url, AdapterEntry, EnsureOutcome,
-    LlamaServerControl, LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT,
-};
+use crate::inference::llama_server::{ensure_model_serving_if_current, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl, LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT};
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
 use crate::model_registry::types::Model;
 use crate::persona::hw_tier_descriptor::HwTierCategory;
@@ -565,7 +560,7 @@ impl ServingOperation {
     ) -> Option<Self> {
         gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
-        started_ms.store(crate::modules::chat::now_ms(), Ordering::Release);
+        started_ms.store(EpochMs::now().millis(), Ordering::Release);
         step.store(ReconcileStep::None as u8, Ordering::Release);
         Some(Self {
             gate,
@@ -2408,7 +2403,7 @@ impl ServingDaemonModule {
         // credit would read a freshly relaunched engine as nobody's for up to a minute, which
         // is exactly when a relaunch is sized. `/props` is one local call per tick.
         self.refresh_engine_device_credit().await;
-        let now = crate::persona::trace::now_ms();
+        let now = EpochMs::now().millis();
         if !crate::inference::lane_footprint::sample_due(now) {
             return;
         }
@@ -3037,7 +3032,7 @@ impl ServingDaemonModule {
         if ticks < PLAN_NONE_LIVE_LANE_TICKS {
             return;
         }
-        let now = crate::modules::chat::now_ms();
+        let now = EpochMs::now().millis();
         let said = self.plan_none_said_ms.load(Ordering::Acquire);
         if now.saturating_sub(said) < RECONCILE_BUSY_SAY_EVERY.as_millis() as u64 {
             return;
@@ -3058,7 +3053,7 @@ impl ServingDaemonModule {
         if started == 0 {
             return;
         }
-        let now = crate::modules::chat::now_ms();
+        let now = EpochMs::now().millis();
         let age = Duration::from_millis(now.saturating_sub(started));
         let said = self.reconcile_busy_said_ms.load(Ordering::Acquire);
         if now.saturating_sub(said) < RECONCILE_BUSY_SAY_EVERY.as_millis() as u64 {
@@ -3204,7 +3199,7 @@ impl ServingDaemonModule {
                 self.downshift_streak.store(0, Ordering::Relaxed);
                 *self.pending_model_change.lock().unwrap_or_else(|p| p.into_inner()) = None; // unwrap_or_else: a poisoned streak cell is still cleared
                 static LAST_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let now = crate::persona::trace::now_ms();
+                let now = EpochMs::now().millis();
                 // one row a minute while held, not one a tick
                 if now.saturating_sub(LAST_HELD.load(Ordering::Relaxed)) >= 60_000 {
                     LAST_HELD.store(now, Ordering::Relaxed);
@@ -4454,7 +4449,7 @@ impl ServingDaemonModule {
             if let Some(slots) = server.slots_body().await {
                 crate::inference::prefill_knee::observe_slots(
                     &slots,
-                    crate::persona::trace::now_ms(),
+                    EpochMs::now().millis(),
                     crate::cognition::resource_admission::served_lane_count(),
                     engine,
                 );
@@ -5800,22 +5795,6 @@ static LAST_GOOD_VRAM_CEILING_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// boot never has to guess zero. 0 = no GPU reported a size.
 static DEVICE_VRAM_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-/// Epoch milliseconds for the ladder's staleness arithmetic. Local because `now_ms` is
-/// currently hand-rolled in five files tree-wide; adding a sixth private copy here would
-/// be worse than reusing one, and hoisting all five is its own change, not this one.
-fn epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        // JUSTIFIED unwrap_or: the error case is a system clock set before 1970, and the
-        // 0 it yields is not a fabricated quantity — it is the sentinel this module
-        // already defines as "never recorded" (`LAST_GOOD_VRAM_CEILING_AT_MS == 0`), which
-        // makes the last-known rung correctly UNAVAILABLE rather than falsely fresh. The
-        // failure direction is toward less trust, not more, which is the only direction a
-        // default may ever move a decision.
-        .unwrap_or(0)
-}
-
 /// Seed the cold-boot prior. Called once as the serving daemon starts, BEFORE the first
 /// plan, so the very first tick already has a real number to stand on.
 pub fn seed_device_vram_prior(total_bytes: u64) {
@@ -6047,7 +6026,7 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
     // Record every real reading so the NEXT silent tick has something honest to stand on.
     if let Some(bytes) = board {
         LAST_GOOD_VRAM_CEILING.store(bytes, Ordering::Relaxed);
-        LAST_GOOD_VRAM_CEILING_AT_MS.store(epoch_ms(), Ordering::Relaxed);
+        LAST_GOOD_VRAM_CEILING_AT_MS.store(EpochMs::now().millis(), Ordering::Relaxed);
     }
 
     let last_at = LAST_GOOD_VRAM_CEILING_AT_MS.load(Ordering::Relaxed);
@@ -6056,7 +6035,7 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
         last_good: (last_at > 0).then(|| {
             (
                 LAST_GOOD_VRAM_CEILING.load(Ordering::Relaxed),
-                epoch_ms().saturating_sub(last_at),
+                EpochMs::now().millis().saturating_sub(last_at),
             )
         }),
         // The device prior is a VRAM fact. The Ram row is never cold — its ceiling is
@@ -6268,7 +6247,7 @@ fn derived_prompt_cache_mib(
         .filter(|(id, _)| resident.contains(id))
         .map(|(_, d)| (d.last_seen_ms, d.prev_seen_ms))
         .collect();
-    let active = rotating_minds(&seen, crate::persona::trace::now_ms(), rotation_window_ms(&seen)).max(warm_floor);
+    let active = rotating_minds(&seen, EpochMs::now().millis(), rotation_window_ms(&seen)).max(warm_floor);
     let demands = with_measured_state(
         active_cache_states(&population, served_ctx, active),
         fp.map(|f| f.kv_per_token),
@@ -7108,10 +7087,7 @@ fn snapshot_from_outcome(
                 // the honest answer is available — take it. Inventing a plausible
                 // number is the worse half of swallowing an error: it doesn't just
                 // hide the failure, it feeds fiction to every downstream reader.
-                ready_verified_at_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .ok(),
+                ready_verified_at_ms: crate::time::EpochMs::read().ok().map(crate::time::EpochMs::millis),
                 active_model: Some(desired.to_string()),
                 ready: true,
                 base_url: serving_v1_url(),

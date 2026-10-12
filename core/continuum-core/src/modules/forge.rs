@@ -39,7 +39,6 @@ use serde_json::{json, Value};
 use std::any::Any;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Holds the [`MessageBus`] (captured in `initialize`) so native training jobs can
 /// EMIT `forge.train.*` lifecycle events onto airc — consumers SUBSCRIBE, never poll.
@@ -215,10 +214,7 @@ fn synthesize_stub_artifact(
     recipe: &ForgeRecipe,
     hardware_node: Option<&str>,
 ) -> Result<ForgeArtifact, String> {
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("system time before epoch: {e}"))?
-        .as_millis() as u64;
+    let now_ms = crate::time::EpochMs::read().map_err(|e| format!("system time before epoch: {e}"))?.millis();
 
     // Derive an identifiable stub hash from the recipe id (first 16 hex
     // chars). Real Phase 5 hash will be sha256 of the populated alloy

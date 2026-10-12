@@ -38,14 +38,11 @@
 //! provider moves on to the next persona directory.
 
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::persona::identity_provider::{
-    PersonaIdentityError, PersonaIdentityIntent, PersonaIdentityProvider, PersonaIdentitySource,
-};
+use crate::persona::identity_provider::{PersonaIdentityError, PersonaIdentityIntent, PersonaIdentityProvider, PersonaIdentitySource};
 use crate::persona::name_generator::agent_name_from_identity;
 use crate::persona::seed::{read_seed, PersonaSeedError};
 
@@ -293,17 +290,6 @@ fn mint_fresh_intent() -> PersonaIdentityIntent {
         agent_name,
         source: PersonaIdentitySource::FreshlyMinted,
     }
-}
-
-/// Get the current wallclock as ms since epoch. Used when minting
-/// fresh intents — the resulting timestamp lands in the seed.json
-/// that `PersonaPersistenceModule` writes.
-#[allow(dead_code)] // used by PersonaPersistenceModule once it lands
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// Scan a personas directory for existing seed.json files. Returns

@@ -331,7 +331,7 @@ pub fn credit_settled_card(persona: Uuid, card: Uuid, passed: bool, turns: &[Car
     let Some(store) = GeneTrials::default_store() else {
         return;
     };
-    let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    let now_ms = crate::time::EpochMs::now().millis();
     let decided = match store.credit_card(persona, card, passed, turns, now_ms) {
         Ok(d) => d,
         Err(error) => {

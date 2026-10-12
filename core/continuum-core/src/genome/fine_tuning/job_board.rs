@@ -57,6 +57,7 @@
 //! the tick. A subsequent tick can never re-handle the same completed job because
 //! it is already gone. A terminal event leaves the board exactly once.
 
+use crate::time::EpochMs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -253,13 +254,6 @@ fn orphan_of(id: &str, reg: &serde_json::Value) -> Option<OrphanedJob> {
         trait_kind: field("trait_kind").unwrap_or_default(), // unwrap_or_default: same
         eval_set: field("eval_set"),
     })
-}
-
-fn now_ms() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0)
 }
 
 /// The exact bytes one ledger row occupies: compact JSON and its newline, built
@@ -668,7 +662,7 @@ impl TrainingJobBoard {
                 "event": "terminal",
                 "reason": "killed-by-reboot",
                 "local_id": id,
-                "at_ms": now_ms(),
+                "at_ms": EpochMs::now().millis(),
             }));
             // a registration without parseable ids cannot be resumed, only reported
             if let Some(orphan) = orphan_of(id, reg) {
@@ -734,7 +728,7 @@ impl TrainingJobBoard {
             "from_local_id": from.to_string(),
             "held_by": held_by,
             "attempt": attempt,
-            "at_ms": now_ms(),
+            "at_ms": EpochMs::now().millis(),
         }));
     }
 
@@ -746,7 +740,7 @@ impl TrainingJobBoard {
             "from_local_id": from.to_string(),
             "new_local_id": to.to_string(),
             "attempt": attempt,
-            "at_ms": now_ms(),
+            "at_ms": EpochMs::now().millis(),
         }));
     }
 
@@ -779,7 +773,7 @@ impl TrainingJobBoard {
             "base_model": job.base_model,
             "trait_kind": job.trait_kind,
             "eval_set": job.eval_set,
-            "at_ms": now_ms(),
+            "at_ms": EpochMs::now().millis(),
         }));
         self.jobs.insert(job.handle.local_id, job);
     }
@@ -836,7 +830,7 @@ impl TrainingJobBoard {
                 "handle": &job.handle,
                 "trigger_dispatch_id": job.trigger_dispatch_id,
                 "local_id": local_id.to_string(),
-                "at_ms": now_ms(),
+                "at_ms": EpochMs::now().millis(),
             }));
         }
         job

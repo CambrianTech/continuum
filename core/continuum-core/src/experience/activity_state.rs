@@ -20,6 +20,7 @@
 //! `saves: ["<binding>", ...]` (see [`crate::recipe::types::RecipeStep::saves`]) —
 //! the framework saves, the activity declares what. Who reads it: whoever resumes
 //! the activity — the reconciler on boot, a peer node seating its residents.
+use crate::time::EpochMs;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -91,13 +92,6 @@ impl WallActivityStateStore {
     }
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // JUSTIFIED unwrap_or: a pre-epoch clock stamps 0 — the bundle still carries its state
-}
-
 #[async_trait::async_trait]
 impl ActivityStateStore for WallActivityStateStore {
     async fn load(&self, room: &airc_lib::Room, kind: &str) -> Result<Option<ActivityStateRecord>, String> {
@@ -117,7 +111,8 @@ impl ActivityStateStore for WallActivityStateStore {
     ) -> Result<ActivityStateRecord, String> {
         let keys: Vec<String> = patch.keys().cloned().collect();
         let base = self.load(room, kind).await?;
-        let record = merged(base.as_ref(), kind, patch, now_ms());
+        // A pre-1970 clock reads 0 here: the bundle still carries its state.
+        let record = merged(base.as_ref(), kind, patch, EpochMs::now().millis());
         let body = serde_json::to_string(&record).map_err(|e| e.to_string())?; // ORM boundary: a wall record is airc's wire + store, read back by whoever resumes the activity
         self.airc
             .publish_wall_post_in(room, ACTIVITY_STATE_WALL_CATEGORY.to_string(), body, None)

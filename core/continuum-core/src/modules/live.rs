@@ -12,16 +12,14 @@
 //!
 //! Priority: Realtime — voice operations are time-critical.
 
+use crate::time::EpochMs;
 use crate::live::audio::buffer::AudioBufferPool;
 use crate::live::audio::resource_lifecycle::AudioResourceLifecycle;
 use crate::live::session::voice_service::VoiceService;
 use crate::live::transport::bridge_client::LiveKitAgentManager;
 use crate::live::{UtteranceEvent, VoiceParticipant};
 use crate::logging::TimingGuard;
-use crate::runtime::{
-    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
-    ServiceModule,
-};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::utils::params::Params;
 use crate::{log_error, log_info};
 use async_trait::async_trait;
@@ -184,7 +182,7 @@ async fn perception_ingest_drain(
             call_id = frame.call_id.as_str(),
             speaker = frame.speaker_id.as_str(),
             received_at_ms = frame.received_at_ms,
-            admission_delay_ms = crate::persona::recall_metadata::now_ms()
+            admission_delay_ms = EpochMs::now().millis()
                 .saturating_sub(frame.received_at_ms),
             viewers = viewers.len() as u64,
             "bridge receipt to perception fan-out (not remote capture latency)"

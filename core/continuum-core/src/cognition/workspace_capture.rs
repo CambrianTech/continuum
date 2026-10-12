@@ -15,18 +15,16 @@
 //! a write failure is logged and dropped, NEVER fails the cognition turn —
 //! observability is not load-bearing ([[substrate-is-a-good-citizen-on-the-host]]).
 
+use crate::time::EpochMs;
 use crate::routing::capped_appender::{CappedAppender, MAX_LOG_BYTES};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::workspace::{
-    Contribution, Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace,
-};
+use super::workspace::{Contribution, Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace};
 
 /// Bumped when the on-disk record shape changes (replay readers gate on it).
 /// v2 added per-faculty `timings` (the speed axis / dashboard feed).
@@ -186,12 +184,6 @@ impl JsonlWorkspaceCaptureSink {
         self
     }
 
-    fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
-    }
 }
 
 impl WorkspaceCaptureSink for JsonlWorkspaceCaptureSink {
@@ -204,7 +196,7 @@ impl WorkspaceCaptureSink for JsonlWorkspaceCaptureSink {
             cause_root: trace.cause.root(),
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA"),
             schema_version: SCHEMA_VERSION,
-            captured_at_ms: Self::now_ms(),
+            captured_at_ms: EpochMs::now().millis(),
             persona_id: self.persona_id,
             room_id: trace.room_id,
             world_state: &trace.world_state,

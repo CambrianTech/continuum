@@ -75,10 +75,7 @@ fn open_connection(path: &str, flags: OpenFlags) -> Result<Connection, String> {
 /// Adaptive memory management: adjust cache_size based on system memory pressure.
 /// Called before operations, rate-limited to once per 10 seconds via atomic timestamp.
 fn apply_memory_pressure(conn: &Connection, last_check: &AtomicU64) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::time::EpochMs::now().secs();
     let last = last_check.load(Ordering::Relaxed);
     if now.saturating_sub(last) < 10 {
         return;
