@@ -1,5 +1,7 @@
 # TS Persona Cognition Deletion Ratchet
 
+> **Retired 2026-10-03.** The TypeScript it measured moved to `legacy/src` (the quarantined Node MVP), so its workflows could only fail; they and their scripts were deleted (card 5c3204ba). The Rust core owns persona behaviour. This page is kept as history.
+
 **Lane F** (PR #1084 alpha workstreams). Enforces the Rust-first alpha
 contract (PR #1070, `docs/planning/ALPHA-GAP-ANALYSIS.md` — "Rust core
 owns behavior"): every PR touching the persona surface must keep the
