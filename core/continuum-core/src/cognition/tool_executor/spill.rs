@@ -114,6 +114,35 @@ pub fn whole_or_handle(full: String, share: usize, persona_id: Uuid) -> Fitted {
     }
 }
 
+/// Save `content` exactly as given and name its custody: `Whole{handle}` (it resolves
+/// byte-identical through `tool/output`), or `Unsaved` when the save failed (probed). Working
+/// memory's results ring keeps a batch's rendered text; this saves THAT text, so a pointer the
+/// ring leaves later resolves to what the mind saw, every call of the batch included (Astra on
+/// #4963: one call's handle for a multi-call batch implied the rest were recoverable).
+pub fn retain(persona_id: Uuid, content: &str) -> ResultCustody {
+    match spill_root() {
+        Ok(root) => retain_in(&root, persona_id, content),
+        Err(e) => unretained(content, &e),
+    }
+}
+
+fn retain_in(root: &Path, persona_id: Uuid, content: &str) -> ResultCustody {
+    match spill_in(root, persona_id, content) {
+        Ok(r) => ResultCustody::Whole { handle: r.handle },
+        Err(e) => unretained(content, &e),
+    }
+}
+
+fn unretained(content: &str, error: &std::io::Error) -> ResultCustody {
+    crate::probe!(
+        class = "tool.output.unsaved",
+        chars = %content.chars().count(),
+        error = %error,
+        "a batch's rendered result could not be saved; working memory keeps it whole"
+    );
+    ResultCustody::Unsaved
+}
+
 /// Resolve the spill file for `persona_id`/`handle`, rejecting any handle that
 /// isn't a bare hex stem — that is the path-traversal guard (no `/`, no `..`, no
 /// absolute path can survive the hex-only check), so we never canonicalize or
@@ -405,6 +434,25 @@ mod tests {
         // Multibyte bodies measure in chars, the unit the share is in, and never split.
         let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona).into_parts();
         assert!(!shown.contains('α'));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // what this catches: a multi-call batch that one call's handle claimed to cover (Astra
+    // on #4963). The batch's rendered text, two distinct results inside it, is saved as one
+    // unit and resolves byte-identical, both results included.
+    #[test]
+    fn a_batch_is_retained_whole_both_results_byte_identical() {
+        let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
+        let persona = Uuid::new_v4();
+        let batch = "code/read(a.rs)\nResult:\nfn a() {}\n\ncode/run(t)\nResult:\nerror[E0601]\n";
+        let ResultCustody::Whole { handle } = retain_in(&tmp, persona, batch) else {
+            panic!("the batch is saved")
+        };
+        let saved = std::fs::read_to_string(resolve_in(&tmp, persona, &handle).unwrap()).unwrap();
+        assert_eq!(saved, batch, "both results, byte-identical");
+        let blocked = tmp.join("not-a-dir");
+        std::fs::write(&blocked, b"x").unwrap();
+        assert_eq!(retain_in(&blocked, persona, batch), ResultCustody::Unsaved);
         std::fs::remove_dir_all(&tmp).ok();
     }
 

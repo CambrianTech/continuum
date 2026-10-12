@@ -6448,6 +6448,7 @@ mod tests {
                     }],
                     report,
                     Some(result_rooms[step]),
+                    crate::ai::types::ResultCustody::Unsaved,
                 );
                 let mut ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
                     room,
@@ -8177,6 +8178,7 @@ mod tests {
                 }],
                 &grep_result,
                 None,
+                crate::ai::types::ResultCustody::Unsaved,
             );
 
             let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter)

@@ -724,8 +724,12 @@ pub async fn apply_act(
     // ALONGSIDE the typed acts, so `active_act()`/`recent_acts()` read the tool result
     // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
     // one-time recency rendering; `acts` are the id-correlated typed observations.
+    // The ring keeps this exact text; save THAT, so the pointer it leaves when it collapses
+    // resolves to what she saw, every call of the batch included.
+    let custody =
+        crate::cognition::tool_executor::spill::retain(body.persona_id, observation.trim());
     body.working_memory
-        .record_receipt_typed(&acts, &observation, Some(room_id));
+        .record_receipt_typed(&acts, &observation, Some(room_id), custody);
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }

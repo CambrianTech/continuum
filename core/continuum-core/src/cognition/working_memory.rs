@@ -563,7 +563,7 @@ impl WorkingMemory {
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
     pub fn record_receipt(&self, result: &str) {
-        self.record_receipt_inner(result, Vec::new(), None);
+        self.record_receipt_inner(result, Vec::new(), None, None);
     }
 
     /// TYPED sibling of [`record_receipt`](Self::record_receipt): store the same
@@ -576,8 +576,16 @@ impl WorkingMemory {
     /// `room` scopes the archived head to the room the act was FOR (the act
     /// path passes it; legacy text callers don't have it) — the steps ledger
     /// renders this-room acts first (CAUSAL-MEMORY-GRAPH.md slice B).
-    pub fn record_receipt_typed(&self, acts: &[Observation], rendered: &str, room: Option<Uuid>) {
-        self.record_receipt_inner(rendered, acts.to_vec(), room);
+    /// `custody` is where `rendered` itself is saved (`spill::retain`): the handle the results
+    /// ring's pointer names when this entry collapses. `Unsaved` entries never collapse.
+    pub fn record_receipt_typed(
+        &self,
+        acts: &[Observation],
+        rendered: &str,
+        room: Option<Uuid>,
+        custody: crate::ai::types::ResultCustody,
+    ) {
+        self.record_receipt_inner(rendered, acts.to_vec(), room, custody.handle().map(str::to_owned));
     }
 
     /// Shared body: mint the monotonic `#seq`, keep the FULL latest result, and push
@@ -585,7 +593,13 @@ impl WorkingMemory {
     /// plus the (possibly empty) typed acts. One entry per batch so `recent()` stays
     /// byte-stable (a multi-call batch renders as one receipt exactly as before);
     /// `acts` carries every call's typed observation for the typed consumers.
-    fn record_receipt_inner(&self, result: &str, acts: Vec<Observation>, room: Option<Uuid>) {
+    fn record_receipt_inner(
+        &self,
+        result: &str,
+        acts: Vec<Observation>,
+        room: Option<Uuid>,
+        handle: Option<String>,
+    ) {
         let a = result.trim();
         if a.is_empty() {
             return;
@@ -618,9 +632,6 @@ impl WorkingMemory {
             if label.is_empty() {
                 label.push_str("unrecorded");
             }
-            let handle = acts
-                .iter()
-                .find_map(|o| o.output.result.custody.handle().map(str::to_owned));
             let mut rr = self.recent_results.lock();
             rr.push_back((seq, room, tail, label, handle));
             // NO mid-settle eviction (2026-08-24, the third head-rotation): evicting
@@ -1365,33 +1376,40 @@ impl WorkingMemory {
             return;
         }
         let target = cap / 2;
-        while total > target && rr.len() > 1 {
-            if let Some((eseq, room, evicted, elabel, ehandle)) = rr.pop_front() {
-                total -= evicted.chars().count() + 1;
-                // COLLAPSE, never delete: the evicted result leaves a queryable
-                // one-line pointer so she can expand or re-run deliberately
-                // instead of forgetting it ever happened.
-                let mut ptrs = self.evicted_pointers.lock();
-                let attribution = ResultAttribution {
-                    seq: eseq,
-                    room,
-                    operation: Some(&elabel),
-                    spill_handle: ehandle.as_deref(),
-                };
-                ptrs.push_back(match &ehandle {
-                    Some(_) => format!("[result {attribution} — collapsed]"),
-                    // No handle: its save failed (or it predates saving). Said as what it
-                    // is; re-running a tool is a new result, not this one.
-                    None => format!(
-                        "[result {attribution}, {} chars — collapsed from view; it was never \
-                         saved, so it cannot be reopened]",
-                        evicted.chars().count()
-                    ),
-                });
-                while ptrs.len() > 12 {
-                    ptrs.pop_front();
-                }
+        // Oldest first, SAVED entries collapse to pointers until the ring is under target. An
+        // UNSAVED entry (its save failed) never collapses: nothing else holds its bytes, so
+        // custody outranks the share (Astra on #4963). The newest entry always stays.
+        let mut survivors = VecDeque::with_capacity(rr.len());
+        while let Some(entry) = rr.pop_front() {
+            let (eseq, room, evicted, elabel, ehandle) = entry;
+            let newest = rr.is_empty() && survivors.is_empty();
+            let Some(handle) = ehandle.as_deref().filter(|_| total > target && !newest) else {
+                survivors.push_back((eseq, room, evicted, elabel, ehandle));
+                continue;
+            };
+            total -= evicted.chars().count() + 1;
+            // COLLAPSE, never delete: the evicted result leaves a one-line pointer whose
+            // handle resolves to exactly what she saw.
+            let attribution = ResultAttribution {
+                seq: eseq,
+                room,
+                operation: Some(&elabel),
+                spill_handle: Some(handle),
+            };
+            let mut ptrs = self.evicted_pointers.lock();
+            ptrs.push_back(format!("[result {attribution} — collapsed]"));
+            while ptrs.len() > 12 {
+                ptrs.pop_front();
             }
+        }
+        *rr = survivors;
+        if total > cap {
+            crate::probe!(
+                class = "wm.results.unsaved_over_share",
+                total = %total,
+                cap = %cap,
+                "results whose save failed are kept whole over the results share"
+            );
         }
     }
 
@@ -1787,6 +1805,17 @@ mod rebuilt_marker {
 mod tests {
     use super::*;
 
+    /// A receipt saved under `handle` (what `spill::retain` returns in production).
+    fn saved(handle: &str) -> crate::ai::types::ResultCustody {
+        crate::ai::types::ResultCustody::Whole { handle: handle.into() }
+    }
+
+    /// Record `text` as a saved receipt with no typed acts: the shape a settlement collapse
+    /// acts on. An unsaved receipt never collapses.
+    fn record_saved(wm: &WorkingMemory, text: &str) {
+        wm.record_receipt_typed(&[], text, None, saved("ring-test"));
+    }
+
     // what this catches: her collapsed thought keeping the re-orientation and losing
     // the decision (Kimi, 2026-10-04: "keep the end"). The decision survives, the
     // marker still names the collapse for the framing-echo detector, short thoughts
@@ -1825,6 +1854,33 @@ mod tests {
         );
     }
 
+    // what this catches: an unsaved result dropped at collapse (Astra on #4963 at 4840af859:
+    // a pointer saying "never saved" documents the loss instead of preventing it). Its save
+    // failed, so nothing else holds its bytes: it stays WHOLE through settlement and restore
+    // while the saved results around it collapse to pointers.
+    #[test]
+    fn an_unsaved_result_keeps_its_bytes_through_settlement_and_restore() {
+        let wm = WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        let cap = wm.budget().recent_results_chars();
+        let unsaved = format!("UNSAVED {}", "u".repeat(cap / 2));
+        wm.record_receipt_typed(&[], &unsaved, None, crate::ai::types::ResultCustody::Unsaved);
+        for _ in 0..4 {
+            record_saved(&wm, &"s".repeat(cap / 2));
+        }
+        wm.record_settlement("done");
+        let whole = |m: &WorkingMemory| m.recent_results_messages().iter().any(|r| r.ends_with(&unsaved));
+        assert!(whole(&wm), "kept whole through settlement");
+        assert!(
+            wm.recent_results_messages().join("\n").contains("ring-test — collapsed"),
+            "the saved ones around it collapsed"
+        );
+        let restored = WorkingMemory::new(8);
+        restored.set_served_window(16_384);
+        restored.restore(wm.snapshot());
+        assert!(whole(&restored), "and through restore");
+    }
+
     // what this catches: the Anwen regression (2026-08-16). Act results used to
     // live only in the K=1 `last_action` slot (any act overwrites) and the
     // settlement-gated pinned block — so a compile error vanished the moment she
@@ -1835,9 +1891,9 @@ mod tests {
     #[test]
     fn recent_results_survive_subsequent_acts_and_stay_bounded() {
         let wm = WorkingMemory::new(8);
-        wm.record_receipt("[action] code/run(sol.rs) error[E0601]: `main` function not found");
-        wm.record_receipt("[action] code/list() sol.rs sol2.rs");
-        wm.record_receipt("[action] code/tree() workspace/");
+        record_saved(&wm, "[action] code/run(sol.rs) error[E0601]: `main` function not found");
+        record_saved(&wm, "[action] code/list() sol.rs sol2.rs");
+        record_saved(&wm, "[action] code/tree() workspace/");
         let block = wm.recent_results_messages().join("\n");
         assert!(
             block.contains("E0601"),
@@ -1852,7 +1908,7 @@ mod tests {
         // Whole results an eighth of the share each, so several fit and the collapse is visible.
         let unit = (cap / 8).max(1);
         for _ in 0..8 {
-            wm.record_receipt(&"x".repeat(unit));
+            record_saved(&wm, &"x".repeat(unit));
         }
         assert!(
             wm.recent_results_messages().join("\n").contains("E0601"),
@@ -1880,9 +1936,9 @@ mod tests {
             cap / 2
         );
         let head_after_collapse = wm.recent_results_messages().get(1).cloned();
-        wm.record_receipt("[action] code/read(a.rs) fine");
+        record_saved(&wm, "[action] code/read(a.rs) fine");
         wm.record_settlement("one");
-        wm.record_receipt("[action] code/read(b.rs) fine");
+        record_saved(&wm, "[action] code/read(b.rs) fine");
         wm.record_settlement("two");
         assert_eq!(
             wm.recent_results_messages().get(1).cloned(),
@@ -2195,7 +2251,7 @@ mod tests {
         let rendered = "code/search({\"query\":\"needle\"})\nResult:\nmatch at foo.rs:42\n\n";
 
         let typed = WorkingMemory::new(8);
-        typed.record_receipt_typed(std::slice::from_ref(&obs), rendered, None);
+        typed.record_receipt_typed(std::slice::from_ref(&obs), rendered, None, crate::ai::types::ResultCustody::Unsaved);
         let legacy = WorkingMemory::new(8);
         legacy.record_receipt(rendered);
         assert_eq!(
@@ -2230,7 +2286,7 @@ mod tests {
         let mut second = obs.clone();
         second.call.id = "call-43".into();
         second.output.result.tool_use_id = second.call.id.clone();
-        typed.record_receipt_typed(&[obs.clone(), second], "two results", None);
+        typed.record_receipt_typed(&[obs.clone(), second], "two results", None, crate::ai::types::ResultCustody::Unsaved);
         let (seq, _) = typed.active_action_full().unwrap();
         let batch = typed.active_action_observations(seq);
         assert_eq!(batch.len(), 2);
@@ -2242,7 +2298,7 @@ mod tests {
         typed.set_scope(None);
         typed.record_settlement("observed");
         assert!(typed.active_action_observations(seq).is_empty());
-        typed.record_receipt_typed(&[obs], "new result", None);
+        typed.record_receipt_typed(&[obs], "new result", None, crate::ai::types::ResultCustody::Unsaved);
         assert!(typed.active_action_observations(seq).is_empty());
         let (new_seq, _) = typed.active_action_full().unwrap();
         assert_eq!(typed.active_action_observations(new_seq).len(), 1);
@@ -2291,11 +2347,13 @@ mod tests {
             ],
             "same result",
             Some(room_a),
+            saved("search-output"),
         );
         wm.record_receipt_typed(
             &[observation("b1", "code/run", None)],
             "same result",
             Some(room_b),
+            crate::ai::types::ResultCustody::Unsaved,
         );
         // #2 is the active result: it renders whole as the full-result message below, so
         // the ring shows only #1 rather than paying for #2 twice.
@@ -2338,7 +2396,7 @@ mod tests {
         // Actual settlement collapses old results; its pointers must still tell
         // the mind which activity and operation the retained handle belongs to.
         for _ in 0..4 {
-            restored.record_receipt(&"x".repeat(restored.budget().recent_results_chars()));
+            record_saved(&restored, &"x".repeat(restored.budget().recent_results_chars()));
         }
         restored.record_settlement("reported");
         assert!(restored.recent_results_messages().join("\n").contains(
@@ -2355,11 +2413,12 @@ mod tests {
         memory.set_served_window(16_384);
         let mut read_observation = observation("read-274", "code/read", Some("read-274-output"));
         read_observation.output.result.content = read.clone();
-        memory.record_receipt_typed(&[read_observation], &read, Some(room_a));
+        memory.record_receipt_typed(&[read_observation], &read, Some(room_a), saved("read-274-output"));
         memory.record_receipt_typed(
             &[observation("poll-next", "shell/poll", None)],
             "process still running",
             Some(room_a),
+            saved("poll-next-output"),
         );
         let assert_whole_or_handle = |memory: &WorkingMemory| {
             let view = memory.recent_results_messages().join("\n");
