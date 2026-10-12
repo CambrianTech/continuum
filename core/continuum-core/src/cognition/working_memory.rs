@@ -37,7 +37,7 @@
 //! working memory SELF-ACTIVATES only where thinking is enabled — "reason when it
 //! helps, remember what you reasoned." No config flag needed.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -295,6 +295,12 @@ pub struct WorkingMemory {
     /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
     /// message ahead of the recent-results banner.
     evicted_pointers: Mutex<VecDeque<(String, String)>>,
+    /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
+    /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
+    /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
+    /// what it points at stays reachable, whatever the entries' capacity dropped (Codex on
+    /// #4987). Pruned to the live receipts at every publish.
+    receipt_children: Mutex<BTreeMap<String, Vec<String>>>,
     /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
     /// still inside the act→observe loop that produced it and hasn't yet spoken. The
     /// full raw result exists to answer "what next" the moment the hands fetch it; once
@@ -427,6 +433,43 @@ pub struct VolatileSnapshot {
     /// lost its only handle on restart). Empty on snapshots written before this field.
     #[serde(default)]
     pub evicted_pointers: Vec<(String, String)>,
+    /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
+    /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
+    /// written before this field.
+    #[serde(default)]
+    pub receipt_children: BTreeMap<String, Vec<String>>,
+}
+
+/// The key a receipt's dependencies are filed under: its saved handle, or `seq:N` for a
+/// receipt whose save failed (it is held whole in the ring and never collapses).
+fn receipt_key(seq: u64, handle: Option<&str>) -> String {
+    handle.map_or_else(|| format!("seq:{seq}"), str::to_owned)
+}
+
+/// EVERY handle a mind can still reach from what it holds: each retained receipt's own, each
+/// collapsed pointer's, and the per-call results each of those receipts points at. The one
+/// owner of that set: working memory publishes it live, and eviction reads the same set from
+/// the persisted checkpoint (`persona_workspace::persisted_result_handles`).
+pub(crate) fn reachable_handles<'a>(
+    recent_results: impl IntoIterator<Item = &'a (u64, Option<Uuid>, String, String, Option<String>)>,
+    evicted_pointers: impl IntoIterator<Item = &'a (String, String)>,
+    receipt_children: &BTreeMap<String, Vec<String>>,
+) -> HashSet<String> {
+    let mut roots: Vec<String> = recent_results
+        .into_iter()
+        .map(|(seq, _, _, _, handle)| receipt_key(*seq, handle.as_deref()))
+        .collect();
+    roots.extend(evicted_pointers.into_iter().map(|(_, handle)| handle.clone()));
+    let mut reachable: HashSet<String> = HashSet::new();
+    for root in roots {
+        if let Some(children) = receipt_children.get(&root) {
+            reachable.extend(children.iter().cloned());
+        }
+        if !root.starts_with("seq:") {
+            reachable.insert(root);
+        }
+    }
+    reachable
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -474,6 +517,7 @@ impl WorkingMemory {
             receipt_heads: Mutex::new(VecDeque::new()),
             recent_results: Mutex::new(VecDeque::new()),
             evicted_pointers: Mutex::new(VecDeque::new()),
+            receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
         }
     }
@@ -638,6 +682,13 @@ impl WorkingMemory {
             }
             if label.is_empty() {
                 label.push_str("unrecorded");
+            }
+            let children: Vec<String> = acts
+                .iter()
+                .filter_map(|act| act.output.result.custody.handle().map(str::to_owned))
+                .collect();
+            if !children.is_empty() {
+                self.receipt_children.lock().insert(receipt_key(seq, handle.as_deref()), children);
             }
             let mut rr = self.recent_results.lock();
             rr.push_back((seq, room, tail, label, handle));
@@ -879,6 +930,7 @@ impl WorkingMemory {
                 .map(|d| d.label.clone())
                 .collect(),
             evicted_pointers: self.evicted_pointers.lock().iter().cloned().collect(),
+            receipt_children: self.receipt_children.lock().clone(),
         }
     }
 
@@ -933,6 +985,7 @@ impl WorkingMemory {
             ptrs.clear();
             ptrs.extend(snap.evicted_pointers);
         }
+        *self.receipt_children.lock() = snap.receipt_children;
         // Collapse only against the REAL window. Before set_served_window the budget is the
         // floor (cap 1,536 measured at restore on the 5090), which would fold results the
         // served window holds; the next settlement collapses against the window she is
@@ -1374,22 +1427,19 @@ impl WorkingMemory {
     /// collapsed pointers), so disk-pressure eviction never deletes one (card 9197cd01).
     /// The whole set, replaced, so nothing can drift.
     fn publish_live_handles(&self) {
-        let mut handles: std::collections::HashSet<String> = self
-            .recent_results
-            .lock()
+        let rr = self.recent_results.lock();
+        let ptrs = self.evicted_pointers.lock();
+        let mut children = self.receipt_children.lock();
+        // Dependencies live exactly as long as their receipt: drop those of receipts that
+        // left both the ring and the pointer ring.
+        let receipts: HashSet<String> = rr
             .iter()
-            .filter_map(|(_, _, _, _, handle)| handle.clone())
+            .map(|(seq, _, _, _, handle)| receipt_key(*seq, handle.as_deref()))
+            .chain(ptrs.iter().map(|(_, handle)| handle.clone()))
             .collect();
-        handles.extend(self.evicted_pointers.lock().iter().map(|(_, handle)| handle.clone()));
-        // Each call's own saved result: a receipt shows a pointer to it, so it is referenced
-        // for as long as the entry holding that act is (card 12b080c3).
-        handles.extend(
-            self.entries
-                .lock()
-                .iter()
-                .flat_map(|entry| entry.acts.iter())
-                .filter_map(|act| act.output.result.custody.handle().map(str::to_owned)),
-        );
+        children.retain(|key, _| receipts.contains(key));
+        let handles = reachable_handles(rr.iter(), ptrs.iter(), &children);
+        drop((rr, ptrs, children));
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
     }
 
@@ -1937,6 +1987,60 @@ mod tests {
         assert!(!live(&file), "released when the mind drops");
     }
 
+    // what this catches (Codex on #4987): per-call results reachable only while the ENTRY that
+    // carried their acts survives. Entries roll over at capacity while the receipt that points
+    // at those results stays in the ring, then collapses to a pointer, then is checkpointed and
+    // restored; at every step each child stays reachable, because it belongs to the receipt.
+    #[test]
+    fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
+        use crate::ai::types::{ResultCustody, ToolCall, ToolResult};
+        use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+        let id = || format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let act = |handle: &str| Observation {
+            call: ToolCall { id: handle.into(), name: "code/read".into(), input: serde_json::json!({}) },
+            output: ToolOutput {
+                image: None,
+                additional_images: None,
+                result: ToolResult {
+                    tool_use_id: handle.into(),
+                    content: format!("[saved as output `{handle}`]"),
+                    is_error: None,
+                    custody: ResultCustody::Pointer { handle: handle.to_owned() },
+                },
+                verb: ToolVerb::classify("code/read"),
+                paths: Vec::new(),
+                verdict: Default::default(),
+            },
+            status: ActStatus::Executed,
+        };
+        let live = |h: &str| {
+            crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")))
+        };
+        let (receipt, children) = (id(), [id(), id()]);
+        let wm = WorkingMemory::new(2); // two entries: the third receipt rolls the first out
+        wm.set_served_window(16_384);
+        let cap = wm.budget().recent_results_chars();
+        wm.record_receipt_typed(&[act(&children[0]), act(&children[1])], &"r".repeat(cap / 2), None, saved(&receipt));
+        for _ in 0..3 {
+            record_saved(&wm, &"s".repeat(cap / 2));
+        }
+        assert!(!wm.entries.lock().iter().any(|e| e.acts.iter().any(|a| a.call.id == children[0])), "its entry rolled out");
+        assert!(children.iter().all(|c| live(c)), "the receipt still holds its children");
+
+        wm.record_settlement("done");
+        assert!(wm.recent_results_messages().join("\n").contains(&format!("{receipt} — collapsed")), "collapsed to a pointer");
+        assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
+
+        let snapshot = wm.snapshot();
+        let checkpointed = reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children);
+        assert!(children.iter().all(|c| checkpointed.contains(c)), "the checkpoint names each child");
+        drop(wm);
+        assert!(children.iter().all(|c| !live(c)), "released with the mind");
+        let restored = WorkingMemory::new(2);
+        restored.restore(snapshot);
+        assert!(children.iter().all(|c| live(c)), "and held again by the restored mind");
+    }
+
     // what this catches (card 12b080c3): a call's own saved result, shown to her as a pointer
     // inside its receipt, left out of the live set, so eviction could delete it while the
     // receipt still names it, and the act seam's pin released before it was published.
@@ -2357,6 +2461,7 @@ mod tests {
             recent_results: Vec::new(),
             handoff: None,
             evicted_pointers: Vec::new(),
+            receipt_children: Default::default(),
         });
         assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
         let q = quiet.pinned_facts();

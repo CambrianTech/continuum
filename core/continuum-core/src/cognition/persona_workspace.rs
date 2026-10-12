@@ -2024,11 +2024,11 @@ fn result_handles_at(
         load_volatile_at(path)?
             .map(|persisted| {
                 let wm = persisted.wm;
-                wm.recent_results
-                    .into_iter()
-                    .filter_map(|(_, _, _, _, handle)| handle)
-                    .chain(wm.evicted_pointers.into_iter().map(|(_, handle)| handle))
-                    .collect()
+                crate::cognition::working_memory::reachable_handles(
+                    &wm.recent_results,
+                    &wm.evicted_pointers,
+                    &wm.receipt_children,
+                )
             })
             .unwrap_or_default(),
     );

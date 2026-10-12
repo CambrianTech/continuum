@@ -246,11 +246,11 @@ the one-prompt constraint lifts, it is encoding the constraint instead of the in
    save goes through one `LivePin`, one per batch: the handle (a content hash) enters the
    live set before its file is written, and eviction (`evict_unless_live`) decides and deletes
    under that same lock. The act seam holds the batch's pin until working memory has recorded
-   the batch, and working memory publishes the receipt's handle and each call's own.
-   **Still open, owner Cormac (card 12b080c3):** a call's custody is `#[serde(skip)]` on
-   `ToolResult`, so after a restart the checkpoint names a receipt's handle but not the
-   per-call handles its saved text points at. A pointer inside a saved receipt has to keep its
-   target alive as long as the receipt is.
+   the batch. A receipt's per-call results are its DEPENDENCIES (`receipt_children`, keyed by
+   the receipt and checkpointed with it): they are reachable exactly as long as the receipt is,
+   in the ring or collapsed to a pointer, across a restart, whatever the entries' capacity
+   dropped. `working_memory::reachable_handles` is the one owner of that set, for the live
+   publish and the checkpoint eviction reads alike (Codex on #4987).
 
 ## Forbidden moves
 
