@@ -1245,7 +1245,7 @@ impl TrainingTriggerState {
             }
             DispatchPhase::Parked { wait } => {
                 let free = crate::genome::fine_tuning::engine_lora_adapter::governed_training_free("genome-train:wake");
-                let engine = crate::inference::engine_slots::current_stamp();
+                let engine = crate::inference::engine_slots::live_lane_build();
                 if !wait.wakes(free, engine.as_deref()) {
                     return Ok(DispatchResult::Empty);
                 }

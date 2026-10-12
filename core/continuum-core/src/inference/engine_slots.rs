@@ -277,13 +277,20 @@ pub fn resolve(root: &Path, operator_override: Option<&str>, current: Option<&'s
     Resolved::Path
 }
 
-/// The current engine's stamp (`<commit>:<backend>`), when this node installs engines into
-/// slots: the identity a measurement was taken against. `None` on a pre-slot install, where an
-/// engine change cannot be told apart and only capacity wakes a parked job.
-pub fn current_stamp() -> Option<String> {
+/// The build (`<commit>:<backend>` stamp) of the engine binary `bin`: the stamp of the slot it was
+/// launched from. `None` for a binary outside the slots (a pre-slot install), where one engine
+/// cannot be told from another.
+pub fn stamp_of_bin(bin: &Path) -> Option<String> {
     let home = crate::paths::continuum_home().ok()?;
     let root = root(&home).ok()?;
-    slot_stamp(&root, current_slot(&root)?)
+    slot_stamp(&root, slot_of(&root, bin)?)
+}
+
+/// The build of the engine the live lane RUNS (not the slot most recently promoted: a lane
+/// relaunches onto a new engine after it is installed): the identity a training measurement was
+/// taken against (card de9e1342).
+pub fn live_lane_build() -> Option<String> {
+    stamp_of_bin(crate::inference::lane_registry::live_lane()?.engine_bin.as_deref()?)
 }
 
 /// A slot's stamp, trimmed, when it has one.
