@@ -99,7 +99,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             supported_base_model_prefixes: vec![],
             // Apple's MLX path — the coordinator routes here only on a
             // host whose probed HardwareProfile reports a Metal device.
-            requires: TrainerHardware::Metal,
+            requires: TrainerHardware::AppleSilicon,
             trains_on_resident_weights: false,
         }
     }

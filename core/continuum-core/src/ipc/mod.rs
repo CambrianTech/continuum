@@ -3497,8 +3497,8 @@ pub fn start_server(
         // MlxLoraFineTuner — the REAL owned trainer (#32): Apple's
         // mlx_lm.lora on the Metal GPU → forge-custodian converts to a
         // GGUF-lora gene → llama-server serves it. Always registered; its
-        // capability declares `requires: TrainerHardware::Metal`, so the
-        // coordinator routes here only on a Metal host, and create_job
+        // capability declares `requires: TrainerHardware::AppleSilicon`, so the
+        // coordinator routes here only on Apple Silicon, and create_job
         // fails loud (never silently) when Metal / the mlx python env /
         // a base model / examples are missing. Without this slot the live
         // registry held only the synthetic Candle skeleton + conditional
