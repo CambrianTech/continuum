@@ -178,7 +178,7 @@ impl PersonaResolver for FilesystemPersonaResolver {
             .map(|a| a.provider_id().to_string());
         tracing::info!(
             persona = name,
-            persona_id_prefix = %&persona_id.to_string()[..8],
+            persona_id_prefix = %&crate::id_resolve::short(persona_id),
             adapter = ?adapter_id,
             "FilesystemPersonaResolver: resolved persona"
         );

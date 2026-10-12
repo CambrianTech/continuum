@@ -644,7 +644,7 @@ impl ServiceModule for VoiceModule {
                     "module",
                     "voice_synthesize_handle",
                     "Stored handle {} ({} samples, {}ms, {})",
-                    &info.handle[..8],
+                    crate::id_resolve::short_str(&info.handle),
                     info.sample_count,
                     info.duration_ms,
                     info.adapter
@@ -698,7 +698,7 @@ impl ServiceModule for VoiceModule {
                     "module",
                     "voice_play_handle",
                     "Played handle {} into call {} for user {} ({} samples, {}ms)",
-                    &handle[..8],
+                    crate::id_resolve::short_str(&handle),
                     call_id,
                     user_id,
                     sample_count,

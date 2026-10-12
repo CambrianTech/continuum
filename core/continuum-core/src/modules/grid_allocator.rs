@@ -486,7 +486,7 @@ impl Inner {
             .allocation
             .nodes
             .iter()
-            .map(|n| format!("{}:{}", &n.node.to_string()[..8], n.seats))
+            .map(|n| format!("{}:{}", &crate::id_resolve::short(n.node), n.seats))
             .collect();
         crate::probe!(
             class = "grid.allocation.published",

@@ -249,7 +249,7 @@ pub(crate) fn render_room_content(text: &str, media: &[crate::persona::channel_i
 /// words. Short ids because that is how the board renders them; the typed event
 /// retains the full ids for her hands.
 pub fn render_room_work(work: &RoomWork, actor: uuid::Uuid) -> String {
-    let short = |id: uuid::Uuid| id.to_string()[..8].to_string();
+    let short = |id: uuid::Uuid| crate::id_resolve::short(id);
     match work {
         RoomWork::Reviewed { card_id, outcome, reviewer, .. } => format!(
             "[board fact] review on card {}: {:?} (reviewer {})",

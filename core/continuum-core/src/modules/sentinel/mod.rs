@@ -102,7 +102,7 @@ impl SentinelModule {
 
     /// Generate a unique handle ID
     fn generate_handle_id() -> String {
-        uuid::Uuid::new_v4().to_string()[..8].to_string()
+        crate::id_resolve::short(uuid::Uuid::new_v4())
     }
 
     /// Get logs directory for a handle

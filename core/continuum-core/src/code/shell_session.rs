@@ -396,7 +396,7 @@ impl ShellSession {
             "code",
             "shell",
             "Execution {} started: {}",
-            &execution_id[..8],
+            crate::id_resolve::short_str(&execution_id),
             command
         );
         Ok(execution_id)
@@ -1101,7 +1101,7 @@ async fn run_shell_command(
                     "code",
                     "shell",
                     "Execution {} finished: exit={} cmd={}",
-                    &s.id[..8],
+                    crate::id_resolve::short_str(&s.id),
                     s.exit_code.unwrap_or(-1), // killed/no-status path reads as conventional -1 in the error line
                     &s.command
                 );
@@ -1489,14 +1489,14 @@ mod tests {
         // Poll until finished
         // Short handles must round-trip to the full ID and cannot cross sessions.
         let other = ShellSession::new("other", "p2", dir.path()).unwrap();
-        assert!(other.get_execution_state(&exec_id[..8]).is_err());
+        assert!(other.get_execution_state(crate::id_resolve::short_str(&exec_id)).is_err());
         assert!(other.get_execution_state(&exec_id).is_err());
-        assert!(session.get_watch_handles(&exec_id[..8]).is_ok());
-        assert_eq!(session.set_sentinel(&exec_id[..8], &[]).unwrap(), 0);
+        assert!(session.get_watch_handles(crate::id_resolve::short_str(&exec_id)).is_ok());
+        assert_eq!(session.set_sentinel(crate::id_resolve::short_str(&exec_id), &[]).unwrap(), 0);
         let mut all_stdout = Vec::new();
         loop {
             std::thread::sleep(Duration::from_millis(50));
-            let poll = session.poll(&exec_id[..8]).unwrap();
+            let poll = session.poll(crate::id_resolve::short_str(&exec_id)).unwrap();
             assert_eq!(poll.execution_id, exec_id);
             all_stdout.extend(poll.new_stdout);
             if poll.finished {
@@ -1533,7 +1533,7 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
 
         // Kill it
-        session.kill(&exec_id[..8]).unwrap();
+        session.kill(crate::id_resolve::short_str(&exec_id)).unwrap();
 
         // Poll should show killed
         std::thread::sleep(Duration::from_millis(200));

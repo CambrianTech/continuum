@@ -260,7 +260,7 @@ mod tests {
         let running = |s: &ShellSession, id: &str| s.get_execution_state(id);
         let by_full = state.with_execution("kimi", &exec, running).expect("still reachable after 5 re-roots");
         assert_eq!(by_full.lock().unwrap().status, crate::code::shell_types::ShellExecutionStatus::Running);
-        let prefix = &exec[..8];
+        let prefix = crate::id_resolve::short_str(&exec);
         assert!(state.with_execution("kimi", prefix, running).is_ok(), "a unique prefix resolves across sessions");
         assert!(
             matches!(state.with_execution("mara", &exec, running), Err(ExecutionLookup::NoSession)),

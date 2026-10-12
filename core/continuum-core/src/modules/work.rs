@@ -2394,7 +2394,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
     let title = crate::commands::benchmark::review_card_title(parent.as_uuid(), &instance, &owner);
-    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
+    let p8 = crate::id_resolve::short(parent.as_uuid());
     let body = format!(
         "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \
          eyes: READ-ONLY. Do not edit their tree.\n\n\
@@ -2441,7 +2441,7 @@ async fn open_room_review_card(
                 .map(|rt| rt.agent_name().to_string())
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
-    let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
+    let p8 = crate::id_resolve::short(parent.as_uuid());
     let title: String = format!("review: {}", card.title).chars().take(160).collect();
     let body = format!(
         "Review {owner}'s work on card {p8} (\"{}\"). Read the latest submission          (work/submission) and the change it carries, judge it against the card, then give          your verdict with work/review (passed or failed, with evidence). This room's review          policy decides how many passing reviews finish the card and whether the author may          review her own work.",
@@ -4597,7 +4597,7 @@ mod tests {
             .await
             .expect("part the academy");
 
-        let prefix = card.as_uuid().simple().to_string()[..8].to_string();
+        let prefix = crate::id_resolve::short(card.as_uuid());
         let full_id = card.as_uuid().to_string();
         let before = airc
             .subscription_set()

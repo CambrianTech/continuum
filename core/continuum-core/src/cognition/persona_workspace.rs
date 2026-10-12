@@ -1440,7 +1440,7 @@ impl PersonaWorkspaceRegistry {
         }
         let mut listed: Vec<String> = roster
             .iter()
-            .map(|(id, name)| format!("{name} ({})", &id.to_string()[..8]))
+            .map(|(id, name)| format!("{name} ({})", &crate::id_resolve::short(id)))
             .collect();
         listed.sort();
         format!("Online now: {}.", listed.join(", "))
@@ -2970,7 +2970,7 @@ mod tests {
         // 8-char short-id prefix
         assert_eq!(
             registry
-                .resolve_persona(&asha.to_string()[..8].into())
+                .resolve_persona(&crate::id_resolve::short(asha).into())
                 .unwrap(),
             PeerId::from_uuid(asha)
         );

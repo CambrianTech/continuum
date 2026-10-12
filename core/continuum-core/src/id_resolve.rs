@@ -25,6 +25,22 @@
 
 use uuid::Uuid;
 
+/// How many characters the short form of an id carries: what every surface displays.
+pub const SHORT_LEN: usize = 8;
+
+/// THE short form of an id, the form every surface displays and [`resolve`] accepts back: its
+/// first [`SHORT_LEN`] characters. A `Uuid` (hyphenated or simple, the same eight hex digits),
+/// a typed id that displays as one, or a handle. One function, so no surface cuts its own.
+pub fn short(id: impl std::fmt::Display) -> String {
+    short_str(&id.to_string()).to_owned()
+}
+
+/// [`short`] for an id already held as text: its first [`SHORT_LEN`] characters, or the whole
+/// string when it is shorter. Never a panic: a hand-cut `&s[..8]` panicked on a short string.
+pub fn short_str(id: &str) -> &str {
+    id.get(..SHORT_LEN).unwrap_or(id) // unwrap_or: a string shorter than the short form IS its short form
+}
+
 /// How a raw id string should be looked up: a clean full UUID, a leading short-id
 /// prefix to resolve against a candidate set, or genuinely unusable.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -295,12 +311,23 @@ mod tests {
             "counts instead of listing: {e}"
         );
     }
+    /// what this catches: a second short-id rule drifting from the one every surface displays,
+    /// and the panic a hand-cut `&s[..8]` had on a string shorter than eight characters.
+    #[test]
+    fn the_short_form_is_one_rule_and_never_panics() {
+        let id = Uuid::new_v4();
+        assert_eq!(short(id), id.simple().to_string()[..SHORT_LEN], "hyphenated and simple share the first eight hex digits");
+        assert_eq!(short(id), short(id.simple()));
+        assert_eq!(resolve(&short(id), &[id], "card"), Ok(id), "the displayed form resolves back");
+        assert_eq!(short_str("abc"), "abc", "shorter than the short form: itself, no panic");
+        assert_eq!(short_str("0123456789"), "01234567");
+    }
     /// what this catches: one id present twice in the candidates (the same card
     /// folded from two boards) must resolve, not read as an ambiguity between two.
     #[test]
     fn the_same_id_listed_twice_is_one_candidate_not_an_ambiguity() {
         let id = Uuid::new_v4();
-        let prefix = id.simple().to_string()[..8].to_string();
+        let prefix = short(id);
         assert_eq!(resolve(&prefix, &[id, id], "card"), Ok(id));
     }
 }

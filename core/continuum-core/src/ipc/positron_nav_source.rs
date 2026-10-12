@@ -540,7 +540,7 @@ impl NavReader for ChannelBookmarksNavReader {
                 // A room observed before presence named it gets an honest
                 // short-id label, never an invisible empty tab.
                 let title = if title.is_empty() {
-                    room.to_string()[..8].to_string()
+                    crate::id_resolve::short(room)
                 } else {
                     title.clone()
                 };
@@ -762,7 +762,7 @@ fn activity_lineage(room_ref: &str, title: &str) -> (String, String) {
                 .find(|(_, peer)| *peer == act.assignee)
                 .map(|(name, _)| name)
         })
-        .unwrap_or_else(|| act.assignee.to_string()[..8].to_string());
+        .unwrap_or_else(|| crate::id_resolve::short(act.assignee));
     (
         run_room.to_string(),
         format!("{short_instance} · {who}"),
@@ -1051,7 +1051,7 @@ mod tests {
         let reader = ChannelBookmarksNavReader::fixed(vec![(room, String::new())]);
         let snap = reader.nav_snapshot(Uuid::from_u128(11));
         assert_eq!(snap.activities.len(), 1);
-        assert_eq!(snap.activities[0].title, room.to_string()[..8].to_string());
+        assert_eq!(snap.activities[0].title, crate::id_resolve::short(room));
     }
 
     // what this catches: the registry spawns a citizen's projector exactly once

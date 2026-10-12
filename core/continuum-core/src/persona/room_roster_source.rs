@@ -717,7 +717,7 @@ mod tests {
             "the no-human fact + the unnamed peer"
         );
         let simple = other.as_uuid().simple().to_string();
-        let expected_label = format!("peer-{}", &simple[..8]);
+        let expected_label = format!("peer-{}", crate::id_resolve::short_str(&simple));
         assert_eq!(
             delivery.items[1].content,
             format!("{expected_label} [codex]"),

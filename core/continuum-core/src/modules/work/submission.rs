@@ -268,7 +268,7 @@ fn submissions_on_card(on_card: &[(Uuid, Uuid)]) -> String {
     let lines: Vec<String> = on_card
         .iter()
         .map(|(id, publisher)| {
-            format!("{} by {}", &id.simple().to_string()[..8], &publisher.simple().to_string()[..8])
+            format!("{} by {}", &crate::id_resolve::short(id), &crate::id_resolve::short(publisher))
         })
         .collect();
     format!("submissions on this card: {}", lines.join(", "))
@@ -1576,7 +1576,7 @@ mod tests {
             .await
             .expect("card");
         let turn_room = airc.join("academy").await.expect("join her turn's room");
-        let short = card.as_uuid().simple().to_string()[..8].to_string();
+        let short = crate::id_resolve::short(card.as_uuid());
         let hint = super::card_elsewhere(&airc, &short, turn_room.channel.as_uuid())
             .await
             .expect("the card is on another board");
@@ -1610,7 +1610,7 @@ mod tests {
             .await
             .expect("card");
         airc.join("academy").await.expect("her pointer stands elsewhere");
-        let short = card.as_uuid().simple().to_string()[..8].to_string();
+        let short = crate::id_resolve::short(card.as_uuid());
         for named in [None, Some("swe-bench"), Some("default"), Some("academy"), Some("")] {
             let room = super::room_of_card(&airc, named, &short, "work/submit").await.expect("the card says its room");
             assert_eq!(room.name, "bench-swe-bench-verified-1789170698", "named {named:?}");
