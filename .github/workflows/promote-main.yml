@@ -18,8 +18,8 @@ name: promote-main
 # commits, so `origin/main..origin/canary` is the whole history without that anchor).
 #
 # NOT A RED TIP. This runs on the default branch, and a scheduled workflow's failure lands
-# a check-run on that branch's tip. The deploy verdict (tools/scripts/track-canary.sh
-# `tip_checks` and continuum-core `modules/deploy_tracker.rs::parse_tip_checks`) judges a
+# a check-run on that branch's tip. The deploy verdict (continuum-core
+# `modules/deploy_tracker.rs::parse_tip_checks`) judges a
 # tip over its own push's suites only (events push / pull_request / workflow_dispatch —
 # #4243), AND excludes this workflow by path (`.github/workflows/promote-main.yml`) so a
 # hand-dispatched run cannot turn the tip red either. Expected non-promotions (nothing to
@@ -109,7 +109,7 @@ jobs:
           runs="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${TIP}&per_page=100" || echo '{}')"
           verdict="$(python3 - "$checks" "$runs" <<'PY'
           import json, sys
-          # The ONE rule, the same one track-canary.sh::tip_checks and deploy_tracker.rs
+          # The ONE rule, the same one deploy_tracker.rs::parse_tip_checks
           # apply: only suites the tip's own event started count; this workflow's own
           # suite never counts; a hard failure is red, an incomplete run is pending,
           # all-completed (success / skipped / neutral) is green, no runs is unknown.
