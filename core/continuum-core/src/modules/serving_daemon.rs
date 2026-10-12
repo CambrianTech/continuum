@@ -8123,8 +8123,6 @@ pub(crate) mod tests {
     }
     use super::*;
     use crate::cognition::serving_plan::footprint::apply_kv_quantization;
-    use crate::cognition::serving_plan::MIN_SERVE_CTX;
-    use crate::model_registry::types::Capability;
 
     const GB: u64 = 1_000_000_000;
 
