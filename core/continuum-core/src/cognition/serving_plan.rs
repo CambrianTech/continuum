@@ -659,8 +659,20 @@ pub struct ServingPlan {
 pub enum LanesBound {
     /// No candidate fit one lane on the budget: the whole demand is off-box.
     NoFit,
-    /// The requirements allocator chose lanes and window together from the roster's needs.
-    Allocator,
+    /// The requirements allocator chose lanes and window together: `served` minds got a warm
+    /// slot at their requirement, and `unserved` could not be held at theirs within
+    /// `budget_bytes` (the geometry it chose costs `device_bytes`). That is why there are not
+    /// more lanes.
+    #[serde(rename_all = "camelCase")]
+    Allocator {
+        served: u32,
+        unserved: u32,
+        window: u32,
+        #[ts(type = "number")]
+        device_bytes: u64,
+        #[ts(type = "number")]
+        budget_bytes: u64,
+    },
     /// Every demanded lane was granted (residents plus leased-in, bounded by the decode knee).
     Demand,
     /// The host's performance cores capped the lanes below demand.
@@ -668,11 +680,15 @@ pub enum LanesBound {
     /// The `MAX_LANES` safety ceiling capped the lanes below demand.
     MaxLanes,
     /// One more lane would have left each lane a window below the per-lane floor, so the
-    /// budget stopped there. `floor_term` names which term set the floor.
+    /// budget stopped there. The evaluated candidate is reported, not just the verdict:
+    /// `rejected_lanes` lanes would each have had `rejected_window` tokens, against
+    /// `floor_tokens`, which `floor_term` set.
     #[serde(rename_all = "camelCase")]
     PerLaneFloor {
         floor_tokens: u32,
         floor_term: FloorTerm,
+        rejected_lanes: u32,
+        rejected_window: u32,
     },
     /// A cold boot's remembered lane count capped the plan (it only ever lowers it).
     BootGeometry,
@@ -900,23 +916,19 @@ pub fn plan_serving(
     // residents' median sent prompt with headroom, never the ceiling: one 96k prompt
     // sized every lane to 120k and 16 minds ran on 3 lanes with 40 GB of KV idle.
     // The outlier is reconciled down to the served window; the roster gets its lanes.
-    let per_lane_floor = BOOTSTRAP_WORKING_SET
-        .max(demand.window_floor_tokens)
-        .max(demand.typical_prompt_floor().unwrap_or(0)) // JUSTIFIED unwrap_or: no sent prompt measured yet = no floor from it, the bootstrap prior stands
+    // The value and the term that set it are chosen TOGETHER (Codex on #4971), so a new term
+    // can never fall silently into another's label. Ties go to the earlier term.
+    let (per_lane_floor, floor_term) = [
+        (BOOTSTRAP_WORKING_SET, FloorTerm::Bootstrap),
+        (demand.window_floor_tokens, FloorTerm::WindowFloor),
+        // no sent prompt measured yet = no floor from it, the bootstrap prior stands
+        (demand.typical_prompt_floor().unwrap_or(0), FloorTerm::TypicalPrompt), // JUSTIFIED unwrap_or: an absent median contributes no floor; 0 never wins the max
         // A cold boot's remembered window is the last MEASURED demand: it floors the lane
         // choice so the boot never trades the window it will need for lanes it cannot keep.
-        .max(demand.boot_geometry.map(|(w, _)| w).unwrap_or(0)); // JUSTIFIED unwrap_or: no remembered geometry = no floor from it
-    // Which term set it, from the same four inputs (the first that reaches the floor wins a tie,
-    // in the order the floor is built).
-    let floor_term = if per_lane_floor == BOOTSTRAP_WORKING_SET {
-        FloorTerm::Bootstrap
-    } else if per_lane_floor == demand.window_floor_tokens {
-        FloorTerm::WindowFloor
-    } else if Some(per_lane_floor) == demand.typical_prompt_floor() {
-        FloorTerm::TypicalPrompt
-    } else {
-        FloorTerm::BootWindow
-    };
+        (demand.boot_geometry.map(|(w, _)| w).unwrap_or(0), FloorTerm::BootWindow), // JUSTIFIED unwrap_or: no remembered geometry = no floor from it
+    ]
+    .into_iter()
+    .fold((0, FloorTerm::Bootstrap), |best, term| if term.0 > best.0 { term } else { best });
     // THE GOVERNED SIZE (card 2eec3977, Joel 2026-09-20: "context must go along with
     // required governed size"): when the roster's requirements are known, lanes × window
     // are the allocator's — every served mind at her requirement, minds shed before the
@@ -956,14 +968,28 @@ pub fn plan_serving(
         }
     };
     let (lanes, lanes_bound) = match &allocation {
-        Some(a) => (a.lanes, LanesBound::Allocator),
+        Some(a) => (
+            a.lanes,
+            LanesBound::Allocator {
+                served: a.served.len() as u32,
+                unserved: a.unserved.len() as u32,
+                window: a.window,
+                device_bytes: a.device_bytes,
+                budget_bytes: host.usable_bytes,
+            },
+        ),
         None => {
             let lanes = (1..=lane_cap)
                 .rev()
                 .find(|&l| window_for(l as u64) >= per_lane_floor)
                 .unwrap_or(1);
             let bound = if lanes < lane_cap {
-                LanesBound::PerLaneFloor { floor_tokens: per_lane_floor, floor_term }
+                LanesBound::PerLaneFloor {
+                    floor_tokens: per_lane_floor,
+                    floor_term,
+                    rejected_lanes: lanes + 1,
+                    rejected_window: window_for(lanes as u64 + 1),
+                }
             } else if lane_cap >= demand_lanes.max(1) {
                 LanesBound::Demand
             } else if lane_cap == MAX_LANES && MAX_LANES < host.perf_cores.max(1) {
@@ -2871,7 +2897,9 @@ mod tests {
         let plan = plan_serving(&tight, models, &demand).expect("plan");
         assert_eq!(plan.lanes, 1, "{}", plan.rationale);
         match plan.lanes_bound {
-            LanesBound::PerLaneFloor { floor_tokens, floor_term } => {
+            LanesBound::PerLaneFloor { floor_tokens, floor_term, rejected_lanes, rejected_window } => {
+                assert_eq!(rejected_lanes, 2, "the candidate it rejected was a second lane");
+                assert!(rejected_window < floor_tokens, "and that lane's window fell below the floor: {rejected_window} < {floor_tokens}");
                 let typical = demand.typical_prompt_floor().expect("a sent median");
                 assert_eq!(floor_tokens, typical.max(BOOTSTRAP_WORKING_SET).max(demand.window_floor_tokens));
                 if demand.window_floor_tokens < typical {

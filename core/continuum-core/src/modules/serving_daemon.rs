@@ -5261,13 +5261,15 @@ impl ServingDaemonModule {
                         } else if plan.served_context_window >= demand.window_tokens {
                             "demand"
                         } else {
-                            "host-fit"
+                            // the window came out below demand; WHICH term did it is `lanes_bound`
+                            // below and the plan's rationale (this read "host-fit" until card
+                            // eb8d1839, and was taken for a host-RAM finding)
+                            "below-demand"
                         },
                         demand_measured = demand.measured,
                         // WHAT chose the lane count, from the planner's own decision. `bound_by`
                         // above says only whether the WINDOW came out below demand, whatever
-                        // budget did it ("host-fit" is not a host-RAM finding); this names the
-                        // term that decided `lanes` (card eb8d1839).
+                        // budget did it; this names the term that decided `lanes` (card eb8d1839).
                         lanes_bound = ?plan.lanes_bound,
                         "serving plan recomputed",
                     );
