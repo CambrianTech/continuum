@@ -314,12 +314,6 @@ const RECALL_DENOM: usize = 10;
         self.fraction(4)
     }
 
-    /// A single tool result folded into the next perception / engram. The most generous
-    /// bound: a traceback she must READ to self-correct has to survive intact.
-    pub fn result_fold_chars(&self) -> usize {
-        self.fraction(3)
-    }
-
     /// A dispatched command's result (a compile log, a sentinel's report) folded back in.
     /// Bounded harder than a foreground result because several can land at once and the
     /// full text stays recoverable through the command's own handle.
@@ -328,7 +322,7 @@ const RECALL_DENOM: usize = 10;
     }
 
     /// A rendered tool-output slice (`tool/output` grep windows). Kept under
-    /// [`Self::result_fold_chars`] so a normal investigation is not itself re-spilled.
+    /// [`Self::latest_action_chars`] so a normal investigation is not itself re-spilled.
     pub fn render_slice_chars(&self) -> usize {
         self.fraction(4)
     }
@@ -564,7 +558,6 @@ mod tests {
         };
         near(b.trail_head_chars(), 800); // WM_ACTION_HEAD_CHARS
         near(b.latest_action_chars(), 12_000); // WM_ACTION_FULL_MAX_CHARS
-        near(b.result_fold_chars(), 16_000); // RESULT_FOLD_MAX_CHARS
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
         near(b.catalog_summary_chars(), 96); // SUMMARY_MAX_CHARS
@@ -620,8 +613,8 @@ mod tests {
         let small = ContextBudget::from_window(16_384);
         let large = ContextBudget::from_window(1_048_576);
         assert_eq!(
-            large.result_fold_chars(),
-            small.result_fold_chars() * 64,
+            large.latest_action_chars(),
+            small.latest_action_chars() * 64,
             "a 64x window must yield a 64x fold bound"
         );
         assert!(large.latest_action_chars() > 700_000);
@@ -675,7 +668,7 @@ mod tests {
     #[test]
     fn an_unknown_window_folds_nothing_rather_than_inventing_a_number() {
         let b = ContextBudget::unknown();
-        assert_eq!(b.result_fold_chars(), usize::MAX);
+        assert_eq!(b.latest_action_chars(), usize::MAX);
         assert_eq!(b.trail_head_chars(), usize::MAX);
         assert_eq!(b.echoed_arg_chars(), usize::MAX);
     }

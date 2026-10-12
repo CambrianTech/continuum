@@ -1,14 +1,14 @@
 //! Tool-output spill: durable recovery for flood-sized tool results.
 //!
-//! Tier 2 of the three-tier flood protection (tier 1 = the head+tail cap in
-//! [`super::command_executor::truncate_tool_output`]; tier 3 = the build hands
-//! themselves). When a tool floods — an Xcode/gradle/cargo build log, a giant
-//! file read, a chatty command — the cap protects the persona's context window,
-//! but a cap alone THROWS AWAY the part she still needs to investigate. So before
-//! truncating, the executor spills the WHOLE result to a file and hands back a
-//! preview that names a `handle`; she then pages/greps the full output through
-//! the `tool/output` command — exactly the bounded-preview + recoverable-on-disk
-//! + grep-to-find-it shape Claude Code uses for its own large tool results.
+//! [`whole_or_handle`] is THE decision for how a tool result reaches a mind: WHOLE when the
+//! window's share for one result holds it, otherwise saved whole here and handed back as a
+//! pointer naming its `handle`, never as a fragment. A head, a tail, or a head+tail of a
+//! source file, a JSON document or a build log is broken, not short (Joel, 2026-10-12: "the
+//! clipping I've yelled about for months"; Kimi read one file 25+ times and landed no edit
+//! because each read reached her later as its last ~2,100 chars). She opens what she needs
+//! through `tool/output`: a prebuilt failure filter, a regex hunt, or a line range. Re-running
+//! a tool to recover what it already returned is not a recovery: the world may have moved and
+//! a mutating tool must not repeat (Astra, 2026-10-12).
 //!
 //! Per-persona by construction: spills land under a directory keyed by the
 //! persona's id, and the read command resolves by the SAME id (`ctx.caller`'s
@@ -69,6 +69,18 @@ pub fn spill(persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
     spill_in(&spill_root()?, persona_id, content)
 }
 
+/// Whole, or saved whole and pointed at: the one place a tool result is fitted to a mind's
+/// window. `share` is the window's share for one result
+/// ([`crate::cognition::context_budget::ContextBudget::latest_action_chars`]), the same share
+/// working memory shows it at, so nothing reaches working memory too big for its view without
+/// a handle. Returns the text to show and the handle when one was saved.
+pub fn whole_or_handle(full: String, share: usize, persona_id: Uuid) -> (String, Option<String>) {
+    match spill_root() {
+        Ok(root) => whole_or_handle_in(&root, full, share, persona_id),
+        Err(e) => (unsaved_pointer(&full, share, &e), None),
+    }
+}
+
 /// Resolve the spill file for `persona_id`/`handle`, rejecting any handle that
 /// isn't a bare hex stem — that is the path-traversal guard (no `/`, no `..`, no
 /// absolute path can survive the hex-only check), so we never canonicalize or
@@ -98,6 +110,54 @@ fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<Spi
         bytes: content.len(),
         lines: content.lines().count(),
     })
+}
+
+fn whole_or_handle_in(
+    root: &Path,
+    full: String,
+    share: usize,
+    persona_id: Uuid,
+) -> (String, Option<String>) {
+    let chars = full.chars().count();
+    if chars <= share {
+        return (full, None);
+    }
+    match spill_in(root, persona_id, &full) {
+        Ok(r) => {
+            crate::probe!(
+                class = "tool.output.spilled",
+                handle = %r.handle,
+                chars = %chars,
+                share = %share,
+                "a tool result was larger than the window's share for one result: saved \
+                 whole and handed to the mind as its handle"
+            );
+            (
+                format!(
+                    "[this result is {} lines ({chars} chars), more than this window's \
+                     {share}-char share for one result, so it is not shown in part. The whole \
+                     result is saved as output `{}`: open what you need with `tool/output`. \
+                     Jump straight to what broke with `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` \
+                     (or `warnings`/`failures`/`summary`), hunt with `\"pattern\":\"<regex>\"`, or \
+                     read a line range with `startLine`/`endLine`]",
+                    r.lines, r.handle, r.handle,
+                ),
+                Some(r.handle),
+            )
+        }
+        Err(e) => (unsaved_pointer(&full, share, &e), None),
+    }
+}
+
+/// The pointer when the whole result could not be saved: said as a failure, and still never a
+/// fragment of the result.
+fn unsaved_pointer(full: &str, share: usize, error: &std::io::Error) -> String {
+    format!(
+        "[this result is {} chars, more than this window's {share}-char share for one result, \
+         and saving it whole failed ({error}), so it is not shown: run the tool on a narrower \
+         scope (a path or a line range) if it does not change anything]",
+        full.chars().count()
+    )
 }
 
 fn resolve_in(root: &Path, persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
@@ -255,6 +315,32 @@ fn bound(s: String, max: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the head+tail fold (the executor's tier 1 until 2026-10-12) and
+    // every other fragment. A result within its share is returned byte-identical; one over
+    // it is saved whole, resolvable by the returned handle, and the text shown carries no
+    // piece of it, neither the head nor the tail.
+    #[test]
+    fn a_result_is_whole_or_a_handle_never_a_fragment() {
+        let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
+        let persona = Uuid::new_v4();
+        let small = "ok: 2 passed".to_string();
+        assert_eq!(whole_or_handle_in(&tmp, small.clone(), 600, persona), (small, None));
+
+        let body = format!("HEAD-MARK\n{}TAIL-MARK error: boom\n", "compiling module\n".repeat(5000));
+        let (shown, handle) = whole_or_handle_in(&tmp, body.clone(), 600, persona);
+        let handle = handle.expect("an over-share result is saved");
+        assert!(!shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "no fragment: {shown}");
+        assert!(shown.contains(&handle) && shown.contains("tool/output"), "names the way in: {shown}");
+        assert!(shown.contains("\"filter\":\"errors\""), "points at the failure filter: {shown}");
+        let path = resolve_in(&tmp, persona, &handle).expect("resolve");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), body, "saved byte-identical");
+
+        // Multibyte bodies measure in chars, the unit the share is in, and never split.
+        let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona);
+        assert!(!shown.contains('α'));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     // what this catches: a round-trip through the root-injected core — spill
     // writes a hex-handled file, resolve points back at it, and the content is

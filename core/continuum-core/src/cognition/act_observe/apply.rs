@@ -253,7 +253,7 @@ pub async fn apply_act(
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         body.executor
-            .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars()),
+            .execute_native_batch(&fg_calls, &ctx, budget.latest_action_chars()),
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error

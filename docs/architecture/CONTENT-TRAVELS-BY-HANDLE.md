@@ -229,15 +229,17 @@ the one-prompt constraint lifts, it is encoding the constraint instead of the in
    of `spill` at the moment a second implementation actually exists, so the trait is
    extracted from two real cases rather than imagined from zero (CLAUDE.md's outlier
    rule, applied honestly).
-3. **The remaining real defect:** `working_memory`'s `recent_results_chars` re-cuts a
-   result that the executor ALREADY bounded and handle-backed, severing the
-   "your full output is saved as `<handle>`, page it with `tool/output`" sentence the
-   executor wrote. The citizen is told how to recover her output and the budget layer
-   cuts the telling off. Fixing it properly means `fold_with_recovery` returning
-   `{preview, Option<SpillRef>}` instead of a String with the handle baked into prose,
-   so the handle travels as DATA to working memory and the render layer cannot cut it.
-4. **Then** the recency fold and recent-results tail-keep can go, because a handle-backed
-   result has nothing left worth re-cutting.
+3. ~~Working memory re-cuts a handle-backed result~~ — **done (card 735a3183,
+   2026-10-12).** The handle travels as DATA (`NativeToolResult.spill_handle`), and
+   `spill::whole_or_handle` is the ONE decision: a result within the window's share for one
+   result is shown whole; over it, it is saved whole and the mind is shown a pointer naming
+   the handle and the `tool/output` filters, never a head, a tail or a head+tail. The
+   executor's head+tail fold, the recency head cut and the recent-results tail-keep are
+   deleted; the executor spills at `latest_action_chars`, the share working memory shows a
+   result at, so nothing reaches working memory over its view without a handle.
+4. **Still cutting, owner to settle:** the `tool/output` grep-window cut in `spill::bound`,
+   the dispatch-result head cut in `dispatch_listener::summarize_result`, and the act/wall
+   fact cuts. Each goes through `whole_or_handle` or names why its unit differs.
 
 ## Forbidden moves
 

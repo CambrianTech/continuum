@@ -2650,7 +2650,7 @@ mod tests {
             "the marker tells the mind how to see the rest — never a silent starve"
         );
 
-        // End-to-end through the PINNED block (#392): the oversized result renders clipped.
+        // End-to-end through the PINNED block (#392): the oversized result renders as its pointer.
         let wm = Arc::new(WorkingMemory::new(8));
         // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
         // is unbounded by contract, so a clipping test must declare the window it measures.
@@ -2664,8 +2664,8 @@ mod tests {
             "the block still surfaces"
         );
         assert!(
-            pinned.contains("chars truncated"),
-            "and it's the CLIPPED body, not the raw 16k dump"
+            pinned.contains("not shown in part") && !pinned.contains("zzzz"),
+            "and it's the POINTER, neither the raw dump nor a fragment of it"
         );
     }
 

@@ -24,23 +24,10 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// garble. Generous (the mind still needs enough of the result to act), but
 /// finite. A result already within budget is untouched.
 pub(super) fn bound_recency_result(body: &str, budget: &ContextBudget) -> String {
-    // Hold the WHOLE fetched result up to the ONE result bound, which is a FRACTION OF HER
-    // LIVE WINDOW (`ContextBudget::result_fold_chars`) — not a constant. Joel said this twice:
-    // 2026-07-13 "you always choke context down to stupid small sizes", and again 2026-08-03
-    // when the constant was still a constant. A 1600-char clamp chopped a read file to ~25
-    // lines; a 16_000-char one does the same thing to a 1M-context mind. This is a FLOOD guard
-    // for a pathological result (a 5000-entry glob), not the context budget: the real fit is
-    // the downstream window-sized prompt packing. One bound, reused, derived.
-    let cap = budget.result_fold_chars();
-    let trimmed = body.trim();
-    if trimmed.chars().count() <= cap {
-        return trimmed.to_string();
-    }
-    let head: String = trimmed.chars().take(cap).collect();
-    format!(
-        "{head}\n… (result truncated — it was too large to hold whole; narrow it with \
-         a more specific query/path, or read a single file)"
-    )
+    // The executor already fitted this result (whole, or saved whole and handed back as its
+    // handle) at the same share; a body that still exceeds it gets the same pointer working
+    // memory uses, never a head of it. One decision: `spill::whole_or_handle`.
+    crate::cognition::working_memory::clip_action_full(body.trim(), budget).into_owned()
 }
 
 /// Decode a tool result for HER WINDOW (card 0a4c0648, Joel's encoding catch 2026-08-08).
@@ -437,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn recency_result_is_bounded_cleanly_not_flooded() {
+    fn recency_result_is_whole_or_a_pointer() {
         // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
         // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
         let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
@@ -446,27 +433,11 @@ mod tests {
             real_file.trim(),
             "a real file stays whole"
         );
-        // only a PATHOLOGICAL result (a 50k-char runaway glob) is flood-bounded — to
-        // the ONE result bound (a fraction of the live window), not a tiny hand cap.
-        let huge = "x".repeat(50_000);
+        // a result larger than its share is a POINTER, never a head of it.
+        let huge = "x".repeat(200_000);
         let bounded = bound_recency_result(&huge, &ContextBudget::from_window(16_384));
-        assert!(
-            bounded.chars().count() < ContextBudget::from_window(16_384).result_fold_chars() + 200,
-            "flood bounded to the fold max: {} chars",
-            bounded.chars().count()
-        );
-        assert!(
-            bounded.chars().count() > 8_000,
-            "but still generous — not re-choked small"
-        );
-        assert!(
-            bounded.contains("truncated"),
-            "cut is announced, not silent"
-        );
-        assert!(
-            bounded.contains("narrow"),
-            "teaches how to get a usable result"
-        );
+        assert!(!bounded.contains('x'), "no fragment of the result: {bounded}");
+        assert!(bounded.contains("tool/output"), "names the way to the whole: {bounded}");
         // char-boundary safe on multibyte content (never panics mid-codepoint)
         let multibyte = "日本語".repeat(1_000);
         let _ = bound_recency_result(&multibyte, &ContextBudget::from_window(16_384));
