@@ -139,7 +139,7 @@ impl Drop for QuiesceLease {
         // demand from whatever overrides remain (or the base floor if none) — safe under
         // any release order of overlapping measurements.
         if let Some(id) = self.demand_override {
-            crate::modules::serving_daemon::release_lane_demand(id);
+            crate::modules::serving_daemon::lane_demand::release_lane_demand(id);
         }
     }
 }
@@ -416,7 +416,7 @@ impl PersonaAircRuntimeRegistry {
         // ([[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]). Restored on
         // drop. A no-op (`None`) before the serving daemon booted — pure in unit tests.
         let active = (total - flags.len()) as u32;
-        let demand_override = crate::modules::serving_daemon::quiesce_lane_demand(active);
+        let demand_override = crate::modules::serving_daemon::lane_demand::quiesce_lane_demand(active);
         QuiesceLease {
             flags,
             demand_override,

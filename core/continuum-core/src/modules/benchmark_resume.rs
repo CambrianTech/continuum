@@ -119,12 +119,12 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 Some((_, held)) if held == want => {}
                 _ => {
                     if let Some((id, _)) = demand_lease.take() {
-                        crate::modules::serving_daemon::release_lane_demand(id);
+                        crate::modules::serving_daemon::lane_demand::release_lane_demand(id);
                         crate::cognition::serving_plan::set_solve_window_floor(0);
                     }
                     if queued > 0 {
                         if let Some(id) =
-                            crate::modules::serving_daemon::quiesce_lane_demand(want)
+                            crate::modules::serving_daemon::lane_demand::quiesce_lane_demand(want)
                         {
                             // The pinned per-lane floor rides WITH the lane ask:
                             // lanes multiply only while each fits a real solve.
@@ -229,7 +229,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             if due.is_empty() {
                 if !crate::cognition::bench_round::any_working_round() {
                     if let Some((id, _)) = demand_lease.take() {
-                        crate::modules::serving_daemon::release_lane_demand(id);
+                        crate::modules::serving_daemon::lane_demand::release_lane_demand(id);
                     }
                     return; // every round terminal — the watch has nothing left to guard
                 }
