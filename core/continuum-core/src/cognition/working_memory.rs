@@ -185,7 +185,8 @@ struct TurnPinnedFact {
 
 #[derive(Debug)]
 pub struct WorkingMemory {
-    /// Process-unique construction ordinal. Purely diagnostic: lets any probe
+    /// Process-unique construction ordinal. It keys this mind's set of live spill handles
+    /// (`spill::publish_live_handles`), and it lets any probe
     /// that renders from this instance say WHICH instance it is, so a duplicate
     /// cycle serving the same persona (two working memories alternating under
     /// one mind — the 2026-08-21 split-brain, taken=3389 vs taken=0 in the same
@@ -651,6 +652,7 @@ impl WorkingMemory {
             // ([`Self::record_settlement`] → `collapse_results_over_cap`), the
             // boundary where the prompt re-prefills anyway.
         }
+        self.publish_live_handles();
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
@@ -928,6 +930,7 @@ impl WorkingMemory {
             ptrs.extend(snap.evicted_pointers);
         }
         self.collapse_results_over_cap();
+        self.publish_live_handles();
         {
             let mut f = self.action_fps.lock();
             f.clear();
@@ -1357,6 +1360,20 @@ impl WorkingMemory {
             .collect()
     }
 
+    /// Tell the spill owner which saved results this mind still points at (ring entries and
+    /// collapsed pointers), so disk-pressure eviction never deletes one (card 9197cd01).
+    /// The whole set, replaced, so nothing can drift.
+    fn publish_live_handles(&self) {
+        let mut handles: std::collections::HashSet<String> = self
+            .recent_results
+            .lock()
+            .iter()
+            .filter_map(|(_, _, _, _, handle)| handle.clone())
+            .collect();
+        handles.extend(self.evicted_pointers.lock().iter().map(|(_, handle)| handle.clone()));
+        crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
+    }
+
     /// Record that the persona SETTLED — produced an utterance and closed the current
     /// concern. Pushes a [`WM_SETTLEMENT_PREFIX`]-marked boundary into the same rolling
     /// buffer (honest proprioception: "I already answered X", perceivable by the mind
@@ -1415,6 +1432,8 @@ impl WorkingMemory {
             }
         }
         *rr = survivors;
+        drop(rr);
+        self.publish_live_handles();
         if total > cap {
             crate::probe!(
                 class = "wm.results.unsaved_over_share",
@@ -1813,6 +1832,13 @@ mod rebuilt_marker {
     }
 }
 
+impl Drop for WorkingMemory {
+    /// A mind that is gone points at nothing: its saved results may be evicted again.
+    fn drop(&mut self) {
+        crate::cognition::tool_executor::spill::withdraw_live_handles(self.instance);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1864,6 +1890,32 @@ mod tests {
             back.iter().any(|t| t.contains("tests/ordering")),
             "{back:?}"
         );
+    }
+
+    // what this catches: eviction deleting a saved result a mind still points at (card
+    // 9197cd01). A handle in the ring, and the same handle after it collapses to a pointer,
+    // is live to the spill pool's guard; when the mind drops, it is released.
+    #[test]
+    fn a_mind_s_saved_handles_are_live_until_it_drops() {
+        let handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let file = std::path::PathBuf::from(format!("/spill/p/{handle}.log"));
+        let live = |p: &std::path::Path| crate::cognition::tool_executor::spill::is_live(p);
+        let wm = WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        let cap = wm.budget().recent_results_chars();
+        wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved(&handle));
+        assert!(live(&file), "referenced by the ring");
+        for _ in 0..4 {
+            record_saved(&wm, &"s".repeat(cap / 2));
+        }
+        wm.record_settlement("done");
+        assert!(
+            wm.recent_results_messages().join("\n").contains(&format!("{handle} — collapsed")),
+            "it collapsed to a pointer"
+        );
+        assert!(live(&file), "still referenced by its pointer");
+        drop(wm);
+        assert!(!live(&file), "released when the mind drops");
     }
 
     // what this catches: an unsaved result dropped at collapse (Astra on #4963 at 4840af859:
