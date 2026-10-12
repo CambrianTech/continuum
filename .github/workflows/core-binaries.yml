@@ -279,8 +279,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         # Archive first, under its own sha256, then the marker that names it: a concurrent publisher
         # uploads its own archive before replacing the marker, so the marker always names a
-        # complete archive. A release with no marker (a run that failed mid-upload) is completed
-        # here, never left permanently broken.
+        # complete archive. Any key that did not restore (no marker, or a marker naming a missing
+        # or mismatched archive) is repaired here, never left permanently broken.
         run: |
           set -euo pipefail
           tag="${{ steps.engine-cache.outputs.tag }}"
@@ -289,9 +289,10 @@ jobs:
           archive="published-engine-${sum:0:16}.tar.gz"
           mv "$RUNNER_TEMP/published-engine.tar.gz" "$RUNNER_TEMP/$archive"
           printf '%s %s\n' "$sum" "$archive" > "$RUNNER_TEMP/published-engine.ready"
-          if gh release view "$tag" --json assets -q '.assets[].name' 2>/dev/null | grep -qx published-engine.ready; then
-            echo "already complete: $tag"; exit 0
-          fi
+          # This step runs only when the restore MISSED, so whatever is published for this key did
+          # not restore (absent, partial, or a marker naming a missing or mismatched archive).
+          # Republish rather than trust the marker's existence: archive first, then the marker
+          # that names it (Astra on #4974).
           gh release view "$tag" >/dev/null 2>&1 \
             || gh release create "$tag" --prerelease --target "$GITHUB_SHA" --title "$tag" \
                  --notes "Published Windows NVIDIA engine, built by core-binaries.yml. Its tag is the hash of every input that decides its bytes; published-engine.ready names the complete archive." \
