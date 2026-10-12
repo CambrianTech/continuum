@@ -68,7 +68,11 @@ const SHAPES: &[&str] = &[
 /// correct code-vs-prose split then revealed 14 more that a doc-comment mention of
 /// `#[cfg(test)]` had been hiding — see `scan`.)
 #[cfg(test)]
-const BASELINE_UNJUSTIFIED: usize = 2257;
+// 2026-10-12 (card 18014227): RAISED 2257 -> 2502 as a measurement CORRECTION, not a loosening.
+// The production half used to stop at a file's first #[cfg(test)], hiding the rest of the file;
+// 245 production unwraps (67 in serving_daemon.rs alone, 54 in bench_round.rs) were never
+// counted. They are counted now, and the ratchet tightens from the true number.
+const BASELINE_UNJUSTIFIED: usize = 2502;
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).

@@ -68,7 +68,9 @@ const SHAPES: &[&str] = &[
 /// **This number may only ever go DOWN.** A single total, not a per-file map,
 /// for the same reason as the unwrap ratchet: pressure on the whole surface.
 #[cfg(test)]
-const BASELINE_UNJUSTIFIED: usize = 241;
+// 2026-10-12 (card 18014227): RAISED 241 -> 258 as a measurement CORRECTION: 17 sites sat
+// after an early #[cfg(test)] that hid the rest of their file. Counted now; ratchet from here.
+const BASELINE_UNJUSTIFIED: usize = 258;
 
 pub struct BoundarySerialization;
 

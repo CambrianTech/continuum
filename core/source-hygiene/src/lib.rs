@@ -40,15 +40,12 @@ pub struct SourceFile {
     /// Path relative to `src/`, forward-slashed — the form a rule's allow-list and
     /// a failure message should both use.
     pub rel: String,
-    /// The PRODUCTION half: everything before the file's first `#[cfg(test)]` line.
+    /// The PRODUCTION half: every line except the items `#[cfg(test)]` gates ([`production_of`]).
     ///
-    /// This is an APPROXIMATION and callers must know which way it errs. Test mods
-    /// conventionally sit at the end of a file, so this captures production exactly
-    /// in the common case. Where a file gates a helper `#[cfg(test)]` mid-file, the
-    /// split lands early and the rule sees LESS production code than exists — it
-    /// under-reports, never over-reports. A hygiene rule that under-reports lets a
-    /// violation slip; one that over-reports cries wolf and gets deleted. Erring
-    /// toward the first is the deliberate choice.
+    /// Still an approximation (braces are counted, not parsed), and it still errs one way:
+    /// a gated item whose end it cannot find hides the rest of the file, as the old
+    /// first-marker split always did. A rule that under-reports lets a violation slip; one
+    /// that over-reports cries wolf and gets deleted.
     pub production: String,
     /// The WHOLE file, test mods included.
     ///
@@ -77,6 +74,63 @@ impl SourceFile {
             raw: production.to_string(),
         }
     }
+}
+
+/// The PRODUCTION half of a file: every line except the items a `#[cfg(test)]` gates, which
+/// are blanked (so a violation's line number is still the editor's). An item ends at its
+/// balanced `{}` block, at a `;`, or, for a gated field or arm, at the line's trailing `,`.
+///
+/// Before 2026-10-12 this was "everything before the first `#[cfg(test)]` line", which
+/// under-reported by whole files: one early test-only helper hid the rest of the file from
+/// every ratchet. Six production unwraps in serving_daemon.rs stayed invisible until that
+/// file was split (card 18014227). A gated item whose end this cannot find (braces it cannot
+/// balance) keeps the old behaviour from there on: the rest of the file reads as test, so
+/// the error stays on the under-reporting side.
+pub fn production_of(src: &str) -> String {
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut i = 0;
+    while i < lines.len() {
+        if !split_code_and_comment(lines[i]).0.contains("#[cfg(test)]") {
+            out.push(lines[i]);
+            i += 1;
+            continue;
+        }
+        // The gated item: skip further attributes, then follow it to its end.
+        let mut j = i + 1;
+        while j < lines.len() && split_code_and_comment(lines[j]).0.trim_start().starts_with("#[") {
+            j += 1;
+        }
+        let mut depth: i64 = 0;
+        let mut opened = false;
+        let mut end = None;
+        for (k, line) in lines.iter().enumerate().skip(j) {
+            let code = split_code_and_comment(line).0;
+            for c in code.chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            let t = code.trim_end();
+            if (opened && depth <= 0) || (!opened && (t.ends_with(';') || t.ends_with(','))) {
+                end = Some(k);
+                break;
+            }
+        }
+        match end {
+            Some(k) => {
+                out.extend(std::iter::repeat("").take(k + 1 - i));
+                i = k + 1;
+            }
+            None => break, // unbalanced: the rest reads as test (the old, under-reporting behaviour)
+        }
+    }
+    out.join("\n")
 }
 
 /// One violation, in the shape a failure message can print directly.
@@ -223,17 +277,7 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
             // that, including this one. Found by the guard's own positive control:
             // the naive form excluded nearly all of `source_hygiene/mod.rs` from
             // its own scan, silently. Match by nature, never by name.
-            let production = match src
-                .lines()
-                .position(|l| split_code_and_comment(l).0.contains("#[cfg(test)]"))
-            {
-                Some(line_idx) => src
-                    .lines()
-                    .take(line_idx)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                None => src.clone(),
-            };
+            let production = production_of(&src);
             out.push(SourceFile {
                 rel,
                 production,
@@ -547,6 +591,20 @@ mod tests {
     /// file (or none of it), which would make every rule vacuously green or wildly
     /// noisy. The split is an approximation and this pins WHICH approximation.
     #[test]
+    // what this catches (card 18014227): an early `#[cfg(test)]` helper hiding the rest of the
+    // file from every ratchet. Only the gated items are blanked; the production after them is
+    // kept, at its own line numbers.
+    #[test]
+    fn only_the_gated_items_leave_the_production_half() {
+        let src = "fn a() { x.unwrap(); }\n#[cfg(test)]\nfn helper() {\n    y.unwrap();\n}\nfn b() { z.unwrap(); }\nstruct S {\n    #[cfg(test)]\n    probe: u8,\n    kept: u8,\n}\n#[cfg(test)]\nmod tests {\n    fn t() { w.unwrap(); }\n}";
+        let prod = production_of(src);
+        let lines: Vec<&str> = prod.lines().collect();
+        assert!(prod.contains("x.unwrap()") && prod.contains("z.unwrap()") && prod.contains("kept: u8"), "{prod}");
+        assert!(!prod.contains("y.unwrap()") && !prod.contains("w.unwrap()") && !prod.contains("probe: u8"), "{prod}");
+        assert_eq!(lines[5], "fn b() { z.unwrap(); }", "line numbers are the file's");
+        assert_eq!(production_of("fn a() {}\n#[cfg(test)]\nfn broken() {\n"), "fn a() {}", "unbalanced: the rest reads as test, as before");
+    }
+
     fn production_half_stops_at_the_first_cfg_test() {
         let root = crate_src_root();
         assert!(root.join("lib.rs").is_file(), "src root resolved wrong");
