@@ -868,7 +868,7 @@ fn incarnation_of(rec: &crate::inference::lane_registry::LaneRecord) -> Option<c
 
 fn live_lane_for(base: &str) -> Option<LaneChoice> {
     let rec = crate::inference::lane_registry::live_lane()?;
-    (rec.model == base).then(|| LaneChoice {
+    crate::model_registry::artifacts::names_the_same_base(&rec.model, base).then(|| LaneChoice {
         url: rec.root_url(),
         window: rec.context_window,
         engine: incarnation_of(&rec),
