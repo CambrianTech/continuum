@@ -33,8 +33,16 @@ use super::{
 use crate::inference::planning::training_plan::{
     calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle,
     train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample,
-    need, Need, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
+    need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
 };
+
+/// What the trainer is governed to have free for `consumer`: the governor's VRAM budget net of
+/// every reservation. ONE reader, for the plan here and for the trigger deciding whether a
+/// capacity-parked job may re-plan (card de9e1342), so the two can never disagree.
+pub(crate) fn governed_training_free(consumer: &str) -> u64 {
+    crate::resources::ResourceDaemon::global()
+        .map_or(0, |d| d.available_for(consumer, crate::resources::ResourceKind::Vram)) // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
+}
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -904,8 +912,7 @@ impl EngineLoraFineTuner {
     /// what an ungoverned (test) host declares.
     fn vram_free_for(&self, consumer: &str) -> u64 {
         match self.admission {
-            Admission::Governed => crate::resources::ResourceDaemon::global()
-                .map_or(0, |d| d.available_for(consumer, crate::resources::ResourceKind::Vram)), // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
+            Admission::Governed => governed_training_free(consumer),
             #[cfg(test)]
             Admission::Ungoverned { vram_free } => vram_free,
         }
@@ -1803,6 +1810,48 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 "the training window: what trains her examples whole (the longest of them), shrunk only if even the smallest chunk cannot hold it beside serving"
             );
         }
+        // THE WINDOW NEVER SHRINKS BELOW WHAT TRAINS ONE OF HER EXAMPLES (card de9e1342; Codex's
+        // corrections): a window none of them trains in teaches nothing, and the run would end
+        // Failed with nothing to return. When memory plans one, the smallest window that trains
+        // one of them decides. Measured not to fit what the trainer is governed to, the job is
+        // not created: its examples wait, owned by the trigger, with what would wake them. Only
+        // predicted not to fit, it calibrates there, and its refusal is the measurement the next
+        // plan parks on. Her examples are never cut to a smaller window.
+        let useful = at_served
+            .as_ref()
+            .ok()
+            .and_then(|rows| rows.iter().map(|r| r.tokens_min).min())
+            .and_then(|tokens| u32::try_from(tokens).ok())
+            .map(|tokens| train_window(tokens.saturating_add(255)))
+            .filter(|&useful| window < useful && useful <= served_sent);
+        let window = match useful {
+            Some(useful) => {
+                let at_useful = Shape { window: useful, chunk: TRAINING_CHUNK_MIN, ..family.clone() };
+                match self.footprints.need(&at_useful, model.map(|m| m.bytes(useful, TRAINING_CHUNK_MIN))) {
+                    Some(n) if n.source != NeedSource::Predicted && n.rules_out(governed_free) => {
+                        let wait = super::types::CapacityWait {
+                            window: useful,
+                            need_bytes: n.bytes,
+                            need_source: n.source,
+                            governed_free,
+                            engine_stamp: crate::inference::engine_slots::current_stamp(),
+                        };
+                        crate::probe!(
+                            class = "training.job.capacity_parked",
+                            job = %id,
+                            window = u64::from(useful),
+                            need_bytes = n.bytes,
+                            need_source = ?n.source,
+                            governed_free = governed_free,
+                            "the smallest window that trains one of her examples is measured not to fit the governed training memory: no job; her examples wait with what wakes them"
+                        );
+                        return Err(FineTuningError::CapacityParked(wait));
+                    }
+                    _ => useful,
+                }
+            }
+            None => window,
+        };
         body.window = window;
         let shape_at = |chunk: u32| Shape { window, chunk, ..family.clone() };
         // The chunk is chosen against the measured graph, else the fitted model's prediction for
@@ -2790,6 +2839,38 @@ mod tests {
         let (w, c) = (posted["window"].as_u64().expect("test: window") as u32, posted["chunk"].as_u64().expect("test: chunk") as u32);
         assert!(w < 68_608 && w % 256 == 0, "a calculated window under served: {w}");
         assert!(model.bytes(w, c) <= free, "the POSTED window and chunk fit the grant together: w{w} c{c} = {} MiB of {} MiB", model.bytes(w, c) / mib, free / mib);
+        server.abort();
+    }
+
+    // what this catches (card de9e1342; the 5090, 84 of 108 jobs Failed): memory planning a
+    // window none of her examples trains in, so the run ends Failed with nothing to return and
+    // waits for a human. Each example here needs 3,072 tokens; a graph-only refusal at that
+    // window's floor chunk is over what is free, so the plan's window drops below it. The job is
+    // not created: it is refused as parked, carrying the window her examples need, the measured
+    // lower bound and the free memory, and no run is posted.
+    #[tokio::test]
+    async fn a_job_memory_cannot_give_a_useful_window_is_parked_with_its_wake_key() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "short_turns").await;
+        let footprints = jobs.path().join("footprints.json");
+        let gib = 1024u64 * 1024 * 1024;
+        let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 3072, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
+        Footprints { path: footprints.clone() }.record_with(&fam, 2 * gib, false, Uuid::nil()).expect("test: graph-only refusal");
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        match t.create_job(r).await {
+            Err(FineTuningError::CapacityParked(wait)) => {
+                assert_eq!((wait.window, wait.need_bytes, wait.governed_free), (3_072, 2 * gib, gib), "{wait:?}");
+                assert_eq!(wait.need_source, NeedSource::LowerBound);
+                assert!(!wait.wakes(gib, wait.engine_stamp.as_deref()), "the same free memory never wakes it");
+                assert!(wait.wakes(3 * gib, wait.engine_stamp.as_deref()), "free past the bound makes it eligible to re-plan");
+            }
+            other => panic!("expected a capacity park, got {other:?}"),
+        }
+        assert!(seen.lock().unwrap().is_none(), "no run was posted");
         server.abort();
     }
 

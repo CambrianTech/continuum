@@ -277,6 +277,15 @@ pub fn resolve(root: &Path, operator_override: Option<&str>, current: Option<&'s
     Resolved::Path
 }
 
+/// The current engine's stamp (`<commit>:<backend>`), when this node installs engines into
+/// slots: the identity a measurement was taken against. `None` on a pre-slot install, where an
+/// engine change cannot be told apart and only capacity wakes a parked job.
+pub fn current_stamp() -> Option<String> {
+    let home = crate::paths::continuum_home().ok()?;
+    let root = root(&home).ok()?;
+    slot_stamp(&root, current_slot(&root)?)
+}
+
 /// A slot's stamp, trimmed, when it has one.
 pub fn slot_stamp(root: &Path, slot: &str) -> Option<String> {
     std::fs::read_to_string(root.join(slot).join(STAMP_FILE)).ok().map(|s| s.trim().to_string())

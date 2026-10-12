@@ -409,6 +409,34 @@ pub struct JobHandle {
     pub local_id: Uuid,
 }
 
+/// What a capacity-parked job waits for (card de9e1342): the smallest window that trains one
+/// of her examples, what that window needs at the smallest chunk and on what evidence, the
+/// governed training memory free when it parked, and the engine it was measured against. The
+/// trigger re-plans it when that need no longer rules the shape out, or when the engine changes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/genome/fine_tuning/CapacityWait.ts")]
+#[serde(rename_all = "camelCase")]
+pub struct CapacityWait {
+    pub window: u32,
+    #[ts(type = "number")]
+    pub need_bytes: u64,
+    pub need_source: crate::inference::planning::training_plan::NeedSource,
+    #[ts(type = "number")]
+    pub governed_free: u64,
+    #[ts(optional)]
+    pub engine_stamp: Option<String>,
+}
+
+impl CapacityWait {
+    /// THE wake rule: re-plan when the need no longer rules the shape out of what the governed
+    /// budget has free (a lower bound cleared makes it eligible to re-plan or calibrate, never
+    /// proves it fits), or when the engine is not the one it was measured against.
+    pub fn wakes(&self, governed_free: u64, engine_stamp: Option<&str>) -> bool {
+        let need = crate::inference::planning::training_plan::Need { bytes: self.need_bytes, source: self.need_source };
+        !need.rules_out(governed_free) || engine_stamp != self.engine_stamp.as_deref()
+    }
+}
+
 /// Current state of a training job. Returned by
 /// [`super::FineTuningAdapter::poll`].
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

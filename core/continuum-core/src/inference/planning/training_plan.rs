@@ -72,8 +72,10 @@ pub(crate) fn choose_chunk(window: u32, available: u64, measured_at: impl Fn(u32
 /// Where a shape's [`Need`] comes from. Kept explicit because they are different claims: a
 /// whole run measured it, a refusal proved at least this much (a graph alone over what was free,
 /// which the fit never reads), or the fit predicted it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NeedSource {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ts_rs::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/genome/fine_tuning/NeedSource.ts")]
+pub enum NeedSource {
     WholeRun,
     LowerBound,
     Predicted,
@@ -97,6 +99,13 @@ impl Need {
             NeedSource::LowerBound if self.bytes <= available => None,
             _ => Some(self.bytes),
         }
+    }
+
+    /// Whether this need PROVES the shape does not fit `available`: a whole run or a prediction
+    /// over it, or a lower bound over it. A lower bound under it proves nothing, so it never rules
+    /// a shape out (card de9e1342: a parked job wakes to re-plan exactly when this turns false).
+    pub(crate) fn rules_out(self, available: u64) -> bool {
+        self.decides(available).is_some_and(|bytes| bytes > available)
     }
 }
 
@@ -471,6 +480,11 @@ mod tests {
         assert_eq!(bound.decides(4 << 30), None, "under free, a bound proves nothing: calibrate");
         assert_eq!(bound.decides(2 << 30), Some(3 << 30), "over free, it disqualifies");
         assert_eq!(Need { bytes: 3 << 30, source: NeedSource::Predicted }.decides(4 << 30), Some(3 << 30));
+        // what this catches (card de9e1342): a parked job that wakes on a bound it has not
+        // cleared, or never wakes once capacity clears its bound.
+        assert!(bound.rules_out(2 << 30), "a bound over free rules the shape out");
+        assert!(!bound.rules_out(4 << 30), "a bound under free does not: the job may re-plan");
+        assert!(Need { bytes: 5 << 30, source: NeedSource::Predicted }.rules_out(4 << 30));
     }
 
     // what this catches (Fable, 2026-10-11): the window planned as the largest memory allowed at a

@@ -41,6 +41,9 @@ pub struct AcceptanceReceipt {
 pub(crate) enum DispatchFailure {
     Retryable(String),
     Uncertain(String),
+    /// Certain, and created nothing: no room for the smallest window that trains one of her
+    /// examples, by measurement. The intent keeps its batch, parked until the wait wakes.
+    Parked(crate::genome::fine_tuning::types::CapacityWait),
 }
 
 pub(crate) enum DispatchResult {
@@ -131,6 +134,12 @@ pub enum DispatchPhase {
     /// a trial judging it, or an existing gene adopted for trial): nothing was created,
     /// the batch went back into the bucket, and this intent is finished.
     Held { took: Took },
+    /// No job: the smallest window that trains one of her examples is measured not to fit the
+    /// governed training memory (card de9e1342). The intent stays active and keeps owning its
+    /// submissions (a crash or retry neither duplicates nor drops a row); the recovery tick
+    /// re-plans it only when `wait.wakes(..)`: capacity no longer rules it out, or the engine
+    /// changed. Not failed, not trained, not left for a human.
+    Parked { wait: crate::genome::fine_tuning::types::CapacityWait },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Entity)]
@@ -1234,6 +1243,22 @@ impl TrainingTriggerState {
                     error: format!("dispatch {id} has no confirmed result; it was not repeated"),
                 });
             }
+            DispatchPhase::Parked { wait } => {
+                let free = crate::genome::fine_tuning::engine_lora_adapter::governed_training_free("genome-train:wake");
+                let engine = crate::inference::engine_slots::current_stamp();
+                if !wait.wakes(free, engine.as_deref()) {
+                    return Ok(DispatchResult::Empty);
+                }
+                crate::probe!(
+                    class = "training.dispatch.capacity_woke",
+                    dispatch = %id,
+                    window = u64::from(wait.window),
+                    need_bytes = wait.need_bytes,
+                    governed_free = free,
+                    engine_changed = engine.as_deref() != wait.engine_stamp.as_deref(),
+                    "a capacity-parked dispatch may re-plan: its need no longer rules it out, or the engine changed"
+                );
+            }
             DispatchPhase::Prepared | DispatchPhase::Retryable { .. } => {}
         }
         let mut intent = active.intent.clone();
@@ -1289,6 +1314,13 @@ impl TrainingTriggerState {
                         "RecoveryRequired",
                         error,
                     ),
+                    DispatchFailure::Parked(wait) => {
+                        let error = format!(
+                            "parked for capacity: window {} needs {} bytes ({:?}), {} governed free",
+                            wait.window, wait.need_bytes, wait.need_source, wait.governed_free
+                        );
+                        (DispatchPhase::Parked { wait }, "CapacityParked", error)
+                    }
                 };
                 let mut intent = active.intent.clone();
                 intent.phase = phase;
