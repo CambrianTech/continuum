@@ -214,13 +214,33 @@ jobs:
           echo "version=$ImageVersion" >> "$GITHUB_OUTPUT"
           echo "runner image $ImageVersion"
 
+      # The engine is an IMMUTABLE artifact named by everything that decides its bytes, so it is a
+      # release asset, not an Actions-cache entry. The repo's Actions cache sits at its 10 GB limit
+      # and LRU-evicts: the 2.4-2.6 GB cargo caches pushed this 523 MB engine out within hours, and
+      # it was rebuilt on 5 of 5 canary runs (16-26 min each, card 2a805524). A release asset is
+      # never evicted; the prune job below keeps the newest few.
       - name: Restore the published engine (Windows NVIDIA)
         id: engine-cache
         if: runner.os == 'Windows'
-        uses: actions/cache/restore@v4
-        with:
-          path: ${{ runner.temp }}/published-engine
-          key: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
+        run: |
+          set -euo pipefail
+          tag="engine-windows-$(printf '%s' "$ENGINE_KEY" | sha256sum | cut -c1-16)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "engine key $ENGINE_KEY -> $tag"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            echo "no published engine for this key: building"
+            echo "cache-hit=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          gh release download "$tag" -D "$RUNNER_TEMP/engine-download" -p 'published-engine.tar.gz*'
+          (cd "$RUNNER_TEMP/engine-download" && sha256sum -c published-engine.tar.gz.sha256)
+          mkdir -p "$RUNNER_TEMP/published-engine"
+          tar -xzf "$RUNNER_TEMP/engine-download/published-engine.tar.gz" -C "$RUNNER_TEMP/published-engine"
+          echo "cache-hit=true" >> "$GITHUB_OUTPUT"
 
       - name: Build the receipted inference engine (Windows NVIDIA)
         if: runner.os == 'Windows'
@@ -246,11 +266,23 @@ jobs:
       # Saved as soon as it is built and receipted, not at job end, so a later failing step does
       # not send the next run back to a 27-minute rebuild.
       - name: Save the published engine (Windows NVIDIA)
-        if: runner.os == 'Windows' && steps.engine-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ${{ runner.temp }}/published-engine
-          key: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
+        if: runner.os == 'Windows' && steps.engine-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.engine-cache.outputs.tag }}"
+          tar -czf "$RUNNER_TEMP/published-engine.tar.gz" -C "$RUNNER_TEMP/published-engine" .
+          (cd "$RUNNER_TEMP" && sha256sum published-engine.tar.gz > published-engine.tar.gz.sha256)
+          # Concurrent canary runs race to publish the same key; the loser finds it and stops.
+          gh release view "$tag" >/dev/null 2>&1 && { echo "already published: $tag"; exit 0; }
+          gh release create "$tag" --prerelease --target "$GITHUB_SHA" --title "$tag" \
+              --notes "Published Windows NVIDIA engine, built by core-binaries.yml. Its tag is the hash of every input that decides its bytes." \
+            || { gh release view "$tag" >/dev/null && exit 0; }
+          # The checksum names the archive, so it goes up after it: a reader verifies, never trusts.
+          gh release upload "$tag" "$RUNNER_TEMP/published-engine.tar.gz"
+          gh release upload "$tag" "$RUNNER_TEMP/published-engine.tar.gz.sha256"
 
       - name: Package
         id: package
@@ -383,6 +415,18 @@ jobs:
           set -euo pipefail
           gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
             -q '[.[] | select(.tagName | startswith("canary-"))] | sort_by(.createdAt) | reverse | .[20:][] | .tagName' \
+          | while read -r tag; do
+              echo "pruning $tag"
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done
+
+      # The engine's drain: an engine key changes only with the pin, the build scripts, the
+      # toolkit or the runner image, so the newest 3 cover every build in flight.
+      - name: Keep the newest 3 published engines
+        run: |
+          set -euo pipefail
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            -q '[.[] | select(.tagName | startswith("engine-windows-"))] | sort_by(.createdAt) | reverse | .[3:][] | .tagName' \
           | while read -r tag; do
               echo "pruning $tag"
               gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
