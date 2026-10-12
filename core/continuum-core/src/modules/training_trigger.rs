@@ -783,7 +783,14 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         "genome/job-create rejected: {}",
         response.error.unwrap_or_default()
     );
-    use crate::commands::genome::job_create::{ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
+    use crate::commands::genome::job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
+    if response.error_kind.as_deref() == Some(ERROR_KIND_CAPACITY_PARKED) {
+        // Parked only with its wake key: a refusal that names no wait is evidence of nothing.
+        return Err(match response.capacity_wait {
+            Some(wait) => DispatchFailure::Parked(wait),
+            None => DispatchFailure::Uncertain(format!("{error} (no capacityWait)")),
+        });
+    }
     Err(match response.error_kind.as_deref() {
         // No kind is the command's pre-provider validation/selection refusal.
         None | Some("InvalidRequest" | "MissingCredentials" | "ProviderRejected") => {
@@ -901,6 +908,24 @@ impl ServiceModule for TrainingTriggerModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card de9e1342): a capacity refusal decoded as a retry (re-planning
+    // every tick) or as recovery (left for a human), or parked with no wake key to wake by.
+    #[test]
+    fn a_capacity_refusal_decodes_as_parked_only_with_its_wait() {
+        use crate::genome::fine_tuning::types::CapacityWait;
+        use crate::inference::planning::training_plan::NeedSource;
+        let wait = CapacityWait { window: 16_128, need_bytes: 18 << 30, need_source: NeedSource::LowerBound, governed_free: 4 << 30, engine_stamp: Some("abc:cuda".into()) };
+        let refused = |wait: Option<&CapacityWait>| {
+            let mut v = serde_json::json!({"success": false, "error": "waiting for capacity", "errorKind": "CapacityParked"});
+            if let Some(w) = wait {
+                v["capacityWait"] = serde_json::to_value(w).expect("test: encode");
+            }
+            v
+        };
+        assert!(matches!(decode_job_create(refused(Some(&wait))), Err(DispatchFailure::Parked(w)) if w == wait));
+        assert!(matches!(decode_job_create(refused(None)), Err(DispatchFailure::Uncertain(_))), "no wake key, no park");
+    }
 
     // what this catches (Cormac on #4537): an orphan whose engine was silent at boot asked
     // once and dropped, holding serving off its run for the engine's life; or, worse, resumed

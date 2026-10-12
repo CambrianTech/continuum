@@ -56,6 +56,12 @@ pub enum FineTuningError {
     #[error("local trainer failed: {0}")]
     LocalTrainerFailed(String),
 
+    /// The memory the trainer is governed to has no room for the smallest window that trains
+    /// one of her examples, by measurement: the job is not created, and its examples wait,
+    /// owned by the trigger, until [`super::types::CapacityWait::wakes`] (card de9e1342).
+    #[error("waiting for capacity: window {} needs {} bytes, {} free", .0.window, .0.need_bytes, .0.governed_free)]
+    CapacityParked(super::types::CapacityWait),
+
     /// The job handle doesn't correspond to anything the adapter
     /// knows about. Common cause: substrate restart mid-job, the
     /// adapter's in-memory poll state was lost. Cloud adapters can

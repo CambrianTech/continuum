@@ -33,8 +33,16 @@ use super::{
 use crate::inference::planning::training_plan::{
     calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle,
     train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample,
-    need, Need, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
+    need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN,
 };
+
+/// What the trainer is governed to have free for `consumer`: the governor's VRAM budget net of
+/// every reservation. ONE reader, for the plan here and for the trigger deciding whether a
+/// capacity-parked job may re-plan (card de9e1342), so the two can never disagree.
+pub(crate) fn governed_training_free(consumer: &str) -> u64 {
+    crate::resources::ResourceDaemon::global()
+        .map_or(0, |d| d.available_for(consumer, crate::resources::ResourceKind::Vram)) // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
+}
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -461,13 +469,23 @@ fn effective_depth(layers_adapted: Option<u32>, n_layer: Option<u32>) -> Option<
 
 /// Measured engine-training footprints, one row per shape, in one small JSON file (bounded by
 /// the number of distinct shapes ever run, not by runs).
+#[derive(Clone)]
 struct Footprints {
     path: PathBuf,
+    /// The engine build this view reads and writes for (`LaneChoice::build`). Lower bounds and
+    /// leases are evidence only about the engine that measured them; whole-run rows of any
+    /// engine still fit the model, which is a prediction. `None` reads every row (no identity
+    /// to tell engines apart) (Codex on #4988).
+    engine: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct FootprintRow {
+    /// The build of the engine it was measured on (`LaneChoice::build`). `None` on rows from
+    /// before it and on pre-slot installs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine: Option<String>,
     bytes: u64,
     measured_at_ms: i64,
     job: String,
@@ -480,6 +498,17 @@ struct FootprintRow {
 }
 
 impl Footprints {
+    fn at(path: PathBuf) -> Self {
+        Footprints { path, engine: None }
+    }
+    /// This store, as evidence about the engine `build`.
+    fn for_engine(&self, build: Option<String>) -> Self {
+        Footprints { path: self.path.clone(), engine: build }
+    }
+    /// Whether `row` is evidence about this view's engine.
+    fn measured_here(&self, row: &FootprintRow) -> bool {
+        self.engine.is_none() || row.engine == self.engine
+    }
     fn read_all(&self) -> BTreeMap<String, FootprintRow> {
         match std::fs::read_to_string(&self.path) {
             Ok(body) => serde_json::from_str(&body).unwrap_or_default(), // unwrap_or_default: a corrupt file re-measures every shape (a calibration run), never blocks training
@@ -487,7 +516,7 @@ impl Footprints {
         }
     }
     fn get(&self, shape: &Shape) -> Option<u64> {
-        self.read_all().get(&shape.key()).filter(|r| r.includes_context).map(|r| r.bytes)
+        self.read_all().get(&shape.key()).filter(|r| r.includes_context && self.measured_here(r)).map(|r| r.bytes)
     }
     /// Every measured `(window, chunk, bytes)` of `shape`'s family (the same model, rank, targets,
     /// depth, walk and recompute, at any window and chunk): what [`choose_window`] fits. A key is
@@ -495,6 +524,15 @@ impl Footprints {
     /// accept a row of a different family.
     fn rows_like(&self, shape: &Shape) -> Vec<(u32, u32, u64)> {
         self.family_rows(shape, true)
+    }
+    /// The whole-run rows of `shape`'s family measured on THIS engine: what a hard floor reads
+    /// (a calibration grant's minimum, the exact walk ruled out). Another engine's rows predict,
+    /// through the model, and never set a floor here (Codex on #4988).
+    fn measured_rows_like(&self, shape: &Shape) -> Vec<(u32, u32, u64)> {
+        self.family_rows(shape, true)
+            .into_iter()
+            .filter(|&(window, chunk, _)| self.get(&Shape { window, chunk, ..shape.clone() }).is_some())
+            .collect()
     }
     /// Every measured row of `shape`'s family, a graph-only refusal included: LOWER bounds on
     /// what each shape needs. They cap a plan (a graph alone over what is free means the whole
@@ -504,7 +542,7 @@ impl Footprints {
     }
     /// A shape's measured lower bound: its whole-run row, else its graph-only one.
     fn bound(&self, shape: &Shape) -> Option<u64> {
-        self.read_all().get(&shape.key()).map(|r| r.bytes)
+        self.read_all().get(&shape.key()).filter(|r| self.measured_here(r)).map(|r| r.bytes)
     }
     /// What a shape needs ([`need`] over this store's rows): a graph-only refusal
     /// at a chunk still rules it out, so the ladder steps down instead of calibrating the
@@ -523,7 +561,9 @@ impl Footprints {
                 let window = num('w')?;
                 let chunk = num('c').unwrap_or_else(|| train_chunk_for(window, TRAINING_CHUNK));
                 let candidate = Shape { window, chunk, ..shape.clone() };
-                (candidate.key() == key && (row.includes_context || !whole_only)).then_some((window, chunk, row.bytes))
+                // the fit reads whole runs of any engine (a prediction); bounds only this engine's
+                let usable = if whole_only { row.includes_context } else { self.measured_here(&row) };
+                (candidate.key() == key && usable).then_some((window, chunk, row.bytes))
             })
             .collect()
     }
@@ -540,12 +580,15 @@ impl Footprints {
         let mut all = self.read_all();
         // a whole-run row is never replaced by a graph-only one (an engine rolled back before
         // #52), whatever its size; otherwise the larger measurement stands (Cormac on #4939)
-        if all.get(&shape.key()).is_some_and(|r| (r.includes_context && !includes_context) || (r.includes_context == includes_context && r.bytes >= bytes)) {
+        // within ONE engine; another engine's measurement is not evidence about this one, so a
+        // measurement on this engine always replaces it
+        if all.get(&shape.key()).is_some_and(|r| r.engine == self.engine && ((r.includes_context && !includes_context) || (r.includes_context == includes_context && r.bytes >= bytes))) {
             return Ok(());
         }
         all.insert(
             shape.key(),
             FootprintRow {
+                engine: self.engine.clone(),
                 bytes,
                 measured_at_ms: chrono::Utc::now().timestamp_millis(),
                 job: job.to_string(),
@@ -807,6 +850,10 @@ struct LaneChoice {
     /// The engine process hosting it (pid plus OS start time), the identity a run binds to at
     /// admission (SHARED-RESIDENT-LIFECYCLE.md step 1). `None` only in tests with no engine.
     engine: Option<crate::inference::engine_residency::EngineIncarnation>,
+    /// The build of that engine (its slot stamp): what a footprint measured on it is filed under,
+    /// so a measurement is never read as evidence about another engine (card de9e1342). `None`
+    /// on a pre-slot install and in tests.
+    build: Option<String>,
 }
 
 /// A lane record's incarnation. A record from before `started_s` names the live process by
@@ -821,7 +868,12 @@ fn incarnation_of(rec: &crate::inference::lane_registry::LaneRecord) -> Option<c
 
 fn live_lane_for(base: &str) -> Option<LaneChoice> {
     let rec = crate::inference::lane_registry::live_lane()?;
-    (rec.model == base).then(|| LaneChoice { url: rec.root_url(), window: rec.context_window, engine: incarnation_of(&rec) })
+    (rec.model == base).then(|| LaneChoice {
+        url: rec.root_url(),
+        window: rec.context_window,
+        engine: incarnation_of(&rec),
+        build: rec.engine_bin.as_deref().and_then(crate::inference::engine_slots::stamp_of_bin),
+    })
 }
 
 /// Admission: the governed lease a run holds for its life. `Governed` in production;
@@ -876,7 +928,7 @@ impl EngineLoraFineTuner {
             http: reqwest::Client::new(),
             lane: Box::new(live_lane_for),
             train_dir: crate::inference::llama_server::engine_train_dir(),
-            footprints: Footprints { path: footprints },
+            footprints: Footprints::at(footprints),
             admission: Admission::Governed,
             holds: TrainingHolds::node().clone(),
             hold_store: crate::paths::continuum_home()
@@ -904,8 +956,7 @@ impl EngineLoraFineTuner {
     /// what an ungoverned (test) host declares.
     fn vram_free_for(&self, consumer: &str) -> u64 {
         match self.admission {
-            Admission::Governed => crate::resources::ResourceDaemon::global()
-                .map_or(0, |d| d.available_for(consumer, crate::resources::ResourceKind::Vram)), // map_or: a governed host whose governor is gone has nothing free to lease (the governed branch refuses below)
+            Admission::Governed => governed_training_free(consumer),
             #[cfg(test)]
             Admission::Ungoverned { vram_free } => vram_free,
         }
@@ -917,9 +968,9 @@ impl EngineLoraFineTuner {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
             // a lane launched at 256 per slot: the window every existing test asserts
-            lane: Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None })),
+            lane: Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None, build: None })),
             train_dir: Some(train_dir),
-            footprints: Footprints { path: footprints },
+            footprints: Footprints::at(footprints),
             admission: Admission::Ungoverned { vram_free: u64::MAX },
             holds: TrainingHolds::new(),
             hold_store: None,
@@ -939,7 +990,7 @@ struct EngineRun {
     /// dispatch of this shape chooses a smaller chunk instead of calibrating at the same
     /// one forever (BigMama on #4894: footprints were filed by a finished run only).
     shape: Shape,
-    footprints_path: PathBuf,
+    footprints: Footprints,
     /// The run to POST, or `None` for a run this core RE-ATTACHED to: it is already training in
     /// the engine, and POSTing it again would be the duplicate run step 3 exists to prevent.
     start: Option<TrainRequest>,
@@ -1339,7 +1390,7 @@ impl EngineRun {
                             );
                         }
                         // file I/O that may wait out a Windows sharing violation: off the runtime
-                        let store = Footprints { path: self.footprints_path.clone() };
+                        let store = self.footprints.clone();
                         let (shape, job) = (refused.clone(), self.job);
                         let whole = s.context_mib.is_some();
                         let recorded = tokio::task::spawn_blocking(move || store.record_with(&shape, grown, whole, job))
@@ -1557,7 +1608,7 @@ impl EngineLoraFineTuner {
                 let last = Arc::new(Mutex::new(None));
                 let run = EngineRun {
                     shape: spec.shape.clone(),
-                    footprints_path: self.footprints.path.clone(),
+                    footprints: self.footprints.clone(), // a re-attached run's engine build is not known: its rows are filed without one
                     http: self.http.clone(),
                     lane,
                     start: None,
@@ -1573,7 +1624,7 @@ impl EngineLoraFineTuner {
                     residency: Some((store, work)),
                     _lease: lease,
                 };
-                let finish = finish_run(job, spec, self.footprints.path.clone(), last);
+                let finish = finish_run(job, spec, self.footprints.clone(), last);
                 let handle = self.jobs.prepare(job, move |_progress| async move {
                     Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
                 });
@@ -1625,7 +1676,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             ));
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
-        let LaneChoice { url: lane, window: served_window, engine } = (self.lane)(&request.base_model).ok_or_else(|| {
+        let LaneChoice { url: lane, window: served_window, engine, build } = (self.lane)(&request.base_model).ok_or_else(|| {
             FineTuningError::InvalidRequest(format!(
                 "no live lane serves {} on this node: in-engine training runs on the resident weights",
                 request.base_model
@@ -1734,7 +1785,10 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             chunk: TRAINING_CHUNK_MIN,
             recompute: body.recompute,
         };
-        let mut rows = self.footprints.rows_like(&family);
+        // Evidence about THIS lane's engine only (Codex on #4988): a bound another engine measured
+        // must not park her on this one, or a fixed engine could never wake her.
+        let footprints = self.footprints.for_engine(build.clone());
+        let mut rows = footprints.rows_like(&family);
         let mut model = GraphModel::fit(&rows);
         // THE WINDOW THE DATA NEEDS: every example measured at the served window by the engine's
         // render gives its whole length; the run plans for the longest (every example trains
@@ -1756,7 +1810,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // plain walk instead of truncated or parked on the exact one: a step at cosine 0.81 on her
         // whole turns over one at 0.998 on a fraction of them (Joel: working training beats data
         // purity; she can unlearn).
-        if body.exact && exact_ruled_out(&rows, need, governed_free) {
+        if body.exact && exact_ruled_out(&footprints.measured_rows_like(&family), need, governed_free) {
             crate::probe!(
                 class = "training.job.walk_plain",
                 job = %id,
@@ -1768,10 +1822,10 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             body.walk_host_budget_mib = None;
             walk_reason = format!("the exact walk was measured not to fit window {need} in {governed_free} governed free bytes");
             family.exact = false;
-            rows = self.footprints.rows_like(&family);
+            rows = footprints.rows_like(&family);
             model = GraphModel::fit(&rows);
         }
-        let bounds = self.footprints.bound_rows_like(&family);
+        let bounds = footprints.bound_rows_like(&family);
         let plan = choose_window(need, governed_free, &rows, &bounds);
         let window = plan.window;
         // ONE evaluation, ONE probe (Cormac on #4972): a predicted no-fit floor is reported as the
@@ -1803,6 +1857,52 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 "the training window: what trains her examples whole (the longest of them), shrunk only if even the smallest chunk cannot hold it beside serving"
             );
         }
+        // THE WINDOW NEVER SHRINKS BELOW WHAT TRAINS ONE OF HER EXAMPLES (card de9e1342; Codex's
+        // corrections): a window none of them trains in teaches nothing, and the run would end
+        // Failed with nothing to return. When memory plans one, the smallest window that trains
+        // one of them decides. Measured not to fit what the trainer is governed to, the job is
+        // not created: its examples wait, owned by the trigger, with what would wake them. Only
+        // predicted not to fit, it calibrates there, and its refusal is the measurement the next
+        // plan parks on. Her examples are never cut to a smaller window.
+        // WHOLE length, never `tokens_min` (head plus last exchange: a middle-cut example; Codex on
+        // #4988, her canonical shortest is 38,012 whole against 15,966 min)
+        let useful = at_served
+            .as_ref()
+            .ok()
+            .and_then(|rows| rows.iter().map(|r| r.tokens_full).min())
+            .and_then(|tokens| u32::try_from(tokens).ok())
+            .map(|tokens| train_window(tokens.saturating_add(255)))
+            .filter(|&useful| useful <= served_sent);
+        // Checked whatever the plan chose (Codex on #4988): a measured no-fit at a window equal to
+        // `useful`, the floor included, would otherwise dispatch again.
+        let window = match useful {
+            Some(useful) => {
+                let at_useful = Shape { window: useful, chunk: TRAINING_CHUNK_MIN, ..family.clone() };
+                match footprints.need(&at_useful, model.map(|m| m.bytes(useful, TRAINING_CHUNK_MIN))) {
+                    Some(n) if n.source != NeedSource::Predicted && n.rules_out(governed_free) => {
+                        let wait = super::types::CapacityWait {
+                            window: useful,
+                            need_bytes: n.bytes,
+                            need_source: n.source,
+                            governed_free,
+                            engine_stamp: build.clone(),
+                        };
+                        crate::probe!(
+                            class = "training.job.capacity_parked",
+                            job = %id,
+                            window = u64::from(useful),
+                            need_bytes = n.bytes,
+                            need_source = ?n.source,
+                            governed_free = governed_free,
+                            "the smallest window that trains one of her examples is measured not to fit the governed training memory: no job; her examples wait with what wakes them"
+                        );
+                        return Err(FineTuningError::CapacityParked(wait));
+                    }
+                    _ => window.max(useful),
+                }
+            }
+            None => window,
+        };
         body.window = window;
         let shape_at = |chunk: u32| Shape { window, chunk, ..family.clone() };
         // The chunk is chosen against the measured graph, else the fitted model's prediction for
@@ -1810,15 +1910,15 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // would refuse by construction (Cormac on #4920). The LEASE is only ever a measurement:
         // a chunk known only by prediction is a calibration run, leasing all governed free VRAM.
         let (chunk, _) = choose_chunk(window, governed_free, |c| {
-            self.footprints.need(&shape_at(c), model.map(|m| m.bytes(window, c))).and_then(|n| n.decides(governed_free))
+            footprints.need(&shape_at(c), model.map(|m| m.bytes(window, c))).and_then(|n| n.decides(governed_free))
         });
-        let measured = self.footprints.get(&shape_at(chunk));
+        let measured = footprints.get(&shape_at(chunk));
         let shape = shape_at(chunk);
         body.chunk = Some(chunk);
-        let footprints_path = self.footprints.path.clone();
+        let job_footprints = footprints.clone();
         // what this candidate cannot be under, by measurement (Astra and Cormac on #4949): a
         // calibration grant below it is a guaranteed refusal
-        let calibration_floor = calibration_floor(&rows, window, chunk);
+        let calibration_floor = calibration_floor(&footprints.measured_rows_like(&family), window, chunk);
         let walk = if body.exact {
             super::types::TrainingWalk::Exact
         } else {
@@ -1860,8 +1960,8 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 let shortest_parked = partition
                     .rows
                     .iter()
-                    .filter(|r| r.fit == ExampleFit::Skipped)
-                    .map(|r| r.tokens_min)
+                    .filter(|r| r.fit != ExampleFit::Kept)
+                    .map(|r| r.tokens_full)
                     .min()
                     .unwrap_or(0); // probe field: 0 = nothing parked
                 crate::probe!(
@@ -1880,7 +1980,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 match written {
                     Err(e) => Some(format!("the partition could not be recorded ({e}): no run, so no example is counted as trained that was not")),
                     Ok(()) if sent.is_empty() => Some(format!(
-                        "none of the {} examples fits window {window}: her system and tool head plus her last exchange need at least {shortest_parked} tokens; all are parked in {}",
+                        "none of the {} examples trains whole at window {window}: the shortest needs {shortest_parked} tokens whole; all are parked in {}",
                         request.dataset.examples.len(),
                         job_dir.join(PARTITION_FILE).display()
                     )),
@@ -2001,7 +2101,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 http,
                 lane,
                 shape: spec.shape.clone(),
-                footprints_path: footprints_path.clone(),
+                footprints: job_footprints.clone(),
                 post_wait: post_wait_for(render_per_example, body.examples.len(), post_wait_floor),
                 start: Some(body),
                 out: out.clone(),
@@ -2017,7 +2117,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             };
             Ok(PreparedJob {
                 execution: Execution::InPlace(Box::new(run)),
-                finish: finish_run(id, spec, footprints_path, last),
+                finish: finish_run(id, spec, job_footprints, last),
             })
         }))
     }
@@ -2041,7 +2141,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
 fn finish_run(
     job: Uuid,
     spec: EngineRunSpec,
-    footprints_path: PathBuf,
+    footprints: Footprints,
     last: Arc<Mutex<Option<TrainStatus>>>,
 ) -> Box<dyn FnOnce(u64) -> Result<TrainingArtifact, String> + Send> {
     Box::new(move |wall_clock_ms| {
@@ -2115,7 +2215,7 @@ fn finish_run(
         // every run (Cormac on #4472).
         let asked_full = matches!((spec.shape.depth, status.n_layer), (Some(k), Some(n)) if k >= n);
         if grown > 0 {
-            let store = Footprints { path: footprints_path };
+            let store = footprints;
             if asked_full {
                 // the asked depth, at the window that ran
                 let asked_ran = Shape { window: ran_window, chunk: ran_chunk, ..spec.shape.clone() };
@@ -2243,7 +2343,7 @@ mod tests {
         let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "lost_post_refused").await;
         let footprints = jobs.path().join("footprints.json");
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * 1024 * 1024 * 1024);
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None }));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None, build: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r).await.expect("test: create");
@@ -2307,7 +2407,7 @@ mod tests {
         let at_floor = [(TRAINING_WINDOW_MIN, TRAINING_CHUNK_MIN, 5 * gib)];
         assert_eq!(choose_window(68_608, free, &at_floor, &at_floor).window, TRAINING_WINDOW_MIN, "never under the smallest window");
         let dir = tempfile::tempdir().expect("test: dir");
-        let store = Footprints { path: dir.path().join("fp.json") };
+        let store = Footprints::at(dir.path().join("fp.json"));
         let shape = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
         store.record_with(&shape, 9 * gib, false, Uuid::nil()).expect("test: graph-only");
         assert_eq!(store.get(&shape), None, "a graph-only row leases nothing: the shape calibrates");
@@ -2385,11 +2485,11 @@ mod tests {
             16_896,
             vec![row(0, ExampleFit::Kept), row(1, ExampleFit::Skipped), row(2, ExampleFit::Truncated), row(3, ExampleFit::Skipped), row(4, ExampleFit::Kept)],
         );
-        assert_eq!(p.sent, vec![0, 2, 4], "kept and truncated are sent, in request order");
-        assert_eq!(p.parked, vec![1, 3], "skipped ones are parked");
+        assert_eq!(p.sent, vec![0, 4], "only examples that train whole are sent, in request order");
+        assert_eq!(p.parked, vec![1, 2, 3], "a cut example is parked with the skipped ones, never sent cut");
         let amended = with_run_skipped(p.clone(), &[1, 9]);
-        assert_eq!(amended.parked, vec![1, 2, 3], "the run's index 1 is request index 2; an index past what was sent is ignored");
-        assert_eq!(with_run_skipped(amended.clone(), &[1]).parked, vec![1, 2, 3], "parking twice is once");
+        assert_eq!(amended.parked, vec![1, 2, 3, 4], "the run's index 1 is request index 4; an index past what was sent is ignored");
+        assert_eq!(with_run_skipped(amended.clone(), &[1]).parked, vec![1, 2, 3, 4], "parking twice is once");
         let dir = tempfile::tempdir().expect("test: dir");
         assert_eq!(read_partition(dir.path()), None, "a job from before the record has none");
         write_partition(dir.path(), &amended).expect("test: written");
@@ -2417,7 +2517,7 @@ mod tests {
         assert_eq!(one_chunk.key(), "m|w256|r8|attn_q", "a 256 window's only chunk is the engine's default there: the old key");
         // the store reads its rows back by rebuilding the key, so another family never counts
         let dir = tempfile::tempdir().expect("test: dir");
-        let store = Footprints { path: dir.path().join("fp.json") };
+        let store = Footprints::at(dir.path().join("fp.json"));
         let fam = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
         store.record(&fam, 7, Uuid::nil()).expect("test: record");
         store.record(&Shape { window: 68608, chunk: 512, ..fam.clone() }, 9, Uuid::nil()).expect("test: record");
@@ -2480,8 +2580,17 @@ mod tests {
                         // odd by the example's own prompt ("p1"), not its place in the batch
                         let odd = e["prompt"].as_str().and_then(|p| p.chars().last()).and_then(|c| c.to_digit(10)).is_some_and(|d| d % 2 == 1);
                         let skipped = mode == "park_all" || (mode == "park_odd" && odd);
-                        let full = if mode == "short_turns" { 3_000 } else { at };
-                        let min = if mode == "short_turns" { 3_000 } else { 64 };
+                        // "tiny_turns": 2,000 whole (the useful window is the floor); "truncatable_turns":
+                        // 3,000 whole but 64 once its history is dropped (whole and min apart)
+                        let (full, min) = match mode {
+                            "short_turns" => (3_000, 3_000),
+                            // "mixed_turns": p1 is 6,000 whole (64 once cut), the others 3,000 whole
+                            "mixed_turns" if odd => (6_000, 64),
+                            "mixed_turns" => (3_000, 3_000),
+                            "tiny_turns" => (2_000, 2_000),
+                            "truncatable_turns" => (3_000, 64),
+                            _ => (at, 64),
+                        };
                         let (full, min, fit) = if skipped { (at + 40_000, at + 40_000, "skipped") } else { (full, min, "kept") };
                         json!({"index": i, "tokens_full": full, "tokens_min": min, "tokens_trained": if skipped { 0 } else { full }, "fit": fit})
                     })
@@ -2712,7 +2821,7 @@ mod tests {
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
         let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
         let served = url.clone();
-        t.lane = Box::new(move |_| Some(LaneChoice { url: served.clone(), window: 61_696, engine: None }));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: served.clone(), window: 61_696, engine: None, build: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         r.schedule.as_mut().expect("test: schedule").sequence_length = 1024;
@@ -2723,7 +2832,7 @@ mod tests {
 
         for (served, why) in [(0, "an unknown served window is refused, never guessed"), (200, "a window under 256 is refused, never rounded up past serving")] {
             let lane_url = url.clone();
-            t.lane = Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: served, engine: None }));
+            t.lane = Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: served, engine: None, build: None }));
             let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             assert!(t.create_job(r).await.is_err(), "{why}");
@@ -2743,7 +2852,7 @@ mod tests {
         let footprints = jobs.path().join("footprints.json");
         let gib = 1024u64 * 1024 * 1024;
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), 6 * gib);
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None }));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 1536, engine: None, build: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r.clone()).await.expect("test: create");
@@ -2764,24 +2873,27 @@ mod tests {
 
     // what this catches (Cormac and Astra on #4920; the 5090 2026-10-10, job 00431d4d): the WHOLE
     // planner, not its parts. With two windows of the family measured and a lane serving more
-    // than the graph can hold, the dispatch POSTS a calculated window under served AND a chunk
+    // than the graph can hold, the dispatch POSTS a calculated window under served (her examples
+    // need far less than served, and only whole examples are sent: Codex on #4988) AND a chunk
     // whose modelled graph fits the same grant (a window sized for the floor chunk sent at the
     // default 512 refuses by construction).
     #[tokio::test]
     async fn a_dispatch_the_served_window_cannot_hold_posts_a_window_and_chunk_that_fit() {
         let train = tempfile::tempdir().expect("test: dir");
         let jobs = tempfile::tempdir().expect("test: dir");
-        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "normal").await;
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "short_turns").await;
         let footprints = jobs.path().join("footprints.json");
         let mib = 1024u64 * 1024;
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
-        let store = Footprints { path: footprints.clone() };
+        let store = Footprints::at(footprints.clone());
         store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
         store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
-        let free = 1000 * mib; // tight enough that even chunk 64 cannot hold the served window (fork #52)
+        // her examples are 3,000 tokens whole: the window they need (3,072) is far under served, and
+        // the grant holds it at the floor chunk but not at the served window
+        let free = model.bytes(3_072, TRAINING_CHUNK_MIN);
         let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints.clone(), free);
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 68_608, engine: None }));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 68_608, engine: None, build: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r).await.expect("test: create");
@@ -2791,6 +2903,132 @@ mod tests {
         assert!(w < 68_608 && w % 256 == 0, "a calculated window under served: {w}");
         assert!(model.bytes(w, c) <= free, "the POSTED window and chunk fit the grant together: w{w} c{c} = {} MiB of {} MiB", model.bytes(w, c) / mib, free / mib);
         server.abort();
+    }
+
+    // what this catches (card de9e1342; the 5090, 84 of 108 jobs Failed): memory planning a
+    // window none of her examples trains in, so the run ends Failed with nothing to return and
+    // waits for a human. Each example here needs 3,072 tokens; a graph-only refusal at that
+    // window's floor chunk is over what is free, so the plan's window drops below it. The job is
+    // not created: it is refused as parked, carrying the window her examples need, the measured
+    // lower bound and the free memory, and no run is posted.
+    #[tokio::test]
+    async fn a_job_memory_cannot_give_a_useful_window_is_parked_with_its_wake_key() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let (url, server, seen) = fake_lane(train.path().to_path_buf(), "short_turns").await;
+        let footprints = jobs.path().join("footprints.json");
+        let gib = 1024u64 * 1024 * 1024;
+        let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 3072, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
+        Footprints::at(footprints.clone()).record_with(&fam, 2 * gib, false, Uuid::nil()).expect("test: graph-only refusal");
+        let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
+        let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+        r.local_artifact_dir = Some(jobs.path().to_path_buf());
+        match t.create_job(r).await {
+            Err(FineTuningError::CapacityParked(wait)) => {
+                assert_eq!((wait.window, wait.need_bytes, wait.governed_free), (3_072, 2 * gib, gib), "{wait:?}");
+                assert_eq!(wait.need_source, NeedSource::LowerBound);
+                assert!(!wait.wakes(gib, wait.engine_stamp.as_deref()), "the same free memory never wakes it");
+                assert!(wait.wakes(3 * gib, wait.engine_stamp.as_deref()), "free past the bound makes it eligible to re-plan");
+                assert!(!wait.wakes(gib, None), "no lane up: an unknown build wakes nothing");
+                assert!(wait.wakes(gib, Some("another:cuda")), "a known other engine does");
+            }
+            other => panic!("expected a capacity park, got {other:?}"),
+        }
+        assert!(seen.lock().unwrap().is_none(), "no run was posted");
+        server.abort();
+    }
+
+    // what this catches (Codex on #4988): an example sent CUT through the middle fit. p1 is 6,000
+    // tokens whole, the others 3,000. Whatever window memory allows between them (raised to the
+    // shortest whole example, equal to it, or between it and the longest), p1 would train with its
+    // history dropped, so it is parked and only p0 and p2 are posted, whole.
+    #[tokio::test]
+    async fn only_whole_examples_are_sent_at_every_window_memory_allows() {
+        let mib = 1024u64 * 1024;
+        let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
+        let probe_dir = tempfile::tempdir().expect("test: dir");
+        let probe = Footprints::at(probe_dir.path().join("fp.json"));
+        probe.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
+        probe.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        let model = GraphModel::fit(&probe.rows_like(&fam)).expect("test: two windows");
+        for (case, free) in [
+            ("raised", model.bytes(3_072, TRAINING_CHUNK_MIN) - 1),
+            ("equal", model.bytes(3_072, TRAINING_CHUNK_MIN)),
+            ("between", model.bytes(4_608, TRAINING_CHUNK_MIN)),
+        ] {
+            let train = tempfile::tempdir().expect("test: dir");
+            let jobs = tempfile::tempdir().expect("test: dir");
+            let (url, server, seen) = fake_lane(train.path().to_path_buf(), "mixed_turns").await;
+            let footprints = jobs.path().join("footprints.json");
+            std::fs::copy(probe_dir.path().join("fp.json"), &footprints).expect("test: rows");
+            let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, free);
+            t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            r.dataset.examples = (0..3)
+                .map(|i| TrainingExample { prompt: format!("p{i}"), completion: "c".into(), metadata: None, lived: None })
+                .collect();
+            let h = t.create_job(r).await.expect("test: a prediction calibrates, never parks");
+            let _ = wait_terminal(&t, &h).await;
+            let posted = seen.lock().unwrap().clone().expect("test: posted");
+            let window = posted["window"].as_u64().expect("test: window");
+            assert!((3_072..6_144).contains(&window), "{case}: a window between the shortest and the longest whole example: {window}");
+            let got: Vec<&str> = posted["examples"].as_array().expect("test: examples").iter().map(|e| e["prompt"].as_str().unwrap_or("")).collect();
+            assert_eq!(got, vec!["p0", "p2"], "{case}: the 6,000-token example is parked, never sent cut");
+            let partition = read_partition(&jobs.path().join(h.local_id.to_string())).expect("test: partition");
+            assert_eq!(partition.parked, vec![1], "{case}");
+            server.abort();
+        }
+    }
+
+    // Codex's three cases on #4988, through the same create_job: (1) the useful window EQUAL to
+    // the planned one (the floor): a measured no-fit there still parks; (2) examples whose WHOLE
+    // length (3,000) and middle-cut length (64) differ park at the whole window, never a cut
+    // one; (3) a bound measured on another engine is not evidence on this lane's: no park, the
+    // job calibrates at the useful window; on the engine that measured it, it parks.
+    #[tokio::test]
+    async fn the_park_is_checked_at_the_whole_window_on_the_measuring_engine() {
+        let gib = 1024u64 * 1024 * 1024;
+        let fam = |window: u32| Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK_MIN, recompute: true };
+        let run = |mode: &'static str, bound_at: u32, measured_on: Option<&'static str>, lane_build: Option<&'static str>| async move {
+            let train = tempfile::tempdir().expect("test: dir");
+            let jobs = tempfile::tempdir().expect("test: dir");
+            let (url, server, seen) = fake_lane(train.path().to_path_buf(), mode).await;
+            let footprints = jobs.path().join("footprints.json");
+            Footprints::at(footprints.clone())
+                .for_engine(measured_on.map(str::to_owned))
+                .record_with(&fam(bound_at), 2 * gib, false, Uuid::nil())
+                .expect("test: graph-only refusal");
+            let mut t = EngineLoraFineTuner::for_test_with_vram(url.clone(), train.path().to_path_buf(), footprints, gib);
+            t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: lane_build.map(str::to_owned) }));
+            let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
+            r.local_artifact_dir = Some(jobs.path().to_path_buf());
+            let created = t.create_job(r).await;
+            if let Ok(h) = &created {
+                let _ = wait_terminal(&t, h).await;
+            }
+            let posted = seen.lock().unwrap().clone();
+            server.abort();
+            (created, posted)
+        };
+        let parked_at = |created: &Result<JobHandle, FineTuningError>| match created {
+            Err(FineTuningError::CapacityParked(wait)) => Some(wait.window),
+            _ => None,
+        };
+
+        let (created, posted) = run("tiny_turns", TRAINING_WINDOW_MIN, None, None).await;
+        assert_eq!(parked_at(&created), Some(TRAINING_WINDOW_MIN), "(1) equal to the floor, still parked: {created:?}");
+        assert!(posted.is_none());
+
+        let (created, _) = run("truncatable_turns", 3_072, None, None).await;
+        assert_eq!(parked_at(&created), Some(3_072), "(2) the whole window, not the cut one: {created:?}");
+
+        let (created, posted) = run("short_turns", 3_072, Some("old:cuda"), Some("new:cuda")).await;
+        assert_eq!(parked_at(&created), None, "(3) another engine's bound does not park: {created:?}");
+        assert_eq!(posted.and_then(|p| p["window"].as_u64()), Some(3_072), "it calibrates at the useful window");
+        let (created, _) = run("short_turns", 3_072, Some("old:cuda"), Some("old:cuda")).await;
+        assert_eq!(parked_at(&created), Some(3_072), "(3) on the engine that measured it, it parks");
     }
 
     // what this catches (Fable, 2026-10-11): a run planned at the served window whatever its
@@ -2803,7 +3041,7 @@ mod tests {
         let jobs = tempfile::tempdir().expect("test: dir");
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "short_turns").await;
         let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None }));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         let h = t.create_job(r).await.expect("test: create");
@@ -2824,7 +3062,7 @@ mod tests {
             let jobs = tempfile::tempdir().expect("test: dir");
             let (url, server, seen) = fake_lane(train.path().to_path_buf(), mode).await;
             let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
-            t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 2048, engine: None }));
+            t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 2048, engine: None, build: None }));
             let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
             r.local_artifact_dir = Some(jobs.path().to_path_buf());
             r.dataset.examples = (0..3)
@@ -2861,7 +3099,7 @@ mod tests {
         let (url, server, seen) = fake_lane(train.path().to_path_buf(), "sized").await;
         let footprints = jobs.path().join("footprints.json");
         let mut t = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), footprints.clone());
-        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None }));
+        t.lane = Box::new(move |_| Some(LaneChoice { url: url.clone(), window: 61_696, engine: None, build: None }));
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.local_artifact_dir = Some(jobs.path().to_path_buf());
         // the trigger's dispatch and `return` carry no schedule: the engine runs the default
@@ -3240,7 +3478,7 @@ mod tests {
     #[test]
     fn a_footprint_keeps_the_largest_observation() {
         let dir = tempfile::tempdir().expect("test: dir");
-        let f = Footprints { path: dir.path().join("f.json") };
+        let f = Footprints::at(dir.path().join("f.json"));
         let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
         f.record(&s, 900, Uuid::nil()).unwrap();
         f.record(&s, 700, Uuid::nil()).unwrap();
@@ -3267,11 +3505,11 @@ mod tests {
             serde_json::to_vec(&serde_json::json!({ "m|w1536|r8|attn_q": { "bytes": 41_500, "measuredAtMs": 0, "job": "legacy", "includesContext": true } })).unwrap(),
         )
         .unwrap();
-        let f = Footprints { path: path.clone() };
+        let f = Footprints::at(path.clone());
         assert_eq!(f.get(&full), Some(41_500), "the legacy row is full depth");
         assert_eq!(f.get(&top8), None, "a reduced-depth lookup never falls back to the legacy row");
         f.record(&top8, 5_200, Uuid::nil()).unwrap();
-        let reloaded = Footprints { path };
+        let reloaded = Footprints::at(path);
         assert_eq!(reloaded.get(&top8), Some(5_200));
         assert_eq!(reloaded.get(&full), Some(41_500), "the reduced row never answers for full depth");
         // what the engine reported decides the recorded depth: an engine that says nothing

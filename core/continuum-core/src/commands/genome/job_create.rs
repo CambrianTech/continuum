@@ -90,6 +90,11 @@ pub struct JobCreateOutcome {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub took: Option<Took>,
+    /// Set with `errorKind` [`ERROR_KIND_CAPACITY_PARKED`]: what the refused job waits for, so
+    /// the trigger parks its examples with the wake key instead of retrying or failing them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub capacity_wait: Option<crate::genome::fine_tuning::types::CapacityWait>,
 }
 
 /// A decision's action that creates no job. The caller (the trigger) keeps the
@@ -181,6 +186,9 @@ pub const ERROR_KIND_REUSE_PULL_FAILED: &str = "ReusePullFailed";
 pub const ERROR_KIND_REUSE_ADOPT_FAILED: &str = "ReuseAdoptFailed";
 /// Her trial file could not be read: nothing decided blind; the next fill retries.
 pub const ERROR_KIND_TRIAL_FILE_UNREADABLE: &str = "TrialFileUnreadable";
+/// No room for the smallest window that trains one of her examples, by measurement: no job;
+/// the trigger parks the batch with the outcome's `capacityWait` (card de9e1342).
+pub const ERROR_KIND_CAPACITY_PARKED: &str = "CapacityParked";
 
 /// The decision could not be made: a typed refusal the trigger retries on the next fill,
 /// probed so a bucket that keeps refusing is readable.
@@ -193,7 +201,7 @@ fn refused_decision(error_kind: &str, request: &TrainingJobRequest, error: &str)
         error,
         "a full bucket could not decide: no job, the bucket keeps its examples, the next fill retries"
     );
-    Ok(JobCreateOutcome { success: false, result: None, error: Some(error.to_string()), error_kind: Some(error_kind.to_string()), took: None })
+    Ok(JobCreateOutcome { success: false, result: None, error: Some(error.to_string()), error_kind: Some(error_kind.to_string()), took: None, capacity_wait: None })
 }
 
 /// The one clock a decision reads: the signature's mint time, a trial's liveness, the
@@ -245,6 +253,7 @@ crate::action_command! {
                             error: Some(format!("datasetName {name:?}: no datasets root ({e})")),
                             error_kind: None,
                             took: None,
+                            capacity_wait: None,
                         });
                     }
                 };
@@ -265,6 +274,7 @@ crate::action_command! {
                             )),
                             error_kind: None,
                             took: None,
+                            capacity_wait: None,
                         });
                     }
                 };
@@ -280,6 +290,7 @@ crate::action_command! {
                     ),
                     error_kind: None,
                     took: None,
+                    capacity_wait: None,
                 });
             }
             (None, true) => {
@@ -293,6 +304,7 @@ crate::action_command! {
                     ),
                     error_kind: None,
                     took: None,
+                    capacity_wait: None,
                 });
             }
             (None, false) => {}
@@ -313,6 +325,7 @@ crate::action_command! {
                     error: Some(e.to_string()),
                     error_kind: None,
                     took: None,
+                    capacity_wait: None,
                 });
             }
         };
@@ -507,7 +520,7 @@ crate::action_command! {
         // her bucket for each of them: they are the competence's evidence, nothing trained
         // on them, and the fill after the pending thing settles decides again.
         let examples = p.request.dataset.examples.len() as u64;
-        let without_job = |took: Took| Ok(JobCreateOutcome { success: true, result: None, error: None, error_kind: None, took: Some(took) });
+        let without_job = |took: Took| Ok(JobCreateOutcome { success: true, result: None, error: None, error_kind: None, took: Some(took), capacity_wait: None });
         match &decision {
             // A competence already training is never minted twice.
             Some(Decision::Join { job, similarity }) => {
@@ -540,7 +553,7 @@ crate::action_command! {
             // No training. Her work decides it; a retired one is never offered again.
             Some(Decision::Reuse { gene, similarity }) => {
                 let refused = |error_kind: &str, error: String| {
-                    Ok(JobCreateOutcome { success: false, result: None, error: Some(error), error_kind: Some(error_kind.into()), took: None })
+                    Ok(JobCreateOutcome { success: false, result: None, error: Some(error), error_kind: Some(error_kind.into()), took: None, capacity_wait: None })
                 };
                 let path = match gene {
                     GeneRef::Local { path } => path.clone(),
@@ -674,6 +687,7 @@ crate::action_command! {
                     error: None,
                     error_kind: None,
                     took: None,
+                    capacity_wait: None,
                 })
             }
             Err(e) => Ok(JobCreateOutcome {
@@ -682,6 +696,10 @@ crate::action_command! {
                 error: Some(e.to_string()),
                 error_kind: Some(fine_tuning_error_kind(&e).to_string()),
                 took: None,
+                capacity_wait: match e {
+                    crate::genome::fine_tuning::FineTuningError::CapacityParked(wait) => Some(wait),
+                    _ => None,
+                },
             }),
         }
     }
