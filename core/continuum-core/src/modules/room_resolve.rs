@@ -30,21 +30,59 @@ pub(crate) async fn resolve_room(airc: &Airc, named: Option<&str>) -> Result<air
     let wanted = named.trim_start_matches('#');
     let by_id = uuid::Uuid::parse_str(wanted).ok();
     let mut names = Vec::new();
+    let mut rooms = Vec::new();
     for sub in set.all() {
         let room = sub.as_room();
         if room.name == wanted || by_id == Some(room.channel.as_uuid()) {
             return Ok(room);
         }
-        names.push(room.name);
+        names.push(room.name.clone());
+        rooms.push(room);
     }
-    Err(CommandError::Invalid(not_in_reach(named, wanted, &names)))
+    // A CARD ID WHERE A ROOM GOES (card 7d03cef2): Kimi passed her card's id `db0aa5b2` as
+    // work/create's room twice on 2026-10-12 and the refusal never said what she had done. Only an
+    // id-shaped name is looked up, on the refusal path, across the boards she can read.
+    let card = if looks_like_an_id(wanted) {
+        card_on_a_board(airc, &rooms, wanted).await
+    } else {
+        None
+    };
+    Err(CommandError::Invalid(not_in_reach(named, wanted, &names, card.as_ref())))
+}
+
+/// A name shaped like an id (eight or more hex digits, dashes allowed), not a room name.
+fn looks_like_an_id(name: &str) -> bool {
+    name.len() >= 8 && name.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
+}
+
+/// The card on one of `rooms`' boards whose id starts with `prefix`: its title and room.
+async fn card_on_a_board(airc: &Airc, rooms: &[airc_lib::Room], prefix: &str) -> Option<(String, String)> {
+    let prefix = prefix.to_ascii_lowercase();
+    for room in rooms {
+        let Ok(board) = airc.work_board_in(room).await else { continue };
+        if let Some(card) = board
+            .snapshot()
+            .cards
+            .iter()
+            .find(|c| c.card_id.as_uuid().to_string().starts_with(&prefix))
+        {
+            return Some((card.title.clone(), room.name.clone()));
+        }
+    }
+    None
 }
 
 /// PURE: the refusal for a room the caller is not in, leading with the room she most likely
 /// meant. Kimi sent `swe-bench` for `#bench-swe-bench-verified-1789170698` three times in an
 /// hour (2026-10-06, QA 598de62b): the list held the answer, but nothing pointed at it.
-fn not_in_reach(named: &str, wanted: &str, names: &[String]) -> String {
+fn not_in_reach(named: &str, wanted: &str, names: &[String], card: Option<&(String, String)>) -> String {
     let listed = names.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
+    if let Some((title, room)) = card {
+        return format!(
+            "{named:?} is your card \"{title}\" in #{room}, not a room. The work verbs that act on a card \
+             (work/note, work/get, work/state, work/submit) take it as card_id; a room is one of these ({listed})"
+        );
+    }
     let lower = wanted.to_lowercase();
     let containing: Vec<&String> = if lower.len() >= 3 {
         names.iter().filter(|n| n.to_lowercase().contains(&lower)).collect()
@@ -126,7 +164,7 @@ mod tests {
             ["general", "bench-swe-bench-verified-1789170698", "bench-humaneval-1789170001", "academy"]
                 .map(String::from)
                 .to_vec();
-        let lead = |want: &str| not_in_reach(want, want.trim_start_matches('#'), &names);
+        let lead = |want: &str| not_in_reach(want, want.trim_start_matches('#'), &names, None);
 
         let contained = lead("swe-bench");
         assert!(contained.contains("did you mean #bench-swe-bench-verified-1789170698?"), "{contained}");
@@ -141,5 +179,20 @@ mod tests {
         assert!(lead("#acadmy").contains("did you mean #academy?"), "a typo resolves by edit distance");
         assert!(!lead("default").contains("did you mean"), "nothing close: no guess");
         assert!(!lead("ge").contains("did you mean"), "too short to contain-match");
+    }
+
+    // what this catches (card 7d03cef2): a card's id passed where a room goes, refused without
+    // saying so. Kimi sent her card `db0aa5b2` as work/create's room twice on 2026-10-12 and read
+    // only "not among the rooms". The refusal names the card, its room and the verbs that take it.
+    #[test]
+    fn a_card_id_passed_as_a_room_is_named_as_the_card() {
+        let names: Vec<String> = ["cambriantech", "general"].map(String::from).to_vec();
+        let card = ("wall paging: expand cursor".to_string(), "cambriantech".to_string());
+        let text = not_in_reach("db0aa5b2", "db0aa5b2", &names, Some(&card));
+        assert!(text.contains("is your card \"wall paging: expand cursor\" in #cambriantech, not a room"), "{text}");
+        assert!(text.contains("card_id") && text.contains("work/note"), "names the verbs that take a card: {text}");
+        assert!(text.contains("#cambriantech, #general"), "still lists the rooms: {text}");
+        assert!(looks_like_an_id("db0aa5b2") && looks_like_an_id("db0aa5b2-9bba-4168"));
+        assert!(!looks_like_an_id("academy") && !looks_like_an_id("abc"), "a room name or a short word is never looked up");
     }
 }
