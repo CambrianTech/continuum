@@ -218,6 +218,7 @@ mod tests {
                 fixed_per_lane_bytes: 0,
             },
             served_context_window: 8192,
+            lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
             lanes: 1,
             grid_overflow_lanes: 0,
             resident_models: 1,
