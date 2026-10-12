@@ -112,7 +112,7 @@ pub struct PersonaDemand {
     pub last_seen_ms: u64,
     /// Wall clock of the turn BEFORE `last_seen_ms` (0 = fewer than two turns seen). The
     /// gap between them is how long she takes to come back, which is what the prompt
-    /// cache must hold her state across (`serving_daemon::rotation_window_ms`, card
+    /// cache must hold her state across (`serving_daemon::prompt_cache::rotation_window_ms`, card
     /// 56d3c76f). Legacy files read 0: no return measured yet.
     #[serde(default)]
     pub prev_seen_ms: u64,

@@ -155,7 +155,7 @@ impl LaneInvocation {
 /// so the cache is load-bearing for slot eviction — kept at HALF the default:
 /// 4 GiB comfortably holds every slot's conversation once on the current
 /// geometry, and the governor accounts this exact number as a term of the
-/// host-cache lease (`serving_daemon::moe_host_cache_lease_inputs`), so the
+/// host-cache lease (`serving_daemon::prompt_cache::moe_host_cache_lease_inputs`), so the
 /// expert cache can never be sized as if this RAM were free.
 /// COLD-START PRIOR only (restore-economy 1.b): the value a lane gets when no
 /// citizen demand has ever been measured (fresh install, or a single-purpose
