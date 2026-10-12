@@ -2425,7 +2425,9 @@ mod tests {
             assert!(view.contains("read-274-output"), "the read remains addressable");
             assert!(view.contains(&room_a.to_string()), "the view retains its room");
             assert!(
-                !view.contains("660: complete source line") || view.contains(&read),
+                // The ring stores the receipt trimmed of surrounding whitespace, which is not
+                // a cut: every line of the read must be there.
+                !view.contains("660: complete source line") || view.contains(read.trim()),
                 "a suffix of a source read must never masquerade as the retained result"
             );
         };
