@@ -38,12 +38,13 @@ static LIVE_HANDLES: std::sync::OnceLock<
     parking_lot::Mutex<std::collections::HashMap<LiveHolder, std::collections::HashSet<String>>>,
 > = std::sync::OnceLock::new();
 
-/// Who holds a set of live handles: a working memory (its instance), or a restore in progress
-/// ([`RestorePin`]), in separate key spaces so neither can replace the other's set.
+/// Who holds a set of live handles: a working memory (its instance), or a [`LivePin`] holding
+/// results saved but not yet published by a memory, in separate key spaces so neither can
+/// replace the other's set.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum LiveHolder {
     Memory(u64),
-    Restore(u64),
+    Pin(u64),
 }
 
 fn live_handles(
@@ -66,12 +67,60 @@ pub fn withdraw_live_handles(holder: u64) {
     live_handles().lock().remove(&LiveHolder::Memory(holder));
 }
 
-/// Keeps the results a restore just saved live until the working memory that references them
-/// has published its own set; dropping it withdraws the restore's set.
-#[must_use = "the restored handles are unprotected once this drops; hold it past WorkingMemory::restore"]
-pub struct RestorePin(LiveHolder);
+/// THE atomic retain-and-pin: a save that is live from before its file exists until a working
+/// memory has published a set naming it. [`LivePin::retain`] enters the handle (a content hash,
+/// known before the write) into the same live set eviction reads ([`is_live`]), under the same
+/// lock, and only then writes the file. So no evictor, sequential or concurrent, ever sees a new
+/// file unpinned (Codex on #4982). Dropping the pin withdraws its set; hold it until the memory
+/// that references the results has published. The restore path uses it here; the live path
+/// (command executor, act/observe) adopting it is card 12b080c3.
+#[must_use = "the saved handles are unprotected once this drops; hold it until a memory has published them"]
+pub struct LivePin(LiveHolder);
 
-impl Drop for RestorePin {
+impl LivePin {
+    pub fn new() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        LivePin(LiveHolder::Pin(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)))
+    }
+
+    /// Save `content` exactly, pinned before it is written: `Whole{handle}`, or `Unsaved` when
+    /// the save failed (probed; the caller keeps the text whole).
+    pub fn retain(&self, persona_id: Uuid, content: &str) -> ResultCustody {
+        match spill_root() {
+            Ok(root) => self.retain_in(&root, persona_id, content),
+            Err(e) => unretained(content, &e),
+        }
+    }
+
+    fn retain_in(&self, root: &Path, persona_id: Uuid, content: &str) -> ResultCustody {
+        let handle = handle_of(content);
+        let entered = self.hold(&handle);
+        match write_in(root, persona_id, &handle, content) {
+            Ok(_) => ResultCustody::Whole { handle },
+            Err(e) => {
+                if entered {
+                    if let Some(set) = live_handles().lock().get_mut(&self.0) {
+                        set.remove(&handle);
+                    }
+                }
+                unretained(content, &e)
+            }
+        }
+    }
+
+    /// Enter `handle` into this pin's live set; whether it was newly entered.
+    fn hold(&self, handle: &str) -> bool {
+        live_handles().lock().entry(self.0).or_default().insert(handle.to_owned())
+    }
+}
+
+impl Default for LivePin {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for LivePin {
     fn drop(&mut self) {
         live_handles().lock().remove(&self.0);
     }
@@ -79,46 +128,30 @@ impl Drop for RestorePin {
 
 /// Save every restored result that has no handle: those from a snapshot written before results
 /// were saved (#4963). They predate custody; they are not failed saves. Each is saved exactly as
-/// the mind saw it, and its handle is published live BEFORE the next save, so the disk pressure a
-/// later save adds can never evict an earlier one in the window before the restored memory
-/// publishes (Codex on #4982; the persisted checkpoint is the old snapshot and names none of
-/// them). A save that fails leaves its handle `None` and its text whole (probed `Unsaved`).
+/// the mind saw it through one [`LivePin`], pinned before its write (the persisted checkpoint is
+/// the old snapshot and names none of them). A save that fails leaves its handle `None` and its
+/// text whole (probed `Unsaved`).
 pub fn retain_handleless<'a>(
     persona_id: Uuid,
     results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
-) -> RestorePin {
+) -> LivePin {
+    let pin = LivePin::new();
     match spill_root() {
-        Ok(root) => retain_handleless_in(&root, persona_id, results),
-        Err(e) => {
-            for (text, _) in results {
-                unretained(text, &e);
-            }
-            RestorePin(next_restore_holder())
-        }
-    }
-}
-
-fn next_restore_holder() -> LiveHolder {
-    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-    LiveHolder::Restore(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
-}
-
-fn retain_handleless_in<'a>(
-    root: &Path,
-    persona_id: Uuid,
-    results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
-) -> RestorePin {
-    let pin = RestorePin(next_restore_holder());
-    for (text, handle) in results {
-        if handle.is_some() {
-            continue;
-        }
-        if let ResultCustody::Whole { handle: saved } = retain_in(root, persona_id, text) {
-            live_handles().lock().entry(pin.0).or_default().insert(saved.clone());
-            *handle = Some(saved);
-        }
+        Ok(root) => retain_handleless_with(|text| pin.retain_in(&root, persona_id, text), results),
+        Err(e) => retain_handleless_with(|text| unretained(text, &e), results),
     }
     pin
+}
+
+fn retain_handleless_with<'a>(
+    mut save: impl FnMut(&str) -> ResultCustody,
+    results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
+) {
+    for (text, handle) in results {
+        if handle.is_none() {
+            *handle = save(text).handle().map(str::to_owned);
+        }
+    }
 }
 
 /// Whether a spill file at `path` is referenced by a mind. The eviction guard the spill
@@ -285,14 +318,25 @@ fn persona_dir(root: &Path, persona_id: Uuid) -> PathBuf {
     root.join(persona_id.to_string())
 }
 
-fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
-    let dir = persona_dir(root, persona_id);
-    fs::create_dir_all(&dir)?;
+/// The content address a result is saved under: 16 hex chars of its SHA-256, known before any
+/// write, which is what lets [`LivePin`] pin a file before it exists.
+fn handle_of(content: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(content.as_bytes());
-    let handle = format!("{:x}", hasher.finalize())[..16].to_string();
+    format!("{:x}", hasher.finalize())[..16].to_string()
+}
+
+fn write_in(root: &Path, persona_id: Uuid, handle: &str, content: &str) -> std::io::Result<PathBuf> {
+    let dir = persona_dir(root, persona_id);
+    fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{handle}.log"));
     fs::write(&path, content.as_bytes())?;
+    Ok(path)
+}
+
+fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
+    let handle = handle_of(content);
+    let path = write_in(root, persona_id, &handle, content)?;
     Ok(SpillRef {
         handle,
         path,
@@ -515,7 +559,7 @@ mod tests {
 
     // what this catches (Codex on #4982): the restore retain loop untested, a restored
     // handle that does not resolve to the exact bytes the mind saw, a failed save that drops
-    // the text, and a restored file left unpinned between its save and the memory's publish.
+    // the text or leaves a pin, and a new file visible to eviction before it is pinned.
     #[test]
     fn a_restore_saves_handleless_results_exactly_and_pins_them_until_published() {
         let tmp = std::env::temp_dir().join(format!("spill-restore-{}", Uuid::new_v4()));
@@ -525,7 +569,8 @@ mod tests {
             ("already saved".to_string(), Some("feedfacefeedface".to_string())),
             ("third result".to_string(), None),
         ];
-        let pin = retain_handleless_in(&tmp, persona, results.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        let pin = LivePin::new();
+        retain_handleless_with(|t| pin.retain_in(&tmp, persona, t), results.iter_mut().map(|(t, h)| (t.as_str(), h)));
         for (text, handle) in [&results[0], &results[2]] {
             let handle = handle.as_deref().expect("a handle-less result is saved");
             assert_eq!(std::fs::read_to_string(resolve_in(&tmp, persona, handle).unwrap()).unwrap(), *text, "byte-identical");
@@ -541,8 +586,19 @@ mod tests {
         let blocked = std::env::temp_dir().join(format!("spill-blocked-{}", Uuid::new_v4()));
         std::fs::write(&blocked, b"not a directory").unwrap();
         let mut failed = vec![("kept whole".to_string(), None::<String>)];
-        let _pin = retain_handleless_in(&blocked, persona, failed.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        let failing = LivePin::new();
+        retain_handleless_with(|t| failing.retain_in(&blocked, persona, t), failed.iter_mut().map(|(t, h)| (t.as_str(), h)));
         assert_eq!(failed[0], ("kept whole".to_string(), None), "a failed save keeps its text and claims no handle");
+        assert!(live_handles().lock().get(&failing.0).is_none_or(|set| set.is_empty()), "and pins nothing");
+
+        // THE ORDER (Codex on #4982): the handle is live before its file exists, under the lock
+        // eviction reads, so no evictor can see the new file unpinned.
+        let ordered = LivePin::new();
+        let handle = handle_of("pinned first");
+        assert!(ordered.hold(&handle), "entered");
+        let path = persona_dir(&tmp, persona).join(format!("{handle}.log"));
+        assert!(!path.exists() && live_handles().lock().values().any(|set| set.contains(&handle)), "live before written");
+        assert!(matches!(ordered.retain_in(&tmp, persona, "pinned first"), ResultCustody::Whole { .. }) && path.exists());
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_file(&blocked);
     }
