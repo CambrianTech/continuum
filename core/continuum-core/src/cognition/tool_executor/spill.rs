@@ -73,7 +73,8 @@ pub fn withdraw_live_handles(holder: u64) {
 /// lock, and only then writes the file. So no evictor, sequential or concurrent, ever sees a new
 /// file unpinned (Codex on #4982). Dropping the pin withdraws its set; hold it until the memory
 /// that references the results has published. The restore path uses it here; the live path
-/// (command executor, act/observe) adopting it is card 12b080c3.
+/// (command executor, act/observe) adopting it is card 12b080c3. The other half of the
+/// atomicity is eviction's: [`evict_unless_live`] decides and deletes under this same lock.
 #[must_use = "the saved handles are unprotected once this drops; hold it until a memory has published them"]
 pub(crate) struct LivePin(LiveHolder);
 
@@ -157,9 +158,43 @@ pub fn is_live(path: &Path) -> bool {
     let Some(handle) = path.file_stem().and_then(|s| s.to_str()) else {
         return false;
     };
-    if live_handles().lock().values().any(|set| set.contains(handle)) {
-        return true;
+    live_handles().lock().values().any(|set| set.contains(handle)) || checkpoint_protects(path, handle)
+}
+
+/// Evict one spill file unless a mind points at it: the pool's remover. Liveness in memory and
+/// the delete happen in ONE critical section of the live-set lock, the lock [`LivePin`] enters a
+/// handle under. So a pin either lands first (the file is protected) or after the delete (and
+/// its write recreates the file): it can never land between the check and the delete, which is
+/// how a content-addressed file that already existed could be deleted while pinned (Codex on
+/// #4982). The persisted checkpoint is read first, outside the lock.
+pub fn evict_unless_live(path: &Path) -> crate::paging::filesystem_tier_pool::Removal {
+    evict_unless_live_with(path, || {})
+}
+
+fn evict_unless_live_with(
+    path: &Path,
+    inside_the_section: impl FnOnce(),
+) -> crate::paging::filesystem_tier_pool::Removal {
+    use crate::paging::filesystem_tier_pool::Removal;
+    let Some(handle) = path.file_stem().and_then(|s| s.to_str()) else {
+        return fs::remove_file(path).into();
+    };
+    if checkpoint_protects(path, handle) {
+        return Removal::Protected;
     }
+    let live = live_handles().lock();
+    if live.values().any(|set| set.contains(handle)) {
+        return Removal::Protected;
+    }
+    inside_the_section();
+    let removal = fs::remove_file(path).into();
+    drop(live);
+    removal
+}
+
+/// Whether the persisted checkpoint of the persona owning `path` names `handle`. An unreadable
+/// checkpoint fails closed.
+fn checkpoint_protects(path: &Path, handle: &str) -> bool {
     let Some(persona_id) = path
         .parent()
         .and_then(|dir| dir.file_name())
@@ -592,6 +627,19 @@ mod tests {
         let path = persona_dir(&tmp, persona).join(format!("{handle}.log"));
         assert!(!path.exists() && live_handles().lock().values().any(|set| set.contains(&handle)), "live before written");
         assert!(matches!(ordered.retain_in(&tmp, persona, "pinned first"), ResultCustody::Whole { .. }) && path.exists());
+
+        // THE INTERLEAVING (Codex on #4982): a content-addressed file that already exists is
+        // never deleted while pinned. Eviction decides and deletes in one critical section, so a
+        // pin cannot enter between them: inside it, the lock a pin needs is held.
+        use crate::paging::filesystem_tier_pool::Removal;
+        assert!(matches!(evict_unless_live(&path), Removal::Protected) && path.exists(), "pinned: protected");
+        drop(ordered);
+        let removal = evict_unless_live_with(&path, || {
+            assert!(live_handles().try_lock().is_none(), "no pin can enter between the check and the delete");
+        });
+        assert!(matches!(removal, Removal::Removed) && !path.exists(), "unpinned: removed");
+        let again = LivePin::new();
+        assert!(matches!(again.retain_in(&tmp, persona, "pinned first"), ResultCustody::Whole { .. }) && path.exists(), "a pin after the delete rewrites the file");
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_file(&blocked);
     }

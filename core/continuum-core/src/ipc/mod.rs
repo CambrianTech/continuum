@@ -1758,7 +1758,7 @@ pub fn start_server(
                         SPILL_POOL_SOFT_CAP_BYTES,
                     )
                     // A handle a live mind still points at is never evicted (card 9197cd01).
-                    .protecting(Arc::new(crate::cognition::tool_executor::spill::is_live)),
+                    .removing_with(Arc::new(crate::cognition::tool_executor::spill::evict_unless_live)),
                 )
                     as Arc<dyn crate::paging::pool::ResourcePool>);
                 log_info!(

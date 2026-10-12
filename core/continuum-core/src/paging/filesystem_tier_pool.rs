@@ -50,6 +50,24 @@ struct DirSnapshot {
 /// reuses one snapshot across `usage_bytes` + `evict_at_least`.
 const SNAPSHOT_TTL_MS: u128 = 1000;
 
+/// What removing one file did. A guarded remover returns [`Removal::Protected`] for a file
+/// something live still points at.
+#[derive(Debug)]
+pub enum Removal {
+    Removed,
+    Protected,
+    Failed(std::io::Error),
+}
+
+impl From<std::io::Result<()>> for Removal {
+    fn from(result: std::io::Result<()>) -> Self {
+        match result {
+            Ok(()) => Removal::Removed,
+            Err(e) => Removal::Failed(e),
+        }
+    }
+}
+
 /// `ResourcePool` implementation backed by a single directory on the
 /// host filesystem. Files in the directory are evicted oldest-first
 /// (by mtime) when the broker asks for relief.
@@ -61,10 +79,12 @@ pub struct FilesystemTierPool {
     /// read may also refresh; the lock window is small and contention
     /// is bounded by the broker's tick interval anyway.
     snapshot: Mutex<Option<DirSnapshot>>,
-    /// Files this guard names are never evicted, whatever their age: a cache whose entries
-    /// something live still points at (the tool-output spill: a handle in a mind's working
-    /// memory). `None` evicts purely oldest-first.
-    protect: Option<std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync>>,
+    /// How a file is removed, for a cache whose entries something live may still point at (the
+    /// tool-output spill: a handle in a mind's working memory). The remover decides liveness
+    /// AND deletes in one critical section of its owner, so nothing can claim the file between
+    /// the check and the delete (Codex on #4982: a separate predicate released its lock before
+    /// the delete). `None` deletes purely oldest-first.
+    remove: Option<std::sync::Arc<dyn Fn(&Path) -> Removal + Send + Sync>>,
 }
 
 impl FilesystemTierPool {
@@ -79,13 +99,13 @@ impl FilesystemTierPool {
             dir,
             max_bytes,
             snapshot: Mutex::new(None),
-            protect: None,
+            remove: None,
         }
     }
 
-    /// Never evict a file `protect` names. Oldest-first still orders the rest.
-    pub fn protecting(mut self, protect: std::sync::Arc<dyn Fn(&Path) -> bool + Send + Sync>) -> Self {
-        self.protect = Some(protect);
+    /// Remove each file through `remove`, which may protect it. Oldest-first still orders them.
+    pub fn removing_with(mut self, remove: std::sync::Arc<dyn Fn(&Path) -> Removal + Send + Sync>) -> Self {
+        self.remove = Some(remove);
         self
     }
 
@@ -140,17 +160,20 @@ impl ResourcePool for FilesystemTierPool {
             if freed >= want_bytes {
                 break;
             }
-            if self.protect.as_ref().is_some_and(|protect| protect(path)) {
-                crate::probe!(
-                    class = "pool.evict_protected",
-                    tier = %self.tier_name,
-                    path = %path.display(),
-                    "a file something live still points at is not evicted"
-                );
-                continue;
-            }
-            match fs::remove_file(path) {
-                Ok(()) => {
+            let removal = match &self.remove {
+                Some(remove) => remove(path),
+                None => fs::remove_file(path).into(),
+            };
+            match removal {
+                Removal::Protected => {
+                    crate::probe!(
+                        class = "pool.evict_protected",
+                        tier = %self.tier_name,
+                        path = %path.display(),
+                        "a file something live still points at is not evicted"
+                    );
+                }
+                Removal::Removed => {
                     freed = freed.saturating_add(*size);
                     crate::probe!(
                         class = "pool.evicted",
@@ -159,7 +182,7 @@ impl ResourcePool for FilesystemTierPool {
                         bytes = *size
                     );
                 }
-                Err(e) => {
+                Removal::Failed(e) => {
                     // Don't bail — operator may have locked a file; try
                     // the next-oldest. Logging the failure keeps the
                     // evidence trail per
@@ -319,7 +342,9 @@ mod tests {
             .collect();
         let oldest = paths[0].clone();
         let pool = FilesystemTierPool::new("guarded", dir.path().to_path_buf(), 10_000)
-            .protecting(std::sync::Arc::new(move |p: &Path| p == oldest));
+            .removing_with(std::sync::Arc::new(move |p: &Path| {
+                if p == oldest { Removal::Protected } else { fs::remove_file(p).into() }
+            }));
         assert_eq!(pool.evict_at_least(1000), 1000);
         assert!(paths[0].exists(), "the protected oldest file survives");
         assert!(!paths[1].exists(), "the next-oldest goes instead");
