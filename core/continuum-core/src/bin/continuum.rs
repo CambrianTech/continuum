@@ -7676,8 +7676,11 @@ mod tests {
     // BEFORE stopping the live core, even when its description names the new image.
     #[test]
     fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
-        let directory = tempfile::tempdir().unwrap();
-        let directory = directory.path().canonicalize().unwrap();
+        let tempdir = tempfile::tempdir().unwrap();
+        // The directory as an installer receipt names it, BEFORE resolution: on Windows an
+        // ordinary path, whose resolved form carries the verbatim `\\?\` prefix.
+        let ordinary = tempdir.path().to_path_buf();
+        let directory = ordinary.canonicalize().unwrap();
         #[cfg(windows)]
         {
             // Receipt migration and direct reboot share the installer's real
@@ -7779,12 +7782,12 @@ mod tests {
         let raw = {
             #[cfg(windows)]
             {
-                artifact.clone()
+                ordinary.join(artifact.file_name().unwrap())
             }
             #[cfg(unix)]
             {
                 let link = directory.join("via-link");
-                std::os::unix::fs::symlink(&directory, &link).unwrap();
+                std::os::unix::fs::symlink(&ordinary, &link).unwrap();
                 link.join(artifact.file_name().unwrap())
             }
         };
