@@ -376,7 +376,7 @@ async fn stage_for_owner_on_demand(
     card: &airc_lib::WorkCard,
 ) -> Result<std::path::PathBuf, CommandError> {
     use crate::modules::card_staging::Staging;
-    let home = crate::commands::benchmark::continuum_home()
+    let home = crate::paths::continuum_home()
         .map_err(|e| CommandError::Internal(format!("continuum home: {e}")))?;
     let card_uuid = card.card_id.as_uuid();
     match crate::modules::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {

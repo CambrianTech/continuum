@@ -35,7 +35,7 @@ use std::path::PathBuf;
 /// writes. A single expression of the layout, so a change to staging cannot leave a reader
 /// looking in a directory the writer stopped using.
 pub fn staging_root(peer: &uuid::Uuid) -> Option<PathBuf> {
-    let home = crate::commands::benchmark::continuum_home().ok()?;
+    let home = crate::paths::continuum_home().ok()?;
     Some(
         home.join("citizens")
             .join("peers")
@@ -243,7 +243,7 @@ fn copy_facts(peer: uuid::Uuid, path: PathBuf) -> StagedCopy {
 /// other's card ([[a-perception-fact-is-honesty-not-an-actuator]]: refusing is the honest
 /// outcome, and the caller names the candidates).
 pub fn owners_of(instance: &str) -> Vec<StagedCopy> {
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(home.join("citizens").join("peers")) else {

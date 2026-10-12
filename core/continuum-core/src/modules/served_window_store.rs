@@ -60,7 +60,7 @@ fn path_under(home: &Path) -> PathBuf {
 }
 
 fn default_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|h| path_under(&h))
 }

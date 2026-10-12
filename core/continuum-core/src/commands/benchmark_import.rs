@@ -411,7 +411,7 @@ impl ActionCommand for CourseworkImport {
         })
         .await
         .map_err(|e| CommandError::Internal(format!("lesson selection task failed: {e}")))??;
-        let home = crate::commands::benchmark::continuum_home()?;
+        let home = crate::paths::continuum_home()?;
         let set = crate::cognition::coursework::write_set(&home, &tasks).map_err(CommandError::Invalid)?;
         let reference = crate::commands::benchmark::eval_set_reference(&set).ok_or_else(|| {
             CommandError::Internal(format!("coursework set {set} was written but does not resolve"))

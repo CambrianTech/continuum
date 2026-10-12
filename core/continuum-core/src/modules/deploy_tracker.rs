@@ -339,7 +339,7 @@ pub struct DeployTrackerModule {
 
 impl DeployTrackerModule {
     pub fn new() -> Self {
-        let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
+        let root = crate::paths::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         let state_dir = root.join("state");
         let actuator = Arc::new(DeployActuator::new(root.clone()));
         Self {

@@ -1405,7 +1405,7 @@ pub fn page_dirs_of(
 fn server_bin() -> Result<String, LlamaServerError> {
     use crate::inference::engine_slots::{self as slots, Resolved};
     let over = engine_override();
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return Ok(over.unwrap_or_else(|| "llama-server".to_string())); // no home: only an override or PATH can name an engine
     };
     if let Some(bin) = over { return Ok(bin); }
@@ -1437,7 +1437,7 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
     if !matches!(error, LlamaServerError::Spawn(_) | LlamaServerError::NotReady(..)) || engine_override().is_some() {
         return false;
     }
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return false; // no home: no slots to roll between
     };
     let now_ms = std::time::SystemTime::now()
@@ -1477,7 +1477,7 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
 /// ([`crate::inference::engine_slots::rollback_after_failed_launch`]). `program` is the binary
 /// the launch actually ran, not a fresh resolution (a promote may have moved `current` since).
 fn mark_engine_proven(program: Option<String>) {
-    let (Some(program), Ok(home)) = (program, crate::commands::benchmark::continuum_home()) else {
+    let (Some(program), Ok(home)) = (program, crate::paths::continuum_home()) else {
         return; // no launch record or no home: nothing to mark
     };
     let root = match crate::inference::engine_slots::root(&home) {

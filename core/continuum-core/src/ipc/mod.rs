@@ -1444,7 +1444,7 @@ pub fn start_server(
     // its pin/unpin commands are handed the handle and never resolve a path of their
     // own (a global resolution let a unit test pin the real machine, 2026-09-16).
     let pin_store = crate::modules::serving_pin_store::ServingPinStore::under_home(
-        &crate::commands::benchmark::continuum_home().map_err(|e| {
+        &crate::paths::continuum_home().map_err(|e| {
             std::io::Error::other(format!("serving pin store needs the continuum home: {e}"))
         })?,
     );
@@ -3806,7 +3806,7 @@ pub fn start_server(
             // identity — the one the capacity beacon is stamped with and placement
             // targets — so a remote-bound mind's `ai/generate` reaches a handler
             // instead of every citizen saying "not for me" while it dies at 600 s.
-            let state_home = crate::commands::benchmark::continuum_home()
+            let state_home = crate::paths::continuum_home()
                 .map(|h| h.join("state").join("node-responder"));
             match state_home {
                 Ok(state_home) => {

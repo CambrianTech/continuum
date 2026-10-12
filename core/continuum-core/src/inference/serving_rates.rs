@@ -83,7 +83,7 @@ pub fn rates_for(model: &str) -> ModelRates {
 }
 
 fn default_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|h| h.join("state").join("serving-rates.json"))
 }

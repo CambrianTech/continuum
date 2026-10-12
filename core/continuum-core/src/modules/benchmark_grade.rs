@@ -317,7 +317,7 @@ async fn grade_card(
         owner.ok_or_else(|| format!("bench card {card_id} has no owner — nobody worked it"))?;
     // The staged checkout: <home>/citizens/peers/<owner>/workspace/swe/<instance>, exactly
     // where benchmark/swe-setup put it. Graded in a FRESH clone, so this tree is READ only.
-    let workspace = crate::commands::benchmark::continuum_home()
+    let workspace = crate::paths::continuum_home()
         .map_err(|e| format!("{e:?}"))?
         .join("citizens")
         .join("peers")
@@ -534,7 +534,7 @@ async fn grade_gym_card(
         .to_string();
     let task = normalized_gym_task(reference, task_id)?;
     // Her workspace root — the same layout every other per-citizen path uses.
-    let workspace = crate::commands::benchmark::continuum_home()
+    let workspace = crate::paths::continuum_home()
         .map_err(|e| format!("{e:?}"))?
         .join("citizens")
         .join("peers")
@@ -735,7 +735,7 @@ fn sweep_verdict(
 /// clone graded would burn a fake capability-zero for a dead session, the #384 class).
 fn bench_artifact_present(bench: &str, instance: &str, owner: &str) -> bool {
     let spec = known_benchmarks().iter().find(|b| b.name == bench);
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return false;
     };
     let workspace = home

@@ -206,7 +206,7 @@ pub fn decide(has_verdict: bool, target: GradeTarget) -> SweepDecision {
 /// grading ORDER, so a sweep interrupted halfway resumes at the same place rather than at
 /// whatever `read_dir` happened to yield first.
 pub fn all_staged_instances() -> Vec<String> {
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(home.join("citizens").join("peers")) else {

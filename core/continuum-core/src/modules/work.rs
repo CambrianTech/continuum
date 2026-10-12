@@ -926,7 +926,7 @@ impl ActionCommand for WorkClaim {
                 Some((room, card)) => {
                     use crate::cognition::bench_round::WorkDriver;
                     use crate::modules::card_staging::Staging;
-                    let staging = match crate::commands::benchmark::continuum_home() {
+                    let staging = match crate::paths::continuum_home() {
                         Ok(home) => {
                             crate::modules::card_staging::stage_for_card(
                                 &home,

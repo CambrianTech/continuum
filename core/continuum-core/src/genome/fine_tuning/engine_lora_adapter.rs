@@ -860,10 +860,10 @@ impl EngineLoraFineTuner {
             footprints: Footprints { path: footprints },
             admission: Admission::Governed,
             holds: TrainingHolds::node().clone(),
-            hold_store: crate::commands::benchmark::continuum_home()
+            hold_store: crate::paths::continuum_home()
                 .ok()
                 .map(|home| super::training_hold_store::store_path(&home)),
-            residency_store: crate::commands::benchmark::continuum_home()
+            residency_store: crate::paths::continuum_home()
                 .ok()
                 .map(|home| crate::inference::engine_residency::store_path(&home)),
             resident_leases: Arc::new(Mutex::new(BTreeMap::new())),

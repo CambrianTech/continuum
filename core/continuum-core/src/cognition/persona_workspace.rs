@@ -1934,7 +1934,7 @@ fn save_volatile(
     // work/note, the seam walk) plus the two things only the seam knows — what tears this
     // life, read from the deploy claim the reboot holds, and what stands on disk at her root.
     let now_ms = crate::modules::chat::now_ms();
-    let home = crate::commands::benchmark::continuum_home().ok();
+    let home = crate::paths::continuum_home().ok();
     let torn_by = crate::cognition::handoff::torn_by_for(reason, home.as_deref(), now_ms);
     let acting_root = acting_root_of(persona_id);
     snapshot.handoff = crate::cognition::handoff::compose(

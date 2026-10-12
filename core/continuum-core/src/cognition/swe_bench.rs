@@ -282,12 +282,12 @@ pub struct SweVerdict {
 /// `state: "running"` at dispatch, then the verdict — or a killed-by-reboot marker.
 ///
 /// Honours `CONTINUUM_HOME` the same way every other progress-ledger reader does
-/// (`benchmark::continuum_home`). It did not until 2026-08-18, which made this the SECOND
+/// (`paths::continuum_home`). It did not until 2026-08-18, which made this the SECOND
 /// way to spell the ledger root — and a reader that resolves a directory differently from
 /// the writer reports a self-consistent lie about an empty dir, the same failure shape the
 /// `swe_cache_dir` doc records for env coverage.
 pub fn solve_ledger_dir() -> PathBuf {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .unwrap_or_else(|_| {
             PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
         })
@@ -552,7 +552,7 @@ pub fn reap_orphaned_solve_runs() -> Vec<(String, String)> {
 /// and the test was quietly seeding the live verdict record with fixture data — a fixture
 /// that would later read as a genuine measurement.
 pub fn swe_cache_dir() -> PathBuf {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .unwrap_or_else(|_| {
             PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
         })

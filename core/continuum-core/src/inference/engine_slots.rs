@@ -201,7 +201,7 @@ impl std::fmt::Display for VerbError {
 /// snapshot of idle is only good while no other builder or launch can move it).
 pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
     // The same home `server_bin` resolves the engine under: one root, never two.
-    let home = crate::commands::benchmark::continuum_home().map_err(|e| VerbError::Failed(e.to_string()))?;
+    let home = crate::paths::continuum_home().map_err(|e| VerbError::Failed(e.to_string()))?;
     let root = root(&home).map_err(VerbError::Failed)?;
     let usage = || {
         VerbError::Failed(
@@ -442,7 +442,7 @@ pub fn bootstrap_service_engine(root: &Path, engine: &Path) -> Result<bool, Stri
 /// under `<continuum_home>/bin`. What the Windows deploy's drift check compares the pin against,
 /// since with `current` as the truth the registered descriptor can name an older slot.
 pub fn active_engine_dir() -> Result<Option<PathBuf>, String> {
-    let home = crate::commands::benchmark::continuum_home().map_err(|e| e.to_string())?;
+    let home = crate::paths::continuum_home().map_err(|e| e.to_string())?;
     let root = root(&home)?;
     Ok(current_slot(&root)
         .filter(|slot| slot_bin(&root, slot).is_file() && slot_stamp(&root, slot).is_some())

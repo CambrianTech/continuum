@@ -120,7 +120,7 @@ impl ActionCommand for BenchmarkVerify {
         let mut swept = 0u64;
         let mut healed = 0u64;
         let mut unshielded = 0u64;
-        let peers = crate::commands::benchmark::continuum_home()?
+        let peers = crate::paths::continuum_home()?
             .join("citizens")
             .join("peers");
         if let Ok(citizens) = std::fs::read_dir(&peers) {

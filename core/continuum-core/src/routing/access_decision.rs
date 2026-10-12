@@ -128,7 +128,7 @@ impl AccessPolicy {
 }
 
 fn policy_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home().ok().map(|h| h.join("state").join("access-policy.json"))
+    crate::paths::continuum_home().ok().map(|h| h.join("state").join("access-policy.json"))
 }
 
 /// The policy as last read or set; loaded on first use. A missing file is the default. A file

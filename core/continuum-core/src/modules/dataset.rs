@@ -875,14 +875,14 @@ pub struct DatasetModule {
 /// The ONE default datasets root (`<continuum home>/datasets`). Producers
 /// (`dataset/*` commands) and consumers (`genome/job-create` by `datasetName`)
 /// both resolve through here — the location is defined once, and the home through
-/// [`crate::commands::benchmark::continuum_home`], the resolution every other store uses.
+/// [`crate::paths::continuum_home`], the resolution every other store uses.
 /// It read `HOME` alone before, and a Windows core started by its scheduled task has no
 /// `HOME`, so `dataset/list` on the 5090 read `/tmp\.continuum\datasets` and found nothing
 /// (Codex, 2026-09-28, preparing Kimi's first dream).
 /// With no home at all it fails loud (Cormac on #4496): a dataset written under a temp dir
 /// is a dataset the next boot cannot find.
 pub fn default_datasets_root() -> Result<PathBuf, crate::sdk_codegen::CommandError> {
-    Ok(crate::commands::benchmark::continuum_home()?.join("datasets"))
+    Ok(crate::paths::continuum_home()?.join("datasets"))
 }
 
 impl Default for DatasetModule {

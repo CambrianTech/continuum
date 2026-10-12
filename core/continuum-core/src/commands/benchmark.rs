@@ -1439,7 +1439,7 @@ pub(crate) fn eval_set_reference(suite: &str) -> Option<String> {
     if let Some(spec) = known_benchmarks().iter().find(|b| b.name == suite) {
         return spec.eval_set.map(str::to_string);
     }
-    let home = continuum_home().ok()?;
+    let home = crate::paths::continuum_home().ok()?;
     crate::cognition::coursework::set_path(&home, suite).map(|p| p.display().to_string())
 }
 
@@ -2157,7 +2157,7 @@ impl ActionCommand for BenchmarkDispatch {
             .filter_map(|pc| bench_card_key(&pc.title).map(str::to_string))
             .collect();
         // Continuum home under which each citizen's workspace lives (for SWE staging).
-        let stage_home = continuum_home().ok();
+        let stage_home = crate::paths::continuum_home().ok();
         let mut card_ids = Vec::new();
         // FULL card uuids for the round tracker (#371) — the bus event carries the full
         // hyphenated uuid, so the round's membership set must too (the 8-char `card_ids`
@@ -3925,56 +3925,9 @@ mod swe_grade_tests {
         );
     }
 
-    // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a
-    // harness lane's settle wrote a fixture model into the M5's served-window record and
-    // the next boot planned 8 lanes on it. Under test the home is a per-process temp dir.
-    #[test]
-    fn a_test_binary_never_resolves_the_operators_home() {
-        if std::env::var_os("CONTINUUM_HOME").is_some() {
-            return; // an explicitly declared home is the test's own choice
-        }
-        let home = super::continuum_home().expect("a test home always resolves");
-        assert!(home.starts_with(std::env::temp_dir()), "{}", home.display());
-        assert!(home.to_string_lossy().contains("continuum-test-home-"), "{}", home.display());
-        assert_ne!(Some(home.clone()), dirs::home_dir().map(|h| h.join(".continuum")));
-        assert_eq!(super::continuum_home().unwrap(), home, "one home per process");
-    }
 }
 
-/// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
-/// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
-/// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
-/// layout as the grader that wrote the stream — one layout, never two.
-pub(crate) fn continuum_home() -> Result<std::path::PathBuf, CommandError> {
-    std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(test_home)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| CommandError::Internal("no home dir".into()))
-}
 
-/// A TEST BINARY NEVER WRITES THE OPERATOR'S RECORDS (2026-09-20, the M5): a local
-/// `cargo test` run of the serving daemon settled its harness lane and `save`d the
-/// fixture's "coder-14b" into ~/.continuum/state/served-window.json; the next boot
-/// remembered that model, found no decode knee for it, planned 8 lanes unclamped on a box
-/// whose knee is 2, and swapped 4.6 GB. Every store resolves its path through this
-/// function, so under `cfg(test)` — when no `$CONTINUUM_HOME` is declared — the home is a
-/// per-process directory under the system temp dir. Not configurable, not a fixture to
-/// remember: a test cannot reach the operator's state by forgetting.
-#[cfg(test)]
-fn test_home() -> Option<std::path::PathBuf> {
-    static HOME: std::sync::LazyLock<std::path::PathBuf> = std::sync::LazyLock::new(|| {
-        let dir = std::env::temp_dir().join(format!("continuum-test-home-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        dir
-    });
-    Some(HOME.clone())
-}
-#[cfg(not(test))]
-fn test_home() -> Option<std::path::PathBuf> {
-    None
-}
 
 /// Resolve a solver to the ONE matching `citizens/peers/<uuid>/` directory. Accepts a
 /// citizen NAME (resolved through the live roster — the SAME `get_by_agent_name` identity
@@ -4122,7 +4075,7 @@ impl ActionCommand for BenchmarkSweSetup {
                 CommandError::NotFound(format!("no instance '{}' in {dataset}", p.instance))
             })?;
 
-        let home = continuum_home()?;
+        let home = crate::paths::continuum_home()?;
         let (solver_full, solver_dir) = resolve_solver_dir(&home, &p.solver)?;
         let target = solver_dir
             .join("workspace")
@@ -5311,7 +5264,7 @@ impl ActionCommand for BenchmarkRuns {
 /// Bounded on purpose: at most [`WORKSPACE_ARTIFACT_SCAN_CAP`] trees per call, and the count
 /// dropped is logged rather than silently truncated (no-silent-caps).
 fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<String>, now_ms: u64) -> Vec<BenchRunCard> {
-    let Ok(home) = continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return Vec::new();
     };
     let peers = home.join("citizens").join("peers");

@@ -51,7 +51,7 @@ crate::action_command! {
     params: ReclaimBuildResidueParams,
     output: ReclaimBuildResidueResult,
     run(_this, _ctx, p) => {
-        let home = crate::commands::benchmark::continuum_home()?;
+        let home = crate::paths::continuum_home()?;
         let root = home.join("citizens");
         let now_ms = crate::persona::trace::now_ms();
         let apply = p.apply;

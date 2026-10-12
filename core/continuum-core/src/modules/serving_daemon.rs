@@ -2362,7 +2362,7 @@ impl ServingDaemonModule {
         let Some(rec) = (self.inherited_lane)() else {
             return Occupancy::Free;
         };
-        match crate::commands::benchmark::continuum_home() {
+        match crate::paths::continuum_home() {
             Ok(home) => occupancy(&store_path(&home), rec.port),
             Err(e) => Occupancy::Unknown(format!("no home to read the engine's residency from: {e}")),
         }
@@ -3120,7 +3120,7 @@ impl ServingDaemonModule {
         if occupancy.holds() {
             let port = (self.inherited_lane)().map(|r| r.port);
             if self.server.paging_recovery_required() {
-                let told = match (port, crate::commands::benchmark::continuum_home()) {
+                let told = match (port, crate::paths::continuum_home()) {
                     (Some(port), Ok(home)) => crate::inference::engine_residency::interrupt(
                         &crate::inference::engine_residency::store_path(&home),
                         port,
@@ -10321,7 +10321,7 @@ pub(crate) mod tests {
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates, &candidates);
 
-        let store = store_path(&crate::commands::benchmark::continuum_home().expect("test: a test home"));
+        let store = store_path(&crate::paths::continuum_home().expect("test: a test home"));
         let job = uuid::Uuid::from_u128(0xef9d_f13b);
         let bound = ResidentWork {
             job,
