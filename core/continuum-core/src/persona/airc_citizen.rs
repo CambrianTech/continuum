@@ -518,6 +518,13 @@ impl crate::persona::wall_source::WallReader for StubAircCitizen {
         // cleanly with no [room-wall] grounding block.
         Ok(vec![])
     }
+
+    /// The same board this stub's `work_board` serves: a seeded room's cards, and an
+    /// unseeded room as an empty (read) board, so the stub's two views of the board agree.
+    async fn card_labels(&self, room: Option<uuid::Uuid>) -> Option<crate::persona::wall_source::CardLabels> {
+        let cards = room.and_then(|id| self.boards.get(&id)).cloned().unwrap_or_default(); // an unseeded room is an empty board, as in work_board
+        Some(cards.iter().map(|c| (c.card_id.as_uuid(), (c.title.clone(), c.state))).collect())
+    }
 }
 
 #[async_trait]

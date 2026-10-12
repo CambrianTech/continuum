@@ -106,9 +106,15 @@ pub trait WallReader: Send + Sync {
     /// read (or this reader has none): ledgers then render verbatim. An EMPTY map is a board
     /// that was read and holds no cards, and only that may say a card is off the board
     /// (BigMama on #4959: one empty map for both told her every card was gone).
-    async fn card_labels(&self, _room: Option<uuid::Uuid>) -> Option<CardLabels> {
-        None
-    }
+    ///
+    /// REQUIRED, no default (the 5090, 2026-10-12, build 6153): with a `None` default, the two
+    /// PRODUCTION readers (`PersonaAircRuntime`, `AircHandleAdapter`) compiled without it and
+    /// silently answered "board unread", so #4959's labels and #4962's concluded-ledger drop
+    /// never ran on a persona's turn: Kimi's wall still carried a merged card's ledger,
+    /// unlabelled, while every test passed against a stub that supplied labels directly. A
+    /// reader now states what it knows about the board, so the next one cannot opt out by
+    /// omission.
+    async fn card_labels(&self, room: Option<uuid::Uuid>) -> Option<CardLabels>;
 }
 
 /// The work board's cards by id: (title, state).
@@ -715,6 +721,8 @@ mod tests {
 
     struct StubReader {
         posts: Vec<WallPostPublished>,
+        /// The board this reader answers `card_labels` with: `None` = it has no board.
+        board: Option<CardLabels>,
         fail: Mutex<bool>,
         /// The room argument of the LAST read, so a test can assert which room
         /// the source actually asked for — the whole point of the bound-room
@@ -726,6 +734,7 @@ mod tests {
         fn new(posts: Vec<WallPostPublished>) -> Self {
             Self {
                 posts,
+                board: None,
                 fail: Mutex::new(false),
                 asked_for: Mutex::new(None),
             }
@@ -748,6 +757,40 @@ mod tests {
             }
             Ok(self.posts.clone())
         }
+
+        async fn card_labels(&self, _room: Option<uuid::Uuid>) -> Option<CardLabels> {
+            self.board.clone()
+        }
+    }
+
+    // what this catches (the 5090, 2026-10-12, build 6153): the labels and the concluded-ledger
+    // drop wired only in a helper, never through deliver(), the path a persona's turn takes. The
+    // helper-level test passed while production readers answered "board unread" and Kimi's wall
+    // kept a merged card's ledger, unlabelled. This drives the READER's board through deliver().
+    #[tokio::test]
+    async fn deliver_applies_the_readers_board_to_card_ledgers() {
+        use crate::experience::ledger::{CardLedger, LEDGER_WALL_CATEGORY};
+        let live = Uuid::from_u128(0x27f1_33e4);
+        let merged = Uuid::from_u128(0x1f58_fc16);
+        let ledger = |card_id| {
+            post(
+                LEDGER_WALL_CATEGORY,
+                &serde_json::to_string(&CardLedger { card_id, next_test: "run it".into(), ..Default::default() }).unwrap(),
+            )
+        };
+        let mut board = CardLabels::new();
+        board.insert(live, ("RenameIndex crashes".to_string(), airc_work::CardState::InProgress));
+        board.insert(merged, ("landed".to_string(), airc_work::CardState::Merged));
+        let mut reader = StubReader::new(vec![ledger(live), ledger(merged)]);
+        reader.board = Some(board);
+        let delivery = WallSource::new(persona(), Arc::new(reader))
+            .deliver(&ctx(), 10_000, ResolutionPreference::Raw)
+            .await;
+        let text = delivery.items.iter().map(|i| i.content.as_str()).collect::<Vec<_>>().join("\n");
+        let live8 = live.simple().to_string();
+        assert!(text.contains(&format!("ledger of card {} \"RenameIndex crashes\" (in_progress)", &live8[..8])), "{text}");
+        assert!(!text.contains(&merged.to_string()), "a merged card's ledger leaves the context: {text}");
+        assert_eq!(delivery.items.len(), 1, "only the live card's ledger is delivered");
     }
 
     /// what this catches (#3874): an id that names a thing it does not read. This

@@ -1473,6 +1473,11 @@ impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
         )
         .await
     }
+
+    /// The same board read the `Airc` impl answers (UFCS, for the reason above).
+    async fn card_labels(&self, room: Option<uuid::Uuid>) -> Option<crate::persona::wall_source::CardLabels> {
+        <airc_lib::Airc as crate::persona::wall_source::WallReader>::card_labels(self.airc.as_ref(), room).await
+    }
 }
 
 #[async_trait::async_trait]
