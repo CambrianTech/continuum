@@ -156,7 +156,7 @@ fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels
                 return Some(post); // an unreadable ledger renders as it is, unlabelled
             };
             let short = ledger.card_id.simple().to_string();
-            let short = &short[..8];
+            let short = crate::id_resolve::short_str(&short);
             let head = match labels.get(&ledger.card_id) {
                 Some((_, state)) if crate::modules::work::is_concluded(state) => return None,
                 Some((title, state)) => {
@@ -788,7 +788,7 @@ mod tests {
             .await;
         let text = delivery.items.iter().map(|i| i.content.as_str()).collect::<Vec<_>>().join("\n");
         let live8 = live.simple().to_string();
-        assert!(text.contains(&format!("ledger of card {} \"RenameIndex crashes\" (in_progress)", &live8[..8])), "{text}");
+        assert!(text.contains(&format!("ledger of card {} \"RenameIndex crashes\" (in_progress)", crate::id_resolve::short_str(&live8))), "{text}");
         assert!(!text.contains(&merged.to_string()), "a merged card's ledger leaves the context: {text}");
         assert_eq!(delivery.items.len(), 1, "only the live card's ledger is delivered");
     }

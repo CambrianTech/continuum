@@ -334,7 +334,7 @@ mod tests {
             .execute(
                 "memory/consolidate",
                 serde_json::json!({
-                    "persona_id": &canonical[..8],
+                    "persona_id": crate::id_resolve::short_str(&canonical),
                     "base_model": "synthetic",
                 }),
             )

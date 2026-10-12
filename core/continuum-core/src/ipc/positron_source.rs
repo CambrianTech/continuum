@@ -143,7 +143,7 @@ const MAX_ACTS_PER_SNAPSHOT: usize = 60;
 /// (compression principle).
 pub(crate) fn provisional_sender_name(sender_id: Uuid) -> String {
     let simple = sender_id.simple().to_string();
-    format!("peer-{}", &simple[..8])
+    format!("peer-{}", crate::id_resolve::short_str(&simple))
 }
 
 /// The `chat:heard` payload (see [`CHAT_HEARD`]).

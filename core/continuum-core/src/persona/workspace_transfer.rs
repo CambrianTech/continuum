@@ -312,7 +312,7 @@ pub fn has_unpushed_work(root: &Path) -> bool {
 /// commits she made is the receipt that she made them. Kimi's §12 pass committed as a bare
 /// `wip(...)` and the merger had to add her trailer by hand (card e5e72485).
 pub fn wip_message(card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> String {
-    let subject = format!("wip({}): continuum act on node {node}", &card.to_string()[..8]);
+    let subject = format!("wip({}): continuum act on node {node}", &crate::id_resolve::short(card));
     match actor {
         Some((peer, name)) => format!("{subject}
 
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(classify_push_error("something new"), PushFailure::Unreachable, "unknown reads as not delivered");
         let card = Uuid::new_v4();
         assert_eq!(node_of_wip_subject(&wip_message(card, "node-a", None)).as_deref(), Some("node-a"));
-        assert!(wip_message(card, "n", None).starts_with(&format!("wip({})", &card.to_string()[..8])));
+        assert!(wip_message(card, "n", None).starts_with(&format!("wip({})", &crate::id_resolve::short(card))));
         // what this catches (card e5e72485): her act commits carried no trailer, so her
         // authorship of her own work had to be added by hand. Credited, and the node still
         // reads back from the subject line.

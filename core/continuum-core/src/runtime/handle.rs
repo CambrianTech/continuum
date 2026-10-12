@@ -51,7 +51,7 @@ impl Handle {
 
     /// Short form for logging (first 8 chars)
     pub fn short(&self) -> String {
-        self.0.to_string()[..8].to_string()
+        crate::id_resolve::short(self.0)
     }
 }
 

@@ -105,10 +105,65 @@ impl SourceRule for NoStringCompositeIdKeys {
     }
 }
 
+/// Hand-cut short ids in production when this guard landed (2026-10-12), after 53 were moved
+/// onto `id_resolve::short` / `short_str`. Joel, the same day: "we made uuid/shortuuids as part
+/// of every command period, unless you guys are being idiots and coding each tool its own long
+/// mess". This stays 0 forever.
+#[cfg(test)]
+const BASELINE_HAND_CUT_SHORT_IDS: usize = 0;
+
+/// The short form of an id has ONE owner, `id_resolve` (the form every surface displays and
+/// `resolve` accepts back). A `[..8]` cut anywhere else is a second, drifting copy, and on a
+/// string shorter than eight characters it panics. Byte slices (a file signature) are not ids.
+pub struct NoHandCutShortIds;
+
+impl SourceRule for NoHandCutShortIds {
+    fn name(&self) -> &'static str {
+        "no_hand_cut_short_ids"
+    }
+
+    fn check(&self, file: &SourceFile) -> Vec<Violation> {
+        if file.rel == "id_resolve.rs" {
+            return Vec::new();
+        }
+        file.production_lines()
+            .filter(|(_, l)| {
+                let t = l.trim_start();
+                !t.starts_with("//") && l.contains("[..8]") && !l.contains("bytes[..8]")
+            })
+            .map(|(line, l)| Violation {
+                rule: self.name(),
+                file: file.rel.clone(),
+                line,
+                source: l.trim().to_string(),
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::scan;
+
+    // what this catches: a NEW hand-cut short id (`id.to_string()[..8]`, `&handle[..8]`) beside
+    // the one owner, `id_resolve::short` / `short_str`. If this fails on your change, call them.
+    #[test]
+    fn hand_cut_short_ids_never_rise() {
+        let violations = scan(&[&NoHandCutShortIds]);
+        assert!(
+            violations.len() <= BASELINE_HAND_CUT_SHORT_IDS,
+            "hand-cut short ids rose to {} (baseline {BASELINE_HAND_CUT_SHORT_IDS}); use \
+             crate::id_resolve::short(id) or short_str(&s).\nOffenders:\n{}",
+            violations.len(),
+            violations
+                .iter()
+                .take(10)
+                .map(|v| format!("  {}:{} — {}", v.file, v.line, v.source))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+    }
 
     // what this catches: a NEW `Uuid::nil()` landing beside a room field in
     // production cognition — the back door to #425 after ActivityRoom closed the

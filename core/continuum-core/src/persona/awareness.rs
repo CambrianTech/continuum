@@ -184,7 +184,7 @@ impl AwarenessSnapshot {
 }
 
 fn short8(id: Uuid) -> String {
-    id.to_string()[..8].to_string()
+    crate::id_resolve::short(id)
 }
 
 fn reason_word(r: &super::salience::SalienceReason) -> &'static str {

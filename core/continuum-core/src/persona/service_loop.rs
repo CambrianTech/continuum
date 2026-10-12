@@ -914,7 +914,7 @@ async fn serve_persona_loop_inner(
                 sender_name: roster_names
                     .get(&msg.peer_id)
                     .cloned()
-                    .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
+                    .unwrap_or_else(|| format!("peer-{}", &crate::id_resolve::short(msg.peer_id))),
                 sender_type: crate::persona::types::SenderType::Persona,
                 content: msg.render_content(),
                 timestamp: now_ms,
@@ -1052,7 +1052,7 @@ async fn serve_persona_loop_inner(
             sender_name: roster_names
                 .get(&msg.peer_id)
                 .cloned()
-                .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
+                .unwrap_or_else(|| format!("peer-{}", &crate::id_resolve::short(msg.peer_id))),
             sender_type: crate::persona::types::SenderType::Persona,
             content: msg.render_content(),
             timestamp: now_ms,
@@ -1086,7 +1086,7 @@ async fn serve_persona_loop_inner(
                 tracing::info!(
                     lamport = msg.lamport,
                     rank,
-                    engram_id = %&engram.id.to_string()[..8],
+                    engram_id = %&crate::id_resolve::short(engram.id),
                     salience = format!("{:.3}", salience),
                     content = %preview,
                     "recall_scored — engram ranked (introspection; RecallFaculty feeds the prompt)"
@@ -3952,7 +3952,7 @@ mod tests {
             owner: Option<&str>,
         ) -> RagItem {
             let owner_txt = match owner {
-                Some(o) => format!("owner {}", &o[..8]),
+                Some(o) => format!("owner {}", crate::id_resolve::short_str(&o)),
                 None => "unclaimed".to_string(),
             };
             // The rendered line is what a persona READS, so it keeps the HUMAN spelling

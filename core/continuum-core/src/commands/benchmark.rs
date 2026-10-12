@@ -998,7 +998,7 @@ pub(crate) fn parse_card_title(title: &str) -> Option<(String, String)> {
 pub(crate) fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
     format!(
         "[review {}] {instance}: review {owner}'s fix",
-        &parent.simple().to_string()[..8]
+        &crate::id_resolve::short(parent)
     )
 }
 
@@ -2375,7 +2375,7 @@ impl ActionCommand for BenchmarkDispatch {
                 .await
                 .map_err(|e| CommandError::Internal(e.to_string()))?;
             let full = card_id.as_uuid().simple().to_string();
-            let short = full[..8].to_string();
+            let short = crate::id_resolve::short_str(&full).to_owned();
 
             // The card joins the round the moment it exists — BEFORE the pre-claim and
             // the kickoff below, either of which can put it into someone's hands. From
@@ -2710,7 +2710,7 @@ impl ActionCommand for BenchmarkDispatch {
                         // the caller must not read a partial prune as a clean board.
                         Err(e) => kickoff_errors.push(format!(
                             "prune {}: {e}",
-                            card_id.as_uuid().simple().to_string()[..8].to_string()
+                            crate::id_resolve::short(card_id.as_uuid())
                         )),
                     }
                 }
@@ -5705,7 +5705,7 @@ pub(crate) async fn enrich_rounds_from_board_and_verdicts(
                         .as_ref()
                         .and_then(|reg| reg.get(o.as_uuid()))
                         .map(|rt| rt.agent_name().to_string())
-                        .unwrap_or_else(|| o.as_uuid().to_string()[..8].to_string())  // unwrap_or: no live runtime for the owner = her short id, still addressable
+                        .unwrap_or_else(|| crate::id_resolve::short(o.as_uuid()))  // unwrap_or: no live runtime for the owner = her short id, still addressable
                 })
                 .unwrap_or_default();  // unwrap_or: unreadable = empty, the report shows the tracker's view
             // An owner is a CLAIM attribute: the board keeps the last holder's id on a

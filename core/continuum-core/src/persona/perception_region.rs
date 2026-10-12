@@ -490,7 +490,7 @@ impl PerceptionRegion {
 }
 
 fn short8(id: Uuid) -> String {
-    id.to_string()[..8].to_string()
+    crate::id_resolve::short(id)
 }
 
 fn blank(name: String) -> ActivityView {
