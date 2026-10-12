@@ -12,7 +12,14 @@ const MAX_ENTRIES: u32 = 1024;
 // Rotate before the next row at this threshold; one row is independently
 // bounded by the same amount. Each segment is therefore <= 2 * this bound,
 // and two retained segments consume <= 256 MiB plus 4 MiB of fixed metadata.
-const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+pub(super) const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
+
+/// The bytes a value's row takes in the data file: its JSON and the newline that ends it.
+/// The one size contract `append` enforces (through `LimitedWriter`), and the one a caller
+/// sizing a row before writing it must use.
+pub(super) fn row_bytes(json_len: u64) -> u64 {
+    json_len.saturating_add(1)
+}
 pub const PAGE_LIMIT: usize = 40;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -608,6 +615,21 @@ mod tests {
     }
     fn row(id: usize) -> serde_json::Value {
         serde_json::json!({"request_id": format!("request-{id}"), "session_id": Uuid::nil(), "request": {"messages": []}})
+    }
+
+    // what this catches (Astra on #4978): a row sized by its JSON alone. append writes the
+    // JSON and a newline through the limited writer, so a row whose JSON is exactly the limit
+    // is refused; row_bytes is the contract that says so, and the real writer agrees.
+    #[test]
+    fn a_row_fits_exactly_when_its_json_and_newline_fit() {
+        let dir = tempfile::tempdir().expect("capture directory");
+        let mut store = Store::open(dir.path(), Uuid::new_v4()).expect("capture store");
+        let value = row(1);
+        let json = serde_json::to_vec(&value).expect("json").len() as u64;
+        store.max_bytes = json;
+        assert!(store.append(&value, header(1), false).is_err(), "JSON alone at the limit: the newline does not fit");
+        store.max_bytes = row_bytes(json);
+        assert!(store.append(&value, header(2), false).is_ok(), "JSON plus newline at the limit fits");
     }
 
     // Real files, small fixture bounds on the actual writer: rotation, paging,

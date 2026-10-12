@@ -77,6 +77,7 @@ pub mod serving_guard;
 pub mod throughput_expectation;
 pub mod turn_admission;
 pub mod turn_bound;
+pub mod wire_tap;
 pub mod placement_watch;
 pub mod planning;
 pub mod weight_residency;
