@@ -276,7 +276,7 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
 /// `continuum reboot` holds the claim while its warm build compiles beside this core) or
 /// the boot window. Named so the skip probe says which.
 pub(crate) fn own_transient(now: u64) -> Option<&'static str> {
-    if let Some(root) = crate::commands::benchmark::continuum_home().ok() {
+    if let Some(root) = crate::paths::continuum_home().ok() {
         if crate::runtime::deploy_claim::in_flight(&root, now).blocks() {
             return Some("deploy_in_flight");
         }
@@ -414,7 +414,7 @@ pub fn rate_for(model: &str) -> MeasuredRate {
 }
 
 fn default_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|h| h.join("state").join("decode-knee.json"))
 }

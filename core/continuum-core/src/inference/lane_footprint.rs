@@ -469,7 +469,7 @@ fn now_ms() -> u64 {
 }
 
 fn default_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|h| h.join("state").join("lane-footprint.json"))
 }

@@ -72,7 +72,7 @@ fn refused(kind: &str, error: String) -> JobPauseOutcome {
 }
 
 fn store_path() -> Result<std::path::PathBuf, JobPauseOutcome> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .map(|home| store::store_path(&home))
         .map_err(|e| refused("Store", e.to_string()))
 }

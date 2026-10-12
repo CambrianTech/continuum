@@ -1043,7 +1043,7 @@ pub(crate) fn lesson_tasks(
         // citizen layout as the grader that wrote the stream (one resolver),
         // latest-per-task dedup so a later PASS retires the failure, then the
         // SAME salience selection every other experience consumer uses.
-        let home = crate::commands::benchmark::continuum_home()?;
+        let home = crate::paths::continuum_home()?;
         let (solver_full, solver_dir) =
             crate::commands::benchmark::resolve_solver_dir(&home, solver)?;
         let records = crate::cognition::experience::load_experiences(&solver_dir);

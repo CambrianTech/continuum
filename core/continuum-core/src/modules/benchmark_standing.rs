@@ -97,7 +97,7 @@ fn team_for_round(configured: &[String], residents: &[(String, Uuid)]) -> Vec<St
 }
 
 fn standing_path() -> Result<PathBuf, String> {
-    Ok(crate::commands::benchmark::continuum_home()
+    Ok(crate::paths::continuum_home()
         .map_err(|e| format!("no continuum home: {e}"))?
         .join("state")
         .join("benchmark_standing.json"))
