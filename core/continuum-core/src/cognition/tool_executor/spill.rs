@@ -35,11 +35,19 @@ use crate::ai::types::ResultCustody;
 /// (Astra on #4963). One owner: working memory republishes its whole set whenever its ring
 /// changes and withdraws it when it drops, so no reference count can drift.
 static LIVE_HANDLES: std::sync::OnceLock<
-    parking_lot::Mutex<std::collections::HashMap<u64, std::collections::HashSet<String>>>,
+    parking_lot::Mutex<std::collections::HashMap<LiveHolder, std::collections::HashSet<String>>>,
 > = std::sync::OnceLock::new();
 
+/// Who holds a set of live handles: a working memory (its instance), or a restore in progress
+/// ([`RestorePin`]), in separate key spaces so neither can replace the other's set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LiveHolder {
+    Memory(u64),
+    Restore(u64),
+}
+
 fn live_handles(
-) -> &'static parking_lot::Mutex<std::collections::HashMap<u64, std::collections::HashSet<String>>> {
+) -> &'static parking_lot::Mutex<std::collections::HashMap<LiveHolder, std::collections::HashSet<String>>> {
     LIVE_HANDLES.get_or_init(Default::default)
 }
 
@@ -47,15 +55,70 @@ fn live_handles(
 pub fn publish_live_handles(holder: u64, handles: std::collections::HashSet<String>) {
     let mut live = live_handles().lock();
     if handles.is_empty() {
-        live.remove(&holder);
+        live.remove(&LiveHolder::Memory(holder));
     } else {
-        live.insert(holder, handles);
+        live.insert(LiveHolder::Memory(holder), handles);
     }
 }
 
 /// `holder` references nothing any more (its working memory dropped).
 pub fn withdraw_live_handles(holder: u64) {
-    live_handles().lock().remove(&holder);
+    live_handles().lock().remove(&LiveHolder::Memory(holder));
+}
+
+/// Keeps the results a restore just saved live until the working memory that references them
+/// has published its own set; dropping it withdraws the restore's set.
+#[must_use = "the restored handles are unprotected once this drops; hold it past WorkingMemory::restore"]
+pub struct RestorePin(LiveHolder);
+
+impl Drop for RestorePin {
+    fn drop(&mut self) {
+        live_handles().lock().remove(&self.0);
+    }
+}
+
+/// Save every restored result that has no handle: those from a snapshot written before results
+/// were saved (#4963). They predate custody; they are not failed saves. Each is saved exactly as
+/// the mind saw it, and its handle is published live BEFORE the next save, so the disk pressure a
+/// later save adds can never evict an earlier one in the window before the restored memory
+/// publishes (Codex on #4982; the persisted checkpoint is the old snapshot and names none of
+/// them). A save that fails leaves its handle `None` and its text whole (probed `Unsaved`).
+pub fn retain_handleless<'a>(
+    persona_id: Uuid,
+    results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
+) -> RestorePin {
+    match spill_root() {
+        Ok(root) => retain_handleless_in(&root, persona_id, results),
+        Err(e) => {
+            for (text, _) in results {
+                unretained(text, &e);
+            }
+            RestorePin(next_restore_holder())
+        }
+    }
+}
+
+fn next_restore_holder() -> LiveHolder {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    LiveHolder::Restore(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+}
+
+fn retain_handleless_in<'a>(
+    root: &Path,
+    persona_id: Uuid,
+    results: impl IntoIterator<Item = (&'a str, &'a mut Option<String>)>,
+) -> RestorePin {
+    let pin = RestorePin(next_restore_holder());
+    for (text, handle) in results {
+        if handle.is_some() {
+            continue;
+        }
+        if let ResultCustody::Whole { handle: saved } = retain_in(root, persona_id, text) {
+            live_handles().lock().entry(pin.0).or_default().insert(saved.clone());
+            *handle = Some(saved);
+        }
+    }
+    pin
 }
 
 /// Whether a spill file at `path` is referenced by a mind. The eviction guard the spill
@@ -449,6 +512,40 @@ fn bound(s: String, max: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Codex on #4982): the restore retain loop untested, a restored
+    // handle that does not resolve to the exact bytes the mind saw, a failed save that drops
+    // the text, and a restored file left unpinned between its save and the memory's publish.
+    #[test]
+    fn a_restore_saves_handleless_results_exactly_and_pins_them_until_published() {
+        let tmp = std::env::temp_dir().join(format!("spill-restore-{}", Uuid::new_v4()));
+        let persona = Uuid::new_v4();
+        let mut results = vec![
+            ("first result\nline two".to_string(), None),
+            ("already saved".to_string(), Some("feedfacefeedface".to_string())),
+            ("third result".to_string(), None),
+        ];
+        let pin = retain_handleless_in(&tmp, persona, results.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        for (text, handle) in [&results[0], &results[2]] {
+            let handle = handle.as_deref().expect("a handle-less result is saved");
+            assert_eq!(std::fs::read_to_string(resolve_in(&tmp, persona, handle).unwrap()).unwrap(), *text, "byte-identical");
+        }
+        assert_eq!(results[1].1.as_deref(), Some("feedfacefeedface"), "a saved result keeps its handle");
+        let live: std::collections::HashSet<String> = live_handles().lock().get(&pin.0).cloned().unwrap_or_default();
+        assert!(results.iter().filter(|(t, _)| t != "already saved").all(|(_, h)| live.contains(h.as_ref().unwrap())), "each is pinned as it is saved");
+        let holder = pin.0;
+        drop(pin);
+        assert!(!live_handles().lock().contains_key(&holder), "the pin withdraws once the memory has published");
+
+        // A root that is a FILE: every save fails, and the text stays whole with no handle.
+        let blocked = std::env::temp_dir().join(format!("spill-blocked-{}", Uuid::new_v4()));
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        let mut failed = vec![("kept whole".to_string(), None::<String>)];
+        let _pin = retain_handleless_in(&blocked, persona, failed.iter_mut().map(|(t, h)| (t.as_str(), h)));
+        assert_eq!(failed[0], ("kept whole".to_string(), None), "a failed save keeps its text and claims no handle");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_file(&blocked);
+    }
 
     // what this catches: the head+tail fold (the executor's tier 1 until 2026-10-12) and
     // every other fragment. A result within its share is returned byte-identical; one over
