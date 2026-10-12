@@ -413,6 +413,17 @@ impl ToolExecutor for CommandToolExecutor {
         ctx: &ToolExecutionContext,
         max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError> {
+        // No memory records this batch's handles, so its saves are pinned only while it runs.
+        self.execute_native_batch_pinned(calls, ctx, max_result_chars, &spill::LivePin::new()).await
+    }
+
+    async fn execute_native_batch_pinned(
+        &self,
+        calls: &[NativeToolCall],
+        ctx: &ToolExecutionContext,
+        max_result_chars: usize,
+        pin: &spill::LivePin,
+    ) -> Result<NativeBatchOutcome, ToolError> {
         // Scope the persona's connection to THIS turn's room (the third ID tier);
         // identity is already the persona's, baked into the connection. The
         // scoped view is a cheap clone over the same transport.
@@ -553,7 +564,7 @@ impl ToolExecutor for CommandToolExecutor {
                         // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
                         let (content, custody) =
-                            spill::whole_or_handle(full, max_result_chars, ctx.persona_id).into_parts();
+                            pin.whole_or_handle(full, max_result_chars, ctx.persona_id).into_parts();
                         NativeToolResult {
                             tool_use_id,
                             content,
@@ -602,7 +613,7 @@ impl ToolExecutor for CommandToolExecutor {
                         dispatch_handle: None,
                     });
                     // The same one decision as a success: whole, or saved and handed back.
-                    let (content, custody) = spill::whole_or_handle(
+                    let (content, custody) = pin.whole_or_handle(
                         persona_tool_error(attempted, raw),
                         max_result_chars,
                         ctx.persona_id,

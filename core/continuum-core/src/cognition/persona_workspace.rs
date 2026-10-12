@@ -333,10 +333,7 @@ fn assemble_workspace_cycle(
         // collapse within the share like any saved result and the "save failed" probe names
         // only a real failure (BigMama's live receipt on the 5090, card df0035bf). The pin
         // holds them live until `restore` below publishes the memory's own set.
-        let restore_pin = crate::cognition::tool_executor::spill::retain_handleless(
-            cfg.persona_id,
-            persisted.wm.recent_results.iter_mut().map(|(_, _, text, _, handle)| (text.as_str(), handle)),
-        );
+        let restore_pin = persisted.wm.retain_handleless(cfg.persona_id);
         // The previous life's handoff re-seeds this one: her ledger and card are known at
         // the NEXT seam too, without a wall read (card 49b5e806).
         if let Some(handoff) = persisted.wm.handoff.as_ref() {
@@ -2024,11 +2021,11 @@ fn result_handles_at(
         load_volatile_at(path)?
             .map(|persisted| {
                 let wm = persisted.wm;
-                wm.recent_results
-                    .into_iter()
-                    .filter_map(|(_, _, _, _, handle)| handle)
-                    .chain(wm.evicted_pointers.into_iter().map(|(_, handle)| handle))
-                    .collect()
+                crate::cognition::working_memory::reachable_handles(
+                    &wm.recent_results,
+                    &wm.evicted_pointers,
+                    &wm.receipt_children,
+                )
             })
             .unwrap_or_default(),
     );
