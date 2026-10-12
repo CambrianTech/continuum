@@ -5,6 +5,7 @@
 //! never the other way round (card d2aee969; they lived under cognition/ until 2026-10-12).
 
 pub mod adaptive_throughput;
+pub mod kv_cache_plan;
 pub mod service_rate;
 pub mod throughput_lease;
 pub mod training_plan;

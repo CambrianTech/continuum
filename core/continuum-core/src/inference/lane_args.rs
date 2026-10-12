@@ -433,11 +433,11 @@ pub const ALL_GPU_LAYERS: &str = "999";
 pub struct LaneOptions<'a> {
     /// KV cache quantization (#232) — `Some("q8_0")` etc. `None` (or `f16` upstream)
     /// leaves llama.cpp's f16 default, byte-identical to passing nothing.
-    /// RESOLVED UPSTREAM by [`crate::cognition::kv_cache_plan`], never re-read here:
+    /// RESOLVED UPSTREAM by [`crate::inference::planning::kv_cache_plan`], never re-read here:
     /// the same struct supplies the serving plan's resident-KV divisor, so the flag and
     /// the fit math cannot disagree.
     pub kv_cache_type: Option<&'a str>,
-    /// Flash attention (#232). Arrives from the SAME [`crate::cognition::kv_cache_plan`]
+    /// Flash attention (#232). Arrives from the SAME [`crate::inference::planning::kv_cache_plan`]
     /// decision as `kv_cache_type`, because quantized KV rides the fused-attention path
     /// — q8_0 with this off is a misconfiguration, not a half-fix.
     pub flash_attn: bool,
@@ -507,7 +507,7 @@ impl LaneInvocation {
         // SERVED at half their KV budget for their whole lives, self-consistently and
         // invisibly. It is now a DECISION the substrate makes from the engine's own
         // advertised `--cache-type-k` values (backend table as the fallback), with the
-        // env key demoted to an override: [`crate::cognition::kv_cache_plan`]. The
+        // env key demoted to an override: [`crate::inference::planning::kv_cache_plan`]. The
         // window-GROWTH coupling that comment called a follow-up shipped as
         // `apply_kv_quantization` — and it now rides the same resolved struct as this
         // flag, so the two can no longer name different numbers.
