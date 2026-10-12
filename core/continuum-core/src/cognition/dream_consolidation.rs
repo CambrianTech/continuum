@@ -1248,12 +1248,32 @@ impl DreamConsolidationRegion {
         if beliefs.is_empty() {
             return None;
         }
+        // THE REST GATE IS ONLY REAL IF IT IS RECORDED (card 07188783): this read had no writer,
+        // so a review relaunched on every tick it found work (the 5090, 00:54-01:03Z: three
+        // dream-belief-review passes ~4.5 minutes apart, under the 5-minute cooldown). Marked at
+        // launch, like the received-lesson gate: a cancelled pass leaves its beliefs unreviewed
+        // for the next one.
+        self.last_review_ms.lock().unwrap().insert(persona_id, now);
         let permit = permit.take();
         let reviewed = Arc::clone(&self.reviewed);
         let reflector = reflector.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            review_pass(reflector, persona_id, beliefs, reviewed).await;
+            // HER GAP, NOT BETWEEN HER TURNS (card 07188783): belief hygiene waits for her
+            // sustained idle, the same gate the idle consolidation pass takes, and her next act
+            // cancels it; its beliefs stay unreviewed for the next pass. Nothing about it is
+            // urgent, so it never interleaves with her turns.
+            crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
+            tokio::select! {
+                _ = review_pass(reflector, persona_id, beliefs, reviewed) => {}
+                _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
+                    crate::probe!(
+                        class = "dream.review_paged_out",
+                        persona = %persona_id,
+                        "activity arrived mid-review: the review is cancelled and its beliefs stay unreviewed for the next pass"
+                    );
+                }
+            }
         });
         Some(TickOutcome {
             published: 0,
@@ -2633,6 +2653,15 @@ pub(crate) mod tests {
             let second = region.tick(&RegionContext::for_persona(1, persona)).await;
             assert!(!region.dreaming(), "review queue drained — no second pass");
             assert_eq!(second.cadence_hint, Some(CadenceHint::Sleep));
+
+            // what this catches (card 07188783; the 5090, three review passes in 14 minutes):
+            // the cooldown read had no writer. Another age-eligible belief arrives within the
+            // cooldown: the rest gate holds, and no second review launches.
+            let mut another = episodic(Uuid::from_u128(42), "Cargo workspaces share one target directory", &["rust"]);
+            another.kind = EngramKind::Semantic;
+            admission.admit_reflection(another).expect("test: an old belief");
+            region.tick(&RegionContext::for_persona(2, persona)).await;
+            assert!(!region.dreaming(), "within the review cooldown, no second review pass");
         }
 
         // what this catches: a lone episode is not yet a pattern — below
