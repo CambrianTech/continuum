@@ -253,7 +253,7 @@ pub async fn apply_act(
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         body.executor
-            .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars()),
+            .execute_native_batch(&fg_calls, &ctx, budget.latest_action_chars()),
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
@@ -332,7 +332,7 @@ pub async fn apply_act(
                 tool_use_id: call.id.clone(),
                 content: "(no result returned)".to_string(),
                 is_error: None,
-                spill_handle: None,
+                custody: crate::ai::types::ResultCustody::Unsaved,
             });
         // The COMMAND's own verdict, decoded once by the executor from the
         // PRE-FOLD value and carried here by tool_use_id. Absent (a test double, or
@@ -407,7 +407,7 @@ pub async fn apply_act(
                     result: ToolResult {
                         tool_use_id: call.id.clone(),
                         content: "dispatched — running in background".to_string(),
-                        spill_handle: None,
+                        custody: crate::ai::types::ResultCustody::Unsaved,
                         is_error: None,
                     },
                     verb: ToolVerb::classify(&call.name),
@@ -724,8 +724,12 @@ pub async fn apply_act(
     // ALONGSIDE the typed acts, so `active_act()`/`recent_acts()` read the tool result
     // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
     // one-time recency rendering; `acts` are the id-correlated typed observations.
+    // The ring keeps this exact text; save THAT, so the pointer it leaves when it collapses
+    // resolves to what she saw, every call of the batch included.
+    let custody =
+        crate::cognition::tool_executor::spill::retain(body.persona_id, observation.trim());
     body.working_memory
-        .record_receipt_typed(&acts, &observation, Some(room_id));
+        .record_receipt_typed(&acts, &observation, Some(room_id), custody);
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }

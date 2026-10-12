@@ -1,14 +1,14 @@
 //! Tool-output spill: durable recovery for flood-sized tool results.
 //!
-//! Tier 2 of the three-tier flood protection (tier 1 = the head+tail cap in
-//! [`super::command_executor::truncate_tool_output`]; tier 3 = the build hands
-//! themselves). When a tool floods — an Xcode/gradle/cargo build log, a giant
-//! file read, a chatty command — the cap protects the persona's context window,
-//! but a cap alone THROWS AWAY the part she still needs to investigate. So before
-//! truncating, the executor spills the WHOLE result to a file and hands back a
-//! preview that names a `handle`; she then pages/greps the full output through
-//! the `tool/output` command — exactly the bounded-preview + recoverable-on-disk
-//! + grep-to-find-it shape Claude Code uses for its own large tool results.
+//! [`whole_or_handle`] is THE decision for how a tool result reaches a mind: WHOLE when the
+//! window's share for one result holds it, otherwise saved whole here and handed back as a
+//! pointer naming its `handle`, never as a fragment. A head, a tail, or a head+tail of a
+//! source file, a JSON document or a build log is broken, not short (Joel, 2026-10-12: "the
+//! clipping I've yelled about for months"; Kimi read one file 25+ times and landed no edit
+//! because each read reached her later as its last ~2,100 chars). She opens what she needs
+//! through `tool/output`: a prebuilt failure filter, a regex hunt, or a line range. Re-running
+//! a tool to recover what it already returned is not a recovery: the world may have moved and
+//! a mutating tool must not repeat (Astra, 2026-10-12).
 //!
 //! Per-persona by construction: spills land under a directory keyed by the
 //! persona's id, and the read command resolves by the SAME id (`ctx.caller`'s
@@ -26,6 +26,8 @@ use std::path::{Path, PathBuf};
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+use crate::ai::types::ResultCustody;
 
 /// A spilled tool result: the content-addressed handle (the filename stem the
 /// persona quotes back to `tool/output`), where it landed, and how big it was.
@@ -69,6 +71,78 @@ pub fn spill(persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
     spill_in(&spill_root()?, persona_id, content)
 }
 
+/// How a tool result reached a mind: the three custody states, and the only text a mind is
+/// ever shown for one. A consumer renders these; it never invents a recovery from a raw string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fitted {
+    /// Within the window's share for one result: the result itself, also saved under
+    /// `handle` so it stays reachable after it leaves view (a settlement collapse or a
+    /// restore leaves a pointer that resolves, never "re-run if needed").
+    Complete { text: String, handle: String },
+    /// Over the share and saved whole under `handle`: `shown` is the pointer to it.
+    Stored { shown: String, handle: String },
+    /// The save failed: `shown` says so and then carries the WHOLE result, whatever its size.
+    /// Nothing else holds those bytes, and re-running a tool to recover them is not a recovery
+    /// (Astra, 2026-10-12). A failure to save, never a failure of the action; once it leaves
+    /// view it cannot be reopened, and the pointer it leaves says exactly that.
+    RetentionFailed { shown: String },
+}
+
+impl Fitted {
+    /// The text the mind is shown, and its typed custody.
+    pub fn into_parts(self) -> (String, ResultCustody) {
+        match self {
+            Fitted::Complete { text, handle } => (text, ResultCustody::Whole { handle }),
+            Fitted::Stored { shown, handle } => (shown, ResultCustody::Pointer { handle }),
+            Fitted::RetentionFailed { shown } => (shown, ResultCustody::Unsaved),
+        }
+    }
+}
+
+/// Whole, or saved whole and pointed at: the one place a tool result is fitted to a mind's
+/// window. `share` is the window's share for one result
+/// ([`crate::cognition::context_budget::ContextBudget::latest_action_chars`]), the same share
+/// working memory shows it at, so nothing reaches working memory too big for its view without
+/// a handle. EVERY result is saved, not only the oversized ones: a result that fits now still
+/// leaves view later (a settlement collapse, a restore into a smaller window), and the pointer
+/// it leaves must resolve (Astra on #4963). Saves are content-addressed, so a repeated read
+/// reuses its file, and the directory is evicted under disk pressure like every spill.
+pub fn whole_or_handle(full: String, share: usize, persona_id: Uuid) -> Fitted {
+    match spill_root() {
+        Ok(root) => whole_or_handle_in(&root, full, share, persona_id),
+        Err(e) => unsaved_whole(full, share, &e),
+    }
+}
+
+/// Save `content` exactly as given and name its custody: `Whole{handle}` (it resolves
+/// byte-identical through `tool/output`), or `Unsaved` when the save failed (probed). Working
+/// memory's results ring keeps a batch's rendered text; this saves THAT text, so a pointer the
+/// ring leaves later resolves to what the mind saw, every call of the batch included (Astra on
+/// #4963: one call's handle for a multi-call batch implied the rest were recoverable).
+pub fn retain(persona_id: Uuid, content: &str) -> ResultCustody {
+    match spill_root() {
+        Ok(root) => retain_in(&root, persona_id, content),
+        Err(e) => unretained(content, &e),
+    }
+}
+
+fn retain_in(root: &Path, persona_id: Uuid, content: &str) -> ResultCustody {
+    match spill_in(root, persona_id, content) {
+        Ok(r) => ResultCustody::Whole { handle: r.handle },
+        Err(e) => unretained(content, &e),
+    }
+}
+
+fn unretained(content: &str, error: &std::io::Error) -> ResultCustody {
+    crate::probe!(
+        class = "tool.output.unsaved",
+        chars = %content.chars().count(),
+        error = %error,
+        "a batch's rendered result could not be saved; working memory keeps it whole"
+    );
+    ResultCustody::Unsaved
+}
+
 /// Resolve the spill file for `persona_id`/`handle`, rejecting any handle that
 /// isn't a bare hex stem — that is the path-traversal guard (no `/`, no `..`, no
 /// absolute path can survive the hex-only check), so we never canonicalize or
@@ -98,6 +172,62 @@ fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<Spi
         bytes: content.len(),
         lines: content.lines().count(),
     })
+}
+
+fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid) -> Fitted {
+    let chars = full.chars().count();
+    match spill_in(root, persona_id, &full) {
+        Ok(r) if chars <= share => Fitted::Complete {
+            text: full,
+            handle: r.handle,
+        },
+        Ok(r) => {
+            crate::probe!(
+                class = "tool.output.spilled",
+                handle = %r.handle,
+                chars = %chars,
+                share = %share,
+                "a tool result was larger than the window's share for one result: saved \
+                 whole and handed to the mind as its handle"
+            );
+            Fitted::Stored {
+                shown: format!(
+                    "[this result is {} lines ({chars} chars), more than this window's \
+                     {share}-char share for one result, so it is not shown in part. The whole \
+                     result is saved as output `{}`: open what you need with `tool/output`. \
+                     Jump straight to what broke with `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` \
+                     (or `warnings`/`failures`/`summary`), hunt with `\"pattern\":\"<regex>\"`, or \
+                     read a line range with `startLine`/`endLine`]",
+                    r.lines, r.handle, r.handle,
+                ),
+                handle: r.handle,
+            }
+        }
+        Err(e) => unsaved_whole(full, share, &e),
+    }
+}
+
+/// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
+fn unsaved_whole(full: String, share: usize, error: &std::io::Error) -> Fitted {
+    let chars = full.chars().count();
+    crate::probe!(
+        class = "tool.output.unsaved",
+        chars = %chars,
+        share = %share,
+        error = %error,
+        "a tool result could not be saved; it goes on whole and cannot be reopened later"
+    );
+    let over = if chars > share {
+        format!(", over this window's {share}-char share for one result")
+    } else {
+        String::new()
+    };
+    Fitted::RetentionFailed {
+        shown: format!(
+            "[saving this {chars}-char result failed ({error}): it is shown whole{over}, and \
+             once it leaves view it cannot be reopened]\n{full}"
+        ),
+    }
 }
 
 fn resolve_in(root: &Path, persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
@@ -255,6 +385,76 @@ fn bound(s: String, max: usize) -> (String, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the head+tail fold (the executor's tier 1 until 2026-10-12) and
+    // every other fragment. A result within its share is returned byte-identical; one over
+    // it is saved whole, resolvable by the returned handle, and the text shown carries no
+    // piece of it, neither the head nor the tail.
+    #[test]
+    fn a_result_is_whole_or_a_handle_never_a_fragment() {
+        let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
+        let persona = Uuid::new_v4();
+        let small = "ok: 2 passed".to_string();
+        let Fitted::Complete { text, handle } = whole_or_handle_in(&tmp, small.clone(), 600, persona)
+        else {
+            panic!("a fitting result is complete")
+        };
+        assert_eq!(text, small, "shown byte-identical");
+        let path = resolve_in(&tmp, persona, &handle).expect("resolve");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), small, "and saved, so it stays reachable");
+
+        let body = format!("HEAD-MARK\n{}TAIL-MARK error: boom\n", "compiling module\n".repeat(5000));
+        let Fitted::Stored { shown, handle } = whole_or_handle_in(&tmp, body.clone(), 600, persona)
+        else {
+            panic!("an over-share result is saved")
+        };
+        assert!(!shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "no fragment: {shown}");
+        assert!(shown.contains(&handle) && shown.contains("tool/output"), "names the way in: {shown}");
+        assert!(shown.contains("\"filter\":\"errors\""), "points at the failure filter: {shown}");
+        let path = resolve_in(&tmp, persona, &handle).expect("resolve");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), body, "saved byte-identical");
+
+        // A failed save keeps the WHOLE result and says why: nothing else holds those bytes.
+        let blocked = tmp.join("not-a-dir");
+        std::fs::write(&blocked, b"file where the persona dir must go").unwrap();
+        let unsaved_body = "UNSAVED-HEAD ".repeat(100);
+        let Fitted::RetentionFailed { shown } =
+            whole_or_handle_in(&blocked, unsaved_body.clone(), 64, persona)
+        else {
+            panic!("a failed save is its own state")
+        };
+        assert!(shown.contains("saving this") && shown.ends_with(&unsaved_body), "kept whole: {shown}");
+        let Fitted::RetentionFailed { shown } =
+            whole_or_handle_in(&blocked, "ok".to_string(), 64, persona)
+        else {
+            panic!("a fitting result whose save failed says so too")
+        };
+        assert!(shown.contains("cannot be reopened") && shown.ends_with("ok"), "{shown}");
+
+        // Multibyte bodies measure in chars, the unit the share is in, and never split.
+        let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona).into_parts();
+        assert!(!shown.contains('α'));
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    // what this catches: a multi-call batch that one call's handle claimed to cover (Astra
+    // on #4963). The batch's rendered text, two distinct results inside it, is saved as one
+    // unit and resolves byte-identical, both results included.
+    #[test]
+    fn a_batch_is_retained_whole_both_results_byte_identical() {
+        let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
+        let persona = Uuid::new_v4();
+        let batch = "code/read(a.rs)\nResult:\nfn a() {}\n\ncode/run(t)\nResult:\nerror[E0601]\n";
+        let ResultCustody::Whole { handle } = retain_in(&tmp, persona, batch) else {
+            panic!("the batch is saved")
+        };
+        let saved = std::fs::read_to_string(resolve_in(&tmp, persona, &handle).unwrap()).unwrap();
+        assert_eq!(saved, batch, "both results, byte-identical");
+        let blocked = tmp.join("not-a-dir");
+        std::fs::write(&blocked, b"x").unwrap();
+        assert_eq!(retain_in(&blocked, persona, batch), ResultCustody::Unsaved);
+        std::fs::remove_dir_all(&tmp).ok();
+    }
 
     // what this catches: a round-trip through the root-injected core — spill
     // writes a hex-handled file, resolve points back at it, and the content is

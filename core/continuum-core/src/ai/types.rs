@@ -126,13 +126,42 @@ pub struct ToolResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub is_error: Option<bool>, // True if tool execution failed
-    /// Spill handle when the FULL result was persisted to disk (tier-2 flood
-    /// protection) and `content` is the bounded preview. Never on the provider
-    /// wire (`skip`): it exists so working memory can leave a QUERYABLE POINTER
-    /// when this result is evicted — collapse, never delete (2026-08-24).
+    /// Where the WHOLE result lives and what `content` is, set by its producer
+    /// (`spill::whole_or_handle`). Never on the provider wire (`skip`): it exists so
+    /// working memory can leave a pointer that RESOLVES when this result leaves view
+    /// (collapse, never delete — 2026-08-24), and so a reader can tell the whole result
+    /// from a pointer to it without guessing from the text.
     #[serde(skip)]
     #[ts(skip)]
-    pub spill_handle: Option<String>,
+    pub custody: ResultCustody,
+}
+
+/// Custody of one tool result: two facts that used to share one `Option<String>`
+/// ("is it saved" and "is `content` only a pointer"), now named apart.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ResultCustody {
+    /// Not saved: a stand-in result, or the save failed. `content` is all there is.
+    #[default]
+    Unsaved,
+    /// `content` IS the whole result, also saved under `handle`.
+    Whole { handle: String },
+    /// `content` is a pointer; the whole result is saved under `handle`.
+    Pointer { handle: String },
+}
+
+impl ResultCustody {
+    /// The handle the whole result is saved under, if it was saved.
+    pub fn handle(&self) -> Option<&str> {
+        match self {
+            ResultCustody::Unsaved => None,
+            ResultCustody::Whole { handle } | ResultCustody::Pointer { handle } => Some(handle),
+        }
+    }
+
+    /// `content` is a pointer to the result, not the result itself.
+    pub fn is_pointer(&self) -> bool {
+        matches!(self, ResultCustody::Pointer { .. })
+    }
 }
 
 /// Tool choice specification

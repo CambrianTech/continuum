@@ -116,130 +116,6 @@ impl CommandToolExecutor {
     }
 }
 
-/// Truncate to at most `max` bytes on a UTF-8 char boundary. Tool output (a file
-/// read, a cargo log) can be huge; the agent loop bounds it so the context
-/// doesn't blow up. Appends a marker so the model knows it was cut.
-fn truncate_on_boundary(mut s: String, max: usize) -> String {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max.min(s.len());
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s.truncate(end);
-    s.push_str("\n…[truncated]");
-    s
-}
-
-/// Bound a tool RESULT for re-injection, keeping BOTH ends and naming the cut.
-///
-/// A tool that floods — a build log, a giant file, a chatty command (an Xcode or
-/// cargo build is the canonical case) — must never blow the persona's context
-/// window. The cap (`max_result_chars`) is that protection. But a naive head-keep
-/// throws away exactly the part she needs for log-shaped output: the verdict (the
-/// errors, the failing target, the summary) lives at the END. So this keeps the
-/// HEAD (where a read/listing/JSON starts) AND the TAIL (where a build/test/log
-/// concludes), eliding the middle with a marker that (a) names how much was
-/// dropped and (b) reinforces the narrowing affordance — re-run the tool SCOPED,
-/// or grep with `code/search`, so she asks for less next time instead of drowning.
-///
-/// Like the failure-feedback translation, this is affordance quality, not output
-/// steering: it shapes what the tool layer hands back, never reads her generation.
-///
-/// When `spill` is `Some`, the FULL result was first persisted (tier 2) and the
-/// elision marker names the handle so she can grep/page the whole thing via
-/// `tool/output` — Joel's "even if it blows up, all is not lost". When it's
-/// `None` (small output, or the spill itself failed), the marker reinforces the
-/// re-run-scoped / `code/search` narrowing affordance instead.
-fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) -> String {
-    if s.len() <= max {
-        return s;
-    }
-    // Split the visible budget between the two ends — the head of a read/listing
-    // and the tail of a build/log are both load-bearing (~60/40 toward the head).
-    let head_budget = max * 3 / 5;
-    let tail_budget = max - head_budget;
-
-    let mut head_end = head_budget.min(s.len());
-    while head_end > 0 && !s.is_char_boundary(head_end) {
-        head_end -= 1;
-    }
-    let mut tail_start = s.len().saturating_sub(tail_budget);
-    while tail_start < s.len() && !s.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
-    // Degenerate tiny budget where the ends would overlap: fall back to head-only.
-    if tail_start <= head_end {
-        return truncate_on_boundary(s, max);
-    }
-    let dropped = tail_start - head_end;
-    // MAKE THE FLOOD OBSERVABLE. Without this probe there is no way to answer
-    // "does her output actually flood?" — and on 2026-08-28 that question blocked
-    // a real decision: `tool/output` (the verb that reads the spilled MIDDLE) is
-    // not in the native surface, and making it native costs ~1200 tokens on EVERY
-    // prompt forever against a ceiling guard that says "do not keep bumping this".
-    // The honest answer was "no spill has ever been recorded on this box" — the
-    // demand was UNMEASURED, not proven absent. She already receives head+tail;
-    // the middle is what a spill adds. This probe is the evidence that decides it:
-    // if floods are frequent in solves the verb earns its slot; if they never
-    // happen, the surface stays lean.
-    if let Some(r) = spill {
-        crate::probe!(
-            class = "tool.output.spilled",
-            handle = %r.handle,
-            dropped_chars = %dropped,
-            "a tool result flooded and was spilled to disk — its MIDDLE is reachable \
-             only through `tool/output`, which is NOT in the native surface today \
-             (she holds the handle, not the verb)"
-        );
-    }
-    let recovery = match spill {
-        // The whole result is recoverable — point her at the handle, and at the
-        // failure-hunting path specifically (grep for the error), per Joel: the
-        // build hands spit out a lot of crap and the job is finding the error.
-        Some(r) => format!(
-            "the FULL {} lines were saved as output `{}`. Find the part you need with \
-             `tool/output` — easiest, jump straight to what broke with a prebuilt filter: \
-             `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/\
-             `summary`); for a specific hunt use `\"pattern\":\"<regex>\"`, or read a line \
-             range with `startLine`/`endLine`",
-            r.lines, r.handle, r.handle,
-        ),
-        // Not recoverable — narrow at the source instead.
-        None => "Re-run the tool SCOPED to what you need (a narrower argument, e.g. \
-                 `filter`/`package`/`path`), or grep with `code/search`, instead of \
-                 reading it all"
-            .to_string(),
-    };
-    format!(
-        "{}\n…[{dropped} chars elided — this result is large. {recovery}. The start \
-         and end are kept below.]…\n{}",
-        &s[..head_end],
-        &s[tail_start..],
-    )
-}
-
-/// Bound a tool result for re-injection, spilling the FULL output to disk first
-/// when it overflows so nothing is lost (tier 2). The returned preview names the
-/// spill handle (when the spill succeeded) so the persona can grep/page it.
-///
-/// Spilling is best-effort: if it fails (no home dir, disk full) we STILL bound
-/// the output — context safety is non-negotiable — she just loses the recover-it
-/// affordance for that one result. We never fabricate a handle we couldn't write.
-fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> (String, Option<String>) {
-    if full.len() <= max {
-        return (full, None);
-    }
-    match spill::spill(persona_id, &full) {
-        Ok(r) => {
-            let handle = r.handle.clone();
-            (truncate_tool_output(full, max, Some(&r)), Some(handle))
-        }
-        Err(_) => (truncate_tool_output(full, max, None), None),
-    }
-}
-
 /// Translate a raw substrate failure into feedback a PERSONA can act on.
 ///
 /// The substrate's own error strings are written for a developer caller. The
@@ -672,13 +548,12 @@ impl ToolExecutor for CommandToolExecutor {
 
                     let full = value.to_string(); // boundary: tool-result transcript now contains a durable image reference.
                     {
-                        // Spill-then-bound: a flood-sized result is persisted whole
-                        // (recoverable via `tool/output`) before the preview is cut;
-                        // the HANDLE rides the result type-level so working memory
-                        // can leave a queryable pointer when this result is later
+                        // Whole, or saved whole and handed back as its handle: never a
+                        // fragment. The HANDLE rides the result type-level so working
+                        // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
-                        let (content, spill_handle) =
-                            fold_with_recovery(full, max_result_chars, ctx.persona_id);
+                        let (content, custody) =
+                            spill::whole_or_handle(full, max_result_chars, ctx.persona_id).into_parts();
                         NativeToolResult {
                             tool_use_id,
                             content,
@@ -687,7 +562,7 @@ impl ToolExecutor for CommandToolExecutor {
                             // be flattened into one here — they ride the typed
                             // `CallVerdict` to the receipt, which can say them.
                             is_error: verdict.failed().then_some(true),
-                            spill_handle,
+                            custody,
                         }
                     }
                 }
@@ -726,14 +601,18 @@ impl ToolExecutor for CommandToolExecutor {
                         verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
                         dispatch_handle: None,
                     });
+                    // The same one decision as a success: whole, or saved and handed back.
+                    let (content, custody) = spill::whole_or_handle(
+                        persona_tool_error(attempted, raw),
+                        max_result_chars,
+                        ctx.persona_id,
+                    )
+                    .into_parts();
                     NativeToolResult {
                         tool_use_id,
-                        content: truncate_on_boundary(
-                            persona_tool_error(attempted, raw),
-                            max_result_chars,
-                        ),
+                        content,
                         is_error: Some(true),
-                        spill_handle: None,
+                        custody,
                     }
                 }
             })
@@ -1070,82 +949,6 @@ mod tests {
         let raw = "data/delete: refused — requires Owner trust".to_string();
         let out = persona_tool_error("data/delete", raw.clone());
         assert_eq!(out, raw);
-    }
-
-    // what this catches: a flood-sized tool result (a build log) is bounded AND
-    // keeps the END — where the verdict/errors live — not just the head, and the
-    // elision marker reinforces narrowing (re-run scoped / code/search grep).
-    #[test]
-    fn huge_output_keeps_both_ends_and_suggests_narrowing() {
-        let body = format!(
-            "BUILD START\n{}\nerror: linker failed — THE VERDICT AT THE END",
-            "compiling module …\n".repeat(5000)
-        );
-        // None spill ref → the narrow-at-source affordance (re-run scoped / grep).
-        let out = truncate_tool_output(body, 600, None);
-        assert!(
-            out.len() < 1200,
-            "stays bounded near the cap: {} chars",
-            out.len()
-        );
-        assert!(out.contains("BUILD START"), "keeps the head: {out}");
-        assert!(
-            out.contains("THE VERDICT AT THE END"),
-            "keeps the tail (the verdict): {out}"
-        );
-        assert!(
-            out.contains("code/search"),
-            "reinforces grep/narrowing: {out}"
-        );
-        assert!(out.contains("elided"), "names that output was cut: {out}");
-    }
-
-    // what this catches: when the full result was spilled, the elision marker
-    // names the recovery handle AND points at the failure-hunting path
-    // (grep the error via `tool/output`) — Joel's "all is not lost" affordance.
-    #[test]
-    fn spilled_output_marker_names_the_handle_and_recovery() {
-        let body = format!("BUILD START\n{}\nerror: boom", "noise\n".repeat(5000));
-        let fake = spill::SpillRef {
-            handle: "deadbeefcafe0001".to_string(),
-            path: std::path::PathBuf::from("/tmp/x.log"),
-            bytes: body.len(),
-            lines: body.lines().count(),
-        };
-        let out = truncate_tool_output(body, 600, Some(&fake));
-        assert!(out.contains("deadbeefcafe0001"), "names the handle: {out}");
-        assert!(
-            out.contains("tool/output"),
-            "names the recovery tool: {out}"
-        );
-        // #1917: the failure hunt is a PREBUILT one-word filter, not a regex.
-        assert!(
-            out.contains("\"filter\":\"errors\""),
-            "points at the prebuilt failure filter: {out}"
-        );
-    }
-
-    // what this catches: output within budget is returned verbatim — no marker,
-    // no elision when nothing was dropped.
-    #[test]
-    fn small_output_is_returned_verbatim() {
-        let out = truncate_tool_output("ok: 2 passed".to_string(), 16_000, None);
-        assert_eq!(out, "ok: 2 passed");
-    }
-
-    // what this catches: a multi-byte body never slices mid-codepoint (would panic),
-    // at both a normal and a pathologically tiny budget — the head/tail boundary
-    // walks must land on char boundaries on both ends.
-    #[test]
-    fn multibyte_body_never_panics_at_any_budget() {
-        let body = "αβγδε".repeat(2000); // 2-byte chars, well over any cap
-        for max in [8usize, 64, 600, 4096] {
-            let out = truncate_tool_output(body.clone(), max, None);
-            // round-trips as valid UTF-8 (the assertions themselves would panic on
-            // a mid-codepoint slice) and stays near the requested budget.
-            assert!(out.chars().count() > 1, "valid UTF-8 at max={max}");
-            assert!(out.contains("elided"), "marks the cut at max={max}: {out}");
-        }
     }
 
     /// Build a persona's tool executor over the uniform client: a

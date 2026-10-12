@@ -6438,7 +6438,7 @@ mod tests {
                                 tool_use_id: call_id,
                                 content: (*report).into(),
                                 is_error: None,
-                                spill_handle: None,
+                                custody: crate::ai::types::ResultCustody::Unsaved,
                             },
                             verb: ToolVerb::classify("code/run"),
                             paths: Vec::new(),
@@ -6448,6 +6448,7 @@ mod tests {
                     }],
                     report,
                     Some(result_rooms[step]),
+                    crate::ai::types::ResultCustody::Unsaved,
                 );
                 let mut ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
                     room,
@@ -8167,7 +8168,7 @@ mod tests {
                             tool_use_id: "capture".into(),
                             content: grep_result.clone(),
                             is_error: None,
-                            spill_handle: None,
+                            custody: crate::ai::types::ResultCustody::Unsaved,
                         },
                         verb: ToolVerb::classify("perception/observe"),
                         paths: Vec::new(),
@@ -8177,6 +8178,7 @@ mod tests {
                 }],
                 &grep_result,
                 None,
+                crate::ai::types::ResultCustody::Unsaved,
             );
 
             let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter)

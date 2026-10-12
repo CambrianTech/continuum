@@ -48,7 +48,7 @@ pub(super) fn batch_evidence(
         // Missing/full-result-spilled evidence and unfinished operations cannot
         // establish an unchanged completed observation. They reset the streak.
         if !matches!(act.status, super::observation::ActStatus::Executed)
-            || act.output.result.spill_handle.is_some()
+            || act.output.result.custody.is_pointer()
             || act.output.verdict.running()
             || matches!(act.output.verdict, crate::sdk_codegen::ActVerdict::Undecodable)
         {
@@ -225,7 +225,7 @@ mod tests {
                     tool_use_id: "c".into(),
                     content: "ok".into(),
                     is_error: None,
-                spill_handle: None,
+                custody: crate::ai::types::ResultCustody::Unsaved,
                 },
                 verb: ToolVerb::classify(name),
                 paths: extract_paths(&input),

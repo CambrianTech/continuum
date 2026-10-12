@@ -114,7 +114,7 @@ mod tests {
                     tool_use_id: c.id.clone(),
                     content: self.result_content.clone(),
                     is_error: None,
-                    spill_handle: None,
+                    custody: crate::ai::types::ResultCustody::Unsaved,
                 })
                 .collect();
             Ok(NativeBatchOutcome {
@@ -565,7 +565,7 @@ mod tests {
                     // recover the handle from a flood-sized result.
                     content: format!("{{\"execution_id\":\"{}\",\"status\":\"runni", self.handle),
                     is_error: None,
-                    spill_handle: Some("spill-1".into()),
+                    custody: crate::ai::types::ResultCustody::Pointer { handle: "spill-1".into() },
                 })
                 .collect();
             Ok(NativeBatchOutcome {
@@ -1089,7 +1089,7 @@ mod tests {
         acts[0].output.verdict = ActVerdict::Declared(ToolVerdict::Running);
         assert!(batch_evidence(&[call.clone()], &acts).is_none());
         acts[0].output.verdict = ActVerdict::Unprojected;
-        acts[0].output.result.spill_handle = Some("full-result".into());
+        acts[0].output.result.custody = crate::ai::types::ResultCustody::Pointer { handle: "full-result".into() };
         assert!(batch_evidence(&[call.clone()], &acts).is_none());
         assert!(batch_evidence(&[call], &[]).is_none());
     }
@@ -1227,7 +1227,7 @@ mod tests {
                     tool_use_id: c.id.clone(),
                     content: content.clone(),
                     is_error: (self.error_at == Some(act)).then_some(true),
-                    spill_handle: None,
+                    custody: crate::ai::types::ResultCustody::Unsaved,
                 })
                 .collect();
             Ok(NativeBatchOutcome {
