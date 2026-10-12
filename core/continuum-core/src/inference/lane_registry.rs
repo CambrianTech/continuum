@@ -242,7 +242,7 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 
 /// Reap EVERY lane this install owns — live and ephemeral — for shutdown.
 ///
-/// `stop` reaps cores ([`crate::runtime::core_bind_guard`]) and owned engine
+/// `stop` reaps cores ([`continuum_cli_lifecycle::core_bind_guard`]) and owned engine
 /// orphans, but until this existed it never touched a `llama-server`: the whole
 /// registry was swept only on the NEXT boot, so shutting Continuum down left
 /// every lane resident. Measured 2026-08-17 on the M5: an ephemeral 27B lane

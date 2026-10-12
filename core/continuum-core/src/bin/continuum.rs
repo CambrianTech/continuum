@@ -3272,7 +3272,7 @@ enum ConsumeVerdict {
     /// `reboot --service` into the first one's build — two builds racing one target
     /// dir, the second swap shipping whichever artifact it found (Cormac, review of
     /// #4208; `reboot` itself never consults the claim — `deploy_gate` is the START
-    /// verb's). The fifth arm, mirroring `runtime::deploy_tracker::decide`.
+    /// verb's). The fifth arm, mirroring `continuum_cli_lifecycle::deploy_tracker::decide`.
     BuildInFlight,
     /// This tip failed to build/hand off [`CONSUME_MAX_ATTEMPTS`] times here: a tip
     /// green on CI can still fail on THIS box (a Windows-only wall, a vendor drift).

@@ -1,5 +1,5 @@
 //! THE DEPLOY TRACKER MODULE — the fleet's cadence-deploy DECISION, in Rust, wiring the
-//! pure core ([`crate::runtime::deploy_tracker`]) to git/gh and the supervisor seam.
+//! pure core ([`continuum_cli_lifecycle::deploy_tracker`]) to git/gh and the supervisor seam.
 //!
 //! Joel, 2026-09-17: "It's supposed to be rust for infrastructure not shell jacks." The
 //! decision that `tools/scripts/track-canary.sh` (bash + launchd, Unix-only) makes now
@@ -31,7 +31,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::modules::deploy_actuator::{ActuateOutcome, DeployActuator};
-use crate::runtime::deploy_tracker::{
+use continuum_cli_lifecycle::deploy_tracker::{
     decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold,
     RequestOutcome, TickInputs,
 };
@@ -446,7 +446,7 @@ impl ServiceModule for DeployTrackerModule {
             Some(req) => self.source.build_key(&req.tip_sha).await,
             None => None,
         };
-        match crate::runtime::deploy_tracker::reconcile_request(
+        match continuum_cli_lifecycle::deploy_tracker::reconcile_request(
             request.as_ref(),
             running_sha(),
             request_build_key.as_deref(),
@@ -499,7 +499,7 @@ impl ServiceModule for DeployTrackerModule {
                 // made every age-based decision downstream meaningless (card c48fc453). The
                 // probe follows the write, so a standing request stops repeating itself too.
                 let standing = read_deploy_request(state_dir);
-                let persisted = crate::runtime::deploy_tracker::request_to_persist(
+                let persisted = continuum_cli_lifecycle::deploy_tracker::request_to_persist(
                     standing.as_ref(),
                     tip_sha,
                     now,
@@ -518,7 +518,7 @@ impl ServiceModule for DeployTrackerModule {
                 // request is exactly what a retry must be judged against.
                 let req = persisted
                     .or(standing)
-                    .unwrap_or_else(|| crate::runtime::deploy_tracker::DeployRequest::new(tip_sha, now));
+                    .unwrap_or_else(|| continuum_cli_lifecycle::deploy_tracker::DeployRequest::new(tip_sha, now));
                 // THE ACTION, off the tick: the actuator defers to an installed owner,
                 // launches the consumer once per request, and keeps the receipt.
                 let actuator = self.actuator.clone();
@@ -587,7 +587,7 @@ impl ServiceModule for DeployTrackerModule {
                 // request on disk is how it learns that. Recorded, never actuated here.
                 if let Some(tip_sha) = deployable_tip {
                     let standing = read_deploy_request(state_dir);
-                    if let Some(req) = crate::runtime::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
+                    if let Some(req) = continuum_cli_lifecycle::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
                         write_deploy_request(state_dir, &req);
                         crate::probe!(
                             class = "deploy.track.request_moved_in_flight",
