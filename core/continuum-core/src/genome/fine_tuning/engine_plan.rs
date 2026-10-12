@@ -292,9 +292,8 @@ pub(super) struct WindowPlan {
 
 /// `rows` are whole-run footprints, what the model is fitted to. `bounds` are every measured row,
 /// a graph-only refusal included: a graph alone over `available` proves the whole run is over it
-/// too, so it caps the window whichever it included (card 030d70f0: the 5090 re-planned window
-/// 68,608 seventy-three times in a row because its refusals were filed graph-only and the cap
-/// read whole-run rows alone).
+/// too, so it caps the window whichever it included (card 030d70f0, where the 5090's graph-only
+/// refusals were invisible to every plan read).
 pub(super) fn choose_window(
     served: u32,
     available: u64,

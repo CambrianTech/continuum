@@ -509,7 +509,8 @@ impl Footprints {
     /// What a shape needs, for [`choose_chunk`]: the larger of what is known (its whole-run row,
     /// else `predicted` by the fit) and its measured lower bound. A graph-only refusal at this
     /// chunk still rules it out, so the ladder steps down instead of calibrating the refused
-    /// shape again (card 030d70f0: 73 runs at window 68,608 and the engine's default chunk).
+    /// shape again (card 030d70f0: the 5090 held a graph-only row at window 68,608 and the
+    /// engine's default chunk, the window it re-dispatched in its failure run).
     fn need(&self, shape: &Shape, predicted: Option<u64>) -> Option<u64> {
         let bound = self.bound(shape);
         match self.get(shape).or(predicted) {
@@ -2316,8 +2317,8 @@ mod tests {
         assert_eq!(store.get(&shape), None, "a graph-only row leases nothing: the shape calibrates");
         assert!(store.rows_like(&shape).is_empty(), "and is not fitted");
         // regression for card 030d70f0 (the 5090, 84 of 108 jobs failed): her refusals were filed
-        // graph-only, so the cap never saw them and window 68,608 was re-dispatched 73 times. A
-        // graph alone over what is free is a LOWER bound the plan obeys, though the fit ignores it.
+        // graph-only, which no plan read. A graph alone over what is free is a LOWER bound the
+        // plan obeys, though the fit ignores it: at the floor chunk it caps the window.
         assert_eq!(store.bound(&shape), Some(9 * gib), "a graph-only row still bounds its shape");
         let served = Shape { window: 68_608, chunk: TRAINING_CHUNK_MIN, ..shape.clone() };
         store.record_with(&served, 13 * gib, false, Uuid::nil()).expect("test: graph-only refusal at the served window");
