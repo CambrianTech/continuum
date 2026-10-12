@@ -244,7 +244,9 @@ jobs:
           got="$(sha256sum "$dl/$archive" | cut -d' ' -f1)"
           [ "$got" = "$want" ] || miss "checksum mismatch on $archive"
           mkdir -p "$RUNNER_TEMP/published-engine"
-          tar -xzf "$dl/$archive" -C "$RUNNER_TEMP/published-engine" \
+          # Relative names from inside the directory, as Package does below: GNU tar (Git for
+          # Windows) reads `D:\...` as host:path (canary run 38223974097 failed on exactly that).
+          (cd "$RUNNER_TEMP/published-engine" && tar -xzf "../engine-download/$archive") \
             || { rm -rf "$RUNNER_TEMP/published-engine"; miss "archive did not unpack"; }
           echo "restored $archive from $tag"
           echo "cache-hit=true" >> "$GITHUB_OUTPUT"
@@ -284,7 +286,9 @@ jobs:
         run: |
           set -euo pipefail
           tag="${{ steps.engine-cache.outputs.tag }}"
-          tar -czf "$RUNNER_TEMP/published-engine.tar.gz" -C "$RUNNER_TEMP/published-engine" .
+          # Relative names from inside the directory: GNU tar (Git for Windows) reads `D:\...` as
+          # host:path, which failed canary run 38223974097 at exactly this line.
+          (cd "$RUNNER_TEMP/published-engine" && tar -czf ../published-engine.tar.gz .)
           sum="$(sha256sum "$RUNNER_TEMP/published-engine.tar.gz" | cut -d' ' -f1)"
           archive="published-engine-${sum:0:16}.tar.gz"
           mv "$RUNNER_TEMP/published-engine.tar.gz" "$RUNNER_TEMP/$archive"
