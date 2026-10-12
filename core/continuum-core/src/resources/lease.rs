@@ -47,11 +47,10 @@ impl ResourceKind {
     }
 }
 
-/// How willing a lease is to be reclaimed under pressure. Mirrors this module's
+/// How willing a lease is to be reclaimed under pressure. Mirrors inference planning's
 /// [`ThroughputLeaseRevocationPolicy`](crate::inference::planning::throughput_lease::ThroughputLeaseRevocationPolicy)
 /// so the two axes speak the same revocation vocabulary. Convergence onto one
-/// shared enum is deferred (same pattern this module already follows for
-/// `cognition::*` re-exports) — noted, not forced.
+/// shared enum is deferred — noted, not forced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 #[ts(
