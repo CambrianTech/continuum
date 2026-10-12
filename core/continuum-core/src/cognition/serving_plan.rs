@@ -35,6 +35,8 @@
 //! GPU pressure shifting. Pure function, same shape as `adaptive_throughput`
 //! and `model_resolver`.
 
+pub mod footprint;
+
 /// SAFETY backstop on continuous-batching lanes for a single base model on one
 /// node — NOT the binding constraint. The binding constraint is now the
 /// compute-buffer-aware fit math ([`ModelFootprint::compute_buffer_per_lane`] +

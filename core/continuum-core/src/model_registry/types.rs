@@ -417,7 +417,7 @@ pub struct ModelServingPrefs {
     /// misread Joel called out (2026-09-05: "You guys aren't understanding how
     /// scaling works"). A measured score outranks any weight proxy; an
     /// unmeasured model keeps the proxy, capped below every measured frontier
-    /// score (see `serving_daemon::UNMEASURED_RANK_CAP`).
+    /// score (see `cognition::serving_plan::footprint::UNMEASURED_RANK_CAP`).
     pub measured_capability: Option<u8>,
 }
 
