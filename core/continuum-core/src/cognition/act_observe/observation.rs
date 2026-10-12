@@ -454,7 +454,7 @@ mod tests {
                         tool_use_id: "c1".into(),
                         content: content.into(),
                         is_error,
-                        spill_handle: None,
+                        custody: crate::ai::types::ResultCustody::Unsaved,
                     },
                     verb: ToolVerb::classify("code/shell"),
                     paths: Vec::new(),

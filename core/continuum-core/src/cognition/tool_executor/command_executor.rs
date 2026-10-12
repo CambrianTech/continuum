@@ -552,7 +552,7 @@ impl ToolExecutor for CommandToolExecutor {
                         // fragment. The HANDLE rides the result type-level so working
                         // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
-                        let (content, spill_handle) =
+                        let (content, custody) =
                             spill::whole_or_handle(full, max_result_chars, ctx.persona_id).into_parts();
                         NativeToolResult {
                             tool_use_id,
@@ -562,7 +562,7 @@ impl ToolExecutor for CommandToolExecutor {
                             // be flattened into one here — they ride the typed
                             // `CallVerdict` to the receipt, which can say them.
                             is_error: verdict.failed().then_some(true),
-                            spill_handle,
+                            custody,
                         }
                     }
                 }
@@ -602,7 +602,7 @@ impl ToolExecutor for CommandToolExecutor {
                         dispatch_handle: None,
                     });
                     // The same one decision as a success: whole, or saved and handed back.
-                    let (content, spill_handle) = spill::whole_or_handle(
+                    let (content, custody) = spill::whole_or_handle(
                         persona_tool_error(attempted, raw),
                         max_result_chars,
                         ctx.persona_id,
@@ -612,7 +612,7 @@ impl ToolExecutor for CommandToolExecutor {
                         tool_use_id,
                         content,
                         is_error: Some(true),
-                        spill_handle,
+                        custody,
                     }
                 }
             })

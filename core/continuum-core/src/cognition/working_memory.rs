@@ -620,7 +620,7 @@ impl WorkingMemory {
             }
             let handle = acts
                 .iter()
-                .find_map(|o| o.output.result.spill_handle.clone());
+                .find_map(|o| o.output.result.custody.handle().map(str::to_owned));
             let mut rr = self.recent_results.lock();
             rr.push_back((seq, room, tail, label, handle));
             // NO mid-settle eviction (2026-08-24, the third head-rotation): evicting
@@ -1380,8 +1380,11 @@ impl WorkingMemory {
                 };
                 ptrs.push_back(match &ehandle {
                     Some(_) => format!("[result {attribution} — collapsed]"),
+                    // No handle: its save failed (or it predates saving). Said as what it
+                    // is; re-running a tool is a new result, not this one.
                     None => format!(
-                        "[result {attribution}, {} chars — collapsed from view; re-run if needed]",
+                        "[result {attribution}, {} chars — collapsed from view; it was never \
+                         saved, so it cannot be reopened]",
                         evicted.chars().count()
                     ),
                 });
@@ -2181,7 +2184,7 @@ mod tests {
                     tool_use_id: "call-42".into(),
                     content: "match at foo.rs:42".into(),
                     is_error: None,
-                    spill_handle: None,
+                    custody: crate::ai::types::ResultCustody::Unsaved,
                 },
                 verb: ToolVerb::Search,
                 paths: Vec::new(),
@@ -2267,7 +2270,9 @@ mod tests {
                     tool_use_id: id.into(),
                     content: "same result".into(),
                     is_error: None,
-                    spill_handle: handle.map(str::to_owned),
+                    custody: handle.map_or(crate::ai::types::ResultCustody::Unsaved, |h| {
+                        crate::ai::types::ResultCustody::Whole { handle: h.to_owned() }
+                    }),
                 },
                 verb: ToolVerb::classify(name),
                 paths: Vec::new(),

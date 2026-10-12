@@ -332,7 +332,7 @@ pub async fn apply_act(
                 tool_use_id: call.id.clone(),
                 content: "(no result returned)".to_string(),
                 is_error: None,
-                spill_handle: None,
+                custody: crate::ai::types::ResultCustody::Unsaved,
             });
         // The COMMAND's own verdict, decoded once by the executor from the
         // PRE-FOLD value and carried here by tool_use_id. Absent (a test double, or
@@ -407,7 +407,7 @@ pub async fn apply_act(
                     result: ToolResult {
                         tool_use_id: call.id.clone(),
                         content: "dispatched — running in background".to_string(),
-                        spill_handle: None,
+                        custody: crate::ai::types::ResultCustody::Unsaved,
                         is_error: None,
                     },
                     verb: ToolVerb::classify(&call.name),

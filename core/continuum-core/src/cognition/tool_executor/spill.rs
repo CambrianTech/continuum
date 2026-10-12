@@ -27,6 +27,8 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::ai::types::ResultCustody;
+
 /// A spilled tool result: the content-addressed handle (the filename stem the
 /// persona quotes back to `tool/output`), where it landed, and how big it was.
 #[derive(Debug, Clone)]
@@ -73,22 +75,26 @@ pub fn spill(persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
 /// ever shown for one. A consumer renders these; it never invents a recovery from a raw string.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fitted {
-    /// Within the window's share for one result: the result itself.
-    Complete(String),
+    /// Within the window's share for one result: the result itself, also saved under
+    /// `handle` so it stays reachable after it leaves view (a settlement collapse or a
+    /// restore leaves a pointer that resolves, never "re-run if needed").
+    Complete { text: String, handle: String },
     /// Over the share and saved whole under `handle`: `shown` is the pointer to it.
     Stored { shown: String, handle: String },
-    /// Over the share and the save failed: `shown` says so and then carries the WHOLE result.
+    /// The save failed: `shown` says so and then carries the WHOLE result, whatever its size.
     /// Nothing else holds those bytes, and re-running a tool to recover them is not a recovery
-    /// (Astra, 2026-10-12). A failure to save, never a failure of the action.
+    /// (Astra, 2026-10-12). A failure to save, never a failure of the action; once it leaves
+    /// view it cannot be reopened, and the pointer it leaves says exactly that.
     RetentionFailed { shown: String },
 }
 
 impl Fitted {
-    /// The text the mind is shown, and the handle when the whole result is saved.
-    pub fn into_parts(self) -> (String, Option<String>) {
+    /// The text the mind is shown, and its typed custody.
+    pub fn into_parts(self) -> (String, ResultCustody) {
         match self {
-            Fitted::Complete(text) | Fitted::RetentionFailed { shown: text } => (text, None),
-            Fitted::Stored { shown, handle } => (shown, Some(handle)),
+            Fitted::Complete { text, handle } => (text, ResultCustody::Whole { handle }),
+            Fitted::Stored { shown, handle } => (shown, ResultCustody::Pointer { handle }),
+            Fitted::RetentionFailed { shown } => (shown, ResultCustody::Unsaved),
         }
     }
 }
@@ -97,11 +103,11 @@ impl Fitted {
 /// window. `share` is the window's share for one result
 /// ([`crate::cognition::context_budget::ContextBudget::latest_action_chars`]), the same share
 /// working memory shows it at, so nothing reaches working memory too big for its view without
-/// a handle. A result that fits never touches the disk.
+/// a handle. EVERY result is saved, not only the oversized ones: a result that fits now still
+/// leaves view later (a settlement collapse, a restore into a smaller window), and the pointer
+/// it leaves must resolve (Astra on #4963). Saves are content-addressed, so a repeated read
+/// reuses its file, and the directory is evicted under disk pressure like every spill.
 pub fn whole_or_handle(full: String, share: usize, persona_id: Uuid) -> Fitted {
-    if full.chars().count() <= share {
-        return Fitted::Complete(full);
-    }
     match spill_root() {
         Ok(root) => whole_or_handle_in(&root, full, share, persona_id),
         Err(e) => unsaved_whole(full, share, &e),
@@ -141,10 +147,11 @@ fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<Spi
 
 fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid) -> Fitted {
     let chars = full.chars().count();
-    if chars <= share {
-        return Fitted::Complete(full);
-    }
     match spill_in(root, persona_id, &full) {
+        Ok(r) if chars <= share => Fitted::Complete {
+            text: full,
+            handle: r.handle,
+        },
         Ok(r) => {
             crate::probe!(
                 class = "tool.output.spilled",
@@ -179,12 +186,17 @@ fn unsaved_whole(full: String, share: usize, error: &std::io::Error) -> Fitted {
         chars = %chars,
         share = %share,
         error = %error,
-        "a tool result over its share could not be saved whole; it goes on whole, over its share"
+        "a tool result could not be saved; it goes on whole and cannot be reopened later"
     );
+    let over = if chars > share {
+        format!(", over this window's {share}-char share for one result")
+    } else {
+        String::new()
+    };
     Fitted::RetentionFailed {
         shown: format!(
-            "[saving this {chars}-char result failed ({error}), so it is shown whole, over \
-             this window's {share}-char share for one result]\n{full}"
+            "[saving this {chars}-char result failed ({error}): it is shown whole{over}, and \
+             once it leaves view it cannot be reopened]\n{full}"
         ),
     }
 }
@@ -354,7 +366,13 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
         let persona = Uuid::new_v4();
         let small = "ok: 2 passed".to_string();
-        assert_eq!(whole_or_handle_in(&tmp, small.clone(), 600, persona), Fitted::Complete(small));
+        let Fitted::Complete { text, handle } = whole_or_handle_in(&tmp, small.clone(), 600, persona)
+        else {
+            panic!("a fitting result is complete")
+        };
+        assert_eq!(text, small, "shown byte-identical");
+        let path = resolve_in(&tmp, persona, &handle).expect("resolve");
+        assert_eq!(std::fs::read_to_string(path).unwrap(), small, "and saved, so it stays reachable");
 
         let body = format!("HEAD-MARK\n{}TAIL-MARK error: boom\n", "compiling module\n".repeat(5000));
         let Fitted::Stored { shown, handle } = whole_or_handle_in(&tmp, body.clone(), 600, persona)
@@ -377,6 +395,12 @@ mod tests {
             panic!("a failed save is its own state")
         };
         assert!(shown.contains("saving this") && shown.ends_with(&unsaved_body), "kept whole: {shown}");
+        let Fitted::RetentionFailed { shown } =
+            whole_or_handle_in(&blocked, "ok".to_string(), 64, persona)
+        else {
+            panic!("a fitting result whose save failed says so too")
+        };
+        assert!(shown.contains("cannot be reopened") && shown.ends_with("ok"), "{shown}");
 
         // Multibyte bodies measure in chars, the unit the share is in, and never split.
         let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona).into_parts();
