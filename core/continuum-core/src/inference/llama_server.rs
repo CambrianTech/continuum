@@ -1565,7 +1565,7 @@ pub fn warm_build_jobs_for_memory(free_bytes: u64) -> Option<u32> {
 /// (prefix either way, credible hex). A lane is stale only when both commits are credible
 /// SHAs and they disagree; anything unreadable is not evidence (BigMama on 7c5f139d).
 pub(crate) fn lane_runs_installed_engine(build_info: &str, installed: &str) -> bool {
-    use crate::runtime::deploy_provenance::sha_matches;
+    use continuum_cli_lifecycle::deploy_provenance::sha_matches;
     let lane = build_info.rsplit('-').next().unwrap_or(build_info).trim(); // unwrap_or: rsplit always yields one piece
     let credible = |sha: &str| sha_matches(sha, sha); // a SHA matches itself iff it is credible
     if !credible(lane) || !credible(installed) {
