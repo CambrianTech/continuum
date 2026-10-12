@@ -1976,7 +1976,8 @@ fn save_volatile(
 /// and adoption. Only an absent checkpoint permits a fresh resident; inability
 /// to read or decode an existing one must reach the registration caller.
 /// The spill handles a persona's PERSISTED working memory still points at: its checkpoint's
-/// results ring. Disk-pressure eviction protects these as well as the live minds' handles, so
+/// results ring AND its collapsed pointers (each pointer is how she reopens a result that left
+/// the ring, so it is a reference exactly as a ring entry is). Disk-pressure eviction protects these as well as the live minds' handles, so
 /// a saved result survives the restart a deploy performs, a mind that has not restored yet,
 /// and a persona that is offline (Astra on card 9197cd01). Cached per persona by the
 /// checkpoint's modification time, so an eviction pass over many files reads each checkpoint
@@ -2012,11 +2013,11 @@ fn result_handles_at(
     let handles: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
         load_volatile_at(path)?
             .map(|persisted| {
-                persisted
-                    .wm
-                    .recent_results
+                let wm = persisted.wm;
+                wm.recent_results
                     .into_iter()
                     .filter_map(|(_, _, _, _, handle)| handle)
+                    .chain(wm.evicted_pointers.into_iter().map(|(_, handle)| handle))
                     .collect()
             })
             .unwrap_or_default(),
@@ -2199,6 +2200,35 @@ mod tests {
                 .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs))
                 .unwrap();
         };
+        // A result that collapsed out of the ring is referenced by its POINTER: the checkpoint
+        // of a mind with no live working memory still protects it (Astra on acdfb010a).
+        {
+            let memory = WorkingMemory::new(8);
+            memory.set_served_window(16_384);
+            let cap = memory.budget().recent_results_chars();
+            let saved = |handle: &str| crate::ai::types::ResultCustody::Whole { handle: handle.into() };
+            memory.record_receipt_typed(&[], &"c".repeat(cap / 2), None, saved("c011a75ed0000001"));
+            for _ in 0..4 {
+                memory.record_receipt_typed(&[], &"s".repeat(cap / 2), None, saved("5000000000000002"));
+            }
+            memory.record_settlement("done");
+            let persisted = PersistedVolatile {
+                wm: memory.snapshot(),
+                own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),
+            };
+            drop(memory);
+            std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(200))
+                .unwrap();
+            assert!(
+                result_handles_at(&path).unwrap().contains("c011a75ed0000001"),
+                "a collapsed result's handle is protected through its persisted pointer"
+            );
+        }
         write("0123456789abcdef", 100);
         assert!(result_handles_at(&path).unwrap().contains("0123456789abcdef"));
         write("fedcba9876543210", 10);
