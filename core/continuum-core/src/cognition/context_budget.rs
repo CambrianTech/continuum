@@ -467,20 +467,21 @@ const RECALL_DENOM: usize = 10;
         self.fraction(TRAIL_HEAD_DENOM)
     }
 
-    /// The RECENT-RESULTS buffer share — the last few acts' result TAILS, kept across
-    /// subsequent acts and turn boundaries. The `last_action` slot keeps only the
-    /// LATEST result and any act overwrites it, and the pinned block is settlement-
-    /// gated — so a finding survived exactly until the next trivial act or spoken
-    /// turn (measured 2026-08-16: Anwen's compile error was overwritten by a
-    /// `list_files` one act later; her next three turns wandered discovery tools and
-    /// she re-ran the same unfixed code — the missing-feedback loop). `1/32` of the
-    /// window holds a handful of ~300-char tails on a 16k lane, more on a big one.
+    /// The RECENT-RESULTS share: the last few acts' results kept WHOLE across subsequent acts
+    /// and turn boundaries, newest first, with the older ones collapsed to pointers at
+    /// settlement. The `last_action` slot keeps only the LATEST result and any act overwrites
+    /// it, and the pinned block is settlement-gated, so a finding survived exactly until the
+    /// next trivial act or spoken turn (measured 2026-08-16: Anwen's compile error was
+    /// overwritten by a `list_files` one act later). This share used to be `1/32` holding
+    /// result TAILS, and a tail of a code read is broken code: on 2026-10-12 Kimi read the same
+    /// file 25+ times in four hours and landed no edit. A quarter of the window, the same share
+    /// the latest action gets, because a working mind's own results ARE its work.
     /// Storage bound (same leak-honesty contract as [`Self::receipt_archive_chars`]).
     pub fn recent_results_chars(&self) -> usize {
         match self.total_chars {
-            Some(_) => self.fraction(32),
+            Some(_) => self.fraction(4),
             None => {
-                Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX).fraction(32)
+                Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX).fraction(4)
             }
         }
     }

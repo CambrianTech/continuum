@@ -111,16 +111,20 @@ pub fn collapse_thought(text: &str, keep: usize) -> String {
     format!("[{} earlier chars — my full thought, collapsed] …{tail}", total - keep)
 }
 
+/// The latest result WHOLE when the window's share holds it, otherwise a pointer that says how
+/// to reach it, never a head or a tail of it: a fragment of code or JSON is broken, not short
+/// (Joel, 2026-10-12). The executor already spilled an oversized result whole and named its
+/// `tool/output` handle in the attribution line; without one, a narrower re-run is the way.
 pub fn clip_action_full<'a>(full: &'a str, budget: &ContextBudget) -> std::borrow::Cow<'a, str> {
     let cap = budget.latest_action_chars();
-    if full.chars().count() <= cap {
+    let size = full.chars().count();
+    if size <= cap {
         return std::borrow::Cow::Borrowed(full);
     }
-    let head: String = full.chars().take(cap).collect();
-    let dropped = full.chars().count() - cap;
     std::borrow::Cow::Owned(format!(
-        "{head}\n[… +{dropped} chars truncated — re-run the tool with a narrower scope \
-         (a path or line range) to see the rest]"
+        "[this result is {size} chars, more than this window's {cap}-char share for it, so it is \
+         not shown in part: open it whole with tool/output if it names a handle above, or re-run \
+         the tool on a narrower scope (a path or a line range)]"
     ))
 }
 
@@ -297,9 +301,9 @@ pub struct WorkingMemory {
     /// Anwen's compile error was overwritten by a `list_files` one act later —
     /// her next three turns wandered discovery tools and she re-ran the same
     /// unfixed code). Char-bounded by the window-derived
-    /// [`ContextBudget::recent_results_chars`] share; tails are the result's
-    /// FINAL chars (errors and conclusions live at the end; the head is already
-    /// in the receipt trail).
+    /// [`ContextBudget::recent_results_chars`] share. Each result is held WHOLE:
+    /// a tail of a code read is broken code (2026-10-12). What no longer fits
+    /// collapses to a pointer at settlement.
     recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String, String, Option<String>)>>,
     /// One-line pointers for results EVICTED from the channel above — collapse,
     /// never delete (2026-08-24): "[result #N (verb, Nk chars) — evicted; …]".
@@ -608,19 +612,16 @@ impl WorkingMemory {
         // file, read a screenshot description, scan a log). Overwrites the prior latest —
         // older acts survive only as heads in the trail below.
         *self.last_action.lock() = Some((seq, a.to_string()));
-        // Recent-results feedback channel: keep this result's TAIL past the next act
-        // and the next turn (the overwrite above and the settlement gate both destroy
-        // it exactly when a multi-turn task still needs it — the Anwen regression).
-        // Per-entry share is a third of the buffer so ~3 tails coexist; eviction by
-        // total chars keeps the whole buffer inside its window-derived bound.
+        // Recent-results feedback channel: keep this result WHOLE past the next act and
+        // the next turn (the overwrite above and the settlement gate both destroy it
+        // exactly when a multi-turn task still needs it — the Anwen regression). Never a
+        // tail: a code read's last lines are broken code, and on 2026-10-12 Kimi read
+        // wall_source.rs 25+ times in four hours and landed no edit because every earlier
+        // read reached her next turn as its last ~2,100 chars (Joel: "the clipping I've
+        // yelled about for months"). The budget decides how many WHOLE results fit
+        // (`recent_results_chars`); the rest collapse to pointers at settlement.
         {
-            let cap = self.budget().recent_results_chars();
-            let per_entry = (cap / 3).max(1);
-            let tail: String = {
-                let chars: Vec<char> = a.chars().collect();
-                let start = chars.len().saturating_sub(per_entry);
-                chars[start..].iter().collect()
-            };
+            let tail = a.to_string();
             // A receipt can contain several operations. Retain their typed names
             // in order instead of attributing the whole batch to its first call.
             let mut label = String::new();
@@ -912,19 +913,14 @@ impl WorkingMemory {
         }
         *self.last_action.lock() = snap.last_action;
         {
-            // Restore the feedback channel; bounded by the same eviction the live
-            // writer applies (re-clamp contract), so an oversized snapshot trims.
-            let cap = self.budget().recent_results_chars();
+            // Restore the feedback channel, then bound it by the SAME collapse the live
+            // writer's settlement applies (re-clamp contract): a snapshot from a bigger
+            // window leaves pointers to what no longer fits, never a silent deletion.
             let mut rr = self.recent_results.lock();
             rr.clear();
             rr.extend(snap.recent_results);
-            let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
-            while total > cap && rr.len() > 1 {
-                if let Some((_, _, evicted, _, _)) = rr.pop_front() {
-                    total -= evicted.chars().count() + 1;
-                }
-            }
         }
+        self.collapse_results_over_cap();
         {
             let mut f = self.action_fps.lock();
             f.clear();
@@ -1240,8 +1236,13 @@ impl WorkingMemory {
     /// instead of re-ingesting it. First message carries the banner so the
     /// semantics of the ledger stay stated.
     pub fn recent_results_messages(&self) -> Vec<String> {
+        // The active result renders WHOLE as the "Full result of your most recent action"
+        // message; holding it here too would spend its share twice. It joins the ring's
+        // tail when the next act replaces it: an append at the frontier, so the prefix
+        // ahead of it stays byte-stable.
+        let active = self.active_action_full().map(|(seq, _)| seq);
         let rr = self.recent_results.lock();
-        if rr.is_empty() {
+        if rr.iter().all(|(seq, ..)| Some(*seq) == active) && self.evicted_pointers.lock().is_empty() {
             return Vec::new();
         }
         // Banner as its OWN byte-stable message (never an rr entry, so eviction
@@ -1252,7 +1253,7 @@ impl WorkingMemory {
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(),
         );
-        out.extend(rr.iter().map(|(seq, room, tail, operation, handle)| {
+        out.extend(rr.iter().filter(|(seq, ..)| Some(*seq) != active).map(|(seq, room, tail, operation, handle)| {
             let attribution = ResultAttribution {
                 seq: *seq,
                 room: *room,
@@ -1275,30 +1276,6 @@ impl WorkingMemory {
             }
         }
         out
-    }
-
-    pub fn recent_results_block(&self) -> Option<String> {
-        let rr = self.recent_results.lock();
-        if rr.is_empty() {
-            return None;
-        }
-        let lines: Vec<String> = rr
-            .iter()
-            .map(|(seq, room, tail, operation, handle)| {
-                let attribution = ResultAttribution {
-                    seq: *seq,
-                    room: *room,
-                    operation: Some(operation),
-                    spill_handle: handle.as_deref(),
-                };
-                format!("[result {attribution}] {tail}")
-            })
-            .collect();
-        Some(format!(
-            "Recent results of your own actions (oldest first; #n matches the \
-             action ledger):\n{}",
-            lines.join("\n")
-        ))
     }
 
     /// Fold a streamed event from a DISPATCHED (background) command into the mind's
@@ -1873,7 +1850,7 @@ mod tests {
         wm.record_receipt("[action] code/run(sol.rs) error[E0601]: `main` function not found");
         wm.record_receipt("[action] code/list() sol.rs sol2.rs");
         wm.record_receipt("[action] code/tree() workspace/");
-        let block = wm.recent_results_block().expect("results recorded");
+        let block = wm.recent_results_messages().join("\n");
         assert!(
             block.contains("E0601"),
             "the compile error must survive later trivial acts: {block}"
@@ -1884,32 +1861,33 @@ mod tests {
         // is enforced at SETTLEMENT (the boundary where the prompt re-prefills
         // anyway). So: flooding mid-settle keeps everything visible…
         let cap = wm.budget().recent_results_chars();
+        // Whole results an eighth of the share each, so several fit and the collapse is visible.
+        let unit = (cap / 8).max(1);
         for _ in 0..8 {
-            wm.record_receipt(&"x".repeat(cap));
+            wm.record_receipt(&"x".repeat(unit));
         }
         assert!(
-            wm.recent_results_block()
-                .unwrap_or_default()
-                .contains("E0601"),
+            wm.recent_results_messages().join("\n").contains("E0601"),
             "mid-settle the ring is append-only — no head rotation before settlement"
         );
-        // …and SETTLEMENT collapses over-cap tails to pointers, restoring the bound.
+        // …and SETTLEMENT collapses over-cap results to pointers, restoring the bound. The
+        // results that stay are WHOLE (never a tail); the rest are one-line pointers.
         wm.record_settlement("done");
-        let total: usize = wm
-            .recent_results_block()
-            .unwrap_or_default()
-            .chars()
-            .count();
+        let messages = wm.recent_results_messages();
+        let kept: Vec<&String> = messages.iter().filter(|m| m.starts_with("[result ")).collect();
+        assert!(!kept.is_empty(), "the newest results stay");
         assert!(
-            total <= cap + 256,
-            "settlement must restore the window-derived bound: {total} > {cap}"
+            kept.iter().all(|m| m.contains(&"x".repeat(unit))),
+            "every result still shown is shown WHOLE, never a tail"
         );
+        assert!(messages.iter().any(|m| m.contains("collapsed")), "the rest are pointers");
         // …in ONE CHUNK: the collapse lands at half the cap so the surviving head
         // stays byte-identical across the next settles (the KV divergence audit,
         // 2026-09-13: the oldest surviving result was the first differing block in
         // 28 of 55 consecutive turns under one-entry-per-settle eviction).
+        let total: usize = kept.len() * unit;
         assert!(
-            total <= cap / 2 + 256,
+            total <= cap / 2 + unit,
             "an over-cap collapse lands at half the cap, not at the cap: {total} > {}",
             cap / 2
         );
@@ -1924,9 +1902,7 @@ mod tests {
             "the ledger head is byte-stable across settles that fit under the cap"
         );
         assert!(
-            !wm.recent_results_block()
-                .unwrap_or_default()
-                .contains("E0601"),
+            !wm.recent_results_messages().join("\n").contains("E0601"),
             "oldest tails collapse to pointers at settlement — bounded, not immortal"
         );
     }
@@ -2331,15 +2307,16 @@ mod tests {
             "same result",
             Some(room_b),
         );
+        // #2 is the active result: it renders whole as the full-result message below, so
+        // the ring shows only #1 rather than paying for #2 twice.
         let expected = vec![
             format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output] same result"),
-            format!("[result #2; room {room_b}; operation code/run] same result"),
         ];
         let messages = wm.recent_results_messages();
         assert_eq!(
             messages.len(),
-            3,
-            "banner plus two separately attributed results"
+            2,
+            "banner plus the one result that is not the active full result"
         );
         assert_eq!(&messages[1..], expected.as_slice());
         let (seq, full) = wm
@@ -2368,7 +2345,7 @@ mod tests {
             wm.full_result_message(seq, &full)
         );
 
-        // Actual settlement collapses old tails; its pointers must still tell
+        // Actual settlement collapses old results; its pointers must still tell
         // the mind which activity and operation the retained handle belongs to.
         for _ in 0..4 {
             restored.record_receipt(&"x".repeat(restored.budget().recent_results_chars()));
@@ -2625,20 +2602,13 @@ mod tests {
             "a genuine file read stays whole — never clipped"
         );
 
-        // A pathological dump ABOVE the cap → clipped to the head + a re-fetch marker.
+        // A pathological dump ABOVE the cap → a pointer to it, never a fragment of it.
         let dump = "z".repeat(cap + 4_000);
         let clipped = clip_action_full(&dump, &budget);
+        assert!(!clipped.contains('z'), "no head or tail of the result: a fragment is broken, not short");
         assert!(
-            clipped.chars().count() < dump.chars().count(),
-            "the pathological dump is shorter than the raw body"
-        );
-        assert!(
-            clipped.chars().count() <= cap + 120,
-            "clipped to ~the cap plus the short marker, not the full 16k"
-        );
-        assert!(
-            clipped.contains("+4000 chars truncated"),
-            "the marker names exactly how much was dropped"
+            clipped.contains(&format!("{} chars", cap + 4_000)),
+            "the pointer names the result's size"
         );
         assert!(
             clipped.contains("narrower scope"),
