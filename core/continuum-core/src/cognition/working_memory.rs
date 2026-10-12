@@ -1947,14 +1947,17 @@ mod tests {
             wm.recent_results_messages().iter().filter(|m| m.starts_with("[result ")).count()
         };
 
+        // The source settles against its own window as it records, so the count to keep is
+        // what it held, not how many were recorded.
+        let held = entries(&source);
         let unknown = WorkingMemory::new(8);
         unknown.restore(snapshot.clone());
-        assert_eq!(entries(&unknown), 4, "no window yet: nothing folds against the floor");
+        assert_eq!(entries(&unknown), held, "no window yet: nothing folds against the floor");
 
         let known = WorkingMemory::new(8);
         known.set_served_window(16_384);
         known.restore(snapshot);
-        assert!(entries(&known) < 4, "a known smaller window collapses on restore");
+        assert!(entries(&known) < held, "a known smaller window collapses on restore");
     }
 
     // what this catches: an unsaved result dropped at collapse (Astra on #4963 at 4840af859:
