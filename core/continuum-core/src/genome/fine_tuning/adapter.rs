@@ -104,7 +104,12 @@ impl TrainerHardware {
     pub fn satisfied_by(&self, host: &HardwareProfile) -> bool {
         match self {
             TrainerHardware::Any => true,
-            TrainerHardware::Metal => host.has_metal,
+            // Apple Silicon, not merely Metal: an Intel Mac's discrete GPU reports Metal too, and
+            // `mlx_lm` cannot run there (IntelMac 2026-10-12: Delia's training dispatch wedged on
+            // "mlx python interpreter not found"). One classifier owns the distinction.
+            TrainerHardware::Metal => {
+                crate::governor::types::classify_silicon(host) == crate::governor::types::TargetSilicon::AppleM
+            }
             TrainerHardware::Cuda => host.has_cuda,
             TrainerHardware::Vulkan => host.has_vulkan,
         }
