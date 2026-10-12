@@ -1674,8 +1674,8 @@ mod tests {
         assert!(!seat_starves(None, Some(70_071)));
         assert!(!seat_starves(None, None));
         // Nothing measured of her turn: the serve floor is the bar, on both sides.
-        assert!(!seat_starves(Some(crate::cognition::serving_plan::MIN_SERVE_CTX), None));
-        assert!(seat_starves(Some(crate::cognition::serving_plan::MIN_SERVE_CTX - 1), None));
+        assert!(!seat_starves(Some(crate::inference::planning::MIN_SERVE_CTX), None));
+        assert!(seat_starves(Some(crate::inference::planning::MIN_SERVE_CTX - 1), None));
     }
 
     #[test]

@@ -37,6 +37,8 @@
 
 pub mod footprint;
 
+use crate::inference::planning::MIN_SERVE_CTX;
+
 /// SAFETY backstop on continuous-batching lanes for a single base model on one
 /// node — NOT the binding constraint. The binding constraint is now the
 /// compute-buffer-aware fit math ([`ModelFootprint::compute_buffer_per_lane`] +
@@ -107,16 +109,6 @@ pub const MAX_LANES: u32 = 8;
 // (pathological roster + llama.cpp `--parallel` practicality); the binding constraint is
 // the window floor, exactly as the earlier doc always claimed it should be.
 
-/// Bare-minimum served window for a model to be runnable at ALL — a hardware
-/// reality floor, NOT a serving target or a cheapening cap. The served window is
-/// sized UP from here to the largest that fits the host budget, capped by BOTH
-/// the model's own trained `context_window` AND the DEMAND ceiling
-/// ([`BOOTSTRAP_WORKING_SET`] / measured p95) — a lane is provisioned for what
-/// personas actually USE, never maximized to fill RAM. A model whose weights + KV
-/// at even this floor won't fit the GPU budget is simply not a serving option on
-/// this host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
-// context-budget-exempt: the hardware FLOOR the whole serving stack sizes UP from — the one substrate-owned minimum every other bound derives against, and never a cap on anything
-pub const MIN_SERVE_CTX: u32 = 2048;
 
 /// Cold-start DEMAND ceiling for the served window — the "B-now" half of the
 /// demand-derived cap (M5 + BigMama, 2026-07-26). Sizing a lane's window to fill

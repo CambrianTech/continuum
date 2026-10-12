@@ -61,7 +61,7 @@ use async_trait::async_trait;
 use parking_lot::Mutex;
 use tokio::sync::watch;
 
-use crate::cognition::serving_plan::MIN_SERVE_CTX;
+use crate::inference::planning::MIN_SERVE_CTX;
 use crate::inference::lane_registry::LaneRecord;
 use crate::inference::llama_server::ServingSnapshot;
 use crate::modules::serving_tier_down::{TierDownContext, TierDownPolicy};

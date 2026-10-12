@@ -82,7 +82,7 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// the same figure [`decide_eval_lane_placement`] reads), the throwaway lane's geometry
 /// mirrors what production would serve THIS base on THIS host RIGHT NOW: roomy host →
 /// big window up to the model's trained ceiling; contended host → honestly smaller;
-/// always floored at [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX)
+/// always floored at [`MIN_SERVE_CTX`](crate::inference::planning::MIN_SERVE_CTX)
 /// and capped at the base's own trained window.
 ///
 /// Degrades honestly (never a fresh magic cap): no GPU monitor on the node (CPU-only
@@ -121,7 +121,7 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// `decide_eval_lane_placement`; if the window won't fit, the lane spawn fails and the caller
 /// degrades to a co-tenant SHARE rather than OOM.
 fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
-    use crate::cognition::serving_plan::MIN_SERVE_CTX;
+    use crate::inference::planning::MIN_SERVE_CTX;
     let trained = base.context_window.max(MIN_SERVE_CTX);
     match exam_fit_window(base) {
         // The host can hold the model's whole trained window — use it exactly.
@@ -3662,7 +3662,7 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
     // than inventing headroom. [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
     let exam_window = window
         .min(max_fit_window)
-        .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+        .max(crate::inference::planning::MIN_SERVE_CTX);
     let demand = LaneDemand {
         base_model_id: active.to_string(),
         weights_bytes: fp.weights_bytes,

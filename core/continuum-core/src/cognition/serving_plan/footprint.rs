@@ -7,7 +7,8 @@
 //! the footprint adapters among them, so every one of them depended on the serving loop to
 //! ask how big a model is. The daemon is now one more caller.
 
-use super::{ModelFootprint, MIN_SERVE_CTX};
+use super::ModelFootprint;
+use crate::inference::planning::MIN_SERVE_CTX;
 use crate::model_registry::types::{Capability, Model};
 
 pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
