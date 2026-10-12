@@ -25,7 +25,7 @@
 //! `metal` / `cuda` / `vulkan`. Tests can pass `platform = "mock"` to
 //! bypass.
 
-use crate::cognition::adaptive_throughput::TargetSilicon;
+use crate::inference::planning::adaptive_throughput::TargetSilicon;
 use crate::cognition::model_resolver::{HostCapability, HwCapabilityTier};
 use crate::gpu::monitor::GpuMonitor;
 use serde::{Deserialize, Serialize};

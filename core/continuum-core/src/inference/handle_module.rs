@@ -722,7 +722,7 @@ mod tests {
     /// to exercise the shared-registry fallback in `open`. `module_with_
     /// coordinator` layers a local heuristic registration on top.
     fn bare_coordinator_module() -> InferenceHandleModule {
-        use crate::cognition::adaptive_throughput::{
+        use crate::inference::planning::adaptive_throughput::{
             ResourceClass, TargetSilicon, ThroughputLaneBudget,
         };
         use crate::inference::coordinator::{CoordinatorConfig, InferenceCoordinator};

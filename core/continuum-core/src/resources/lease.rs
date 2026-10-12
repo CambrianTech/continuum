@@ -3,7 +3,7 @@
 //! A [`ResourceLease`] is the handle the [resource authority](super) hands a
 //! consumer: "you hold N bytes of this `kind` until `expires_at_ms`; renew to
 //! keep it, or I will ask for it back." It is the **byte-residency** sibling of
-//! this module's [`ThroughputLease`](super::ThroughputLease): the throughput
+//! this module's [`ThroughputLease`](crate::inference::planning::throughput_lease::ThroughputLease): the throughput
 //! lease admits a *transient job* to a concurrency lane (cost-units, slots);
 //! this lease tracks *durable bytes* a subsystem holds (a loaded model sits in
 //! VRAM for hours). Same Graceful/Hard/Pinned revocation vocabulary; different
@@ -47,11 +47,10 @@ impl ResourceKind {
     }
 }
 
-/// How willing a lease is to be reclaimed under pressure. Mirrors this module's
-/// [`ThroughputLeaseRevocationPolicy`](super::ThroughputLeaseRevocationPolicy)
+/// How willing a lease is to be reclaimed under pressure. Mirrors inference planning's
+/// [`ThroughputLeaseRevocationPolicy`](crate::inference::planning::throughput_lease::ThroughputLeaseRevocationPolicy)
 /// so the two axes speak the same revocation vocabulary. Convergence onto one
-/// shared enum is deferred (same pattern this module already follows for
-/// `cognition::*` re-exports) — noted, not forced.
+/// shared enum is deferred — noted, not forced.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
 #[serde(rename_all = "kebab-case")]
 #[ts(
