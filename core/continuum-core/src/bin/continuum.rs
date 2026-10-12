@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use continuum_client::{ClientError, Connection};
 use continuum_cli_lifecycle::core_bind_guard::BindDecision;
-use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
+use continuum_client::core_ipc::CoreIpcTransport;
 use continuum_cli_lifecycle::deploy_provenance::{
     cli_replaced_this_run, cli_self_build, cli_staleness_note, deploy_verdict, sha_matches,
     CliSelfBuild,

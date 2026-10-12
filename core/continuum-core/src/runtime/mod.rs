@@ -40,7 +40,6 @@ pub mod command_interceptor;
 pub mod control;
 pub mod core_bind_guard;
 pub mod deploy_claim;
-pub mod core_ipc_transport;
 pub mod deploy_provenance;
 pub mod deploy_tracker;
 pub mod event_graph;
