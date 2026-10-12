@@ -111,23 +111,6 @@ pub fn collapse_thought(text: &str, keep: usize) -> String {
     format!("[{} earlier chars — my full thought, collapsed] …{tail}", total - keep)
 }
 
-/// The latest result WHOLE when the window's share holds it, otherwise a pointer that says how
-/// to reach it, never a head or a tail of it: a fragment of code or JSON is broken, not short
-/// (Joel, 2026-10-12). The executor already spilled an oversized result whole and named its
-/// `tool/output` handle in the attribution line; without one, a narrower re-run is the way.
-pub fn clip_action_full<'a>(full: &'a str, budget: &ContextBudget) -> std::borrow::Cow<'a, str> {
-    let cap = budget.latest_action_chars();
-    let size = full.chars().count();
-    if size <= cap {
-        return std::borrow::Cow::Borrowed(full);
-    }
-    std::borrow::Cow::Owned(format!(
-        "[this result is {size} chars, more than this window's {cap}-char share for it, so it is \
-         not shown in part: open it whole with tool/output if it names a handle above, or re-run \
-         the tool on a narrower scope (a path or a line range)]"
-    ))
-}
-
 /// Max distinct dispatched (background) handles tracked at once. A persona with more than
 /// this many sentinels/compiles/debuggers in flight is unusual; past the cap the
 /// oldest-updated finished handle is evicted first (a still-running one is never dropped).
@@ -618,12 +601,11 @@ impl WorkingMemory {
         // tail: a code read's last lines are broken code, and on 2026-10-12 Kimi read
         // wall_source.rs 25+ times in four hours and landed no edit because every earlier
         // read reached her next turn as its last ~2,100 chars (Joel: "the clipping I've
-        // yelled about for months"). The budget decides how many WHOLE results fit
-        // (`recent_results_chars`); the rest collapse to pointers at settlement. One
-        // result larger than its share is kept as the same pointer the latest slot
-        // shows, so the ring holds units, never a fragment and never an unbounded body.
+        // yelled about for months"). The producer already fitted it (whole, or its
+        // handle: `spill::whole_or_handle`); the budget decides how many of these units
+        // fit (`recent_results_chars`) and the rest collapse to pointers at settlement.
         {
-            let tail = clip_action_full(a, &self.budget()).into_owned();
+            let tail = a.to_string();
             // A receipt can contain several operations. Retain their typed names
             // in order instead of attributing the whole batch to its first call.
             let mut label = String::new();
@@ -1205,18 +1187,19 @@ impl WorkingMemory {
     /// builder now reads this DIRECTLY and appends it as its own durable trailing
     /// turn, so no `focus()` pass stands between the hands and the mind.
     ///
-    /// Identical gating + clipping to the old faculty block: settlement-gated via
+    /// Identical gating to the old faculty block: settlement-gated via
     /// [`active_action_full`](Self::active_action_full) (stops re-prefilling once the
     /// turn settles — #139/#165), and shown only when the full result carries MORE
     /// than the trail head already does. `None` when there is no active result or it
     /// would add nothing.
     pub fn pinned_active_result_block(&self) -> Option<String> {
         let (seq, full) = self.active_action_full()?;
-        let budget = self.budget();
-        if full.chars().count() <= budget.trail_head_chars() {
+        if full.chars().count() <= self.budget().trail_head_chars() {
             return None;
         }
-        Some(self.full_result_message(seq, &clip_action_full(&full, &budget)))
+        // Shown as the producer handed it over: whole, or its handle. A consumer never
+        // re-cuts (CONTENT-TRAVELS-BY-HANDLE.md, forbidden moves).
+        Some(self.full_result_message(seq, &full))
     }
 
     /// The RECENT-RESULTS feedback block: the last few acts' result tails, kept
@@ -2616,57 +2599,20 @@ mod tests {
         assert_eq!(seq2, 2, "latest-full tracks the most recent act");
     }
 
-    // what this catches: #139 latency — a PATHOLOGICAL tool result (a huge code/tree
-    // dump ≈ 4k tokens, HALF the whole prompt) is clipped in the full-result block so it
-    // stops re-prefilling verbatim every turn it rides along as "most recent action",
-    // while a GENUINE read (a ~130-line file, the design's stated legit case) still comes
-    // through WHOLE. The clip is re-fetchable, never silent: it names the dropped size and
-    // how to see the rest. Bounding this volatile tail is the OOM-safe prefill lever.
+    // what this catches: a consumer re-cut (the #392 pinned-block clip until 2026-10-12). The
+    // producer fits a result (`spill::whole_or_handle`: whole, or its handle, or whole with
+    // a failed save said first); working memory shows exactly that, never a head of it,
+    // even when it is over the window's share.
     #[tokio::test]
-    async fn oversized_action_result_is_clipped_but_genuine_reads_survive_whole() {
-        // A genuine read at the design's stated legit size (5k chars ≈ 130-line file) is
-        // BELOW the cap → unchanged, matches the sibling test's guarantee.
-        // Bounds are a fraction of a live window now, so the test states the window it is
-        // measuring against instead of importing a constant that no longer exists.
-        let budget = ContextBudget::from_window(16_384);
-        let cap = budget.latest_action_chars();
-        let genuine = "y".repeat(5_000);
-        assert_eq!(
-            clip_action_full(&genuine, &budget),
-            genuine,
-            "a genuine file read stays whole — never clipped"
-        );
-
-        // A pathological dump ABOVE the cap → a pointer to it, never a fragment of it.
-        let dump = "z".repeat(cap + 4_000);
-        let clipped = clip_action_full(&dump, &budget);
-        assert!(!clipped.contains('z'), "no head or tail of the result: a fragment is broken, not short");
-        assert!(
-            clipped.contains(&format!("{} chars", cap + 4_000)),
-            "the pointer names the result's size"
-        );
-        assert!(
-            clipped.contains("narrower scope"),
-            "the marker tells the mind how to see the rest — never a silent starve"
-        );
-
-        // End-to-end through the PINNED block (#392): the oversized result renders as its pointer.
+    async fn the_pinned_result_is_what_the_producer_handed_over_never_re_cut() {
         let wm = Arc::new(WorkingMemory::new(8));
-        // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
-        // is unbounded by contract, so a clipping test must declare the window it measures.
         wm.set_served_window(16_384);
-        wm.record_receipt(&dump);
+        let over_share = "z".repeat(wm.budget().latest_action_chars() + 4_000);
+        wm.record_receipt(&over_share);
         let pinned = wm
             .pinned_active_result_block()
-            .expect("the oversized result still surfaces, clipped");
-        assert!(
-            pinned.contains("Full result of your most recent action (#1; room unrecorded; operation unrecorded):"),
-            "the block still surfaces"
-        );
-        assert!(
-            pinned.contains("not shown in part") && !pinned.contains("zzzz"),
-            "and it's the POINTER, neither the raw dump nor a fragment of it"
-        );
+            .expect("the result surfaces");
+        assert!(pinned.ends_with(&over_share), "whole, as handed over");
     }
 
     // what this catches: #139/#165 — the FULL action result rides in the prompt only while

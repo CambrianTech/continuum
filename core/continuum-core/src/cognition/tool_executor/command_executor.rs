@@ -553,7 +553,7 @@ impl ToolExecutor for CommandToolExecutor {
                         // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
                         let (content, spill_handle) =
-                            spill::whole_or_handle(full, max_result_chars, ctx.persona_id);
+                            spill::whole_or_handle(full, max_result_chars, ctx.persona_id).into_parts();
                         NativeToolResult {
                             tool_use_id,
                             content,
@@ -606,7 +606,8 @@ impl ToolExecutor for CommandToolExecutor {
                         persona_tool_error(attempted, raw),
                         max_result_chars,
                         ctx.persona_id,
-                    );
+                    )
+                    .into_parts();
                     NativeToolResult {
                         tool_use_id,
                         content,

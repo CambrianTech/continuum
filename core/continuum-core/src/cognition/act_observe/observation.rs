@@ -25,7 +25,7 @@ use crate::ai::types::{ToolCall, ToolResult};
 use crate::cognition::context_budget::ContextBudget;
 
 use super::recency::{
-    bound_recency_result, humanize_result_content, render_act_for_recall,
+    humanize_result_content, render_act_for_recall,
     summarize_args_for_recency,
 };
 
@@ -272,7 +272,7 @@ impl Observation {
             self.call.name,
             args,
             because,
-            bound_recency_result(&self.body_text(), budget),
+            self.body_text().trim(),
         )
     }
 

@@ -69,15 +69,42 @@ pub fn spill(persona_id: Uuid, content: &str) -> std::io::Result<SpillRef> {
     spill_in(&spill_root()?, persona_id, content)
 }
 
+/// How a tool result reached a mind: the three custody states, and the only text a mind is
+/// ever shown for one. A consumer renders these; it never invents a recovery from a raw string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Fitted {
+    /// Within the window's share for one result: the result itself.
+    Complete(String),
+    /// Over the share and saved whole under `handle`: `shown` is the pointer to it.
+    Stored { shown: String, handle: String },
+    /// Over the share and the save failed: `shown` says so and then carries the WHOLE result.
+    /// Nothing else holds those bytes, and re-running a tool to recover them is not a recovery
+    /// (Astra, 2026-10-12). A failure to save, never a failure of the action.
+    RetentionFailed { shown: String },
+}
+
+impl Fitted {
+    /// The text the mind is shown, and the handle when the whole result is saved.
+    pub fn into_parts(self) -> (String, Option<String>) {
+        match self {
+            Fitted::Complete(text) | Fitted::RetentionFailed { shown: text } => (text, None),
+            Fitted::Stored { shown, handle } => (shown, Some(handle)),
+        }
+    }
+}
+
 /// Whole, or saved whole and pointed at: the one place a tool result is fitted to a mind's
 /// window. `share` is the window's share for one result
 /// ([`crate::cognition::context_budget::ContextBudget::latest_action_chars`]), the same share
 /// working memory shows it at, so nothing reaches working memory too big for its view without
-/// a handle. Returns the text to show and the handle when one was saved.
-pub fn whole_or_handle(full: String, share: usize, persona_id: Uuid) -> (String, Option<String>) {
+/// a handle. A result that fits never touches the disk.
+pub fn whole_or_handle(full: String, share: usize, persona_id: Uuid) -> Fitted {
+    if full.chars().count() <= share {
+        return Fitted::Complete(full);
+    }
     match spill_root() {
         Ok(root) => whole_or_handle_in(&root, full, share, persona_id),
-        Err(e) => (unsaved_pointer(&full, share, &e), None),
+        Err(e) => unsaved_whole(full, share, &e),
     }
 }
 
@@ -112,15 +139,10 @@ fn spill_in(root: &Path, persona_id: Uuid, content: &str) -> std::io::Result<Spi
     })
 }
 
-fn whole_or_handle_in(
-    root: &Path,
-    full: String,
-    share: usize,
-    persona_id: Uuid,
-) -> (String, Option<String>) {
+fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid) -> Fitted {
     let chars = full.chars().count();
     if chars <= share {
-        return (full, None);
+        return Fitted::Complete(full);
     }
     match spill_in(root, persona_id, &full) {
         Ok(r) => {
@@ -132,8 +154,8 @@ fn whole_or_handle_in(
                 "a tool result was larger than the window's share for one result: saved \
                  whole and handed to the mind as its handle"
             );
-            (
-                format!(
+            Fitted::Stored {
+                shown: format!(
                     "[this result is {} lines ({chars} chars), more than this window's \
                      {share}-char share for one result, so it is not shown in part. The whole \
                      result is saved as output `{}`: open what you need with `tool/output`. \
@@ -142,22 +164,29 @@ fn whole_or_handle_in(
                      read a line range with `startLine`/`endLine`]",
                     r.lines, r.handle, r.handle,
                 ),
-                Some(r.handle),
-            )
+                handle: r.handle,
+            }
         }
-        Err(e) => (unsaved_pointer(&full, share, &e), None),
+        Err(e) => unsaved_whole(full, share, &e),
     }
 }
 
-/// The pointer when the whole result could not be saved: said as a failure, and still never a
-/// fragment of the result.
-fn unsaved_pointer(full: &str, share: usize, error: &std::io::Error) -> String {
-    format!(
-        "[this result is {} chars, more than this window's {share}-char share for one result, \
-         and saving it whole failed ({error}), so it is not shown: run the tool on a narrower \
-         scope (a path or a line range) if it does not change anything]",
-        full.chars().count()
-    )
+/// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
+fn unsaved_whole(full: String, share: usize, error: &std::io::Error) -> Fitted {
+    let chars = full.chars().count();
+    crate::probe!(
+        class = "tool.output.unsaved",
+        chars = %chars,
+        share = %share,
+        error = %error,
+        "a tool result over its share could not be saved whole; it goes on whole, over its share"
+    );
+    Fitted::RetentionFailed {
+        shown: format!(
+            "[saving this {chars}-char result failed ({error}), so it is shown whole, over \
+             this window's {share}-char share for one result]\n{full}"
+        ),
+    }
 }
 
 fn resolve_in(root: &Path, persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
@@ -325,19 +354,32 @@ mod tests {
         let tmp = std::env::temp_dir().join(format!("spill-test-{}", Uuid::new_v4()));
         let persona = Uuid::new_v4();
         let small = "ok: 2 passed".to_string();
-        assert_eq!(whole_or_handle_in(&tmp, small.clone(), 600, persona), (small, None));
+        assert_eq!(whole_or_handle_in(&tmp, small.clone(), 600, persona), Fitted::Complete(small));
 
         let body = format!("HEAD-MARK\n{}TAIL-MARK error: boom\n", "compiling module\n".repeat(5000));
-        let (shown, handle) = whole_or_handle_in(&tmp, body.clone(), 600, persona);
-        let handle = handle.expect("an over-share result is saved");
+        let Fitted::Stored { shown, handle } = whole_or_handle_in(&tmp, body.clone(), 600, persona)
+        else {
+            panic!("an over-share result is saved")
+        };
         assert!(!shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "no fragment: {shown}");
         assert!(shown.contains(&handle) && shown.contains("tool/output"), "names the way in: {shown}");
         assert!(shown.contains("\"filter\":\"errors\""), "points at the failure filter: {shown}");
         let path = resolve_in(&tmp, persona, &handle).expect("resolve");
         assert_eq!(std::fs::read_to_string(path).unwrap(), body, "saved byte-identical");
 
+        // A failed save keeps the WHOLE result and says why: nothing else holds those bytes.
+        let blocked = tmp.join("not-a-dir");
+        std::fs::write(&blocked, b"file where the persona dir must go").unwrap();
+        let unsaved_body = "UNSAVED-HEAD ".repeat(100);
+        let Fitted::RetentionFailed { shown } =
+            whole_or_handle_in(&blocked, unsaved_body.clone(), 64, persona)
+        else {
+            panic!("a failed save is its own state")
+        };
+        assert!(shown.contains("saving this") && shown.ends_with(&unsaved_body), "kept whole: {shown}");
+
         // Multibyte bodies measure in chars, the unit the share is in, and never split.
-        let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona);
+        let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona).into_parts();
         assert!(!shown.contains('α'));
         std::fs::remove_dir_all(&tmp).ok();
     }

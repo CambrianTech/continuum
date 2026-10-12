@@ -14,22 +14,6 @@ fn truncate_chars(s: &str, max: usize) -> String {
     format!("{}…", s.chars().take(max).collect::<String>())
 }
 
-/// The RECENCY channel keeps the WHOLE latest result so the mind can act on what
-/// it just fetched — but "whole" for a 5000-entry `code/list` or a multi-match
-/// `code/search` is a multi-KB raw-JSON blob that (a) floods working memory and
-/// (b) gets cut MID-JSON by the downstream budget, which is the garbled/nested
-/// `line_content` a persona then reasons over and loops on (#165, glass-boxed
-/// 2026-07-13). So bound it HERE, at the source, with a CLEAN cut on a char
-/// boundary + a teaching marker that names how to narrow — never a mid-structure
-/// garble. Generous (the mind still needs enough of the result to act), but
-/// finite. A result already within budget is untouched.
-pub(super) fn bound_recency_result(body: &str, budget: &ContextBudget) -> String {
-    // The executor already fitted this result (whole, or saved whole and handed back as its
-    // handle) at the same share; a body that still exceeds it gets the same pointer working
-    // memory uses, never a head of it. One decision: `spill::whole_or_handle`.
-    crate::cognition::working_memory::clip_action_full(body.trim(), budget).into_owned()
-}
-
 /// Decode a tool result for HER WINDOW (card 0a4c0648, Joel's encoding catch 2026-08-08).
 ///
 /// The executor hands back each command's response as serde-serialized JSON, and this
@@ -100,7 +84,7 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
 /// The recall path has collapsed big args since it was written — `summarize_args_for_recall`
 /// turns a whole-file `content` into `content: N chars`, because re-showing that file every
 /// future turn is measured dead weight. The recency path rendered
-/// `serde_json::to_string(&call.input)` RAW, unbounded, and `bound_recency_result` bounds only
+/// `serde_json::to_string(&call.input)` RAW, unbounded, and the result's producer fitted only
 /// the RESULT. So one code path had the rule and its sibling didn't.
 ///
 /// What that costs, glass-boxed on sympy-21379: her single `code/edit` of the run passed
@@ -421,26 +405,6 @@ mod tests {
             kept.contains("refine_arg"),
             "an ordinary edit stays visible verbatim: {kept}"
         );
-    }
-
-    #[test]
-    fn recency_result_is_whole_or_a_pointer() {
-        // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
-        // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
-        let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
-        assert_eq!(
-            bound_recency_result(&real_file, &ContextBudget::from_window(16_384)),
-            real_file.trim(),
-            "a real file stays whole"
-        );
-        // a result larger than its share is a POINTER, never a head of it.
-        let huge = "x".repeat(200_000);
-        let bounded = bound_recency_result(&huge, &ContextBudget::from_window(16_384));
-        assert!(!bounded.contains('x'), "no fragment of the result: {bounded}");
-        assert!(bounded.contains("tool/output"), "names the way to the whole: {bounded}");
-        // char-boundary safe on multibyte content (never panics mid-codepoint)
-        let multibyte = "日本語".repeat(1_000);
-        let _ = bound_recency_result(&multibyte, &ContextBudget::from_window(16_384));
     }
 
     /// what this catches (Astra on #4352): the COLLAPSE branch saying "ok" for work
