@@ -3343,18 +3343,56 @@ fn consume_attempts_path() -> Result<PathBuf, String> {
     deploy_request_path().map(|p| p.with_file_name("deploy-consume-attempts.json"))
 }
 
-fn read_consume_failures(path: &Path, tip: &str) -> u32 {
-    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else { return 0 };
-    if v.get("tip").and_then(|t| t.as_str()) != Some(tip) {
-        return 0; // a different tip: the ledger is about a request that no longer stands
-    }
-    v.get("failures").and_then(|f| f.as_u64()).unwrap_or(0) as u32 // unwrap_or: a malformed ledger counts as no failures, never as give-up
+/// Failed handoffs on this box, per BUILD tried (the build key the pass deployed),
+/// never per request. On 2026-10-13 the 5090's request for 34e8db15d spent all three
+/// attempts installing the older published 254d11e1c, whose installer predated the fix,
+/// and gave up on 34e8db15d minutes before its own artifact published (card f7826d97).
+/// Charged to the build, a failing older core is skipped while the tip's is awaited, and
+/// the tip is given up on only when ITS build failed here.
+///
+/// A ledger in the old per-request shape (`{tip, failures}`) names the request, not the
+/// build that failed, so its failures cannot be attributed: it reads as none.
+#[derive(Debug, Default, PartialEq)]
+struct ConsumeLedger {
+    failures: std::collections::BTreeMap<String, u32>,
 }
 
-fn write_consume_failures(path: &Path, tip: &str, failures: u32) {
-    let body = serde_json::json!({ "tip": tip, "failures": failures });
-    let _ = std::fs::write(path, body.to_string());
+impl ConsumeLedger {
+    fn read(path: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else { return Self::default() };
+        let failures = v
+            .get("failures_by_build")
+            .and_then(|m| m.as_object())
+            .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()? as u32))).collect())
+            .unwrap_or_default(); // unwrap_or_default: an old-shape or malformed ledger counts as no failures, never as give-up
+        Self { failures }
+    }
+
+    fn write(&self, path: &Path) {
+        let body = serde_json::json!({ "failures_by_build": self.failures });
+        let _ = std::fs::write(path, body.to_string());
+    }
+
+    fn failures(&self, build: &str) -> u32 {
+        self.failures.get(build).copied().unwrap_or(0) // unwrap_or: a build never tried here has no failures
+    }
+
+    fn record_failure(&mut self, build: &str) -> u32 {
+        let n = self.failures.entry(build.to_string()).or_insert(0);
+        *n += 1;
+        *n
+    }
+
+    /// The candidates still worth a pass: the tip's own build always (whether to give it
+    /// up is the verdict's call), and any older one that has not already failed here
+    /// CONSUME_MAX_ATTEMPTS times.
+    fn admissible(&self, candidates: Vec<String>, tip_build: &str) -> Vec<String> {
+        candidates
+            .into_iter()
+            .filter(|key| key == tip_build || self.failures(key) < CONSUME_MAX_ATTEMPTS)
+            .collect()
+    }
 }
 
 fn deploy_request_path() -> Result<PathBuf, String> {
@@ -4341,12 +4379,15 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     }
     let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
-    let prior_failures = tip
-        .as_deref()
-        .map(|t| read_consume_failures(&attempts_path, t))
-        .unwrap_or(0); // unwrap_or: no request = nothing to have failed
+    let mut ledger = ConsumeLedger::read(&attempts_path);
     // The tip's build key, read from the same checkout the tracker fetched into.
     let tip_build_key = tip.as_deref().and_then(|t| build_key_in(&repo, t));
+    // Give-up is judged on the TIP's own build only: an older core that would not land
+    // here is skipped below, never charged to the request.
+    let prior_failures = tip
+        .as_deref()
+        .map(|t| ledger.failures(tip_build_key.as_deref().unwrap_or(t))) // unwrap_or: no build key means the tip names its own core
+        .unwrap_or(0); // unwrap_or: no request = nothing to have failed
     let verdict = consume_verdict(
         tip.as_deref(),
         tip_build_key.as_deref(),
@@ -4416,7 +4457,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // core (card d1db1a83). On a busy canary the tip's build has not started
                 // while an older one is out, and waiting only on the tip never deployed.
                 let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
-                let candidates = deploy_candidates(&repo, running.as_deref(), &tip, &newest_key);
+                let candidates = ledger.admissible(deploy_candidates(&repo, running.as_deref(), &tip, &newest_key), &newest_key);
                 let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip).await;
                 // The wait is over, whatever it found: from here the deploy promotes the
                 // engine and swaps the core, which the claim must block. A marker that cannot
@@ -4468,10 +4509,13 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 }
                 Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
-                    write_consume_failures(&attempts_path, &tip, prior_failures + 1);
+                    // Charged to the build this pass tried: the tip's, or the older published
+                    // core it fell back to. A failure before any build was chosen is the tip's.
+                    let tried = if deployed == tip { tip_build_key.clone().unwrap_or_else(|| tip.clone()) } else { deployed.clone() }; // unwrap_or_else: no build key means the tip names its own core
+                    let failures = ledger.record_failure(&tried);
+                    ledger.write(&attempts_path);
                     deploy_note(&format!(
-                        "deploy-consume: attempt {} of {CONSUME_MAX_ATTEMPTS} for {tip} failed: {why}",
-                        prior_failures + 1
+                        "deploy-consume: attempt {failures} of {CONSUME_MAX_ATTEMPTS} for build {tried} (request {tip}) failed: {why}"
                     ));
                 }
             }
@@ -7350,13 +7394,37 @@ mod tests {
         // deploy.stranded — never a rebuild loop every tick until the claim ages out.
         assert_eq!(consume_verdict(Some("abc1234"), None, None, false, false, 2), ConsumeVerdict::Deploy);
         assert_eq!(consume_verdict(Some("abc1234"), None, None, false, false, 3), ConsumeVerdict::GaveUp);
-        // The ledger is per tip: a new tip starts at zero.
+        // The ledger is per BUILD tried (card f7826d97, the 5090 on 2026-10-13): an older
+        // published core that failed here three times is skipped while the tip's is
+        // awaited, and is never charged to the tip; the tip's own build still gives up
+        // at the bound. An old per-request ledger cannot be attributed and reads as none.
         let dir = std::env::temp_dir().join(format!("consume-ledger-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture — a temp dir that cannot be made fails the test loudly
-        let ledger = dir.join("deploy-consume-attempts.json");
-        super::write_consume_failures(&ledger, "abc1234", 3);
-        assert_eq!(super::read_consume_failures(&ledger, "abc1234"), 3);
-        assert_eq!(super::read_consume_failures(&ledger, "def5678"), 0, "a different tip resets");
+        let path = dir.join("deploy-consume-attempts.json");
+        let mut ledger = super::ConsumeLedger::default();
+        for _ in 0..3 {
+            ledger.record_failure("254d11e1c");
+        }
+        ledger.write(&path);
+        let ledger = super::ConsumeLedger::read(&path);
+        assert_eq!(ledger.failures("254d11e1c"), 3);
+        assert_eq!(ledger.failures("34e8db15d"), 0, "the older build's failures are not the tip's");
+        assert_eq!(
+            ledger.admissible(vec!["34e8db15d".into(), "254d11e1c".into(), "5deb01e96".into()], "34e8db15d"),
+            vec!["34e8db15d".to_string(), "5deb01e96".to_string()],
+            "a build that already failed here is skipped; the tip's and untried ones stay"
+        );
+        let mut tip_failed = super::ConsumeLedger::default();
+        for _ in 0..3 {
+            tip_failed.record_failure("34e8db15d");
+        }
+        assert_eq!(
+            tip_failed.admissible(vec!["34e8db15d".into()], "34e8db15d"),
+            vec!["34e8db15d".to_string()],
+            "the tip's own build is never filtered here: giving it up is the verdict's call"
+        );
+        std::fs::write(&path, r#"{"failures":3,"tip":"34e8db15db2d543a5bb72ee599b74feef39ae7f8"}"#).unwrap(); // unwrap: test fixture write
+        assert_eq!(super::ConsumeLedger::read(&path), super::ConsumeLedger::default(), "an old per-request ledger names no build");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
         assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
