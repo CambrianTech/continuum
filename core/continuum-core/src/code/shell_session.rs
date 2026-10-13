@@ -1055,10 +1055,18 @@ async fn run_shell_command(
     // the shell started is found while the shell is alive and still their parent, and killed
     // deepest first, each only if its pid still names the same process; then the shell itself.
     // What survives is recorded, never assumed gone, and a release re-checks it.
-    let crate::inference::lane_process::TreeEnd { reaped, survivors } = if exit_status.is_some() {
-        crate::inference::lane_process::TreeEnd { reaped: Ok(()), survivors: Vec::new() }
+    let crate::inference::lane_process::TreeEnd { reaped, survivors, unwalked } = if exit_status.is_some() {
+        crate::inference::lane_process::TreeEnd { reaped: Ok(()), survivors: Vec::new(), unwalked: None }
     } else {
         crate::inference::lane_process::end_tree(&mut child).await
+    };
+    // a tree that couldn't be walked is an unproven end, the same as an unproven reap
+    let reaped = match unwalked {
+        Some(why) => Err(match reaped {
+            Ok(()) => why,
+            Err(reap) => format!("{reap}; {why}"),
+        }),
+        None => reaped,
     };
     if let Ok(mut s) = state.lock() {
         match reaped {

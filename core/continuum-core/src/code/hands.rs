@@ -95,10 +95,24 @@ fn claim_id(persona: Uuid, card: Uuid, claim: Uuid) -> Uuid {
 struct Gate {
     closing: bool,
     in_flight: usize,
-    /// Processes admitted work started and could not confirm gone when it ended them (a `gh`'s
-    /// `git`, say): a release re-checks them and keeps the hands while any is present, the same
-    /// rule it applies to a shell's survivors (Codex root on #5026).
-    survivors: Vec<crate::inference::lane_process::ProcessIdentity>,
+    /// What admitted work started and couldn't confirm ended (Codex root on #5026).
+    lingering: Lingering,
+}
+
+/// What admitted work started and couldn't confirm ended when it ended it (a `gh` and its
+/// `git`): processes still running as themselves, which a release re-checks, and trees that
+/// couldn't be walked at all, which no re-check can confirm. A release keeps the hands while
+/// either is non-empty, the same rule it applies to a shell's survivors.
+#[derive(Debug, Clone, Default)]
+pub struct Lingering {
+    pub processes: Vec<crate::inference::lane_process::ProcessIdentity>,
+    pub unknown: Vec<String>,
+}
+
+impl Lingering {
+    pub fn is_empty(&self) -> bool {
+        self.processes.is_empty() && self.unknown.is_empty()
+    }
 }
 
 type GateCell = std::sync::Arc<(std::sync::Mutex<Gate>, tokio::sync::Notify)>;
@@ -122,14 +136,16 @@ impl Drop for HandsLease {
 }
 
 impl HandsLease {
-    /// Record processes this admitted work started and couldn't confirm gone, BEFORE the lease
-    /// drops: the release that waits the lease out then finds them.
-    pub fn keep_survivors(&self, survivors: Vec<crate::inference::lane_process::ProcessIdentity>) {
-        if survivors.is_empty() {
+    /// Record what ending a process this admitted work owned left unconfirmed, BEFORE the lease
+    /// drops: the release that waits the lease out then finds it. A survivor (the child itself
+    /// when its reap is unproven, or a descendant) is re-checked; an unwalked tree is held.
+    pub fn keep_unconfirmed(&self, end: &crate::inference::lane_process::TreeEnd) {
+        if end.survivors.is_empty() && end.unwalked.is_none() {
             return;
         }
         let mut g = self.cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
-        g.survivors.extend(survivors);
+        g.lingering.processes.extend(end.survivors.iter().copied());
+        g.lingering.unknown.extend(end.unwalked.clone());
     }
 }
 
@@ -189,13 +205,32 @@ where
 {
     let held = current();
     tokio::task::spawn_blocking(move || {
-        // held for the work's life and visible to what it starts; cleared before the thread is
-        // pooled, so no later work on it inherits this admission
-        let previous = BLOCKING_ADMITTED.with(|a| a.replace(held));
-        let out = work();
-        BLOCKING_ADMITTED.with(|a| *a.borrow_mut() = previous);
-        out
+        // held for the work's life and visible to what it starts; restored by a guard (even when
+        // the work panics) before the thread is pooled, so no later work on it inherits it
+        let _current = BlockingAdmission::enter(held);
+        work()
     })
+}
+
+/// The admission current on a blocking thread for one piece of work: set on entry, and the one
+/// it replaced put back on drop, so a panicking `work()` can't leave it on the pooled thread
+/// (Codex root on #5026).
+struct BlockingAdmission {
+    previous: Option<std::sync::Arc<HandsLease>>,
+}
+
+impl BlockingAdmission {
+    fn enter(admission: Option<std::sync::Arc<HandsLease>>) -> Self {
+        Self { previous: BLOCKING_ADMITTED.with(|a| a.replace(admission)) }
+    }
+}
+
+impl Drop for BlockingAdmission {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        // try_with: during thread teardown the slot may already be gone, and then there is nothing to restore
+        let _ = BLOCKING_ADMITTED.try_with(|a| *a.borrow_mut() = previous);
+    }
 }
 
 /// Close `context`'s hands to new work and wait until every admitted command and turn has
@@ -203,8 +238,8 @@ where
 /// closed: a context is never reused (a re-acquired card is a new claim), so a stale binding
 /// can never re-open old hands (Astra on #5026). The tombstone is an id and a flag, kept for
 /// the process's life, one per context released. Returns what admitted work recorded as
-/// started and not confirmed gone ([`HandsLease::keep_survivors`]), for the release to re-check.
-pub async fn close(context: HandsContext) -> Vec<crate::inference::lane_process::ProcessIdentity> {
+/// started and not confirmed ended ([`HandsLease::keep_unconfirmed`]), for the release.
+pub async fn close(context: HandsContext) -> Lingering {
     let cell = GATES.entry(context).or_default().clone();
     loop {
         let ended = cell.1.notified();
@@ -212,19 +247,19 @@ pub async fn close(context: HandsContext) -> Vec<crate::inference::lane_process:
             let mut g = cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still closes
             g.closing = true;
             if g.in_flight == 0 {
-                return g.survivors.clone();
+                return g.lingering.clone();
             }
         }
         ended.await;
     }
 }
 
-/// After a release re-checked `context`'s survivors: keep only the ones still present, so a
-/// retried release re-checks exactly those.
-pub fn retain_survivors(context: HandsContext, still: Vec<crate::inference::lane_process::ProcessIdentity>) {
+/// After a release re-checked `context`'s lingering processes: keep only the ones still
+/// present, so a retried release re-checks exactly those. Unknown trees stay as they are.
+pub fn retain_processes(context: HandsContext, still: Vec<crate::inference::lane_process::ProcessIdentity>) {
     if let Some(cell) = GATES.get(&context) {
         let mut g = cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
-        g.survivors = still;
+        g.lingering.processes = still;
     }
 }
 
@@ -318,6 +353,42 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(10), close(context))
             .await
             .expect("the release completes once the nested worker returns");
+    }
+
+    // what this catches (Codex root on #5026 at f014371be): a blocking worker that panicked left
+    // its command's admission on the pooled thread (the restore ran after work()), so the next
+    // work on that thread ran under it and the release never completed. One blocking thread, so
+    // the second worker runs where the first panicked.
+    #[test]
+    fn a_panicking_blocking_worker_leaves_no_admission_on_its_pooled_thread() {
+        let runtime = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().expect("a runtime");
+        runtime.block_on(async {
+            let context = HandsContext::fresh();
+            let lease = std::sync::Arc::new(admit(context).expect("open hands"));
+            let worker = admitted(Some(lease), async { spawn_blocking(|| panic!("the work panics")) }).await;
+            assert!(worker.await.is_err(), "the work panicked");
+            assert!(!spawn_blocking(|| current().is_some()).await.expect("the next work ran"), "the pooled thread carries no admission");
+            tokio::time::timeout(std::time::Duration::from_secs(10), close(context)).await.expect("the panicked work's admission was released");
+        });
+    }
+
+    // what this catches (Codex root on #5026 at f014371be): an owned process whose tree couldn't
+    // be walked was recorded as having no descendants, so its release confirmed what nothing had
+    // checked. An unwalked tree, and an unproven reap among the survivors, reach the release.
+    #[tokio::test]
+    async fn what_an_owned_process_left_unconfirmed_reaches_the_release() {
+        let context = HandsContext::fresh();
+        let lease = admit(context).expect("open hands");
+        let itself = crate::inference::lane_process::ProcessIdentity { pid: 4242, start_time: 7 };
+        lease.keep_unconfirmed(&crate::inference::lane_process::TreeEnd {
+            reaped: Err("could not confirm the process exited".into()),
+            survivors: vec![itself],
+            unwalked: Some("its descendants could not be walked".into()),
+        });
+        drop(lease);
+        let lingering = close(context).await;
+        assert_eq!(lingering.processes, vec![itself], "the unreaped child is re-checked by the release");
+        assert_eq!(lingering.unknown.len(), 1, "the unwalked tree is held, never counted gone: {lingering:?}");
     }
 
     // what this catches (Astra on #5026): a dispatch cancelled while its blocking worker still

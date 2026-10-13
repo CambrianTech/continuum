@@ -1882,16 +1882,19 @@ impl ActionCommand for CodeReleaseHands {
         }
         // What admitted work started and couldn't confirm gone (a gh's git): the same recheck
         // as a shell's survivors, and the hands are kept while any is present.
-        if !lingering.is_empty() {
-            let still = tokio::task::spawn_blocking(move || crate::inference::lane_process::recheck(&lingering))
+        if !lingering.processes.is_empty() {
+            let processes = lingering.processes;
+            let still = tokio::task::spawn_blocking(move || crate::inference::lane_process::recheck(&processes))
                 .await
                 .map_err(|e| CommandError::Internal(format!("release-hands: re-checking its work's processes failed to run: {e}")))?;
             if !still.is_empty() {
                 unconfirmed.extend(still.iter().map(|who| who.pid));
                 errors.push(format!("processes {:?} its work started are not confirmed gone", still.iter().map(|who| who.pid).collect::<Vec<_>>()));
             }
-            crate::code::hands::retain_survivors(context, still);
+            crate::code::hands::retain_processes(context, still);
         }
+        // a tree no walk could read: nothing can confirm it, so the hands are held and it is named
+        errors.extend(lingering.unknown.iter().map(|why| format!("a process its work started ended unconfirmed: {why}")));
         let still_there = tokio::task::spawn_blocking(move || {
             reaped
                 .into_iter()

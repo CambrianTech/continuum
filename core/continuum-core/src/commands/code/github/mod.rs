@@ -113,16 +113,17 @@ impl Drop for OwnedGh {
 /// and keeps the hands while any is present (Codex root on #5026).
 async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>) -> crate::inference::lane_process::TreeEnd {
     let end = crate::inference::lane_process::end_tree(&mut child).await;
-    if !end.survivors.is_empty() || end.reaped.is_err() {
+    if !end.confirmed() {
         crate::probe!(
             class = "code.github.unconfirmed_end",
             survivors = ?end.survivors.iter().map(|who| who.pid).collect::<Vec<_>>(),
             reaped = ?end.reaped,
-            "a gh process was ended but not everything it started is confirmed gone; its hands' release re-checks"
+            unwalked = ?end.unwalked,
+            "a gh process was ended but not everything is confirmed ended; its hands' release re-checks or holds"
         );
     }
     if let Some(lease) = &held {
-        lease.keep_survivors(end.survivors.clone());
+        lease.keep_unconfirmed(&end); // an unproven reap is among the survivors (end_tree)
     }
     end
 }
@@ -164,7 +165,7 @@ async fn run_gh_owned(root: &Path, args: &[String], bound: Option<std::time::Dur
             let unconfirmed = match owned.end() {
                 // gh itself counts as unconfirmed when its reap couldn't be proven
                 Some(end) => match end.await {
-                    Ok(end) => end.survivors.iter().map(|who| who.pid).chain(end.reaped.err().and(gh_pid)).collect(),
+                    Ok(end) => end.survivors.iter().map(|who| who.pid).chain(end.unwalked.and(gh_pid)).collect(),
                     Err(join) => return Err(GhRunError::Spawn(format!("ending the timed-out gh failed to run: {join}"))),
                 },
                 None => Vec::new(),
