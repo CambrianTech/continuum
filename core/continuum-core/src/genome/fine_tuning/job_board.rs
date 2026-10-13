@@ -540,7 +540,18 @@ impl TrainingJobBoard {
     /// append failure is loud in the log and the in-memory board proceeds —
     /// observability must not gate the work it observes.
     fn journal(&self, line: &serde_json::Value) {
-        let Some(path) = &self.ledger else { return };
+        if self.ledger.is_none() {
+            return; // a board without a ledger journals nothing, as before
+        }
+        if let Err(e) = self.append(line) {
+            tracing::warn!(error = %e, "job-ledger append failed");
+        }
+    }
+
+    /// Append one line, and SAY whether it landed: the form an audit record needs, where a
+    /// decision that wasn't journaled must not take effect. No ledger is an error here.
+    fn append(&self, line: &serde_json::Value) -> Result<(), String> {
+        let path = self.ledger.as_ref().ok_or("this board has no ledger to journal into")?;
         let write = || -> std::io::Result<()> {
             if let Some(dir) = path.parent() {
                 std::fs::create_dir_all(dir)?;
@@ -558,9 +569,7 @@ impl TrainingJobBoard {
             // Serialize first, then a single `write_all` of the whole line.
             f.write_all(ledger_line(line).as_bytes())
         };
-        if let Err(e) = write() {
-            tracing::warn!(error = %e, ledger = %path.display(), "job-ledger append failed");
-        }
+        write().map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Replay the ledger: every `registered` id with no matching `terminal` line
@@ -810,6 +819,42 @@ impl TrainingJobBoard {
             "attempt": attempt,
             "at_ms": EpochMs::now().millis(),
         }));
+    }
+
+    /// Journal an operator's decision to RETRY a training dispatch whose outcome is
+    /// unconfirmed, with the evidence they checked about retained results. Kept in the ledger
+    /// recovery already reads, apart from the intent's own phase: the decision (who, why) and
+    /// the evidence (what was checked, what was found) are an audit record, not a claim that
+    /// no job existed (Codex root on Sahar's 2b4e7272). Fails when the line doesn't land, so a
+    /// retry is never taken without its record.
+    pub fn journal_retry_unconfirmed(
+        &self,
+        dispatch: Uuid,
+        resolved_by: Option<Uuid>,
+        reason: &str,
+        evidence: &[String],
+    ) -> Result<(), String> {
+        self.append(&serde_json::json!({
+            "event": "retry_unconfirmed",
+            "trigger_dispatch_id": dispatch.to_string(),
+            "resolved_by": resolved_by.map(|p| p.to_string()),
+            "reason": reason,
+            "evidence": evidence,
+            "at_ms": EpochMs::now().millis(),
+        }))
+    }
+
+    /// The retry decisions journaled for `dispatch`, oldest first: the audit record a test
+    /// reads back to prove the decision landed before the intent changed.
+    #[cfg(test)]
+    pub(crate) fn retry_decisions(&self, dispatch: Uuid) -> Vec<serde_json::Value> {
+        let id = dispatch.to_string();
+        self.ledger_rows()
+            .filter(|row| {
+                row.get("event").and_then(|e| e.as_str()) == Some("retry_unconfirmed")
+                    && row.get("trigger_dispatch_id").and_then(|d| d.as_str()) == Some(id.as_str())
+            })
+            .collect()
     }
 
     /// Journal a resume: `from` died with a core, `to` carries its input on.
