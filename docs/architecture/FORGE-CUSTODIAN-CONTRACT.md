@@ -145,8 +145,9 @@ protocol-drift repair (below). `forge/decide` (when to train, adopt-or-reject)
 stays in the organism — it's policy, a cognition decision, not a byte-op.
 
 The remaining open question (NOT this contract's scope) is **training**: on Apple
-Silicon, LoRA training already runs in-core via `genome/fine_tuning/`
-(`mlx_lora_adapter.rs` → `mlx_lm.lora` in a `spawn_blocking` job actor), while the
+Silicon, LoRA training ran in-core via `genome/fine_tuning/` (the `mlx_lora_adapter.rs`
+→ `mlx_lm.lora` path, deleted 2026-10-13 by card 878f100f: the engine is now the one
+trainer, in place on the resident weights), while the
 trait's `train_start`/`train_status` point at unsloth's stateful `/api/train/*`
 (the NVIDIA path). Whether training becomes a Contract-C custodian capability or
 stays an in-core faculty is a #32/#52 design fork, tracked there — Contract C

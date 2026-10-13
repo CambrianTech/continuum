@@ -74,13 +74,22 @@ pub const RECORDING_BASE_PREFIX: &str = "recording-test";
 #[derive(Clone)]
 pub struct RecordingFineTuningAdapter {
     captures: Arc<StdMutex<Vec<TrainingJobRequest>>>,
+    /// `Some` = trains on the resident weights, available while the switch is on (a live
+    /// lane serving the base). `None` = an ordinary, always-available trainer.
+    lane: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
 
 impl RecordingFineTuningAdapter {
     pub fn new() -> Self {
         Self {
             captures: Arc::new(StdMutex::new(Vec::new())),
+            lane: None,
         }
+    }
+
+    /// A resident-weights trainer whose availability is `lane`.
+    pub fn resident(lane: Arc<std::sync::atomic::AtomicBool>) -> Self {
+        Self { lane: Some(lane), ..Self::new() }
     }
 
     /// Shared handle to the captures vector. Use this on the test
@@ -140,8 +149,12 @@ impl FineTuningAdapter for RecordingFineTuningAdapter {
             // Test fixture — no real accelerator needed; selectable on
             // any host.
             requires: TrainerHardware::Any,
-            trains_on_resident_weights: false,
+            trains_on_resident_weights: self.lane.is_some(),
         }
+    }
+
+    fn available_for(&self, _base_model: &str) -> bool {
+        self.lane.as_ref().is_none_or(|on| on.load(std::sync::atomic::Ordering::SeqCst))
     }
 
     async fn create_job(&self, request: TrainingJobRequest) -> Result<JobHandle, FineTuningError> {

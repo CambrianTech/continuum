@@ -44,6 +44,8 @@ pub(crate) enum DispatchFailure {
     /// Certain, and created nothing: no room for the smallest window that trains one of her
     /// examples, by measurement. The intent keeps its batch, parked until the wait wakes.
     Parked(crate::genome::fine_tuning::types::CapacityWait),
+    /// Certain, and created nothing: the trainer for this base has no live lane now.
+    AwaitingLane(String),
 }
 
 pub(crate) enum DispatchResult {
@@ -140,6 +142,11 @@ pub enum DispatchPhase {
     /// re-plans it only when `wait.wakes(..)`: capacity no longer rules it out, or the engine
     /// changed. Not failed, not trained, not left for a human.
     Parked { wait: crate::genome::fine_tuning::types::CapacityWait },
+    /// No job: the trainer for this base trains on the resident weights, and no live lane
+    /// served the base (card 878f100f). The intent keeps its submissions; the recovery tick
+    /// re-dispatches it once a live lane serves THIS base. A lane serving another base does
+    /// not wake it, and it never goes to another trainer.
+    AwaitingLane,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Entity)]
@@ -1018,6 +1025,14 @@ impl TrainingTriggerState {
                 .is_some_and(|batch| batch.examples.len() >= batch.min_examples as usize)
     }
 
+    /// Whether a live lane on this node serves `base` now: the wake of a dispatch awaiting one.
+    pub(crate) fn lane_serves(&self, base: &str) -> bool {
+        #[cfg(not(test))]
+        return crate::genome::fine_tuning::engine_lora_adapter::lane_serves(base);
+        #[cfg(test)]
+        return self.test_lanes.lock().unwrap_or_else(|p| p.into_inner()).contains(base);
+    }
+
     /// The training job for this bucket's `(persona, trait, base)` on the job board, if
     /// one is in flight: the job a held fill's examples wait for.
     pub(crate) fn job_in_flight_for(&self, key: &BucketKey) -> Option<Uuid> {
@@ -1253,6 +1268,17 @@ impl TrainingTriggerState {
                     "a capacity-parked dispatch may re-plan: its need no longer rules it out, or the engine changed"
                 );
             }
+            DispatchPhase::AwaitingLane => {
+                if !self.lane_serves(&key.base_model) {
+                    return Ok(DispatchResult::Empty);
+                }
+                crate::probe!(
+                    class = "training.dispatch.lane_woke",
+                    dispatch = %id,
+                    base_model = %key.base_model,
+                    "a dispatch awaiting a lane may dispatch: a live lane serves its base"
+                );
+            }
             DispatchPhase::Prepared | DispatchPhase::Retryable { .. } => {}
         }
         let mut intent = active.intent.clone();
@@ -1315,6 +1341,7 @@ impl TrainingTriggerState {
                         );
                         (DispatchPhase::Parked { wait }, "CapacityParked", error)
                     }
+                    DispatchFailure::AwaitingLane(error) => (DispatchPhase::AwaitingLane, "AwaitingLane", error),
                 };
                 let mut intent = active.intent.clone();
                 intent.phase = phase;
@@ -2764,6 +2791,48 @@ mod tests {
         assert_eq!(replay["outcome"], "AlreadyAccepted");
         assert_eq!(replay["acceptance"]["replayed"], true);
         assert_eq!(next.state.pending_bucket_count(), 0);
+    }
+
+    // What this catches (card 878f100f): with no live lane for her base, a full bucket must
+    // wait as AwaitingLane, owning its submissions; a lane serving ANOTHER base must not wake
+    // it; and when a lane serves its base (the same build reloading it after a restart),
+    // the recovery tick must dispatch it exactly once.
+    #[tokio::test]
+    async fn a_bucket_awaiting_a_lane_dispatches_once_when_its_base_is_served() {
+        use crate::genome::fine_tuning::{FineTuningRegistry, RecordingFineTuningAdapter};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let lane = Arc::new(AtomicBool::new(false));
+        let trainer = RecordingFineTuningAdapter::resident(lane.clone());
+        let registry = Arc::new(FineTuningRegistry::new());
+        registry.register(Arc::new(trainer.clone()));
+        let (trigger, executor) =
+            crate::commands::training_trigger::test_support::build_runtime_with_registry(adapter, Some(registry)).await;
+        let persona = Uuid::new_v4();
+        let base = "recording-test-27b";
+        let mut request = submit_params(persona, "test-trait", (0..3).map(|i| ex(&format!("p{i}"), "c")).collect(), Some(3));
+        request["baseModel"] = serde_json::json!(base);
+        // The full bucket dispatches at submit: accepted, and waiting, never trained elsewhere.
+        let receipt = executor.execute_json("genome/training-trigger/submit", request).await.unwrap();
+        assert_eq!(receipt["acceptance"]["replayed"], false, "{receipt}");
+        assert_eq!(receipt["errorKind"], "AwaitingLane", "{receipt}");
+        assert_eq!(trainer.captured_job_count(), 0, "no job without a lane");
+        // The operator's reader shows the wait, owned by its bucket.
+        let status = executor.execute_json("genome/training-trigger/status", serde_json::json!({})).await.unwrap();
+        let bucket = status["buckets"].as_array().unwrap().iter()
+            .find(|b| b["baseModel"] == base).cloned().expect("her bucket is listed");
+        assert_eq!(bucket["dispatch"]["state"], "awaiting_lane", "{bucket}");
+
+        trigger.state.test_lanes.lock().unwrap().insert("some-other-base".into());
+        trigger.state.recover_tick().await.unwrap();
+        assert_eq!(trainer.captured_job_count(), 0, "a lane for another base wakes nothing");
+
+        lane.store(true, Ordering::SeqCst);
+        trigger.state.test_lanes.lock().unwrap().insert(base.into());
+        trigger.state.recover_tick().await.unwrap();
+        trigger.state.recover_tick().await.unwrap();
+        assert_eq!(trainer.captured_job_count(), 1, "served: dispatched exactly once");
+        assert_eq!(trainer.captured_example_count(), 3);
     }
 
     // What this catches (278afa6c): cancellation after a successful insert must

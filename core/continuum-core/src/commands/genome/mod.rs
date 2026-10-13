@@ -75,6 +75,7 @@ pub(crate) fn fine_tuning_error_kind(e: &FineTuningError) -> &'static str {
         FineTuningError::MalformedResponse(_) => "MalformedResponse",
         FineTuningError::LocalTrainerFailed(_) => "LocalTrainerFailed",
         FineTuningError::CapacityParked(_) => ERROR_KIND_CAPACITY_PARKED,
+        FineTuningError::AwaitingLane(_) => job_create::ERROR_KIND_AWAITING_LANE,
         FineTuningError::UnknownHandle(_) => "UnknownHandle",
     }
 }

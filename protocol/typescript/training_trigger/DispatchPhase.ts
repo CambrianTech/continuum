@@ -3,4 +3,4 @@ import type { Took } from "../genome/Took";
 import type { CapacityWait } from "../genome/fine_tuning/CapacityWait";
 import type { JobHandle } from "../genome/fine_tuning/JobHandle";
 
-export type DispatchPhase = { "state": "prepared" } | { "state": "dispatching" } | { "state": "retryable", error: string, } | { "state": "recovery_required", error: string, } | { "state": "dispatched", handle: JobHandle, provider: string, } | { "state": "held", took: Took, } | { "state": "parked", wait: CapacityWait, };
+export type DispatchPhase = { "state": "prepared" } | { "state": "dispatching" } | { "state": "retryable", error: string, } | { "state": "recovery_required", error: string, } | { "state": "dispatched", handle: JobHandle, provider: string, } | { "state": "held", took: Took, } | { "state": "parked", wait: CapacityWait, } | { "state": "awaiting_lane" };

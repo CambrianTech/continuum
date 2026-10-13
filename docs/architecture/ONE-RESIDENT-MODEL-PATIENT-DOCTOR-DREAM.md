@@ -28,8 +28,8 @@ Every path below holds a **second copy of the base** or **relaunches the engine*
 
 | # | Path | What happens | Where |
 |---|---|---|---|
-| 1 | MLX LoRA trainer (Mac) | `mlx_lm lora` subprocess loads the HF base or a 4-bit MLX copy | `genome/fine_tuning/mlx_lora_adapter.rs:124-156`, `forge/mlx_train.rs` |
-| 2 | CUDA QLoRA trainer (5090) | Python `cuda_train.py`, PyTorch + bitsandbytes, HF weights at NF4 | `genome/fine_tuning/cuda_lora_adapter.rs` |
+| 1 | ~~MLX LoRA trainer (Mac)~~ **deleted** (card 878f100f, 2026-10-13: "Python can't be part of code") | was an `mlx_lm lora` subprocess loading the HF base or a 4-bit MLX copy | was `genome/fine_tuning/mlx_lora_adapter.rs`; `forge/mlx_train.rs` goes with the custodian convert (PR-2) |
+| 2 | ~~CUDA QLoRA trainer (5090)~~ **deleted** (card 878f100f) | was Python `cuda_train.py`, PyTorch + bitsandbytes, HF weights at NF4: chosen only when no live lane served the base, and a reboot killed it | was `genome/fine_tuning/cuda_lora_adapter.rs` |
 | 3 | Gene A/B evaluation | always spawns an `EphemeralServingLane` with its own base + `--lora` | `cognition/eval.rs:676-757` |
 | 4 | Teacher lane (default) | reuses the live lane only when the teacher IS the served model; else a second base | `commands/genome/teach.rs:526-537`, `eval.rs:840-905` |
 | 5 | Private teacher (`exclusive_teacher`) | second base if it fits; otherwise **retires the live engine**, teaches, restores it | `eval.rs:944-997`, `modules/serving_daemon/academy_batch.rs:258-289` |

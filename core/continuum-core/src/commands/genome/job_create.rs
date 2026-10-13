@@ -189,6 +189,9 @@ pub const ERROR_KIND_TRIAL_FILE_UNREADABLE: &str = "TrialFileUnreadable";
 /// No room for the smallest window that trains one of her examples, by measurement: no job;
 /// the trigger parks the batch with the outcome's `capacityWait` (card de9e1342).
 pub const ERROR_KIND_CAPACITY_PARKED: &str = "CapacityParked";
+/// The trainer for this base has no live lane now: no job; the trigger keeps the batch
+/// awaiting a lane (card 878f100f), whether the coordinator or the adapter found it.
+pub const ERROR_KIND_AWAITING_LANE: &str = "AwaitingLane";
 
 /// The decision could not be made: a typed refusal the trigger retries on the next fill,
 /// probed so a bucket that keeps refusing is readable.
@@ -312,7 +315,8 @@ crate::action_command! {
                     success: false,
                     result: None,
                     error: Some(e.to_string()),
-                    error_kind: None,
+                    error_kind: matches!(e, crate::genome::fine_tuning::CoordinatorError::AwaitingAvailability { .. })
+                        .then(|| ERROR_KIND_AWAITING_LANE.to_string()),
                     took: None,
                     capacity_wait: None,
                 });

@@ -90,9 +90,7 @@ pub mod job_actor;
 pub mod job_board;
 pub mod local_candle_adapter;
 pub mod lora_module;
-pub mod mlx_lora_adapter;
 mod native_jobs;
-pub mod cuda_lora_adapter;
 pub mod engine_lora_adapter;
 pub mod training_hold_store;
 pub(crate) mod training_rate;
@@ -114,8 +112,6 @@ pub use job_actor::{spawn_job, JobActorError, JobController, SpawnJobRequest};
 pub use job_board::{TrainingJobBoard, WatchedJob};
 pub use local_candle_adapter::{LocalCandleFineTuner, SYNTHETIC_BASE_PREFIX};
 pub use lora_module::{LoRAError, LoRAModule};
-pub use mlx_lora_adapter::MlxLoraFineTuner;
-pub use cuda_lora_adapter::CudaLoraFineTuner;
 pub use engine_lora_adapter::EngineLoraFineTuner;
 pub use openai_adapter::OpenAIFineTuningAdapter;
 #[cfg(any(test, feature = "test-fixtures"))]
