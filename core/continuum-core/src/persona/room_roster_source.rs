@@ -66,6 +66,25 @@ use crate::persona::rag_budget::{
 /// grounding rather than conversation history.
 pub(crate) const SOURCE_ID: &str = "room-roster";
 
+/// One entry of a `room-roster` delivery, as [`entries_in`] reads it.
+pub(crate) struct RosterEntry<'a> {
+    pub peer_id: Option<&'a str>,
+    pub display_name: Option<&'a str>,
+}
+
+/// THE reader of `room-roster` deliveries: every entry, in delivery order, with the
+/// `peer_id` / `display_name` keys this source writes. Every consumer (the turn's
+/// name memory, the history's speaker names, the orientation block, the prompt seam
+/// test) reads the roster through this, so those keys have one writer and one reader.
+pub(crate) fn entries_in(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+) -> impl Iterator<Item = RosterEntry<'_>> {
+    deliveries.iter().filter(|d| d.source_id == SOURCE_ID).flat_map(|d| d.items.iter()).map(|item| RosterEntry {
+        peer_id: item.metadata.get("peer_id").and_then(|v| v.as_str()),
+        display_name: item.metadata.get("display_name").and_then(|v| v.as_str()),
+    })
+}
+
 /// How far back a heartbeat counts as "present". Matches the airc
 /// agent-liveness convention of a short recency window — a peer that
 /// hasn't beaten within this window is treated as gone.
@@ -756,6 +775,35 @@ mod tests {
             .await;
         assert!(delivery.items.is_empty());
         assert_eq!(delivery.tokens_used, 0);
+    }
+
+    // what this catches: #443, the roster of the WRONG room. The room she is standing
+    // in (the turn's stamped room) wins over the source's bound room; an unstamped
+    // context falls back to the bound room; a synthetic nil room asks airc for
+    // nothing. Pins the room actually ASKED for, which no delivery content reveals.
+    #[tokio::test]
+    async fn the_turn_room_wins_and_a_nil_room_asks_for_nothing() {
+        let me = PeerId::new();
+        let reader = Arc::new(StubReader::new(me, vec![member(PeerId::new(), "persona", None)]));
+        let bound = Uuid::from_u128(0xb0);
+        let turn = Uuid::from_u128(0x70);
+        let source = RoomRosterSource::new(persona(), reader.clone()).for_room(bound);
+
+        source
+            .deliver(&RagContext::for_persona_in_room(persona(), 1_000_000, turn), 1_000, ResolutionPreference::Raw)
+            .await;
+        assert_eq!(reader.asked_room(), Some(Some(turn)), "the stamped turn room wins");
+
+        source.deliver(&ctx(), 1_000, ResolutionPreference::Raw).await;
+        assert_eq!(reader.asked_room(), Some(Some(bound)), "an unstamped context uses the bound room");
+
+        let fresh = Arc::new(StubReader::new(me, vec![member(PeerId::new(), "persona", None)]));
+        let delivery = RoomRosterSource::new(persona(), fresh.clone())
+            .for_room(bound)
+            .deliver(&RagContext::for_persona_in_room(persona(), 1_000_000, Uuid::nil()), 1_000, ResolutionPreference::Raw)
+            .await;
+        assert!(delivery.items.is_empty());
+        assert_eq!(fresh.asked_room(), None, "a nil room never reaches airc, bound room or not");
     }
 
     // what this catches: cross-persona ctx gets nothing (defense in

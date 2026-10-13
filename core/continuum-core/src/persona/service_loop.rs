@@ -42,9 +42,8 @@
 //!   substrate's IPC boundary; tests stub it without any daemon.
 
 use crate::time::EpochMs;
-use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::supervisor::HostedPersona;
-use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};
+use crate::persona::work_burst::work_board_anchor;
 use async_trait::async_trait;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -447,7 +446,7 @@ async fn serve_persona_loop_inner(
         .await
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
     // Event-id ring for staleness at the loop head (see `wake_backlog::is_stale`).
-    let mut seen_ids = crate::persona::wake_backlog::SeenIds::new(256);
+    let mut seen_ids = crate::runtime::seen::SeenRing::new(256);
 
     // The persona's adapter (`ctx.adapter`) is reached by the
     // cognition layer through the global provider registry — slice
@@ -1140,19 +1139,10 @@ async fn serve_persona_loop_inner(
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
         // Harvest the roster resolution this compose already fetched into the
         // admit-time name memory (see `roster_names` above).
-        for d in composed
-            .deliveries
-            .iter()
-            .filter(|d| d.source_id == "room-roster")
-        {
-            for item in &d.items {
-                if let (Some(peer), Some(name)) = (
-                    item.metadata.get("peer_id").and_then(|v| v.as_str()),
-                    item.metadata.get("display_name").and_then(|v| v.as_str()),
-                ) {
-                    if let Ok(id) = Uuid::parse_str(peer) {
-                        roster_names.insert(id, name.to_string());
-                    }
+        for entry in crate::persona::room_roster_source::entries_in(&composed.deliveries) {
+            if let (Some(peer), Some(name)) = (entry.peer_id, entry.display_name) {
+                if let Ok(id) = Uuid::parse_str(peer) {
+                    roster_names.insert(id, name.to_string());
                 }
             }
         }
@@ -2000,43 +1990,6 @@ pub(crate) struct TriggerTurn<'a> {
     pub occurred_at_ms: u64,
 }
 
-/// The two grounding consumers the room-roster delivery feeds — kept as one
-/// struct so the fold below returns both from the ONE roster truth.
-pub(crate) struct RoomRosterProjection {
-    /// `<name> [<runtime>] — <availability>` lines → the system-prompt
-    /// `[Present in this room]` grounding block (identity, NOT conversation).
-    pub(crate) room_roster: Vec<String>,
-    /// Bare display names → the `ProperChatMlSingleParty` history-drop
-    /// (single-party models can't process other-AI turns).
-    pub(crate) other_persona_names: Vec<String>,
-}
-
-/// Fold the `room-roster` delivery into its two grounding consumers, routed by
-/// `source_id`. Pure and extracted from the heartbeat loop (sibling of
-/// [`build_workspace_turns`]) so the live path and the convergence seam-proof
-/// test exercise the IDENTICAL projection — one roster truth, no inline
-/// duplication. See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
-pub(crate) fn project_room_roster(
-    deliveries: &[crate::persona::rag_budget::RagDelivery],
-) -> RoomRosterProjection {
-    let mut room_roster: Vec<String> = Vec::new();
-    let mut other_persona_names: Vec<String> = Vec::new();
-    for item in deliveries
-        .iter()
-        .filter(|d| d.source_id == "room-roster")
-        .flat_map(|d| d.items.iter())
-    {
-        room_roster.push(item.content.clone());
-        if let Some(name) = item.metadata.get("display_name").and_then(|v| v.as_str()) {
-            other_persona_names.push(name.to_string());
-        }
-    }
-    RoomRosterProjection {
-        room_roster,
-        other_persona_names,
-    }
-}
-
 /// How many CONSECUTIVE repetition-detector fires (without the pattern
 /// breaking) before the `[pattern]` DESCRIPTION escalates to a concrete
 /// `[anchor]` work fact. 2 = escalate on the first turn posted AFTER the
@@ -2184,15 +2137,8 @@ pub(crate) fn build_workspace_turns(
     // instead of raw UUIDs. A peer not in the roster (or an eval-synthesized delivery
     // with no roster) falls back to its own peer_id: honest, never invisible, never a
     // fabricated name ([[fallbacks-are-illegal-fail-loud]]).
-    let names: HashMap<&str, &str> = deliveries
-        .iter()
-        .filter(|d| d.source_id == "room-roster")
-        .flat_map(|d| d.items.iter())
-        .filter_map(|item| {
-            let peer = item.metadata.get("peer_id").and_then(|v| v.as_str())?;
-            let name = item.metadata.get("display_name").and_then(|v| v.as_str())?;
-            Some((peer, name))
-        })
+    let names: HashMap<&str, &str> = crate::persona::room_roster_source::entries_in(deliveries)
+        .filter_map(|entry| Some((entry.peer_id?, entry.display_name?)))
         .collect();
     let mut turns: Vec<BurstTurn> = deliveries
         .iter()
@@ -2445,11 +2391,8 @@ pub(crate) fn build_workspace_turns(
     // denials. An authorless opaque FACT block (same shape as [pattern]) —
     // orientation, never instruction ([[no-hardcoded-heuristics-to-steer-cognition]]).
     if turns.is_empty() {
-        let peers: Vec<&str> = deliveries
-            .iter()
-            .filter(|d| d.source_id == "room-roster")
-            .flat_map(|d| d.items.iter())
-            .filter_map(|i| i.metadata.get("display_name").and_then(|v| v.as_str()))
+        let peers: Vec<&str> = crate::persona::room_roster_source::entries_in(deliveries)
+            .filter_map(|entry| entry.display_name)
             .filter(|n| *n != agent_name)
             .take(8)
             .collect();
@@ -3139,6 +3082,8 @@ async fn next_event(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::adapter::AIProviderAdapter;
+    use crate::persona::work_burst::{held_work_burst_gated, own_recent_thoughts_about, CardProgress};
 
     // What this catches: a paused generator must not hold a short answer until
     // another token arrives; the same live rail must filter reasoning and close in order.
@@ -3299,7 +3244,7 @@ mod tests {
             "First, the ground truth from my own board and workspace. ".repeat(6)
         );
         let rows = vec![row(1, "💭 earlier orientation"), row(2, &long)];
-        let state = own_recent_thoughts(&rows, me, 2, 80);
+        let state = own_recent_thoughts_about(&rows, me, 2, 80, &[]);
         assert_eq!(state.len(), 2);
         assert!(
             state[1].ends_with("include the index in the label at checks.py:1040."),
@@ -3316,7 +3261,7 @@ mod tests {
     // help; never a release demand); an edit receipt resets the count and it stays away.
     #[test]
     fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
-        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, CardProgress, WRITE_OR_RELEASE_AFTER_ACTS};
+        use crate::persona::work_burst::{acts_since_last_write_since, held_work_burst_gated, CardProgress, WRITE_OR_RELEASE_AFTER_ACTS};
         let me = Uuid::new_v4();
         let row = |ms, text: &str| crate::persona::durable_history::RoomRow {
             id: Uuid::new_v4(),
@@ -3330,11 +3275,11 @@ mod tests {
             row(2, "💭 checking ⚙ code/run pytest ✓ ⚙ code/git/status ✓"),
             row(3, "💭 more ⚙ code/read b.py ✓ ⚙ code/shell ls ✓"),
         ];
-        assert_eq!(acts_since_last_write(&looping, me), 6);
+        assert_eq!(acts_since_last_write_since(&looping, me, 0), 6);
         let text = held_work_burst_gated(
             &[],
             &[],
-            acts_since_last_write(&looping, me),
+            acts_since_last_write_since(&looping, me, 0),
             &CardProgress::default(),
         );
         assert!(text.contains("[progress checkpoint]"), "{text}");
@@ -3349,7 +3294,7 @@ mod tests {
             "💭 fixing ⚙ code/write witness_report.txt ✓ ⚙ code/run pytest ✓",
         ));
         assert_eq!(
-            acts_since_last_write(&edited, me),
+            acts_since_last_write_since(&edited, me, 0),
             1,
             "an edit resets the count"
         );
@@ -3359,14 +3304,14 @@ mod tests {
         reclaimed.push(row(4, "💭 next ⚙ work/release abcd ✓"));
         reclaimed.push(row(5, "💭 pulled ⚙ work/claim ef01 ✓ ⚙ code/read c.py ✓"));
         assert_eq!(
-            acts_since_last_write(&reclaimed, me),
+            acts_since_last_write_since(&reclaimed, me, 0),
             1,
             "a claim is a hold boundary: only the act after it counts"
         );
         let text = held_work_burst_gated(
             &[],
             &[],
-            acts_since_last_write(&edited, me),
+            acts_since_last_write_since(&edited, me, 0),
             &CardProgress::default(),
         );
         assert!(
@@ -3483,7 +3428,7 @@ mod tests {
                 "💭 let me refocus and actually do work on this card now, really",
             ),
         ];
-        let state = own_recent_thoughts(&rows, me, 2, 40);
+        let state = own_recent_thoughts_about(&rows, me, 2, 40, &[]);
         assert_eq!(state.len(), 2);
         assert!(state[0].starts_with("💭 lines 107-152"), "{state:?}");
         // The newest thought keeps its TAIL — the conclusion — not its opening.
@@ -3491,7 +3436,7 @@ mod tests {
             state[1].starts_with('…') && state[1].ends_with("on this card now, really"),
             "newest keeps its conclusion: {state:?}"
         );
-        let text = held_work_burst(&[], &state);
+        let text = held_work_burst_gated(&[], &state, 0, &CardProgress::default());
         assert!(text.contains("resume from them"));
         assert!(text.contains("lines 107-152"));
     }
@@ -3521,7 +3466,7 @@ mod tests {
             last_submission_rejection: None,
         };
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
-        let burst = held_work_burst(&[&card], &[]);
+        let burst = held_work_burst_gated(&[&card], &[], 0, &CardProgress::default());
         assert!(burst.contains(&id8), "short id must appear: {burst}");
         assert!(
             burst.contains("psf__requests-2148"),

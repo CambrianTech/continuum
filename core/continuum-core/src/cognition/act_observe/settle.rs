@@ -483,7 +483,7 @@ async fn settle_to_outcome(
                         if message.peer_id == body.persona_id
                             || crate::persona::wake_backlog::is_stale(
                                 message,
-                                seen_inputs.get_or_insert_with(|| crate::persona::wake_backlog::SeenIds::new(
+                                seen_inputs.get_or_insert_with(|| crate::runtime::seen::SeenRing::new(
                                     crate::persona::airc_persona_conversation::INBOX_CAPACITY,
                                 )),
                                 input_watermark,

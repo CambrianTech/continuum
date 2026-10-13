@@ -1211,7 +1211,9 @@ impl ActionCommand for WorkReview {
             if let Some(policy) = crate::modules::work::review_gate::room_policy(airc, &room).await {
                 if !policy.self_review {
                     return Err(CommandError::Invalid(format!(
-                        "this room's review policy does not admit the author's own review                          (review.self is false): a member other than you reviews card {card_id}.                          A room can allow it: activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."
+                        "this room's review policy does not admit the author's own review \
+                         (review.self is false): a member other than you reviews card {card_id}. \
+                         A room can allow it: activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."
                     )));
                 }
             }

@@ -105,21 +105,12 @@ fn wire_card_state_payload(event: &airc_core::TranscriptEvent) -> Option<Value> 
 /// deduped only if the ring still held it — 256 transitions of churn ages it out long
 /// before that matters.
 fn first_transition_sighting(card_id: &str, state: &str) -> bool {
-    use std::collections::VecDeque;
     use std::sync::Mutex;
-    const SEEN_CAP: usize = 256;
-    static SEEN: OnceLock<Mutex<VecDeque<String>>> = OnceLock::new();
-    let key = format!("{card_id}\u{1}{state}");
-    let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
-    if seen.contains(&key) {
-        return false;
-    }
-    if seen.len() >= SEEN_CAP {
-        seen.pop_front();
-    }
-    seen.push_back(key);
-    true
+    static SEEN: OnceLock<Mutex<crate::runtime::seen::SeenRing<String>>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(crate::runtime::seen::SeenRing::new(256)))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .note(format!("{card_id}\u{1}{state}"))
 }
 
 /// Publish one card-state transition onto the internal bus — the ONE emitter both
@@ -150,20 +141,12 @@ pub(crate) async fn emit_card_state_changed(payload: Value, via: &'static str) {
 /// age out, which is safe because duplicate deliveries arrive within the same
 /// fan-out instant, not hours apart.
 fn first_sighting(event_id: Uuid) -> bool {
-    use std::collections::VecDeque;
     use std::sync::Mutex;
-    const SEEN_CAP: usize = 256;
-    static SEEN: OnceLock<Mutex<VecDeque<Uuid>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
-    if seen.contains(&event_id) {
-        return false;
-    }
-    if seen.len() >= SEEN_CAP {
-        seen.pop_front();
-    }
-    seen.push_back(event_id);
-    true
+    static SEEN: OnceLock<Mutex<crate::runtime::seen::SeenRing<Uuid>>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(crate::runtime::seen::SeenRing::new(256)))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .note(event_id)
 }
 
 /// THE one emitter of [`WORK_CARD_STATE_CHANGED`] — bridge a card-state transition

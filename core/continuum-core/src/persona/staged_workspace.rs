@@ -377,13 +377,8 @@ pub(crate) fn staged_base_of(root: &std::path::Path) -> Option<String> {
 /// The tracked paths that differ from the staged base under the grader's exclude rules,
 /// rendered in the ` M path` shape `newest_work_mtime_ms` reads — one question to git,
 /// the same one `workspace_candidate_diff_from` asks, so "worked" and "gradeable" cannot
-/// drift. No recorded base (a checkout older than `clone_at`'s record) falls back to
-/// HEAD, which IS the base until she commits.
-fn candidate_paths_changed(root: &std::path::Path) -> String {
-    candidate_paths_changed_from(root, commit_facts_of(root).base.as_deref())
-}
-
-/// `candidate_paths_changed` against a base already known (the held commit facts).
+/// drift. `base` is the held commit facts' base; `None` (no recorded base, a checkout
+/// older than `clone_at`'s record) means HEAD, which IS the base until she commits.
 fn candidate_paths_changed_from(root: &std::path::Path, base: Option<&str>) -> String {
     let base = base.unwrap_or("HEAD").to_string(); // unwrap_or: no record = the checkout sits at its base
     let mut args: Vec<String> = vec![
@@ -610,7 +605,7 @@ mod tests {
         std::fs::write(root.join("repro_gfk_uuid.py"), "print('repro')\n").unwrap();
         std::fs::create_dir_all(root.join("__pycache__")).unwrap();
         std::fs::write(root.join("__pycache__").join("x.pyc"), "junk").unwrap();
-        assert_eq!(super::candidate_paths_changed(root), "", "untracked scratch is not a candidate");
+        assert_eq!(super::candidate_paths_changed_from(root, super::commit_facts_of(root).base.as_deref()), "", "untracked scratch is not a candidate");
         assert!(super::work_mtime_of(root).is_some(), "…but it IS something a restage must not destroy");
         // what this catches (Cormac's condition on #4258): an edit not yet `git add`ed writes
         // none of .git/HEAD, .git/index, .git/logs/HEAD — the held COMMIT facts stay held
@@ -621,7 +616,7 @@ mod tests {
         let held = super::commit_facts_of(root);
         assert!(!super::copy_facts(peer, root.to_path_buf()).has_work, "no candidate yet");
         std::fs::write(root.join("a.txt"), "edit\n").unwrap();
-        assert_eq!(super::candidate_paths_changed(root), " M a.txt", "a tracked edit is the candidate");
+        assert_eq!(super::candidate_paths_changed_from(root, super::commit_facts_of(root).base.as_deref()), " M a.txt", "a tracked edit is the candidate");
         assert_eq!(super::git_state_key(root), Some(key_before), "an un-added edit is not a git write");
         assert_eq!(super::commit_facts_of(root).base, held.base, "the commit half is still the held record");
         assert!(super::copy_facts(peer, root.to_path_buf()).has_work, "…and the working-tree half sees the edit now");

@@ -3013,36 +3013,13 @@ impl LlmDeliberationFaculty {
             .collect()
     }
 
-    /// Build the role-attributed conversation thread from the workspace's
-    /// structured turns, fitted to `budget_tokens`. The persona's OWN posts become
-    /// `assistant` messages (her own voice — no name prefix, matching the
-    /// "do NOT prefix your message with your name" instruction); peers' posts become
-    /// `user` messages prefixed `{author}: ` so several speakers stay legible inside
-    /// one merged user turn. Consecutive same-role turns merge into a single message
-    /// (the chat-template shape models expect). Under budget pressure the OLDEST
-    /// turns drop first. This is the payoff of the structured-turns refactor: the
-    /// model sees WHO said WHAT with its own past messages attributed to `assistant`,
-    /// so it neither bleeds identity nor replays the transcript (the echo-loop root
-    /// cause — PERSONA-COGNITION-PIPELINE §7.5).
-    #[cfg(test)]
-    fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
-        self.fit_messages(self.messages_unfitted(ws, None), budget_tokens)
-            .expect("test workspace must fit its complete current stimulus and action result")
-            .messages
-    }
-
     /// The conversation as it stands BEFORE any budget is applied — every turn, every
     /// perception fact, every trailing proprioception block, in final render order.
     ///
-    /// Split out from the fitting step so a turn's TRUE conversational size is
-    /// knowable. Fitting is lossy by design (newest-first, oldest dropped), and once
-    /// it has run the question "how much did this turn actually want?" is
-    /// unanswerable — which is precisely why the served window had to be sized by a
-    /// constant instead of by demand. [`super::working_set`] measures this.
-    fn messages_unfitted(&self, ws: &Workspace, trailing_framing: Option<&str>) -> PromptMessages {
-        self.messages_with_visual_feedback(ws, trailing_framing, None)
-    }
-
+    /// Fitting is lossy by design (newest-first, oldest dropped), and once it has run
+    /// the question "how much did this turn actually want?" is unanswerable — which
+    /// is precisely why the served window had to be sized by a constant instead of by
+    /// demand. [`super::working_set`] measures this.
     fn messages_with_visual_feedback(
         &self,
         ws: &Workspace,
@@ -6446,16 +6423,16 @@ mod tests {
                     room,
                     turns.clone(),
                 ));
-                let required_identity = faculty.messages_unfitted(&ws, None).input_identity;
+                let required_identity = faculty.messages_with_visual_feedback(&ws, None, None).input_identity;
                 ws.now_ms = Some(occurred_at + 86_400_000);
                 assert_eq!(
-                    faculty.messages_unfitted(&ws, None).input_identity,
+                    faculty.messages_with_visual_feedback(&ws, None, None).input_identity,
                     required_identity
                 );
                 let stimulus_index = ws.turns.len() - 2;
                 ws.turns[stimulus_index].occurred_at_ms = Some(occurred_at + 1);
                 assert_ne!(
-                    faculty.messages_unfitted(&ws, None).input_identity,
+                    faculty.messages_with_visual_feedback(&ws, None, None).input_identity,
                     required_identity,
                     "required stimulus identity includes its rendered occurrence time"
                 );
@@ -9858,7 +9835,7 @@ mod tests {
                     crate::identity::ActivityRoom::mint(),
                     turns,
                 ));
-                assert!(faculty.messages_unfitted(&ws, None).tokens() > 36_865);
+                assert!(faculty.messages_with_visual_feedback(&ws, None, None).tokens() > 36_865);
                 let expected_view = faculty.prompt_view_within(&ws, expected);
                 assert!(expected_view.capacity_error.is_none());
                 let verdict = faculty
@@ -10049,7 +10026,7 @@ mod tests {
                 );
                 let initial = faculty.prompt_view_within(&ws, window);
                 assert!(initial.capacity_error.is_none());
-                let unfitted = faculty.messages_unfitted(&ws, None);
+                let unfitted = faculty.messages_with_visual_feedback(&ws, None, None);
                 assert_eq!(
                     unfitted
                         .history
@@ -10299,7 +10276,7 @@ mod tests {
             ));
             assert_eq!(
                 faculty
-                    .messages_unfitted(&ws, None)
+                    .messages_with_visual_feedback(&ws, None, None)
                     .history
                     .iter()
                     .filter(|m| m.content_text().contains("distinct_history_"))
@@ -10515,7 +10492,7 @@ mod tests {
                     .standing_grounding(),
                 );
 
-                let unfitted = faculty.messages_unfitted(&ws, None);
+                let unfitted = faculty.messages_with_visual_feedback(&ws, None, None);
                 assert_eq!(
                     unfitted
                         .history
@@ -10759,7 +10736,7 @@ mod tests {
                         ws.now_ms,
                         LlmDeliberationFaculty::holds_live_work(&ws),
                     );
-                    let unfitted = faculty.messages_unfitted(&ws, Some(&framing.trailing));
+                    let unfitted = faculty.messages_with_visual_feedback(&ws, Some(&framing.trailing), None);
                     let history: Vec<_> = unfitted
                         .history
                         .iter()

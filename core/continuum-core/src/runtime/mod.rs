@@ -61,6 +61,7 @@ pub mod region_telemetry;
 pub mod registry;
 #[allow(clippy::module_inception)]
 pub mod runtime;
+pub mod seen;
 pub mod service_module;
 pub mod share_controller;
 pub mod shared_compute;
