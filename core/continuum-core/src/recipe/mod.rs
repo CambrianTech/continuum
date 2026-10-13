@@ -23,11 +23,12 @@
 pub mod condition;
 pub mod executor;
 pub mod interpolate;
+pub mod run_record;
 pub mod state;
 pub mod types;
 pub mod validate;
 
-pub use executor::PipelineExecutor;
+pub use executor::{PipelineExecutor, RecipeRunReceipt};
 pub use state::ExecutionState;
 pub use types::{Approval, OnError, RecipeStep};
 pub use validate::{pipeline_issues, registry_lookup, IssueKind, PipelineIssue};

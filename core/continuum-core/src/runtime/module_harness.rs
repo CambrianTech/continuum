@@ -29,6 +29,67 @@ use super::service_module::{CommandResult, ServiceModule};
 use super::shared_compute::SharedCompute;
 use crate::vdd::record::{HarnessStatus, StandardVddRecord};
 
+/// THE canned `ServiceModule` (task #155): answers every `canned/*` command from a
+/// script, and counts the dispatches it received. Tests that need "a command that
+/// does X" — succeed, fail, sleep, look at the world mid-dispatch — register this
+/// rather than a private mock.
+pub struct CannedModule {
+    script: Arc<dyn Fn(&str, Value) -> futures::future::BoxFuture<'static, Result<CommandResult, String>> + Send + Sync>,
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+impl CannedModule {
+    pub const PREFIXES: &'static [&'static str] = &["canned/"];
+
+    /// Every command answers `answer`.
+    pub fn answering(answer: Result<Value, String>) -> Self {
+        Self::scripted(move |_, _| {
+            let answer = answer.clone();
+            Box::pin(async move { answer.map(CommandResult::Json) })
+        })
+    }
+
+    /// Every command runs `script(command, params)`.
+    pub fn scripted(
+        script: impl Fn(&str, Value) -> futures::future::BoxFuture<'static, Result<CommandResult, String>> + Send + Sync + 'static,
+    ) -> Self {
+        Self { script: Arc::new(script), calls: std::sync::atomic::AtomicUsize::new(0) }
+    }
+
+    /// How many dispatches reached this module.
+    pub fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl ServiceModule for CannedModule {
+    fn config(&self) -> super::ModuleConfig {
+        super::ModuleConfig {
+            name: "canned",
+            priority: super::ModulePriority::Normal,
+            command_prefixes: Self::PREFIXES,
+            event_subscriptions: &[],
+            needs_dedicated_thread: false,
+            max_concurrency: 0,
+            tick_interval: None,
+        }
+    }
+
+    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+        Ok(())
+    }
+
+    async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        (self.script)(command, params).await
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// A minimal runtime hosting exactly the module(s) under test — the smallest
 /// thing that can dispatch a real command to them.
 pub struct ModuleHarness {

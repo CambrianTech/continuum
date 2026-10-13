@@ -55,6 +55,41 @@ use crate::routing::{route, CommandUri, RouteDecision, Transport, Verdict};
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
 
+/// Whether a failed dispatch can have had an effect. A caller that retries,
+/// skips, or reports "nothing happened" must know which; the message alone
+/// cannot say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchOutcome {
+    /// Refused before any handler ran: the AuthPolicy gate (Forbidden or
+    /// Deferred) or no route for the command. Nothing was attempted.
+    NotCommitted,
+    /// A handler, interceptor or transport was reached and failed. It may have
+    /// acted before failing. Every handler error lands here, whatever its
+    /// `CommandError` category: no handler contract yet promises "refused
+    /// before effect" (Codex root review, 2026-10-13).
+    Uncertain,
+}
+
+/// A failed dispatch: the message every caller has always read, plus the
+/// [`DispatchOutcome`] decided where the failure happened, never by parsing
+/// the message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchFailure {
+    pub outcome: DispatchOutcome,
+    pub message: String,
+}
+
+impl DispatchFailure {
+    fn not_committed(message: String) -> Self {
+        Self { outcome: DispatchOutcome::NotCommitted, message }
+    }
+
+    fn uncertain(message: String) -> Self {
+        Self { outcome: DispatchOutcome::Uncertain, message }
+    }
+}
+
 /// Universal command executor that routes to interceptors, then Rust
 /// modules, then TypeScript.
 ///
@@ -235,6 +270,13 @@ impl CommandExecutor {
         self.bus.clone()
     }
 
+    /// The module registry this executor dispatches into — how a composing
+    /// service finds the module that owns its state (the recipe executor finds
+    /// the node's run store this way).
+    pub fn registry(&self) -> &Arc<ModuleRegistry> {
+        &self.registry
+    }
+
     /// Execute ANY command — walks the dispatch chain documented on the
     /// struct: interceptors → local Rust module → TypeScript bridge.
     ///
@@ -276,6 +318,21 @@ impl CommandExecutor {
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
     ) -> Result<CommandResult, String> {
+        self.execute_classified(command, params, caller)
+            .await
+            .map_err(|failure| failure.message)
+    }
+
+    /// As [`Self::execute_with_caller`], and a failure says whether the command
+    /// can have had an effect ([`DispatchFailure::outcome`]). A caller that may
+    /// retry or skip (the recipe executor) needs that answer; every other caller
+    /// reads only the message.
+    pub async fn execute_classified(
+        &self,
+        command: impl Into<CommandUri>,
+        params: Value,
+        caller: Option<crate::routing::CallerIdentity>,
+    ) -> Result<CommandResult, DispatchFailure> {
         let command: CommandUri = command.into();
         let start = std::time::Instant::now();
         let work = caller.as_ref().and_then(|c| {
@@ -358,7 +415,7 @@ impl CommandExecutor {
         params: Value,
         caller: Option<&crate::routing::CallerIdentity>,
         work: Option<crate::persona::cognition_pulse::CommandWork>,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, DispatchFailure> {
         let decision = route(command);
         // Local in-process dispatches pass `None` — substrate's own
         // code calling itself, implicitly trusted by the default
@@ -381,15 +438,15 @@ impl CommandExecutor {
             // proceeds to transport selection.
             match verdict {
                 Verdict::Forbidden { reason } => {
-                    return Err(format!("forbidden: {reason}"));
+                    return Err(DispatchFailure::not_committed(format!("forbidden: {reason}")));
                 }
                 Verdict::Deferred {
                     reason,
                     prompt_target_env,
                 } => {
-                    return Err(format!(
+                    return Err(DispatchFailure::not_committed(format!(
                         "deferred: {reason:?} — consent prompt routed to env={prompt_target_env}"
-                    ));
+                    )));
                 }
                 Verdict::Allowed => {}
             }
@@ -405,7 +462,11 @@ impl CommandExecutor {
                 RouteDecision::Local { path, .. } => {
                     self.execute_inner(&path, params, caller).await
                 }
-                non_local => self.remote_transport.dispatch(non_local, params).await,
+                non_local => self
+                    .remote_transport
+                    .dispatch(non_local, params)
+                    .await
+                    .map_err(DispatchFailure::uncertain),
             };
             if outcome.is_ok() {
                 if let Some(work) = &work {
@@ -432,7 +493,7 @@ impl CommandExecutor {
         command: &str,
         params: Value,
         caller: Option<&crate::routing::CallerIdentity>,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, DispatchFailure> {
         let log = super::logger("command-executor");
 
         // 1. Walk the interceptor chain. First Handle wins. Decline
@@ -461,7 +522,7 @@ impl CommandExecutor {
                         command,
                         e
                     ));
-                    return Err(e);
+                    return Err(DispatchFailure::uncertain(e));
                 }
             }
         }
@@ -479,7 +540,8 @@ impl CommandExecutor {
             // the policy gate just saw (persona / cross-grid airc sender), so the
             // handler can gate/scope/compose by identity.
             return super::runtime::dispatch_object_with_panic_guard(cmd, params, caller.cloned())
-                .await;
+                .await
+                .map_err(DispatchFailure::uncertain);
         }
 
         // 3. Fallback: prefix-routed local Rust module registry (un-migrated
@@ -492,7 +554,8 @@ impl CommandExecutor {
             // panicking handler converts to typed Err instead of
             // poisoning the caller's task.
             return super::runtime::dispatch_with_panic_guard(&module, &cmd, params, module_name)
-                .await;
+                .await
+                .map_err(DispatchFailure::uncertain);
         }
 
         // 4. No DynCommand object and no Rust module owns this command.
@@ -512,7 +575,7 @@ impl CommandExecutor {
         log.warn(&format!(
             "no Rust module handles command '{command}' — refusing silent TS fallthrough"
         ));
-        Err(format!(
+        Err(DispatchFailure::not_committed(format!(
             "no Rust module handles command: '{command}'. \
              The implicit TS-bridge fallthrough is disabled per \
              [[no-fallbacks-ever]]. If this command is intentionally \
@@ -520,7 +583,7 @@ impl CommandExecutor {
              `CommandExecutor::execute_ts_json` (or `execute_ts`) \
              explicitly. If this command should be in Rust, register a \
              `ServiceModule` whose `command_prefixes` covers it."
-        ))
+        )))
     }
 
     /// Publish a `command:completed` event on the bus (when wired).
@@ -529,7 +592,7 @@ impl CommandExecutor {
     fn emit_command_completed(
         &self,
         command: &str,
-        outcome: &Result<CommandResult, String>,
+        outcome: &Result<CommandResult, DispatchFailure>,
         duration_ms: u64,
         handle: Option<uuid::Uuid>,
     ) {
@@ -546,7 +609,7 @@ impl CommandExecutor {
             command_name: command.to_string(),
             duration_ms,
             success: outcome.is_ok(),
-            error: outcome.as_ref().err().cloned(),
+            error: outcome.as_ref().err().map(|failure| failure.message.clone()),
             handle,
             result,
         };
@@ -1111,52 +1174,7 @@ mod tests {
     use super::super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
     use super::super::message_bus::MessageBus;
 
-    /// Test-only ServiceModule that returns canned results so we can
-    /// drive `execute()` through the local-Rust dispatch path
-    /// without standing up a real module. Stores the canned outcome
-    /// as `Result<Value, String>` (not `CommandResult`) because
-    /// `CommandResult` doesn't impl Clone — we re-wrap in Json each
-    /// call. Uses a fixed `canned/` prefix to keep the trait's
-    /// `&'static [&'static str]` requirement satisfied without
-    /// test-time string juggling.
-    struct CannedModule {
-        canned: Result<serde_json::Value, String>,
-    }
-
-    impl CannedModule {
-        const PREFIXES: &'static [&'static str] = &["canned/"];
-    }
-
-    #[async_trait]
-    impl crate::runtime::ServiceModule for CannedModule {
-        fn config(&self) -> crate::runtime::ModuleConfig {
-            crate::runtime::ModuleConfig {
-                name: "canned",
-                priority: crate::runtime::ModulePriority::Normal,
-                command_prefixes: Self::PREFIXES,
-                event_subscriptions: &[],
-                needs_dedicated_thread: false,
-                max_concurrency: 0,
-                tick_interval: None,
-            }
-        }
-        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
-            Ok(())
-        }
-        async fn handle_command(
-            &self,
-            _command: &str,
-            _params: serde_json::Value,
-        ) -> Result<CommandResult, String> {
-            match &self.canned {
-                Ok(v) => Ok(CommandResult::Json(v.clone())),
-                Err(e) => Err(e.clone()),
-            }
-        }
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-    }
+    use super::super::module_harness::CannedModule;
 
     /// Drain the bus receiver until we find an event named
     /// `command:completed`. Returns the parsed payload.
@@ -1181,9 +1199,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_emits_completed_event_on_success() {
         let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(CannedModule {
-            canned: Ok(serde_json::json!({ "ok": true })),
-        }));
+        registry.register(Arc::new(CannedModule::answering(Ok(serde_json::json!({ "ok": true })))));
         let bus = Arc::new(MessageBus::new());
         let mut rx = bus.receiver();
         let executor = CommandExecutor::new(registry).with_message_bus(bus);
@@ -1228,9 +1244,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_background_completion_carries_handle_and_result() {
         let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(CannedModule {
-            canned: Ok(serde_json::json!({ "built": true, "warnings": 0 })),
-        }));
+        registry.register(Arc::new(CannedModule::answering(Ok(serde_json::json!({ "built": true, "warnings": 0 })))));
         let bus = Arc::new(MessageBus::new());
         let mut rx = bus.receiver();
         let executor = Arc::new(CommandExecutor::new(registry).with_message_bus(bus));
@@ -1256,9 +1270,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_emits_completed_event_on_handler_error() {
         let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(CannedModule {
-            canned: Err("simulated handler failure".to_string()),
-        }));
+        registry.register(Arc::new(CannedModule::answering(Err("simulated handler failure".to_string()))));
         let bus = Arc::new(MessageBus::new());
         let mut rx = bus.receiver();
         let executor = CommandExecutor::new(registry).with_message_bus(bus);
@@ -1285,9 +1297,7 @@ mod tests {
         // still complete normally. This is the back-compat path for
         // tests + the old init_executor calls.
         let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(CannedModule {
-            canned: Ok(serde_json::json!({ "ok": true })),
-        }));
+        registry.register(Arc::new(CannedModule::answering(Ok(serde_json::json!({ "ok": true })))));
         let executor = CommandExecutor::new(registry);
         assert!(!executor.has_message_bus(), "no bus wired");
 
@@ -1334,9 +1344,7 @@ mod tests {
         // corruption, no event loss, no event duplication.
         const PARALLEL: usize = 32;
         let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(CannedModule {
-            canned: Ok(serde_json::json!({ "ok": true })),
-        }));
+        registry.register(Arc::new(CannedModule::answering(Ok(serde_json::json!({ "ok": true })))));
         let bus = Arc::new(MessageBus::new());
         let mut rx = bus.receiver();
         let executor = Arc::new(CommandExecutor::new(registry).with_message_bus(bus));
