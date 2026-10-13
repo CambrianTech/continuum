@@ -76,6 +76,15 @@ enum Step {
 /// untethered. The caller decides what to say about that; it is never silently a
 /// reason to act somewhere else.
 pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathBuf> {
+    // A benchmark REVIEW card's work is in the OWNER's checkout (the fix under review
+    // lives there), so the reviewer's hands stand in it. One rule for every turn (card
+    // fc9e9fd7: the held-work turn kept its own copy of this resolver).
+    if let Some(instance) = crate::commands::benchmark::parse_review_title(&card.title) {
+        let copies = crate::persona::staged_workspace::owners_of(&instance);
+        if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
+            return Some(copy.path.clone());
+        }
+    }
     if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
         return crate::persona::staged_workspace::workspace_for_held_cards(
             peer,
@@ -672,17 +681,7 @@ mod tests {
         );
 
         // THE INVARIANT: the same title on an ORDINARY card must not borrow that checkout.
-        assert_eq!(
-            crate::persona::act_question::held_card_workspace(&peer, &bench).as_deref(),
-            Some(swe.as_path()),
-            "the follow-on work turn keeps benchmark staging"
-        );
         let generic = generic_card(instance);
-        assert_eq!(
-            crate::persona::act_question::held_card_workspace(&peer, &generic),
-            checkout_path_for(&peer, &generic),
-            "room and follow-on work turns must use the same project checkout authority"
-        );
         assert_ne!(
             checkout_path_for(&peer, &generic).as_deref(),
             Some(swe.as_path()),

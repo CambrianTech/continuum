@@ -337,7 +337,7 @@ mod tests {
         let chain = ActChain::new();
 
         // Act 1 — starts the chain: no predecessor, so no edge.
-        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
+        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain, None).await);
         let first = chain.prior().expect("first act admitted onto the chain");
         assert!(
             adm.engram_neighbors(&first).is_empty(),
@@ -351,7 +351,7 @@ mod tests {
             name: "code/read".into(),
             input: serde_json::json!({ "file_path": "src/main.rs" }),
         };
-        acts_of(apply_act(&cycle, &[second_call], "inspect", room, &chain).await);
+        acts_of(apply_act(&cycle, &[second_call], "inspect", room, &chain, None).await);
         let second = chain.prior().expect("second act admitted onto the chain");
         assert_ne!(first, second, "two acts, two engrams");
 
@@ -397,7 +397,7 @@ mod tests {
         let trigger = Uuid::new_v4();
         let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Stimulus(trigger));
 
-        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
+        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain, None).await);
         let first = chain.prior().expect("first act admitted onto the chain");
         assert_ne!(first, trigger, "the act is its own engram, not the trigger");
 
@@ -427,7 +427,7 @@ mod tests {
             .with_acting(body(exec.clone(), adm.clone()));
         let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Ambient);
 
-        acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain).await);
+        acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain, None).await);
         let first = chain.prior().expect("first act admitted");
         assert!(
             adm.engram_neighbors(&first).is_empty(),
@@ -494,6 +494,7 @@ mod tests {
             "check the math",
             room,
             &ActChain::new(),
+            None,
         )
         .await
         {
@@ -638,6 +639,7 @@ mod tests {
             "building",
             Uuid::new_v4(),
             &ActChain::new(),
+            None,
         )
         .await
         {
@@ -686,8 +688,9 @@ mod tests {
                     &[tool_call()],
                     "try",
                     Uuid::new_v4(),
-                    &ActChain::new()
-                )
+                    &ActChain::new(),
+            None,
+        )
                 .await,
                 ActOutcome::NoHands
             ),
@@ -710,8 +713,9 @@ mod tests {
                     &[tool_call()],
                     "run",
                     Uuid::new_v4(),
-                    &ActChain::new()
-                )
+                    &ActChain::new(),
+            None,
+        )
                 .await,
                 ActOutcome::ExecutorError { .. }
             ),
@@ -1077,6 +1081,7 @@ mod tests {
         let mut call = tool_call();
         let mut acts = acts_of(apply_act(
             &cycle, &[call.clone()], "inspect", Uuid::new_v4(), &ActChain::new(),
+            None,
         ).await);
         let original = batch_evidence(&[call.clone()], &acts);
         assert!(original.is_some());
@@ -1939,7 +1944,7 @@ mod tests {
             ("code/tree", serde_json::json!({"path":"b"}), "tree two"),
         ].into_iter().enumerate() {
             let call = ToolCall { id: format!("call-{i}"), name: name.into(), input };
-            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &chain).await);
+            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &chain, None).await);
             assert!(matches!(acts[0].status, ActStatus::Executed));
             assert!(acts[0].output.result.content.contains(expected));
             assert_eq!(acts[0].output.result.is_error, (i == 3).then_some(true));
@@ -1963,7 +1968,7 @@ mod tests {
                 name: "code/read".into(),
                 input: serde_json::json!({"file_path": "README.md"}),
             };
-            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new()).await);
+            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new(), None).await);
             assert!(matches!(acts[0].status, ActStatus::Executed));
             assert_eq!(acts[0].output.result.tool_use_id, id);
             assert!(acts[0].output.result.content.contains(if i == 0 {

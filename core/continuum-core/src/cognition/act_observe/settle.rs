@@ -1112,6 +1112,8 @@ pub async fn settle_step(
     // conversion is #[cfg(test)]-only, so production can only arrive here with a
     // real attributed Burst.
     let room_id: Uuid = burst.room.as_uuid();
+    // The turn's hands, bound at its admission: every act of this step runs in them.
+    let hands = burst.hands;
     // Snapshot the burst's PEER turns before the workspace consumes it — the
     // draft-side echo check (#303) below compares her settled utterance
     // against exactly what she reasoned over, so the evidence can never
@@ -1209,7 +1211,7 @@ pub async fn settle_step(
                 // re-perceive next step; `NoHands`/`ExecutorError` → unfulfilled. Behavior
                 // identical to the old `Some`/`None`, but `ExecutorError` is now
                 // distinguishable for a future backstop.
-                if apply_act(cycle, &calls, &intent, room_id, chain)
+                if apply_act(cycle, &calls, &intent, room_id, chain, hands)
                     .await
                     .produced_an_act()
                 {

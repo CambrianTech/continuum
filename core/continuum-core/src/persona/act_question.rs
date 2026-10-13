@@ -282,136 +282,101 @@ pub(crate) async fn ask_the_act_question(
                     // producer fires, so it is also what puts benchmark
                     // experience into her genome instead of only her memory.
                     //
-                    // The re-root is PROCESS-GLOBAL (the file engine keys on
-                    // caller identity), so the restore below is mandatory on
-                    // EVERY exit — #312: after a flask solve, Anwen's live
-                    // self was still reading the exam repo hours later.
-                    // Ordinary project cards use the same card-id checkout authority as room turns.
-                    // A REVIEW card roots her hands in the OWNER's checkout (the fix
-                    // under review lives there); any other held card resolves to her
-                    // own staged instance as before.
-                    // `held` was reduced through work_focus::focus_card above.
-                    // Reuse that same selection for hands, facts, credit and genes.
-                    let card_workspace = held.first().and_then(|card| {
-                        held_card_workspace(&ctx.identity.peer_id.as_uuid(), card)
-                    });
-                    let work_hands = match &card_workspace {
-                        Some(ws) => {
-                            let hands =
-                                crate::cognition::persona_workspace::ActingHands::of(&cycle);
-                            match crate::cognition::persona_workspace::root_acting_workspace(
-                                &cycle,
-                                &ws.to_string_lossy(),
-                                &[],
-                                false,
-                            )
-                            .await
-                            {
-                                Ok(()) => {
-                                    // WHERE SHE STANDS, as a FACT in working memory (the
-                                    // same channel as the act-budget facts). Live
-                                    // 2026-09-04: the card said `swe/<instance>/`
-                                    // (workspace-relative) while her tools stood INSIDE
-                                    // that repo — every citizen burned acts on `ls swe/`
-                                    // → "No such file" and reported the checkout missing.
-                                    if let Some(body) = cycle.acting() {
-                                        // PINNED (not recorded): the FIFO window is three
-                                        // deep and by her third act this fact was gone —
-                                        // four consecutive work turns without [hands]/[env]
-                                        // on 2026-09-07. Replaced by key on every re-root,
-                                        // dropped when her hands are restored below.
-                                        body.working_memory.pin_fact(
-                                            "hands",
-                                            &format!(
-                                                "[hands] For this turn my files and shell are \
-                                                 rooted AT the repo root `{}` — paths are \
-                                                 repo-relative; `ls` lists the repo itself.",
-                                                ws.display()
-                                            ),
-                                        );
-                                        // Prepared environments and hidden grading belong only
-                                        // to benchmark recipes, never to an ordinary project.
-                                        if held.first().is_some_and(|card| {
-                                            crate::commands::benchmark::parse_card_title(&card.title).is_some()
-                                                || crate::commands::benchmark::parse_review_title(&card.title).is_some()
-                                        }) {
-                                            // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
-                                            // holder ran `pip install --no-build-isolation -e .`
-                                            // twelve times in one checkout (21 acts, 0 edits) —
-                                            // the grader's prepared env for her instance sat
-                                            // beside it, unnamed. Absence is named too, so
-                                            // she never guesses an interpreter.
-                                            body.working_memory.pin_fact(
-                                                "env",
-                                                &crate::persona::instance_env_fact::instance_env_fact(
-                                                    &ws,
-                                                ),
-                                            );
-                                            // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
-                                            // tests that grade her are not in the checkout.
-                                            if let Some(instance) =
-                                                ws.file_name().and_then(|n| n.to_str())
-                                            {
-                                                body.working_memory.pin_fact(
-                                                    "grading",
-                                                    &crate::persona::instance_env_fact::grading_fact(
-                                                        instance,
-                                                    ),
-                                                );
-                                            }
-                                        } else {
-                                            body.working_memory.unpin_fact("env");
-                                            body.working_memory.unpin_fact("grading");
-                                        }
-                                        // THE LEDGER, as the fact her turn opens with: the
-                                        // saved state of the thought — hers from the last
-                                        // turn, the previous holder's, or the owner's for a
-                                        // review card. Absence is named with the instruction
-                                        // (2026-09-12: 78 acts of re-orientation on worked cards).
-                                        body.working_memory.pin_fact(
-                                            "ledger",
-                                            &crate::persona::card_ledger_fact::ledger_fact_for(
-                                                ctx.identity.peer_id.as_uuid(),
-                                                &held,
-                                            )
-                                            .await,
-                                        );
-                                    }
-                                    crate::probe!(
-                                        class = "persona.work.hands_rooted",
-                                        persona = %ctx.identity.agent_name,
-                                        workspace = %ws.display(),
-                                        cards = held.len(),
-                                        "hands rooted at her claimed card's \
-                                         staged workspace for this work turn"
-                                    );
-                                    hands
-                                }
-                                Err(e) => {
-                                    // Fail LOUD, work anyway in her own
-                                    // workspace: a citizen who cannot reach
-                                    // the repo still gets her turn, and the
-                                    // empty patch is then explained on the
-                                    // probe stream instead of being a mystery
-                                    // zero. No silent re-root.
-                                    tracing::error!(
-                                        persona = %ctx.identity.agent_name,
-                                        workspace = %ws.display(),
-                                        error = %e,
-                                        "could NOT root hands at the claimed \
-                                         card's workspace — she will work in \
-                                         her own dir and any graded diff will \
-                                         read EMPTY"
-                                    );
-                                    None
-                                }
-                            }
-                        }
+                    // `held` was reduced through work_focus::focus_card above; the same
+                    // selection decides hands, facts, credit and genes.
+                    // Bound through THE one binding every turn uses (card fc9e9fd7): the hands
+                    // of her card's claim, standing in its checkout, never her default hands.
+                    let card_turn = match held.first() {
+                        Some(card) => Some(
+                            crate::cognition::persona_workspace::bind_card(&cycle, ctx.identity.peer_id.as_uuid(), card).await,
+                        ),
                         None => None,
                     };
-                    let selected_credit = held.first().map(|card| {
-                        crate::persona::training_producer::CapturedCredit::from_selected_card(card)
-                    });
+                    let work_hands = card_turn.as_ref().and_then(|t| t.hands.as_ref());
+                    let card_root = work_hands.and_then(|h| h.root());
+                    let burst = burst.in_hands(work_hands.map(|h| h.context));
+                    if let (Some(ws), Some(body)) = (card_root.as_ref(), cycle.acting()) {
+                        // PINNED (not recorded): the FIFO window is three
+                        // deep and by her third act this fact was gone —
+                        // four consecutive work turns without [hands]/[env]
+                        // on 2026-09-07. Replaced by key each work turn,
+                        // dropped when the turn ends below.
+                        body.working_memory.pin_fact(
+                            "hands",
+                            &format!(
+                                "[hands] For this turn my files and shell are \
+                                 rooted AT the repo root `{}` — paths are \
+                                 repo-relative; `ls` lists the repo itself.",
+                                ws.display()
+                            ),
+                        );
+                        // Prepared environments and hidden grading belong only
+                        // to benchmark recipes, never to an ordinary project.
+                        if held.first().is_some_and(|card| {
+                            crate::commands::benchmark::parse_card_title(&card.title).is_some()
+                                || crate::commands::benchmark::parse_review_title(&card.title).is_some()
+                        }) {
+                            // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
+                            // holder ran `pip install --no-build-isolation -e .`
+                            // twelve times in one checkout (21 acts, 0 edits) —
+                            // the grader's prepared env for her instance sat
+                            // beside it, unnamed. Absence is named too, so
+                            // she never guesses an interpreter.
+                            body.working_memory.pin_fact(
+                                "env",
+                                &crate::persona::instance_env_fact::instance_env_fact(
+                                    &ws,
+                                ),
+                            );
+                            // THE GRADING CONTRACT, as a fact (card 2bb8ae13): the
+                            // tests that grade her are not in the checkout.
+                            if let Some(instance) =
+                                ws.file_name().and_then(|n| n.to_str())
+                            {
+                                body.working_memory.pin_fact(
+                                    "grading",
+                                    &crate::persona::instance_env_fact::grading_fact(
+                                        instance,
+                                    ),
+                                );
+                            }
+                        } else {
+                            body.working_memory.unpin_fact("env");
+                            body.working_memory.unpin_fact("grading");
+                        }
+                        // THE LEDGER, as the fact her turn opens with: the
+                        // saved state of the thought — hers from the last
+                        // turn, the previous holder's, or the owner's for a
+                        // review card. Absence is named with the instruction
+                        // (2026-09-12: 78 acts of re-orientation on worked cards).
+                        body.working_memory.pin_fact(
+                            "ledger",
+                            &crate::persona::card_ledger_fact::ledger_fact_for(
+                                ctx.identity.peer_id.as_uuid(),
+                                &held,
+                            )
+                            .await,
+                        );
+                    }
+                    if let Some(ws) = &card_root {
+                        crate::probe!(
+                            class = "persona.work.hands_rooted",
+                            persona = %ctx.identity.agent_name,
+                            workspace = %ws.display(),
+                            cards = held.len(),
+                            "this work turn acts in the hands of her card's claim, at its checkout"
+                        );
+                    } else if held.first().is_some() {
+                        // Fail LOUD, work anyway with her default hands: a citizen who cannot
+                        // reach the repo still gets her turn, and an empty patch is then
+                        // explained on the probe stream instead of being a mystery zero.
+                        tracing::error!(
+                            persona = %ctx.identity.agent_name,
+                            "could NOT bind the hands of her claimed card — she works in her own \
+                             dir this turn and any graded diff will read EMPTY"
+                        );
+                    }
+                    let selected_credit = card_turn.as_ref().and_then(|t| t.credit.clone());
                     // HER GENES RIDE HER CARD, like her hands do (integrated, not parallel:
                     // a gene is judged in her own work). The card this turn is credited to
                     // decides the genome: her promoted genes, plus an open trial's gene when
@@ -458,30 +423,16 @@ pub(crate) async fn ask_the_act_question(
                         genome_back.restore_to(genes);
                     }
                     drop(genome_back);
-                    // Give her back her own hands BEFORE anything else can
-                    // observe them — every exit path from here (Spoke, Passed,
-                    // Acted) must leave her rooted at home (#312).
-                    if let Some(hands) = &work_hands {
-                        if let Err(e) =
-                            crate::cognition::persona_workspace::restore_acting_workspace(hands)
-                                .await
-                        {
-                            tracing::error!(
-                                persona = %ctx.identity.agent_name,
-                                error = %e,
-                                "work turn could NOT return her hands to her \
-                                 own workspace — she is still rooted at the \
-                                 card's repo and her live turns will act there"
-                            );
-                        }
-                        // Her hands are home again: the rooting facts no longer hold.
-                        // The next work turn re-pins them at its own root.
-                        if let Some(body) = cycle.acting() {
-                            // One turn ended: 1-turn pins ([hands], [env]) leave now; the
-                            // governor's 2-turn [released] notice survives to the next work
-                            // turn's start — the pull decision — and leaves at its end.
-                            body.working_memory.end_of_work_turn();
-                        }
+                    // The turn's work is synced to its card's branch; her hands stay where
+                    // they are, because nothing moved them (card fc9e9fd7).
+                    if let Some(hands) = work_hands {
+                        crate::cognition::persona_workspace::end_card_turn(hands).await;
+                    }
+                    if let Some(body) = cycle.acting() {
+                        // One turn ended: 1-turn pins ([hands], [env]) leave now; the
+                        // governor's 2-turn [released] notice survives to the next work
+                        // turn's start — the pull decision — and leaves at its end.
+                        body.working_memory.end_of_work_turn();
                     }
                     let turn_act_count = work.acts;
                     let (work_step, _, _) =
@@ -633,17 +584,3 @@ pub(crate) async fn ask_the_act_question(
     false
 }
 
-/// The work-turn checkout uses the same card-id authority as room turns.
-/// Benchmark review retains its explicit owner-checkout behavior.
-pub(crate) fn held_card_workspace(
-    peer: &uuid::Uuid,
-    card: &airc_lib::WorkCard,
-) -> Option<std::path::PathBuf> {
-    if let Some(instance) = crate::commands::benchmark::parse_review_title(&card.title) {
-        let copies = crate::persona::staged_workspace::owners_of(&instance);
-        if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
-            return Some(copy.path.clone());
-        }
-    }
-    crate::modules::card_staging::checkout_path_for(peer, card)
-}

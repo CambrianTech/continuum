@@ -1469,7 +1469,8 @@ async fn serve_persona_loop_inner(
                     Some(turn_room.to_string()),
                     Some(ctx.identity.peer_id.to_string()),
                 );
-                // A citizen holding a card lives at that repo — in a ROOM turn too.
+                // A citizen holding a card works at that repo — in a ROOM turn too: the
+                // turn is bound to her card claim's hands, admitted here.
                 let held_card = crate::cognition::persona_workspace::root_at_held_card(
                     &cycle,
                     ctx.identity.peer_id.as_uuid(),
@@ -1487,7 +1488,9 @@ async fn serve_persona_loop_inner(
                 let (step, turn_metrics, settled_receipts) = {
                     let outcome = crate::cognition::act_observe::drive_to_settle_with_credit(
                         &cycle,
-                        workspace_burst,
+                        // The turn acts in the hands it was admitted to: her card claim's, or
+                        // her default ones (card fc9e9fd7).
+                        workspace_burst.in_hands(held_card.hands.as_ref().map(|h| h.context)),
                         LIVE_MAX_ACTS,
                         framing,
                         conversation,
@@ -1523,12 +1526,10 @@ async fn serve_persona_loop_inner(
                 // Turn done: drop the cycle's sink so the forwarder's channel closes,
                 // then join it (all `tok_tx` clones are gone once the turn's Workspaces
                 // dropped inside `drive_to_settle`).
+                // The turn's work is synced to its card's branch; her hands stay where they
+                // are, because nothing moved them (card fc9e9fd7).
                 if let Some(hands) = &held_card.hands {
-                    if let Err(e) =
-                        crate::cognition::persona_workspace::restore_acting_workspace(hands).await
-                    {
-                        tracing::error!(error = %e, "room turn could NOT return her hands home");
-                    }
+                    crate::cognition::persona_workspace::end_card_turn(hands).await;
                 }
                 cycle.set_token_sink(None);
                 let _ = forwarder.await;

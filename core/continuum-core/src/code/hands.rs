@@ -2,7 +2,7 @@
 //!
 //! A citizen can act in more than one context at once: her live session, an eval of her,
 //! a solve on a fork. Each has its own workspace and shell. Before this, every hands map
-//! (`CodeState.file_engines` / `shell_sessions` / `parked_shells`, the acting-root record)
+//! (`CodeState.file_engines` / `shell_sessions`, the acting-root record)
 //! was keyed by the caller alone, so an eval and her live session were the same hands: an
 //! eval's root moved her live tools, and its restore moved them home
 //! (docs/architecture/HER-HANDS.md, "What acts on a citizen's hands today").
@@ -29,6 +29,84 @@ impl HandsContext {
     pub fn id(&self) -> Uuid {
         self.0
     }
+
+    /// The context a citizen works ONE CLAIM of a card in: the same for every turn of that
+    /// claim, so her engine, shell and execution handles persist across those turns, and a
+    /// different one for any other claim (a released and re-acquired card is a new claim, so
+    /// it never inherits the old one's hands or authority: Codex root on fc9e9fd7). Derived,
+    /// not stored: any turn that knows the claim names the same hands.
+    pub fn for_claim(persona: Uuid, card: Uuid, claim: Uuid) -> Self {
+        let mut name = [0u8; 32];
+        name[..16].copy_from_slice(card.as_bytes());
+        name[16..].copy_from_slice(claim.as_bytes());
+        Self(Uuid::new_v5(&persona, &name))
+    }
+}
+
+/// Admission to one set of hands: whether they take new work, and how much is in flight.
+/// A turn is admitted ONCE, when it binds its hands, and holds its [`HandsLease`] until it
+/// ends; closing the hands (their claim ended) refuses new turns and waits the admitted
+/// ones out, so an in-flight call never loses the engine or shell it runs in (Codex root
+/// and Astra on fc9e9fd7; the gap #5023 left open).
+#[derive(Default)]
+struct Gate {
+    closing: bool,
+    in_flight: usize,
+}
+
+type GateCell = std::sync::Arc<(std::sync::Mutex<Gate>, tokio::sync::Notify)>;
+
+static GATES: std::sync::LazyLock<dashmap::DashMap<String, GateCell>> = std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// One admitted turn's hold on a set of hands. Dropping it lets a closing context finish.
+pub struct HandsLease {
+    cell: GateCell,
+}
+
+impl Drop for HandsLease {
+    fn drop(&mut self) {
+        let (gate, ended) = &*self.cell;
+        let mut g = gate.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still counts down
+        g.in_flight = g.in_flight.saturating_sub(1);
+        if g.in_flight == 0 {
+            ended.notify_waiters();
+        }
+    }
+}
+
+/// Admit a turn to `key`'s hands, or refuse by name when they are closing.
+pub fn admit(key: &HandsKey) -> Result<HandsLease, String> {
+    let cell = GATES.entry(key.map_key()).or_default().clone();
+    {
+        let mut g = cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still admits or refuses
+        if g.closing {
+            return Err(format!("the hands {} are closing (their claim ended); no new turn is admitted to them", key.map_key()));
+        }
+        g.in_flight += 1;
+    }
+    Ok(HandsLease { cell })
+}
+
+/// Close `key`'s hands to new turns and wait until every admitted one has ended. The
+/// caller then releases them (`close_acting_context`) and calls [`forget`].
+pub async fn close(key: &HandsKey) {
+    let cell = GATES.entry(key.map_key()).or_default().clone();
+    loop {
+        let ended = cell.1.notified();
+        {
+            let mut g = cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still closes
+            g.closing = true;
+            if g.in_flight == 0 {
+                return;
+            }
+        }
+        ended.await;
+    }
+}
+
+/// Drop `key`'s gate once its hands are released: a claim's context is never reused.
+pub fn forget(key: &HandsKey) {
+    GATES.remove(&key.map_key());
 }
 
 /// The key of one set of hands: whose (the caller) and in which context.
@@ -73,5 +151,27 @@ mod tests {
         assert_ne!(eval.map_key(), live.map_key(), "an eval is not her live hands");
         assert_ne!(eval.map_key(), solve.map_key(), "two contexts are two sets of hands");
         assert!(eval.map_key().starts_with(&caller), "a context's hands stay attributable to their caller");
+    }
+
+    // what this catches (Codex root and Astra on fc9e9fd7): closing a claim's hands while a
+    // turn is admitted to them dropped its engine or shell under it. Closing refuses NEW
+    // turns at once and completes only after the admitted one ends.
+    #[tokio::test]
+    async fn closing_a_claims_hands_refuses_new_turns_and_waits_out_the_admitted_one() {
+        let key = HandsKey::new(Uuid::new_v4().to_string(), Some(HandsContext::fresh()));
+        let admitted = admit(&key).expect("open hands admit a turn");
+        let closing = tokio::spawn({
+            let key = key.clone();
+            async move { close(&key).await }
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await; // let the close run up to its wait
+        }
+        assert!(admit(&key).is_err(), "closing hands admit no new turn");
+        assert!(!closing.is_finished(), "the close waits for the admitted turn");
+        drop(admitted);
+        tokio::time::timeout(std::time::Duration::from_secs(5), closing).await.expect("closes once the turn ends").expect("close task");
+        forget(&key);
+        assert!(admit(&key).is_ok(), "a forgotten key is a fresh gate (claims never reuse one)");
     }
 }

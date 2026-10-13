@@ -535,11 +535,6 @@ impl ShellSession {
         )
     }
 
-    /// Whether any execution in this session is still running.
-    pub fn has_running(&self) -> bool {
-        self.info().active_executions > 0
-    }
-
     /// Resolve a full execution ID or unique hex prefix in this session only.
     /// Used to await completion without holding the DashMap lock.
     pub fn get_execution_state(&self, execution_id: &str) -> Result<Arc<Mutex<ExecutionState>>, String> {

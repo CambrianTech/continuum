@@ -116,6 +116,15 @@ pub trait ToolExecutor: Send + Sync {
         None
     }
 
+    /// The same caller's hands in an EXISTING acting context it does not own: the context of
+    /// the card claim a turn works in (card fc9e9fd7). Unlike [`Self::in_fresh_hands`], the
+    /// executor never releases the context when dropped, because the context lives as long
+    /// as the claim, not as long as one act's executor. `None` when these hands can't act in
+    /// a context; the turn then runs without hands and never borrows hers.
+    fn in_hands(&self, _persona: uuid::Uuid, _context: crate::code::hands::HandsContext) -> Option<std::sync::Arc<dyn ToolExecutor>> {
+        None
+    }
+
     /// Parse tool calls from a raw AI response string (XML-fallback path
     /// for models that don't emit native tool_use blocks). Returns
     /// extracted calls + cleaned-of-tool-blocks text + parse-time

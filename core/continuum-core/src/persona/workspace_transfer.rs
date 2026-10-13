@@ -9,9 +9,9 @@
 //! node, that node cut the branch from ITS clone's HEAD and her edits stayed behind on
 //! the old machine. Three seams, plain git, no bundles, no new transport:
 //!
-//! 1. [`sync_after_act`] — at the end of every turn her hands were rooted at a card
-//!    (`persona_workspace::restore_acting_workspace`, the one restore every acting path
-//!    goes through): a work-in-progress commit of whatever the act left, then
+//! 1. [`sync_after_act`] — at the end of every turn bound to a card claim's hands
+//!    (`persona_workspace::end_card_turn`, or `end_acting_context` for a fork that a card
+//!    rooted): a work-in-progress commit of whatever the act left, then
 //!    `git push -u origin <branch>`. The commit is made with plumbing
 //!    (`write-tree` / `commit-tree` / `update-ref`) so an autosave can never run the
 //!    repo's hooks — hooks belong to the reviewed commit she makes with `code/git/commit`.
@@ -512,6 +512,17 @@ fn move_blocker_over(persona: Uuid, acting_root: Option<PathBuf>) -> Option<Stri
 /// The turn-path form of [`sync_after_act`]: off the async thread, bounded by
 /// [`SYNC_BOUND`], probed as `workspace.push`, and recorded so a later move can ask.
 /// Never fails the turn — every shape is an outcome.
+/// The per-checkout lock [`sync_after_act_for`] holds around its git work: one entry per
+/// checkout with open claim hands, dropped when those hands close ([`forget_checkout`]).
+static CHECKOUT_SYNC: std::sync::LazyLock<dashmap::DashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Drop `root`'s sync lock once the claim hands standing in it are released. A sync still
+/// holding its clone finishes under it; the next one, for a new claim, starts a fresh lock.
+pub fn forget_checkout(root: &std::path::Path) {
+    CHECKOUT_SYNC.remove(root);
+}
+
 pub async fn sync_after_act_for(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
     let node = crate::capacity::gossip::this_process_origin().to_string();
     let started = std::time::Instant::now();
@@ -519,7 +530,14 @@ pub async fn sync_after_act_for(persona: Uuid, persona_name: &str, root: PathBuf
     let actor_name = persona_name.to_string();
     let outcome = match tokio::time::timeout(
         SYNC_BOUND,
-        tokio::task::spawn_blocking(move || sync_after_act(&root_for_git, card, &node, Some((persona, actor_name.as_str())))),
+        tokio::task::spawn_blocking(move || {
+            // ONE sync per checkout at a time, held INSIDE the blocking task: two turns of one
+            // card claim can end together (card fc9e9fd7), and a timed-out caller leaves its
+            // git work running, so the lock must live with the work, not with the await.
+            let lock = CHECKOUT_SYNC.entry(root_for_git.clone()).or_default().clone();
+            let _one_at_a_time = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes the next sync
+            sync_after_act(&root_for_git, card, &node, Some((persona, actor_name.as_str())))
+        }),
     )
     .await
     {

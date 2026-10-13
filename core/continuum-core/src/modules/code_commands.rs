@@ -93,7 +93,7 @@ pub(crate) async fn resolve_readable_path(
     ctx: &Ctx,
     path: &str,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let key = hands_key(ctx);
+    let key = hands_of(ctx).await;
     ensure_engine(state, &key).await?;
     let engine = state
         .file_engines
@@ -125,8 +125,30 @@ pub(crate) const LOCAL_OWNER: &str = "local-owner";
 /// bound to (`CallerIdentity::hands`, set by the kernel side, never by params). The one
 /// key every hands map uses; the caller alone stays the authorization identity
 /// ([`caller_id`]). See [`crate::code::hands`].
-pub(crate) fn hands_key(ctx: &Ctx) -> HandsKey {
+fn hands_key(ctx: &Ctx) -> HandsKey {
     HandsKey::new(caller_id(ctx), ctx.caller.as_ref().and_then(|c| c.hands))
+}
+
+/// Whose hands THIS call acts with. A connection bound to a context (a persona's card-claim
+/// turn, an eval, a fork) acts in it. A LOCAL identity (the operator, an agent self-peer)
+/// acts in the hands of the card claim it holds, resolved per call from the board, the rule
+/// a persona's turn applies; with no claim, in its default hands (the core's cwd). Nothing
+/// is re-rooted: the card's hands are their own and are bound once (card fc9e9fd7).
+pub(crate) async fn hands_of(ctx: &Ctx) -> HandsKey {
+    let key = hands_of(ctx).await;
+    if key.context.is_some() || !is_local_who(&key.caller) {
+        return key;
+    }
+    match local_focus_claim(&key.caller).await {
+        Some((peer, card)) => match card.claim_id {
+            Some(claim) => {
+                let context = crate::code::hands::HandsContext::for_claim(peer, card.card_id.as_uuid(), claim.as_uuid());
+                HandsKey::new(key.caller, Some(context))
+            }
+            None => key,
+        },
+        None => key,
+    }
 }
 
 /// Resolve (and provision on first use) the citizen LAYER for an identified peer
@@ -467,77 +489,55 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
     let caller = key.caller.as_str();
     let map_key = key.map_key();
     let who = map_key.as_str();
-    let local = is_local_who(caller);
-    if local {
-        // A LOCAL identity's hands follow her held card (2026-09-12): the operator or
-        // the agent self-peer claims on the board, the claim stages a checkout, her
-        // `code/*` verbs root THERE — the rule a persona's held-work turn applies — and
-        // return to the core's cwd when the card is released. Only a CHANGE of card
-        // rooting evicts the cached engine (and its shell); an engine a caller pinned
-        // with `create-workspace` is otherwise left alone.
-        let card_root = card_root_of(caller).await;
-        let mut last = LAST_CARD_ROOT
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned marker still compares — the hands must move, never panic
-        if last.get(who).cloned().flatten() != card_root {
-            state.file_engines.remove(&who.to_string());
-            // Set aside, never drop: the same handle-keeping move as create-workspace.
-            let new_root = card_root
-                .clone()
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_default(); // unwrap_or_default: an unreadable cwd parks the old session and opens fresh
-            state.re_root_shell(who, &new_root);
-            crate::probe!(
-                class = "code.hands.rerooted",
-                who = who,
-                root = %card_root
-                    .as_ref()
-                    .map(|r| r.display().to_string())
-                    .unwrap_or_else(|| "cwd".to_string()), // unwrap_or_else: no card = the core's cwd, named
-                "a local identity's hands moved with her held card"
-            );
-            last.insert(who.to_string(), card_root);
-        }
-    }
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
-    // An acting context's workspace is what it was rooted at (`create-workspace` through its
-    // own hands); it never falls back to her home layer, which would put a fork's edits on
-    // her desk. Fail closed and say so (Astra's review of #5005).
-    if key.context.is_some() {
-        return Err(CommandError::Invalid(
-            "these hands belong to an acting context (an eval or a fork) that has no workspace \
-             yet: it must be rooted with code/create-workspace before code tools run in it"
-                .into(),
-        ));
-    }
-    let root = if local {
-        match card_root_of(caller).await {
+    let local = is_local_who(caller);
+    let root = match key.context {
+        // A local identity's card claim: the card's checkout, through the one authority a
+        // persona's turn binds through (`card_staging::checkout_path_for`).
+        Some(context) if local => match local_claim_checkout(caller, context).await {
             Some(root) => root,
-            None => std::env::current_dir().map_err(|e| {
-                CommandError::Internal(format!("workspace root unavailable: {e}"))
-            })?,
+            None => {
+                return Err(CommandError::Invalid(
+                    "the card claim these hands belong to has no checkout on this node".into(),
+                ))
+            }
+        },
+        // An acting context's workspace is what it was rooted at (`create-workspace` through
+        // its own hands); it never falls back to her home layer, which would put a fork's
+        // edits on her desk. Fail closed and say so (Astra's review of #5005).
+        Some(_) => {
+            return Err(CommandError::Invalid(
+                "these hands belong to an acting context (an eval or a fork) that has no workspace \
+                 yet: it must be rooted with code/create-workspace before code tools run in it"
+                    .into(),
+            ))
         }
-    } else {
-        let citizen_root = ensure_citizen_layer(caller)?;
-        // Every citizen workspace is git-backed from birth
-        // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
-        // exists; otherwise init + root commit, so diff→share→apply works the
-        // moment a citizen first touches files. Glass-boxed 2026-07-11: three
-        // parallel Conway implementations across un-versioned workspaces had no
-        // consolidation path, and the team asked for one. Loud on failure — a
-        // workspace that silently can't version work is a quiet defect.
-        let initialized = crate::code::git_bridge::git_init_if_needed(&citizen_root)
-            .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
-        if initialized {
-            // init + root commit gave the workspace a HEAD — card f860e59c.
-            crate::code::workspace_events::note_written(&citizen_root);
+        None if local => std::env::current_dir()
+            .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?,
+        None => {
+            let citizen_root = ensure_citizen_layer(caller)?;
+            // Every citizen workspace is git-backed from birth
+            // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
+            // exists; otherwise init + root commit, so diff→share→apply works the
+            // moment a citizen first touches files. Glass-boxed 2026-07-11: three
+            // parallel Conway implementations across un-versioned workspaces had no
+            // consolidation path, and the team asked for one. Loud on failure — a
+            // workspace that silently can't version work is a quiet defect.
+            let initialized = crate::code::git_bridge::git_init_if_needed(&citizen_root)
+                .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
+            if initialized {
+                // init + root commit gave the workspace a HEAD — card f860e59c.
+                crate::code::workspace_events::note_written(&citizen_root);
+            }
+            citizen_root
         }
-        citizen_root
     };
     let security = PathSecurity::new(&root)
         .map_err(|e| CommandError::Internal(format!("workspace security init failed: {e}")))?;
+    // Every racer for one key computes the same root (a key's root is a function of the key),
+    // so the first insert wins and the rest are the same engine's twin, dropped.
     state
         .file_engines
         .entry(who.to_string())
@@ -561,16 +561,17 @@ fn is_local_who(who: &str) -> bool {
 /// scratch), never the live checkout (Astra's review of #5005). The caller's default context
 /// keeps the local identity's held-card lookup.
 pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
-    let key = hands_key(ctx);
+    let key = hands_of(ctx).await;
     if let Ok(persona) = uuid::Uuid::parse_str(&key.caller) {
         if let Some(root) = crate::cognition::persona_workspace::acting_root_in(persona, key.context) {
             return Some(root);
         }
     }
-    if key.context.is_some() {
+    let context = key.context?;
+    if !is_local_who(&key.caller) {
         return None;
     }
-    card_root_of(&key.caller).await
+    local_claim_checkout(&key.caller, context).await
 }
 
 /// The prepared instance environment's python for the root these hands stand at
@@ -582,24 +583,28 @@ pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf>
     crate::persona::instance_env_fact::instance_python(&root)
 }
 
-/// The held-card checkout a local identity's hands stand in — BOARD-TRUE, read from her
-/// live claims on every provisioning (the same read a persona's held-work turn makes),
-/// never a note taken at claim time: a note dies with the process while the claim lives
-/// on the board (2026-09-12: the hands fell back to cwd after the first reboot).
-async fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
+/// The card a local identity is working: the focus of its live claims on the board,
+/// BOARD-TRUE and read per call (the same read a persona's held-work turn makes), never a
+/// note taken at claim time: a note dies with the process while the claim lives on the
+/// board (2026-09-12: the hands fell back to cwd after the first reboot).
+async fn local_focus_claim(who: &str) -> Option<(uuid::Uuid, airc_lib::WorkCard)> {
     use crate::persona::active_work_source::AircWorkReader as _;
     let peer = uuid::Uuid::parse_str(who).ok()?;
     let rt = crate::persona::operator_peer::local_runtime_of(peer)?;
     let held = rt.active_claims().await.ok()?;
-    let card = crate::persona::work_focus::focus_workspace_card(held.iter())?;
-    crate::modules::card_staging::checkout_path_for(&peer, card)
+    let card = crate::persona::work_focus::focus_workspace_card(held.iter())?.clone();
+    Some((peer, card))
 }
 
-/// The card rooting each local identity's engine was last built for — a change here
-/// is the only thing that evicts a cached engine.
-static LAST_CARD_ROOT: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, Option<std::path::PathBuf>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+/// The checkout of the local identity's claim whose hands are `context`; `None` when it no
+/// longer holds that claim or the card has no checkout on this node.
+async fn local_claim_checkout(who: &str, context: crate::code::hands::HandsContext) -> Option<std::path::PathBuf> {
+    let (peer, card) = local_focus_claim(who).await?;
+    let claim = card.claim_id?;
+    (crate::code::hands::HandsContext::for_claim(peer, card.card_id.as_uuid(), claim.as_uuid()) == context)
+        .then(|| crate::modules::card_staging::checkout_path_for(&peer, &card))
+        .flatten()
+}
 
 /// Lazily ensure shell execution state exists for `who`, rooted at the
 /// caller's ENGINE root — the one workspace authority per caller (the operator's
@@ -610,17 +615,17 @@ static LAST_CARD_ROOT: std::sync::LazyLock<
 /// caller retains handles and configured cwd/env. Each command starts a fresh
 /// shell process: shell `cd`, assignments, exports and options do not flow back
 /// into this registry or into later calls.
-async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<(), CommandError> {
-    let key = hands_key(ctx);
+async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String, CommandError> {
+    // Resolved ONCE and returned: the caller acts on exactly the hands provisioned here.
+    let key = hands_of(ctx).await;
     let map_key = key.map_key();
     let who = map_key.as_str();
-    // The ENGINE decides the root and evicts a shell whose root moved (a held card
-    // claimed after the shell was opened) — so it runs first; a shell that survives
-    // it is current. Checking the shell first let a pre-claim `code/shell` pin the
-    // hands at the core's cwd for the session's whole life (2026-09-12, live).
+    // The ENGINE decides the root, once for these hands' life, and the shell opens there.
+    // Hands are never re-rooted (card fc9e9fd7), so a shell that exists stands at its
+    // engine's root.
     ensure_engine(state, &key).await?;
     if state.shell_sessions.contains_key(who) {
-        return Ok(());
+        return Ok(map_key);
     }
     let root = state
         .file_engines
@@ -636,7 +641,7 @@ async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<(), CommandError> 
         shell.confine(confinement);
     }
     state.shell_sessions.entry(who.to_string()).or_insert(shell);
-    Ok(())
+    Ok(map_key)
 }
 
 /// The confinement this caller's children and reads are held to: `None` for the
@@ -662,7 +667,7 @@ const DEFAULT_SHELL_WAIT_MS: u64 = 30_000;
 /// `DashMap` ref guard the caller borrows the engine through.
 macro_rules! engine {
     ($self:ident, $ctx:ident) => {{
-        let key = hands_key($ctx);
+        let key = hands_of($ctx).await;
         ensure_engine(&$self.state, &key).await?;
         $self
             .state
@@ -1498,8 +1503,7 @@ impl ActionCommand for CodeShell {
         ctx: &Ctx,
         p: CodeShellParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
-        let who = hands_key(ctx).map_key();
-        ensure_shell(&self.state, ctx).await?;
+        let who = ensure_shell(&self.state, ctx).await?;
 
         // Start the command while briefly holding the shell entry, then DROP the
         // DashMap ref before awaiting — never hold a lock across `.await` (the
@@ -1578,7 +1582,7 @@ impl ActionCommand for CodeShellPoll {
         ctx: &Ctx,
         p: CodeShellPollParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
-        let who = hands_key(ctx).map_key();
+        let who = hands_of(ctx).await.map_key();
         let state_arc = self
             .state
             .with_execution(&who, &p.execution_id, |s, id| s.get_execution_state(id))
@@ -1638,7 +1642,7 @@ impl ActionCommand for CodeShellKill {
         ctx: &Ctx,
         p: CodeShellKillParams,
     ) -> Result<CodeShellKillResult, CommandError> {
-        let who = hands_key(ctx).map_key();
+        let who = hands_of(ctx).await.map_key();
         self.state
             .with_execution(&who, &p.execution_id, |s, id| s.kill(id))
             .map_err(execution_lookup_error)?;
@@ -1862,7 +1866,7 @@ impl ActionCommand for CodeReleaseHands {
     type Output = ReleaseHandsResult;
 
     async fn run(&self, ctx: &Ctx, _p: CodeReleaseHandsParams) -> Result<ReleaseHandsResult, CommandError> {
-        let key = hands_key(ctx);
+        let key = hands_of(ctx).await;
         let Some(context) = key.context else {
             return Err(CommandError::Invalid(
                 "code/release-hands ends an acting context's hands; these are the caller's default \
@@ -1988,8 +1992,9 @@ impl ActionCommand for CodeCreateWorkspace {
     // toolbelt action — letting a persona re-root itself to `/` would be an escape.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Establish or re-root the caller's workspace sandbox at a specific path, with optional \
-         read-only roots. Overrides the auto-provisioned default (repo cwd) for this caller.";
+        "Bind the caller's hands (in their acting context) to a workspace sandbox at a specific \
+         path, with optional read-only roots. Hands are bound once: binding them to another root \
+         is refused; an eval, a fork or a card claim opens hands of its own.";
     type Params = CodeCreateWorkspaceParams;
     type Output = CreateWorkspaceResult;
 
@@ -2000,7 +2005,7 @@ impl ActionCommand for CodeCreateWorkspace {
     ) -> Result<CreateWorkspaceResult, CommandError> {
         // These hands, in this caller's acting context: an eval's create-workspace roots the
         // eval's hands, never her live ones (docs/architecture/HER-HANDS.md).
-        let key = hands_key(ctx);
+        let key = hands_of(ctx).await;
         let who = key.map_key();
         let root = std::path::Path::new(&p.workspace_root);
         let mut security = PathSecurity::new(root).map_err(|e| {
@@ -2014,28 +2019,35 @@ impl ActionCommand for CodeCreateWorkspace {
                 .add_read_root(std::path::Path::new(rr))
                 .map_err(|e| CommandError::Invalid(format!("invalid read root '{rr}': {e}")))?;
         }
-        // An explicit create-workspace OVERRIDES any engine `ensure_engine` lazily
-        // provisioned for this caller (its doc reserves this override path). Keyed by
-        // caller, so each peer's change-DAG stays isolated — exactly like the migrated
-        // read/write/edit siblings, and never on a spoofable persona_id param.
+        // HANDS ARE BOUND ONCE (card fc9e9fd7). These hands get this workspace if they have
+        // none; the same root again is a no-op; ANOTHER root is refused by name. Moving one
+        // set of hands between roots is what split Kimi's shell from her code tools when two
+        // turns moved them (#11697); an eval, a fork or a card claim opens hands of its own
+        // instead. Keyed by caller and context, never a spoofable persona_id param.
         let policy = if p.refuse_inert_edits {
             crate::code::file_engine::WritePolicy::RefuseInert
         } else {
             crate::code::file_engine::WritePolicy::Warn
         };
-        self.state.file_engines.insert(
-            who.clone(),
-            FileEngine::new(&key.caller, security).with_write_policy(policy),
-        );
-        // Move the caller's shell to the NEW root. `ensure_shell` early-returns when a session
-        // exists, so without this a re-root moved her FILE engine and left her SHELL in the old
-        // directory. The old session is SET ASIDE, not dropped: a work turn roots at the card
-        // and restores home every turn, and dropping lost every execution handle she had been
-        // given (Kimi, 2026-09-29).
-        self.state
-            .re_root_shell(&who, std::path::Path::new(&p.workspace_root));
+        let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()); // unwrap_or_else: an uncanonicalizable path compares as written
+        match self.state.file_engines.entry(who.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(bound) => {
+                let at = bound.get().workspace_root();
+                if canon(&at) != canon(root) {
+                    return Err(CommandError::Invalid(format!(
+                        "these hands are bound to '{}'; hands are bound once and never moved. Work \
+                         at '{}' in hands of its own (an eval, a fork or a card claim opens them)",
+                        at.display(),
+                        p.workspace_root
+                    )));
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(free) => {
+                free.insert(FileEngine::new(&key.caller, security).with_write_policy(policy));
+            }
+        }
         if !p.path_prepend.is_empty() {
-            ensure_shell(&self.state, ctx).await?;
+            let who = ensure_shell(&self.state, ctx).await?;
             if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
                 let prepend = p.path_prepend.join(":");
                 // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
@@ -2219,6 +2231,39 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card fc9e9fd7; Kimi #11697): moving one set of hands between roots
+    // is what split her shell from her code tools when two turns moved them. Hands are bound
+    // once: the same root again is a no-op, another root is refused by name, and the hands
+    // still stand where they were bound.
+    #[tokio::test]
+    async fn create_workspace_binds_hands_once_and_refuses_to_move_them() {
+        let (bound, other) = (tempfile::tempdir().expect("test: a"), tempfile::tempdir().expect("test: b"));
+        let state = Arc::new(CodeState::new(
+            Arc::new(dashmap::DashMap::new()),
+            Arc::new(dashmap::DashMap::new()),
+            tokio::runtime::Handle::current(),
+        ));
+        let cmd = CodeCreateWorkspace { state: state.clone() };
+        let persona = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
+        let ctx = Ctx {
+            caller: Some(crate::routing::CallerIdentity::local_persona(persona).in_hands(crate::code::hands::HandsContext::fresh())),
+            ..Ctx::default()
+        };
+        let at = |root: &std::path::Path| CodeCreateWorkspaceParams {
+            workspace_root: root.to_string_lossy().into_owned(),
+            read_roots: Vec::new(),
+            path_prepend: Vec::new(),
+            refuse_inert_edits: false,
+        };
+        cmd.run(&ctx, at(bound.path())).await.expect("bound");
+        cmd.run(&ctx, at(bound.path())).await.expect("the same root again is a no-op");
+        let moved = cmd.run(&ctx, at(other.path())).await;
+        assert!(matches!(moved, Err(CommandError::Invalid(ref why)) if why.contains("bound once")), "{moved:?}");
+        let key = hands_of(&ctx).await.map_key();
+        let root = state.file_engines.get(&key).map(|e| e.workspace_root()).expect("an engine");
+        assert_eq!(std::fs::canonicalize(root).unwrap(), std::fs::canonicalize(bound.path()).unwrap(), "still where they were bound");
+    }
 
     // what this catches (card d598c806): the operator's hands confined (the core runs
     // as the operator; confining him would break every operator tool), or a citizen's

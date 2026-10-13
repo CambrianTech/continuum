@@ -786,6 +786,20 @@ impl ActingHands {
             context: a.executor.hands_context(),
         })
     }
+
+    /// The same persona's hands in `context`, a context these hands don't own (a card
+    /// claim's): `None` when her executor can't act in a context.
+    fn in_context(&self, context: crate::code::hands::HandsContext) -> Option<Self> {
+        Some(Self {
+            executor: self.executor.in_hands(self.persona_id, context)?,
+            context: Some(context),
+            ..self.clone()
+        })
+    }
+
+    fn key(&self) -> crate::code::hands::HandsKey {
+        crate::code::hands::HandsKey::new(self.persona_id.to_string(), self.context)
+    }
 }
 
 /// Drive `code/create-workspace` through the persona's OWN identity-bearing executor —
@@ -861,9 +875,37 @@ struct ActingPlace {
     card: Option<uuid::Uuid>,
 }
 
-/// Where her LIVE hands stand (what she perceives and what her receipts are scoped to).
+/// The card-claim context her perception follows: the one her latest turn was bound to, or
+/// none (her default hands, at home). Only WHICH hands she looks through changes; no hands'
+/// place ever moves (card fc9e9fd7). Set by [`root_at_held_card`], cleared when that
+/// claim's hands close.
+static FOCUS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<uuid::Uuid, crate::code::hands::HandsContext>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+fn focus_of(persona_id: uuid::Uuid) -> Option<crate::code::hands::HandsContext> {
+    FOCUS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).copied() // poisoned lock = read the last state, same policy as every lock in this crate
+}
+
+/// Point her perception at `context` (or home). The map she perceives re-renders when it moved.
+fn set_focus(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) {
+    let moved = {
+        let mut map = FOCUS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+        let before = match context {
+            Some(c) => map.insert(persona_id, c),
+            None => map.remove(&persona_id),
+        };
+        before != context
+    };
+    if moved {
+        crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
+    }
+}
+
+/// Where the hands she is focused on stand (what she perceives and what her receipts are
+/// scoped to): her current card claim's checkout, or nothing when she is at home.
 pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
-    acting_root_in(persona_id, None)
+    acting_root_in(persona_id, focus_of(persona_id))
 }
 
 /// Where one set of her hands stands: her live ones (`None`) or a context's.
@@ -881,7 +923,7 @@ pub(crate) fn acting_root_in(persona_id: uuid::Uuid, context: Option<crate::code
 /// in #academy — the base room and the agents' coordination room — because the
 /// trigger arrived there; the run room stayed empty for its reviewer).
 pub fn acting_card_of(persona_id: uuid::Uuid) -> Option<uuid::Uuid> {
-    acting_card_in(persona_id, None)
+    acting_card_in(persona_id, focus_of(persona_id))
 }
 
 /// The card one set of her hands is rooted at: her live ones (`None`) or a context's.
@@ -926,9 +968,9 @@ fn note_acting_root_in(
             }
         }
     }
-    // The map she perceives is her LIVE hands' place; an eval or a fork moving its own
-    // hands changes nothing she perceives.
-    let marked = context.is_none() && crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
+    // The map she perceives is the place of the hands she is focused on; an eval or a fork
+    // placing its own hands changes nothing she perceives.
+    let marked = context == focus_of(persona_id) && crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
     crate::probe!(
         class = "workspace.acting_root",
         persona_id = %persona_id,
@@ -975,12 +1017,28 @@ pub(crate) fn claim_gone_verdict(
     })
 }
 
-/// Root her hands at her held card's staged checkout for THIS turn — any turn,
-/// not only the work turn. Freya (2026-09-05) edited a file during a room turn
-/// with her hands at home: her home is a copy of the continuum repo, and the
-/// edit landed there, not in her card's checkout. While a citizen holds a card
-/// she lives at that repo. Returns the hands to restore after the turn.
+/// Bind THIS turn to the hands of her held card's claim, standing in the card's staged
+/// checkout — any turn, not only the work turn. Freya (2026-09-05) edited a file during a
+/// room turn with her hands at home: her home is a copy of the continuum repo, and the edit
+/// landed there, not in her card's checkout. While a citizen holds a card she works at that
+/// repo. Returns the admitted claim hands for the turn's burst ([`crate::cognition::workspace::Burst::in_hands`]) and for
+/// [`end_card_turn`]; nothing is restored after the turn, because nothing moved (card
+/// fc9e9fd7).
 pub(crate) async fn root_at_held_card(
+    cycle: &WorkspaceCycle,
+    peer_id: uuid::Uuid,
+    conversation: &dyn crate::persona::service_loop::PersonaConversation,
+) -> HeldCardTurn {
+    let turn = bind_held_card(cycle, peer_id, conversation).await;
+    // A turn bound to no claim's hands acts with her default hands, at home: her
+    // perception follows the same hands the turn acts with.
+    if turn.hands.is_none() {
+        set_focus(peer_id, None);
+    }
+    turn
+}
+
+async fn bind_held_card(
     cycle: &WorkspaceCycle,
     peer_id: uuid::Uuid,
     conversation: &dyn crate::persona::service_loop::PersonaConversation,
@@ -1043,6 +1101,15 @@ pub(crate) async fn root_at_held_card(
             }
         }
     }
+    // The hands of every claim she no longer holds close, whether or not a card is
+    // bound this turn.
+    if let Some(live) = ActingHands::of(cycle) {
+        let held_contexts: Vec<crate::code::hands::HandsContext> = held
+            .iter()
+            .filter_map(|c| c.claim_id.map(|claim| crate::code::hands::HandsContext::for_claim(peer_id, c.card_id.as_uuid(), claim.as_uuid())))
+            .collect();
+        close_ended_claims(&live, &held_contexts);
+    }
     if held.is_empty() {
         return HeldCardTurn::unheld();
     }
@@ -1056,6 +1123,19 @@ pub(crate) async fn root_at_held_card(
     // Stamped for the seam as the turn roots: the handoff record carries this card WHOLE
     // (claim id, lease edge, submissions) without a board walk at stop time (card 49b5e806).
     crate::cognition::handoff::note_held(peer_id, None, focus, EpochMs::now().millis());
+    bind_card(cycle, peer_id, focus).await
+}
+
+/// Bind a turn to the hands of `card`'s claim (card fc9e9fd7): THE one binding both the
+/// room turn ([`root_at_held_card`]) and the held-work turn use. Resolves the card's
+/// checkout through the one owner of where a card's work lives
+/// (`card_staging::checkout_path_for`), admits the turn to the claim's hands, roots them
+/// once, points her perception at them and tells her where she stands when that changed.
+pub(crate) async fn bind_card(
+    cycle: &WorkspaceCycle,
+    peer_id: uuid::Uuid,
+    focus: &airc_lib::WorkCard,
+) -> HeldCardTurn {
     // ── FROM HERE THE CARD IS KNOWN ───────────────────────────────────────────────
     // Everything that can still fail below is a fact about the WORKSPACE — no checkout
     // on this node, no acting body, a rooting error. NONE of them is a fact about which
@@ -1101,57 +1181,69 @@ pub(crate) async fn root_at_held_card(
         // Her hands stay home, but she is still working THIS card — the credit rides out.
         return HeldCardTurn::unrooted(credit);
     };
-    // Never trust the registry over the engine: a failed restore could leave a
-    // stale root recorded while her engine stood at home (Freya, 2026-09-05: a
-    // correct repo-relative edit answered "File not found … did you mean swe/…").
-    // Rooting is idempotent; do it every turn she holds a card.
     // A pure-cognition persona has no hands at all. Still her card.
-    let Some(hands) = ActingHands::of(cycle) else {
+    let Some(live) = ActingHands::of(cycle) else {
         return HeldCardTurn::unrooted(credit);
     };
-    match root_acting_workspace(cycle, &ws.to_string_lossy(), &[], false).await {
-        Ok(()) => {
-            note_acting_card_in(hands.persona_id, hands.context, focus.card_id.as_uuid());
-            // SAY WHERE SHE NOW STANDS when it is not where she was last told (card
-            // 822c4253): staging a card's checkout moved Kimi from the career-wrangler/
-            // tree she had built at home into a per-card worktree on a card branch, and
-            // her next code/read of career-wrangler/docs/... failed with no word of why.
-            // Recorded as told only AFTER the line is pinned (Cormac on #4555): marking
-            // first would leave a body-less turn "told" and silent at this checkout forever.
-            if !already_told(hands.persona_id, &ws) {
-                let branch = crate::modules::card_staging::card_branch(focus);
-                let Some(body) = cycle.acting() else {
-                    return HeldCardTurn {
-                        credit: Some(credit),
-                        hands: Some(hands),
-                    };
-                };
-                body.working_memory.pin_fact_for_turns(
-                    "rooted",
-                    &rooted_notice(&focus.repo.to_string(), &ws, &branch),
-                    3,
-                );
-                mark_told(hands.persona_id, &ws);
-                crate::probe!(
-                    class = "persona.work.root_moved",
-                    peer = %peer_id,
-                    card = %focus.card_id.as_uuid(),
-                    root = %ws.display(),
-                    branch = %branch,
-                    "her hands stand in a checkout she was not last told about; she is told now"
-                );
-            }
-            HeldCardTurn {
-                credit: Some(credit),
-                hands: Some(hands),
-            }
+    // THE CLAIM'S OWN HANDS (card fc9e9fd7): derived from the claim, the same for every turn
+    // of it and new for any other claim, rooted once at the card's checkout and never moved.
+    // Her default hands stay home; no turn moves another's hands, so concurrent turns can't
+    // split her shell from her code tools (Kimi #11697, card 2d58192d).
+    let Some(claim) = focus.claim_id else {
+        crate::probe!(
+            class = "persona.work.claim_unknown",
+            peer = %peer_id,
+            card = %focus.card_id.as_uuid(),
+            "the focus card carries no claim id, so no claim's hands can be bound; nothing acts on it this turn"
+        );
+        return HeldCardTurn::unrooted(credit);
+    };
+    let context = crate::code::hands::HandsContext::for_claim(peer_id, focus.card_id.as_uuid(), claim.as_uuid());
+    let Some(hands) = live.in_context(context) else {
+        return HeldCardTurn::unrooted(credit);
+    };
+    let lease = match crate::code::hands::admit(&hands.key()) {
+        Ok(lease) => lease,
+        Err(why) => {
+            crate::probe!(class = "persona.work.hands_closing", peer = %peer_id, card = %focus.card_id.as_uuid(), why = %why, "the claim's hands are closing; nothing acts on the card this turn");
+            return HeldCardTurn::unrooted(credit);
         }
-        Err(e) => {
-            tracing::warn!(error = %e, "could not root her hands at the held card for this turn");
-            // Rooting failed, so nothing may act on the card — but the turn is still
-            // hers and still card-linked, so it stages rather than submitting.
-            HeldCardTurn::unrooted(credit)
+    };
+    // Rooted ONCE: a context's place is fixed for its life, so a later turn finds it there.
+    if acting_root_in(peer_id, Some(context)).as_deref() != Some(ws.as_path()) {
+        if let Err(e) = drive_create_workspace(&hands, &ws.to_string_lossy(), &[], "bind-card-hands", false).await {
+            tracing::warn!(error = %e, "could not root the card claim's hands at its checkout");
+            // Nothing may act on the card, but the turn is still card-linked: it stages.
+            return HeldCardTurn::unrooted(credit);
         }
+        note_acting_root_in(peer_id, Some(context), Some(ws.clone()));
+        note_acting_card_in(peer_id, Some(context), focus.card_id.as_uuid());
+    }
+    set_focus(peer_id, Some(context));
+    if let Some(body) = cycle.acting() {
+        body.working_memory.set_scope(Some(ws.to_string_lossy().to_string()));
+        // SAY WHERE SHE NOW STANDS when it is not where she was last told (card 822c4253):
+        // staging a card's checkout moved Kimi from the career-wrangler/ tree she had built
+        // at home into a per-card worktree on a card branch, and her next code/read of
+        // career-wrangler/docs/... failed with no word of why. Recorded as told only AFTER
+        // the line is pinned (Cormac on #4555).
+        if !already_told(peer_id, &ws) {
+            let branch = crate::modules::card_staging::card_branch(focus);
+            body.working_memory.pin_fact_for_turns("rooted", &rooted_notice(&focus.repo.to_string(), &ws, &branch), 3);
+            mark_told(peer_id, &ws);
+            crate::probe!(
+                class = "persona.work.root_moved",
+                peer = %peer_id,
+                card = %focus.card_id.as_uuid(),
+                root = %ws.display(),
+                branch = %branch,
+                "she works a checkout she was not last told about; she is told now"
+            );
+        }
+    }
+    HeldCardTurn {
+        credit: Some(credit),
+        hands: Some(CardHands { context, hands, _lease: lease }),
     }
 }
 
@@ -1207,9 +1299,71 @@ pub(crate) struct HeldCardTurn {
     /// The card the work store selected for this turn, present whenever one was
     /// selected — regardless of what happened to the workspace afterwards.
     pub(crate) credit: Option<crate::persona::training_producer::CapturedCredit>,
-    /// Her hands, rooted at that card's checkout. `None` means nothing may act on the
-    /// card this turn; it says nothing about which card it is.
-    pub(crate) hands: Option<ActingHands>,
+    /// The hands of the card claim this turn was admitted to, standing in its checkout.
+    /// `None` means nothing may act on the card this turn; it says nothing about which
+    /// card it is.
+    pub(crate) hands: Option<CardHands>,
+}
+
+/// A turn's admission to the hands of the card claim it works (card fc9e9fd7). The context
+/// is derived from the claim, rooted ONCE at the card's checkout and never moved; the lease
+/// holds the hands open until the turn ends, so closing them (the claim ended) waits the
+/// turn out instead of dropping its engine or shell under it.
+pub(crate) struct CardHands {
+    pub(crate) context: crate::code::hands::HandsContext,
+    hands: ActingHands,
+    _lease: crate::code::hands::HandsLease,
+}
+
+impl CardHands {
+    /// Where these hands stand: the claim's checkout, rooted once.
+    pub(crate) fn root(&self) -> Option<std::path::PathBuf> {
+        acting_root_in(self.hands.persona_id, Some(self.context))
+    }
+}
+
+/// The end of one turn on a card: the act's work is WIP-committed on the card's branch and
+/// pushed (card 73eefbbb), so a node she is next staged on fetches it and a seat change waits
+/// on it. Her hands stay where they are; nothing is restored, because nothing moved.
+pub(crate) async fn end_card_turn(card: &CardHands) {
+    let hands = &card.hands;
+    if let (Some(root), Some(card_id)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
+        crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card_id).await;
+    }
+}
+
+/// Close the hands of every card claim she no longer holds: their claims ended (released,
+/// merged, lapsed, re-acquired as a new claim). Each closes in the background, refusing new
+/// turns and waiting out admitted ones, then releases its engine and shells. A claim she
+/// still holds keeps its hands.
+fn close_ended_claims(live: &ActingHands, held: &[crate::code::hands::HandsContext]) {
+    let ended: Vec<crate::code::hands::HandsContext> = ACTING_ROOTS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .iter()
+        .filter(|((persona, context), place)| *persona == live.persona_id && place.card.is_some() && context.is_some_and(|c| !held.contains(&c)))
+        .filter_map(|((_, context), _)| *context)
+        .collect();
+    for context in ended {
+        let Some(hands) = live.in_context(context) else { continue };
+        tokio::spawn(async move {
+            let key = hands.key();
+            crate::code::hands::close(&key).await;
+            let root = acting_root_in(hands.persona_id, Some(context));
+            match close_acting_context(&hands).await {
+                Ok(()) => {
+                    crate::code::hands::forget(&key);
+                    if let Some(root) = root {
+                        crate::persona::workspace_transfer::forget_checkout(&root);
+                    }
+                    if focus_of(hands.persona_id) == Some(context) {
+                        set_focus(hands.persona_id, None);
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, context = %context.id(), "a card claim's hands could not be released; they are kept closed for a retry"),
+            }
+        });
+    }
 }
 
 impl HeldCardTurn {
@@ -1241,8 +1395,8 @@ impl HeldCardTurn {
 /// ([[fallbacks-are-illegal-fail-loud]]). Fails LOUD if the cycle has no hands or the
 /// executor rejects the root; never silently no-ops.
 ///
-/// **Every caller of this MUST pair it with [`restore_acting_workspace`]** on every exit
-/// path — the re-root is process-global and outlives the fork (see [`ActingHands`]).
+/// Callers root an acting context they opened (a fork's own hands) and end it with
+/// [`end_acting_context`]; her own hands are never rooted here.
 pub(crate) async fn root_acting_workspace(
     cycle: &WorkspaceCycle,
     root: &str,
@@ -1256,6 +1410,13 @@ pub(crate) async fn root_acting_workspace(
                 .to_string(),
         )
     })?;
+    // HER OWN HANDS NEVER MOVE (card fc9e9fd7): a measurement, solve or replay roots the
+    // hands of the fork it opened, never hers.
+    if hands.context.is_none() {
+        return Err(crate::sdk_codegen::CommandError::Internal(
+            "refusing to root her default hands: a measurement, solve or replay roots its own fork's hands".to_string(),
+        ));
+    }
     drive_create_workspace(
         &hands,
         root,
@@ -1277,22 +1438,12 @@ pub(crate) async fn root_acting_workspace(
     Ok(())
 }
 
-/// Put the persona's hands BACK in her own home after a measurement — the HANDS
-/// counterpart of [`EvalIsolation`](crate::cognition::workspace::EvalIsolation), which
-/// already guards the MIND (admission sink, memory checkpoint, decoding temperature).
-/// The mind had a guard from the day snapshot-eval landed (#59); the hands never did, and
-/// that asymmetry IS #312.
-///
-/// Restores to her durable citizen layer (`<home>/citizens/peers/<id>/workspace`) — the
-/// root `code/create-workspace` would auto-provision for her anyway — rather than to
-/// "whatever it was before". Deliberate: if a previous measurement already left her
-/// standing in an exam repo, restoring the *previous* value would faithfully preserve the
-/// bug. Restoring to her HOME is self-healing — the next measurement corrects an earlier
-/// leak instead of inheriting it.
-///
-/// Best-effort by contract: it returns the error for the caller to LOG, never to propagate.
-/// A failed restore must not mask the measurement's own result — but it must be loud.
-pub(crate) async fn restore_acting_workspace(
+/// End an acting context a measurement, a solve or a replay opened (its own hands, never
+/// hers): the act's work is WIP-committed on its card's branch when a card rooted it, then
+/// the context closes, awaited, before its caller removes the directory it stood in. Her own
+/// hands are never moved by any of these, so there is nothing to put back (card fc9e9fd7:
+/// the move-home this replaced is gone with the moves).
+pub(crate) async fn end_acting_context(
     hands: &ActingHands,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): this is the one restore every
@@ -1305,17 +1456,12 @@ pub(crate) async fn restore_acting_workspace(
     if let (Some(root), Some(card)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
         crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card).await;
     }
-    // An acting context (an eval's, a solve's or a replay's own hands) has no home to go back
-    // to: it ENDS, awaited here, before its caller removes the directory it stood in.
-    if hands.context.is_some() {
-        return close_acting_context(hands).await.map_err(Into::into);
+    if hands.context.is_none() {
+        return Err(crate::sdk_codegen::CommandError::Internal(
+            "refusing to end her default hands: only an acting context a measurement, solve or replay opened ends".to_string(),
+        ));
     }
-    // `ensure_`, not `path_`: `code/create-workspace` REFUSES a root that does not exist
-    // (PathSecurity canonicalizes), and a persona who has never written anything has no
-    // layer on disk yet. Provisioning here is not a new side effect — it is exactly what
-    // `ensure_engine` would do on her very next file op; an existing layer is reused.
-    let home = crate::modules::code_commands::ensure_citizen_layer(&hands.persona_id.to_string())?;
-    restore_acting_workspace_at(hands, &home.to_string_lossy()).await
+    close_acting_context(hands).await.map_err(Into::into)
 }
 
 /// Forget where an acting context stood: what a context's release on drop (the abnormal-exit
@@ -1414,29 +1560,6 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), Cont
         persona = %hands.persona_name,
         context = %context.id(),
         "an acting context ended: its engine and shells released, its place forgotten"
-    );
-    Ok(())
-}
-
-/// [`restore_acting_workspace`] with the home root supplied — the seam the isolation test
-/// drives, so the round-trip (root at a sandbox → restore → the sandbox is no longer
-/// visible through those hands) is provable without touching the real `CONTINUUM_HOME`.
-async fn restore_acting_workspace_at(
-    hands: &ActingHands,
-    home: &str,
-) -> Result<(), crate::sdk_codegen::CommandError> {
-    // Restoring her to her OWN home restores the LIVE stance too: a citizen at home writes code
-    // as text whenever she means to, and only gets told when it will not execute (#317).
-    // Forget the acting root BEFORE the move: if the restore fails, the registry
-    // must not keep saying she stands at a checkout her engine has left.
-    note_acting_root_in(hands.persona_id, hands.context, None);
-    drive_create_workspace(hands, home, &[], "restore-acting-workspace", false).await?;
-    hands.working_memory.set_scope(None);
-    crate::probe!(
-        class = "workspace.restored",
-        persona = %hands.persona_name,
-        root = %home,
-        "measurement over — persona's hands returned to her own citizen workspace"
     );
     Ok(())
 }
@@ -3904,49 +4027,37 @@ mod tests {
             note_acting_root_in(persona, None, None);
         }
 
-        // what this catches: #312 — the measurement leaving the LIVING persona standing in
-        // the exam repo. `code/create-workspace` keys the file engine on the CALLER, the
-        // engines live in ONE process-global map, and a measurement fork shares the living
-        // persona's executor AND her id — so rooting "the fork" re-roots HER, permanently.
-        // Measured 2026-08-04: after a SWE-bench solve on a flask clone, Anwen's live self
-        // ran `code/list(path=src)` → `flask/` and `code/read(src/flask/app.py)` in her own
-        // room turns, hours later. The MIND had a guard (EvalIsolation) from #59; the HANDS
-        // had none. If the restore regresses, the exam file is still visible here.
+        // what this catches (card fc9e9fd7; Kimi #11697, #312): one set of hands moved by
+        // every turn and measurement that needed another root. A card claim's hands are their
+        // own: rooted at the card, they never move her default hands, every turn of the claim
+        // finds them where they were rooted, and a re-acquired claim is NEW hands that don't
+        // inherit the old one's place. Her default hands can't be rooted or ended at all.
         #[tokio::test]
-        async fn a_measurement_returns_her_hands_to_her_own_workspace() {
-            let exam = tempfile::TempDir::new().expect("exam dir");
+        async fn a_claims_hands_are_its_own_and_her_default_hands_never_move() {
+            let card_dir = tempfile::TempDir::new().expect("card checkout");
             let home = tempfile::TempDir::new().expect("home dir");
-            std::fs::write(exam.path().join("EXAM_ONLY_blueprints.py"), "# flask\n").unwrap();
+            std::fs::write(card_dir.path().join("CARD_ONLY.rs"), "// card\n").unwrap();
             std::fs::write(home.path().join("HER_OWN_notes.md"), "# mine\n").unwrap();
+            let persona = Uuid::new_v4();
+            let live = hands_for(persona);
+            drive_create_workspace(&live, &home.path().to_string_lossy(), &[], "home", false).await.expect("her home");
 
-            let hands = hands_for(Uuid::new_v4());
+            let (card, claim) = (Uuid::new_v4(), Uuid::new_v4());
+            let context = crate::code::hands::HandsContext::for_claim(persona, card, claim);
+            let claim_hands = live.in_context(context).expect("her executor acts in a claim's context");
+            drive_create_workspace(&claim_hands, &card_dir.path().to_string_lossy(), &[], "bind", false).await.expect("rooted once");
+            assert!(listing(&claim_hands).await.contains("CARD_ONLY.rs"), "the claim's hands stand in the card");
+            let at_home = listing(&live).await;
+            assert!(at_home.contains("HER_OWN_notes.md") && !at_home.contains("CARD_ONLY.rs"), "her default hands never moved: {at_home}");
 
-            // Root at the sandbox, as agent/solve does before a drive.
-            drive_create_workspace(&hands, &exam.path().to_string_lossy(), &[], "root", false)
-                .await
-                .expect("roots at the exam sandbox");
-            let during = listing(&hands).await;
-            assert!(
-                during.contains("EXAM_ONLY_blueprints.py"),
-                "the measurement must actually move her hands, or it scores a false zero: {during}"
-            );
+            let next_turn = live.in_context(crate::code::hands::HandsContext::for_claim(persona, card, claim)).expect("same claim");
+            assert!(listing(&next_turn).await.contains("CARD_ONLY.rs"), "the next turn of the claim finds its hands where they were rooted");
+            let reacquired = crate::code::hands::HandsContext::for_claim(persona, card, Uuid::new_v4());
+            assert_ne!(reacquired, context, "a re-acquired claim is new hands, never the old one's");
 
-            // Measurement over.
-            restore_acting_workspace_at(&hands, &home.path().to_string_lossy())
-                .await
-                .expect("restores to her own workspace");
-
-            let after = listing(&hands).await;
-            assert!(
-                !after.contains("EXAM_ONLY_blueprints.py"),
-                "SHE IS STILL IN THE EXAM ROOM (#312) — her live hands can still see the \
-                 measurement sandbox after the run: {after}"
-            );
-            assert!(
-                after.contains("HER_OWN_notes.md"),
-                "restore must land her in her OWN workspace, not merely unroot her: {after}"
-            );
+            assert!(end_acting_context(&live).await.is_err(), "her default hands can't be ended");
         }
+
 
         /// One tool call through these hands: its content, and whether it was an error.
         async fn call(hands: &ActingHands, name: &str, input: serde_json::Value) -> (String, bool) {
