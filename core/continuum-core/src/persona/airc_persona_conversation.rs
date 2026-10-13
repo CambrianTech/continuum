@@ -63,9 +63,6 @@ enum Polled {
     Quiet,
 }
 
-/// How long a live stream may stay silent before the durable store is asked
-/// whether the room moved on without us (see `next_message`).
-const QUIET_WATCHDOG: std::time::Duration = std::time::Duration::from_secs(90);
 /// How often the store-backed catch-up pages every subscribed room's tail.
 const CATCH_UP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 /// Events paged per room per catch-up tick.
@@ -131,9 +128,9 @@ impl Drop for MindFeed {
 #[derive(Default)]
 struct SeenRooms {
     /// Per-room ring of (peer, text) fingerprints — the same line under two ids.
-    texts: std::collections::HashMap<Uuid, std::collections::VecDeque<u64>>,
+    texts: std::collections::HashMap<Uuid, crate::runtime::seen::SeenRing<u64>>,
     floor_ms: std::collections::HashMap<Uuid, u64>,
-    seen: std::collections::HashMap<Uuid, std::collections::VecDeque<Uuid>>,
+    seen: std::collections::HashMap<Uuid, crate::runtime::seen::SeenRing<Uuid>>,
 }
 
 impl SeenRooms {
@@ -146,14 +143,10 @@ impl SeenRooms {
     }
 
     fn note_text(&mut self, room: Uuid, fp: u64) {
-        let ring = self.texts.entry(room).or_default();
-        if ring.contains(&fp) {
-            return;
-        }
-        if ring.len() == SEEN_RING {
-            ring.pop_front();
-        }
-        ring.push_back(fp);
+        self.texts
+            .entry(room)
+            .or_insert_with(|| crate::runtime::seen::SeenRing::new(SEEN_RING))
+            .note(fp);
     }
 
     fn was_seen_text(&self, room: Uuid, fp: u64) -> bool {
@@ -161,13 +154,10 @@ impl SeenRooms {
     }
 
     fn note(&mut self, room: Uuid, event_id: Uuid) {
-        let ring = self.seen.entry(room).or_default();
-        if !ring.contains(&event_id) {
-            ring.push_back(event_id);
-            while ring.len() > SEEN_RING {
-                ring.pop_front();
-            }
-        }
+        self.seen
+            .entry(room)
+            .or_insert_with(|| crate::runtime::seen::SeenRing::new(SEEN_RING))
+            .note(event_id);
     }
     fn was_seen(&self, room: Uuid, event_id: Uuid) -> bool {
         self.seen.get(&room).is_some_and(|r| r.contains(&event_id))
@@ -2068,12 +2058,6 @@ mod tests {
 }
 
 impl AircPersonaConversation {
-    /// The newest lamport across the current subscription snapshot (two events
-    /// per room). An empty snapshot has no tip; a failed read counts as not moved.
-    async fn rooms_high_water_mark(&self) -> u64 {
-        self.high_water_mark(2).await.unwrap_or(self.last_lamport) // unwrap_or: a failed page reads as not moved
-    }
-
     /// One live event through the door: heartbeat/chunk guards, the raw probe,
     /// the work-bridge, the decoder, the self-filter, the lamport advance.
     /// `Some(msg)` = a room turn to serve; `None` = consumed, keep polling.

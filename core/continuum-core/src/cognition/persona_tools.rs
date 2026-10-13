@@ -817,6 +817,9 @@ mod tests {
             // that never declares NATIVE is invisible to every citizen — this list is
             // the reachability contract, not a nicety.
             "room/members",
+            // Every saved large result names an output handle; this is the verb that
+            // opens it (Astra's paired-capture audit, 2026-10-13: it was in none of 51).
+            "tool/output",
         ] {
             assert!(
                 names.contains(expected),
@@ -848,8 +851,11 @@ mod tests {
         // focus/continue, focus/nudge and focus/mute joined, her self-determination verbs,
         // which were registered and documented but never offered (NATIVE unset); Kimi
         // reported "present in the registry, absent from my menu" twice before this.
+        // < 52 -> < 53, stated plainly (2026-10-13, Joel: give her what any AI's tools give
+        // it): tool/output joined. Every truncated result hands her an output handle,
+        // and without this verb in the offer she could not open one.
         assert!(
-            names.len() < 52,
+            names.len() < 53,
             "native set stayed bounded ({} tools); a full dump would re-mute personas",
             names.len()
         );

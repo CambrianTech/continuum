@@ -14,11 +14,8 @@ pub(crate) const WRITE_OR_RELEASE_AFTER_ACTS: usize = 6;
 /// Her acts since her last file change, counted from her own ⚙ receipts in the
 /// room (oldest → newest). A `code/edit` / `git_apply` / `edit_file` receipt resets
 /// the count; a card with no edit ever counts every act. Pure.
-pub(crate) fn acts_since_last_write(rows: &[crate::persona::durable_history::RoomRow], me: Uuid) -> usize {
-    acts_since_last_write_since(rows, me, 0)
-}
-
-/// [`acts_since_last_write`] counting only rows at or after `since_ms` — THIS hold's acts.
+/// Her acts since her last write, counting only rows at or after `since_ms` (THIS
+/// hold's acts; `0` counts the whole page).
 /// 2026-09-12 21:30Z: a citizen re-pulled a card after a reboot and was released 28 s later
 /// at "22 acts without a write" — every one of them from her previous hold, whose pull
 /// left no ⚙ receipt to reset the count. The pull's own clock is the boundary.
@@ -55,10 +52,6 @@ pub(crate) fn acts_since_last_write_since(
         }
     }
     n
-}
-
-pub(crate) fn held_work_burst(held: &[&airc_lib::WorkCard], last_state: &[String]) -> String {
-    held_work_burst_gated(held, last_state, 0, &CardProgress::default())
 }
 
 /// What she has already done on this card, derived from her own ⚙ receipts in
@@ -198,7 +191,7 @@ fn is_write_verb(verb: &str) -> bool {
         || verb.starts_with("code/git/apply")
 }
 
-/// [`held_work_burst`] with an advisory progress checkpoint. Receipt counts do
+/// Her work-turn burst, with an advisory progress checkpoint. Receipt counts do
 /// not establish that investigation is finished or that responsibility should
 /// transfer (card 3bd860ba: multi-day project work includes reading and review).
 pub(crate) fn held_work_burst_gated(
@@ -261,20 +254,10 @@ pub(crate) fn held_work_burst_gated(
     s
 }
 
-/// Her own newest thoughts in the room (💭 lines), oldest first, each clipped —
-/// the raw material of the resume block in [`held_work_burst`]. Pure: the
-/// caller pages the durable store.
-pub(crate) fn own_recent_thoughts(
-    rows: &[crate::persona::durable_history::RoomRow],
-    me: Uuid,
-    keep: usize,
-    max_chars: usize,
-) -> Vec<String> {
-    own_recent_thoughts_about(rows, me, keep, max_chars, &[])
-}
-
-/// Like [`own_recent_thoughts`], but when `about` names the held card (its short
-/// id, its instance), her thoughts that mention it win; only if none do does the
+/// Her own newest thoughts in the room (💭 lines), oldest first, each clipped: the
+/// raw material of the burst's resume block. Pure; the caller pages the durable store.
+/// When `about` names the held card (its short id, its instance), her thoughts that
+/// mention it win; only if none do does the
 /// unscoped set apply. Measured 2026-09-05: after a reopen churn a holder's newest
 /// thoughts were about ANOTHER card, and every turn opened with "my context is
 /// confused".

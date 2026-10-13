@@ -167,6 +167,11 @@ impl ActionCommand for ToolOutput {
     // aliases can only widen what she can say, never narrow it.
     const ALIASES: &'static [&'static str] =
         &["read_output", "grep_output", "tail_output", "search_output"];
+    // Offered natively: every saved large result hands her an output handle, and the
+    // aliases above are only names. NATIVE defaults to false, so the one verb that
+    // opens those handles was absent from all 51 offered tools (Astra's paired-capture
+    // audit, 2026-10-13): a handle she cannot open is a clip by another name.
+    const NATIVE: bool = true;
     const DESCRIPTION: &'static str =
         "Page or grep a large tool result that was saved to disk because it was too big \
          to show in full. Pass the `outputId` from the elision marker. EASIEST: set \

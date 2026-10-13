@@ -1031,7 +1031,7 @@ mod tests {
     // code (not hand-authored roster strings). A present airc `RoomMember` flows:
     //   RoomRosterSource.deliver  (the ONE shared `roster_slot_from_member` projection
     //                              both the WS widget and this grounding rail use)
-    //     → project_room_roster    (the heartbeat loop's own delivery fold, extracted)
+    //     → entries_in             (the one roster reader every live consumer uses)
     //       → prompt_assembly       (the [Present in this room] block)
     // and lands with the converged line INCLUDING availability — the field the widget
     // rail used to silently drop before the convergence (#8/#13). Connects the three
@@ -1041,7 +1041,6 @@ mod tests {
     async fn present_member_reaches_present_in_room_block_end_to_end() {
         use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
         use crate::persona::room_roster_source::{AircRosterReader, RoomRosterSource};
-        use crate::persona::service_loop::project_room_roster;
         use airc_core::PeerId;
         use airc_lib::{AgentAvailabilityState, AircError, RoomMember};
         use async_trait::async_trait;
@@ -1087,24 +1086,28 @@ mod tests {
         let ctx = RagContext::for_persona(persona, 1_000_000);
         let delivery = source.deliver(&ctx, 1_000, ResolutionPreference::Raw).await;
 
-        // 2. Real loop fold: delivery → grounding consumers (the converged line +
-        //    the bare name), via the exact fn the heartbeat loop calls.
-        let proj = project_room_roster(std::slice::from_ref(&delivery));
+        // 2. Real roster read: delivery → grounding lines + bare names, through the one
+        //    reader every live consumer uses (`room_roster_source::entries_in`).
+        let entries: Vec<_> =
+            crate::persona::room_roster_source::entries_in(std::slice::from_ref(&delivery)).collect();
+        let room_roster: Vec<String> = delivery.items.iter().map(|i| i.content.clone()).collect();
+        let other_persona_names: Vec<String> =
+            entries.iter().filter_map(|e| e.display_name).map(str::to_string).collect();
         // Agent-only roster ⇒ the no-human authority fact (#2113) rides FIRST in
         // the grounding lines — it reaches the prompt through the same block —
         // while other_persona_names stays peer-only (the fact has no
         // display_name, so it can NEVER become a phantom "peer" name).
-        assert_eq!(proj.room_roster.len(), 2);
+        assert_eq!(room_roster.len(), 2);
         assert!(
-            proj.room_roster[0].contains("No human is present"),
+            room_roster[0].contains("No human is present"),
             "authority fact first: {}",
-            proj.room_roster[0]
+            room_roster[0]
         );
         assert_eq!(
-            proj.room_roster[1], "win-claude [claude] — busy",
+            room_roster[1], "win-claude [claude] — busy",
             "converged line (availability = airc's neutral 'busy', not Debug 'Busy')"
         );
-        assert_eq!(proj.other_persona_names, vec!["win-claude".to_string()]);
+        assert_eq!(other_persona_names, vec!["win-claude".to_string()]);
 
         // 3. Real assembly: grounding lines → the [Present in this room] block.
         let input = PromptAssemblyInput {
@@ -1121,9 +1124,9 @@ mod tests {
             is_voice: false,
             social_signals: None,
             multi_party_strategy: MultiPartyChatStrategy::default(),
-            other_persona_names: proj.other_persona_names,
+            other_persona_names: other_persona_names,
             recalled_engrams: vec![],
-            room_roster: proj.room_roster,
+            room_roster: room_roster,
             room_doctrine: None,
         };
         let assembled = assemble(&input);
