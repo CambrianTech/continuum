@@ -40,7 +40,7 @@ use crate::persona::{InboxMessage, Modality, PersonaCognition, PersonaInboxFrame
 use crate::rag::RagEngine;
 use crate::runtime;
 use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
+use crate::runtime::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde_json::Value;

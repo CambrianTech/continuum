@@ -10,7 +10,7 @@
 //! - The lease is the authority AMONG CITIZENS, not an OS reservation: a port is taken only if
 //!   nobody holds a lease on it AND nothing uses it right now: loopback binds and no server
 //!   answers a loopback connect, which also sees a wildcard listener on Windows (the one probe,
-//!   [`crate::utils::ports::first_unused`]). A foreign process that later sits on a leased port
+//!   [`crate::system_resources::ports::first_unused`]). A foreign process that later sits on a leased port
 //!   shows up as her server's bind error; the lease stays hers.
 //! - A release does not free the port at once (Codex on the plan): her service may still be
 //!   running, or restarting between listens. The row is kept as released, the port stays
@@ -191,7 +191,7 @@ pub(crate) fn decide(
 /// The first port in [`CITIZEN_PORT_RANGE`] not in `unavailable` that nothing uses right now.
 /// BLOCKING (a loopback connect per candidate): [`PortLeases::lease`] runs it off the runtime.
 fn first_free_citizen_port(unavailable: &BTreeSet<u16>) -> Option<u16> {
-    crate::utils::ports::first_unused(CITIZEN_PORT_RANGE.filter(|p| !unavailable.contains(p)))
+    crate::system_resources::ports::first_unused(CITIZEN_PORT_RANGE.filter(|p| !unavailable.contains(p)))
 }
 
 /// The node's port leases: the store, and every lease row held in memory for the synchronous
@@ -250,7 +250,7 @@ impl PortLeases {
                     let unavailable: BTreeSet<u16> =
                         decide_on.iter().filter(|l| l.active() || l.quarantined(now)).map(|l| l.port).collect();
                     let candidates = CITIZEN_PORT_RANGE.filter(|p| !unavailable.contains(p));
-                    let usable = |p: u16| crate::utils::ports::first_unused([p]).is_some();
+                    let usable = |p: u16| crate::system_resources::ports::first_unused([p]).is_some();
                     PortLeaseError::RangeExhausted { unbindable: unbindable_runs(candidates, usable) }
                 }
                 other => other,

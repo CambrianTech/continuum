@@ -7,7 +7,7 @@
 //! - CoreML (Apple Silicon) - macOS
 //! - CUDA (NVIDIA GPUs) - Linux/Windows
 
-use super::audio_utils;
+use super::normalize;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
@@ -385,7 +385,7 @@ impl KokoroTTS {
 
         // Step 7: Normalize to standard 16kHz i16 PCM via shared audio utilities
         let f32_samples: Vec<f32> = audio_data.to_vec();
-        let result = audio_utils::normalize_audio(&f32_samples, 24000)?;
+        let result = normalize::normalize_audio(&f32_samples, 24000)?;
 
         clog_info!(
             "Kokoro synthesized {} samples ({}ms) for '{}...'",
@@ -593,7 +593,6 @@ mod tests {
         assert_eq!(bella.gender.as_deref(), Some("female"));
     }
 
-    // Resample tests moved to audio_utils::tests (shared across all adapters)
 
     #[test]
     fn test_tokenize_basic_vocab() {

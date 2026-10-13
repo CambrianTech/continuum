@@ -253,7 +253,7 @@ fn write_partition(job_dir: &Path, partition: &Partition) -> Result<(), String> 
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_vec(partition).map_err(|e| e.to_string())?; // file on disk: the job dir's partition.json, read back by `return` after a restart
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    crate::utils::file_replace::replace_file(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+    crate::fs_portable::replace::replace_file(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What `job_dir` records about its partition, if anything. A job from before the record has
@@ -591,7 +591,7 @@ impl Footprints {
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
         // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
-        crate::utils::file_replace::replace_file(&tmp, &self.path)
+        crate::fs_portable::replace::replace_file(&tmp, &self.path)
     }
 }
 

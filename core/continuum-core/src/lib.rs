@@ -79,7 +79,6 @@ pub mod system_resources;
 pub(crate) mod test_env;
 pub mod time;
 pub mod tool_parsing;
-pub mod utils;
 pub mod vdd;
 
 pub use audio_constants::*;

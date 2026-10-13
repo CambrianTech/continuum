@@ -52,7 +52,7 @@ crate::action_command! {
             "cognition",
             "classify-domain {}: '{}...' → domain={}, confidence={:.2}, adapter={:?} ({:.0}μs)",
             p.persona_id,
-            crate::utils::str_truncate::truncate_at_char_boundary(&p.text, 40),
+            crate::logging::preview::truncate_at_char_boundary(&p.text, 40),
             result.domain,
             result.confidence,
             result.adapter_name,

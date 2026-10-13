@@ -357,7 +357,7 @@ pub fn generate(
                 rank + 1,
                 tid,
                 val,
-                crate::utils::str_truncate::truncate_at_char_boundary(&decoded, 20)
+                crate::logging::preview::truncate_at_char_boundary(&decoded, 20)
             );
         }
         for &eos_id in backend.eos_token_ids() {
@@ -521,7 +521,7 @@ pub fn generate(
                 next_token,
                 format!(
                     "{:?}",
-                    crate::utils::str_truncate::truncate_at_char_boundary(&decoded, 20)
+                    crate::logging::preview::truncate_at_char_boundary(&decoded, 20)
                 ),
                 min_logit,
                 max_logit,

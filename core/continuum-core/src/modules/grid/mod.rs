@@ -28,7 +28,6 @@ pub mod commands;
 pub mod connection;
 pub mod frame;
 pub mod handlers;
-pub mod helpers;
 pub mod node;
 pub mod registry;
 pub mod router;
