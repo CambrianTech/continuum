@@ -3798,6 +3798,13 @@ pub(crate) mod tests {
         // the way a citizen's call actually does: as JSON, in the 8-char form she was
         // shown, and the assertions below prove the whole path end to end.
         let short = |id: Uuid| id.simple().to_string().chars().take(8).collect::<String>();
+        // A typed artifact must have its bytes retained (card e1babb61), so the fixture
+        // retains a real patch in this test's store and types ITS hash and size.
+        let patch = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+        let patch_hash = {
+            use airc_blobs::ContentAddressedStore;
+            crate::media::artifact::store().expect("test: store").put(patch.as_bytes()).expect("test: retain the patch").to_hex()
+        };
         let params: WorkSubmitParams = serde_json::from_value(serde_json::json!({
             "room": room.channel.as_uuid().to_string(),
             "submission_id": Uuid::new_v4().to_string(),
@@ -3805,7 +3812,7 @@ pub(crate) mod tests {
             "claim_id": short(claim.as_uuid()),
             "instance": "generic-project-work",
             "base_sha": "a".repeat(40),
-            "artifact": { "hash": "b".repeat(64), "size_bytes": 20, "mime": "text/x-diff" },
+            "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
             "staged_revision_id": selected.id.to_string(),
         }))
         .expect("a citizen's call carries the handles her board printed"); // expect: the fixture's own json, asserted decodable
