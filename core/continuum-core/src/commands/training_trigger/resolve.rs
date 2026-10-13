@@ -33,10 +33,11 @@ pub struct ResolveParams {
     /// registered under this dispatch.
     #[serde(default)]
     pub not_dispatched: bool,
-    /// The intent's outcome is UNCONFIRMED (no evidence either way about a job) and the
-    /// operator retries it anyway: it becomes retryable like `notDispatched`, journaled as an
-    /// operator decision with `evidence`, never as "no job was created". Refused while a job
-    /// registered under it hasn't ended, or when that job completed training.
+    /// The intent's outcome is UNCONFIRMED (no job registered under it, no evidence either way
+    /// that one ran) and the operator retries it anyway: it becomes retryable like
+    /// `notDispatched`, journaled as an operator decision with `evidence`, never as "no job was
+    /// created". Refused when a job IS registered under it: resolve that as dispatched with
+    /// `jobId`, then `genome/training-trigger/return` returns what it didn't train.
     #[serde(default)]
     pub retry_unconfirmed: bool,
     /// With `retryUnconfirmed`: what was checked about retained results, one line per check

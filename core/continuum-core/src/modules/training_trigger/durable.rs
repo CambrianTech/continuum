@@ -1685,32 +1685,30 @@ impl TrainingTriggerState {
                     if evidence.iter().all(|e| e.trim().is_empty()) {
                         return Err(("Invalid", "a retry of an unconfirmed dispatch names the evidence checked about retained results".into()));
                     }
-                    let job = registered.as_ref().map(|h| h.local_id);
+                    if let Some(handle) = &registered {
+                        return Err((
+                            "Contradicted",
+                            format!(
+                                "job {} is registered under dispatch {dispatch}: a known job is never retried under its dispatch (recovery would re-adopt it); resolve it as dispatched with that job id, then genome/training-trigger/return returns what it didn't train",
+                                handle.local_id
+                            ),
+                        ));
+                    }
                     let (evidence, reason_owned, by) = (evidence.clone(), reason.clone(), resolved_by);
-                    let ended_untrained = tokio::task::spawn_blocking({
+                    tokio::task::spawn_blocking({
                         #[cfg(test)]
                         let board = self.test_job_board.clone();
-                        move || -> Result<(), (&'static str, String)> {
+                        move || {
                             #[cfg(not(test))]
                             let board = TrainingJobBoard::global();
-                            if let Some(job) = job {
-                                if !board.is_terminal(job) {
-                                    return Err(("Contradicted", format!("job {job} registered under dispatch {dispatch} has not ended: it may still be training; nothing is retried under it")));
-                                }
-                                if board.completed_training(job) {
-                                    return Err(("Contradicted", format!("job {job} registered under dispatch {dispatch} COMPLETED training: what it trained survives; adopt it as dispatched")));
-                                }
-                            }
                             // The audit row lands BEFORE the intent changes: a retry is never
                             // taken without its record.
-                            board
-                                .journal_retry_unconfirmed(dispatch, by, &reason_owned, &evidence)
-                                .map_err(|e| ("PersistenceFailed", format!("the retry's audit row didn't land: {e}")))
+                            board.journal_retry_unconfirmed(dispatch, by, &reason_owned, &evidence)
                         }
                     })
                     .await
-                    .map_err(|e| ("PersistenceFailed", format!("training job board read: {e}")))?;
-                    ended_untrained?;
+                    .map_err(|e| ("PersistenceFailed", format!("training job ledger write: {e}")))?
+                    .map_err(|e| ("PersistenceFailed", format!("the retry's audit row didn't land: {e}")))?;
                     "retried by operator decision, outcome unconfirmed"
                 } else {
                     if let Some(handle) = registered {
@@ -2037,11 +2035,13 @@ fn registration_from(board: &crate::genome::fine_tuning::TrainingJobBoard, dispa
 pub(crate) enum DispatchResolution {
     /// No job was ever registered under it: retry from the same batch.
     NotDispatched,
-    /// Its outcome is UNCONFIRMED and the operator decides to retry it anyway, on the evidence
-    /// they name about retained results. Asserts nothing about whether a job existed (Codex
-    /// root on Sahar's 2b4e7272); the decision and its evidence are journaled as an audit row
-    /// in the job ledger. Refused while a job registered under it hasn't ended, or when that
-    /// job completed training (what it trained survives).
+    /// NO job is registered under it, its outcome is UNCONFIRMED, and the operator decides to
+    /// retry it anyway on the evidence they name about retained results. Asserts nothing about
+    /// whether a job existed (Codex root on Sahar's 2b4e7272); the decision and its evidence are
+    /// journaled as an audit row in the job ledger. A dispatch WITH a registered job is never
+    /// retried under its own id (after a crash, recovery would re-adopt that registration:
+    /// Astra on #5028): it is resolved as dispatched to that job, and `training-trigger/return`
+    /// returns what it didn't train, through its artifact guards.
     RetryUnconfirmed { evidence: Vec<String> },
     /// This job is the one it made: adopt it.
     Dispatched { job: Uuid },
@@ -3043,49 +3043,29 @@ mod tests {
         assert!(matches!(settled_twice, Err(("Invalid", _))), "a finished intent is not settled again: {settled_twice:?}");
     }
 
-    // what this catches (Codex root on Sahar's 2b4e7272): "safe to retry" smuggled in as "no
-    // job was created". Retrying an UNCONFIRMED dispatch is its own audited decision: it needs
-    // named evidence; its audit row lands in the job ledger BEFORE the intent changes; the
-    // intent's note says "outcome unconfirmed", never "not dispatched"; and it is refused while
-    // a registered job hasn't ended or when that job completed training.
+    // what this catches (Codex root on Sahar's 2b4e7272; Astra on #5028): "safe to retry"
+    // smuggled in as "no job was created", and a known job retried under its own dispatch (which
+    // recovery would re-adopt after a crash). Retrying an UNCONFIRMED dispatch is its own audited
+    // decision: it needs named evidence; its audit row lands in the job ledger BEFORE the intent
+    // changes; the intent's note says "outcome unconfirmed", never "not dispatched"; and a
+    // dispatch with a registered job is refused toward the dispatched + return path.
     #[tokio::test]
     async fn retrying_an_unconfirmed_dispatch_is_an_audited_decision_that_asserts_no_job_either_way() {
         use crate::genome::fine_tuning::job_board::WatchedJob;
-        let (next, _executor, key, id, _dir) = recovery_required_intent().await;
+        let (next, _executor, _key, id, _dir) = recovery_required_intent().await;
         let no_evidence = next
             .state
             .resolve_dispatch(id, DispatchResolution::RetryUnconfirmed { evidence: vec![" ".into()] }, "unknown".into(), None)
             .await;
         assert!(matches!(no_evidence, Err(("Invalid", _))), "a retry names its evidence: {no_evidence:?}");
 
-        let job = Uuid::new_v4();
-        next.state.test_job_board.register(WatchedJob {
-            trigger_dispatch_id: Some(id),
-            handle: JobHandle { provider_id: "engine-local".into(), provider_job_id: job.to_string(), local_id: job },
-            persona_id: key.persona_id,
-            persona_name: "test-p".into(),
-            base_model: "synthetic".into(),
-            trait_kind: "code".into(),
-            eval_set: None,
-            signature: None,
-            decision: None,
-        });
-        let evidence = vec!["adapters: none under her genome since the intent".to_string(), "overlap: 0 of 16 examples in the killed job".to_string()];
-        let running = next
-            .state
-            .resolve_dispatch(id, DispatchResolution::RetryUnconfirmed { evidence: evidence.clone() }, "interrupted".into(), None)
-            .await;
-        assert!(matches!(running, Err(("Contradicted", ref why)) if why.contains("has not ended")), "never retried under a live job: {running:?}");
-        assert!(next.state.test_job_board.retry_decisions(id).is_empty(), "a refused retry journals nothing");
-
-        let killed = crate::genome::fine_tuning::types::TrainingStatus::Failed { error: "killed-by-reboot".into() };
-        next.state.test_job_board.claim(job, &killed).expect("the job ends untrained");
+        let evidence = vec!["adapters: none under her genome since the intent".to_string(), "ledger: no registration under it".to_string()];
         let by = Uuid::new_v4();
         let settled = next
             .state
             .resolve_dispatch(id, DispatchResolution::RetryUnconfirmed { evidence: evidence.clone() }, "interrupted by the reboot".into(), Some(by))
             .await
-            .expect("an unconfirmed dispatch whose job ended untrained is retried by decision");
+            .expect("an unconfirmed dispatch with no registered job is retried by decision");
         assert_eq!(settled.resolution, Resolved::Retryable);
         let audit = next.state.test_job_board.retry_decisions(id);
         assert_eq!(audit.len(), 1, "one audit row: {audit:?}");
@@ -3098,6 +3078,27 @@ mod tests {
             "noted as a decision on an unconfirmed outcome: {:?}",
             intent.phase
         );
+
+        // A dispatch WITH a registered job is never retried under its own id (Astra on #5028).
+        let (other, _executor2, key2, id2, _dir2) = recovery_required_intent().await;
+        let job = Uuid::new_v4();
+        other.state.test_job_board.register(WatchedJob {
+            trigger_dispatch_id: Some(id2),
+            handle: JobHandle { provider_id: "engine-local".into(), provider_job_id: job.to_string(), local_id: job },
+            persona_id: key2.persona_id,
+            persona_name: "test-p".into(),
+            base_model: "synthetic".into(),
+            trait_kind: "code".into(),
+            eval_set: None,
+            signature: None,
+            decision: None,
+        });
+        let known = other
+            .state
+            .resolve_dispatch(id2, DispatchResolution::RetryUnconfirmed { evidence }, "interrupted".into(), None)
+            .await;
+        assert!(matches!(known, Err(("Contradicted", ref why)) if why.contains("resolve it as dispatched")), "a known job goes the dispatched + return path: {known:?}");
+        assert!(other.state.test_job_board.retry_decisions(id2).is_empty(), "a refused retry journals nothing");
     }
 
     // what this catches: named evidence never beats the ledger. A job registered under the
