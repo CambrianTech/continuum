@@ -71,6 +71,14 @@ pub struct ExecutionState {
     /// perception without her remembering to poll. False for in-window
     /// completions (the caller already holds the result).
     pub handed_back: bool,
+    /// True once this execution's task has POSITIVE proof its direct child exited: a `wait` that
+    /// returned its status (after an exit, a kill or a timeout), or a child that never started.
+    /// A kill is confirmed by this, never by the `Killed` status, which is set before the child
+    /// dies (`code/release-hands`).
+    pub process_ended: bool,
+    /// Why the task could NOT prove the child exited (its final `wait` failed). Never read as
+    /// an exit: a release that meets it stays unresolved and keeps the context's handles.
+    pub process_end_error: Option<String>,
     /// Cursor: index of next stdout line to return on poll/watch.
     stdout_cursor: usize,
     /// Cursor: index of next stderr line to return on poll/watch.
@@ -367,6 +375,8 @@ impl ShellSession {
             started_at: now_ms,
             finished_at: None,
             handed_back: false,
+            process_ended: false,
+            process_end_error: None,
             stdout_cursor: 0,
             stderr_cursor: 0,
             output_notify: notify,
@@ -920,6 +930,7 @@ async fn run_shell_command(
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("Failed to spawn bash: {e}"));
                 s.finished_at = Some(crate::time::EpochMs::now().millis());
+                s.process_ended = true; // nothing started, so nothing is left running
                 s.output_notify.notify_one();
             }
             return;
@@ -1040,6 +1051,24 @@ async fn run_shell_command(
         }
     };
 
+    // PROOF THE DIRECT CHILD EXITED, or why there is none. A `wait` that returned its status is
+    // proof. Every other way out of the select (a kill, a timeout, a wait error, or a kill already
+    // flagged before the timeout fired, which used to skip the child entirely) signals the child
+    // (harmless if it's already dead) and waits once more: only that wait's status proves the
+    // reap, and its error is recorded as unproven, never as an exit (Astra on #5005).
+    let reaped: Result<(), String> = if exit_status.is_some() {
+        Ok(())
+    } else {
+        let _ = child.start_kill();
+        child.wait().await.map(|_| ()).map_err(|e| format!("could not confirm the process exited: {e}"))
+    };
+    if let Ok(mut s) = state.lock() {
+        match reaped {
+            Ok(()) => s.process_ended = true,
+            Err(why) => s.process_end_error = Some(why),
+        }
+    }
+
     // Wait for output readers to drain
     let _ = stdout_task.await;
     let _ = stderr_task.await;
@@ -1110,6 +1139,10 @@ async fn run_shell_command(
     }
 }
 
+/// How often an execution's task looks for a kill request. The cadence a kill is noticed at,
+/// and so the cadence `code/release-hands` checks a killed execution has ended at.
+pub(crate) const KILL_POLL: Duration = Duration::from_millis(100);
+
 /// Poll the kill flag on the execution state. Returns when kill is requested.
 async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
     loop {
@@ -1120,7 +1153,7 @@ async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
                 }
             }
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(KILL_POLL).await;
     }
 }
 

@@ -71,11 +71,60 @@ pub struct CommandToolExecutor {
     /// async-dispatch listener. `None` when built from a bare `Connection` (harnesses,
     /// mocks) — those run every command synchronously. [[persona-async-dispatch-channel]]
     core: Option<Arc<CommandExecutor>>,
+    /// The acting context these hands are bound to (bound into the connection's identity,
+    /// so the kernel keys her code tools by it). `None` = her default (live) context.
+    hands: Option<crate::code::hands::HandsContext>,
+    /// For a context's hands: ends the context when the last clone of these hands drops (the
+    /// fork is over, on any exit path). `None` for her live hands, which never end.
+    _release: Option<Arc<ContextRelease>>,
+}
+
+/// Ends an acting context when the hands bound to it are gone: sends `code/release-hands`
+/// as that context, so its engine and shells (and anything they still run) don't outlive
+/// it. Tied to the hands' lifetime rather than to a restore call, so every exit path of a
+/// fork (finish, error, panic) releases it.
+struct ContextRelease {
+    core: Arc<CommandExecutor>,
+    identity: CallerIdentity,
+    persona: Uuid,
+    context: crate::code::hands::HandsContext,
+}
+
+impl Drop for ContextRelease {
+    fn drop(&mut self) {
+        let (core, identity, persona, context) = (self.core.clone(), self.identity.clone(), self.persona, self.context);
+        // Off the dropping thread: a release dispatches a command. With no runtime (a test
+        // tearing down outside one) there is nothing live to release into.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                // Forget the place only on a CONFIRMED release: an unresolved one keeps the
+                // handles and the record together, so neither claims the other is gone.
+                let outcome = core
+                    .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity))
+                    .await
+                    .and_then(|r| match r {
+                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)
+                            .map_err(|e| format!("the release's result isn't its own shape: {e}")),
+                        _ => Err("the release answered in a shape other than its own JSON".to_string()),
+                    });
+                match outcome {
+                    Ok(release) if release.released => crate::cognition::persona_workspace::forget_acting_context(persona, context),
+                    Ok(release) => tracing::warn!(
+                        context = %context.id(),
+                        unconfirmed = ?release.unconfirmed,
+                        errors = ?release.errors,
+                        "an acting context's processes were not confirmed gone; its handles and place are kept"
+                    ),
+                    Err(e) => tracing::warn!(error = %e, context = %context.id(), "an acting context's hands could not be released; its handles and place are kept"),
+                }
+            });
+        }
+    }
 }
 
 impl CommandToolExecutor {
     pub fn new(conn: Connection<InProcessTransport>) -> Self {
-        Self { conn, core: None }
+        Self { conn, core: None, hands: None, _release: None }
     }
 
     /// Build a persona's hands over the uniform client: a
@@ -91,6 +140,16 @@ impl CommandToolExecutor {
     /// at execution even though it may appear in the tool surface. Offer = the
     /// `AiSafe` surface; execute = authorized-by-identity ([[persona-is-a-client]]).
     pub fn for_persona(executor: Arc<CommandExecutor>, persona: Uuid) -> Self {
+        Self::for_persona_in(executor, persona, None)
+    }
+
+    /// [`Self::for_persona`] in an acting context: the same persona, gated the same way, with
+    /// her code tools keyed by `hands` (an eval's or a fork's own hands, never her live ones).
+    pub fn for_persona_in(
+        executor: Arc<CommandExecutor>,
+        persona: Uuid,
+        hands: Option<crate::code::hands::HandsContext>,
+    ) -> Self {
         // A local persona is the owner's own in-process agent, not a cross-grid
         // peer: it carries `LocalPersona` identity → resolves to `Trusted` at the
         // gate (file/shell access), capped below Owner. Unforgeable remotely (the
@@ -98,15 +157,18 @@ impl CommandToolExecutor {
         // `persona` is the persona's bare-Uuid id; the gate identity is the canonical
         // PeerId (== peer_id by invariant). Convert at this spawn boundary.
         let core = executor.clone();
-        let transport = InProcessTransport::new(
-            executor,
-            Some(CallerIdentity::local_persona(
-                crate::identity::PeerId::from_uuid(persona),
-            )),
-        );
+        let identity = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona));
+        let identity = match hands {
+            Some(context) => identity.in_hands(context),
+            None => identity,
+        };
+        let release = hands.map(|context| Arc::new(ContextRelease { core: core.clone(), identity: identity.clone(), persona, context }));
+        let transport = InProcessTransport::new(executor, Some(identity));
         Self {
             conn: Connection::new(transport),
             core: Some(core),
+            hands,
+            _release: release,
         }
     }
 
@@ -405,6 +467,15 @@ pub(crate) fn manual_blanks_in(input: &Value) -> Vec<String> {
 impl ToolExecutor for CommandToolExecutor {
     fn command_executor(&self) -> Option<Arc<CommandExecutor>> {
         self.core_executor()
+    }
+
+    fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {
+        self.hands
+    }
+
+    fn in_fresh_hands(&self, persona: Uuid) -> Option<Arc<dyn ToolExecutor>> {
+        let core = self.core.clone()?;
+        Some(Arc::new(Self::for_persona_in(core, persona, Some(crate::code::hands::HandsContext::fresh()))))
     }
 
     async fn execute_native_batch(

@@ -11,6 +11,7 @@
 //! - `search` — Regex + glob code search with .gitignore awareness
 //! - `tree` — Directory tree generation
 //! - `git_bridge` — Git status, diff, and branch operations
+//! - `hands` — whose hands a call acts with: caller + acting context (the hands-map key)
 //! - `workspace_events` — `workspace:written` bus events emitted at every write site
 
 pub mod change_graph;
@@ -18,6 +19,7 @@ pub mod confinement;
 pub mod diff_engine;
 pub mod file_engine;
 pub mod git_bridge;
+pub mod hands;
 pub mod path_security;
 pub mod search;
 pub mod shell_session;

@@ -191,9 +191,20 @@ pub struct CallerIdentity {
     /// SAME boundary-aware capability semantics the gate re-checks. Never set it
     /// from unverified input.
     pub granted_capabilities: Vec<String>,
+    /// The acting context this caller's code calls run in (an eval or a fork of a
+    /// citizen, beside her live session). Bound by the kernel side of the connection
+    /// ([`Self::in_hands`]), never from params: a caller can't name another context's
+    /// hands. `None` is the caller's default context. See [`crate::code::hands`].
+    pub hands: Option<crate::code::hands::HandsContext>,
 }
 
 impl CallerIdentity {
+    /// This identity, acting in `context`: same caller, same trust, its own hands.
+    pub fn in_hands(mut self, context: crate::code::hands::HandsContext) -> Self {
+        self.hands = Some(context);
+        self
+    }
+
     /// Construct an airc-sourced caller identity. Used by the
     /// airc transport when it extracts the sender's peer_id
     /// from a verified envelope.
@@ -202,6 +213,7 @@ impl CallerIdentity {
             peer_id,
             source: CallerSource::Airc,
             granted_capabilities: Vec::new(),
+            hands: None,
         }
     }
 
@@ -213,6 +225,7 @@ impl CallerIdentity {
             peer_id,
             source: CallerSource::Local,
             granted_capabilities: Vec::new(),
+            hands: None,
         }
     }
 
@@ -226,6 +239,7 @@ impl CallerIdentity {
             peer_id,
             source: CallerSource::LocalPersona,
             granted_capabilities: Vec::new(),
+            hands: None,
         }
     }
 
@@ -237,6 +251,7 @@ impl CallerIdentity {
             peer_id,
             source: CallerSource::Tcp,
             granted_capabilities: Vec::new(),
+            hands: None,
         }
     }
 
@@ -250,6 +265,7 @@ impl CallerIdentity {
             peer_id,
             source: CallerSource::Ws,
             granted_capabilities: Vec::new(),
+            hands: None,
         }
     }
 
@@ -278,6 +294,7 @@ impl CallerIdentity {
             peer_id,
             source: CallerSource::PositronObserver { observer_id },
             granted_capabilities: Vec::new(),
+            hands: None,
         }
     }
 

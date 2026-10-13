@@ -46,6 +46,7 @@ use crate::code::types::{
     DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
     SearchResult, TreeResult, WriteResult,
 };
+use crate::code::hands::HandsKey;
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
 
@@ -92,11 +93,11 @@ pub(crate) async fn resolve_readable_path(
     ctx: &Ctx,
     path: &str,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let who = caller_id(ctx);
-    ensure_engine(state, &who).await?;
+    let key = hands_key(ctx);
+    ensure_engine(state, &key).await?;
     let engine = state
         .file_engines
-        .get(&who)
+        .get(&key.map_key())
         .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
     let scope = read_scope_of(ctx, &engine.workspace_root());
     engine
@@ -119,6 +120,14 @@ pub(crate) fn caller_id(ctx: &Ctx) -> String {
 }
 
 pub(crate) const LOCAL_OWNER: &str = "local-owner";
+
+/// Whose hands this call acts with: the caller, in the acting context its connection is
+/// bound to (`CallerIdentity::hands`, set by the kernel side, never by params). The one
+/// key every hands map uses; the caller alone stays the authorization identity
+/// ([`caller_id`]). See [`crate::code::hands`].
+pub(crate) fn hands_key(ctx: &Ctx) -> HandsKey {
+    HandsKey::new(caller_id(ctx), ctx.caller.as_ref().and_then(|c| c.hands))
+}
 
 /// Resolve (and provision on first use) the citizen LAYER for an identified peer
 /// caller: a copy-on-write clone of the shared base (the core's cwd — the repo)
@@ -452,8 +461,13 @@ fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) {
 /// the shared checkout is never writable through a peer's hands. Idempotent and
 /// defers to an engine a prior call already created (so an explicit
 /// `create-workspace` with a specific root still wins).
-pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), CommandError> {
-    let local = is_local_who(who);
+pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(), CommandError> {
+    // `caller` is who acts (her layer, her trust, her held card); `who` is which of her
+    // hands (the map key: her default context keeps the bare caller).
+    let caller = key.caller.as_str();
+    let map_key = key.map_key();
+    let who = map_key.as_str();
+    let local = is_local_who(caller);
     if local {
         // A LOCAL identity's hands follow her held card (2026-09-12): the operator or
         // the agent self-peer claims on the board, the claim stages a checkout, her
@@ -461,7 +475,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), Co
         // return to the core's cwd when the card is released. Only a CHANGE of card
         // rooting evicts the cached engine (and its shell); an engine a caller pinned
         // with `create-workspace` is otherwise left alone.
-        let card_root = card_root_of(who).await;
+        let card_root = card_root_of(caller).await;
         let mut last = LAST_CARD_ROOT
             .lock()
             .unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned marker still compares — the hands must move, never panic
@@ -488,15 +502,25 @@ pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), Co
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
+    // An acting context's workspace is what it was rooted at (`create-workspace` through its
+    // own hands); it never falls back to her home layer, which would put a fork's edits on
+    // her desk. Fail closed and say so (Astra's review of #5005).
+    if key.context.is_some() {
+        return Err(CommandError::Invalid(
+            "these hands belong to an acting context (an eval or a fork) that has no workspace \
+             yet: it must be rooted with code/create-workspace before code tools run in it"
+                .into(),
+        ));
+    }
     let root = if local {
-        match card_root_of(who).await {
+        match card_root_of(caller).await {
             Some(root) => root,
             None => std::env::current_dir().map_err(|e| {
                 CommandError::Internal(format!("workspace root unavailable: {e}"))
             })?,
         }
     } else {
-        let citizen_root = ensure_citizen_layer(who)?;
+        let citizen_root = ensure_citizen_layer(caller)?;
         // Every citizen workspace is git-backed from birth
         // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
         // exists; otherwise init + root commit, so diff→share→apply works the
@@ -517,7 +541,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, who: &str) -> Result<(), Co
     state
         .file_engines
         .entry(who.to_string())
-        .or_insert_with(|| FileEngine::new(who, security));
+        .or_insert_with(|| FileEngine::new(caller, security));
     Ok(())
 }
 
@@ -530,27 +554,38 @@ fn is_local_who(who: &str) -> bool {
             .unwrap_or(false) // unwrap_or: not a uuid = not a self-peer
 }
 
+/// Where THESE hands stand, for a command that runs outside the engine (`code/run`): the
+/// root this caller's acting context was rooted at (a held card's checkout on a work turn,
+/// an exam directory for an eval), from the one acting-root record her shell and file hands
+/// are rooted through. A context that was never rooted gets `None` (its snippet runs in
+/// scratch), never the live checkout (Astra's review of #5005). The caller's default context
+/// keeps the local identity's held-card lookup.
+pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let key = hands_key(ctx);
+    if let Ok(persona) = uuid::Uuid::parse_str(&key.caller) {
+        if let Some(root) = crate::cognition::persona_workspace::acting_root_in(persona, key.context) {
+            return Some(root);
+        }
+    }
+    if key.context.is_some() {
+        return None;
+    }
+    card_root_of(&key.caller).await
+}
+
+/// The prepared instance environment's python for the root these hands stand at
+/// ([`held_root_for`]), if it has one: the interpreter `code/run` runs a snippet with (card
+/// 533c2d78). `None` = no root, or no prepared env, and the caller falls back to the PATH
+/// interpreter, named.
+pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let root = held_root_for(ctx).await?;
+    crate::persona::instance_env_fact::instance_python(&root)
+}
+
 /// The held-card checkout a local identity's hands stand in — BOARD-TRUE, read from her
 /// live claims on every provisioning (the same read a persona's held-work turn makes),
 /// never a note taken at claim time: a note dies with the process while the claim lives
 /// on the board (2026-09-12: the hands fell back to cwd after the first reboot).
-/// The prepared instance environment's python for the caller's HELD checkout, if
-/// both exist — the interpreter `code/run` runs a snippet with (card 533c2d78). The
-/// same root the caller's hands are rooted at (`card_root_of`) and the same env the
-/// [env] fact names (`instance_python`); `None` = no held card, no checkout, or no
-/// prepared env, and the caller falls back to the PATH interpreter, named.
-/// The caller's HELD checkout root — where her hands stand — for a snippet to run in.
-pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
-    let who = caller_id(ctx);
-    card_root_of(&who).await
-}
-
-pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
-    let who = caller_id(ctx);
-    let root = card_root_of(&who).await?;
-    crate::persona::instance_env_fact::instance_python(&root)
-}
-
 async fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
     use crate::persona::active_work_source::AircWorkReader as _;
     let peer = uuid::Uuid::parse_str(who).ok()?;
@@ -576,13 +611,14 @@ static LAST_CARD_ROOT: std::sync::LazyLock<
 /// shell process: shell `cd`, assignments, exports and options do not flow back
 /// into this registry or into later calls.
 async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<(), CommandError> {
-    let who = caller_id(ctx);
-    let who = who.as_str();
+    let key = hands_key(ctx);
+    let map_key = key.map_key();
+    let who = map_key.as_str();
     // The ENGINE decides the root and evicts a shell whose root moved (a held card
     // claimed after the shell was opened) — so it runs first; a shell that survives
     // it is current. Checking the shell first let a pre-claim `code/shell` pin the
     // hands at the core's cwd for the session's whole life (2026-09-12, live).
-    ensure_engine(state, who).await?;
+    ensure_engine(state, &key).await?;
     if state.shell_sessions.contains_key(who) {
         return Ok(());
     }
@@ -592,7 +628,7 @@ async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<(), CommandError> 
         .map(|e| e.workspace_root())
         .ok_or_else(|| CommandError::Internal("engine vanished after provisioning".into()))?;
     let session_id = uuid::Uuid::new_v4().to_string();
-    let mut shell = ShellSession::new(&session_id, who, &root)
+    let mut shell = ShellSession::new(&session_id, &key.caller, &root)
         .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
     // A citizen's shell is confined to her roots (card d598c806); the operator's is the
     // operator's. Decided by the SAME trust the gate saw, never by a params field.
@@ -626,12 +662,12 @@ const DEFAULT_SHELL_WAIT_MS: u64 = 30_000;
 /// `DashMap` ref guard the caller borrows the engine through.
 macro_rules! engine {
     ($self:ident, $ctx:ident) => {{
-        let who = caller_id($ctx);
-        ensure_engine(&$self.state, &who).await?;
+        let key = hands_key($ctx);
+        ensure_engine(&$self.state, &key).await?;
         $self
             .state
             .file_engines
-            .get(&who)
+            .get(&key.map_key())
             .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?
     }};
 }
@@ -1462,7 +1498,7 @@ impl ActionCommand for CodeShell {
         ctx: &Ctx,
         p: CodeShellParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
-        let who = caller_id(ctx);
+        let who = hands_key(ctx).map_key();
         ensure_shell(&self.state, ctx).await?;
 
         // Start the command while briefly holding the shell entry, then DROP the
@@ -1542,7 +1578,7 @@ impl ActionCommand for CodeShellPoll {
         ctx: &Ctx,
         p: CodeShellPollParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
-        let who = caller_id(ctx);
+        let who = hands_key(ctx).map_key();
         let state_arc = self
             .state
             .with_execution(&who, &p.execution_id, |s, id| s.get_execution_state(id))
@@ -1602,7 +1638,7 @@ impl ActionCommand for CodeShellKill {
         ctx: &Ctx,
         p: CodeShellKillParams,
     ) -> Result<CodeShellKillResult, CommandError> {
-        let who = caller_id(ctx);
+        let who = hands_key(ctx).map_key();
         self.state
             .with_execution(&who, &p.execution_id, |s, id| s.kill(id))
             .map_err(execution_lookup_error)?;
@@ -1773,6 +1809,127 @@ impl ActionCommand for CodeHistory {
     }
 }
 
+// ─────────────────── code/release-hands ───────────────────
+
+/// End the caller's current acting context: kill anything its shells still run, wait each
+/// one out, and only once every one is confirmed gone drop its workspace engine and shells.
+/// What a fork's hands do when the fork is over (an eval or a solve), so its context leaves
+/// nothing behind. A release that can't confirm keeps the handles and says so
+/// (`released: false`), so a retry finds them. Refused for a caller's default (live) hands:
+/// those are never ended by a verb (docs/architecture/HER-HANDS.md).
+pub struct CodeReleaseHands {
+    pub state: Arc<CodeState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
+pub struct CodeReleaseHandsParams {}
+
+/// What `code/release-hands` ended, and what it could confirm.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+pub struct ReleaseHandsResult {
+    /// The acting context that ended.
+    pub context: String,
+    /// Pids of executions that hadn't been proven ended: killed now, or killed earlier and
+    /// not yet reaped.
+    pub killed: Vec<u32>,
+    /// Of those, the pids NOT confirmed gone: their exit couldn't be awaited, or the kernel
+    /// still shows them or can't be read. Reported by name, never assumed dead.
+    pub unconfirmed: Vec<u32>,
+    /// Why an exit couldn't be awaited, one line per execution.
+    pub errors: Vec<String>,
+    /// True only when every execution was confirmed gone and the context's engine and shells
+    /// were dropped. False keeps them, so the caller can retry and the acting place stays known.
+    pub released: bool,
+}
+
+/// Whether a release may drop the context's handles: only when nothing is left unconfirmed
+/// and no exit failed to be awaited. One place, so the command and its test agree.
+pub(crate) fn release_confirmed(unconfirmed: &[u32], errors: &[String]) -> bool {
+    unconfirmed.is_empty() && errors.is_empty()
+}
+
+#[async_trait]
+impl ActionCommand for CodeReleaseHands {
+    const NAME: &'static str = "code/release-hands";
+    // Privileged like create-workspace: it ends a context's sandbox. A persona never calls it
+    // as a tool; her fork's own hands send it when the fork is dropped.
+    const ACCESS: AccessLevel = AccessLevel::Privileged;
+    const DESCRIPTION: &'static str =
+        "End the caller's current acting context (an eval's or a fork's own hands): drop its \
+         workspace engine and shells, killing anything still running. Refused for the caller's \
+         default (live) hands.";
+    type Params = CodeReleaseHandsParams;
+    type Output = ReleaseHandsResult;
+
+    async fn run(&self, ctx: &Ctx, _p: CodeReleaseHandsParams) -> Result<ReleaseHandsResult, CommandError> {
+        let key = hands_key(ctx);
+        let Some(context) = key.context else {
+            return Err(CommandError::Invalid(
+                "code/release-hands ends an acting context's hands; these are the caller's default \
+                 (live) hands, which are never ended by a verb"
+                    .into(),
+            ));
+        };
+        let who = key.map_key();
+        let pending = self.state.begin_release(&who);
+        // WAIT each one out: its own task sets `process_ended` after the reap, or
+        // `process_end_error` when the reap itself failed, at the cadence the task notices a
+        // kill (`KILL_POLL`). SIGKILL can't be ignored, so a direct child's reap always comes;
+        // no timeout is guessed. A failed reap is NOT an exit: it stays unconfirmed. Then ask
+        // the kernel, with positive evidence only, whether each reaped pid is gone.
+        let mut pids = Vec::new();
+        let mut reaped = Vec::new();
+        let mut unconfirmed = Vec::new();
+        let mut errors = Vec::new();
+        for state in &pending {
+            loop {
+                let (ended, error, pid) = match state.lock() {
+                    Ok(s) => (s.process_ended, s.process_end_error.clone(), s.pid),
+                    Err(p) => (p.get_ref().process_ended, p.get_ref().process_end_error.clone(), p.get_ref().pid), // poisoned: read the last state
+                };
+                if let Some(why) = error {
+                    pids.extend(pid);
+                    unconfirmed.extend(pid);
+                    errors.push(match pid {
+                        Some(pid) => format!("pid {pid}: {why}"),
+                        None => why,
+                    });
+                    break;
+                }
+                if ended {
+                    pids.extend(pid);
+                    reaped.extend(pid);
+                    break;
+                }
+                tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
+            }
+        }
+        let still_there = tokio::task::spawn_blocking(move || {
+            reaped
+                .into_iter()
+                .filter(|pid| !matches!(crate::inference::engine_residency::probe_process(*pid), crate::inference::engine_residency::ProcessProbe::Absent))
+                .collect::<Vec<u32>>()
+        })
+        .await
+        .map_err(|e| CommandError::Internal(format!("release-hands: confirming the kills failed to run: {e}")))?;
+        unconfirmed.extend(still_there);
+        let released = release_confirmed(&unconfirmed, &errors);
+        if released {
+            self.state.finish_release(&who);
+        }
+        crate::probe!(
+            class = "code.hands.released",
+            caller = key.caller.as_str(),
+            context = %context.id(),
+            killed = pids.len() as u64,
+            unconfirmed = unconfirmed.len() as u64,
+            released = released,
+            "an acting context's executions were waited out; its engine and shells are dropped only when every one is confirmed gone"
+        );
+        Ok(ReleaseHandsResult { context: context.id().to_string(), killed: pids, unconfirmed, errors, released })
+    }
+}
+
 // ─────────────────── code/create-workspace ───────────────────
 
 /// Establish (or re-root) the caller's workspace sandbox at a specific path.
@@ -1841,7 +1998,10 @@ impl ActionCommand for CodeCreateWorkspace {
         ctx: &Ctx,
         p: CodeCreateWorkspaceParams,
     ) -> Result<CreateWorkspaceResult, CommandError> {
-        let who = caller_id(ctx);
+        // These hands, in this caller's acting context: an eval's create-workspace roots the
+        // eval's hands, never her live ones (docs/architecture/HER-HANDS.md).
+        let key = hands_key(ctx);
+        let who = key.map_key();
         let root = std::path::Path::new(&p.workspace_root);
         let mut security = PathSecurity::new(root).map_err(|e| {
             CommandError::Invalid(format!(
@@ -1865,7 +2025,7 @@ impl ActionCommand for CodeCreateWorkspace {
         };
         self.state.file_engines.insert(
             who.clone(),
-            FileEngine::new(&who, security).with_write_policy(policy),
+            FileEngine::new(&key.caller, security).with_write_policy(policy),
         );
         // Move the caller's shell to the NEW root. `ensure_shell` early-returns when a session
         // exists, so without this a re-root moved her FILE engine and left her SHELL in the old
@@ -1990,6 +2150,7 @@ crate::register_command!(CodeDelete);
 crate::register_command!(CodeDiff);
 crate::register_command!(CodeUndo);
 crate::register_command!(CodeHistory);
+crate::register_command!(CodeReleaseHands);
 crate::register_command!(CodeCreateWorkspace);
 
 // Opt-in outcome projection: ONLY these two commands pay the `DeserializeOwned`
@@ -2046,6 +2207,9 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
             state: state.clone(),
         }),
         Arc::new(CodeHistory {
+            state: state.clone(),
+        }),
+        Arc::new(CodeReleaseHands {
             state: state.clone(),
         }),
         Arc::new(CodeCreateWorkspace { state }),
