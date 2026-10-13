@@ -25,8 +25,9 @@ use serde::Deserialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use super::submit::{return_request, SubmitOutcome};
+use super::submit::{return_request, ReturnScope, SubmitOutcome};
 use crate::genome::fine_tuning::TrainingJobBoard;
+use crate::genome::fine_tuning::engine_lora_adapter::read_partition;
 use crate::modules::training_trigger::{genome_root, job_dir_under, read_job_request, TrainingTriggerState};
 use crate::sdk_codegen::CommandError;
 
@@ -101,11 +102,107 @@ pub(crate) async fn return_job(
     // train whole, and a job memory cannot give a useful window parks durably with its wake
     // (#4988). Holding them out was right while a dispatch could only fail or loop; it left Kimi's
     // canonical 680a20 examples in a terminal job's partition with no route back.
-    let outcome = return_request(state, request, job_id).await?;
+    let outcome = return_request(state, request, job_id, ReturnScope::Whole).await?;
     if outcome.success {
         board.journal_returned(job_id, job_id, &serde_json::json!("genome/training-trigger/return"), 0); // not held by a Took: an operator returned it, named by the verb
     }
     Ok(outcome)
+}
+
+/// What returning a trained job's parked remainder did.
+#[derive(Debug)]
+pub(crate) enum Remainder {
+    /// The job parked nothing, or keeps no partition: nothing of it is stranded.
+    Nothing,
+    /// Its receipt stands: the remainder went back before, and is never sent twice.
+    AlreadyReturned,
+    /// Submitted to her bucket. A refusal (`success: false`) leaves no receipt, so the next
+    /// pass retries, and the chunks already accepted replay by their derived identities.
+    Submitted(SubmitOutcome),
+}
+
+/// Written in a job's directory once its parked remainder is back in her bucket.
+pub(crate) const REMAINDER_RECEIPT: &str = "parked-returned.json";
+
+/// The receipt of a returned remainder: which job, exactly which request indices.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RemainderReceipt {
+    job: Uuid,
+    parked: Vec<usize>,
+    at_ms: u64,
+}
+
+/// The REMAINDER of a job that completed training: the whole originals its partition parked
+/// (the window couldn't hold them whole, or the run skipped them), back into her bucket, once
+/// (card 8a2334d9). Never an example it trained, so a trained job's FULL return stays refused
+/// ([`return_job`]). The caller has established that `job` completed training: the sentinel
+/// claimed it Completed, or the ledger's terminal row says so.
+///
+/// - The examples come from the job's own `request.json`, its native base and whole payloads,
+///   never the partition's measured rows.
+/// - The parked indices are checked against that request and the partition: in range, unique,
+///   ascending. An index the run skipped stays in `sent` and is parked too: it never trained, so
+///   it is returned.
+/// - The identity is the job plus its exact parked set ([`ReturnScope::Parked`]); a
+///   [`REMAINDER_RECEIPT`] written atomically after the bucket took it ends the job's remainder.
+pub(crate) async fn return_parked_remainder(
+    state: &Arc<TrainingTriggerState>,
+    root: &std::path::Path,
+    job: &crate::genome::fine_tuning::job_board::CompletedJob,
+) -> Result<Remainder, CommandError> {
+    let id = job.local_id;
+    let primary = job_dir_under(root, &job.persona_name, &job.trait_kind, id);
+    // where its record lives: its own dir, or under the request's artifact dir (as `return_job`)
+    let dir = if read_partition(&primary).is_some() {
+        primary
+    } else {
+        match read_job_request(&primary).ok().and_then(|r| r.local_artifact_dir).map(|r| r.join(id.to_string())) {
+            Some(alt) if read_partition(&alt).is_some() => alt,
+            _ => return Ok(Remainder::Nothing), // no partition: nothing was parked
+        }
+    };
+    if dir.join(REMAINDER_RECEIPT).try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
+        return Ok(Remainder::AlreadyReturned);
+    }
+    let partition = read_partition(&dir).ok_or_else(|| CommandError::Internal(format!("job {id}: its partition vanished while being read")))?;
+    if partition.parked.is_empty() {
+        return Ok(Remainder::Nothing);
+    }
+    let mut request = read_job_request(&dir).map_err(CommandError::NotFound)?;
+    let examples = request.dataset.examples.len();
+    let out_of_range = |set: &[usize]| set.iter().copied().find(|&i| i >= examples);
+    if let Some(i) = out_of_range(&partition.parked).or_else(|| out_of_range(&partition.sent)) {
+        return Err(CommandError::Invalid(format!(
+            "job {id}: its partition names request index {i}, but its request holds {examples} examples; nothing is returned"
+        )));
+    }
+    if !partition.parked.windows(2).all(|pair| pair[0] < pair[1]) {
+        return Err(CommandError::Invalid(format!(
+            "job {id}: its parked indices {:?} are not unique and ascending; nothing is returned",
+            partition.parked
+        )));
+    }
+    let parked = partition.parked;
+    request.dataset.examples = parked.iter().map(|&i| request.dataset.examples[i].clone()).collect();
+    let outcome = return_request(state, request, id, ReturnScope::Parked(&parked)).await?;
+    if outcome.success {
+        let receipt = RemainderReceipt { job: id, parked, at_ms: crate::time::EpochMs::now().millis() };
+        write_receipt(&dir, &receipt).map_err(|e| {
+            CommandError::Internal(format!(
+                "job {id}: its remainder is in her bucket, but its receipt could not be written ({e}); the next pass replays it by identity"
+            ))
+        })?;
+    }
+    Ok(Remainder::Submitted(outcome))
+}
+
+/// Write the receipt whole or not at all: to a sibling, then renamed over.
+fn write_receipt(dir: &std::path::Path, receipt: &RemainderReceipt) -> Result<(), String> {
+    let body = serde_json::to_vec(receipt).map_err(|e| e.to_string())?; // file on disk: the job dir's remainder receipt, read by the next pass after a restart
+    let staged = dir.join(format!("{REMAINDER_RECEIPT}.partial"));
+    std::fs::write(&staged, body).map_err(|e| e.to_string())?;
+    std::fs::rename(&staged, dir.join(REMAINDER_RECEIPT)).map_err(|e| e.to_string())
 }
 
 fn refuse_trained_job(job: Uuid, dir: &std::path::Path) -> Result<(), CommandError> {
@@ -190,12 +287,92 @@ mod tests {
         let jd = job_dir_under(&root, "Kimi", "code/owner", earlier);
         let mut unparked_only = read_job_request(&jd).expect("test: request");
         unparked_only.dataset.examples.retain(|e| e.prompt == "p1");
-        assert!(return_request(&trigger.state, unparked_only, earlier).await.expect("test: the old return").success);
+        assert!(return_request(&trigger.state, unparked_only, earlier, ReturnScope::Whole).await.expect("test: the old return").success);
         let before = trigger.state.buckets.get(&key).map(|b| b.examples.len());
         let again = return_job(&trigger.state, &board, &root, earlier).await.expect("test: answered");
         assert!(!again.success, "a different payload under the same returned id is refused: {again:?}");
         assert!(again.error_kind.is_some() && again.error.is_some(), "the refusal is typed and says why: {again:?}");
         assert_eq!(trigger.state.buckets.get(&key).map(|b| b.examples.len()), before, "nothing was added");
+    }
+
+    // what this catches (card 8a2334d9; Kimi's 55f2e6de on the 5090, 2026-10-13): a job that
+    // COMPLETED training kept the examples its partition parked with no route back, since the
+    // one return refuses a trained job. Its remainder returns whole from request.json, never an
+    // example it trained, including one the run skipped (in `sent` and parked); once, by its
+    // receipt; a full return stays refused; and a partition that doesn't match its request is
+    // refused with nothing added.
+    #[tokio::test]
+    async fn a_completed_job_returns_only_its_parked_remainder_once() {
+        use crate::genome::fine_tuning::job_board::CompletedJob;
+        let (trigger, _executor, _db) = build_runtime_trigger_only().await;
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let board = TrainingJobBoard::with_ledger(Some(dir.path().join("jobs-ledger.jsonl")));
+        let root = dir.path().join("genome");
+        let persona = Uuid::from_u128(12);
+        let completed = |job: Uuid, sent: Vec<usize>, parked: Vec<usize>| {
+            board.register(WatchedJob {
+                trigger_dispatch_id: None,
+                handle: JobHandle { provider_id: "engine-local".into(), provider_job_id: "x".into(), local_id: job },
+                persona_id: persona,
+                persona_name: "Kimi".into(),
+                base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+                trait_kind: "code/owner".into(),
+                eval_set: None,
+                signature: None,
+                decision: None,
+            });
+            board.claim(job, &TrainingStatus::Completed {
+                artifact: crate::genome::fine_tuning::types::TrainingArtifact {
+                    model_id: "gene".into(),
+                    local_path: None,
+                    format: Default::default(),
+                    metrics: Default::default(),
+                },
+            });
+            let jd = job_dir_under(&root, "Kimi", "code/owner", job);
+            std::fs::create_dir_all(&jd).expect("test: job dir");
+            std::fs::write(jd.join("request.json"), serde_json::json!({
+                "personaId": persona.to_string(), "personaName": "Kimi",
+                "baseModel": "ggml-org/Qwen3.8-27B-GGUF", "traitKind": "code/owner",
+                "dataset": {"examples": [ex("p0", "c"), ex("p1", "c"), ex("p2", "c"), ex("p3", "c")], "source": TrainingSource::TeacherSynthesized, "validationSplit": 0.0}
+            }).to_string()).expect("test: request");
+            std::fs::write(jd.join("partition.json"), serde_json::json!({
+                "window": 16896, "sent": sent, "parked": parked, "rows": []
+            }).to_string()).expect("test: partition");
+            std::fs::create_dir_all(jd.join("adapters")).expect("test: adapters");
+            std::fs::write(jd.join("adapters/adapter.gguf"), b"gene").expect("test: its adapter");
+            CompletedJob { local_id: job, persona_name: "Kimi".into(), trait_kind: "code/owner".into() }
+        };
+        let key = crate::modules::training_trigger::BucketKey {
+            persona_id: persona,
+            trait_kind: "code/owner".into(),
+            base_model: "ggml-org/Qwen3.8-27B-GGUF".into(),
+        };
+        let held = || trigger.state.buckets.get(&key).map(|b| b.examples.iter().map(|e| e.prompt.clone()).collect::<Vec<_>>()).unwrap_or_default();
+
+        // Sent 0, 1 and 2; the run skipped 1, so 1 is parked too; 3 never fit. 0 and 2 trained.
+        let trained = Uuid::new_v4();
+        let job = completed(trained, vec![0, 1, 2], vec![1, 3]);
+        assert_eq!(board.take_completed(), vec![job.clone()], "the sentinel's Completed claim queues it for the trigger");
+        let first = return_parked_remainder(&trigger.state, &root, &job).await.expect("test: returned");
+        assert!(matches!(&first, Remainder::Submitted(o) if o.success), "{first:?}");
+        assert_eq!(held(), vec!["p1".to_string(), "p3".to_string()], "only what it parked goes back, whole, never what it trained");
+        assert!(job_dir_under(&root, "Kimi", "code/owner", trained).join(REMAINDER_RECEIPT).is_file(), "the receipt stands");
+        let again = return_parked_remainder(&trigger.state, &root, &job).await.expect("test: answered");
+        assert!(matches!(again, Remainder::AlreadyReturned), "{again:?}");
+        assert_eq!(held().len(), 2, "returned once, never twice");
+        let whole = return_job(&trigger.state, &board, &root, trained).await;
+        assert!(whole.is_err(), "a trained job's FULL return stays refused: {whole:?}");
+
+        // A partition naming an example its request doesn't hold is refused; nothing is added.
+        let broken = completed(Uuid::new_v4(), vec![0], vec![1, 9]);
+        let refused = return_parked_remainder(&trigger.state, &root, &broken).await;
+        assert!(matches!(refused, Err(CommandError::Invalid(_))), "{refused:?}");
+        assert_eq!(held().len(), 2, "nothing was added");
+
+        // A job that parked nothing has no remainder.
+        let whole_fit = completed(Uuid::new_v4(), vec![0, 1, 2, 3], vec![]);
+        assert!(matches!(return_parked_remainder(&trigger.state, &root, &whole_fit).await, Ok(Remainder::Nothing)));
     }
 
     // what this catches (the 5090, 2026-10-05; and 2026-10-07, a return wearing its submission's id): ~500 of Kimi's examples stranded in the

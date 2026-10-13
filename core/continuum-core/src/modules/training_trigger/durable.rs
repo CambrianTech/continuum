@@ -2231,7 +2231,7 @@ mod tests {
                     // have different UUIDs. No historical directory may stand in for it.
                     crate::commands::training_trigger::return_::return_job(&next.state, &board, artifacts.path(), job).await.unwrap()
                 } else {
-                    return_request(&next.state, request.clone(), job).await.unwrap()
+                    return_request(&next.state, request.clone(), job, crate::commands::training_trigger::submit::ReturnScope::Whole).await.unwrap()
                 };
                 if scenario == 0 || scenario == 4 {
                     assert_eq!(result.error_kind.as_deref(), Some("RecoveryRequired"), "{result:?}");

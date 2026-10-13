@@ -87,6 +87,15 @@ pub struct OrphanedJob {
     pub eval_set: Option<String>,
 }
 
+/// A job that completed training, as the trigger needs it to find the job's directory and
+/// return the examples its partition parked (card 8a2334d9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletedJob {
+    pub local_id: Uuid,
+    pub persona_name: String,
+    pub trait_kind: String,
+}
+
 /// How many times one job's lineage may be resumed before the board stops trying:
 /// a job that dies at every boot is not an interrupted job, it is a broken one, and
 /// the third death is the receipt that says so.
@@ -161,6 +170,10 @@ pub struct TrainingJobBoard {
     /// (`take_failed`) and decides whether their examples go back to her bucket (card
     /// 2dfce676). The sentinel only polls and claims; the decision is the trigger's.
     failed: std::sync::Mutex<Vec<WatchedJob>>,
+    /// Jobs that COMPLETED training, until the trigger takes them (`take_completed`) and
+    /// returns the examples each one parked (card 8a2334d9): claimed Completed at runtime, and
+    /// at boot every job the ledger records as completed, since a restart loses this list.
+    completed: std::sync::Mutex<Vec<CompletedJob>>,
 }
 
 /// A bounded evidence read. Neither absence, a partial scan, nor an I/O error
@@ -484,6 +497,7 @@ impl TrainingJobBoard {
             }
             let board = TrainingJobBoard::with_ledger(ledger.clone());
             let orphaned = board.reconcile_orphans().len();
+            board.reconcile_completed();
             if let (true, Some(ledger)) = (orphaned > 0, ledger) {
                 tracing::warn!(
                     orphaned,
@@ -507,6 +521,7 @@ impl TrainingJobBoard {
             quarantined: DashMap::new(),
             orphans: std::sync::Mutex::new(Vec::new()),
             failed: std::sync::Mutex::new(Vec::new()),
+            completed: std::sync::Mutex::new(Vec::new()),
             ledger,
             #[cfg(test)]
             _test_directory: None,
@@ -687,6 +702,71 @@ impl TrainingJobBoard {
         self.failed.lock().map(|mut f| std::mem::take(&mut *f)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to return, never a panic on the tick
     }
 
+    /// The jobs that completed training since the last take: the trigger's tick takes them and
+    /// returns what each one parked (card 8a2334d9).
+    pub fn take_completed(&self) -> Vec<CompletedJob> {
+        self.completed.lock().map(|mut c| std::mem::take(&mut *c)).unwrap_or_default() // unwrap_or_default: a poisoned lock yields nothing to return, never a panic on the tick
+    }
+
+    /// Put back completed jobs whose remainder could not be returned this tick, to try again.
+    pub fn requeue_completed(&self, jobs: Vec<CompletedJob>) {
+        if jobs.is_empty() {
+            return;
+        }
+        if let Ok(mut held) = self.completed.lock() {
+            held.extend(jobs);
+        }
+    }
+
+    /// At boot, every job the ledger records as having completed training, for the trigger to
+    /// return what each one parked: the runtime list dies with the core, and a job completed
+    /// before this existed (Kimi's 55f2e6de) has no other route. One pass over the ledger. A
+    /// job whose remainder already went back is answered by its receipt, so listing it again
+    /// costs one file check. Only the ledger's owner lists them, as with orphans.
+    pub fn reconcile_completed(&self) {
+        if self.owner.is_none() {
+            return;
+        }
+        let mut registered: std::collections::HashMap<String, serde_json::Value> = std::collections::HashMap::new();
+        let mut completed: Vec<String> = Vec::new();
+        for row in self.ledger_rows() {
+            let (Some(event), Some(id)) = (
+                row.get("event").and_then(|e| e.as_str()).map(str::to_owned),
+                row.get("local_id").and_then(|i| i.as_str()).map(str::to_owned),
+            ) else {
+                continue;
+            };
+            match event.as_str() {
+                "registered" => {
+                    registered.insert(id, row);
+                }
+                "terminal"
+                    if row.get("status").is_some_and(|status| {
+                        matches!(serde_json::from_value::<TrainingStatus>(status.clone()), Ok(TrainingStatus::Completed { .. }))
+                    }) && !completed.contains(&id) =>
+                {
+                    completed.push(id);
+                }
+                _ => {}
+            }
+        }
+        let jobs: Vec<CompletedJob> = completed
+            .iter()
+            .filter_map(|id| {
+                let reg = registered.get(id)?;
+                let field = |k: &str| reg.get(k).and_then(|v| v.as_str()).map(str::to_owned);
+                Some(CompletedJob {
+                    local_id: Uuid::parse_str(id).ok()?,
+                    persona_name: field("persona_name")?,
+                    trait_kind: field("trait_kind")?,
+                })
+            })
+            .collect();
+        if let Ok(mut held) = self.completed.lock() {
+            held.extend(jobs);
+        }
+    }
+
     /// The first job in `local_id`'s resume lineage, from the ledger's `resumed` rows.
     pub fn resume_origin(&self, local_id: Uuid) -> Uuid {
         let mut origin = local_id;
@@ -817,6 +897,13 @@ impl TrainingJobBoard {
         if let Some(job) = &job {
             if matches!(status, TrainingStatus::Completed { .. }) {
                 self.adopting.insert(local_id, job.clone());
+                if let Ok(mut completed) = self.completed.lock() {
+                    completed.push(CompletedJob {
+                        local_id,
+                        persona_name: job.persona_name.clone(),
+                        trait_kind: job.trait_kind.clone(),
+                    });
+                }
             }
             if matches!(status, TrainingStatus::Failed { .. }) && job.trigger_dispatch_id.is_some() {
                 if let Ok(mut failed) = self.failed.lock() {
@@ -1278,5 +1365,41 @@ mod tests {
         // (dropping `replay` first, or the check would pass only because it is not the owner).
         drop(replay);
         assert!(TrainingJobBoard::with_ledger(Some(ledger)).reconcile_orphans().is_empty());
+    }
+
+    // what this catches (card 8a2334d9): a job that completed before a restart (Kimi's
+    // 55f2e6de) losing its only route to returning what it parked, because the runtime list
+    // dies with the core. The next owner lists every completed job from the ledger, and no
+    // failed or open one; a reader that doesn't own the ledger lists none.
+    #[test]
+    fn the_boot_replay_lists_every_completed_job_for_its_remainder() {
+        let dir = tempfile::tempdir().expect("test: tempdir");
+        let ledger = dir.path().join("jobs-ledger.jsonl");
+        let board = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        let registered = |id: Uuid| serde_json::json!({
+            "event": "registered", "local_id": id.to_string(), "provider_id": "engine-local",
+            "persona_id": Uuid::from_u128(7).to_string(), "persona_name": "Kimi",
+            "base_model": "ggml-org/Qwen3.8-27B-GGUF", "trait_kind": "code/owner", "at_ms": 1
+        });
+        let (done, failed) = (Uuid::from_u128(0xd0), Uuid::from_u128(0xfa));
+        for id in [done, failed] {
+            board.journal(&registered(id));
+        }
+        let artifact = super::super::types::TrainingArtifact { model_id: "gene".into(), local_path: None, format: Default::default(), metrics: Default::default() };
+        board.journal(&serde_json::json!({"event": "terminal", "reason": "claimed", "local_id": done.to_string(),
+            "status": TrainingStatus::Completed { artifact }, "at_ms": 2}));
+        board.journal(&serde_json::json!({"event": "terminal", "reason": "claimed", "local_id": failed.to_string(),
+            "status": TrainingStatus::Failed { error: "refused".into() }, "at_ms": 2}));
+        let reader = TrainingJobBoard::with_ledger(Some(ledger.clone()));
+        reader.reconcile_completed();
+        assert!(reader.take_completed().is_empty(), "a board that doesn't own the ledger lists nothing");
+        drop((board, reader));
+        let next = TrainingJobBoard::with_ledger(Some(ledger));
+        next.reconcile_completed();
+        assert_eq!(
+            next.take_completed(),
+            vec![CompletedJob { local_id: done, persona_name: "Kimi".into(), trait_kind: "code/owner".into() }],
+            "exactly the completed job, never the failed one"
+        );
     }
 }
