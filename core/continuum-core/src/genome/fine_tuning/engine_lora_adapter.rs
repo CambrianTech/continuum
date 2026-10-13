@@ -2569,9 +2569,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("test: dir");
         let store = Footprints::at(dir.path().join("fp.json"));
         let fam = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
-        store.record(&fam, 7, Uuid::nil()).expect("test: record");
-        store.record(&Shape { window: 68608, chunk: 512, ..fam.clone() }, 9, Uuid::nil()).expect("test: record");
-        store.record(&Shape { recompute: false, ..fam.clone() }, 99, Uuid::nil()).expect("test: record");
+        store.record_with(&fam, 7, true, Uuid::nil()).expect("test: record");
+        store.record_with(&Shape { window: 68608, chunk: 512, ..fam.clone() }, 9, true, Uuid::nil()).expect("test: record");
+        store.record_with(&Shape { recompute: false, ..fam.clone() }, 99, true, Uuid::nil()).expect("test: record");
         let mut got = store.rows_like(&fam);
         got.sort_unstable();
         assert_eq!(got, vec![(1536, 256, 7), (68608, 512, 9)], "its own family only, at every window");
@@ -2956,8 +2956,8 @@ mod tests {
         let mib = 1024u64 * 1024;
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
         let store = Footprints::at(footprints.clone());
-        store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
-        store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        store.record_with(&fam, 2598 * mib, true, Uuid::nil()).expect("test: row");
+        store.record_with(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, true, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
         // her examples are 3,000 tokens whole: the window they need (3,072) is far under served, and
         // the grant holds it at the floor chunk but not at the served window
@@ -3019,8 +3019,8 @@ mod tests {
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
         let probe_dir = tempfile::tempdir().expect("test: dir");
         let probe = Footprints::at(probe_dir.path().join("fp.json"));
-        probe.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
-        probe.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        probe.record_with(&fam, 2598 * mib, true, Uuid::nil()).expect("test: row");
+        probe.record_with(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, true, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&probe.rows_like(&fam)).expect("test: two windows");
         for (case, free) in [
             ("raised", model.bytes(3_072, TRAINING_CHUNK_MIN) - 1),
@@ -3659,10 +3659,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints::at(dir.path().join("f.json"));
         let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
-        f.record(&s, 900, Uuid::nil()).unwrap();
-        f.record(&s, 700, Uuid::nil()).unwrap();
+        f.record_with(&s, 900, true, Uuid::nil()).unwrap();
+        f.record_with(&s, 700, true, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
-        f.record(&s, 1200, Uuid::nil()).unwrap();
+        f.record_with(&s, 1200, true, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(1200));
     }
 
@@ -3687,7 +3687,7 @@ mod tests {
         let f = Footprints::at(path.clone());
         assert_eq!(f.get(&full), Some(41_500), "the legacy row is full depth");
         assert_eq!(f.get(&top8), None, "a reduced-depth lookup never falls back to the legacy row");
-        f.record(&top8, 5_200, Uuid::nil()).unwrap();
+        f.record_with(&top8, 5_200, true, Uuid::nil()).unwrap();
         let reloaded = Footprints::at(path);
         assert_eq!(reloaded.get(&top8), Some(5_200));
         assert_eq!(reloaded.get(&full), Some(41_500), "the reduced row never answers for full depth");
