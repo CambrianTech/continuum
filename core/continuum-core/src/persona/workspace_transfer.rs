@@ -509,9 +509,6 @@ fn move_blocker_over(persona: Uuid, acting_root: Option<PathBuf>) -> Option<Stri
     None
 }
 
-/// The turn-path form of [`sync_after_act`]: off the async thread, bounded by
-/// [`SYNC_BOUND`], probed as `workspace.push`, and recorded so a later move can ask.
-/// Never fails the turn — every shape is an outcome.
 /// The per-checkout lock [`sync_after_act_for`] holds around its git work: one entry per
 /// checkout with open claim hands, dropped when those hands close ([`forget_checkout`]).
 static CHECKOUT_SYNC: std::sync::LazyLock<dashmap::DashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>> =
@@ -524,7 +521,17 @@ pub fn forget_checkout(root: &std::path::Path) {
     CHECKOUT_SYNC.remove_if(root, |_, lock| std::sync::Arc::strong_count(lock) == 1);
 }
 
-pub async fn sync_after_act_for(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
+/// The turn-path form of [`sync_after_act`]: off the async thread, bounded by
+/// [`SYNC_BOUND`], probed as `workspace.push`, and recorded so a later move can ask.
+/// Never fails the turn — every shape is an outcome. It runs ONLY under an admission to the
+/// hands that acted (`lease`, a parameter, so an unleased sync can't be written): its git work
+/// keeps that admission until it returns, even past its own timeout, so a release never
+/// removes the checkout under it (Astra and Codex root on #5026).
+pub async fn sync_after_act_for(lease: std::sync::Arc<crate::code::hands::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
+    crate::code::hands::admitted(Some(lease), sync_admitted(persona, persona_name, root, card)).await
+}
+
+async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
     let node = crate::capacity::gossip::this_process_origin().to_string();
     let started = std::time::Instant::now();
     let root_for_git = root.clone();

@@ -1799,9 +1799,11 @@ impl ActionCommand for CodeReleaseHands {
     // as a tool; her fork's own hands send it when the fork is dropped.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "End the caller's current acting context (an eval's or a fork's own hands): drop its \
-         workspace engine and shells, killing anything still running. Refused for the caller's \
-         default (live) hands.";
+        "End the caller's current acting context (an eval's or a fork's own hands): kill what its \
+         shells still run, wait each one out, and only once every one is confirmed gone drop its \
+         workspace engine and shells (released: true). Otherwise they are kept and the unconfirmed \
+         pids are named (released: false), so a retry finds them. Refused for the caller's default \
+         (live) hands.";
     type Params = CodeReleaseHandsParams;
     type Output = ReleaseHandsResult;
 
@@ -1824,7 +1826,7 @@ impl ActionCommand for CodeReleaseHands {
                     .into(),
             ));
         }
-        crate::code::hands::close(context).await;
+        let lingering = crate::code::hands::close(context).await;
         let who = key.map_key();
         let pending = self.state.begin_release(&who);
         // WAIT each one out: its own task sets `process_ended` after the reap, or
@@ -1854,10 +1856,41 @@ impl ActionCommand for CodeReleaseHands {
                 if ended {
                     pids.extend(pid);
                     reaped.extend(pid);
+                    // What the shell started and the task couldn't confirm gone: kill each again
+                    // while its pid still names it, then re-check. Each release is one recheck,
+                    // so a retry can confirm what this one couldn't.
+                    let survivors = match state.lock() {
+                        Ok(s) => s.unconfirmed_descendants.clone(),
+                        Err(p) => p.get_ref().unconfirmed_descendants.clone(), // poisoned: read the last state
+                    };
+                    if !survivors.is_empty() {
+                        let still = tokio::task::spawn_blocking(move || crate::inference::lane_process::recheck(&survivors))
+                        .await
+                        .map_err(|e| CommandError::Internal(format!("release-hands: re-checking descendants failed to run: {e}")))?;
+                        if let Ok(mut s) = state.lock() {
+                            s.unconfirmed_descendants = still.clone();
+                        }
+                        if !still.is_empty() {
+                            unconfirmed.extend(still.iter().map(|who| who.pid));
+                            errors.push(format!("descendants {:?} of pid {pid:?} are not confirmed gone", still.iter().map(|who| who.pid).collect::<Vec<_>>()));
+                        }
+                    }
                     break;
                 }
                 tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
             }
+        }
+        // What admitted work started and couldn't confirm gone (a gh's git): the same recheck
+        // as a shell's survivors, and the hands are kept while any is present.
+        if !lingering.is_empty() {
+            let still = tokio::task::spawn_blocking(move || crate::inference::lane_process::recheck(&lingering))
+                .await
+                .map_err(|e| CommandError::Internal(format!("release-hands: re-checking its work's processes failed to run: {e}")))?;
+            if !still.is_empty() {
+                unconfirmed.extend(still.iter().map(|who| who.pid));
+                errors.push(format!("processes {:?} its work started are not confirmed gone", still.iter().map(|who| who.pid).collect::<Vec<_>>()));
+            }
+            crate::code::hands::retain_survivors(context, still);
         }
         let still_there = tokio::task::spawn_blocking(move || {
             reaped

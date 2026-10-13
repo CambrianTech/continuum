@@ -606,9 +606,9 @@ mod tests {
     // it; a clone gh refused is removed at once (the positive control).
     #[test]
     fn only_a_timed_out_clone_keeps_its_partial() {
-        use crate::commands::code::github::{GhRunError, TreeKill};
-        let timed_out = CloneError::Gh(GhRunError::TimedOut { args: "repo clone o/r".into(), secs: 900, tree_kill: TreeKill::Delivered });
-        assert!(timed_out.leaves_a_partial_that_may_still_be_written(), "even a delivered tree kill does not prove the tree exited");
+        use crate::commands::code::github::GhRunError;
+        let timed_out = CloneError::Gh(GhRunError::TimedOut { args: "repo clone o/r".into(), secs: 900, unconfirmed: Vec::new() });
+        assert!(timed_out.leaves_a_partial_that_may_still_be_written(), "even with nothing named unconfirmed: a descendant that left the tree is never found");
         let refused = CloneError::Gh(GhRunError::Failed { args: "repo clone o/r".into(), code: Some(1), stderr: "not found".into() });
         assert!(!refused.leaves_a_partial_that_may_still_be_written());
     }

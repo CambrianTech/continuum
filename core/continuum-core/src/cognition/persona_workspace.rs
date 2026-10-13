@@ -1329,13 +1329,8 @@ impl CardHands {
 pub(crate) async fn end_card_turn(card: &CardHands) {
     let hands = &card.hands;
     if let (Some(root), Some(card_id)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
-        // Under the turn's own admission: a sync that outlives its timeout keeps it until the
-        // git work returns, so a release can't remove the checkout under it (Astra on #5026).
-        crate::code::hands::admitted(
-            Some(std::sync::Arc::clone(&card.lease)),
-            crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card_id),
-        )
-        .await;
+        // under the turn's own admission (see sync_after_act_for)
+        crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::clone(&card.lease), hands.persona_id, &hands.persona_name, root, card_id).await;
     }
 }
 
@@ -1466,16 +1461,28 @@ pub(crate) async fn end_acting_context(
     // is next staged on fetches it (`workspace_transfer::arrive`) and a seat change waits
     // on it (`move_blocker`). Bounded, probed, never the turn's failure. A root with no
     // card (an eval sandbox rooted directly) carries nothing: nothing to push.
-    if let (Some(root), Some(card)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
-        // Admitted to the context it syncs: the close below waits for the git work itself,
-        // even when the sync's own timeout already returned (Astra on #5026).
-        let admission = hands.context.and_then(|c| crate::code::hands::admit(c).ok()).map(std::sync::Arc::new);
-        crate::code::hands::admitted(admission, crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card)).await;
-    }
-    if hands.context.is_none() {
+    let Some(context) = hands.context else {
         return Err(crate::sdk_codegen::CommandError::Internal(
             "refusing to end her default hands: only an acting context a measurement, solve or replay opened ends".to_string(),
         ));
+    };
+    if let (Some(root), Some(card)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
+        // Admitted to the context it syncs: the close below waits for the git work itself,
+        // even when the sync's own timeout already returned (Astra on #5026). Hands already
+        // closing admit nothing, and nothing runs in them unleased (Codex root on #5026): the
+        // sync is skipped, named, and the work stays committed-or-not where it stands.
+        match crate::code::hands::admit(context) {
+            Ok(lease) => {
+                crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::new(lease), hands.persona_id, &hands.persona_name, root, card).await;
+            }
+            Err(why) => crate::probe!(
+                class = "workspace.sync_refused",
+                persona = %hands.persona_name,
+                card = %card,
+                why = %why,
+                "the acting context's hands are already closing, so its end-of-act sync does not run"
+            ),
+        }
     }
     close_acting_context(hands).await.map_err(Into::into)
 }

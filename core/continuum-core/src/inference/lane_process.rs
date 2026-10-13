@@ -38,6 +38,177 @@ pub fn kill9(pid: u32) {
         .output();
 }
 
+/// What the platform said about a tree kill, reported as said, never upgraded to "exited".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeKill {
+    Delivered,
+    Refused,
+    NoPid,
+}
+
+impl std::fmt::Display for TreeKill {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TreeKill::Delivered => "delivered",
+            TreeKill::Refused => "refused by the platform",
+            TreeKill::NoPid => "impossible (no pid)",
+        })
+    }
+}
+
+/// Make `cmd`'s child lead its own process group, so [`kill_tree`] reaches every process it
+/// starts after the child itself is gone (a grader's test-runner workers). Unix only; Windows'
+/// `taskkill /T` walks the tree from the live parent and needs no group. Only the grading
+/// subprocess still ends this way; an owned child is ended by [`end_tree`] and stays in the
+/// core's group, so a stop ends it too.
+pub fn lead_own_group(cmd: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
+    #[cfg(not(unix))]
+    let _ = cmd;
+}
+
+/// Kill `pid` and every descendant, while `pid` is still alive so the walk can find them:
+/// Unix, the process group it leads (spawned with [`lead_own_group`]); Windows, `taskkill /F
+/// /T`. THE one tree kill; the outcome is kept, never assumed. A child that put itself in a
+/// new session (`setsid`) has left the group and is not reached; nothing claims it was.
+pub fn kill_tree(pid: u32) -> TreeKill {
+    #[cfg(unix)]
+    {
+        // SAFETY: killpg only sends a signal to the group `pid` leads; no memory is touched
+        let rc = unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        if rc == 0 { TreeKill::Delivered } else { TreeKill::Refused }
+    }
+    #[cfg(windows)]
+    {
+        let ok = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if ok { TreeKill::Delivered } else { TreeKill::Refused }
+    }
+}
+
+/// One process as the process table saw it: its pid and start time. An act on it later is
+/// refused if the pid now names another process (pid reuse never kills a stranger).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub start_time: u64,
+}
+
+/// Every descendant of `pid` in the process table, DEEPEST FIRST, each with its identity: what
+/// a tree kill must reach, read while `pid` is alive (once it dies its children are reparented
+/// and the walk can no longer find them). A child that has double-forked away is not a
+/// descendant and is not found; nothing claims it was.
+pub fn descendants(pid: u32) -> Vec<ProcessIdentity> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut children: std::collections::HashMap<u32, Vec<ProcessIdentity>> = std::collections::HashMap::new();
+    for (child, process) in sys.processes() {
+        if let Some(parent) = process.parent() {
+            children.entry(parent.as_u32()).or_default().push(ProcessIdentity { pid: child.as_u32(), start_time: process.start_time() });
+        }
+    }
+    let mut found: Vec<(usize, ProcessIdentity)> = Vec::new();
+    let mut frontier = vec![(pid, 0usize)];
+    while let Some((at, depth)) = frontier.pop() {
+        for &child in children.get(&at).map(Vec::as_slice).unwrap_or(&[]) {
+            if found.iter().any(|(_, seen)| seen.pid == child.pid) {
+                continue; // a table read mid-fork can list a pid twice; walk it once
+            }
+            found.push((depth + 1, child));
+            frontier.push((child.pid, depth + 1));
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, who)| who).collect()
+}
+
+/// The ones of `set` still running as the SAME process (same pid, same start time). A zombie
+/// has exited and only awaits its reaper, so it is gone.
+pub fn still_present(set: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    if set.is_empty() {
+        return Vec::new();
+    }
+    let pids: Vec<Pid> = set.iter().map(|who| Pid::from_u32(who.pid)).collect();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), true, ProcessRefreshKind::nothing());
+    set.iter()
+        .copied()
+        .filter(|who| {
+            sys.process(Pid::from_u32(who.pid))
+                .is_some_and(|p| p.start_time() == who.start_time && p.status() != ProcessStatus::Zombie)
+        })
+        .collect()
+}
+
+/// Kill `who` only while its pid still names that same process. True when the kill was sent.
+pub fn kill_if_same(who: ProcessIdentity) -> bool {
+    if still_present(&[who]).is_empty() {
+        return false; // gone, or its pid now names another process: never signal a stranger
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: kill only sends a signal to a pid just verified to be `who`; no memory is touched
+        unsafe { libc::kill(who.pid as libc::pid_t, libc::SIGKILL) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &who.pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+}
+
+/// How ending a child and everything it started came out (Astra on ea06701d and #5026): whether
+/// the child's own reap was PROVEN, and which of its descendants still run as the same process.
+/// Delivering a signal is not confirming an exit, so both are reported, never assumed.
+#[derive(Debug)]
+pub struct TreeEnd {
+    pub reaped: Result<(), String>,
+    pub survivors: Vec<ProcessIdentity>,
+}
+
+/// End `child` and its tree: THE one way an owned child is ended (the shell's execution task and
+/// `gh`'s owner). Its descendants are found while it is alive and still their parent, killed
+/// deepest first (each only while its pid names the same process), then the child is killed and
+/// reaped. SIGKILL can't be ignored, so the reap comes; no timeout is guessed. The process-table
+/// walks and kills run off the async workers (they read the whole table, and on Windows each kill
+/// runs `taskkill`).
+pub async fn end_tree(child: &mut tokio::process::Child) -> TreeEnd {
+    let tree = match child.id() {
+        Some(pid) => tokio::task::spawn_blocking(move || {
+            let tree = descendants(pid);
+            for who in &tree {
+                kill_if_same(*who);
+            }
+            tree
+        })
+        .await
+        .unwrap_or_default(), // unwrap_or_default: a walk that panicked found nothing to kill; the child is still killed and reaped below
+        None => Vec::new(),
+    };
+    let _ = child.start_kill(); // harmless when it already exited; the wait below is the proof
+    let reaped = child.wait().await.map(|_| ()).map_err(|e| format!("could not confirm the process exited: {e}"));
+    let checked = tree.clone();
+    // a re-check that didn't run confirms nothing: every descendant stays unconfirmed
+    let survivors = tokio::task::spawn_blocking(move || still_present(&checked)).await.unwrap_or(tree);
+    TreeEnd { reaped, survivors }
+}
+
+/// Kill each of `survivors` again while its pid still names it, and return the ones still
+/// present: one recheck, so a later one (a release retried) can confirm what this couldn't.
+pub fn recheck(survivors: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
+    for who in survivors {
+        kill_if_same(*who);
+    }
+    still_present(survivors)
+}
+
 /// The command name (basename) of `pid` via `ps -p <pid> -o comm=`. `None` if the
 /// pid is gone or `ps` is unavailable — callers treat `None` as "unverifiable" and
 /// refuse to kill.

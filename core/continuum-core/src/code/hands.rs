@@ -95,6 +95,10 @@ fn claim_id(persona: Uuid, card: Uuid, claim: Uuid) -> Uuid {
 struct Gate {
     closing: bool,
     in_flight: usize,
+    /// Processes admitted work started and could not confirm gone when it ended them (a `gh`'s
+    /// `git`, say): a release re-checks them and keeps the hands while any is present, the same
+    /// rule it applies to a shell's survivors (Codex root on #5026).
+    survivors: Vec<crate::inference::lane_process::ProcessIdentity>,
 }
 
 type GateCell = std::sync::Arc<(std::sync::Mutex<Gate>, tokio::sync::Notify)>;
@@ -114,6 +118,18 @@ impl Drop for HandsLease {
         if g.in_flight == 0 {
             ended.notify_waiters();
         }
+    }
+}
+
+impl HandsLease {
+    /// Record processes this admitted work started and couldn't confirm gone, BEFORE the lease
+    /// drops: the release that waits the lease out then finds them.
+    pub fn keep_survivors(&self, survivors: Vec<crate::inference::lane_process::ProcessIdentity>) {
+        if survivors.is_empty() {
+            return;
+        }
+        let mut g = self.cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
+        g.survivors.extend(survivors);
     }
 }
 
@@ -142,10 +158,22 @@ pub async fn admitted<F: std::future::Future>(admission: Option<std::sync::Arc<H
     ADMITTED.scope(admission, work).await
 }
 
-/// The admission of the command running on this task, for an owner of work that can outlive
-/// the command's future (a blocking thread, a child process) to keep until that work ends.
+std::thread_local! {
+    /// The admission of the blocking work running on this thread ([`spawn_blocking`] sets it for
+    /// the work's life), so work it starts in turn (a nested blocking spawn, a child process)
+    /// keeps the same admission: a task-local doesn't reach a blocking thread.
+    static BLOCKING_ADMITTED: std::cell::RefCell<Option<std::sync::Arc<HandsLease>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The admission of the command running here, on its task or in blocking work it started, for
+/// an owner of work that can outlive the command's future (a blocking thread, a child process)
+/// to keep until that work ends.
 pub fn current() -> Option<std::sync::Arc<HandsLease>> {
-    ADMITTED.try_with(|a| a.clone()).ok().flatten()
+    ADMITTED
+        .try_with(|a| a.clone())
+        .ok()
+        .flatten()
+        .or_else(|| BLOCKING_ADMITTED.with(|a| a.borrow().clone()))
 }
 
 /// THE shared owner of blocking work started by a dispatched command: the work keeps the
@@ -161,8 +189,12 @@ where
 {
     let held = current();
     tokio::task::spawn_blocking(move || {
-        let _held = held;
-        work()
+        // held for the work's life and visible to what it starts; cleared before the thread is
+        // pooled, so no later work on it inherits this admission
+        let previous = BLOCKING_ADMITTED.with(|a| a.replace(held));
+        let out = work();
+        BLOCKING_ADMITTED.with(|a| *a.borrow_mut() = previous);
+        out
     })
 }
 
@@ -170,8 +202,9 @@ where
 /// ended: the first step of releasing them (`code/release-hands`). A closed gate STAYS
 /// closed: a context is never reused (a re-acquired card is a new claim), so a stale binding
 /// can never re-open old hands (Astra on #5026). The tombstone is an id and a flag, kept for
-/// the process's life, one per context released.
-pub async fn close(context: HandsContext) {
+/// the process's life, one per context released. Returns what admitted work recorded as
+/// started and not confirmed gone ([`HandsLease::keep_survivors`]), for the release to re-check.
+pub async fn close(context: HandsContext) -> Vec<crate::inference::lane_process::ProcessIdentity> {
     let cell = GATES.entry(context).or_default().clone();
     loop {
         let ended = cell.1.notified();
@@ -179,10 +212,19 @@ pub async fn close(context: HandsContext) {
             let mut g = cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still closes
             g.closing = true;
             if g.in_flight == 0 {
-                return;
+                return g.survivors.clone();
             }
         }
         ended.await;
+    }
+}
+
+/// After a release re-checked `context`'s survivors: keep only the ones still present, so a
+/// retried release re-checks exactly those.
+pub fn retain_survivors(context: HandsContext, still: Vec<crate::inference::lane_process::ProcessIdentity>) {
+    if let Some(cell) = GATES.get(&context) {
+        let mut g = cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
+        g.survivors = still;
     }
 }
 
@@ -244,6 +286,38 @@ mod tests {
         assert_ne!(eval.map_key(), live.map_key(), "an eval is not her live hands");
         assert_ne!(eval.map_key(), solve.map_key(), "two contexts are two sets of hands");
         assert!(eval.map_key().starts_with(&caller), "a context's hands stay attributable to their caller");
+    }
+
+    // what this catches (Codex root on #5026): work a blocking worker starts in turn lost the
+    // command's admission, because a task-local doesn't reach a blocking thread, so a nested
+    // worker (or a process it spawns) ran unleased. Blocking work sees its admission, and a
+    // nested worker keeps it: the release waits for the nested one too.
+    #[tokio::test]
+    async fn a_nested_blocking_worker_keeps_the_admission_of_the_work_that_started_it() {
+        let context = HandsContext::fresh();
+        let lease = std::sync::Arc::new(admit(context).expect("open hands"));
+        let (go, wait) = std::sync::mpsc::channel::<()>();
+        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<bool>();
+        let outer = admitted(Some(lease), async move {
+            spawn_blocking(move || {
+                let seen = current().is_some();
+                let _nested = spawn_blocking(move || {
+                    let _ = wait.recv(); // a nested worker still running after its starter returned
+                });
+                let _ = seen_tx.send(seen);
+            })
+        })
+        .await;
+        assert!(seen_rx.await.expect("the worker ran"), "blocking work sees the command's admission");
+        outer.await.expect("the starting worker returned");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), close(context)).await.is_err(),
+            "the release waits for the nested worker, not the one that started it"
+        );
+        go.send(()).expect("release the nested worker");
+        tokio::time::timeout(std::time::Duration::from_secs(10), close(context))
+            .await
+            .expect("the release completes once the nested worker returns");
     }
 
     // what this catches (Astra on #5026): a dispatch cancelled while its blocking worker still
