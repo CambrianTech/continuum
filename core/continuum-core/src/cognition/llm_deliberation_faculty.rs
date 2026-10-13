@@ -38,6 +38,7 @@ use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
+use super::working_set::TurnKind;
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
@@ -221,17 +222,8 @@ const DEFAULT_TEMPERATURE: f32 = 0.7;
 // context-budget-exempt: a TIME target, not a token budget — the token cap is time x THIS node's MEASURED prefill rate (`prefill_rate::latency_fill_cap`)
 const PREFILL_TARGET_SECONDS: usize = 30;
 
-/// The kind of turn a completion is for — its latency budget and its runaway bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TurnKind {
-    /// A work turn: deliverable + hands — a tool call plus a short plan.
-    Act,
-    /// Every other turn — a reply in a room, or a workspace turn with nothing
-    /// deliverable: a sentence and a reason. A short turn, on a thinking model, is
-    /// still a THINK and then a sentence.
-    Pass,
-}
-
+/// The kind of turn a completion is for — its latency budget and its runaway bound here,
+/// its reply history in the working set (one enum, owned there, card 8fc7a678).
 impl TurnKind {
     /// The seconds the TIME term of the allowance is derived from — a floor on a fast
     /// lane, never the bound (see [`output_allowance`]).
@@ -248,6 +240,20 @@ impl TurnKind {
             Self::Pass => "pass",
         }
     }
+}
+
+/// The reply room a turn plans for and every constraint that shaped it — the plan receipt
+/// (`delib.reply.plan`): which kind, measured or cold, the estimate, how many of its records
+/// were censored, and which constraint bound the room (card 8fc7a678).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReplyPlan {
+    tokens: u32,
+    kind: TurnKind,
+    source: &'static str,
+    estimate: Option<u32>,
+    records: u32,
+    censored: u32,
+    bound: &'static str,
 }
 
 /// The derived allowance and its terms — every field rides the
@@ -968,7 +974,7 @@ impl LlmDeliberationFaculty {
             needed = needed,
             tool_tokens = tools,
             framing_tokens = self.framing_floor_tokens(),
-            reserve_tokens = self.completion_reserve_within(window),
+            reserve_tokens = self.completion_reserve_within(window, TurnKind::Act), // the warning is about ACTING
             "served window is too small to hold framing + tools + a reply — this citizen \
              will struggle to ACT (she can still speak). Raise the window to at least \
              `needed`, or serve a model with a larger context."
@@ -1018,48 +1024,76 @@ impl LlmDeliberationFaculty {
     /// Reuses the identical `fixed` term as [`Self::min_window_for_agentic_surface`], so the
     /// bound that WARNS about a too-small window and the reserve that LIVES within one can
     /// never disagree about what "mandatory" means.
-    fn completion_reserve_within(&self, context_window: u32) -> u32 {
+    fn completion_reserve_within(&self, context_window: u32, kind: TurnKind) -> u32 {
+        self.reply_plan(context_window, kind).tokens
+    }
+
+    /// The reply room a turn of `kind` plans for, and every constraint that shaped it.
+    ///
+    /// THE MEASURED RESERVE, PER KIND (card 8fc7a678). The bare window share was a cold
+    /// prior, not a measurement: at a 29,440 window it reserved 14,720 tokens for replies
+    /// measured at 0.2–2.5k, and the prompt paid (2026-08-31, delib.context.render). Then
+    /// one cross-kind peak, decayed 7/8 per observation, sized every turn: ten small passes
+    /// shrank the next act's room to 5,740 and the act was cut (Kimi b89a7242, the 5090,
+    /// build 825ff5f6f). Now each kind plans from its OWN history ([`TurnKind`]): twice its
+    /// estimate (the headroom for a longer thought, as before; the estimate already carries
+    /// the growth policy for a cut, `ReplyRecord::plans_for`), floored at MIN_SERVE_CTX so
+    /// one tiny ack never strangles the next long thought. An act never reads pass history.
+    ///
+    /// An ESTIMATE, not a safe bound: what lands is bounded by the window less the mandatory
+    /// prompt, and by the window share (measurement only ever returns prompt room); an act's
+    /// runaway limit is its own termination policy in [`output_allowance`], never derived
+    /// from this. The plan names which one bound it.
+    fn reply_plan(&self, context_window: u32, kind: TurnKind) -> ReplyPlan {
         let mandatory = self.mandatory_prompt_floor();
         let share = context_window / Self::COMPLETION_SHARE_DENOM;
-        // THE MEASURED RESERVE (the "output-p95 riding the working-set registry"
-        // endgame both the ceiling and the denominator comments promised). The
-        // bare share is a cold-start PRIOR, not a measurement: at a 29,440
-        // window it reserved 14,720 tokens for replies measured at 0.2–2.5k,
-        // and the prompt paid — grounding got 195 tokens and the room board
-        // dropped for want of 137, which is the meta-loop spiral live
-        // (2026-08-31, delib.context.render). Once this mind's emissions are
-        // measured, the reserve is peak×2 — headroom for a longer thought,
-        // and capped turns already record at double, so a too-small reserve
-        // grows itself back within a turn rather than freezing (the
-        // measure-the-clamp trap). Floored at MIN_SERVE_CTX so one tiny ack
-        // can never strangle the next long thought, and never ABOVE the
-        // share — measurement only ever returns prompt room.
-        //
-        // The PRIOR is no longer that share. It used to be, and a fraction of
-        // the window is the wrong shape for a reply: what a reply costs has
-        // nothing to do with how much room the lane happens to have. See
-        // [`Self::COMPLETION_COLD_PRIOR_TOKENS`] for the citizen that proves it.
-        let measured = self
+        let estimate = self
             .working_set
             .as_ref()
-            .and_then(|reg| reg.emission_of(self.persona_id))
-            // A single observation is a measurement, but ONE reply sizes the
-            // reserve for every turn after it — ask for a few before shrinking.
-            .filter(|e| e.turns >= 3)
-            .map(|e| {
-                e.peak_tokens
-                    .saturating_mul(2)
-                    .max(crate::inference::planning::MIN_SERVE_CTX)
-            });
-        // `.max(FLOOR)` last and deliberately: below `MIN_SERVE_CTX` the floor can exceed the
-        // whole window, and a zero reserve is a mute citizen — strictly worse than a prompt
-        // that overshoots and gets trimmed. That regime is not reachable in production
-        // (`window_for` floors at MIN_SERVE_CTX) but the ordering should not depend on it.
-        measured
-            .unwrap_or(Self::COMPLETION_COLD_PRIOR_TOKENS) // JUSTIFIED unwrap_or: no measurement yet = a REPLY-sized prior, never a window fraction; the honest absence has a named owner above
-            .min(share)
-            .min(context_window.saturating_sub(mandatory))
-            .max(Self::COMPLETION_FLOOR_TOKENS)
+            .and_then(|reg| reg.reply_estimate(self.persona_id, kind));
+        let (mut tokens, mut bound) = match estimate {
+            Some(e) => (
+                e.tokens.saturating_mul(2).max(crate::inference::planning::MIN_SERVE_CTX),
+                "estimate",
+            ),
+            None => (Self::cold_reply_prior(kind), "cold_prior"),
+        };
+        if share < tokens {
+            (tokens, bound) = (share, "share");
+        }
+        let room = context_window.saturating_sub(mandatory);
+        if room < tokens {
+            (tokens, bound) = (room, "window_less_mandatory");
+        }
+        // The floor last and deliberately: below `MIN_SERVE_CTX` it can exceed the whole
+        // window, and a zero reserve is a mute citizen — strictly worse than a prompt that
+        // overshoots and gets trimmed. Not reachable in production (`window_for` floors at
+        // MIN_SERVE_CTX), but the ordering should not depend on it.
+        if tokens < Self::COMPLETION_FLOOR_TOKENS {
+            (tokens, bound) = (Self::COMPLETION_FLOOR_TOKENS, "floor");
+        }
+        ReplyPlan {
+            tokens,
+            kind,
+            source: if estimate.is_some() { "measured" } else { "cold" },
+            estimate: estimate.map(|e| e.tokens),
+            records: estimate.map_or(0, |e| e.records),
+            censored: estimate.map_or(0, |e| e.censored),
+            bound,
+        }
+    }
+
+    /// What a kind with fewer than three records plans for, named: its history starts
+    /// empty (old cross-kind records are never relabelled). A PASS plans a reply-sized
+    /// [`Self::COMPLETION_COLD_PRIOR_TOKENS`] as before. An ACT plans its runaway limit,
+    /// [`Self::ACT_OUTPUT_CAP`], the measured committed-act ceiling (4,188–9,818 on the 27B,
+    /// 2026-09-07): a cold act at the pass prior would be cut, each cut a whole generation
+    /// wasted, before its history grew. Cost: that much prompt room held for her first acts.
+    fn cold_reply_prior(kind: TurnKind) -> u32 {
+        match kind {
+            TurnKind::Act => Self::ACT_OUTPUT_CAP,
+            TurnKind::Pass => Self::COMPLETION_COLD_PRIOR_TOKENS,
+        }
     }
 
     /// The reply's share of the served window, as a DENOMINATOR: reply gets `window/N`.
@@ -2505,10 +2539,24 @@ impl LlmDeliberationFaculty {
         visual: Option<&ActiveVisualFeedback>,
         model: Option<&str>,
     ) -> DeliberationPromptView {
-        // Desired reply room from the existing measured-reserve policy. Below,
-        // it yields to the current payload's measured floor; that planned value
+        // Desired reply room for THIS kind of turn, from its own history (card 8fc7a678).
+        // Below, it yields to the current payload's measured floor; that planned value
         // travels with the view into `build_request_within` as `max_tokens`.
-        let completion_reserve = self.completion_reserve_within(context_window) as usize;
+        let plan = self.reply_plan(context_window, self.turn_kind(ws));
+        crate::probe!(
+            class = "delib.reply.plan",
+            persona = %self.persona_name,
+            kind = plan.kind.label(),
+            source = plan.source,
+            estimate = plan.estimate.map_or(0, u64::from), // 0 on the receipt with source=cold: no estimate, the cold prior planned
+            records = plan.records,
+            censored = plan.censored,
+            reserve = plan.tokens,
+            bound = plan.bound,
+            window = context_window,
+            "the reply room this turn plans for, by kind, and the constraint that bound it"
+        );
+        let completion_reserve = plan.tokens as usize;
 
         // The NATIVE tool schemas ride the served window too: the gateway injects
         // each function spec (name + description + schema) via the chat template,
@@ -4940,11 +4988,11 @@ impl LlmDeliberationFaculty {
             "delib.generate — model-call wall time (lane-queue + prefill + decode)"
         );
 
-        // MEASURE THE REPLY — the observation `completion_reserve_within` derives
-        // the reserve from. The server's own count (reasoning included), recorded
-        // for every completed generation; a cut inside the answer records that channel
-        // at double inside the registry (the growth path), a cut inside the think is not
-        // a need sample.
+        // MEASURE THE REPLY — the observation `reply_plan` derives the reserve from,
+        // recorded in this turn KIND's history: the server's own count (reasoning
+        // included), the cap the request carried and where it stopped. Nothing is
+        // doubled in the record; a cut inside the answer is grown by the planner's
+        // policy when read, a cut inside the think is not a need sample.
         // This is the seam that turns the reserve from a `window/2` prior into a
         // measurement.
         if let Some(reg) = &self.working_set {
@@ -4994,15 +5042,19 @@ impl LlmDeliberationFaculty {
                     persona = %self.persona_name,
                     output_tokens = resp.usage.output_tokens,
                     reasoning_tokens,
-                    "think-only cut at the allowance — the peak holds, the need ring does not take it"
+                    "think-only cut at the allowance — its kind's history takes it with no growth, the need ring does not take it"
                 );
             }
             reg.record_emission(
                 self.persona_id,
-                resp.usage.output_tokens,
-                reasoning_tokens,
-                stop,
-                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
+                self.turn_kind(ws),
+                super::working_set::ReplyRecord {
+                    observed_total: resp.usage.output_tokens,
+                    reasoning_estimate: reasoning_tokens,
+                    request_cap: allowance,
+                    stop,
+                },
+                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (the history keeps records, not a time series)
             );
         }
 
@@ -6996,7 +7048,7 @@ mod tests {
             let ws = Workspace::new("act on the card");
             let view = faculty.prompt_view(&ws);
             let binding = faculty.binding.load_full();
-            let reserve = faculty.completion_reserve_within(window);
+            let reserve = faculty.completion_reserve_within(window, faculty.turn_kind(&ws));
             let act = faculty.build_request_within(
                 &binding,
                 view.completion_reserve,
@@ -7116,7 +7168,7 @@ mod tests {
                 262_144,
                 1_048_576,
             ] {
-                let reserve = faculty.completion_reserve_within(window);
+                let reserve = faculty.completion_reserve_within(window, TurnKind::Pass);
 
                 // (1) THE LAW, on every lane: an unmeasured reply never costs more than a
                 //     reply. This is the one the defect broke — the reservation grew with
@@ -7160,7 +7212,7 @@ mod tests {
         // 14,720 of a 29,440 window for replies measured at 0.2–2.5k, squeezing
         // grounding to 195 tokens and dropping the room board — the 2026-08-31
         // meta-loop spiral. Pins: (a) fewer than 3 observations keeps the prior
-        // (one tiny ack must not size every later turn); (b) measured = peak×2,
+        // (one tiny ack must not size every later turn); (b) measured = the kind's estimate ×2,
         // floored at MIN_SERVE_CTX — now ABOVE the reply-sized cold prior, because
         // measurement GROWS a reply-sized default instead of shaving a window
         // fraction (2026-09-18, see COMPLETION_COLD_PRIOR_TOKENS); (c) a capped
@@ -7181,18 +7233,18 @@ mod tests {
             .with_context_window(window)
             .with_working_set(reg.clone());
 
-            let cold = faculty.completion_reserve_within(window);
+            let cold = faculty.completion_reserve_within(window, TurnKind::Pass);
             // (a) below the observation bar the prior stands
-            reg.record_emission_in_memory(persona, 2_500, 0, crate::cognition::working_set::EmissionStop::Landed, 1);
-            reg.record_emission_in_memory(persona, 1_200, 0, crate::cognition::working_set::EmissionStop::Landed, 2);
-            assert_eq!(faculty.completion_reserve_within(window), cold);
-            // (b) measured: peak 2,500 × 2 = 5,000 — still far under the 14,720 share,
+            reg.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 2_500, reasoning_estimate: 0, request_cap: 2_500, stop: crate::cognition::working_set::EmissionStop::Landed }, 1);
+            reg.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 1_200, reasoning_estimate: 0, request_cap: 1_200, stop: crate::cognition::working_set::EmissionStop::Landed }, 2);
+            assert_eq!(faculty.completion_reserve_within(window, TurnKind::Pass), cold);
+            // (b) measured: estimate 2,500 × 2 = 5,000 — still far under the 14,720 share,
             // but ABOVE the reply-sized cold prior. The direction inverted deliberately:
             // the prior is what a reply costs, and measurement earns room UP toward the
             // share rather than shaving a half-window default down.
-            reg.record_emission_in_memory(persona, 2_500, 0, crate::cognition::working_set::EmissionStop::Landed, 3);
+            reg.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 2_500, reasoning_estimate: 0, request_cap: 2_500, stop: crate::cognition::working_set::EmissionStop::Landed }, 3);
             let share = window / LlmDeliberationFaculty::COMPLETION_SHARE_DENOM;
-            let measured = faculty.completion_reserve_within(window);
+            let measured = faculty.completion_reserve_within(window, TurnKind::Pass);
             assert_eq!(measured, 5_000);
             assert!(
                 measured > cold,
@@ -7202,7 +7254,7 @@ mod tests {
             // tiny-talker floor: a 40-token ack cannot strangle the next thought
             let quiet = Uuid::new_v4();
             for t in 1..=3 {
-                reg.record_emission_in_memory(quiet, 40, 0, crate::cognition::working_set::EmissionStop::Landed, t);
+                reg.record_emission_in_memory(quiet, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 40, reasoning_estimate: 0, request_cap: 40, stop: crate::cognition::working_set::EmissionStop::Landed }, t);
             }
             let quiet_faculty = LlmDeliberationFaculty::new(
                 quiet,
@@ -7213,15 +7265,60 @@ mod tests {
             .with_context_window(window)
             .with_working_set(reg.clone());
             assert_eq!(
-                quiet_faculty.completion_reserve_within(window),
+                quiet_faculty.completion_reserve_within(window, TurnKind::Pass),
                 crate::inference::planning::MIN_SERVE_CTX
             );
-            // (c) a turn cut at 5,000 records 10,000; peak×2 = 20,000 then re-caps at
+            // (c) a turn cut at 5,000 plans 10,000 by the growth policy; ×2 = 20,000 then re-caps at
             // the SHARE — a citizen who genuinely needs the room earns it back within a
             // turn instead of freezing at the reply-sized prior. Growth saturates at the
             // share (the prior is a starting point, the share is the wall).
-            reg.record_emission_in_memory(persona, 5_000, 0, crate::cognition::working_set::EmissionStop::CutMidAnswer, 4);
-            assert_eq!(faculty.completion_reserve_within(window), share);
+            reg.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 5_000, reasoning_estimate: 0, request_cap: 5_000, stop: crate::cognition::working_set::EmissionStop::CutMidAnswer }, 4);
+            assert_eq!(faculty.completion_reserve_within(window, TurnKind::Pass), share);
+        }
+
+        // what this catches (card 8fc7a678; Kimi b89a7242 on the 5090, build 825ff5f6f, through
+        // the production planner): her act cut at 5,740 after ten smaller turns decayed one
+        // shared peak 7/8 each, 21,838 → 5,740. An act plans from her ACTS: ten passes leave it
+        // at twice her largest act, and the pass plans from its own. An act with no history
+        // plans its named cold prior (the act runaway limit), never the pass prior; a cut act
+        // re-plans larger by the growth policy (the partial itself is never executed and is
+        // preserved: command_executor's CUT_AT_LIMIT_SENTINEL test and
+        // a_cut_act_records_that_it_did_not_land_and_what_it_was). The plan names its bound.
+        #[test]
+        fn an_act_plans_from_her_acts_however_many_passes_came_between() {
+            use crate::cognition::working_set::{EmissionStop, ReplyRecord};
+            let persona = Uuid::new_v4();
+            let reg = crate::cognition::working_set::WorkingSetRegistry::new();
+            let window = 101_120u32;
+            let faculty = LlmDeliberationFaculty::new(persona, "Kimi", "You are Kimi.", Arc::new(HeuristicInferenceAdapter::new()))
+                .with_context_window(window)
+                .with_working_set(reg.clone());
+            let cold = faculty.reply_plan(window, TurnKind::Act);
+            assert_eq!((cold.tokens, cold.source, cold.bound), (LlmDeliberationFaculty::ACT_OUTPUT_CAP, "cold", "cold_prior"));
+            assert_eq!(faculty.reply_plan(window, TurnKind::Pass).tokens, LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS);
+
+            let landed = |total: u32| ReplyRecord { observed_total: total, reasoning_estimate: total / 2, request_cap: 24_576, stop: EmissionStop::Landed };
+            for (t, total) in [5_955u32, 9_818, 7_200].into_iter().enumerate() {
+                reg.record_emission_in_memory(persona, TurnKind::Act, landed(total), t as u64);
+            }
+            for t in 0..10u64 {
+                reg.record_emission_in_memory(persona, TurnKind::Pass, landed(700), 10 + t);
+            }
+            let act = faculty.reply_plan(window, TurnKind::Act);
+            assert_eq!((act.tokens, act.source, act.bound, act.records), (19_636, "measured", "estimate", 3),
+                "ten passes leave the act at twice her largest act");
+            assert_eq!(faculty.reply_plan(window, TurnKind::Pass).tokens, crate::inference::planning::MIN_SERVE_CTX,
+                "a pass plans from passes (700 x 2, floored)");
+
+            reg.record_emission_in_memory(
+                persona,
+                TurnKind::Act,
+                ReplyRecord { observed_total: 12_288, reasoning_estimate: 8_000, request_cap: 12_288, stop: EmissionStop::CutMidAnswer },
+                30,
+            );
+            let replanned = faculty.reply_plan(window, TurnKind::Act);
+            assert_eq!((replanned.tokens, replanned.censored), (33_152, 1), "a cut act re-plans by policy: (8,000 + 2 x 4,288) x 2");
+            assert_eq!(faculty.reply_plan(16_384, TurnKind::Act).bound, "share", "and the plan names what bound it");
         }
 
         // Capture 932f6b81:37 ended at 16,384 tokens with no answer or tool call.
@@ -7239,15 +7336,15 @@ mod tests {
             )
             .with_working_set(reg.clone());
             for tick in 1..=3 {
-                reg.record_emission_in_memory(persona, 16_384, 0, crate::cognition::working_set::EmissionStop::CutMidAnswer, tick);
+                reg.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 16_384, reasoning_estimate: 0, request_cap: 16_384, stop: crate::cognition::working_set::EmissionStop::CutMidAnswer }, tick);
             }
             // A censored sample is doubled by the registry; reserve adds headroom.
             // The former absolute ceiling froze this at the same failed allowance.
             let window = 131_072;
-            assert_eq!(faculty.completion_reserve_within(window), 65_536);
+            assert_eq!(faculty.completion_reserve_within(window, TurnKind::Pass), 65_536);
             // This is not permission to overrun a smaller seat or its prompt floor.
             for window in [8_192, 16_384, 32_768, 67_072, 131_072] {
-                let reserve = faculty.completion_reserve_within(window);
+                let reserve = faculty.completion_reserve_within(window, TurnKind::Pass);
                 assert!(reserve <= window / LlmDeliberationFaculty::COMPLETION_SHARE_DENOM);
                 assert!(reserve + faculty.mandatory_prompt_floor() <= window);
             }
@@ -8464,7 +8561,7 @@ mod tests {
             assert!(
                 faculty.describe_tool_tokens()
                     + faculty.framing_floor_tokens() as usize
-                    + faculty.completion_reserve_within(needed) as usize // the LIVE reserve, floor and all — the bound must close against what production actually reserves
+                    + faculty.completion_reserve_within(needed, faculty.turn_kind(&ws)) as usize // the LIVE reserve, floor and all — the bound must close against what production actually reserves
                     <= needed as usize,
                 "min_window_for_agentic_surface({needed}) must clear its own arithmetic"
             );
@@ -9496,7 +9593,7 @@ mod tests {
             // collapsed bookmarks — which is the floor case for this fit guard.
             let collapsed = faculty.compose_system("", &BTreeSet::new(), false, false, None);
             let framing = est_tokens(&collapsed);
-            let reserve = faculty.completion_reserve_within(window) as usize; // derive, never re-spell the fraction: a mirror keeps PASSING while measuring the old split
+            let reserve = faculty.completion_reserve_within(window, TurnKind::Act) as usize; // the larger cold prior, the worst case; derive, never re-spell the fraction: a mirror keeps PASSING while measuring the old split
             assert!(
                 framing + reserve < window as usize,
                 "framing+menu ({framing}) + reserve ({reserve}) must leave burst room in {window}"
@@ -10011,7 +10108,7 @@ mod tests {
                 );
                 let registry = crate::cognition::working_set::WorkingSetRegistry::new();
                 for tick in 0..3 {
-                    registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
+                    registry.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 834, reasoning_estimate: 0, request_cap: 834, stop: crate::cognition::working_set::EmissionStop::Landed }, tick);
                 }
                 let faculty =
                     LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -10270,7 +10367,7 @@ mod tests {
                 ]);
             let registry = WorkingSetRegistry::new();
             for tick in 0..3 {
-                registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
+                registry.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 834, reasoning_estimate: 0, request_cap: 834, stop: crate::cognition::working_set::EmissionStop::Landed }, tick);
             }
             let faculty =
                 LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -10680,7 +10777,7 @@ mod tests {
                 // cold half-window prior must yield to optional conversation.
                 let registry = WorkingSetRegistry::new();
                 for now in 1..=3 {
-                    registry.record_emission_in_memory(persona, 1_000, 0, crate::cognition::working_set::EmissionStop::Landed, now);
+                    registry.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 1_000, reasoning_estimate: 0, request_cap: 1_000, stop: crate::cognition::working_set::EmissionStop::Landed }, now);
                 }
                 let faculty =
                     LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
@@ -10779,7 +10876,7 @@ mod tests {
                         + minimum.system_reserve()
                         + minimum.trailing_tokens()
                         + unfitted.required_tokens()
-                        + faculty.completion_reserve_within(window) as usize;
+                        + faculty.completion_reserve_within(window, faculty.turn_kind(&ws)) as usize;
                     let cluster = history
                         .iter()
                         .rev()
