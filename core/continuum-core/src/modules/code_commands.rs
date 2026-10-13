@@ -1811,10 +1811,12 @@ impl ActionCommand for CodeHistory {
 
 // ─────────────────── code/release-hands ───────────────────
 
-/// End the caller's current acting context: drop its workspace engine and shells, killing
-/// anything they still run. What a fork's hands do when the fork is over (an eval or a
-/// solve), so its context leaves nothing behind. Refused for a caller's default (live)
-/// hands: those are never ended by a verb (docs/architecture/HER-HANDS.md).
+/// End the caller's current acting context: kill anything its shells still run, wait each
+/// one out, and only once every one is confirmed gone drop its workspace engine and shells.
+/// What a fork's hands do when the fork is over (an eval or a solve), so its context leaves
+/// nothing behind. A release that can't confirm keeps the handles and says so
+/// (`released: false`), so a retry finds them. Refused for a caller's default (live) hands:
+/// those are never ended by a verb (docs/architecture/HER-HANDS.md).
 pub struct CodeReleaseHands {
     pub state: Arc<CodeState>,
 }
@@ -1827,11 +1829,23 @@ pub struct CodeReleaseHandsParams {}
 pub struct ReleaseHandsResult {
     /// The acting context that ended.
     pub context: String,
-    /// Pids of executions that were still running and were killed.
+    /// Pids of executions that hadn't been proven ended: killed now, or killed earlier and
+    /// not yet reaped.
     pub killed: Vec<u32>,
-    /// Of those, the pids still present or unreadable when checked: not confirmed gone.
-    /// Reported by name, never assumed dead.
+    /// Of those, the pids NOT confirmed gone: their exit couldn't be awaited, or the kernel
+    /// still shows them or can't be read. Reported by name, never assumed dead.
     pub unconfirmed: Vec<u32>,
+    /// Why an exit couldn't be awaited, one line per execution.
+    pub errors: Vec<String>,
+    /// True only when every execution was confirmed gone and the context's engine and shells
+    /// were dropped. False keeps them, so the caller can retry and the acting place stays known.
+    pub released: bool,
+}
+
+/// Whether a release may drop the context's handles: only when nothing is left unconfirmed
+/// and no exit failed to be awaited. One place, so the command and its test agree.
+pub(crate) fn release_confirmed(unconfirmed: &[u32], errors: &[String]) -> bool {
+    unconfirmed.is_empty() && errors.is_empty()
 }
 
 #[async_trait]
@@ -1856,44 +1870,63 @@ impl ActionCommand for CodeReleaseHands {
                     .into(),
             ));
         };
-        let killed = self.state.release(&key.map_key());
-        // CONFIRM each kill: wait for the execution's own task to see its child exit
-        // (`process_ended`, set after the reap), at the cadence the task notices a kill
-        // (`KILL_POLL`). SIGKILL can't be ignored, so a direct child's reap always comes; no
-        // timeout is guessed. Then ask the kernel, with positive evidence only, whether
-        // each pid is gone; what isn't confirmed is reported by name.
+        let who = key.map_key();
+        let pending = self.state.begin_release(&who);
+        // WAIT each one out: its own task sets `process_ended` after the reap, or
+        // `process_end_error` when the reap itself failed, at the cadence the task notices a
+        // kill (`KILL_POLL`). SIGKILL can't be ignored, so a direct child's reap always comes;
+        // no timeout is guessed. A failed reap is NOT an exit: it stays unconfirmed. Then ask
+        // the kernel, with positive evidence only, whether each reaped pid is gone.
         let mut pids = Vec::new();
-        for state in &killed {
+        let mut reaped = Vec::new();
+        let mut unconfirmed = Vec::new();
+        let mut errors = Vec::new();
+        for state in &pending {
             loop {
-                let (ended, pid) = match state.lock() {
-                    Ok(s) => (s.process_ended, s.pid),
-                    Err(p) => (p.get_ref().process_ended, p.get_ref().pid), // poisoned: read the last state
+                let (ended, error, pid) = match state.lock() {
+                    Ok(s) => (s.process_ended, s.process_end_error.clone(), s.pid),
+                    Err(p) => (p.get_ref().process_ended, p.get_ref().process_end_error.clone(), p.get_ref().pid), // poisoned: read the last state
                 };
+                if let Some(why) = error {
+                    pids.extend(pid);
+                    unconfirmed.extend(pid);
+                    errors.push(match pid {
+                        Some(pid) => format!("pid {pid}: {why}"),
+                        None => why,
+                    });
+                    break;
+                }
                 if ended {
                     pids.extend(pid);
+                    reaped.extend(pid);
                     break;
                 }
                 tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
             }
         }
-        let probed = pids.clone();
-        let unconfirmed = tokio::task::spawn_blocking(move || {
-            probed
+        let still_there = tokio::task::spawn_blocking(move || {
+            reaped
                 .into_iter()
                 .filter(|pid| !matches!(crate::inference::engine_residency::probe_process(*pid), crate::inference::engine_residency::ProcessProbe::Absent))
                 .collect::<Vec<u32>>()
         })
         .await
         .map_err(|e| CommandError::Internal(format!("release-hands: confirming the kills failed to run: {e}")))?;
+        unconfirmed.extend(still_there);
+        let released = release_confirmed(&unconfirmed, &errors);
+        if released {
+            self.state.finish_release(&who);
+        }
         crate::probe!(
             class = "code.hands.released",
             caller = key.caller.as_str(),
             context = %context.id(),
             killed = pids.len() as u64,
             unconfirmed = unconfirmed.len() as u64,
-            "an acting context ended; its engine and shells are gone, every kill waited out and confirmed or named"
+            released = released,
+            "an acting context's executions were waited out; its engine and shells are dropped only when every one is confirmed gone"
         );
-        Ok(ReleaseHandsResult { context: context.id().to_string(), killed: pids, unconfirmed })
+        Ok(ReleaseHandsResult { context: context.id().to_string(), killed: pids, unconfirmed, errors, released })
     }
 }
 

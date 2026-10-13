@@ -1319,23 +1319,22 @@ pub(crate) async fn restore_acting_workspace(
 }
 
 /// Forget where an acting context stood: what a context's release on drop (the abnormal-exit
-/// fallback) does after releasing its engine and shells, so no bookkeeping outlives it.
+/// fallback) does once its release CONFIRMED, so no bookkeeping outlives it.
 pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::code::hands::HandsContext) {
     note_acting_root_in(persona_id, Some(context), None);
 }
 
 /// End an acting context and confirm it: `code/release-hands` through these hands (so it
-/// ends THIS context and no other), awaited, then its acting-root record removed. This is the
-/// normal teardown of an eval, a solve or a replay; the release sent when its hands drop is
-/// only the fallback for an abnormal exit. A kill it couldn't confirm is returned as an
-/// error naming the pids, for the caller to log loudly (Astra's review of #5005).
+/// ends THIS context and no other), awaited. Only a CONFIRMED release forgets where the
+/// context stood; a release that couldn't confirm every kill keeps both the handles and the
+/// record, and is returned as an error naming what's unresolved, so the caller keeps what
+/// the context stood in and a retry finds it (Astra's review of #5005). This is the normal
+/// teardown of an eval, a solve or a replay; the release sent when its hands drop is only
+/// the fallback for an abnormal exit.
 pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), crate::sdk_codegen::CommandError> {
     let Some(context) = hands.context else {
         return Ok(()); // her live hands are never ended
     };
-    // Forget the place first: if the release fails, the record must not claim a context
-    // still stands somewhere.
-    note_acting_root_in(hands.persona_id, hands.context, None);
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: hands.persona_id,
         persona_name: hands.persona_name.clone(),
@@ -1367,17 +1366,22 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), crat
             result.content
         )));
     }
-    let unconfirmed = serde_json::from_str::<serde_json::Value>(&result.content)
-        .ok()
-        .and_then(|v| v.get("unconfirmed").and_then(serde_json::Value::as_array).map(|pids| !pids.is_empty()))
-        .unwrap_or(false); // unwrap_or: a result that isn't the release's own shape names no unconfirmed pids
-    if unconfirmed {
-        return Err(crate::sdk_codegen::CommandError::Internal(format!(
-            "acting context {} ended, but some killed processes were not confirmed gone: {}",
+    let release: crate::modules::code_commands::ReleaseHandsResult = serde_json::from_str(&result.content).map_err(|e| {
+        crate::sdk_codegen::CommandError::Internal(format!(
+            "closing acting context {}: the release's result isn't its own shape ({e}), so nothing is confirmed: {}",
             context.id(),
             result.content
+        ))
+    })?;
+    if !release.released {
+        return Err(crate::sdk_codegen::CommandError::Internal(format!(
+            "acting context {} is NOT closed: pids {:?} not confirmed gone ({}); its handles and place are kept for a retry",
+            context.id(),
+            release.unconfirmed,
+            release.errors.join("; ")
         )));
     }
+    note_acting_root_in(hands.persona_id, hands.context, None);
     hands.working_memory.set_scope(None);
     crate::probe!(
         class = "workspace.context_closed",

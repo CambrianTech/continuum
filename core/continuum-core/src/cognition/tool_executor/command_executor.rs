@@ -97,13 +97,26 @@ impl Drop for ContextRelease {
         // tearing down outside one) there is nothing live to release into.
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
-                if let Err(e) = core
+                // Forget the place only on a CONFIRMED release: an unresolved one keeps the
+                // handles and the record together, so neither claims the other is gone.
+                let outcome = core
                     .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity))
                     .await
-                {
-                    tracing::warn!(error = %e, "an acting context's hands could not be released; its engine and shells stay until the core restarts");
+                    .and_then(|r| match r {
+                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)
+                            .map_err(|e| format!("the release's result isn't its own shape: {e}")),
+                        _ => Err("the release answered in a shape other than its own JSON".to_string()),
+                    });
+                match outcome {
+                    Ok(release) if release.released => crate::cognition::persona_workspace::forget_acting_context(persona, context),
+                    Ok(release) => tracing::warn!(
+                        context = %context.id(),
+                        unconfirmed = ?release.unconfirmed,
+                        errors = ?release.errors,
+                        "an acting context's processes were not confirmed gone; its handles and place are kept"
+                    ),
+                    Err(e) => tracing::warn!(error = %e, context = %context.id(), "an acting context's hands could not be released; its handles and place are kept"),
                 }
-                crate::cognition::persona_workspace::forget_acting_context(persona, context);
             });
         }
     }

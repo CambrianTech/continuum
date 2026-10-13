@@ -1412,25 +1412,45 @@ fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path::Path) {
 /// the temp dir long-term and NEVER touches the shared checkout at all. The
 /// crash path Drop cannot cover (SIGKILL/SIGTERM) is owned by
 /// [`sweep_orphan_eval_roots`] at the next provision.
-struct EphemeralEvalRoot(std::path::PathBuf);
+///
+/// One exception: a fork's hands that couldn't be confirmed ended may still have a process
+/// standing in the world. [`Self::retain`] then keeps it (and its live-roots entry, so the
+/// sweep spares it) instead of deleting a directory something may still run in; the next
+/// provision after a restart, which ends every such process, sweeps it (Astra on #5005).
+struct EphemeralEvalRoot {
+    path: std::path::PathBuf,
+    retained: bool,
+}
 
 impl EphemeralEvalRoot {
-    fn new(root: std::path::PathBuf) -> Self {
+    fn new(path: std::path::PathBuf) -> Self {
         if let Ok(mut live) = live_eval_roots().lock() {
-            live.insert(root.clone());
+            live.insert(path.clone());
         }
-        Self(root)
+        Self { path, retained: false }
+    }
+
+    /// Keep this world past the run: a fork's hands in it weren't confirmed ended.
+    fn retain(mut self) {
+        tracing::error!(
+            root = %self.path.display(),
+            "an eval world is KEPT: a fork's hands in it were not confirmed ended, so it is not deleted under them; the next provision after a restart sweeps it"
+        );
+        self.retained = true;
     }
 }
 
 impl Drop for EphemeralEvalRoot {
     fn drop(&mut self) {
-        if let Ok(mut live) = live_eval_roots().lock() {
-            live.remove(&self.0);
+        if self.retained {
+            return;
         }
-        if let Err(e) = std::fs::remove_dir_all(&self.0) {
+        if let Ok(mut live) = live_eval_roots().lock() {
+            live.remove(&self.path);
+        }
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
             tracing::warn!(
-                root = %self.0.display(),
+                root = %self.path.display(),
                 error = %e,
                 "ephemeral eval workspace cleanup failed — temp-dir debris only, shared checkout unaffected"
             );
@@ -2442,7 +2462,7 @@ impl CognitionEval {
         let eval_workspace_root: Option<String> = p
             .workspace_root
             .clone()
-            .or_else(|| ephemeral_root.as_ref().map(|r| r.0.display().to_string()));
+            .or_else(|| ephemeral_root.as_ref().map(|r| r.path.display().to_string()));
 
         // #207: suppress the fork's drifting episodic recall for a reproducible ABSOLUTE
         // baseline. Opt-in; default false = memories intact (the natural persona).
@@ -2873,7 +2893,7 @@ impl CognitionEval {
                 _fleet_lease.as_ref().map(|_| true),
                 _eval_lane.as_ref().and_then(|lane| lane.measured_gene.as_ref()),
             );
-            close_forked_hands(&forked_hands).await;
+            close_forked_hands(&forked_hands, ephemeral_root).await;
             return Ok(result);
         }
 
@@ -3087,19 +3107,25 @@ impl CognitionEval {
             _fleet_lease.as_ref().map(|_| true),
             None,
         );
-        close_forked_hands(&forked_hands).await;
+        close_forked_hands(&forked_hands, ephemeral_root).await;
         Ok(result)
     }
 }
 
 /// End every fork's own hands an eval rooted, awaited, while the directory they stood in
-/// still exists. A close that fails or can't confirm a kill is logged loudly with its cause;
+/// still exists, then let the run's disposable world go, or keep it if any close is unresolved. A close that fails or can't confirm a kill is logged loudly with its cause;
 /// it never replaces the measurement's own result.
-async fn close_forked_hands(hands: &[crate::cognition::persona_workspace::ActingHands]) {
+async fn close_forked_hands(hands: &[crate::cognition::persona_workspace::ActingHands], world: Option<EphemeralEvalRoot>) {
+    let mut all_closed = true;
     for h in hands {
         if let Err(e) = crate::cognition::persona_workspace::close_acting_context(h).await {
+            all_closed = false;
             tracing::error!(error = %e, "cognition/eval could not cleanly end a fork's own hands; their drop will retry the release");
         }
+    }
+    // The world goes only after every set of hands in it is confirmed ended.
+    if let (false, Some(world)) = (all_closed, world) {
+        world.retain();
     }
 }
 
@@ -5673,6 +5699,17 @@ mod tests {
         assert!(!orphan.is_dir(), "an unregistered world is an orphan and must be removed");
         drop(holder); // Drop removes the live world AND its registry entry
         assert!(!live.is_dir(), "Drop still owns the in-process cleanup path");
+
+        // A world whose fork's hands weren't confirmed ended is kept, and the sweep spares it
+        // (Astra's review of #5005): never deleted under something that may still run in it.
+        let unresolved = parent.path().join("unresolved-run");
+        std::fs::create_dir_all(&unresolved).expect("mkdir unresolved");
+        EphemeralEvalRoot::new(unresolved.clone()).retain();
+        sweep_orphan_eval_roots(parent.path(), &keep);
+        assert!(unresolved.is_dir(), "a retained world survives its run and the sweep");
+        if let Ok(mut live) = live_eval_roots().lock() {
+            live.remove(&unresolved); // test hygiene: the registry is process-global
+        }
     }
 
     // what this catches: #310 — the /v1/models context_length contract for gateway-routed

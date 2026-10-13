@@ -71,10 +71,14 @@ pub struct ExecutionState {
     /// perception without her remembering to poll. False for in-window
     /// completions (the caller already holds the result).
     pub handed_back: bool,
-    /// True once this execution's task has seen its direct child exit (waited on, or killed
-    /// and reaped), or the child never started. A kill is CONFIRMED by this, not by the
-    /// `Killed` status, which is set before the child dies (`code/release-hands`).
+    /// True once this execution's task has POSITIVE proof its direct child exited: a `wait` that
+    /// returned its status (after an exit, a kill or a timeout), or a child that never started.
+    /// A kill is confirmed by this, never by the `Killed` status, which is set before the child
+    /// dies (`code/release-hands`).
     pub process_ended: bool,
+    /// Why the task could NOT prove the child exited (its final `wait` failed). Never read as
+    /// an exit: a release that meets it stays unresolved and keeps the context's handles.
+    pub process_end_error: Option<String>,
     /// Cursor: index of next stdout line to return on poll/watch.
     stdout_cursor: usize,
     /// Cursor: index of next stderr line to return on poll/watch.
@@ -372,6 +376,7 @@ impl ShellSession {
             finished_at: None,
             handed_back: false,
             process_ended: false,
+            process_end_error: None,
             stdout_cursor: 0,
             stderr_cursor: 0,
             output_notify: notify,
@@ -1046,9 +1051,22 @@ async fn run_shell_command(
         }
     };
 
-    // The direct child has exited: `wait` returned, or `kill` (SIGKILL, then wait) reaped it.
+    // PROOF THE DIRECT CHILD EXITED, or why there is none. A `wait` that returned its status is
+    // proof. Every other way out of the select (a kill, a timeout, a wait error, or a kill already
+    // flagged before the timeout fired, which used to skip the child entirely) signals the child
+    // (harmless if it's already dead) and waits once more: only that wait's status proves the
+    // reap, and its error is recorded as unproven, never as an exit (Astra on #5005).
+    let reaped: Result<(), String> = if exit_status.is_some() {
+        Ok(())
+    } else {
+        let _ = child.start_kill();
+        child.wait().await.map(|_| ()).map_err(|e| format!("could not confirm the process exited: {e}"))
+    };
     if let Ok(mut s) = state.lock() {
-        s.process_ended = true;
+        match reaped {
+            Ok(()) => s.process_ended = true,
+            Err(why) => s.process_end_error = Some(why),
+        }
     }
 
     // Wait for output readers to drain
