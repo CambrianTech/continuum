@@ -39,7 +39,10 @@ pub struct CodeState {
     /// used to interleave the engine insert and the shell re-root, leaving her code/* tools
     /// in the card while her shell stood at home (card 2d58192d, Kimi #11697). Taken before
     /// any map guard, so it nests outside every DashMap shard and never inside one.
-    hands_locks: Arc<DashMap<String, Arc<std::sync::Mutex<()>>>>,
+    /// The flag is CLOSED: set by [`Self::finish_release`] while it holds the lock, so a
+    /// waiter that wakes on a released key's lock retakes the key's current one instead of
+    /// proceeding beside a newcomer on a fresh lock (Astra on #5023).
+    hands_locks: Arc<DashMap<String, Arc<std::sync::Mutex<bool>>>>,
 }
 
 /// How many set-aside sessions one caller keeps. Her roots per turn are few (home, the
@@ -61,16 +64,21 @@ impl CodeState {
         }
     }
 
-    fn hands_lock(&self, who: &str) -> Arc<std::sync::Mutex<()>> {
-        self.hands_locks.entry(who.to_string()).or_default().clone()
+    /// Run `f` holding `who`'s hands lock: the ONE serialization point for moving her root,
+    /// provisioning her engine, starting a command and releasing her hands. `f` never awaits.
+    /// A lock whose release closed it is never acted under: the key's current lock is taken.
+    fn holding<R>(&self, who: &str, f: impl FnOnce(&mut bool) -> R) -> R {
+        loop {
+            let lock = self.hands_locks.entry(who.to_string()).or_default().clone();
+            let mut closed = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes
+            if *closed {
+                continue;
+            }
+            return f(&mut closed);
+        }
     }
 
-    /// Move `who`'s hands to `root`: her file engine (replaced by `engine`, or dropped for the
-    /// next call to provision when `None`) and her shell TOGETHER, under the hands lock, so
-    /// two movers serialize instead of interleaving (card 2d58192d).
-    pub fn move_hands(&self, who: &str, engine: Option<FileEngine>, root: &std::path::Path) {
-        let lock = self.hands_lock(who);
-        let _held = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes the move
+    fn move_locked(&self, who: &str, engine: Option<FileEngine>, root: &std::path::Path) {
         match engine {
             Some(engine) => {
                 self.file_engines.insert(who.to_string(), engine);
@@ -82,20 +90,12 @@ impl CodeState {
         self.re_root_shell(who, root);
     }
 
-    /// Run `f` on the shell standing where `who`'s FILE ENGINE stands. The engine is the one
-    /// owner of the root; the shell follows it here, on every call, so however the two came
-    /// to disagree, the next command runs where her code/* tools act (card 2d58192d). Under
-    /// the hands lock: a session at another root is set aside (a running command in it keeps
-    /// going and stays pollable), one is opened with `open` when none stands at the root, and
-    /// `f` acts on THAT session, never one re-fetched after a later move. Nothing here awaits.
-    pub fn with_current_shell<R>(
+    fn shell_locked<R>(
         &self,
         who: &str,
         open: impl FnOnce(&std::path::Path) -> Result<ShellSession, String>,
         f: impl FnOnce(&mut ShellSession) -> Result<R, String>,
     ) -> Result<R, String> {
-        let lock = self.hands_lock(who);
-        let _held = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes the start
         let root = self
             .file_engines
             .get(who)
@@ -111,6 +111,54 @@ impl CodeState {
             .get_mut(who)
             .ok_or_else(|| "the shell vanished under the hands lock".to_string())?;
         f(&mut shell)
+    }
+
+    /// Move `who`'s hands to `root`: her file engine (replaced by `engine`, or dropped for the
+    /// next call to provision when `None`) and her shell TOGETHER, under the hands lock, so
+    /// two movers serialize instead of interleaving (card 2d58192d).
+    pub fn move_hands(&self, who: &str, engine: Option<FileEngine>, root: &std::path::Path) {
+        self.holding(who, |_| self.move_locked(who, engine, root));
+    }
+
+    /// [`Self::move_hands`] and then `f` on the shell at the NEW root, in one hold: what a
+    /// move installs into her shell (an era PATH prefix, PYTHONPATH at the new workspace)
+    /// lands in the session at the root it was computed for, never in one a later mover
+    /// put there while this caller awaited (Astra on #5023).
+    pub fn move_hands_then<R>(
+        &self,
+        who: &str,
+        engine: FileEngine,
+        root: &std::path::Path,
+        open: impl FnOnce(&std::path::Path) -> Result<ShellSession, String>,
+        f: impl FnOnce(&mut ShellSession) -> Result<R, String>,
+    ) -> Result<R, String> {
+        self.holding(who, |_| {
+            self.move_locked(who, Some(engine), root);
+            self.shell_locked(who, open, f)
+        })
+    }
+
+    /// Give `who` a file engine when she has none, under the hands lock: a mover that
+    /// installed one while this caller computed its root wins, and the computed one is dropped.
+    pub fn provision_engine(&self, who: &str, make: impl FnOnce() -> FileEngine) {
+        self.holding(who, |_| {
+            self.file_engines.entry(who.to_string()).or_insert_with(make);
+        });
+    }
+
+    /// Run `f` on the shell standing where `who`'s FILE ENGINE stands. The engine is the one
+    /// owner of the root; the shell follows it here, on every call, so however the two came
+    /// to disagree, the next command runs where her code/* tools act (card 2d58192d). Under
+    /// the hands lock: a session at another root is set aside (a running command in it keeps
+    /// going and stays pollable), one is opened with `open` when none stands at the root, and
+    /// `f` acts on THAT session, never one re-fetched after a later move. Nothing here awaits.
+    pub fn with_current_shell<R>(
+        &self,
+        who: &str,
+        open: impl FnOnce(&std::path::Path) -> Result<ShellSession, String>,
+        f: impl FnOnce(&mut ShellSession) -> Result<R, String>,
+    ) -> Result<R, String> {
+        self.holding(who, |_| self.shell_locked(who, open, f))
     }
 
     /// Begin ending one set of hands: an acting context that is over (an eval or a fork
@@ -157,14 +205,15 @@ impl CodeState {
     /// Finish ending one set of hands, once every execution `begin_release` returned is
     /// confirmed gone: drop its file engine, its shell and its parked shells.
     pub fn finish_release(&self, who: &str) {
-        {
-            let lock = self.hands_lock(who);
-            let _held = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes the release
+        self.holding(who, |closed| {
             self.shell_sessions.remove(who);
             self.parked_shells.remove(who);
             self.file_engines.remove(who);
-        }
-        self.hands_locks.remove(who);
+            // Closed and unlisted while still held: a waiter on this lock wakes, sees it
+            // closed and takes the key's current lock, so the key never has two (Astra on #5023).
+            *closed = true;
+            self.hands_locks.remove(who);
+        });
     }
 
     /// Move `who`'s shell to `new_root`. A no-op at the same root. Otherwise: first take back
@@ -467,6 +516,34 @@ mod tests {
         let shell_root = state.shell_sessions.get("kimi").map(|s| canon(s.workspace_root())).expect("a session");
         assert_eq!(shell_root, canon(home.path()), "move_hands moves the shell with the engine");
         state.with_execution("kimi", &long, |s, id| s.kill(id)).expect("clean up the test command");
+    }
+
+    // what this catches (Astra on #5023): two locks for one key, and a stale engine winning.
+    // A release removed the key's lock after unlocking, so a waiter holding the old lock and a
+    // newcomer on a fresh one could both act; the release now CLOSES the old lock while held,
+    // and the next hold takes a fresh, open one. Lazy provisioning computed her root across
+    // awaits and inserted outside the lock; an engine a mover installed meanwhile now wins.
+    #[tokio::test]
+    async fn a_released_key_never_has_two_locks_and_provisioning_never_overwrites_a_move() {
+        let rt = tokio::runtime::Handle::current();
+        let (moved, stale) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt);
+        let engine_at = |root: &std::path::Path| FileEngine::new("kimi", crate::code::PathSecurity::new(root).expect("a root"));
+        let canon = |p: &std::path::Path| std::fs::canonicalize(p).expect("a real dir");
+
+        state.move_hands("kimi", Some(engine_at(moved.path())), moved.path());
+        state.provision_engine("kimi", || engine_at(stale.path()));
+        let root = state.file_engines.get("kimi").map(|e| canon(&e.workspace_root())).expect("an engine");
+        assert_eq!(root, canon(moved.path()), "the mover's engine stands; the stale computed one is dropped");
+
+        let who = "kimi#context";
+        state.move_hands(who, Some(engine_at(moved.path())), moved.path());
+        let old = state.hands_locks.get(who).map(|l| l.clone()).expect("the key has a lock");
+        state.finish_release(who);
+        assert!(*old.lock().unwrap(), "a waiter on the released lock wakes to find it closed");
+        assert!(!state.hands_locks.contains_key(who), "the released key's lock is unlisted");
+        state.holding(who, |closed| assert!(!*closed, "the next hold takes a fresh, open lock"));
+        assert!(!state.file_engines.contains_key(who), "and the released hands are gone");
     }
 
     fn module() -> CodeModule {

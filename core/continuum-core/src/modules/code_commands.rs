@@ -538,10 +538,9 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
     };
     let security = PathSecurity::new(&root)
         .map_err(|e| CommandError::Internal(format!("workspace security init failed: {e}")))?;
-    state
-        .file_engines
-        .entry(who.to_string())
-        .or_insert_with(|| FileEngine::new(caller, security));
+    // Under the hands lock: a mover that installed an engine while this root was computed
+    // (the awaits above) wins, never overwritten by a stale one (Astra on #5023).
+    state.provision_engine(who, || FileEngine::new(caller, security));
     Ok(())
 }
 
@@ -2020,36 +2019,45 @@ impl ActionCommand for CodeCreateWorkspace {
         // and moves the caller's shell to the new root in the SAME locked step, so a concurrent
         // mover can't leave the two in different roots (card 2d58192d). The old session is SET
         // ASIDE, not dropped: a work turn roots at the card and restores home every turn, and
-        // dropping lost every execution handle she had been given (Kimi, 2026-09-29).
-        self.state.move_hands(
-            &who,
-            Some(FileEngine::new(&key.caller, security).with_write_policy(policy)),
-            root,
-        );
-        if !p.path_prepend.is_empty() {
+        // dropping lost every execution handle she had been given (Kimi, 2026-09-29). Whatever
+        // the move installs into her shell goes in within the same hold, so it lands in the
+        // session at THIS root, never one a later mover put there (Astra on #5023).
+        let engine = FileEngine::new(&key.caller, security).with_write_policy(policy);
+        let open = |at: &std::path::Path| {
+            let mut shell = ShellSession::new(&uuid::Uuid::new_v4().to_string(), &key.caller, at)
+                .map_err(|e| format!("shell init failed: {e}"))?;
+            if let Some(confinement) = confinement_of(ctx, at) {
+                shell.confine(confinement);
+            }
+            Ok(shell)
+        };
+        if p.path_prepend.is_empty() {
+            self.state.move_hands(&who, Some(engine), root);
+        } else {
             let prepend = p.path_prepend.join(":");
             let workspace = p.workspace_root.clone();
-            with_shell(&self.state, ctx, |shell| {
-                // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
-                // reconstructed PATH. The shell runs as the user's LOGIN shell
-                // (shell_session.rs), which already carries the user's full toolchain and
-                // re-sets PATH from the profile — so an inherited PATH override is clobbered.
-                // The shell prepends this prefix AFTER the profile loads (like `activate`), so
-                // the era venv layers on top of the user's real environment. No hand-rolled PATH.
-                shell.set_env("CONTINUUM_PATH_PREPEND".to_string(), prepend.clone());
-                // HER TREE MUST WIN THE IMPORT (due-diligence find, 2026-08-08,
-                // gold-through-her-hands on sympy-24066): the era venv's package is
-                // `pip install -e` bound to the GRADER'S work repo, so `import sympy`
-                // from her python loaded the pristine grader tree and HER EDITS WERE
-                // INVISIBLE TO HER OWN TEST RUNS — anti-verification: a perfect fix
-                // still "failed" when she checked it. Positive-control proven both
-                // ways: with PYTHONPATH at her workspace the issue repro fails
-                // pre-fix and passes post-fix through her exact edit semantics.
-                // PYTHONPATH precedes the venv's .pth entries, so her tree wins.
-                shell.set_env("PYTHONPATH".to_string(), workspace.clone());
-                Ok(())
-            })
-            .await?;
+            self.state
+                .move_hands_then(&who, engine, root, open, |shell| {
+                    // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
+                    // reconstructed PATH. The shell runs as the user's LOGIN shell
+                    // (shell_session.rs), which already carries the user's full toolchain and
+                    // re-sets PATH from the profile — so an inherited PATH override is clobbered.
+                    // The shell prepends this prefix AFTER the profile loads (like `activate`), so
+                    // the era venv layers on top of the user's real environment. No hand-rolled PATH.
+                    shell.set_env("CONTINUUM_PATH_PREPEND".to_string(), prepend.clone());
+                    // HER TREE MUST WIN THE IMPORT (due-diligence find, 2026-08-08,
+                    // gold-through-her-hands on sympy-24066): the era venv's package is
+                    // `pip install -e` bound to the GRADER'S work repo, so `import sympy`
+                    // from her python loaded the pristine grader tree and HER EDITS WERE
+                    // INVISIBLE TO HER OWN TEST RUNS — anti-verification: a perfect fix
+                    // still "failed" when she checked it. Positive-control proven both
+                    // ways: with PYTHONPATH at her workspace the issue repro fails
+                    // pre-fix and passes post-fix through her exact edit semantics.
+                    // PYTHONPATH precedes the venv's .pth entries, so her tree wins.
+                    shell.set_env("PYTHONPATH".to_string(), workspace.clone());
+                    Ok(())
+                })
+                .map_err(CommandError::Internal)?;
             crate::probe!(
                 class = "code.workspace.path_prepend",
                 caller = who.as_str(),
