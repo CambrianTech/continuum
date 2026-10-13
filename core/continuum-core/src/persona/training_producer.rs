@@ -2296,22 +2296,15 @@ pub(crate) fn verdict_of(outcome: &airc_work::WorkReviewOutcome) -> Option<bool>
 
 /// Every resident observer verifies the same review event; the card settles once per
 /// node. Settlement is idempotent anyway (a mark keeps its first value; a transfer
-/// reservation refuses an overlap), so this bounds work, not correctness.
+/// reservation refuses an overlap), so this bounds work, not correctness. The ring is
+/// the existing `SeenIds`, not another hand-rolled copy.
 fn first_settlement(review_id: Uuid) -> bool {
-    use std::collections::VecDeque;
     use std::sync::{Mutex, OnceLock};
-    const SEEN_CAP: usize = 256;
-    static SEEN: OnceLock<Mutex<VecDeque<Uuid>>> = OnceLock::new();
-    let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
-    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
-    if seen.contains(&review_id) {
-        return false;
-    }
-    if seen.len() >= SEEN_CAP {
-        seen.pop_front();
-    }
-    seen.push_back(review_id);
-    true
+    static SEEN: OnceLock<Mutex<crate::persona::wake_backlog::SeenIds>> = OnceLock::new();
+    SEEN.get_or_init(|| Mutex::new(crate::persona::wake_backlog::SeenIds::new(256)))
+        .lock()
+        .unwrap_or_else(|p| p.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .note(review_id)
 }
 
 /// Every card an INSTANCE names (a round's cards for it) settles when its verdict
