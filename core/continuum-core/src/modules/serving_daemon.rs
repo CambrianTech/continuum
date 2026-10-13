@@ -1181,7 +1181,7 @@ impl ServingDaemonModule {
                 crate::model_registry::try_global().and_then(|r| r.model(id).cloned())
             }),
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
-            leased_in_sent: Arc::new(crate::cognition::resource_admission::leased_in_sent_samples),
+            leased_in_sent: Arc::new(crate::inference::seat_load::leased_in_sent_samples),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
@@ -1599,7 +1599,7 @@ impl ServingDaemonModule {
         // the very calls that raised it. Zero until the inbound-generate seam feeds the
         // gauge; never invented.
         let leased_in =
-            note_leased_in_peak(crate::cognition::resource_admission::take_leased_in_peak());
+            note_leased_in_peak(crate::inference::seat_load::take_leased_in_peak());
         // Each live mind's REQUIREMENT: the untrimmed demand her turns assemble (never
         // what a window let her send), with headroom, floored at one real turn. Built
         // once here and carried on the demand by value into the one plan — the

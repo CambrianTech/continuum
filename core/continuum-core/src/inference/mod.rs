@@ -62,6 +62,7 @@ pub mod llama_server;
 pub mod llamacpp_adapter;
 pub mod measured_hold;
 pub mod slots;
+pub mod seat_load;
 pub mod sse_stream;
 pub mod llm_module;
 pub mod llm_module_bus;

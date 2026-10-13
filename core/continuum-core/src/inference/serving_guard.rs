@@ -345,7 +345,7 @@ pub(crate) async fn guard_resident_model(
         {
             // The refused size is demand this seat could not hold; it votes on the next
             // plan's window (the 5090's self-sealed 2048, 2026-09-20).
-            crate::cognition::resource_admission::note_refused_prompt(
+            crate::inference::seat_load::note_refused_prompt(
                 prompt_tokens.min(u32::MAX as usize) as u32,
             );
             return Err(prompt_count.overflow(snap.served_context_window, &cfg.name, caller));

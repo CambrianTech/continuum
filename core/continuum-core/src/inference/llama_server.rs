@@ -689,7 +689,7 @@ pub fn main_lane_placement() -> LanePlacement {
 }
 
 /// Ask the serving binary, ONCE per process, which KV cache types its build accepts,
-/// and record the answer for [`crate::cognition::kv_cache_plan`].
+/// and record the answer for [`crate::inference::planning::kv_cache_plan`].
 ///
 /// The engine's own `--help` outranks any table in our source — a table can only be a
 /// stale guess about someone else's build. Bounded at 10 s like the `--version` and
@@ -711,7 +711,7 @@ async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::proces
             text.push('\n');
             text.push_str(&String::from_utf8_lossy(&out.stderr));
             let _ = ENGINE_TRAIN_DIR.set(engine_help_lists_train_dir(&text));
-            match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
+            match crate::inference::planning::kv_cache_plan::parse_engine_kv_support(&text) {
                 Some(v) => ("answered", Some(v), String::new()),
                 None => ("did_not_enumerate", None, String::new()),
             }
@@ -720,7 +720,7 @@ async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::proces
         Err(_) => ("probe_timeout", None, "no answer in 10 s".to_string()),
     };
     if let Some(v) = support {
-        crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);
+        crate::inference::planning::kv_cache_plan::record_engine_quantized_kv_support(v);
     }
     crate::probe!(
         class = "serving.kv_cache.engine_support",
@@ -3542,7 +3542,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             // that seat within seven minutes. Adopt against the geometry a spawn would
             // produce NOW: a different decision is a stale lane and relaunches once, the
             // probe naming both. Unknown (no argv, a fake) is not a mismatch.
-            let planned_kv = crate::cognition::kv_cache_plan::resolve();
+            let planned_kv = crate::inference::planning::kv_cache_plan::resolve();
             let running_kv = ctrl.launch_kv();
             let kv_ok = running_kv.as_ref().is_none_or(|r| {
                 r.cache_type_or_default().eq_ignore_ascii_case(&planned_kv.cache_type)
@@ -5410,7 +5410,7 @@ impl LlamaServerProcess {
         // named in the receipt. (The CPU arm decides f16 pending a MEASUREMENT of the
         // dequant cost against that box's ~25 tok/s prefill — see the module header;
         // the override is how that number gets made.)
-        let kv_plan = crate::cognition::kv_cache_plan::resolve();
+        let kv_plan = crate::inference::planning::kv_cache_plan::resolve();
         let kv_cache_type = kv_plan.launcher_cache_type().map(|s| s.to_string());
         let flash_attn = kv_plan.flash_attn;
         // THE RECEIPT. The chosen type, WHERE it came from, the backend it was decided
@@ -5420,7 +5420,7 @@ impl LlamaServerProcess {
         // `apply_kv_quantization`), which reads the same resolved divisor this launch
         // flags with: if these two ever disagreed, the box would over- or under-commit
         // its whole budget by 2×.
-        let engine_advertised = crate::cognition::kv_cache_plan::engine_quantized_kv_support();
+        let engine_advertised = crate::inference::planning::kv_cache_plan::engine_quantized_kv_support();
         let planned_kv_per_token = crate::cognition::serving_plan::footprint::footprint_for(&target.model)
             .map(|fp| fp.kv_per_token)
             .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
@@ -8706,8 +8706,8 @@ mod tests {
     // (or an unknown one) still adopts, so the #4284 warm-lane economy stands.
     #[tokio::test]
     async fn an_adopted_lane_on_last_deploys_kv_decision_relaunches_onto_this_ones() {
-        let planned = crate::cognition::kv_cache_plan::resolve();
-        let other = if planned.cache_type == crate::cognition::kv_cache_plan::Q8_0 { None } else { Some(crate::cognition::kv_cache_plan::Q8_0) };
+        let planned = crate::inference::planning::kv_cache_plan::resolve();
+        let other = if planned.cache_type == crate::inference::planning::kv_cache_plan::Q8_0 { None } else { Some(crate::inference::planning::kv_cache_plan::Q8_0) };
         // Launched on the OTHER decision: stale, relaunched.
         let stale = FakeControl::probe(Ok(Some("coder-14b".into()))).owned().launched_with(other, !planned.flash_attn);
         assert_eq!(
