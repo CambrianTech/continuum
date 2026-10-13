@@ -1901,6 +1901,30 @@ impl ActionCommand for CodeReleaseHands {
                 if ended {
                     pids.extend(pid);
                     reaped.extend(pid);
+                    // What the shell started and the task couldn't confirm gone: kill each again
+                    // while its pid still names it, then re-check. Each release is one recheck,
+                    // so a retry can confirm what this one couldn't.
+                    let survivors = match state.lock() {
+                        Ok(s) => s.unconfirmed_descendants.clone(),
+                        Err(p) => p.get_ref().unconfirmed_descendants.clone(), // poisoned: read the last state
+                    };
+                    if !survivors.is_empty() {
+                        let still = tokio::task::spawn_blocking(move || {
+                            for who in &survivors {
+                                crate::inference::lane_process::kill_if_same(*who);
+                            }
+                            crate::inference::lane_process::still_present(&survivors)
+                        })
+                        .await
+                        .map_err(|e| CommandError::Internal(format!("release-hands: re-checking descendants failed to run: {e}")))?;
+                        if let Ok(mut s) = state.lock() {
+                            s.unconfirmed_descendants = still.clone();
+                        }
+                        if !still.is_empty() {
+                            unconfirmed.extend(still.iter().map(|who| who.pid));
+                            errors.push(format!("descendants {:?} of pid {pid:?} are not confirmed gone", still.iter().map(|who| who.pid).collect::<Vec<_>>()));
+                        }
+                    }
                     break;
                 }
                 tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;

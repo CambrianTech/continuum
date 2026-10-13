@@ -62,18 +62,20 @@ impl CodeState {
     /// [`Self::finish_release`], so a release that can't confirm can be retried (Astra on #5005).
     /// Never called for a caller's default (live) hands; `code/release-hands` refuses that.
     ///
-    /// Scope, stated: a kill ends the execution's DIRECT child. The shell isn't spawned in its
-    /// own process group, so a compound command's grandchildren can outlive it; that is a
-    /// shell-wide gap (code/shell-kill has it too), carded separately (ea06701d).
+    /// A kill ends the shell and everything it started that is still its descendant (found and
+    /// killed by the execution's own task, deepest first); what survives is kept on the
+    /// execution and re-checked here. A process that double-forked away from the shell is not a
+    /// descendant and is not reached.
     pub fn begin_release(&self, who: &str) -> Vec<std::sync::Arc<std::sync::Mutex<crate::code::shell_session::ExecutionState>>> {
         let mut pending = Vec::new();
         let mut visit = |shell: &ShellSession| {
             let ids: Vec<String> = shell.execution_ids().map(str::to_string).collect();
             for id in ids {
                 let Ok(state) = shell.get_execution_state(&id) else { continue };
+                // Ended means the shell was reaped AND nothing it started is known to survive.
                 let (running, ended) = match state.lock() {
-                    Ok(s) => (s.status == crate::code::shell_types::ShellExecutionStatus::Running, s.process_ended),
-                    Err(p) => (p.get_ref().status == crate::code::shell_types::ShellExecutionStatus::Running, p.get_ref().process_ended), // poisoned: read the last state
+                    Ok(s) => (s.status == crate::code::shell_types::ShellExecutionStatus::Running, s.process_ended && s.unconfirmed_descendants.is_empty()),
+                    Err(p) => (p.get_ref().status == crate::code::shell_types::ShellExecutionStatus::Running, p.get_ref().process_ended && p.get_ref().unconfirmed_descendants.is_empty()), // poisoned: read the last state
                 };
                 if ended {
                     continue;

@@ -88,6 +88,81 @@ pub fn kill_tree(pid: u32) -> TreeKill {
     }
 }
 
+/// One process as the process table saw it: its pid and start time. An act on it later is
+/// refused if the pid now names another process (pid reuse never kills a stranger).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub start_time: u64,
+}
+
+/// Every descendant of `pid` in the process table, DEEPEST FIRST, each with its identity: what
+/// a tree kill must reach, read while `pid` is alive (once it dies its children are reparented
+/// and the walk can no longer find them). A child that has double-forked away is not a
+/// descendant and is not found; nothing claims it was.
+pub fn descendants(pid: u32) -> Vec<ProcessIdentity> {
+    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let mut children: std::collections::HashMap<u32, Vec<ProcessIdentity>> = std::collections::HashMap::new();
+    for (child, process) in sys.processes() {
+        if let Some(parent) = process.parent() {
+            children.entry(parent.as_u32()).or_default().push(ProcessIdentity { pid: child.as_u32(), start_time: process.start_time() });
+        }
+    }
+    let mut found: Vec<(usize, ProcessIdentity)> = Vec::new();
+    let mut frontier = vec![(pid, 0usize)];
+    while let Some((at, depth)) = frontier.pop() {
+        for &child in children.get(&at).map(Vec::as_slice).unwrap_or(&[]) {
+            if found.iter().any(|(_, seen)| seen.pid == child.pid) {
+                continue; // a table read mid-fork can list a pid twice; walk it once
+            }
+            found.push((depth + 1, child));
+            frontier.push((child.pid, depth + 1));
+        }
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.into_iter().map(|(_, who)| who).collect()
+}
+
+/// The ones of `set` still running as the SAME process (same pid, same start time). A zombie
+/// has exited and only awaits its reaper, so it is gone.
+pub fn still_present(set: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessStatus, ProcessesToUpdate, System};
+    if set.is_empty() {
+        return Vec::new();
+    }
+    let pids: Vec<Pid> = set.iter().map(|who| Pid::from_u32(who.pid)).collect();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&pids), true, ProcessRefreshKind::nothing());
+    set.iter()
+        .copied()
+        .filter(|who| {
+            sys.process(Pid::from_u32(who.pid))
+                .is_some_and(|p| p.start_time() == who.start_time && p.status() != ProcessStatus::Zombie)
+        })
+        .collect()
+}
+
+/// Kill `who` only while its pid still names that same process. True when the kill was sent.
+pub fn kill_if_same(who: ProcessIdentity) -> bool {
+    if still_present(&[who]).is_empty() {
+        return false; // gone, or its pid now names another process: never signal a stranger
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: kill only sends a signal to a pid just verified to be `who`; no memory is touched
+        unsafe { libc::kill(who.pid as libc::pid_t, libc::SIGKILL) == 0 }
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("taskkill")
+            .args(["/F", "/PID", &who.pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success())
+    }
+}
+
 /// The command name (basename) of `pid` via `ps -p <pid> -o comm=`. `None` if the
 /// pid is gone or `ps` is unavailable — callers treat `None` as "unverifiable" and
 /// refuse to kill.

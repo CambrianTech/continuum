@@ -79,6 +79,10 @@ pub struct ExecutionState {
     /// Why the task could NOT prove the child exited (its final `wait` failed). Never read as
     /// an exit: a release that meets it stays unresolved and keeps the context's handles.
     pub process_end_error: Option<String>,
+    /// What the shell had started that was still running after the kill, by identity. Not
+    /// assumed gone: a release re-kills and re-checks each one, and keeps the context while any
+    /// is still present.
+    pub unconfirmed_descendants: Vec<crate::inference::lane_process::ProcessIdentity>,
     /// Cursor: index of next stdout line to return on poll/watch.
     stdout_cursor: usize,
     /// Cursor: index of next stderr line to return on poll/watch.
@@ -377,6 +381,7 @@ impl ShellSession {
             handed_back: false,
             process_ended: false,
             process_end_error: None,
+            unconfirmed_descendants: Vec::new(),
             stdout_cursor: 0,
             stderr_cursor: 0,
             output_notify: notify,
@@ -605,10 +610,8 @@ impl ShellSession {
         state.status = ShellExecutionStatus::Killed;
         state.finished_at = Some(crate::time::EpochMs::now().millis());
 
-        // Also send SIGKILL via the stored PID for immediate effect
-        if let Some(pid) = state.pid {
-            kill_process(pid);
-        }
+        // The execution's own task, which owns the child, sees the flag at its next poll and
+        // kills the shell and everything it started. No second kill by stored pid.
 
         log_info!(
             "code",
@@ -684,9 +687,6 @@ impl ShellSession {
                 if state.status == ShellExecutionStatus::Running {
                     state.status = ShellExecutionStatus::Killed;
                     state.finished_at = Some(crate::time::EpochMs::now().millis());
-                    if let Some(pid) = state.pid {
-                        kill_process(pid);
-                    }
                 }
             }
         }
@@ -992,6 +992,7 @@ async fn run_shell_command(
 
     // Wait for process completion (with optional timeout and kill detection)
     let state_wait = state.clone();
+    let state_for_timed_kill = state.clone();
     let exit_status = if let Some(timeout) = timeout_ms {
         tokio::select! {
             // Branch 1: Process completes
@@ -1006,7 +1007,9 @@ async fn run_shell_command(
                     }
                 }
             }
-            // Branch 2: Timeout fires
+            // Branch 2: a kill was asked for (code/shell-kill, a session's end, a release)
+            _ = poll_kill_flag(state_for_timed_kill) => None,
+            // Branch 3: Timeout fires
             _ = tokio::time::sleep(Duration::from_millis(timeout)) => {
                 // Check if already killed
                 let already_done = state_wait.lock()
@@ -1014,7 +1017,6 @@ async fn run_shell_command(
                     .unwrap_or(false);
 
                 if !already_done {
-                    let _ = child.kill().await;
                     if let Ok(mut s) = state_wait.lock() {
                         if s.status == ShellExecutionStatus::Running {
                             s.status = ShellExecutionStatus::TimedOut;
@@ -1044,10 +1046,7 @@ async fn run_shell_command(
                 }
             }
             // Check kill flag periodically
-            _ = poll_kill_flag(state_for_kill) => {
-                let _ = child.kill().await;
-                None
-            }
+            _ = poll_kill_flag(state_for_kill) => None,
         }
     };
 
@@ -1056,17 +1055,29 @@ async fn run_shell_command(
     // flagged before the timeout fired, which used to skip the child entirely) signals the child
     // (harmless if it's already dead) and waits once more: only that wait's status proves the
     // reap, and its error is recorded as unproven, never as an exit (Astra on #5005).
-    let reaped: Result<(), String> = if exit_status.is_some() {
-        Ok(())
+    //
+    // THE ONE KILL (Astra on ea06701d): only this task, which owns the child, kills it. Everything
+    // the shell started is found while the shell is alive and still their parent, and killed
+    // deepest first, each only if its pid still names the same process; then the shell itself.
+    // What survives is recorded, never assumed gone, and a release re-checks it.
+    let (reaped, tree): (Result<(), String>, Vec<crate::inference::lane_process::ProcessIdentity>) = if exit_status.is_some() {
+        (Ok(()), Vec::new())
     } else {
+        let tree = child.id().map(crate::inference::lane_process::descendants).unwrap_or_default();
+        for who in &tree {
+            crate::inference::lane_process::kill_if_same(*who);
+        }
         let _ = child.start_kill();
-        child.wait().await.map(|_| ()).map_err(|e| format!("could not confirm the process exited: {e}"))
+        let reaped = child.wait().await.map(|_| ()).map_err(|e| format!("could not confirm the process exited: {e}"));
+        (reaped, tree)
     };
+    let survivors = crate::inference::lane_process::still_present(&tree);
     if let Ok(mut s) = state.lock() {
         match reaped {
             Ok(()) => s.process_ended = true,
             Err(why) => s.process_end_error = Some(why),
         }
+        s.unconfirmed_descendants = survivors;
     }
 
     // Wait for output readers to drain
@@ -1155,14 +1166,6 @@ async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
         }
         tokio::time::sleep(KILL_POLL).await;
     }
-}
-
-/// Kill a process by PID (best-effort, Unix only).
-fn kill_process(pid: u32) {
-    // Use kill command — works on macOS and Linux, no extra deps
-    let _ = std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .output();
 }
 
 // ============================================================================
@@ -1566,6 +1569,45 @@ mod tests {
         let poll = session.poll(&exec_id).unwrap();
         assert!(poll.finished);
         assert_eq!(poll.status, ShellExecutionStatus::Killed);
+
+        // what this catches (card ea06701d; Astra's design): a kill that ended only `bash` and left
+        // what it started running (a pipeline, a test runner's workers, a backgrounded server).
+        // The execution's own task kills the shell's descendants deepest first, then the shell,
+        // and records nothing as surviving. Unix: the grandchild's pid is written by the shell.
+        #[cfg(unix)]
+        {
+            let pidfile = dir.path().join("grandchild.pid");
+            let exec_id = session.execute("sleep 600 & echo $! > grandchild.pid; wait", None, rt.handle()).unwrap();
+            // 10 s is this test's bound on a shell writing one file, not a product timeout.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let grandchild: u32 = loop {
+                if let Some(pid) = std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse().ok()) {
+                    break pid;
+                }
+                assert!(std::time::Instant::now() < deadline, "the shell never started its grandchild");
+                std::thread::sleep(KILL_POLL);
+            };
+            let identity = crate::inference::lane_process::ProcessIdentity {
+                pid: grandchild,
+                start_time: match crate::inference::engine_residency::probe_process(grandchild) {
+                    crate::inference::engine_residency::ProcessProbe::Present(start) => start,
+                    other => panic!("the grandchild is running before the kill: {other:?}"),
+                },
+            };
+            session.kill(&exec_id).unwrap();
+            let state = session.get_execution_state(&exec_id).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !state.lock().unwrap().process_ended {
+                assert!(state.lock().unwrap().process_end_error.is_none(), "the shell's reap succeeds");
+                assert!(std::time::Instant::now() < deadline, "the killed shell is reaped");
+                std::thread::sleep(KILL_POLL);
+            }
+            assert!(state.lock().unwrap().unconfirmed_descendants.is_empty(), "nothing the shell started is recorded as surviving");
+            assert!(
+                crate::inference::lane_process::still_present(&[identity]).is_empty(),
+                "the grandchild died with its shell, not only bash"
+            );
+        }
     }
 
     #[test]
