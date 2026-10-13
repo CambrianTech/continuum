@@ -293,12 +293,24 @@ fn post_wait_for(render_per_example: Duration, sent: usize, floor: Duration) -> 
 enum Begin {
     /// accepted (or re-attached): the watch loop takes it
     Running(Box<EngineRun>),
-    /// the engine provably never started it: it refused, or a status read after a lost POST
-    /// showed another run or none
+    /// the engine provably never started it: its documented refusal (see
+    /// [`is_documented_train_refusal`])
     NeverStarted(InPlaceEnd),
-    /// it ended without starting and nothing proves the engine doesn't have it (an unreadable
-    /// status after a lost POST): its binding settles only the ordinary way
+    /// it ended without starting, and nothing proves the engine won't run it: a lost POST
+    /// (it may still be queued), or any other non-2xx. Its binding settles only the ordinary way.
     Unproven(InPlaceEnd),
+}
+
+/// The fork's documented pre-acceptance refusal of `POST /train`: HTTP 400 with an
+/// `invalid_request_error` body. `server_trainer::start` (tools/server/server-train.cpp) is
+/// synchronous and answers `ok: false` only before claiming the run, or after releasing its
+/// claim (`running = false`). The server then maps it to exactly this, so when the answer
+/// arrives nothing of this run is running or will run.
+fn is_documented_train_refusal(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::BAD_REQUEST
+        && serde_json::from_str::<Value>(body)
+            .ok()
+            .is_some_and(|b| b.pointer("/error/type").and_then(Value::as_str) == Some("invalid_request_error"))
 }
 
 /// What a lost POST /train turns out to have been, from the engine's status afterwards.
@@ -1031,8 +1043,8 @@ struct EngineProbe {
 }
 
 impl EngineProbe {
-    /// The end of a run the engine provably never started (card 26df): it refused the POST,
-    /// or a lost POST's status showed another run or none. `settled` can't decide this case,
+    /// The end of a run the engine provably never started (card 26df): its documented refusal
+    /// of the POST, and nothing else. `settled` can't decide this case,
     /// since it waits for THIS run's terminal state and a refused run never has one. The
     /// binding is settled when the bound incarnation is verifiably dead, or is still the same
     /// process, which owns the lane that answered. An unreadable process keeps it.
@@ -1275,9 +1287,12 @@ impl EngineRun {
             {
                 Ok(r) if r.status().is_success() => {}
                 Ok(r) => {
-                    // refused before any thread started: nothing of ours runs
+                    let status = r.status();
                     let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
-                    return Begin::NeverStarted(InPlaceEnd::Failed(format!("the engine refused the training run: {why}")));
+                    let end = InPlaceEnd::Failed(format!("the engine refused the training run: HTTP {status}: {why}"));
+                    // Only the engine's documented refusal proves nothing of ours runs (Codex on
+                    // #5001): any other non-2xx (a 500, a proxy's answer) proves nothing.
+                    return if is_documented_train_refusal(status, &why) { Begin::NeverStarted(end) } else { Begin::Unproven(end) };
                 }
                 // LOST ON THE WAY BACK, RECONCILED BY THE RUN'S ID (card 93ffc555): the engine may
                 // have the run (fork #55 claims and shows it 'preparing' before its long prepare),
@@ -1295,13 +1310,11 @@ impl EngineRun {
                             error = %e,
                             "the POST was lost on the way back but the engine reports this job's run: it is watched to its end, not failed"
                         ),
+                        // A lost POST may still be queued or in flight when the status is read, so a
+                        // status naming another run or none does not prove it will never start
+                        // (Codex on #5001). Its binding settles only the ordinary way.
                         LostPost::NeverStarted => {
-                            let end = self.failed(format!("POST /train on {}: {e}", self.lane)).await;
-                            // Only a status READ proves it never started; an unreadable one proves nothing.
-                            return match status {
-                                Some(_) => Begin::NeverStarted(end),
-                                None => Begin::Unproven(end),
-                            };
+                            return Begin::Unproven(self.failed(format!("POST /train on {}: {e}", self.lane)).await);
                         }
                     }
                 }
@@ -2647,7 +2660,18 @@ mod tests {
                     // "post_400": the engine refuses the start before accepting it, and keeps
                     // naming its PRIOR run (card 26df, the 5090)
                     if mode == "post_400" {
-                        return (axum::http::StatusCode::BAD_REQUEST, "a run is already loaded").into_response();
+                        return (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({"error": {
+                            "code": 400, "message": "a training run is already in progress", "type": "invalid_request_error"}}))).into_response();
+                    }
+                    // "post_500": a non-2xx that is NOT the engine's documented refusal
+                    if mode == "post_500" {
+                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "upstream connect error").into_response();
+                    }
+                    // "post_stale": the POST is still queued past the caller's wait, and /train
+                    // meanwhile names the prior run (it has not claimed this one yet)
+                    if mode == "post_stale" {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        return axum::Json(json!({"ok": true})).into_response();
                     }
                     {
                         let mut l = lane.lock().unwrap();
@@ -2673,7 +2697,7 @@ mod tests {
                     if l.cancelled {
                         return axum::Json(json!({"state": "cancelled", "out": out}));
                     }
-                    if mode == "post_400" {
+                    if mode == "post_400" || mode == "post_500" || mode == "post_stale" {
                         return axum::Json(json!({"state": "done", "out": "prior-run.gguf"}));
                     }
                     if mode == "flaky" && l.polls <= 2 {
@@ -3331,26 +3355,21 @@ mod tests {
         server.abort();
     }
 
-    // what this catches: card 26df (Codex, the 5090). The engine refused the POST before
-    // accepting the run, while its /train kept naming the PRIOR run. `settled` waits for THIS
-    // run's terminal state, which a refused run never has, so the engine binding stayed
-    // forever and serving stayed off the engine. A start the engine provably refused settles
-    // as never-started once the bound incarnation is confirmed (here: this live process).
-    #[tokio::test]
-    async fn a_start_the_engine_refused_releases_its_binding() {
+    /// Run one job against a fake lane in `mode` whose POST does not start it, with the engine
+    /// binding recorded, and answer whether the binding is still held when the job has ended.
+    async fn binding_held_after_a_start_that_did_not_run(mode: &'static str, post_wait: Duration) -> bool {
         let train = tempfile::tempdir().expect("test: dir");
         let jobs = tempfile::tempdir().expect("test: dir");
         let home = tempfile::tempdir().expect("test: dir");
-        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "post_400").await;
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), mode).await;
         let job = Uuid::new_v4();
         let out = format!("{job}.gguf");
         let port: u16 = url.rsplit(':').next().and_then(|p| p.parse().ok()).expect("test: port");
         let engine = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), port).expect("test: this process has a start time");
         let store = crate::inference::engine_residency::store_path(home.path());
-        let job_dir = jobs.path().join(job.to_string());
         let spec = EngineRunSpec {
             adapter_path: train.path().join(&out),
-            job_dir: job_dir.clone(),
+            job_dir: jobs.path().join(job.to_string()),
             epochs: 1,
             val_split: SplitPpm::from(0.1),
             model_id: format!("{PROVIDER_ID}:code:{job}"),
@@ -3378,7 +3397,7 @@ mod tests {
             http: tuner.http.clone(),
             lane: url,
             start: Some(json!({"out": out})),
-            post_wait: POST_WAIT_FLOOR,
+            post_wait,
             out: out.clone(),
             adapter_path: spec.adapter_path.clone(),
             job_dir: spec.job_dir.clone(),
@@ -3394,15 +3413,36 @@ mod tests {
         let handle = tuner.jobs.prepare(job, move |_progress| async move {
             Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
         });
-        let TrainingStatus::Failed { error } = wait_terminal(&tuner, &handle).await else {
-            panic!("test: a refused start fails the job");
-        };
-        assert!(error.contains("refused the training run"), "the failure names the refusal: {error}");
         assert!(
-            crate::inference::engine_residency::find(&store, job).expect("test: read").is_none(),
-            "a start the engine refused releases its binding; it never waits on a terminal state the engine will not report"
+            matches!(wait_terminal(&tuner, &handle).await, TrainingStatus::Failed { .. }),
+            "test ({mode}): a start that did not run fails the job"
         );
+        let held = crate::inference::engine_residency::find(&store, job).expect("test: read").is_some();
         server.abort();
+        held
+    }
+
+    // what this catches: card 26df (Codex, the 5090), both directions. The engine's
+    // documented refusal (HTTP 400, invalid_request_error) proves nothing of this run runs.
+    // `settled` waits for THIS run's terminal state, which a refused run never has, so the
+    // binding stayed forever and serving stayed off the engine; it must be released. And
+    // nothing weaker may release it (Codex on #5001): a 500 or proxy answer is not the
+    // engine's refusal, and a lost POST may still be queued while /train names the prior run.
+    // Releasing on those would let serving replace an engine a run is about to start in.
+    #[tokio::test]
+    async fn only_the_engines_documented_refusal_releases_a_never_started_runs_binding() {
+        assert!(
+            !binding_held_after_a_start_that_did_not_run("post_400", POST_WAIT_FLOOR).await,
+            "the documented refusal releases the binding"
+        );
+        assert!(
+            binding_held_after_a_start_that_did_not_run("post_500", POST_WAIT_FLOOR).await,
+            "a non-2xx that is not the engine's refusal keeps the binding"
+        );
+        assert!(
+            binding_held_after_a_start_that_did_not_run("post_stale", Duration::from_millis(300)).await,
+            "a lost POST whose status still names the prior run keeps the binding: it may yet start"
+        );
     }
 
     // what this catches (Codex on #4472): the finish path filing a measured graph under the
