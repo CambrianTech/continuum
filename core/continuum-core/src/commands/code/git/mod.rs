@@ -47,11 +47,11 @@ use status::CodeGitStatus;
 /// Returns an OWNED [`PathBuf`] so the `DashMap` ref guard is dropped before the
 /// caller runs blocking git work — never a lock held across a shell-out.
 pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
-    let hands = crate::modules::code_commands::hands_of(ctx).await?;
-    ensure_engine(state, &hands.key).await?;
+    let key = crate::modules::code_commands::hands_of(ctx);
+    ensure_engine(state, &key).await?;
     let engine = state
         .file_engines
-        .get(&hands.key.map_key())
+        .get(&key.map_key())
         .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
     Ok(engine.workspace_root())
 }

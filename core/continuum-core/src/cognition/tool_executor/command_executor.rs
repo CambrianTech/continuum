@@ -100,7 +100,7 @@ impl Drop for ContextRelease {
                 // Forget the place only on a CONFIRMED release: an unresolved one keeps the
                 // handles and the record together, so neither claims the other is gone.
                 let outcome = core
-                    .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity))
+                    .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity.releasing_hands()))
                     .await
                     .and_then(|r| match r {
                         crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)

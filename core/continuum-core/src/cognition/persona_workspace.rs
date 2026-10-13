@@ -797,9 +797,6 @@ impl ActingHands {
         })
     }
 
-    fn key(&self) -> crate::code::hands::HandsKey {
-        crate::code::hands::HandsKey::new(self.persona_id.to_string(), self.context)
-    }
 }
 
 /// Drive `code/create-workspace` through the persona's OWN identity-bearing executor —
@@ -1202,7 +1199,7 @@ pub(crate) async fn bind_card(
     let Some(hands) = live.in_context(context) else {
         return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
     };
-    let lease = match crate::code::hands::admit(&hands.key()) {
+    let lease = match crate::code::hands::admit(context) {
         Ok(lease) => lease,
         Err(why) => {
             crate::probe!(class = "persona.work.hands_closing", peer = %peer_id, card = %focus.card_id.as_uuid(), why = %why, "the claim's hands are closing; nothing acts on the card this turn");
@@ -1351,8 +1348,7 @@ fn close_ended_claims(live: &ActingHands, held: &[crate::code::hands::HandsConte
     for context in ended {
         let Some(hands) = live.in_context(context) else { continue };
         tokio::spawn(async move {
-            let key = hands.key();
-            crate::code::hands::close(&key).await;
+            // The release closes the hands to new work and waits out admitted work itself.
             let root = acting_root_in(hands.persona_id, Some(context));
             match close_acting_context(&hands).await {
                 Ok(()) => {
@@ -1518,41 +1514,25 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), Cont
     let Some(context) = hands.context else {
         return Ok(()); // her live hands are never ended
     };
-    let ctx = crate::cognition::tool_executor::ToolExecutionContext {
-        persona_id: hands.persona_id,
-        persona_name: hands.persona_name.clone(),
-        session_id: Uuid::new_v4(),
-        context_id: Uuid::new_v4(),
-        caller_context: serde_json::Value::Null,
-        persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
-            auto_load_media: false,
-            supported_media_types: vec![],
-        },
-    };
-    let call = crate::ai::types::ToolCall {
-        id: "close-acting-context".to_string(),
-        name: "code/release-hands".to_string(),
-        input: serde_json::json!({}),
-    };
-    let out = hands
-        .executor
-        .execute_native_batch(std::slice::from_ref(&call), &ctx, 8000)
-        .await
-        .map_err(|e| ContextNotClosed::unknown(format!("closing acting context {}: {e}", context.id())))?;
-    let result = out
-        .results
-        .first()
-        .ok_or_else(|| ContextNotClosed::unknown(format!("closing acting context {}: no result", context.id())))?;
-    if result.is_error.is_some() {
-        return Err(ContextNotClosed::unknown(format!("closing acting context {}: {}", context.id(), result.content)));
-    }
-    let release: crate::modules::code_commands::ReleaseHandsResult = serde_json::from_str(&result.content).map_err(|e| {
-        ContextNotClosed::unknown(format!(
-            "closing acting context {}: the release's result isn't its own shape ({e}), so nothing is confirmed: {}",
-            context.id(),
-            result.content
-        ))
+    // THE RELEASE IS THE KERNEL'S, run through the core as a RELEASE of these hands (never as
+    // work admitted to them): it closes them to new work, waits out what is admitted, then
+    // ends what still runs (Astra on #5026). Its typed result decides; nothing is clipped.
+    let core = hands.executor.command_executor().ok_or_else(|| {
+        ContextNotClosed::unknown(format!("closing acting context {}: these hands have no core to release through", context.id()))
     })?;
+    let releasing = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(hands.persona_id))
+        .in_hands(context)
+        .releasing_hands();
+    let release: crate::modules::code_commands::ReleaseHandsResult = match core
+        .execute_with_caller("code/release-hands", serde_json::json!({}), Some(releasing))
+        .await
+    {
+        Ok(crate::runtime::CommandResult::Json(value)) => serde_json::from_value(value).map_err(|e| { // BOUNDARY: code/release-hands answers through the command surface's JSON result
+            ContextNotClosed::unknown(format!("closing acting context {}: the release's result isn't its own shape ({e}), so nothing is confirmed", context.id()))
+        })?,
+        Ok(_) => return Err(ContextNotClosed::unknown(format!("closing acting context {}: the release answered in a shape other than its own JSON", context.id()))),
+        Err(e) => return Err(ContextNotClosed::unknown(format!("closing acting context {}: {e}", context.id()))),
+    };
     if !release.released {
         return Err(ContextNotClosed {
             message: format!(
@@ -4039,6 +4019,40 @@ mod tests {
             set_focus(persona, None);
             note_acting_root_in(persona, Some(claim_a), None);
             note_acting_root_in(persona, Some(claim_b), None);
+        }
+
+        // what this catches (Astra on #5026): admission living in helpers, so a command that
+        // started after its hands were released (a background command first polled after the
+        // release) still ran in them; and a release that ran as ordinary admitted work, waiting
+        // on itself. The DISPATCHER admits every command bound to a context; a release is the
+        // kernel's, marked as one, and closes the hands to everything after it.
+        #[tokio::test]
+        async fn a_command_after_its_hands_were_released_is_refused_at_dispatch() {
+            let dir = tempfile::TempDir::new().expect("a workspace");
+            let persona = Uuid::new_v4();
+            let (executor, _state) = core_with_code();
+            let bound = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))
+                .in_hands(crate::code::hands::HandsContext::fresh());
+            executor
+                .execute_with_caller("code/create-workspace", serde_json::json!({"workspace_root": dir.path().to_string_lossy()}), Some(bound.clone()))
+                .await
+                .expect("the hands are bound");
+            executor
+                .execute_with_caller("code/list", serde_json::json!({"path": "."}), Some(bound.clone()))
+                .await
+                .expect("open hands admit a command");
+
+            let unmarked = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))
+                .in_hands(crate::code::hands::HandsContext::fresh());
+            let refused = executor.execute_with_caller("code/release-hands", serde_json::json!({}), Some(unmarked)).await;
+            assert!(refused.is_err(), "a release run as ordinary work is refused: {refused:?}");
+
+            executor
+                .execute_with_caller("code/release-hands", serde_json::json!({}), Some(bound.clone().releasing_hands()))
+                .await
+                .expect("the kernel's release ends the hands");
+            let late = executor.execute_with_caller("code/list", serde_json::json!({"path": "."}), Some(bound)).await;
+            assert!(late.as_ref().is_err_and(|e| e.contains("released")), "a command after the release is refused at dispatch: {late:?}");
         }
 
         // what this catches (card fc9e9fd7; Kimi #11697, #312): one set of hands moved by

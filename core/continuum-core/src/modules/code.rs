@@ -84,17 +84,18 @@ impl CodeState {
     }
 
     /// Apply `f` to the session holding `handle` (a full execution id or a unique prefix),
-    /// resolved ONCE across every set of `caller`'s own hands: her default ones and each acting
-    /// context's (`<caller>#<context>`). A handle from her card claim A stays reachable after
-    /// her focus moved to claim B (Astra on #5026); another caller's never is. A prefix that
-    /// matches executions in two of her sessions is refused as ambiguous (Codex on #4586).
+    /// resolved ONCE across the sessions THESE hands reach ([`HandsKey::reaches`]): her default
+    /// and card hands reach each other, so a handle from her claim A stays reachable after her
+    /// focus moved to claim B; an isolated eval or fork reaches only itself, and nothing of hers
+    /// reaches into it; another caller's never (Astra on #5026). A prefix that matches
+    /// executions in two sessions is refused as ambiguous (Codex on #4586).
     pub fn with_execution<T>(
         &self,
-        caller: &str,
+        hands: &crate::code::hands::HandsKey,
         handle: &str,
         f: impl FnOnce(&ShellSession, &str) -> Result<T, String>,
     ) -> Result<T, ExecutionLookup> {
-        let hers = |key: &str| key == caller || key.strip_prefix(caller).is_some_and(|rest| rest.starts_with('#'));
+        let hers = |key: &str| hands.reaches(key);
         // Collect (session key, execution ids) shard by shard, then act on ONE session: no
         // guard is held across the scan.
         let sessions: Vec<(String, Vec<String>)> = self
@@ -215,38 +216,52 @@ mod tests {
     use super::*;
     use crate::runtime::ServiceModule;
 
-    // what this catches (Kimi, 2026-09-29; Codex's review of #4586): a command started on
-    // one turn unreachable on the next. One set of hands keeps ONE session for its life
-    // (hands are never re-rooted, card fc9e9fd7), so a running command is reachable by its
-    // handle and a unique prefix of it, and never by another caller.
+    // what this catches (Kimi, 2026-09-29; Codex on #4586; Astra on #5026): a command started
+    // on one turn unreachable on the next, or reachable across an isolation boundary. One set
+    // of hands keeps ONE session for its life (hands are never re-rooted, card fc9e9fd7); her
+    // default and card hands reach each other's handles (claim A's after her focus moved to B);
+    // an isolated eval reaches only its own and nothing of hers reaches into it; another
+    // caller (or a caller-id prefix) reaches nothing.
     #[tokio::test]
     async fn a_running_command_stays_reachable_by_its_handle_in_any_of_her_hands() {
+        use crate::code::hands::{HandsContext, HandsKey};
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
         let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
+        let home = HandsKey::new("kimi".into(), None);
         let mut shell = ShellSession::new("s0", "kimi", root.path()).expect("session");
         let exec = shell.execute("sleep 30", Some(60_000), &rt).expect("a long command starts");
-        state.shell_sessions.insert("kimi".into(), shell);
+        state.shell_sessions.insert(home.map_key(), shell);
 
         let running = |s: &ShellSession, id: &str| s.get_execution_state(id);
-        let by_full = state.with_execution("kimi", &exec, running).expect("reachable by its handle");
+        let by_full = state.with_execution(&home, &exec, running).expect("reachable by its handle");
         assert_eq!(by_full.lock().unwrap().status, crate::code::shell_types::ShellExecutionStatus::Running);
-        assert!(state.with_execution("kimi", &exec[..8], running).is_ok(), "a unique prefix resolves");
-        assert!(
-            matches!(state.with_execution("mara", &exec, running), Err(ExecutionLookup::NoSession)),
-            "another caller never reaches her command"
-        );
-        // A command in her claim A's hands, polled after her focus moved to claim B: still hers.
-        let (claim_a, claim_b) = (crate::code::hands::HandsContext::fresh(), crate::code::hands::HandsContext::fresh());
-        let in_a = format!("kimi#{}", claim_a.id());
+        assert!(state.with_execution(&home, &exec[..8], running).is_ok(), "a unique prefix resolves");
+        let mara = HandsKey::new("mara".into(), None);
+        assert!(matches!(state.with_execution(&mara, &exec, running), Err(ExecutionLookup::NoSession)), "another caller never reaches her command");
+
+        // A command in her claim A's hands, polled from claim B: still hers.
+        let claim_a = HandsKey::new("kimi".into(), Some(HandsContext::for_claim(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4())));
+        let claim_b = HandsKey::new("kimi".into(), Some(HandsContext::for_claim(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4())));
         let mut a_shell = ShellSession::new("sa", "kimi", root.path()).expect("session");
         let a_exec = a_shell.execute("sleep 30", Some(60_000), &rt).expect("a command in claim A");
-        state.shell_sessions.insert(in_a, a_shell);
-        state.shell_sessions.insert(format!("kimi#{}", claim_b.id()), ShellSession::new("sb", "kimi", root.path()).expect("session"));
-        assert!(state.with_execution("kimi", &a_exec, running).is_ok(), "claim A's handle is reachable while she works claim B");
-        assert!(matches!(state.with_execution("kim", &a_exec, running), Err(ExecutionLookup::NoSession)), "a caller-id prefix is not her");
-        state.with_execution("kimi", &a_exec, |s, id| s.kill(id)).expect("clean up claim A's command");
-        state.with_execution("kimi", &exec, |s, id| s.kill(id)).expect("clean up the test command");
+        state.shell_sessions.insert(claim_a.map_key(), a_shell);
+        state.shell_sessions.insert(claim_b.map_key(), ShellSession::new("sb", "kimi", root.path()).expect("session"));
+        assert!(state.with_execution(&claim_b, &a_exec, running).is_ok(), "claim A's handle is reachable while she works claim B");
+        assert!(matches!(state.with_execution(&HandsKey::new("kim".into(), None), &a_exec, running), Err(ExecutionLookup::NoSession)), "a caller-id prefix is not her");
+
+        // An isolated eval reaches only itself, and nothing of hers reaches into it.
+        let eval = HandsKey::new("kimi".into(), Some(HandsContext::fresh()));
+        let mut e_shell = ShellSession::new("se", "kimi", root.path()).expect("session");
+        let e_exec = e_shell.execute("sleep 30", Some(60_000), &rt).expect("a command in the eval");
+        state.shell_sessions.insert(eval.map_key(), e_shell);
+        assert!(state.with_execution(&eval, &exec, running).is_err(), "an eval never reaches her live command");
+        assert!(state.with_execution(&home, &e_exec, running).is_err(), "her live hands never reach into an eval");
+        assert!(state.with_execution(&eval, &e_exec, running).is_ok(), "the eval reaches its own");
+
+        for (hands, id) in [(&eval, &e_exec), (&home, &a_exec), (&home, &exec)] {
+            state.with_execution(hands, id, |s, id| s.kill(id)).expect("clean up the test commands");
+        }
     }
 
     // what this catches (Astra's review of #5005): ending a context's hands dropping its
