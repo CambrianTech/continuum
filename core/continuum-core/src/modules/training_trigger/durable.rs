@@ -1585,9 +1585,10 @@ impl TrainingTriggerState {
     /// intent and otherwise refuses forever, which is right: it must never re-create a job
     /// that may exist. This is the operator's half of that contract, under the bucket's own
     /// gate, re-checking the whole ledger first so named evidence can never contradict it.
-    /// `NotDispatched` makes the intent retryable (the next tick re-creates the job from the
-    /// same batch); `Dispatched { job }` adopts a job the operator names. Journaled on the
-    /// intent (the Retryable error text carries the reason) and on a probe.
+    /// `Retry(claim)` makes the intent retryable (the next tick re-creates the job from the
+    /// same batch) under the operator's named claim; `Dispatched { job }` adopts a job the
+    /// operator names. Journaled on the intent (the Retryable error text carries the claim and
+    /// the reason) and on a probe.
     pub(crate) async fn resolve_dispatch(
         self: &Arc<Self>,
         dispatch: Uuid,
@@ -1661,7 +1662,8 @@ impl TrainingTriggerState {
             ));
         }
         // The ledger is read to its end before any evidence is believed: a registration under
-        // this dispatch contradicts `NotDispatched`, and names the job `Dispatched` must match.
+        // this dispatch contradicts a never-dispatched claim, decides an interrupted-untrained one
+        // by its end state, and names the job `Dispatched` must match.
         // From the intent's own recovery cursor: the prefix behind it was already scanned for
         // THIS intent by recovery, which recorded any malformed rows there once and moved on.
         let from = active.journal_cursor;
@@ -1680,16 +1682,46 @@ impl TrainingTriggerState {
         let examples = active.batch.examples.len() as u32;
         let id = entity_id(&active.intent.base).map_err(|e| ("PersistenceFailed", e))?;
         match resolution {
-            DispatchResolution::NotDispatched => {
+            DispatchResolution::Retry(claim) => {
                 if let Some(handle) = registered {
-                    return Err((
-                        "Contradicted",
-                        format!("the ledger registers job {} under dispatch {dispatch}: it WAS dispatched; settle it with that job id, not as not-dispatched", handle.local_id),
-                    ));
+                    match claim {
+                        RetryClaim::NeverDispatched => {
+                            return Err((
+                                "Contradicted",
+                                format!("the ledger registers job {} under dispatch {dispatch}: it WAS dispatched; settle it with that job id, or as interrupted-untrained once that job has ended", handle.local_id),
+                            ))
+                        }
+                        RetryClaim::InterruptedUntrained => {
+                            let job = handle.local_id;
+                            let (ended, trained) = tokio::task::spawn_blocking({
+                                #[cfg(test)]
+                                let board = self.test_job_board.clone();
+                                move || {
+                                    #[cfg(not(test))]
+                                    let board = TrainingJobBoard::global();
+                                    (board.is_terminal(job), board.completed_training(job))
+                                }
+                            })
+                            .await
+                            .map_err(|e| ("PersistenceFailed", format!("training job board read: {e}")))?;
+                            if !ended {
+                                return Err((
+                                    "Contradicted",
+                                    format!("job {job} registered under dispatch {dispatch} has not ended: it may still be training; nothing is retried under it"),
+                                ));
+                            }
+                            if trained {
+                                return Err((
+                                    "Contradicted",
+                                    format!("job {job} registered under dispatch {dispatch} COMPLETED training: what it trained survives; adopt it as dispatched"),
+                                ));
+                            }
+                        }
+                    }
                 }
                 let mut intent = active.intent.clone();
                 intent.phase = DispatchPhase::Retryable {
-                    error: format!("resolved by hand as not dispatched: {reason}"),
+                    error: format!("resolved by hand as {}: {reason}", claim.says()),
                 };
                 store
                     .dispatches
@@ -1710,10 +1742,11 @@ impl TrainingTriggerState {
                     trait_kind = %key.trait_kind,
                     dispatch = %dispatch,
                     resolution = "retryable",
+                    claim = claim.says(),
                     examples = examples as u64,
                     resolved_by = ?resolved_by,
                     reason = %reason,
-                    "an intent recovery could not confirm was settled by hand as never dispatched; the next tick re-creates its job from the same batch"
+                    "an intent recovery could not confirm was settled by hand as retryable, under the named claim; the next tick re-creates its job from the same batch"
                 );
                 Ok(ResolveReport {
                     dispatch_id: dispatch,
@@ -2000,10 +2033,32 @@ fn registration_from(board: &crate::genome::fine_tuning::TrainingJobBoard, dispa
 /// What `genome/training-trigger/resolve` settles an unconfirmed intent as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DispatchResolution {
-    /// No job was ever registered under it: retry from the same batch.
-    NotDispatched,
+    /// Retry from the same batch, under the operator's named claim of WHY that is safe.
+    Retry(RetryClaim),
     /// This job is the one it made: adopt it.
     Dispatched { job: Uuid },
+}
+
+/// What an operator asserts when an unconfirmed dispatch is made retryable. Two different
+/// facts, journaled by name, never one standing in for the other (Codex root on Sahar's
+/// dispatch 2b4e7272: "no job was created" is stronger than "safe to retry").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryClaim {
+    /// No job was ever registered under it. Contradicted by any registration.
+    NeverDispatched,
+    /// It may have made a job, but that job ended and nothing it trained survives (no adapter,
+    /// no artifact, its examples trained nowhere else): safe to retry without claiming no job
+    /// existed. Contradicted by a registered job that has not ended.
+    InterruptedUntrained,
+}
+
+impl RetryClaim {
+    fn says(self) -> &'static str {
+        match self {
+            Self::NeverDispatched => "never dispatched",
+            Self::InterruptedUntrained => "interrupted, nothing it trained survives",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2972,11 +3027,11 @@ mod tests {
     // an operator settling it as not-dispatched makes it retryable and the SAME batch
     // dispatches on the next pass, through the normal path, with nothing re-created by guess.
     #[tokio::test]
-    async fn a_recovery_required_intent_settled_as_not_dispatched_retries_from_its_own_batch() {
+    async fn a_recovery_required_intent_settled_as_never_dispatched_retries_from_its_own_batch() {
         let (next, executor, key, id, _dir) = recovery_required_intent().await;
         let report = next
             .state
-            .resolve_dispatch(id, DispatchResolution::NotDispatched, "the ledger has no line for it".into(), None)
+            .resolve_dispatch(id, DispatchResolution::Retry(RetryClaim::NeverDispatched), "the ledger has no line for it".into(), None)
             .await
             .expect("settled");
         assert_eq!(report.resolution, Resolved::Retryable);
@@ -2997,16 +3052,53 @@ mod tests {
         assert_eq!(flushed["examplesUsed"], 5, "the same batch, not a copy: {flushed}");
         let settled_twice = next
             .state
-            .resolve_dispatch(id, DispatchResolution::NotDispatched, "again".into(), None)
+            .resolve_dispatch(id, DispatchResolution::Retry(RetryClaim::NeverDispatched), "again".into(), None)
             .await;
         assert!(matches!(settled_twice, Err(("Invalid", _))), "a finished intent is not settled again: {settled_twice:?}");
+    }
+
+    // what this catches (Codex root on Sahar's 2b4e7272): "safe to retry" claimed as "never
+    // dispatched". Interrupted-untrained is its own claim: it retries a dispatch whose
+    // registered job ENDED without completing training, journals that claim by name (not
+    // "never dispatched"), and is refused for a job that completed training.
+    #[tokio::test]
+    async fn interrupted_untrained_retries_an_ended_untrained_job_under_its_own_claim() {
+        use crate::genome::fine_tuning::job_board::WatchedJob;
+        let (next, _executor, key, id, _dir) = recovery_required_intent().await;
+        let job = Uuid::new_v4();
+        next.state.test_job_board.register(WatchedJob {
+            trigger_dispatch_id: Some(id),
+            handle: JobHandle { provider_id: "engine-local".into(), provider_job_id: job.to_string(), local_id: job },
+            persona_id: key.persona_id,
+            persona_name: "test-p".into(),
+            base_model: "synthetic".into(),
+            trait_kind: "code".into(),
+            eval_set: None,
+            signature: None,
+            decision: None,
+        });
+        let killed = crate::genome::fine_tuning::types::TrainingStatus::Failed { error: "killed-by-reboot".into() };
+        next.state.test_job_board.claim(job, &killed).expect("the job ends, untrained");
+        let settled = next
+            .state
+            .resolve_dispatch(id, DispatchResolution::Retry(RetryClaim::InterruptedUntrained), "interrupted by the 00:09:10Z reboot; no adapter survives".into(), None)
+            .await
+            .expect("an ended, untrained job's dispatch retries");
+        assert_eq!(settled.resolution, Resolved::Retryable);
+        let store = next.state.durable.require().unwrap();
+        let intent = store.dispatches.find_by_id(id).await.unwrap().unwrap();
+        assert!(
+            matches!(intent.phase, DispatchPhase::Retryable { ref error } if error.contains("interrupted, nothing it trained survives") && !error.contains("never dispatched")),
+            "journaled under its own claim: {:?}",
+            intent.phase
+        );
     }
 
     // what this catches: named evidence never beats the ledger. A job registered under the
     // dispatch contradicts not-dispatched; the dispatched arm adopts exactly that job and
     // refuses any other; a job from another bucket is refused by name.
     #[tokio::test]
-    async fn a_registered_job_contradicts_not_dispatched_and_is_what_the_dispatched_arm_adopts() {
+    async fn a_registered_job_contradicts_never_dispatched_and_is_what_the_dispatched_arm_adopts() {
         use crate::genome::fine_tuning::job_board::WatchedJob;
         let (next, _executor, key, id, _dir) = recovery_required_intent().await;
         let job = Uuid::new_v4();
@@ -3026,9 +3118,14 @@ mod tests {
         next.state.test_job_board.register(watched(other, None, "chat"));
         let contradicted = next
             .state
-            .resolve_dispatch(id, DispatchResolution::NotDispatched, "wrong".into(), None)
+            .resolve_dispatch(id, DispatchResolution::Retry(RetryClaim::NeverDispatched), "wrong".into(), None)
             .await;
         assert!(matches!(contradicted, Err(("Contradicted", _))), "{contradicted:?}");
+        let still_running = next
+            .state
+            .resolve_dispatch(id, DispatchResolution::Retry(RetryClaim::InterruptedUntrained), "it was interrupted".into(), None)
+            .await;
+        assert!(matches!(still_running, Err(("Contradicted", ref why)) if why.contains("has not ended")), "a job not yet ended is never retried under: {still_running:?}");
         let wrong_job = next
             .state
             .resolve_dispatch(id, DispatchResolution::Dispatched { job: other }, "wrong job".into(), None)

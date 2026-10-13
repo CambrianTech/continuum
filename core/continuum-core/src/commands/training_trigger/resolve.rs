@@ -4,9 +4,11 @@
 //! refuses forever ("no confirmed result; it was not repeated"), which is right, and
 //! which held 113 of Kimi's examples on the 5090 (card d24e3f25, 2026-10-10: dispatch
 //! 0512a303 never registered a job before the core was replaced). This verb is the
-//! operator's half of that contract: `not dispatched` makes the intent retryable so the
-//! next tick re-creates the job from the same batch; `dispatched` adopts a job the
-//! operator names. Both re-check the ledger first and refuse evidence that contradicts it.
+//! operator's half of that contract, by a NAMED claim: `neverDispatched` (no job was
+//! created) or `interruptedUntrained` (a job may have existed, but it ended and nothing it
+//! trained survives) make the intent retryable so the next tick re-creates the job from the
+//! same batch; `dispatched` adopts a job the operator names. Each re-checks the ledger first
+//! and refuses evidence that contradicts it, and each is journaled under its own claim.
 
 use std::sync::Arc;
 
@@ -15,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::modules::training_trigger::{DispatchResolution, ResolveReport, TrainingTriggerState};
+use crate::modules::training_trigger::{DispatchResolution, ResolveReport, RetryClaim, TrainingTriggerState};
 use crate::sdk_codegen::CommandError;
 
 #[derive(Debug, Deserialize, TS, JsonSchema)]
@@ -25,18 +27,30 @@ pub struct ResolveParams {
     /// The dispatch intent to settle (the id recovery names in its refusal).
     #[ts(type = "string")]
     pub dispatch_id: Uuid,
-    /// The intent never created a job: it becomes retryable and the next tick
-    /// re-creates the job from the same batch. Refused if the ledger shows a job
-    /// registered under this dispatch.
-    #[serde(default)]
-    pub not_dispatched: bool,
-    /// The intent DID create this job (its registration carries no dispatch, or this
-    /// one): the intent finishes as dispatched and the job takes the normal path.
+    /// What settles it, and what the operator asserts by it.
+    pub resolution: ResolveAs,
+    /// With `dispatched`: the job the intent DID create (its registration carries no
+    /// dispatch, or this one); the intent finishes as dispatched and the job takes the
+    /// normal path. Refused with the other resolutions.
     #[serde(default)]
     #[ts(optional, type = "string")]
     pub job_id: Option<Uuid>,
     /// Why, in the operator's words; journaled on the intent.
     pub reason: String,
+}
+
+/// How an unconfirmed training dispatch is settled, and what the operator asserts by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/training_trigger/ResolveAs.ts")]
+pub enum ResolveAs {
+    // No job was ever created under it; refused if the ledger registers one. Retryable.
+    NeverDispatched,
+    // A job may have existed, but it ended and nothing it trained survives; refused for a
+    // registered job that has not ended or that completed training. Retryable.
+    InterruptedUntrained,
+    // It made the job named by `jobId`, which is adopted.
+    Dispatched,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -95,10 +109,11 @@ impl From<ResolveReport> for ResolveOutcome {
 }
 
 crate::action_command! {
-    /// Settle a dispatch intent recovery cannot confirm, from named evidence: `notDispatched`
-    /// (no job was ever registered under it; it becomes retryable and the next tick re-creates
-    /// the job from the same batch) or `jobId` (that job is adopted as the intent's). Both
-    /// re-check the ledger and refuse evidence it contradicts. The reason is journaled.
+    /// Settle a dispatch intent recovery cannot confirm, from named evidence: `resolution`
+    /// `neverDispatched` (no job was created) or `interruptedUntrained` (it ended untrained)
+    /// make it retryable, re-created from the same batch next tick; `dispatched` with `jobId`
+    /// adopts that job. Each re-checks the ledger and refuses evidence it contradicts; the
+    /// claim and the reason are journaled.
     pub struct TrainingTriggerResolve {
         state: Arc<TrainingTriggerState>,
     }
@@ -123,19 +138,18 @@ pub(crate) async fn resolve(
             "a resolution carries its reason: say what evidence settles this dispatch".into(),
         ));
     }
-    let resolution = match (p.not_dispatched, p.job_id) {
-        (true, None) => DispatchResolution::NotDispatched,
-        (false, Some(job)) => DispatchResolution::Dispatched { job },
-        (true, Some(_)) => {
+    let resolution = match (p.resolution, p.job_id) {
+        (ResolveAs::Dispatched, Some(job)) => DispatchResolution::Dispatched { job },
+        (ResolveAs::Dispatched, None) => {
+            return Err(CommandError::Invalid("dispatched names the job it made: give jobId".into()))
+        }
+        (_, Some(_)) => {
             return Err(CommandError::Invalid(
-                "notDispatched OR jobId, not both: a dispatch either made a job or it did not".into(),
+                "jobId goes only with dispatched: a retry claims no job of its own".into(),
             ))
         }
-        (false, None) => {
-            return Err(CommandError::Invalid(
-                "nothing settled: give notDispatched, or the jobId the dispatch made".into(),
-            ))
-        }
+        (ResolveAs::NeverDispatched, None) => DispatchResolution::Retry(RetryClaim::NeverDispatched),
+        (ResolveAs::InterruptedUntrained, None) => DispatchResolution::Retry(RetryClaim::InterruptedUntrained),
     };
     match state
         .resolve_dispatch(p.dispatch_id, resolution, reason.to_string(), resolved_by)
@@ -156,14 +170,15 @@ mod tests {
     async fn an_empty_reason_or_an_ambiguous_resolution_is_refused_up_front() {
         let (trigger, _executor, _dir) =
             crate::commands::training_trigger::test_support::build_runtime_trigger_only().await;
-        for (not_dispatched, job_id, reason) in [
-            (true, None, "  "),
-            (true, Some(Uuid::new_v4()), "x"),
-            (false, None, "x"),
+        for (resolution, job_id, reason) in [
+            (ResolveAs::NeverDispatched, None, "  "),
+            (ResolveAs::NeverDispatched, Some(Uuid::new_v4()), "x"),
+            (ResolveAs::InterruptedUntrained, Some(Uuid::new_v4()), "x"),
+            (ResolveAs::Dispatched, None, "x"),
         ] {
             let got = resolve(
                 &trigger.state,
-                ResolveParams { dispatch_id: Uuid::new_v4(), not_dispatched, job_id, reason: reason.into() },
+                ResolveParams { dispatch_id: Uuid::new_v4(), resolution, job_id, reason: reason.into() },
                 None,
             )
             .await;
@@ -180,7 +195,7 @@ mod tests {
         let id = Uuid::new_v4();
         let got = resolve(
             &trigger.state,
-            ResolveParams { dispatch_id: id, not_dispatched: true, job_id: None, reason: "never made a job".into() },
+            ResolveParams { dispatch_id: id, resolution: ResolveAs::NeverDispatched, job_id: None, reason: "never made a job".into() },
             None,
         )
         .await
