@@ -102,6 +102,13 @@ pub trait ToolExecutor: Send + Sync {
         None
     }
 
+    /// End the acting context these hands are bound to, as that context, and return the
+    /// release's typed result whole. `None` for hands bound to no context: a caller's default
+    /// (live) hands are never ended. See `command_executor::release_hands_as`.
+    async fn release_own_context(&self) -> Option<Result<crate::modules::code_commands::ReleaseHandsResult, String>> {
+        None
+    }
+
     /// The acting context these hands are bound to; `None` is the caller's default (live)
     /// context. See [`crate::code::hands`].
     fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {

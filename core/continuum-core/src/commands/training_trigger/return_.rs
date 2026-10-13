@@ -173,7 +173,18 @@ pub(crate) async fn return_parked_remainder(
     let (dir, partition) = match read(&dir)? {
         Some(partition) => (dir, partition),
         // under the request's artifact dir, as `return_job` looks, when a request file names one
-        None => match read_job_request(&dir).ok().and_then(|r| r.local_artifact_dir).map(|r| r.join(id.to_string())) {
+        // A request file that exists but can't be read is an ERROR the next pass retries,
+        // never "no artifact dir" (card 9f883920: the same missing/unreadable rule as the
+        // partition, which I left one line over in #5009).
+        None => match (if dir.join("request.json").try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
+            read_job_request(&dir)
+                .map_err(|e| CommandError::Internal(format!("job {id}: its request.json is unreadable: {e}")))?
+                .local_artifact_dir
+        } else {
+            None
+        })
+        .map(|r| r.join(id.to_string()))
+        {
             Some(alt) => match read(&alt)? {
                 Some(partition) => (alt, partition),
                 None => return Ok(Remainder::Nothing),
@@ -422,6 +433,16 @@ mod tests {
         let refused = return_parked_remainder(&trigger.state, &board, &root, &torn).await;
         assert!(matches!(refused, Err(CommandError::Internal(_))), "{refused:?}");
         assert_eq!(held().len(), 2, "nothing was added");
+
+        // what this catches (card 9f883920): a request file that exists but can't be read
+        // made the remainder report Nothing, silently. With no partition in its own dir, the
+        // lookup reads the request for an artifact dir; an unreadable one is an error now.
+        let unreadable = completed(Uuid::new_v4(), vec![0], vec![1, 2, 3]);
+        let ud = job_dir_under(&root, "Kimi", "code/owner", unreadable.local_id);
+        std::fs::remove_file(ud.join("partition.json")).expect("test: no partition here");
+        std::fs::write(ud.join("request.json"), b"{ torn").expect("test: corrupt request");
+        let refused = return_parked_remainder(&trigger.state, &board, &root, &unreadable).await;
+        assert!(matches!(refused, Err(CommandError::Internal(ref why)) if why.contains("request.json is unreadable")), "{refused:?}");
 
         // A job that parked nothing has no remainder.
         let whole_fit = completed(Uuid::new_v4(), vec![0, 1, 2, 3], vec![]);
