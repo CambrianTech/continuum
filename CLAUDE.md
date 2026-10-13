@@ -2,6 +2,11 @@
 
 ## Ongoing refinement is part of every change
 
+**Build as if you were the AI in the system** (Joel, 2026-10-13): don't hand-code a persona's
+problems, remove undue hurdles, ask why a piece exists before polishing it, search for the
+shared pattern before writing a helper, and never make Python load-bearing. The rules live
+in one place: `AGENTS.md`, section "Joel: build as if you were the AI in the system".
+
 Treat iteration speed and maintainability as product requirements, not optional
 cleanup. A narrow ticket does not prohibit repairing the shared responsibility
 that causes it. Coordinate edits with its owner; do not preserve duplication or
