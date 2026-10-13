@@ -2231,7 +2231,7 @@ mod tests {
                     // have different UUIDs. No historical directory may stand in for it.
                     crate::commands::training_trigger::return_::return_job(&next.state, &board, artifacts.path(), job).await.unwrap()
                 } else {
-                    return_request(&next.state, request.clone(), job).await.unwrap()
+                    return_request(&next.state, request.clone(), job, crate::commands::training_trigger::submit::ReturnScope::Whole).await.unwrap()
                 };
                 if scenario == 0 || scenario == 4 {
                     assert_eq!(result.error_kind.as_deref(), Some("RecoveryRequired"), "{result:?}");
@@ -2254,6 +2254,106 @@ mod tests {
                 assert_eq!(legacy.batch.examples.len(), 1, "old successful acceptance remains intact");
             }
         }
+        next.shutdown().await.unwrap();
+    }
+
+    // What this catches (card 8a2334d9; Astra on #5009): the remainder of a CANONICAL completed
+    // job, laid out as Kimi's 55f2e6de is on the 5090: adapters/ and partition.json, NO
+    // request.json, its input provable only through its durable dispatch. Sixteen originals
+    // (each carrying its own provenance), sent [2,3,7], the other thirteen parked. The core dies
+    // after the bucket accepted the remainder but before its receipt; the next owner replays it
+    // by identity, never appends it twice, writes the receipt, and returns exactly those thirteen
+    // payloads unchanged, under the native base. The full return stays refused.
+    #[tokio::test]
+    async fn a_canonical_completed_jobs_remainder_survives_a_crash_before_its_receipt() {
+        use crate::commands::training_trigger::return_::{return_job, return_parked_remainder, Remainder, REMAINDER_RECEIPT};
+        use crate::commands::training_trigger::submit::{return_request, ReturnScope};
+        use crate::genome::fine_tuning::job_board::{CompletedJob, WatchedJob};
+        use crate::genome::fine_tuning::types::{TrainingArtifact, TrainingStatus};
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let (old, executor) = build_runtime(adapter.clone(), false).await;
+        let artifacts = tempfile::tempdir().unwrap();
+        let board = crate::genome::fine_tuning::TrainingJobBoard::with_ledger(Some(artifacts.path().join("jobs.jsonl")));
+        let (persona, job, submission) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let key = BucketKey { persona_id: persona, trait_kind: "code".into(), base_model: "synthetic".into() };
+        let originals: Vec<_> = (0..16)
+            .map(|i| {
+                let mut e = ex(&format!("prompt-{i}"), &format!("completion-{i}"));
+                e.metadata = Some(serde_json::json!({"provenance": {"turn": i, "room": "cb2e21a1"}, "media": [{"kind": "image", "sha256": format!("{i:064x}")}]}));
+                e
+            })
+            .collect();
+        let mut params = submit_params(persona, "code", originals.clone(), Some(64));
+        params["submissionId"] = serde_json::json!(submission);
+        assert_eq!(executor.execute_json("genome/training-trigger/submit", params).await.unwrap()["success"], true);
+        let store = old.state.durable.require().unwrap();
+        let intent = DispatchIntent {
+            base: BaseEntity::for_new_record(),
+            persona_id: persona,
+            trait_kind: key.trait_kind.clone(),
+            base_model: key.base_model.clone(),
+            submission_ids: vec![submission],
+            phase: DispatchPhase::Dispatched {
+                handle: JobHandle { provider_id: "fixture".into(), provider_job_id: job.to_string(), local_id: job },
+                provider: "fixture".into(),
+            },
+            is_active: false,
+        };
+        let dispatch = entity_id(&intent.base).unwrap();
+        store.dispatches.save(dispatch, &intent).await.unwrap();
+        store.assign(&intent).await.unwrap();
+        board.register(WatchedJob {
+            trigger_dispatch_id: Some(dispatch),
+            handle: JobHandle { provider_id: "fixture".into(), provider_job_id: job.to_string(), local_id: job },
+            persona_id: persona, persona_name: "test-p".into(), base_model: "synthetic".into(), trait_kind: "code".into(),
+            eval_set: None, signature: None, decision: None,
+        });
+        board.claim(job, &TrainingStatus::Completed {
+            artifact: TrainingArtifact { model_id: "gene".into(), local_path: None, format: Default::default(), metrics: Default::default() },
+        });
+        let parked: Vec<usize> = vec![0, 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15];
+        let jd = crate::modules::training_trigger::job_dir_under(artifacts.path(), "test-p", "code", job);
+        std::fs::create_dir_all(jd.join("adapters")).unwrap();
+        std::fs::write(jd.join("adapters/adapter.gguf"), b"gene").unwrap();
+        std::fs::write(jd.join("partition.json"), serde_json::json!({"window": 40704, "sent": [2, 3, 7], "parked": parked, "rows": []}).to_string()).unwrap();
+        assert!(!jd.join("request.json").exists(), "the canonical layout has no request file");
+        let completed = CompletedJob { local_id: job, persona_name: "test-p".into(), trait_kind: "code".into() };
+
+        // The dispatching core is gone; the one that boots next holds only what the durable store
+        // says is pending (the dispatched batch is not). It durably accepts the remainder, and dies
+        // before writing the receipt.
+        old.shutdown().await.unwrap();
+        drop(executor);
+        drop(old);
+        let (crashed, crashed_executor) = build_runtime(adapter.clone(), false).await;
+        let mut remainder = crashed.state.dispatched_request(&key, dispatch, job).await.unwrap();
+        remainder.dataset.examples = parked.iter().map(|&i| remainder.dataset.examples[i].clone()).collect();
+        let accepted = return_request(&crashed.state, remainder, job, ReturnScope::Parked(&parked)).await.unwrap();
+        assert!(accepted.success, "the remainder is durably accepted before the crash: {accepted:?}");
+        assert!(!accepted.acceptance.as_ref().expect("an acceptance receipt").replayed, "the first acceptance is new: {accepted:?}");
+        assert_eq!(crashed.state.bucket_example_count(persona, "code", "synthetic"), Some(13), "exactly the thirteen: {accepted:?}");
+        assert!(crashed.state.active_dispatches.get(&key).is_none(), "a remainder below the threshold dispatches nothing: {accepted:?}");
+        let original = crashed.state.durable.require().unwrap().submissions.find_by_id(submission).await.unwrap().expect("the original submission");
+        assert!(!original.is_pending && original.dispatch_id == Some(dispatch), "the original submission stays owned by its completed dispatch");
+        assert!(!jd.join(REMAINDER_RECEIPT).exists());
+        crashed.shutdown().await.unwrap();
+        drop(crashed_executor);
+        drop(crashed);
+
+        let (next, _executor) = build_runtime(adapter, false).await;
+        let replayed = return_parked_remainder(&next.state, &board, artifacts.path(), &completed).await.unwrap();
+        let Remainder::Submitted(outcome) = replayed else { panic!("the remainder is replayed, not skipped: {replayed:?}") };
+        assert!(outcome.success, "{outcome:?}");
+        assert!(outcome.acceptance.expect("an acceptance receipt").replayed, "the next owner replays the accepted remainder by identity");
+        assert!(jd.join(REMAINDER_RECEIPT).is_file(), "and then writes its receipt");
+        assert_eq!(next.state.bucket_example_count(persona, "code", "synthetic"), Some(13), "thirteen examples, never twice");
+        {
+            let pending = next.state.buckets.get(&key).unwrap();
+            let expected: Vec<_> = parked.iter().map(|&i| originals[i].clone()).collect();
+            assert_eq!(serde_json::to_value(&pending.examples).unwrap(), serde_json::to_value(&expected).unwrap(), "exactly the parked originals, whole and unchanged, in order");
+        }
+        assert!(matches!(return_parked_remainder(&next.state, &board, artifacts.path(), &completed).await.unwrap(), Remainder::AlreadyReturned));
+        assert!(return_job(&next.state, &board, artifacts.path(), job).await.is_err(), "the full return of a completed job stays refused");
         next.shutdown().await.unwrap();
     }
 
