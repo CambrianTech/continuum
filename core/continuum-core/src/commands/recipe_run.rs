@@ -82,7 +82,8 @@ impl ActionCommand for RecipeRun {
         // of the source is a boot-order fact, not a recipe fact — say which.
         let source = crate::experience::source::node_experience_source().ok_or_else(|| {
             CommandError::Internal(
-                "recipe/run: the node's experience source is not installed — the boot path                  that builds the room-purpose index has not run"
+                "recipe/run: the node's experience source is not installed — the boot path \
+                 that builds the room-purpose index has not run"
                     .into(),
             )
         })?;
@@ -100,7 +101,8 @@ async fn run_recipe(
 ) -> Result<RecipeRunResult, CommandError> {
     let recipe = source.recipe_for_purpose(&p.name).ok_or_else(|| {
         CommandError::Invalid(format!(
-            "no recipe with purpose `{}` — `activity/recipes` lists the catalogue; author              one as a JSON file in the recipes overlay directory (no code, no deploy)",
+            "no recipe with purpose `{}` — `activity/recipes` lists the catalogue; author \
+             one as a JSON file in the recipes overlay directory (no code, no deploy)",
             p.name
         ))
     })?;
