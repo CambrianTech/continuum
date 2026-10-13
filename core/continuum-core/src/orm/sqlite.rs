@@ -878,12 +878,19 @@ fn row_to_record(
     let mut version: Option<u32> = None;
 
     for (i, col) in columns.iter().enumerate() {
+        // The declared types are keyed by the ENTITY's field names (camelCase, what
+        // `ensure_schema` was given); the row's columns are snake_case. Looking a
+        // multi-word column up by its snake name found nothing, so every such column
+        // fell back to the shape sniff the declared types exist to replace
+        // (`cancel_requested` read back as 0, 2026-10-13).
+        let camel_col = naming::to_camel_case(col);
+        let declared = types.and_then(|t| t.get(camel_col.as_str()));
         // A boolean is stored as INTEGER 0/1. DECODE IT BY THE DECLARED TYPE, the
         // same rule the TEXT branch below follows: a `bool` field whose name the old
         // prefix sniff did not know (`cancel_requested`, 2026-10-13) came back as `0`
         // and the entity refused the row. The name sniff survives only for
         // undeclared collections.
-        let is_boolean_col = match types.and_then(|t| t.get(col.as_str())) {
+        let is_boolean_col = match declared {
             Some(declared) => matches!(declared, FieldType::Boolean),
             None => {
                 col.starts_with("is_")
@@ -916,7 +923,7 @@ fn row_to_record(
                 // failed whole, and the citizen whose store held that ONE row never
                 // seated (Atlas + Benchy, 2026-09-13: two of five seats in backoff
                 // forever). The sniff survives only for undeclared collections.
-                match types.and_then(|t| t.get(col.as_str())) {
+                match declared {
                     Some(FieldType::String | FieldType::Uuid | FieldType::Date) => json!(s),
                     Some(FieldType::Json) => serde_json::from_str(s).unwrap_or_else(|_| json!(s)), // unwrap_or_else: a declared-JSON column holding non-JSON text is handed back as that text, never dropped
                     Some(FieldType::Number | FieldType::Boolean) | None => {
@@ -938,7 +945,6 @@ fn row_to_record(
             }
         };
 
-        let camel_col = naming::to_camel_case(col);
         match col.as_str() {
             "id" => id = value.as_str().map(|s| s.to_string()),
             "created_at" => created_at = value.as_str().map(|s| s.to_string()),
