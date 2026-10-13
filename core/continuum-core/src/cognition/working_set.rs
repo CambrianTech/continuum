@@ -265,20 +265,90 @@ fn p90_with_headroom(samples: &[u32]) -> u32 {
         .div_ceil(NEED_HEADROOM_DEN)
 }
 
+/// What kind of turn a generation was, for its reply room: a work turn (deliverable +
+/// hands) is an ACT, anything else a PASS. Each kind is planned from its own history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) enum TurnKind {
+    /// A work turn: deliverable + hands — a tool call plus a short plan.
+    Act,
+    /// Every other turn — a reply in a room, or a workspace turn with nothing
+    /// deliverable: a sentence and a reason. A short turn, on a thinking model, is
+    /// still a THINK and then a sentence.
+    Pass,
+}
+
+/// How many of a kind's generations its reply room is planned from: a sample count, the
+/// same horizon the need rings use. A starting policy, not an optimality claim: a record
+/// leaves after this many same-kind turns, which is also how a poisoned one is forgotten,
+/// by evidence and with no decay constant (card 8fc7a678).
+pub(crate) const REPLY_HISTORY: usize = NEED_SAMPLES;
+
+/// One completed generation as the reply planner reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct ReplyRecord {
+    /// The server's output count, total. A MEASUREMENT only when the turn landed; at a
+    /// length stop it is censored (her need was at least this).
+    pub observed_total: u32,
+    /// The reasoning share of it, apportioned by channel bytes: an ESTIMATE. It feeds the
+    /// per-channel need rings (a pass's runaway bound) and the receipt; it never sizes a plan.
+    pub reasoning_estimate: u32,
+    /// The max_tokens the request carried.
+    pub request_cap: u32,
+    /// Where it ended.
+    pub stop: EmissionStop,
+}
+
+impl ReplyRecord {
+    /// What this record says the next same-kind turn needs, in TOTAL tokens: what it used.
+    /// A landed turn's count is a measurement; a length stop's is a censored lower bound
+    /// (her need was at least this). No channel estimate and no growth enter here: the
+    /// one growth policy is the planner's headroom over the estimate, applied once
+    /// (Astra on #5025: the byte-apportioned channels are estimates, and growing a cut
+    /// here and again in the plan compounded).
+    fn plans_for(self) -> u32 {
+        self.observed_total
+    }
+
+    fn censored(self) -> bool {
+        !matches!(self.stop, EmissionStop::Landed)
+    }
+}
+
+/// What a kind's history says its next turn should plan for: an ESTIMATE, not a safe
+/// bound. `None` below [`MIN_NEED_TURNS`] records of that kind; the planner then uses its
+/// named cold prior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ReplyEstimate {
+    /// The largest total of the kind's recent records ([`ReplyRecord::plans_for`]).
+    pub tokens: u32,
+    /// Records it was read from.
+    pub records: u32,
+    /// How many of them were censored (a length stop or a think at its budget).
+    pub censored: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PersonaEmission {
-    /// High-water mark, in tokens, of a completed generation. A turn that hit
-    /// its output cap records DOUBLE its emission — the observation is a floor
-    /// on true demand, not a measurement of it, and doubling is the growth
-    /// path that keeps a measured reserve from freezing itself too small
-    /// (the same measure-the-clamp trap `demand_tokens` documents).
-    pub peak_tokens: u32,
-    /// The most recent observation — the peak's honest companion.
+    /// The most recent observation.
     pub last_tokens: u32,
     /// Wall clock of the most recent observation.
     pub last_seen_ms: u64,
-    /// Observation count — what lets a reader judge how much to trust the peak.
+    /// Observation count.
     pub turns: u64,
+    /// Her last [`REPLY_HISTORY`] ACT generations, a ring (`act_count` is the cursor):
+    /// what the next act's reply room is planned from. Kept apart from passes, so a run of
+    /// small passes can never shrink an act's room (card 8fc7a678: Kimi's act cut at 5,740
+    /// after ten smaller turns decayed a shared peak by 7/8 each). A file from before this
+    /// field loads empty: no act history, never relabelled from the old cross-kind peak.
+    #[serde(default)]
+    pub act_replies: [Option<ReplyRecord>; REPLY_HISTORY],
+    #[serde(default)]
+    pub act_count: u32,
+    /// The same ring for PASS generations.
+    #[serde(default)]
+    pub pass_replies: [Option<ReplyRecord>; REPLY_HISTORY],
+    #[serde(default)]
+    pub pass_count: u32,
     /// The last [`NEED_SAMPLES`] turns' reasoning tokens, a ring (`need_turns` is the
     /// cursor). A file from before this field loads zeros with `need_turns` 0 — no
     /// need measured, never a zero need.
@@ -310,23 +380,24 @@ pub(crate) struct PersonaEmission {
 /// halves again, C → C/2 → C/4 down to the floor — and that "committed = a parsed tool
 /// call" mislabels a `code/write` cut mid-payload, the very cut that needed more room.
 /// So the classification is by CHANNEL, and no factor below one exists anywhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EmissionStop {
     /// The model stopped on its own (stop token or tool call): both channels record
     /// verbatim — this is her real size for that turn.
     Landed,
     /// Cut at the cap WITH answer tokens: she was saying or calling something and the
-    /// cap fell in it. The answer channel records at double (the growth path), the
-    /// think verbatim, and the peak is the SUM of the two — never `output × 2`, which
-    /// is what walked a 7,000-token think with a three-token answer to 14,006.
+    /// cap fell in it. The need ring grows the answer channel at double, the think
+    /// verbatim — never `output × 2`, which is what walked a 7,000-token think with a
+    /// three-token answer to 14,006. Its kind's history records the total as counted
+    /// (a censored lower bound); the plan's one headroom is the only growth there.
     CutMidAnswer,
     /// Cut at the cap with NO answer tokens: the think consumed the whole allowance and
     /// nothing was said. Not a sample of her need at all — a thinking model fills
     /// whatever room it is given, so a censored think says only "at least this much
     /// think fits in this allowance"; pushed into the need ring it would carry the
     /// landed turns' headroom on top of a value that already IS the allowance, and the
-    /// loop would drift up ×5/4 a turn to the share. The peak takes it verbatim (so the
-    /// reserve holds), `turns` counts it, the need ring does not: the allowance stays
+    /// loop would drift up ×5/4 a turn to the share. Its kind's history takes it verbatim,
+    /// with no growth; `turns` counts it, the need ring does not: the allowance stays
     /// sized by the turns in which she said something, which is the branch's name.
     /// The cut itself is the fault paths' business (`persona.act.think_only`,
     /// `delib.truncated_not_an_answer`), not the measurement's.
@@ -343,7 +414,7 @@ pub enum EmissionStop {
     /// turn drives every deliberating mind to the full reserve (simulated: 8k → 184k in
     /// 20 turns), and on a slow lane that is the latency law broken. So a budget-hit is
     /// NOT a need sample, exactly as a think-only cut is not: the need ring keeps her
-    /// landed shape, the peak takes the turn verbatim, and growth comes only from turns
+    /// landed shape, its kind's history takes the turn verbatim, and growth comes only from turns
     /// she ends on her own or from a cut inside the answer.
     ThinkBudgetHit { allowance: u32 },
 }
@@ -583,31 +654,19 @@ impl WorkingSetRegistry {
             .filter(|&t| t > 0)
     }
 
-    /// Record one completed generation's measured output for `persona`.
+    /// Record one completed generation for `persona`, in its kind's history.
     ///
-    /// `output_tokens` is the SERVER's count (`usage.output_tokens`) — reasoning
-    /// tokens included, never an estimate; `reasoning_tokens` is the share of it the
-    /// reasoning channel took (the faculty apportions the server's count by channel
-    /// bytes), so the answer is the remainder. `stop` says where it ended
-    /// ([`EmissionStop`]): a landed generation records verbatim; a cut inside the
-    /// answer records the answer at double (a floor on true demand, and the growth
-    /// path — see [`PersonaEmission::peak_tokens`]) and the peak as the sum of the
-    /// channels; a cut inside the think records the peak verbatim and is not a need
-    /// sample. Zero-token completions
-    /// are the empty-completion fault's territory, not a data point to drag the peak with.
-    pub(crate) fn record_emission(
-        &self,
-        persona: Uuid,
-        output_tokens: u32,
-        reasoning_tokens: u32,
-        stop: EmissionStop,
-        now_ms: u64,
-    ) {
-        if output_tokens == 0 {
+    /// `record.observed_total` is the SERVER's count (`usage.output_tokens`), reasoning
+    /// included; `record.reasoning_estimate` is the share the faculty apportioned to the
+    /// reasoning channel by bytes (an estimate); `record.stop` says where it ended
+    /// ([`EmissionStop`]). Nothing is doubled in the record: growth after a cut is the
+    /// planner's policy ([`ReplyRecord::plans_for`]). Zero-token completions are the
+    /// empty-completion fault's territory, not a data point.
+    pub(crate) fn record_emission(&self, persona: Uuid, kind: TurnKind, record: ReplyRecord, now_ms: u64) {
+        if record.observed_total == 0 {
             return;
         }
-        let updated =
-            self.record_emission_in_memory(persona, output_tokens, reasoning_tokens, stop, now_ms);
+        let updated = self.record_emission_in_memory(persona, kind, record, now_ms);
         // Same persistence contract as demand: every observation, atomic, best-effort
         // — a restart is a pause, and a mind must not re-earn its reply size per boot.
         let path = match emission_path(persona) {
@@ -633,95 +692,86 @@ impl WorkingSetRegistry {
         }
     }
 
-    /// How much of a past peak survives each new observation (7/8).
-    ///
-    /// The peak must be able to FALL, or a mid-answer cut's doubling is a one-way ratchet to the
-    /// ceiling (see [`Self::record_emission_in_memory`]). 7/8 per observation is ~16 turns
-    /// to forget a measurement that was never real — fast enough that a poisoned record
-    /// heals within a work session, slow enough that a citizen who genuinely writes long
-    /// replies keeps her room across the quiet turns between them.
-    ///
-    /// Expressed as a ratio on integers rather than a float: this value is persisted and
-    /// compared, and a rounding difference between platforms would make two nodes disagree
-    /// about the same citizen's reply size.
-    const PEAK_DECAY_NUM: u32 = 7;
-    const PEAK_DECAY_DEN: u32 = 8;
-
     /// The in-memory half of [`Self::record_emission`], without the disk write —
     /// same split (and same reason) as [`Self::record_in_memory`].
+    ///
+    /// The generation goes into ITS KIND's history ring, typed (total, think estimate,
+    /// request cap, stop), and nothing is doubled in the record: growth after a cut is the
+    /// planner's one headroom policy over the estimate. There is no
+    /// cross-kind peak and no decay: the 7/8-per-observation decay this replaces made ten
+    /// small passes shrink the next act's room until it was cut (Kimi, b89a7242, the 5090,
+    /// build 825ff5f6f: 21,838 → … → 5,740, cut). A record now leaves when
+    /// [`REPLY_HISTORY`] newer same-kind records have arrived, which is also how a poisoned
+    /// one (the 2026-09-18 16,384) is forgotten.
     pub(crate) fn record_emission_in_memory(
         &self,
         persona: Uuid,
-        output_tokens: u32,
-        reasoning_tokens: u32,
-        stop: EmissionStop,
+        kind: TurnKind,
+        record: ReplyRecord,
         now_ms: u64,
     ) -> PersonaEmission {
-        let reasoning = reasoning_tokens.min(output_tokens);
+        let output_tokens = record.observed_total;
+        let reasoning = record.reasoning_estimate.min(output_tokens);
         let answer = output_tokens - reasoning;
-        // The cut channel takes the growth, and the peak is the SUM of the channels as
-        // measured — never `output × 2`: a 7,000-token think cut three tokens into its
-        // answer needs 7,006, not 14,006 (see [`EmissionStop`]).
-        let (reasoning, answer) = match stop {
-            EmissionStop::Landed | EmissionStop::CutMidThought => (reasoning, answer),
-            EmissionStop::CutMidAnswer => (reasoning, answer.saturating_mul(2)),
-            // A censored think is recorded verbatim on the peak side; the need ring skips it.
-            EmissionStop::ThinkBudgetHit { .. } => (reasoning, answer),
+        let stop = record.stop;
+        let record = ReplyRecord { reasoning_estimate: reasoning, ..record };
+        // The need rings (what a pass's runaway bound and the receipt's need term read): a
+        // cut inside the answer grows that channel; a censored think is not a need sample.
+        let need_answer = match stop {
+            EmissionStop::CutMidAnswer => answer.saturating_mul(2),
+            EmissionStop::Landed | EmissionStop::CutMidThought | EmissionStop::ThinkBudgetHit { .. } => answer,
         };
-        let observed = reasoning.saturating_add(answer);
-        let push_need = |e: &mut PersonaEmission| {
-            // A think-only cut is not a sample of her need ([`EmissionStop::CutMidThought`]).
-            if matches!(stop, EmissionStop::CutMidThought | EmissionStop::ThinkBudgetHit { .. }) {
-                return;
+        let observe = |e: &mut PersonaEmission| {
+            if !matches!(stop, EmissionStop::CutMidThought | EmissionStop::ThinkBudgetHit { .. }) {
+                let slot = (e.need_turns as usize) % NEED_SAMPLES;
+                e.reasoning_samples[slot] = reasoning;
+                e.answer_samples[slot] = need_answer;
+                e.need_turns = e.need_turns.saturating_add(1);
             }
-            let slot = (e.need_turns as usize) % NEED_SAMPLES;
-            e.reasoning_samples[slot] = reasoning;
-            e.answer_samples[slot] = answer;
-            e.need_turns = e.need_turns.saturating_add(1);
+            let (ring, count) = match kind {
+                TurnKind::Act => (&mut e.act_replies, &mut e.act_count),
+                TurnKind::Pass => (&mut e.pass_replies, &mut e.pass_count),
+            };
+            ring[(*count as usize) % REPLY_HISTORY] = Some(record);
+            *count = count.saturating_add(1);
+            e.last_tokens = output_tokens;
+            e.last_seen_ms = now_ms;
+            e.turns = e.turns.saturating_add(1);
         };
-        *self
-            .emitted
-            .entry(persona)
-            .and_modify(|e| {
-                push_need(&mut *e);
-                // A RECENT high-water mark, not an eternal one. `.max()` alone is a
-                // one-way ratchet: a mid-answer cut records its answer at DOUBLE, so a single truncated
-                // turn pins the peak at twice the cap forever, the reserve derived from
-                // it saturates at the ceiling, and — because this file is persisted so a
-                // mind "must not re-earn its reply size per boot" — the poisoned value
-                // outlives every restart. Measured 2026-09-18 (Cormac): emission.json
-                // holding peak_tokens 16384 for a citizen whose real replies are a few
-                // hundred tokens, reserving half her window against a reply she would
-                // never write until she had 297 tokens of context left and answered
-                // "As an AI assistant" when asked who she was.
-                //
-                // Decaying by PEAK_DECAY_NUM/PEAK_DECAY_DEN each observation keeps both
-                // properties that mattered: a genuine large reply still takes the peak
-                // instantly (the growth path `CutMidAnswer` exists for), and a peak that was
-                // never real fades on its own — so poisoned records SELF-HEAL over a few
-                // dozen turns with no migration and no operator step.
-                e.peak_tokens = observed.max(
-                    e.peak_tokens
-                        .saturating_mul(Self::PEAK_DECAY_NUM)
-                        / Self::PEAK_DECAY_DEN,
-                );
-                e.last_tokens = observed;
-                e.last_seen_ms = now_ms;
-                e.turns += 1;
-            })
-            .or_insert_with(|| {
-                let mut e = PersonaEmission {
-                    peak_tokens: observed,
-                    last_tokens: observed,
-                    last_seen_ms: now_ms,
-                    turns: 1,
-                    reasoning_samples: [0; NEED_SAMPLES],
-                    answer_samples: [0; NEED_SAMPLES],
-                    need_turns: 0,
-                };
-                push_need(&mut e);
-                e
-            })
+        let mut entry = self.emitted.entry(persona).or_insert_with(|| PersonaEmission {
+            last_tokens: 0,
+            last_seen_ms: now_ms,
+            turns: 0,
+            reasoning_samples: [0; NEED_SAMPLES],
+            answer_samples: [0; NEED_SAMPLES],
+            need_turns: 0,
+            act_replies: [None; REPLY_HISTORY],
+            act_count: 0,
+            pass_replies: [None; REPLY_HISTORY],
+            pass_count: 0,
+        });
+        observe(&mut *entry);
+        *entry
+    }
+
+    /// What `kind`'s recent history says this persona's next turn of that kind should plan
+    /// for. An estimate, never a safe bound; `None` below [`MIN_NEED_TURNS`] records of
+    /// the kind (the planner's cold prior). An act never reads pass history.
+    pub(crate) fn reply_estimate(&self, persona: Uuid, kind: TurnKind) -> Option<ReplyEstimate> {
+        let e = self.emission_of(persona)?;
+        let ring = match kind {
+            TurnKind::Act => e.act_replies,
+            TurnKind::Pass => e.pass_replies,
+        };
+        let records: Vec<ReplyRecord> = ring.iter().flatten().copied().collect();
+        if (records.len() as u32) < MIN_NEED_TURNS {
+            return None;
+        }
+        Some(ReplyEstimate {
+            tokens: records.iter().map(|r| r.plans_for()).max().unwrap_or(0), // unwrap_or: unreachable, records is non-empty past the MIN check
+            records: records.len() as u32,
+            censored: records.iter().filter(|r| r.censored()).count() as u32,
+        })
     }
 
     /// This persona's observed reply size, for the reserve derivation and the glass box.
@@ -806,7 +856,7 @@ impl WorkingSetRegistry {
         // silent (the reserve falls back to the cold-start share — honest, never invented).
         if let Ok(bytes) = emission_path(persona).and_then(std::fs::read) {
             match serde_json::from_slice::<PersonaEmission>(&bytes) {
-                Ok(e) if e.peak_tokens > 0 => {
+                Ok(e) if e.turns > 0 => {
                     self.emitted.insert(persona, e);
                 }
                 Ok(_) => {}
@@ -1052,68 +1102,63 @@ mod tests {
         assert_eq!(reg.ceiling(), Some(31_000));
     }
 
-    // what this catches: the growth path of the measured reply reserve. A turn that
-    // stopped at its output cap is a CLAMPED observation — recording it verbatim
-    // would freeze the reserve at whatever strangled it (the same measure-the-clamp
-    // trap the demand side documents). It must record at double so the next turn's
-    // reserve is larger than the cap that cut this one.
+    // what this catches (card 8fc7a678; Kimi b89a7242 on the 5090, build 825ff5f6f): one
+    // cross-kind peak decayed 7/8 per observation, so ten smaller turns shrank the next act's
+    // room from 21,838 to 5,740 and the act was cut. Each kind is planned from its OWN
+    // history: passes never lower an act's estimate, neither kind reads the other, a cut
+    // inside the answer plans its total as counted (the planner's headroom is the one growth),
+    // and an estimate is unknown below three records of its kind. A cut is recorded
+    // as counted and plans its total; no growth here.
     #[test]
-    fn a_capped_emission_records_double_and_an_uncapped_one_verbatim() {
+    fn a_kinds_estimate_reads_only_its_own_history_and_growth_is_policy_not_record() {
         let reg = WorkingSetRegistry::new();
-        reg.record_emission_in_memory(p(1), 2_500, 0, EmissionStop::Landed, 1_000);
-        assert_eq!(reg.emission_of(p(1)).map(|e| e.peak_tokens), Some(2_500));
-        reg.record_emission_in_memory(p(1), 3_000, 0, EmissionStop::CutMidAnswer, 2_000);
-        let e = reg.emission_of(p(1)).expect("observed");
-        assert_eq!(
-            e.peak_tokens, 6_000,
-            "a Length stop is a floor, not a measurement"
-        );
-        assert_eq!(e.turns, 2);
-        // A later small reply lowers the peak, but only by the decay step — it must not
-        // collapse to the size of one ack (that is the tiny-talker trap the floor exists
-        // for), and it must not stay pinned either (that is the ratchet that poisoned a
-        // citizen's emission.json at 16,384 and left her 297 tokens of context).
-        reg.record_emission_in_memory(p(1), 40, 0, EmissionStop::Landed, 3_000);
-        let decayed = reg
-            .emission_of(p(1))
-            .map(|e| e.peak_tokens)
-            .expect("observed");
-        assert!(decayed < 6_000, "a peak that can only rise is a ratchet");
-        assert!(decayed > 40, "one small reply must not erase a real measurement");
-        assert_eq!(decayed, 6_000 * 7 / 8);
+        let rec = |observed_total, reasoning_estimate, request_cap, stop| ReplyRecord { observed_total, reasoning_estimate, request_cap, stop };
+        for (t, total) in [14_194u32, 21_838, 9_000].into_iter().enumerate() {
+            reg.record_emission_in_memory(p(1), TurnKind::Act, rec(total, total / 2, 24_000, EmissionStop::Landed), t as u64);
+        }
+        assert_eq!(reg.reply_estimate(p(1), TurnKind::Pass), None, "no pass history: unknown, never read from acts");
+        for t in 0..10u64 {
+            reg.record_emission_in_memory(p(1), TurnKind::Pass, rec(600, 400, 24_000, EmissionStop::Landed), 10 + t);
+        }
+        let act = reg.reply_estimate(p(1), TurnKind::Act).expect("three acts");
+        assert_eq!((act.tokens, act.records, act.censored), (21_838, 3, 0), "ten passes leave the act's estimate where her acts put it");
+        assert_eq!(reg.reply_estimate(p(1), TurnKind::Pass).map(|e| e.tokens), Some(600));
+
+        reg.record_emission_in_memory(p(1), TurnKind::Act, rec(23_000, 3_000, 23_000, EmissionStop::CutMidAnswer), 30);
+        let last = reg.emission_of(p(1)).expect("recorded").act_replies[3].expect("the fourth act");
+        assert_eq!((last.observed_total, last.request_cap), (23_000, 23_000), "the record is what was counted, never doubled");
+        let act = reg.reply_estimate(p(1), TurnKind::Act).expect("four acts");
+        assert_eq!((act.tokens, act.censored), (23_000, 1), "the cut plans its counted total, a censored lower bound");
+        assert_eq!(reg.reply_estimate(p(2), TurnKind::Act), None, "another persona has no history");
     }
 
-    // what this catches: the poisoned-record half of the 2026-09-18 identity defect. A
-    // capped turn records at DOUBLE, and with an all-time `.max()` that value outlived
-    // every restart because emission.json is persisted on purpose ("a restart is a pause").
-    // One truncation therefore reserved half of every future window forever. The decay must
-    // make such a record heal ON ITS OWN — no migration, no operator step, no command —
-    // because the citizens carrying poisoned files are the ones least able to ask for help.
+    // what this catches: the poisoned-record half of the 2026-09-18 identity defect (an
+    // emission.json pinned at 16,384 left a citizen 297 tokens of context). With no decay, a
+    // record that was never real leaves by EVIDENCE: once REPLY_HISTORY newer records of its
+    // kind arrive it plans nothing. Not sooner (a real long turn keeps its room across the
+    // quiet turns between), and never because of the other kind's turns.
     #[test]
-    fn a_peak_that_was_never_real_heals_itself_without_a_migration() {
+    fn a_record_that_was_never_real_leaves_after_a_history_of_its_own_kind() {
         let reg = WorkingSetRegistry::new();
-        // Exactly the poisoned value read off a real citizen's emission.json.
-        reg.record_emission_in_memory(p(7), 8_192, 0, EmissionStop::CutMidAnswer, 1_000);
-        assert_eq!(
-            reg.emission_of(p(7)).map(|e| e.peak_tokens),
-            Some(16_384),
-            "fixture must reproduce the poisoning, not assume it"
-        );
-
-        // Her actual replies are a few hundred tokens. Within a work session of them the
-        // measurement must come back to something a reply-sized reserve can be built on.
-        for turn in 2..=40u64 {
-            reg.record_emission_in_memory(p(7), 300, 0, EmissionStop::Landed, turn * 1_000);
+        let rec = |observed_total, stop| ReplyRecord { observed_total, reasoning_estimate: 0, request_cap: 16_384, stop };
+        reg.record_emission_in_memory(p(7), TurnKind::Pass, rec(16_384, EmissionStop::CutMidAnswer), 0);
+        for t in 1..REPLY_HISTORY as u64 {
+            reg.record_emission_in_memory(p(7), TurnKind::Pass, rec(300, EmissionStop::Landed), t);
         }
-        let healed = reg
-            .emission_of(p(7))
-            .map(|e| e.peak_tokens)
-            .expect("observed");
-        assert!(
-            healed <= 2_048,
-            "a peak that was never real is still {healed} after 39 honest turns"
+        for t in 0..40u64 {
+            reg.record_emission_in_memory(p(7), TurnKind::Act, rec(300, EmissionStop::Landed), 100 + t);
+        }
+        assert_eq!(
+            reg.reply_estimate(p(7), TurnKind::Pass).map(|e| e.tokens),
+            Some(16_384),
+            "fixture must reproduce the poisoning, and 40 acts must not erase a pass record"
         );
-        assert!(healed >= 300, "and it must not fall below what she actually writes");
+        reg.record_emission_in_memory(p(7), TurnKind::Pass, rec(300, EmissionStop::Landed), 200);
+        assert_eq!(
+            reg.reply_estimate(p(7), TurnKind::Pass).map(|e| (e.tokens, e.censored)),
+            Some((300, 0)),
+            "after a full history of honest passes the poisoned one is gone"
+        );
     }
 
     // what this catches: a restart that demotes her. The registry is in-memory, so
@@ -1135,30 +1180,30 @@ mod tests {
     // by channel.
     fn a_think_only_cut_moves_nothing_and_a_mid_answer_cut_grows_only_its_channel() {
         let reg = WorkingSetRegistry::default();
+        let rec = |observed_total, reasoning_estimate, stop| ReplyRecord { observed_total, reasoning_estimate, request_cap: observed_total, stop };
         // Her landed shape: ~6.4k-token turns, mostly think.
         for t in 0..MIN_NEED_TURNS as u64 {
-            reg.record_emission_in_memory(p(9), 6_448, 6_000, EmissionStop::Landed, t);
+            reg.record_emission_in_memory(p(9), TurnKind::Pass, rec(6_448, 6_000, EmissionStop::Landed), t);
         }
         let landed = reg.need_of(p(9)).expect("need measured");
-        let peak_landed = reg.emission_of(p(9)).expect("recorded").peak_tokens;
         // The closed loop: every turn is a think-only cut at the cap the last need set.
         let mut cap = landed.total();
         for t in 0..(NEED_SAMPLES as u64 + 4) {
-            reg.record_emission_in_memory(p(9), cap, cap, EmissionStop::classify(true, 0), 100 + t);
+            reg.record_emission_in_memory(p(9), TurnKind::Pass, rec(cap, cap, EmissionStop::classify(true, 0)), 100 + t);
             let need = reg.need_of(p(9)).expect("need measured");
             assert_eq!(need, landed, "a think-only cut is not a sample: the need does not move (turn {t})");
-            let e = reg.emission_of(p(9)).expect("recorded");
-            assert_eq!(e.last_tokens, cap, "the peak side takes the cut verbatim");
-            assert!(e.peak_tokens <= peak_landed.max(cap), "never output × 2: peak {}", e.peak_tokens);
+            let plan = reg.reply_estimate(p(9), TurnKind::Pass).expect("recorded").tokens;
+            assert!(plan <= 6_448u32.max(cap), "a think-only cut plans what it used, never grown: plan {plan}");
             cap = need.total();
         }
-        // A cut inside the ANSWER is the growth path, on that channel only: the peak is
-        // the sum of the channels, not the whole output doubled.
-        reg.record_emission_in_memory(p(8), 7_003, 7_000, EmissionStop::classify(true, 3), 1);
-        assert_eq!(reg.emission_of(p(8)).expect("recorded").peak_tokens, 7_006, "7,006, not 14,006");
-        reg.record_emission_in_memory(p(7), 7_000, 1_000, EmissionStop::classify(true, 6_000), 1);
+        // A cut inside the ANSWER grows that channel in the NEED ring only; its kind's
+        // history plans the total as counted, whatever the byte split says (Astra on #5025:
+        // channels are estimates, and the plan's headroom is the one growth).
+        assert_eq!(rec(7_003, 7_000, EmissionStop::classify(true, 3)).plans_for(), 7_003, "the total, never a channel-grown figure");
+        reg.record_emission_in_memory(p(7), TurnKind::Act, rec(7_000, 1_000, EmissionStop::classify(true, 6_000)), 1);
         let write = reg.emission_of(p(7)).expect("recorded");
-        assert_eq!((write.peak_tokens, write.answer_samples[0], write.reasoning_samples[0]), (13_000, 12_000, 1_000));
+        assert_eq!((write.answer_samples[0], write.reasoning_samples[0]), (12_000, 1_000));
+        assert_eq!(write.act_replies[0].map(ReplyRecord::plans_for), Some(7_000));
         // Classification is by channel; only a cap hit is a cut.
         assert_eq!(EmissionStop::classify(false, 0), EmissionStop::Landed);
         assert_eq!(EmissionStop::classify(false, 9), EmissionStop::Landed);
@@ -1176,7 +1221,12 @@ mod tests {
         let persona = p(9);
         let before = WorkingSetRegistry::new();
         before.record(persona, 24_126, 1_000);
-        before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
+        before.record_emission(
+            persona,
+            TurnKind::Pass,
+            ReplyRecord { observed_total: 321, reasoning_estimate: 200, request_cap: 2_048, stop: EmissionStop::Landed },
+            1_001,
+        );
         assert_eq!(before.ceiling(), Some(24_126));
 
         // A fresh process: new registry, nothing in memory.
@@ -1217,24 +1267,24 @@ mod tests {
     fn the_reasoning_need_is_a_p90_with_headroom_and_unknown_before_it_is_measured() {
         let reg = WorkingSetRegistry::new();
         assert_eq!(reg.need_of(p(3)), None, "never measured: unknown, not zero");
-        reg.record_emission_in_memory(p(3), 1_000, 700, EmissionStop::Landed, 1);
-        reg.record_emission_in_memory(p(3), 1_200, 900, EmissionStop::Landed, 2);
+        reg.record_emission_in_memory(p(3), TurnKind::Pass, ReplyRecord { observed_total: 1_000, reasoning_estimate: 700, request_cap: 1_000, stop: EmissionStop::Landed }, 1);
+        reg.record_emission_in_memory(p(3), TurnKind::Pass, ReplyRecord { observed_total: 1_200, reasoning_estimate: 900, request_cap: 1_200, stop: EmissionStop::Landed }, 2);
         assert_eq!(reg.need_of(p(3)), None, "two turns are not yet a need");
-        reg.record_emission_in_memory(p(3), 900, 600, EmissionStop::Landed, 3);
+        reg.record_emission_in_memory(p(3), TurnKind::Pass, ReplyRecord { observed_total: 900, reasoning_estimate: 600, request_cap: 900, stop: EmissionStop::Landed }, 3);
         let need = reg.need_of(p(3)).expect("three turns measure a need");
         assert_eq!((need.reasoning, need.answer, need.turns), (1_125, 375, 3), "p90 of 3 is the max (900, 300) × 5/4");
         assert_eq!(need.total(), 1_500);
         // A Length stop with NO answer cut the think: the peak takes it, the need ring
         // does not (Cormac's review of #4406 — doubling it here was the ratchet).
-        reg.record_emission_in_memory(p(3), 768, 768, EmissionStop::CutMidThought, 4);
+        reg.record_emission_in_memory(p(3), TurnKind::Pass, ReplyRecord { observed_total: 768, reasoning_estimate: 768, request_cap: 768, stop: EmissionStop::CutMidThought }, 4);
         let need = reg.need_of(p(3)).expect("measured");
         assert_eq!((need.reasoning, need.turns), (1_125, 3), "a think-only cut is not a need sample");
         // A Length stop WITH an answer cut the answer: that channel records at double.
-        reg.record_emission_in_memory(p(3), 1_000, 600, EmissionStop::CutMidAnswer, 5);
+        reg.record_emission_in_memory(p(3), TurnKind::Pass, ReplyRecord { observed_total: 1_000, reasoning_estimate: 600, request_cap: 1_000, stop: EmissionStop::CutMidAnswer }, 5);
         assert_eq!(reg.emission_of(p(3)).map(|e| e.answer_samples[3]), Some(800));
         // The ring: sixteen quiet turns age the loud one out.
         for t in 6..=22u64 {
-            reg.record_emission_in_memory(p(3), 400, 300, EmissionStop::Landed, t);
+            reg.record_emission_in_memory(p(3), TurnKind::Pass, ReplyRecord { observed_total: 400, reasoning_estimate: 300, request_cap: 400, stop: EmissionStop::Landed }, t);
         }
         let need = reg.need_of(p(3)).expect("measured");
         assert_eq!((need.reasoning, need.answer, need.turns), (375, 125, 16));
@@ -1305,7 +1355,7 @@ mod tests {
     fn a_think_stopped_at_the_budget_never_contracts_the_allowance() {
         let reg = WorkingSetRegistry::default();
         for t in 0..MIN_NEED_TURNS as u64 {
-            reg.record_emission_in_memory(p(6), 6_448, 6_000, EmissionStop::Landed, t);
+            reg.record_emission_in_memory(p(6), TurnKind::Pass, ReplyRecord { observed_total: 6_448, reasoning_estimate: 6_000, request_cap: 6_448, stop: EmissionStop::Landed }, t);
         }
         let landed = reg.need_of(p(6)).expect("need measured");
         let mut allowance = landed.total();
@@ -1316,7 +1366,7 @@ mod tests {
             let answer = 300u32;
             let stop = EmissionStop::classify_with_budget(false, answer, budget, Some(budget), allowance);
             assert_eq!(stop, EmissionStop::ThinkBudgetHit { allowance }, "turn {t}");
-            reg.record_emission_in_memory(p(6), budget + answer, budget, stop, 100 + t);
+            reg.record_emission_in_memory(p(6), TurnKind::Pass, ReplyRecord { observed_total: budget + answer, reasoning_estimate: budget, request_cap: allowance, stop }, 100 + t);
             let next = reg.need_of(p(6)).expect("need measured").total();
             // A budget-hit is not a sample: the need ring keeps her landed shape exactly,
             // so the allowance neither contracts toward the floor nor compounds toward
@@ -1331,13 +1381,13 @@ mod tests {
         // toward 20 × answer unmistakable.
         let reg2 = WorkingSetRegistry::default();
         for t in 0..MIN_NEED_TURNS as u64 {
-            reg2.record_emission_in_memory(p(5), 6_448, 6_000, EmissionStop::Landed, t);
+            reg2.record_emission_in_memory(p(5), TurnKind::Pass, ReplyRecord { observed_total: 6_448, reasoning_estimate: 6_000, request_cap: 6_448, stop: EmissionStop::Landed }, t);
         }
         let mut a2 = reg2.need_of(p(5)).expect("need measured").total();
         let start2 = a2;
         for t in 0..(NEED_SAMPLES as u64 * 10) {
             let budget = crate::inference::request_body::deliberation_reasoning_budget(u64::from(a2)).expect("budget") as u32;
-            reg2.record_emission_in_memory(p(5), budget + 300, budget, EmissionStop::classify(false, 300), 200 + t);
+            reg2.record_emission_in_memory(p(5), TurnKind::Pass, ReplyRecord { observed_total: budget + 300, reasoning_estimate: budget, request_cap: a2, stop: EmissionStop::classify(false, 300) }, 200 + t);
             a2 = reg2.need_of(p(5)).expect("need measured").total();
         }
         assert!(a2 < start2, "the control: verbatim samples contract ({start2} → {a2})");
