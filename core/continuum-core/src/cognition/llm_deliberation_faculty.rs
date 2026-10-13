@@ -1036,8 +1036,9 @@ impl LlmDeliberationFaculty {
     /// one cross-kind peak, decayed 7/8 per observation, sized every turn: ten small passes
     /// shrank the next act's room to 5,740 and the act was cut (Kimi b89a7242, the 5090,
     /// build 825ff5f6f). Now each kind plans from its OWN history ([`TurnKind`]): twice its
-    /// estimate (the headroom for a longer thought, as before; the estimate already carries
-    /// the growth policy for a cut, `ReplyRecord::plans_for`), floored at MIN_SERVE_CTX so
+    /// estimate, the headroom for a longer thought as before and the ONE growth policy: a
+    /// cut is recorded as counted (a censored lower bound), so a cut at the cap plans twice
+    /// the cap, with no channel estimate and nothing compounding. Floored at MIN_SERVE_CTX so
     /// one tiny ack never strangles the next long thought. An act never reads pass history.
     ///
     /// An ESTIMATE, not a safe bound: what lands is bounded by the window less the mandatory
@@ -7268,11 +7269,14 @@ mod tests {
                 quiet_faculty.completion_reserve_within(window, TurnKind::Pass),
                 crate::inference::planning::MIN_SERVE_CTX
             );
-            // (c) a turn cut at 5,000 plans 10,000 by the growth policy; ×2 = 20,000 then re-caps at
-            // the SHARE — a citizen who genuinely needs the room earns it back within a
-            // turn instead of freezing at the reply-sized prior. Growth saturates at the
-            // share (the prior is a starting point, the share is the wall).
-            reg.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 5_000, reasoning_estimate: 0, request_cap: 5_000, stop: crate::cognition::working_set::EmissionStop::CutMidAnswer }, 4);
+            // (c) a turn cut at 5,000 is recorded as counted; ×2 = 10,000, past the cap that
+            // cut it — a citizen who genuinely needs the room earns it back within a turn
+            // instead of freezing at the reply-sized prior. A second cut there plans 20,000,
+            // which re-caps at the SHARE (the prior is a starting point, the share is the wall).
+            let cut = |at: u32| crate::cognition::working_set::ReplyRecord { observed_total: at, reasoning_estimate: 0, request_cap: at, stop: crate::cognition::working_set::EmissionStop::CutMidAnswer };
+            reg.record_emission_in_memory(persona, TurnKind::Pass, cut(5_000), 4);
+            assert_eq!(faculty.completion_reserve_within(window, TurnKind::Pass), 10_000);
+            reg.record_emission_in_memory(persona, TurnKind::Pass, cut(10_000), 5);
             assert_eq!(faculty.completion_reserve_within(window, TurnKind::Pass), share);
         }
 
@@ -7317,7 +7321,7 @@ mod tests {
                 30,
             );
             let replanned = faculty.reply_plan(window, TurnKind::Act);
-            assert_eq!((replanned.tokens, replanned.censored), (33_152, 1), "a cut act re-plans by policy: (8,000 + 2 x 4,288) x 2");
+            assert_eq!((replanned.tokens, replanned.censored), (24_576, 1), "a cut act re-plans past its cap: 12,288 as counted, x2 headroom");
             assert_eq!(faculty.reply_plan(16_384, TurnKind::Act).bound, "share", "and the plan names what bound it");
         }
 
@@ -7338,10 +7342,11 @@ mod tests {
             for tick in 1..=3 {
                 reg.record_emission_in_memory(persona, TurnKind::Pass, crate::cognition::working_set::ReplyRecord { observed_total: 16_384, reasoning_estimate: 0, request_cap: 16_384, stop: crate::cognition::working_set::EmissionStop::CutMidAnswer }, tick);
             }
-            // A censored sample is doubled by the registry; reserve adds headroom.
-            // The former absolute ceiling froze this at the same failed allowance.
+            // A censored sample is recorded as counted; the plan's headroom doubles it, so
+            // the next allowance is past the cap that cut it. The former absolute ceiling
+            // froze this at the same failed allowance.
             let window = 131_072;
-            assert_eq!(faculty.completion_reserve_within(window, TurnKind::Pass), 65_536);
+            assert_eq!(faculty.completion_reserve_within(window, TurnKind::Pass), 32_768);
             // This is not permission to overrun a smaller seat or its prompt floor.
             for window in [8_192, 16_384, 32_768, 67_072, 131_072] {
                 let reserve = faculty.completion_reserve_within(window, TurnKind::Pass);

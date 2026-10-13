@@ -289,8 +289,8 @@ pub(crate) struct ReplyRecord {
     /// The server's output count, total. A MEASUREMENT only when the turn landed; at a
     /// length stop it is censored (her need was at least this).
     pub observed_total: u32,
-    /// The reasoning share of it, apportioned by channel bytes: an ESTIMATE, used only by
-    /// the growth policy, never as a measurement.
+    /// The reasoning share of it, apportioned by channel bytes: an ESTIMATE. It feeds the
+    /// per-channel need rings (a pass's runaway bound) and the receipt; it never sizes a plan.
     pub reasoning_estimate: u32,
     /// The max_tokens the request carried.
     pub request_cap: u32,
@@ -299,23 +299,14 @@ pub(crate) struct ReplyRecord {
 }
 
 impl ReplyRecord {
-    /// What this record asks the next same-kind turn to plan for. A landed turn: what it
-    /// used. A cut inside the answer: the GROWTH POLICY, the think as counted and the
-    /// answer doubled, never the whole output doubled (a 7,000-token think cut three
-    /// tokens into its answer plans 7,006, not 14,006: Cormac's review of #4406). A cut
-    /// inside the think, or a think stopped at its budget: what it used, with no growth,
-    /// because a thinking model fills any room and growing it is the ratchet
-    /// ([`EmissionStop`]).
+    /// What this record says the next same-kind turn needs, in TOTAL tokens: what it used.
+    /// A landed turn's count is a measurement; a length stop's is a censored lower bound
+    /// (her need was at least this). No channel estimate and no growth enter here: the
+    /// one growth policy is the planner's headroom over the estimate, applied once
+    /// (Astra on #5025: the byte-apportioned channels are estimates, and growing a cut
+    /// here and again in the plan compounded).
     fn plans_for(self) -> u32 {
-        match self.stop {
-            EmissionStop::CutMidAnswer => {
-                let answer = self.observed_total.saturating_sub(self.reasoning_estimate);
-                self.observed_total.saturating_add(answer)
-            }
-            EmissionStop::Landed | EmissionStop::CutMidThought | EmissionStop::ThinkBudgetHit { .. } => {
-                self.observed_total
-            }
-        }
+        self.observed_total
     }
 
     fn censored(self) -> bool {
@@ -328,7 +319,7 @@ impl ReplyRecord {
 /// named cold prior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ReplyEstimate {
-    /// The largest of the kind's recent records' plans ([`ReplyRecord::plans_for`]).
+    /// The largest total of the kind's recent records ([`ReplyRecord::plans_for`]).
     pub tokens: u32,
     /// Records it was read from.
     pub records: u32,
@@ -395,9 +386,10 @@ pub enum EmissionStop {
     /// verbatim — this is her real size for that turn.
     Landed,
     /// Cut at the cap WITH answer tokens: she was saying or calling something and the
-    /// cap fell in it. The plan grows the answer at double (the growth policy), the
-    /// think verbatim, and plans the SUM of the two — never `output × 2`, which
-    /// is what walked a 7,000-token think with a three-token answer to 14,006.
+    /// cap fell in it. The need ring grows the answer channel at double, the think
+    /// verbatim — never `output × 2`, which is what walked a 7,000-token think with a
+    /// three-token answer to 14,006. Its kind's history records the total as counted
+    /// (a censored lower bound); the plan's one headroom is the only growth there.
     CutMidAnswer,
     /// Cut at the cap with NO answer tokens: the think consumed the whole allowance and
     /// nothing was said. Not a sample of her need at all — a thinking model fills
@@ -704,8 +696,8 @@ impl WorkingSetRegistry {
     /// same split (and same reason) as [`Self::record_in_memory`].
     ///
     /// The generation goes into ITS KIND's history ring, typed (total, think estimate,
-    /// request cap, stop), and nothing is doubled in the record: growth after a cut is a
-    /// policy the planner applies when reading it ([`ReplyRecord::plans_for`]). There is no
+    /// request cap, stop), and nothing is doubled in the record: growth after a cut is the
+    /// planner's one headroom policy over the estimate. There is no
     /// cross-kind peak and no decay: the 7/8-per-observation decay this replaces made ten
     /// small passes shrink the next act's room until it was cut (Kimi, b89a7242, the 5090,
     /// build 825ff5f6f: 21,838 → … → 5,740, cut). A record now leaves when
@@ -1114,8 +1106,9 @@ mod tests {
     // cross-kind peak decayed 7/8 per observation, so ten smaller turns shrank the next act's
     // room from 21,838 to 5,740 and the act was cut. Each kind is planned from its OWN
     // history: passes never lower an act's estimate, neither kind reads the other, a cut
-    // inside the answer plans by the growth policy while the record stays what was counted,
-    // and an estimate is unknown below three records of its kind.
+    // inside the answer plans its total as counted (the planner's headroom is the one growth),
+    // and an estimate is unknown below three records of its kind. A cut is recorded
+    // as counted and plans its total; no growth here.
     #[test]
     fn a_kinds_estimate_reads_only_its_own_history_and_growth_is_policy_not_record() {
         let reg = WorkingSetRegistry::new();
@@ -1135,7 +1128,7 @@ mod tests {
         let last = reg.emission_of(p(1)).expect("recorded").act_replies[3].expect("the fourth act");
         assert_eq!((last.observed_total, last.request_cap), (23_000, 23_000), "the record is what was counted, never doubled");
         let act = reg.reply_estimate(p(1), TurnKind::Act).expect("four acts");
-        assert_eq!((act.tokens, act.censored), (43_000, 1), "the cut plans think + 2 x answer, by policy");
+        assert_eq!((act.tokens, act.censored), (23_000, 1), "the cut plans its counted total, a censored lower bound");
         assert_eq!(reg.reply_estimate(p(2), TurnKind::Act), None, "another persona has no history");
     }
 
@@ -1147,8 +1140,8 @@ mod tests {
     #[test]
     fn a_record_that_was_never_real_leaves_after_a_history_of_its_own_kind() {
         let reg = WorkingSetRegistry::new();
-        let rec = |observed_total, stop| ReplyRecord { observed_total, reasoning_estimate: 0, request_cap: 8_192, stop };
-        reg.record_emission_in_memory(p(7), TurnKind::Pass, rec(8_192, EmissionStop::CutMidAnswer), 0);
+        let rec = |observed_total, stop| ReplyRecord { observed_total, reasoning_estimate: 0, request_cap: 16_384, stop };
+        reg.record_emission_in_memory(p(7), TurnKind::Pass, rec(16_384, EmissionStop::CutMidAnswer), 0);
         for t in 1..REPLY_HISTORY as u64 {
             reg.record_emission_in_memory(p(7), TurnKind::Pass, rec(300, EmissionStop::Landed), t);
         }
@@ -1203,13 +1196,14 @@ mod tests {
             assert!(plan <= 6_448u32.max(cap), "a think-only cut plans what it used, never grown: plan {plan}");
             cap = need.total();
         }
-        // A cut inside the ANSWER is the growth policy, on that channel only: the plan is
-        // the think plus the answer doubled, not the whole output doubled.
-        assert_eq!(rec(7_003, 7_000, EmissionStop::classify(true, 3)).plans_for(), 7_006, "7,006, not 14,006");
+        // A cut inside the ANSWER grows that channel in the NEED ring only; its kind's
+        // history plans the total as counted, whatever the byte split says (Astra on #5025:
+        // channels are estimates, and the plan's headroom is the one growth).
+        assert_eq!(rec(7_003, 7_000, EmissionStop::classify(true, 3)).plans_for(), 7_003, "the total, never a channel-grown figure");
         reg.record_emission_in_memory(p(7), TurnKind::Act, rec(7_000, 1_000, EmissionStop::classify(true, 6_000)), 1);
         let write = reg.emission_of(p(7)).expect("recorded");
         assert_eq!((write.answer_samples[0], write.reasoning_samples[0]), (12_000, 1_000));
-        assert_eq!(write.act_replies[0].map(ReplyRecord::plans_for), Some(13_000));
+        assert_eq!(write.act_replies[0].map(ReplyRecord::plans_for), Some(7_000));
         // Classification is by channel; only a cap hit is a cut.
         assert_eq!(EmissionStop::classify(false, 0), EmissionStop::Landed);
         assert_eq!(EmissionStop::classify(false, 9), EmissionStop::Landed);
