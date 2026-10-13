@@ -118,6 +118,30 @@ pub(super) struct Retirement {
     retired_at_ms: u64,
 }
 
+/// An operator's decision to RETRY a training dispatch whose outcome recovery could not
+/// confirm, with the evidence they checked about retained results: a receipt, like
+/// [`Retirement`], committed in ONE transaction with the intent it releases. It asserts nothing
+/// about whether a job existed (Codex root on Sahar's 2b4e7272); it records who decided, why,
+/// and on what evidence.
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "training_trigger_retry_decisions")]
+#[entity(index(name = "idx_training_retry_dispatch", fields = ["dispatchId"]))]
+pub(super) struct RetryDecision {
+    #[serde(flatten)]
+    base: BaseEntity,
+    #[entity(indexed)]
+    dispatch_id: Uuid,
+    persona_id: Uuid,
+    trait_kind: String,
+    base_model: String,
+    evidence: Vec<String>,
+    reason: String,
+    /// The caller's peer id, when the command carried one.
+    resolved_by: Option<Uuid>,
+    decided_at_ms: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "state", rename_all = "snake_case")]
 #[ts(
@@ -169,6 +193,7 @@ pub(super) struct DurableStore {
     submissions: OrmStore<Submission>,
     dispatches: OrmStore<DispatchIntent>,
     retirements: OrmStore<Retirement>,
+    retry_decisions: OrmStore<RetryDecision>,
     adapter: Arc<dyn StorageAdapter>,
 }
 
@@ -182,6 +207,9 @@ impl DurableStore {
                 .await
                 .map_err(|e| e.to_string())?,
             retirements: OrmStore::new(adapter.clone())
+                .await
+                .map_err(|e| e.to_string())?,
+            retry_decisions: OrmStore::new(adapter.clone())
                 .await
                 .map_err(|e| e.to_string())?,
             adapter,
@@ -1681,6 +1709,7 @@ impl TrainingTriggerState {
         let id = entity_id(&active.intent.base).map_err(|e| ("PersistenceFailed", e))?;
         match resolution {
             DispatchResolution::NotDispatched | DispatchResolution::RetryUnconfirmed { .. } => {
+                let mut receipt: Option<RetryDecision> = None;
                 let note = if let DispatchResolution::RetryUnconfirmed { evidence } = &resolution {
                     if evidence.iter().all(|e| e.trim().is_empty()) {
                         return Err(("Invalid", "a retry of an unconfirmed dispatch names the evidence checked about retained results".into()));
@@ -1694,7 +1723,6 @@ impl TrainingTriggerState {
                             ),
                         ));
                     }
-                    let (evidence, reason_owned, by) = (evidence.clone(), reason.clone(), resolved_by);
                     let (persona, trait_kind, base_model) = (key.persona_id, key.trait_kind.clone(), key.base_model.clone());
                     tokio::task::spawn_blocking({
                         #[cfg(test)]
@@ -1708,17 +1736,26 @@ impl TrainingTriggerState {
                             let resident = crate::inference::engine_residency::all(&residency)
                                 .map_err(|e| ("PersistenceFailed", format!("engine residency unreadable, so quiescence can't be shown: {e}")))?;
                             producers_quiet(&board, persona, &trait_kind, &base_model, &resident, |engine| engine.liveness())
-                                .map_err(|why| ("Contradicted", why))?;
-                            // The audit row lands BEFORE the intent changes: a retry is never
-                            // taken without its record. It records the decision; the fences above,
-                            // not the record, are what keep a second producer from starting.
-                            board
-                                .journal_retry_unconfirmed(dispatch, by, &reason_owned, &evidence)
-                                .map_err(|e| ("PersistenceFailed", format!("the retry's audit row didn't land: {e}")))
+                                .map_err(|why| ("Contradicted", why))
                         }
                     })
                     .await
-                    .map_err(|e| ("PersistenceFailed", format!("training job ledger write: {e}")))??;
+                    .map_err(|e| ("PersistenceFailed", format!("training quiescence read: {e}")))??;
+                    // The decision's receipt commits in ONE transaction with the intent it
+                    // releases (below): a retry is never taken without its record, and a power
+                    // loss keeps both or neither (Codex root on #5028). The record documents the
+                    // decision; the fence above, not the record, keeps a second producer out.
+                    receipt = Some(RetryDecision {
+                        base: BaseEntity { id: retry_decision_id(dispatch, active.intent.base.version).to_string(), ..BaseEntity::for_new_record() },
+                        dispatch_id: dispatch,
+                        persona_id: key.persona_id,
+                        trait_kind: key.trait_kind.clone(),
+                        base_model: key.base_model.clone(),
+                        evidence: evidence.clone(),
+                        reason: reason.clone(),
+                        resolved_by,
+                        decided_at_ms: crate::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its decision and evidence
+                    });
                     "retried by operator decision, outcome unconfirmed"
                 } else {
                     if let Some(handle) = registered {
@@ -1733,11 +1770,19 @@ impl TrainingTriggerState {
                 intent.phase = DispatchPhase::Retryable {
                     error: format!("{note}: {reason}"),
                 };
-                store
-                    .dispatches
-                    .update(id, &intent)
-                    .await
-                    .map_err(|e| ("PersistenceFailed", e.to_string()))?;
+                match &receipt {
+                    Some(decision) => {
+                        let decision_id = entity_id(&decision.base).map_err(|e| ("PersistenceFailed", e))?;
+                        let operations = vec![
+                            store.retry_decisions.create_op(decision_id, decision).map_err(|e| ("PersistenceFailed", e.to_string()))?,
+                            store.dispatches.update_op(id, &intent).map_err(|e| ("PersistenceFailed", e.to_string()))?,
+                        ];
+                        crate::orm::store::commit(&store.adapter, operations)
+                            .await
+                            .map_err(|e| ("PersistenceFailed", format!("the retry decision and its intent didn't commit (neither did): {e}")))?;
+                    }
+                    None => store.dispatches.update(id, &intent).await.map_err(|e| ("PersistenceFailed", e.to_string()))?,
+                }
                 self.active_dispatches.insert(
                     key.clone(),
                     Arc::new(ActiveDispatch {
@@ -2040,8 +2085,14 @@ fn registration_from(board: &crate::genome::fine_tuning::TrainingJobBoard, dispa
     }
 }
 
+/// The id of the decision to retry `dispatch` from its intent at `version`: one decision per
+/// state of the intent, so a resolve repeated against the same state can't record twice.
+fn retry_decision_id(dispatch: Uuid, version: u32) -> Uuid {
+    Uuid::new_v5(&dispatch, format!("retry-unconfirmed:{version}").as_bytes())
+}
+
 /// QUIESCENCE of a bucket's producers: the fence a retry of an unconfirmed dispatch passes
-/// before its audit row (Codex root on #5028). A missing ledger row doesn't show that nothing is
+/// before its receipt is committed (Codex root on #5028). A missing ledger row doesn't show that nothing is
 /// still producing. Two write-ahead records can. This core's board holds a job in memory even
 /// when its ledger append failed. And engine work is bound to its engine process (pid + start
 /// time) BEFORE its /train is posted (engine_residency), so a record on this base whose engine
@@ -2076,7 +2127,7 @@ fn producers_quiet(
 }
 
 /// What `genome/training-trigger/resolve` settles an unconfirmed intent as. Owned, not Copy:
-/// a retry of an unconfirmed outcome carries its evidence lines into the audit row.
+/// a retry of an unconfirmed outcome carries its evidence lines into its receipt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DispatchResolution {
     /// No job was ever registered under it: retry from the same batch.
@@ -2084,7 +2135,7 @@ pub(crate) enum DispatchResolution {
     /// NO job is registered under it, its outcome is UNCONFIRMED, and the operator decides to
     /// retry it anyway on the evidence they name about retained results. Asserts nothing about
     /// whether a job existed (Codex root on Sahar's 2b4e7272); the decision and its evidence are
-    /// journaled as an audit row in the job ledger. A dispatch WITH a registered job is never
+    /// a [`RetryDecision`] receipt, committed together with the intent. A dispatch WITH a registered job is never
     /// retried under its own id (after a crash, recovery would re-adopt that registration:
     /// Astra on #5028): it is resolved as dispatched to that job, and `training-trigger/return`
     /// returns what it didn't train, through its artifact guards.
@@ -3012,6 +3063,12 @@ mod tests {
 
     /// The fixture every resolve test starts from: an intent persisted mid-dispatch by one
     /// core, found RecoveryRequired by the next, with no job registered under it.
+    /// The retry decisions committed for `dispatch`, read from the durable store.
+    async fn retry_decisions_of(module: &crate::modules::training_trigger::TrainingTriggerModule, dispatch: Uuid) -> Vec<RetryDecision> {
+        let store = module.state.durable.require().unwrap();
+        store.retry_decisions.find_all().await.unwrap().into_iter().map(|(_, d)| d).filter(|d| d.dispatch_id == dispatch).collect()
+    }
+
     async fn recovery_required_intent() -> (
         Arc<crate::modules::training_trigger::TrainingTriggerModule>,
         Arc<crate::runtime::CommandExecutor>,
@@ -3092,8 +3149,8 @@ mod tests {
     // what this catches (Codex root on Sahar's 2b4e7272; Astra on #5028): "safe to retry"
     // smuggled in as "no job was created", and a known job retried under its own dispatch (which
     // recovery would re-adopt after a crash). Retrying an UNCONFIRMED dispatch is its own audited
-    // decision: it needs named evidence; its audit row lands in the job ledger BEFORE the intent
-    // changes; the intent's note says "outcome unconfirmed", never "not dispatched"; and a
+    // decision: it needs named evidence; its receipt commits WITH the intent it releases; the
+    // intent's note says "outcome unconfirmed", never "not dispatched"; and a
     // dispatch with a registered job is refused toward the dispatched + return path.
     #[tokio::test]
     async fn retrying_an_unconfirmed_dispatch_is_an_audited_decision_that_asserts_no_job_either_way() {
@@ -3113,10 +3170,10 @@ mod tests {
             .await
             .expect("an unconfirmed dispatch with no registered job is retried by decision");
         assert_eq!(settled.resolution, Resolved::Retryable);
-        let audit = next.state.test_job_board.retry_decisions(id);
-        assert_eq!(audit.len(), 1, "one audit row: {audit:?}");
-        assert_eq!(audit[0]["evidence"], serde_json::json!(evidence));
-        assert_eq!(audit[0]["resolved_by"], serde_json::json!(by.to_string()));
+        let audit = retry_decisions_of(&next, id).await;
+        assert_eq!(audit.len(), 1, "one receipt: {audit:?}");
+        assert_eq!(audit[0].evidence, evidence);
+        assert_eq!(audit[0].resolved_by, Some(by));
         let store = next.state.durable.require().unwrap();
         let intent = store.dispatches.find_by_id(id).await.unwrap().unwrap();
         assert!(
@@ -3145,7 +3202,7 @@ mod tests {
             .resolve_dispatch(id3, DispatchResolution::RetryUnconfirmed { evidence: vec!["ledger: no registration under it".into()] }, "interrupted".into(), None)
             .await;
         assert!(matches!(unquiet, Err(("Contradicted", ref why)) if why.contains("still in flight")), "a live producer of the bucket refuses the retry: {unquiet:?}");
-        assert!(busy.state.test_job_board.retry_decisions(id3).is_empty(), "and journals nothing");
+        assert!(retry_decisions_of(&busy, id3).await.is_empty(), "and records nothing");
 
         // A dispatch WITH a registered job is never retried under its own id (Astra on #5028).
         let (other, _executor2, key2, id2, _dir2) = recovery_required_intent().await;
@@ -3166,7 +3223,40 @@ mod tests {
             .resolve_dispatch(id2, DispatchResolution::RetryUnconfirmed { evidence }, "interrupted".into(), None)
             .await;
         assert!(matches!(known, Err(("Contradicted", ref why)) if why.contains("resolve it as dispatched")), "a known job goes the dispatched + return path: {known:?}");
-        assert!(other.state.test_job_board.retry_decisions(id2).is_empty(), "a refused retry journals nothing");
+        assert!(retry_decisions_of(&other, id2).await.is_empty(), "a refused retry records nothing");
+    }
+
+    // what this catches (Codex root on #5028 at 497255024): a retry's audit written apart from
+    // the intent it releases (a ledger write_all, then the ORM update), so a power loss could
+    // keep the released intent and lose the decision and its evidence. They commit in ONE
+    // transaction: when the receipt can't be written, the intent is NOT released either.
+    #[tokio::test]
+    async fn a_retry_decision_and_the_intent_it_releases_commit_together_or_not_at_all() {
+        let (next, _executor, _key, id, _dir) = recovery_required_intent().await;
+        let store = next.state.durable.require().unwrap();
+        // the receipt's write fails: a row already holds the id this decision takes
+        let held = store.dispatches.find_by_id(id).await.unwrap().unwrap();
+        let decision_id = retry_decision_id(id, held.base.version);
+        let squatter = RetryDecision {
+            base: BaseEntity { id: decision_id.to_string(), ..BaseEntity::for_new_record() },
+            dispatch_id: Uuid::new_v4(),
+            persona_id: Uuid::new_v4(),
+            trait_kind: "code".into(),
+            base_model: "synthetic".into(),
+            evidence: vec!["squatter".into()],
+            reason: "squatter".into(),
+            resolved_by: None,
+            decided_at_ms: 0,
+        };
+        store.retry_decisions.save(decision_id, &squatter).await.unwrap();
+        let refused = next
+            .state
+            .resolve_dispatch(id, DispatchResolution::RetryUnconfirmed { evidence: vec!["checked".into()] }, "interrupted".into(), None)
+            .await;
+        assert!(matches!(refused, Err(("PersistenceFailed", ref why)) if why.contains("neither did")), "the failed receipt fails the retry: {refused:?}");
+        let after = store.dispatches.find_by_id(id).await.unwrap().unwrap();
+        assert_eq!(format!("{:?}", after.phase), format!("{:?}", held.phase), "the intent was not released without its receipt");
+        assert!(retry_decisions_of(&next, id).await.is_empty(), "and no receipt names it");
     }
 
     // what this catches (Codex root on #5028 at 7279392df): a terminal ledger row taken as proof

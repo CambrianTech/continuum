@@ -41,8 +41,8 @@ pub struct ResolveParams {
     #[serde(default)]
     pub retry_unconfirmed: bool,
     /// With `retryUnconfirmed`: what was checked about retained results, one line per check
-    /// and its finding (adapters, artifacts, overlap with any job that ran). Journaled in the
-    /// job ledger as the decision's audit record.
+    /// and its finding (adapters, artifacts, overlap with any job that ran). Kept on the
+    /// decision's receipt, committed together with the intent it releases.
     #[serde(default)]
     pub evidence: Vec<String>,
     /// The intent DID create this job (its registration carries no dispatch, or this

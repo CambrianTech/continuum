@@ -21,8 +21,8 @@ notDispatched: boolean,
 retryUnconfirmed: boolean, 
 /**
  * With `retryUnconfirmed`: what was checked about retained results, one line per check
- * and its finding (adapters, artifacts, overlap with any job that ran). Journaled in the
- * job ledger as the decision's audit record.
+ * and its finding (adapters, artifacts, overlap with any job that ran). Kept on the
+ * decision's receipt, committed together with the intent it releases.
  */
 evidence: Array<string>, 
 /**
