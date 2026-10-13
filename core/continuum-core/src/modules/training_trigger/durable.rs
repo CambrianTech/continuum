@@ -1695,20 +1695,51 @@ impl TrainingTriggerState {
                         ));
                     }
                     let (evidence, reason_owned, by) = (evidence.clone(), reason.clone(), resolved_by);
+                    let (persona, trait_kind, base_model) = (key.persona_id, key.trait_kind.clone(), key.base_model.clone());
                     tokio::task::spawn_blocking({
                         #[cfg(test)]
                         let board = self.test_job_board.clone();
-                        move || {
+                        move || -> Result<(), (&'static str, String)> {
                             #[cfg(not(test))]
                             let board = TrainingJobBoard::global();
+                            // QUIESCENCE, not just absence (Codex root on #5028): a missing ledger
+                            // row doesn't show that no producer of this bucket is still running.
+                            // Two write-ahead fences do. This core's board holds a job in memory
+                            // even when its ledger append failed; and an engine run is recorded
+                            // against its live engine process (pid + start time) BEFORE its /train
+                            // is posted (engine_residency). Any in-flight, live or unknown one
+                            // refuses the retry until it has ended.
+                            if let Some(job) = board.snapshot().into_iter().find(|j| {
+                                j.persona_id == persona && j.trait_kind == trait_kind && j.base_model == base_model && !board.is_terminal(j.handle.local_id)
+                            }) {
+                                return Err(("Contradicted", format!("job {} of this bucket is still in flight on this core: a producer may be running; retry once it has ended", job.handle.local_id)));
+                            }
+                            let residency = crate::paths::continuum_home()
+                                .map(|home| crate::inference::engine_residency::store_path(&home))
+                                .map_err(|e| ("PersistenceUnavailable", format!("no continuum home to read engine residency from, so quiescence can't be shown: {e}")))?;
+                            let resident = crate::inference::engine_residency::all(&residency)
+                                .map_err(|e| ("PersistenceFailed", format!("engine residency unreadable, so quiescence can't be shown: {e}")))?;
+                            if let Some(work) = resident.into_iter().find(|w| {
+                                w.base_model == base_model
+                                    && !board.is_terminal(w.job)
+                                    && w.engine.liveness() != crate::inference::engine_residency::Liveness::Dead
+                            }) {
+                                return Err(("Contradicted", format!(
+                                    "engine work {} on base {base_model} is {:?}: a producer may still be running; retry once it has ended",
+                                    work.job,
+                                    work.engine.liveness()
+                                )));
+                            }
                             // The audit row lands BEFORE the intent changes: a retry is never
-                            // taken without its record.
-                            board.journal_retry_unconfirmed(dispatch, by, &reason_owned, &evidence)
+                            // taken without its record. It records the decision; the fences above,
+                            // not the record, are what keep a second producer from starting.
+                            board
+                                .journal_retry_unconfirmed(dispatch, by, &reason_owned, &evidence)
+                                .map_err(|e| ("PersistenceFailed", format!("the retry's audit row didn't land: {e}")))
                         }
                     })
                     .await
-                    .map_err(|e| ("PersistenceFailed", format!("training job ledger write: {e}")))?
-                    .map_err(|e| ("PersistenceFailed", format!("the retry's audit row didn't land: {e}")))?;
+                    .map_err(|e| ("PersistenceFailed", format!("training job ledger write: {e}")))??;
                     "retried by operator decision, outcome unconfirmed"
                 } else {
                     if let Some(handle) = registered {
@@ -3079,6 +3110,28 @@ mod tests {
             "noted as a decision on an unconfirmed outcome: {:?}",
             intent.phase
         );
+
+        // A producer of the same bucket still in flight on this core (registered without this
+        // dispatch, e.g. its ledger append failed) refuses: ledger absence isn't quiescence.
+        let (busy, _executor3, key3, id3, _dir3) = recovery_required_intent().await;
+        let running = Uuid::new_v4();
+        busy.state.test_job_board.register(WatchedJob {
+            trigger_dispatch_id: None,
+            handle: JobHandle { provider_id: "engine-local".into(), provider_job_id: running.to_string(), local_id: running },
+            persona_id: key3.persona_id,
+            persona_name: "test-p".into(),
+            base_model: key3.base_model.clone(),
+            trait_kind: key3.trait_kind.clone(),
+            eval_set: None,
+            signature: None,
+            decision: None,
+        });
+        let unquiet = busy
+            .state
+            .resolve_dispatch(id3, DispatchResolution::RetryUnconfirmed { evidence: vec!["ledger: no registration under it".into()] }, "interrupted".into(), None)
+            .await;
+        assert!(matches!(unquiet, Err(("Contradicted", ref why)) if why.contains("still in flight")), "a live producer of the bucket refuses the retry: {unquiet:?}");
+        assert!(busy.state.test_job_board.retry_decisions(id3).is_empty(), "and journals nothing");
 
         // A dispatch WITH a registered job is never retried under its own id (Astra on #5028).
         let (other, _executor2, key2, id2, _dir2) = recovery_required_intent().await;
