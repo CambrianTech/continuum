@@ -26,6 +26,7 @@
 //! [`cognition/trace`]: super::introspect_commands::CognitionTrace
 //! [`cognition/prompt`]: super::introspect_commands::CognitionPrompt
 
+use crate::time::EpochMs;
 use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -82,7 +83,7 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// the same figure [`decide_eval_lane_placement`] reads), the throwaway lane's geometry
 /// mirrors what production would serve THIS base on THIS host RIGHT NOW: roomy host →
 /// big window up to the model's trained ceiling; contended host → honestly smaller;
-/// always floored at [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX)
+/// always floored at [`MIN_SERVE_CTX`](crate::inference::planning::MIN_SERVE_CTX)
 /// and capped at the base's own trained window.
 ///
 /// Degrades honestly (never a fresh magic cap): no GPU monitor on the node (CPU-only
@@ -121,7 +122,7 @@ const EVAL_EPOCH_MS: u64 = 1_700_000_000_000;
 /// `decide_eval_lane_placement`; if the window won't fit, the lane spawn fails and the caller
 /// degrades to a co-tenant SHARE rather than OOM.
 fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
-    use crate::cognition::serving_plan::MIN_SERVE_CTX;
+    use crate::inference::planning::MIN_SERVE_CTX;
     let trained = base.context_window.max(MIN_SERVE_CTX);
     match exam_fit_window(base) {
         // The host can hold the model's whole trained window — use it exactly.
@@ -136,7 +137,7 @@ fn plan_eval_lane_ctx(base: &crate::model_registry::Model) -> u32 {
 /// memory authority `plan_serving` sizes against, never a raw GPU probe. `None` when the host is
 /// ungoverned or the model can't be sized, which the caller reads as "no cap".
 fn exam_fit_window(base: &crate::model_registry::Model) -> Option<u32> {
-    let fp = crate::modules::serving_daemon::footprint_for(base)?;
+    let fp = crate::cognition::serving_plan::footprint::footprint_for(base)?;
     if fp.kv_per_token == 0 {
         return None;
     }
@@ -408,7 +409,7 @@ fn decide_eval_lane_placement(
     use crate::inference::placement_capture::{JsonlPlacementCaptureSink, PlacementDecisionRecord};
     JsonlPlacementCaptureSink::glass_box().record(&PlacementDecisionRecord {
         schema_version: 1,
-        captured_at_ms: JsonlPlacementCaptureSink::now_ms(),
+        captured_at_ms: EpochMs::now().millis(),
         context: context.to_string(),
         model: base.id.clone(),
         served_ctx,
@@ -677,9 +678,7 @@ fn governed_vram_available() -> Option<u64> {
 /// base not in the registry, or the lane not coming up.
 async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError> {
     use crate::ai::adapter::AIProviderAdapter; // brings `initialize` into scope
-    use crate::inference::llama_server::{
-        AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID,
-    };
+    use crate::inference::llama_server::{AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
     // 1. The gene declares its forged base in the trained-adapter manifest.
     let manifest = crate::forge::adapter_manifest::load()
@@ -1313,7 +1312,7 @@ fn write_eval_run_marker(root: &std::path::Path, run_id: &str) {
     let marker = serde_json::json!({
         "runId": run_id,
         "corePid": std::process::id(),
-        "startedAtMs": crate::persona::trace::now_ms(),
+        "startedAtMs": EpochMs::now().millis(),
     });
     // Marker write is best-effort: the run must not die because its guard
     // breadcrumb could not be written; the reboot guard just loses this run.
@@ -1392,6 +1391,10 @@ fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path::Path) {
         if !path.is_dir() || path == keep || live.contains(&path) {
             continue;
         }
+        if let Some(why) = unresolved_hands_keep_reason(&path) {
+            tracing::warn!(root = %path.display(), reason = %why, "an eval world kept for unresolved hands is not swept");
+            continue;
+        }
         match std::fs::remove_dir_all(&path) {
             Ok(()) => crate::probe!(
                 class = "eval.workspace.orphan_swept",
@@ -1413,25 +1416,176 @@ fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path::Path) {
 /// the temp dir long-term and NEVER touches the shared checkout at all. The
 /// crash path Drop cannot cover (SIGKILL/SIGTERM) is owned by
 /// [`sweep_orphan_eval_roots`] at the next provision.
-struct EphemeralEvalRoot(std::path::PathBuf);
+///
+/// Once a fork's hands can act in it, the world is owned by an [`EvalWorld`], which keeps it
+/// until every set of hands is confirmed ended (Astra on #5005).
+pub(crate) struct EphemeralEvalRoot {
+    path: std::path::PathBuf,
+    retained: bool,
+}
 
 impl EphemeralEvalRoot {
-    fn new(root: std::path::PathBuf) -> Self {
+    pub(crate) fn new(path: std::path::PathBuf) -> Self {
         if let Ok(mut live) = live_eval_roots().lock() {
-            live.insert(root.clone());
+            live.insert(path.clone());
         }
-        Self(root)
+        Self { path, retained: false }
+    }
+
+    /// Keep this world past the run: a fork's hands in it weren't confirmed ended. It stays
+    /// registered (this process's sweep spares it), and an [`UNRESOLVED_HANDS_MARKER`] records
+    /// which pids weren't confirmed gone, so a later process's sweep deletes it only once each
+    /// is positively absent. A restart alone proves nothing: a child needn't die with its parent.
+    fn retain_unresolved(mut self, pids: Option<Vec<u32>>) {
+        let marker = UnresolvedHands { pids };
+        let written = serde_json::to_string(&marker) // disk marker read by a later process's sweep — a true process boundary
+            .map_err(|e| e.to_string())
+            .and_then(|body| std::fs::write(self.path.join(UNRESOLVED_HANDS_MARKER), body).map_err(|e| e.to_string()));
+        if let Err(e) = written {
+            tracing::error!(root = %self.path.display(), error = %e, "an unresolved eval world's marker could not be written; only this process's registry keeps it from the sweep");
+        }
+        tracing::error!(
+            root = %self.path.display(),
+            pids = ?marker.pids,
+            "an eval world is KEPT: a fork's hands in it were not confirmed ended, so it is not deleted under them"
+        );
+        self.retained = true;
+    }
+}
+
+/// Written into an eval world kept because a fork's hands in it weren't confirmed ended.
+pub(crate) const UNRESOLVED_HANDS_MARKER: &str = "unresolved-hands.json";
+
+/// What [`UNRESOLVED_HANDS_MARKER`] holds: the pids not confirmed gone, or `None` when the
+/// release couldn't report them (then nothing proves the world unused, and it is kept).
+#[derive(Debug, Serialize, Deserialize)]
+struct UnresolvedHands {
+    pids: Option<Vec<u32>>,
+}
+
+/// Why a world must NOT be swept, or `None` when nothing recorded says so: a kept world is
+/// swept only once every pid its marker names is positively absent.
+fn unresolved_hands_keep_reason(root: &std::path::Path) -> Option<String> {
+    let body = match std::fs::read_to_string(root.join(UNRESOLVED_HANDS_MARKER)) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return Some(format!("its unresolved-hands marker can't be read: {e}")),
+    };
+    let marker: UnresolvedHands = match serde_json::from_str(&body) {
+        Ok(marker) => marker,
+        Err(e) => return Some(format!("its unresolved-hands marker isn't its own shape: {e}")),
+    };
+    let Some(pids) = marker.pids else {
+        return Some("its fork's release reported no pids, so nothing proves the world unused".into());
+    };
+    let present: Vec<u32> = pids
+        .into_iter()
+        .filter(|pid| !matches!(crate::inference::engine_residency::probe_process(*pid), crate::inference::engine_residency::ProcessProbe::Absent))
+        .collect();
+    (!present.is_empty()).then(|| format!("pids {present:?} are not confirmed gone"))
+}
+
+/// An eval run's disposable world together with every fork's hands that may act in it. Once
+/// hands are held the world is RETAINED by default: it is deleted only after each set of hands
+/// is confirmed closed. [`Self::finish`] does that in-band; a cancel or an early return drops
+/// the world first, and its drop hands the same close to an owned task that outlives the
+/// caller (Astra's re-review of #5005). With no hands held, nothing can act in the world, and
+/// it goes as an [`EphemeralEvalRoot`] always did.
+pub(crate) struct EvalWorld {
+    root: Option<EphemeralEvalRoot>,
+    /// Hands not yet confirmed closed. One leaves only after its close returned.
+    hands: Vec<crate::cognition::persona_workspace::ActingHands>,
+    /// Pids not confirmed gone so far, or `None` once a release couldn't report them.
+    unresolved: Option<Vec<u32>>,
+    any_unresolved: bool,
+    /// This world is already the owned cleanup: if it is dropped too (its runtime shutting
+    /// down), it keeps the world rather than spawning again.
+    owned_cleanup: bool,
+}
+
+impl EvalWorld {
+    pub(crate) fn new(root: Option<EphemeralEvalRoot>) -> Self {
+        Self { root, hands: Vec::new(), unresolved: Some(Vec::new()), any_unresolved: false, owned_cleanup: false }
+    }
+
+    /// Hold a fork's hands BEFORE they are rooted in this world.
+    pub(crate) fn hold(&mut self, hands: Option<crate::cognition::persona_workspace::ActingHands>) {
+        self.hands.extend(hands);
+    }
+
+    /// Close every set of hands, awaited, then delete the world, or keep it when any close
+    /// is unresolved. A close that fails is logged loudly; it never replaces the measurement.
+    pub(crate) async fn finish(mut self) {
+        while let Some(hands) = self.hands.last() {
+            let outcome = crate::cognition::persona_workspace::close_acting_context(hands).await;
+            // Popped only AFTER the close returned: a cancel mid-close leaves it held, for drop.
+            self.hands.pop();
+            if let Err(not_closed) = outcome {
+                tracing::error!(error = %not_closed, "cognition/eval could not cleanly end a fork's own hands; its world is kept");
+                self.any_unresolved = true;
+                self.unresolved = match (self.unresolved.take(), not_closed.unconfirmed) {
+                    (Some(mut known), Some(pids)) => {
+                        known.extend(pids);
+                        Some(known)
+                    }
+                    _ => None,
+                };
+            }
+        }
+        if self.any_unresolved {
+            if let Some(root) = self.root.take() {
+                root.retain_unresolved(self.unresolved.take());
+            }
+        }
+        // Otherwise `self` drops with no hands held: the root deletes itself.
+    }
+}
+
+impl Drop for EvalWorld {
+    fn drop(&mut self) {
+        if self.hands.is_empty() {
+            if self.any_unresolved {
+                if let Some(root) = self.root.take() {
+                    root.retain_unresolved(self.unresolved.take());
+                }
+            }
+            return;
+        }
+        let rest = EvalWorld {
+            root: self.root.take(),
+            hands: std::mem::take(&mut self.hands),
+            unresolved: self.unresolved.take(),
+            any_unresolved: self.any_unresolved,
+            owned_cleanup: true,
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) if !self.owned_cleanup => {
+                rt.spawn(rest.finish());
+            }
+            _ => {
+                // No runtime to close on, or the owned cleanup itself was dropped: keep the
+                // world, and say nothing proves it unused. Dropping `rest` with no hands held
+                // and an unresolved verdict retains its root.
+                let mut rest = rest;
+                rest.hands.clear();
+                rest.any_unresolved = true;
+                rest.unresolved = None;
+            }
+        }
     }
 }
 
 impl Drop for EphemeralEvalRoot {
     fn drop(&mut self) {
-        if let Ok(mut live) = live_eval_roots().lock() {
-            live.remove(&self.0);
+        if self.retained {
+            return;
         }
-        if let Err(e) = std::fs::remove_dir_all(&self.0) {
+        if let Ok(mut live) = live_eval_roots().lock() {
+            live.remove(&self.path);
+        }
+        if let Err(e) = std::fs::remove_dir_all(&self.path) {
             tracing::warn!(
-                root = %self.0.display(),
+                root = %self.path.display(),
                 error = %e,
                 "ephemeral eval workspace cleanup failed — temp-dir debris only, shared checkout unaffected"
             );
@@ -2258,41 +2412,21 @@ impl ActionCommand for CognitionEval {
 }
 
 impl CognitionEval {
-    /// [`run_eval`](Self::run_eval) plus the HANDS restore — the ONE entry both launch modes
-    /// (inline and detached) go through, so neither can forget it.
+    /// The ONE entry both launch modes (inline and detached) go through.
     ///
-    /// `--workspace_root` re-roots the persona's file engine, and that is PROCESS-GLOBAL:
-    /// `code/create-workspace` keys the engine on the caller identity, the engines live in one
-    /// map for the whole runtime, and a measurement fork borrows the LIVING persona's executor
-    /// and her id. So the eval's rooting outlives the eval, and the living persona keeps
-    /// acting in the exam repo (#312 — measured on `agent/solve`, identical mechanism here).
-    ///
-    /// Restoring HERE rather than inside the body is deliberate. The body is ~230 lines with
-    /// many fallible steps; the invariant is not "unwind whatever the body did" but "when the
-    /// eval is over, her hands are her own", and that is exactly what this boundary knows.
-    /// It also covers the error paths without wrapping them.
+    /// It used to restore the persona's hands here, because a measurement fork borrowed the
+    /// LIVING persona's executor, so the eval's rooting moved her live hands and outlived the
+    /// eval (#312). A fork now acts with its own hands in its own acting context
+    /// (`persona_workspace::give_fork_its_own_hands`, docs/architecture/HER-HANDS.md): the
+    /// eval never moves her live hands, so there's nothing of hers to put back. The fork's
+    /// context ends when the fork's hands drop, on every exit path. That also removes the
+    /// case this boundary missed: a default tool-bearing eval rooted at an ephemeral clone
+    /// with no `workspace_root`, which was never restored and left her live hands at a deleted
+    /// directory.
     async fn run_eval_restoring(
         p: CognitionEvalParams,
     ) -> Result<CognitionEvalResult, CommandError> {
-        // Only an eval that re-rooted has anything to put back — an ordinary eval never
-        // touched her hands and must not provoke a citizen-layer provision for nothing.
-        let rooted = p.workspace_root.is_some();
-        let persona_id = p.persona_id.clone();
-        let out = CognitionEval::run_eval(p).await;
-        if rooted {
-            if let Err(e) =
-                crate::cognition::persona_workspace::restore_persona_workspace(&persona_id).await
-            {
-                tracing::error!(
-                    persona = %persona_id,
-                    error = %e,
-                    "cognition/eval could NOT return the persona's hands to her own workspace — \
-                     she is still rooted at the eval's workspace_root and her live turns will act \
-                     there (#312)"
-                );
-            }
-        }
-        out
+        CognitionEval::run_eval(p).await
     }
 
     /// The eval body — deliberately ctx-free (reaches the persona's live cognition through
@@ -2463,7 +2597,7 @@ impl CognitionEval {
         let eval_workspace_root: Option<String> = p
             .workspace_root
             .clone()
-            .or_else(|| ephemeral_root.as_ref().map(|r| r.0.display().to_string()));
+            .or_else(|| ephemeral_root.as_ref().map(|r| r.path.display().to_string()));
 
         // #207: suppress the fork's drifting episodic recall for a reproducible ABSOLUTE
         // baseline. Opt-in; default false = memories intact (the natural persona).
@@ -2740,7 +2874,14 @@ impl CognitionEval {
         // roman_to_int was textbook-correct in home, the clone empty, 0/3 graded).
         // The exact "silent no-root scores a false ZERO that would LIE about the
         // solver" this comment block always warned about, one variable to the left.
+        // Every fork's own hands this eval rooted, closed (awaited) before it returns, while its
+        // exam directory still exists. A cancel or an early return hands the same close to an
+        // owned task (`EvalWorld`'s drop); the hands' own drop is only the last fallback.
+        // The world and every fork's hands that may act in it are owned together, and the
+        // hands are held BEFORE they are rooted, so no exit path can delete the world under them.
+        let mut world = EvalWorld::new(ephemeral_root);
         if let Some(root) = eval_workspace_root.as_deref() {
+            world.hold(crate::cognition::persona_workspace::ActingHands::of(&cycle));
             // A gym run IS the measurement — the grader reads the artifact, never her prose,
             // so an inert edit is unrecoverable here for the same reason as `benchmark/swe-solve`.
             crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[], true)
@@ -2890,6 +3031,7 @@ impl CognitionEval {
                 _fleet_lease.as_ref().map(|_| true),
                 _eval_lane.as_ref().and_then(|lane| lane.measured_gene.as_ref()),
             );
+            world.finish().await;
             return Ok(result);
         }
 
@@ -2937,6 +3079,13 @@ impl CognitionEval {
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
                 )))?;
+            // The reviewer is a fork with ITS OWN hands (HER-HANDS): rooted where the writer's
+            // are, or it would have no workspace at all (an acting context never gets hers).
+            if let Some(root) = eval_workspace_root.as_deref() {
+                world.hold(crate::cognition::persona_workspace::ActingHands::of(&reviewer));
+                crate::cognition::persona_workspace::root_acting_workspace(&reviewer, root, &[], true)
+                    .await?;
+            }
             let reviewer_iso = reviewer.isolate_for_eval();
             let out = run_pass_team(
                 &cycle,
@@ -3096,6 +3245,7 @@ impl CognitionEval {
             _fleet_lease.as_ref().map(|_| true),
             None,
         );
+        world.finish().await;
         Ok(result)
     }
 }
@@ -3203,7 +3353,7 @@ impl LessonSink {
                 parent_engram_id: uuid::Uuid::nil(),
             },
             recall_keys: vec!["exam".to_string(), task.id.clone()],
-            admitted_at_ms: crate::persona::trace::now_ms(),
+            admitted_at_ms: EpochMs::now().millis(),
             trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
             admission_trace_id: None,
         };
@@ -3281,7 +3431,7 @@ fn admit_progress_engram(
                 parent_engram_id: uuid::Uuid::nil(),
             },
             recall_keys: vec!["progress".to_string(), eval_set.to_string()],
-            admitted_at_ms: crate::persona::trace::now_ms(),
+            admitted_at_ms: EpochMs::now().millis(),
             trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
             admission_trace_id: None,
         };
@@ -3558,7 +3708,7 @@ fn append_failed_ledger(
     }
     let path = dir.join(format!("{persona_id}.jsonl"));
     let row = serde_json::json!({
-        "capturedAtMs": crate::persona::trace::now_ms(),
+        "capturedAtMs": EpochMs::now().millis(),
         "personaId": persona_id,
         "runId": run_id,
         "note": note,
@@ -3606,7 +3756,7 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
     else {
         return ExamServingContext::ludicrous_fallback().await;
     };
-    let Some(fp) = crate::modules::serving_daemon::footprint_for(&model) else {
+    let Some(fp) = crate::cognition::serving_plan::footprint::footprint_for(&model) else {
         return ExamServingContext::ludicrous_fallback().await;
     };
     // Capacity = the ONE memory authority's governed budget (VRAM netted over every measured
@@ -3662,7 +3812,7 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
     // than inventing headroom. [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
     let exam_window = window
         .min(max_fit_window)
-        .max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+        .max(crate::inference::planning::MIN_SERVE_CTX);
     let demand = LaneDemand {
         base_model_id: active.to_string(),
         weights_bytes: fp.weights_bytes,
@@ -3696,7 +3846,7 @@ fn append_task_ledger_row(
     }
     let row = serde_json::json!({
         "kind": "task",
-        "capturedAtMs": crate::persona::trace::now_ms(),
+        "capturedAtMs": EpochMs::now().millis(),
         "runId": run_id,
         "personaId": persona_id,
         "evalSet": eval_set,
@@ -3735,7 +3885,7 @@ fn append_progress_ledger(
         .is_some_and(eval_run_cancelled);
     let row = serde_json::json!({
         "cancelled": cancelled,
-        "capturedAtMs": crate::persona::trace::now_ms(),
+        "capturedAtMs": EpochMs::now().millis(),
         "personaId": result.persona_id,
         "evalSet": eval_set,
         "cleanLane": clean_lane,
@@ -3860,7 +4010,7 @@ pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
             serde_json::json!({
                 "phase": phase,
                 "detail": detail,
-                "atMs": crate::persona::trace::now_ms(),
+                "atMs": EpochMs::now().millis(),
             }),
         );
     }
@@ -4449,7 +4599,7 @@ fn report_task_graded(
         current_task: task_id.to_string(),
         last_ok: ok,
         output_tokens,
-        updated_at_ms: crate::persona::trace::now_ms(),
+        updated_at_ms: EpochMs::now().millis(),
         vram_free_gb,
         run_id: CURRENT_RUN_META
             .lock()
@@ -5670,6 +5820,28 @@ mod tests {
         assert!(!orphan.is_dir(), "an unregistered world is an orphan and must be removed");
         drop(holder); // Drop removes the live world AND its registry entry
         assert!(!live.is_dir(), "Drop still owns the in-process cleanup path");
+
+        // A world whose fork's hands weren't confirmed ended is kept (Astra's re-review of
+        // #5005). A later process's sweep (simulated: the registry no longer holds it) deletes
+        // it only once every recorded pid is positively absent; a restart alone proves nothing.
+        let alive = parent.path().join("unresolved-alive");
+        let ended = parent.path().join("unresolved-ended");
+        std::fs::create_dir_all(&alive).expect("mkdir alive");
+        std::fs::create_dir_all(&ended).expect("mkdir ended");
+        let mut exited = std::process::Command::new("true").spawn().expect("spawn a child that exits");
+        let exited_pid = exited.id();
+        exited.wait().expect("reap it, so its pid is gone");
+        EphemeralEvalRoot::new(alive.clone()).retain_unresolved(Some(vec![std::process::id()]));
+        EphemeralEvalRoot::new(ended.clone()).retain_unresolved(Some(vec![exited_pid]));
+        sweep_orphan_eval_roots(parent.path(), &keep);
+        assert!(alive.is_dir() && ended.is_dir(), "this process's registry spares every kept world");
+        if let Ok(mut live) = live_eval_roots().lock() {
+            live.remove(&alive);
+            live.remove(&ended);
+        }
+        sweep_orphan_eval_roots(parent.path(), &keep);
+        assert!(alive.is_dir(), "a world whose recorded process is still present is never swept");
+        assert!(!ended.is_dir(), "a world whose every recorded process is gone is swept");
     }
 
     // what this catches: #310 — the /v1/models context_length contract for gateway-routed

@@ -32,7 +32,7 @@ use std::time::Duration;
 
 use continuum_client::{ClientError, Connection};
 use continuum_cli_lifecycle::core_bind_guard::BindDecision;
-use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
+use continuum_client::core_ipc::CoreIpcTransport;
 use continuum_cli_lifecycle::deploy_provenance::{
     cli_replaced_this_run, cli_self_build, cli_staleness_note, deploy_verdict, sha_matches,
     CliSelfBuild,
@@ -1394,13 +1394,18 @@ struct CoreServiceTask {
     installed: Option<continuum_cli_lifecycle::installed_release::Envelope>,
 }
 
-/// A path the ContinuumCore descriptor names, absolute and resolved, or why not.
+/// A path the ContinuumCore descriptor or the installer's receipt names, absolute and resolved,
+/// or why not. THE one resolver for both sides of [`CoreServiceTask::validate`]'s comparison:
+/// a receipt holds an ordinary `C:\...` path while a resolved one carries Windows' verbatim
+/// `\\?\` prefix, so a receipt compared raw refused every unattended deploy on the 5090
+/// (ce84f63ac, 2026-10-12 19:31Z; Codex traced it).
 #[cfg(any(windows, test))]
-fn resolve_service_path(path: &str) -> Result<PathBuf, String> {
-    if !Path::new(path).is_absolute() {
-        return Err(format!("ContinuumCore path must be absolute: {path}"));
+fn resolve_service_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
+    let path = path.as_ref();
+    if !path.is_absolute() {
+        return Err(format!("ContinuumCore path must be absolute: {}", path.display()));
     }
-    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {path} cannot be resolved: {e}"))
+    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {} cannot be resolved: {e}", path.display()))
 }
 
 #[cfg(any(windows, test))]
@@ -1442,12 +1447,35 @@ impl CoreServiceTask {
         let description = self.runtime_paths_resolve()?;
         if self.installed.is_some() { description.installer_root()?; }
         let resolve = resolve_service_path;
-        if !self.enabled
-            || resolve(&description.artifact)? != candidate.path
-            || description.socket != socket
-            || (self.installed.is_none() && resolve(&self.command)? != shell.canonicalize().map_err(|e| e.to_string())?)
-        {
-            return Err("ContinuumCore does not select the requested artifact/socket or is disabled; rerun the installer".to_string());
+        // Each refusal names its condition and both values: one message for four conditions
+        // left the 5090's deploy log unable to say which held (card f5fd64ad).
+        if !self.enabled {
+            return Err("ContinuumCore's scheduled task is disabled; rerun the installer".to_string());
+        }
+        let selected = resolve(&description.artifact)?;
+        if selected != candidate.path {
+            return Err(format!(
+                "ContinuumCore selects artifact {} but the requested core is {}; rerun the installer",
+                selected.display(),
+                candidate.path.display()
+            ));
+        }
+        if description.socket != socket {
+            return Err(format!(
+                "ContinuumCore selects socket {} but the requested socket is {socket}; rerun the installer",
+                description.socket
+            ));
+        }
+        if self.installed.is_none() {
+            let command = resolve(&self.command)?;
+            let shell = shell.canonicalize().map_err(|e| e.to_string())?;
+            if command != shell {
+                return Err(format!(
+                    "ContinuumCore's task runs {} but this host's shell is {}; rerun the installer",
+                    command.display(),
+                    shell.display()
+                ));
+            }
         }
         // Paired host/launcher files live in the same installed slot, never in
         // the mutable build cache or a different release's directory.
@@ -1720,7 +1748,7 @@ impl PreparedCoreService {
                 repo=quote(&repo), socket=socket.replace('\'', "''"), receipt=quote(&receipt.0),
             );
             Self::run_installer_script(&script)?;
-            let staged_path=receipt.artifact()?;
+            let staged_path=resolve_service_path(receipt.artifact()?)?;
             let sha=binary_build_sha(&staged_path).await?;
             if !sha_matches(&sha,&built.build_sha) { return Err("staged core revision differs from validated prebuilt".into()); }
             PrebuiltCore::from_report(staged_path,sha,None)
@@ -2956,30 +2984,23 @@ fn continuum_root() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home_dir()?).join(".continuum"))
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Consult the deploy claim before minting a core, and REPORT what it found.
 ///
 /// Returns `Err` only while a deploy is genuinely in flight. See
-/// [`continuum_core::runtime::deploy_claim`] for the incident: mid-build there is no core
+/// [`continuum_cli_lifecycle::deploy_claim`] for the incident: mid-build there is no core
 /// answering AND the installed image is still the PREVIOUS build, so any autostart in that
 /// window launches stale code, wins the socket, and defeats the deploy.
 ///
 /// A claim whose owner is gone or that has aged out is swept and announced rather than
 /// silently obeyed — a claim must never be able to wedge the machine (#355's failure mode).
 fn deploy_gate(verb: &str) -> Result<(), String> {
-    use continuum_core::runtime::deploy_claim::{self, DeployGate};
+    use continuum_cli_lifecycle::deploy_claim::{self, DeployGate};
     let Ok(root) = continuum_root() else {
         return Ok(()); // no HOME → no claim file → nothing to honour
     };
     let claim = deploy_claim::read(&root);
     let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
-    let now = now_ms();
+    let now = continuum_core::time::EpochMs::now().millis();
     match deploy_claim::with_wait(deploy_claim::decide(claim.as_ref(), alive, now), deploy_claim::read_waiting(&root).as_ref(), now) {
         // A deploy waiting on CI has swapped nothing: the installed core is the running build.
         DeployGate::Clear | DeployGate::Waiting { .. } => Ok(()),
@@ -3051,10 +3072,10 @@ impl DeployClaimGuard {
     /// task: the warm build waits on a blocking `Command::status()` inside this async fn,
     /// and the renewal must not depend on which runtime worker that blocks.
     fn take(target_sha: &str) -> Option<Self> {
-        use continuum_core::runtime::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
+        use continuum_cli_lifecycle::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
         let root = continuum_root().ok()?;
         let pid = std::process::id() as i32;
-        let started = now_ms();
+        let started = continuum_core::time::EpochMs::now().millis();
         let claim = DeployClaim {
             pid,
             started_ms: started,
@@ -3077,7 +3098,7 @@ impl DeployClaimGuard {
                             match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                                     let working = deploy_working(&mut sys, pid);
-                                    if !deploy_claim::renew(&renew_root, pid, now_ms(), working) {
+                                    if !deploy_claim::renew(&renew_root, pid, continuum_core::time::EpochMs::now().millis(), working) {
                                         return; // no longer ours (or unwritable): stop renewing
                                     }
                                 }
@@ -3105,7 +3126,7 @@ impl DeployClaimGuard {
 /// compiler busy anywhere on the host (an owner blocked on the shared cargo lock is waiting on
 /// progress). Card 80ead731.
 fn deploy_working(sys: &mut sysinfo::System, pid: i32) -> bool {
-    use continuum_core::runtime::deploy_claim;
+    use continuum_cli_lifecycle::deploy_claim;
     use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing().with_cpu());
     let procs: Vec<(i32, Option<i32>, f32)> = sys
@@ -3129,8 +3150,8 @@ impl Drop for DeployClaimGuard {
         if let Some(renewer) = self.renewer.take() {
             let _ = renewer.join();
         }
-        let _ = continuum_core::runtime::deploy_claim::clear_waiting(&self.root, self.pid);
-        let _ = continuum_core::runtime::deploy_claim::clear(&self.root, self.pid);
+        let _ = continuum_cli_lifecycle::deploy_claim::clear_waiting(&self.root, self.pid);
+        let _ = continuum_cli_lifecycle::deploy_claim::clear(&self.root, self.pid);
     }
 }
 
@@ -3272,7 +3293,7 @@ enum ConsumeVerdict {
     /// `reboot --service` into the first one's build — two builds racing one target
     /// dir, the second swap shipping whichever artifact it found (Cormac, review of
     /// #4208; `reboot` itself never consults the claim — `deploy_gate` is the START
-    /// verb's). The fifth arm, mirroring `runtime::deploy_tracker::decide`.
+    /// verb's). The fifth arm, mirroring `continuum_cli_lifecycle::deploy_tracker::decide`.
     BuildInFlight,
     /// This tip failed to build/hand off [`CONSUME_MAX_ATTEMPTS`] times here: a tip
     /// green on CI can still fail on THIS box (a Windows-only wall, a vendor drift).
@@ -3322,18 +3343,81 @@ fn consume_attempts_path() -> Result<PathBuf, String> {
     deploy_request_path().map(|p| p.with_file_name("deploy-consume-attempts.json"))
 }
 
-fn read_consume_failures(path: &Path, tip: &str) -> u32 {
-    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
-    let Ok(v) = serde_json::from_str::<Value>(&text) else { return 0 };
-    if v.get("tip").and_then(|t| t.as_str()) != Some(tip) {
-        return 0; // a different tip: the ledger is about a request that no longer stands
-    }
-    v.get("failures").and_then(|f| f.as_u64()).unwrap_or(0) as u32 // unwrap_or: a malformed ledger counts as no failures, never as give-up
+/// Failed handoffs on this box, per BUILD tried (the build key the pass deployed),
+/// never per request. On 2026-10-13 the 5090's request for 34e8db15d spent all three
+/// attempts installing the older published 254d11e1c, whose installer predated the fix,
+/// and gave up on 34e8db15d minutes before its own artifact published (card f7826d97).
+/// Charged to the build, a failing older core is skipped while the tip's is awaited, and
+/// the tip is given up on only when ITS build failed here.
+///
+/// A ledger in the old per-request shape (`{tip, failures}`) names the request, not the
+/// build that failed, so its failures cannot be attributed: it reads as none.
+#[derive(Debug, Default, PartialEq)]
+struct ConsumeLedger {
+    failures: std::collections::BTreeMap<String, u32>,
 }
 
-fn write_consume_failures(path: &Path, tip: &str, failures: u32) {
-    let body = serde_json::json!({ "tip": tip, "failures": failures });
-    let _ = std::fs::write(path, body.to_string());
+impl ConsumeLedger {
+    fn read(path: &Path) -> Self {
+        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else { return Self::default() };
+        let failures = v
+            .get("failures_by_build")
+            .and_then(|m| m.as_object())
+            .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()? as u32))).collect())
+            .unwrap_or_default(); // unwrap_or_default: an old-shape or malformed ledger counts as no failures, never as give-up
+        Self { failures }
+    }
+
+    fn write(&self, path: &Path) {
+        let body = serde_json::json!({ "failures_by_build": self.failures });
+        let _ = std::fs::write(path, body.to_string());
+    }
+
+    fn failures(&self, build: &str) -> u32 {
+        self.failures.get(build).copied().unwrap_or(0) // unwrap_or: a build never tried here has no failures
+    }
+
+    fn record_failure(&mut self, build: &str) -> u32 {
+        let n = self.failures.entry(build.to_string()).or_insert(0);
+        *n += 1;
+        *n
+    }
+
+    /// The build a failed pass is charged to: the one it SELECTED (the tip's, or the
+    /// older published core it fell back to), or the tip's build when none was selected
+    /// yet (no artifact, a refused one, a failure before the CI wait ended).
+    fn charge_failure(&mut self, selected: Option<&str>, tip_build: &str) -> (String, u32) {
+        let build = selected.unwrap_or(tip_build).to_string(); // unwrap_or: nothing selected yet = the tip's attempt
+        let failures = self.record_failure(&build);
+        (build, failures)
+    }
+
+    /// A build landed: forget ITS failures only. Another build that already failed here
+    /// stays excluded (an exhausted newer build must not become eligible again because
+    /// an older one deployed, Astra review of #5011).
+    fn landed(&mut self, build: &str) {
+        self.failures.remove(build);
+    }
+
+    /// Persist, or remove the file when nothing is left to remember.
+    fn save(&self, path: &Path) {
+        if self.failures.is_empty() {
+            let _ = std::fs::remove_file(path);
+        } else {
+            self.write(path);
+        }
+    }
+
+    /// The candidates still worth a pass: the tip's own build always (whether to give it
+    /// up is the verdict's call), and any older one that has not already failed here
+    /// CONSUME_MAX_ATTEMPTS times.
+    fn admissible(&self, candidates: Vec<String>, tip_build: &str) -> Vec<String> {
+        candidates
+            .into_iter()
+            .filter(|key| key == tip_build || self.failures(key) < CONSUME_MAX_ATTEMPTS)
+            .collect()
+    }
 }
 
 fn deploy_request_path() -> Result<PathBuf, String> {
@@ -4306,9 +4390,9 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
     // claim is swept (by `reboot` itself).
     let gate = continuum_root()
-        .map(|root| continuum_core::runtime::deploy_claim::in_flight(&root, now_ms()))
+        .map(|root| continuum_cli_lifecycle::deploy_claim::in_flight(&root, continuum_core::time::EpochMs::now().millis()))
         .ok(); // no root = no claim file = nothing in flight
-    if let Some(continuum_core::runtime::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
+    if let Some(continuum_cli_lifecycle::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
         .as_ref()
         .filter(|g| g.excludes_deploy())
     {
@@ -4320,12 +4404,15 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     }
     let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
-    let prior_failures = tip
-        .as_deref()
-        .map(|t| read_consume_failures(&attempts_path, t))
-        .unwrap_or(0); // unwrap_or: no request = nothing to have failed
+    let mut ledger = ConsumeLedger::read(&attempts_path);
     // The tip's build key, read from the same checkout the tracker fetched into.
     let tip_build_key = tip.as_deref().and_then(|t| build_key_in(&repo, t));
+    // Give-up is judged on the TIP's own build only: an older core that would not land
+    // here is skipped below, never charged to the request.
+    let prior_failures = tip
+        .as_deref()
+        .map(|t| ledger.failures(tip_build_key.as_deref().unwrap_or(t))) // unwrap_or: no build key means the tip names its own core
+        .unwrap_or(0); // unwrap_or: no request = nothing to have failed
     let verdict = consume_verdict(
         tip.as_deref(),
         tip_build_key.as_deref(),
@@ -4364,6 +4451,11 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
             // 2026-10-07 the pass deployed 69a2c2b96 for request d2cf23221 and logged
             // "d2cf23221 handed off", a build that was not running (card 4752fea6).
             let mut deployed = tip.clone();
+            // The build this pass SELECTED, set the moment CI's answer is known and before
+            // any fallible handoff step (clearing the wait marker, the checkout, the
+            // submodules, the reboot), so a failure in any of them is charged to it, never
+            // to the tip (Astra review of #5011).
+            let mut selected: Option<String> = None;
             let attempt = async {
                 // The deploy claim, from BEFORE the checkout to the handoff (Fable on #4702).
                 // The CI wait below can run for hours, and without a claim nothing marks
@@ -4395,13 +4487,17 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // core (card d1db1a83). On a busy canary the tip's build has not started
                 // while an older one is out, and waiting only on the tip never deployed.
                 let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
-                let candidates = deploy_candidates(&repo, running.as_deref(), &tip, &newest_key);
+                let candidates = ledger.admissible(deploy_candidates(&repo, running.as_deref(), &tip, &newest_key), &newest_key);
                 let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip).await;
+                if let CiCore::Built { key, .. } = &ci_core {
+                    selected = Some(key.clone());
+                    deployed = key.clone();
+                }
                 // The wait is over, whatever it found: from here the deploy promotes the
                 // engine and swaps the core, which the claim must block. A marker that cannot
                 // be removed ends this attempt rather than let a swap read as a wait.
                 if let Ok(root) = continuum_root() {
-                    continuum_core::runtime::deploy_claim::clear_waiting(&root, std::process::id() as i32)
+                    continuum_cli_lifecycle::deploy_claim::clear_waiting(&root, std::process::id() as i32)
                         .map_err(|e| format!("deploy-consume: cannot clear the wait marker: {e}"))?;
                 }
                 let prebuilt = match ci_core {
@@ -4418,7 +4514,6 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         }
                         // CI's core for this pass: an older published one, or the build-key
                         // commit's core serving a docs-only tip (card 9080ffb0).
-                        deployed = key.clone();
                         core
                     }
                     CiCore::Refused(why) => return Err(why),
@@ -4441,16 +4536,22 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
             .await;
             match &attempt {
                 Ok(PassEnd::Done) => {
-                    let _ = std::fs::remove_file(&attempts_path);
+                    if let Some(build) = &selected {
+                        ledger.landed(build); // a pass that handed off selected a build
+                    }
+                    ledger.save(&attempts_path);
                     let request = if deployed == tip { String::new() } else { format!(" (request {tip})") };
                     deploy_note(&format!("✓ deploy-consume: {deployed} handed off{request}"));
                 }
                 Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
-                    write_consume_failures(&attempts_path, &tip, prior_failures + 1);
+                    // Charged to the build this pass tried: the tip's, or the older published
+                    // core it fell back to. A failure before any build was chosen is the tip's.
+                    let tip_build = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
+                    let (tried, failures) = ledger.charge_failure(selected.as_deref(), &tip_build);
+                    ledger.save(&attempts_path);
                     deploy_note(&format!(
-                        "deploy-consume: attempt {} of {CONSUME_MAX_ATTEMPTS} for {tip} failed: {why}",
-                        prior_failures + 1
+                        "deploy-consume: attempt {failures} of {CONSUME_MAX_ATTEMPTS} for build {tried} (request {tip}) failed: {why}"
                     ));
                 }
             }
@@ -4524,9 +4625,9 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                 // it before the install).
                 if let Ok(root) = continuum_root() {
                     let pid = std::process::id() as i32;
-                    let now = now_ms();
-                    let _ = continuum_core::runtime::deploy_claim::renew(&root, pid, now, true);
-                    if let Err(e) = continuum_core::runtime::deploy_claim::mark_waiting(&root, pid, now) {
+                    let now = continuum_core::time::EpochMs::now().millis();
+                    let _ = continuum_cli_lifecycle::deploy_claim::renew(&root, pid, now, true);
+                    if let Err(e) = continuum_cli_lifecycle::deploy_claim::mark_waiting(&root, pid, now) {
                         deploy_note(&format!(
                             "deploy-consume: could not mark the wait ({e}); the claim keeps blocking as a build would"
                         ));
@@ -4824,10 +4925,8 @@ fn tip_age_secs(repo: &Path, tip: &str) -> u64 {
     let committed = git_in(repo, &["log", "-1", "--format=%ct", tip])
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0); // unwrap_or: a clock before 1970 makes every tip "new", so the consumer waits
+    // A clock before 1970 reads as the epoch, so every tip is "new" and the consumer waits.
+    let now = continuum_core::time::EpochMs::now().secs();
     committed.map(|c| now.saturating_sub(c)).unwrap_or(0) // unwrap_or: an unreadable commit time waits, it does not compile early
 }
 
@@ -5663,7 +5762,7 @@ fn owned_engine_orphans(keep: &[i32]) -> Vec<(i32, String)> {
 /// Windows has no signals — query the task list for the pid.
 fn pid_alive(pid: i32) -> bool {
     // ONE enumerator, shared with the core's own read of the claim (`deploy_claim::in_flight`).
-    continuum_core::runtime::deploy_claim::owner_alive(pid)
+    continuum_cli_lifecycle::deploy_claim::owner_alive(pid)
 }
 
 /// Spawn the pure-Rust start script detached and wait until the core answers
@@ -7331,13 +7430,64 @@ mod tests {
         // deploy.stranded — never a rebuild loop every tick until the claim ages out.
         assert_eq!(consume_verdict(Some("abc1234"), None, None, false, false, 2), ConsumeVerdict::Deploy);
         assert_eq!(consume_verdict(Some("abc1234"), None, None, false, false, 3), ConsumeVerdict::GaveUp);
-        // The ledger is per tip: a new tip starts at zero.
+        // The ledger is per BUILD tried (card f7826d97, the 5090 on 2026-10-13): an older
+        // published core that failed here three times is skipped while the tip's is
+        // awaited, and is never charged to the tip; the tip's own build still gives up
+        // at the bound. An old per-request ledger cannot be attributed and reads as none.
         let dir = std::env::temp_dir().join(format!("consume-ledger-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap(); // unwrap: test fixture — a temp dir that cannot be made fails the test loudly
-        let ledger = dir.join("deploy-consume-attempts.json");
-        super::write_consume_failures(&ledger, "abc1234", 3);
-        assert_eq!(super::read_consume_failures(&ledger, "abc1234"), 3);
-        assert_eq!(super::read_consume_failures(&ledger, "def5678"), 0, "a different tip resets");
+        let path = dir.join("deploy-consume-attempts.json");
+        let mut ledger = super::ConsumeLedger::default();
+        for _ in 0..3 {
+            ledger.record_failure("254d11e1c");
+        }
+        ledger.write(&path);
+        let ledger = super::ConsumeLedger::read(&path);
+        assert_eq!(ledger.failures("254d11e1c"), 3);
+        assert_eq!(ledger.failures("34e8db15d"), 0, "the older build's failures are not the tip's");
+        assert_eq!(
+            ledger.admissible(vec!["34e8db15d".into(), "254d11e1c".into(), "5deb01e96".into()], "34e8db15d"),
+            vec!["34e8db15d".to_string(), "5deb01e96".to_string()],
+            "a build that already failed here is skipped; the tip's and untried ones stay"
+        );
+        let mut tip_failed = super::ConsumeLedger::default();
+        for _ in 0..3 {
+            tip_failed.record_failure("34e8db15d");
+        }
+        assert_eq!(
+            tip_failed.admissible(vec!["34e8db15d".into()], "34e8db15d"),
+            vec!["34e8db15d".to_string()],
+            "the tip's own build is never filtered here: giving it up is the verdict's call"
+        );
+        // A pass that selected an older build and failed before its checkout (Astra review
+        // of #5011, P1) is charged to that build; one that selected nothing is the tip's.
+        let mut charged = super::ConsumeLedger::default();
+        assert_eq!(charged.charge_failure(Some("254d11e1c"), "34e8db15d"), ("254d11e1c".to_string(), 1));
+        assert_eq!(charged.charge_failure(None, "34e8db15d"), ("34e8db15d".to_string(), 1));
+        // An older build landing forgets only ITS failures (P2): the exhausted one stays
+        // excluded across a reload, and the tip keeps its own count.
+        let mut after = super::ConsumeLedger::default();
+        for _ in 0..3 {
+            after.record_failure("34e8db15d");
+        }
+        after.record_failure("254d11e1c");
+        after.landed("254d11e1c");
+        after.save(&path);
+        let after = super::ConsumeLedger::read(&path);
+        assert_eq!(after.failures("34e8db15d"), 3, "an exhausted build is not made eligible by another landing");
+        assert_eq!(after.failures("254d11e1c"), 0);
+        assert_eq!(
+            after.admissible(vec!["9f1c2d3e4".into(), "34e8db15d".into()], "9f1c2d3e4"),
+            vec!["9f1c2d3e4".to_string()],
+            "under a newer tip the exhausted build is still skipped"
+        );
+        let mut emptied = super::ConsumeLedger::default();
+        emptied.record_failure("254d11e1c");
+        emptied.landed("254d11e1c");
+        emptied.save(&path);
+        assert!(!path.exists(), "nothing left to remember removes the file");
+        std::fs::write(&path, r#"{"failures":3,"tip":"34e8db15db2d543a5bb72ee599b74feef39ae7f8"}"#).unwrap(); // unwrap: test fixture write
+        assert_eq!(super::ConsumeLedger::read(&path), super::ConsumeLedger::default(), "an old per-request ledger names no build");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
         assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
@@ -7648,8 +7798,11 @@ mod tests {
     // BEFORE stopping the live core, even when its description names the new image.
     #[test]
     fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
-        let directory = tempfile::tempdir().unwrap();
-        let directory = directory.path().canonicalize().unwrap();
+        let tempdir = tempfile::tempdir().unwrap();
+        // The directory as an installer receipt names it, BEFORE resolution: on Windows an
+        // ordinary path, whose resolved form carries the verbatim `\\?\` prefix.
+        let ordinary = tempdir.path().to_path_buf();
+        let directory = ordinary.canonicalize().unwrap();
         #[cfg(windows)]
         {
             // Receipt migration and direct reboot share the installer's real
@@ -7739,12 +7892,37 @@ mod tests {
         task.arguments = arguments;
         assert!(task.validate(&candidate, "different.sock", &shell).is_err());
         task.enabled = false;
-        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        assert!(task.validate(&candidate, &socket, &shell).unwrap_err().contains("disabled"));
         task.enabled = true;
+        assert!(task.validate(&candidate, "different.sock", &shell).unwrap_err().contains("different.sock"), "the socket refusal names both sockets");
+        // regression for the 5090 2026-10-12 19:31Z (ce84f63ac; Codex traced it): the staged
+        // core's path as the installer's receipt names it, RAW, and not already canonical. On
+        // Windows that is the ordinary path, whose resolved form carries the verbatim `\\?\`
+        // prefix (the failing case); elsewhere a symlinked directory gives the same shape. Once
+        // resolved the one way it is the core the descriptor selects; raw, it is refused, and
+        // the refusal names both paths.
+        let raw = {
+            #[cfg(windows)]
+            {
+                ordinary.join(artifact.file_name().unwrap())
+            }
+            #[cfg(unix)]
+            {
+                let link = directory.join("via-link");
+                std::os::unix::fs::symlink(&ordinary, &link).unwrap();
+                link.join(artifact.file_name().unwrap())
+            }
+        };
+        assert_ne!(raw, super::resolve_service_path(&raw).unwrap(), "the receipt path is not already canonical");
+        let staged = super::PrebuiltCore { path: super::resolve_service_path(&raw).unwrap(), build_sha: "123456789".to_string() };
+        task.validate(&staged, &socket, &shell).unwrap();
+        let unresolved = super::PrebuiltCore { path: raw.clone(), build_sha: "123456789".to_string() };
+        let refused = task.validate(&unresolved, &socket, &shell).unwrap_err();
+        assert!(refused.contains("selects artifact") && refused.contains(&raw.display().to_string()), "the artifact refusal names both paths: {refused}");
         let mut old_description = description;
         old_description["artifact"] = serde_json::json!(stale);
         task.description = old_description.to_string();
-        assert!(task.validate(&candidate, &socket, &shell).is_err());
+        assert!(task.validate(&candidate, &socket, &shell).unwrap_err().contains("selects artifact"));
     }
 
     // what this catches: card 67f53b63 — provenance is checked before a

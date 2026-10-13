@@ -41,6 +41,7 @@
 //!   through the [`PersonaConversation`] trait. The trait is the
 //!   substrate's IPC boundary; tests stub it without any daemon.
 
+use crate::time::EpochMs;
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::supervisor::HostedPersona;
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};
@@ -250,11 +251,7 @@ impl Default for ServeOptions {
             page_recent_limit: 50,
             rag_fetch_limit: 50,
             now_ms: || {
-                use std::time::{SystemTime, UNIX_EPOCH};
-                SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0)
+                EpochMs::now().millis()
             },
             // A private, never-set flag: a persona built with default options is
             // simply never quiesced (no lease can reach this atomic). Production
@@ -719,10 +716,7 @@ async fn serve_persona_loop_inner(
                 if starved {
                     if let Some(yields) =
                         crate::cognition::resource_admission::take_ambient_yield_report(
-                            std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .map(|d| d.as_millis() as u64)
-                                .unwrap_or(0), // unwrap_or: clock before the epoch = 0
+                            EpochMs::now().millis(), // pre-1970 reads 0: clock before the epoch = 0
                         )
                     {
                         crate::probe!(
@@ -978,10 +972,7 @@ async fn serve_persona_loop_inner(
         // on serving pressure, is proof she is working her holds.
         crate::persona::cognition_pulse::touch(
             ctx.identity.peer_id.as_uuid(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or_default(), // unwrap_or: a pre-epoch clock reads 0, as every other now_ms here
+            EpochMs::now().millis(), // pre-1970 reads 0: a pre-epoch clock reads 0
         );
         // Held for the turn's lifetime: every exit below (`continue` on silence or
         // error, the spoke tail) drops it, which ends the turn on the admission ledger
@@ -989,7 +980,7 @@ async fn serve_persona_loop_inner(
         // turns only) and the measured turn shape it derives her cooldown from.
         let _turn_in_flight = crate::cognition::resource_admission::begin_turn(
             ctx.identity.peer_id.as_uuid(),
-            crate::persona::trace::now_ms(),
+            EpochMs::now().millis(),
         );
         crate::probe!(
             class = "persona.turn.start",
@@ -2482,9 +2473,7 @@ pub(crate) fn build_workspace_turns(
         live_cards.truncate(5);
         lost_threads.truncate(3);
 
-        use crate::cognition::framing_echo::{
-            WAKE_MID_WORK, WAKE_NO_WORK, WAKE_OPENING, WAKE_PRESENT, WAKE_QUIET, WAKE_TAG,
-        };
+        use crate::cognition::framing_echo::{WAKE_MID_WORK, WAKE_NO_WORK, WAKE_OPENING, WAKE_PRESENT, WAKE_QUIET, WAKE_TAG};
         // The fixed sentences live in cognition::framing_echo — the gate that
         // silences a reflected wake prompt matches on the SAME constants.
         let mut b = format!("{WAKE_TAG} You are {agent_name}, {WAKE_OPENING}.");
@@ -3327,9 +3316,7 @@ mod tests {
     // help; never a release demand); an edit receipt resets the count and it stays away.
     #[test]
     fn six_acts_without_a_write_gate_the_work_turn_and_an_edit_resets_it() {
-        use crate::persona::work_burst::{
-            acts_since_last_write, held_work_burst_gated, CardProgress, WRITE_OR_RELEASE_AFTER_ACTS,
-        };
+        use crate::persona::work_burst::{acts_since_last_write, held_work_burst_gated, CardProgress, WRITE_OR_RELEASE_AFTER_ACTS};
         let me = Uuid::new_v4();
         let row = |ms, text: &str| crate::persona::durable_history::RoomRow {
             id: Uuid::new_v4(),
@@ -3397,9 +3384,7 @@ mod tests {
     // must lead with them, de-duplicated, newest last, and say nothing on a fresh card.
     #[test]
     fn a_held_card_carries_what_she_already_read_and_ran() {
-        use crate::persona::work_burst::{
-            card_progress, held_work_burst_gated, progress_line, CardProgress,
-        };
+        use crate::persona::work_burst::{card_progress, held_work_burst_gated, progress_line, CardProgress};
         let me = Uuid::new_v4();
         let row = |ms, text: &str| crate::persona::durable_history::RoomRow {
             id: Uuid::new_v4(),
@@ -5501,7 +5486,7 @@ mod tests {
             embedder: None,
             tool_executor: None,
             experience: None,
-            context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+            context_window: crate::inference::planning::MIN_SERVE_CTX,
             defer_recall: false,
             defer_grounding: false,
             suppress_recall: false,
@@ -5595,7 +5580,7 @@ mod tests {
                 embedder: None,
                 tool_executor: None,
                 experience: None,
-                context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+                context_window: crate::inference::planning::MIN_SERVE_CTX,
                 defer_recall: false,
                 defer_grounding: false,
                 suppress_recall: false,

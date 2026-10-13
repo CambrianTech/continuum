@@ -265,7 +265,7 @@ pub fn note_real_decode() {
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.
-    let Ok(since_epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+    let Ok(since_epoch) = crate::time::EpochMs::read() else {
         tracing::warn!(
             "system clock is before the UNIX epoch — cannot stamp this decode; \
              liveness will be judged from the previous stamp or by probing"
@@ -273,7 +273,7 @@ pub fn note_real_decode() {
         return;
     };
     LAST_REAL_DECODE_MS.store(
-        since_epoch.as_millis() as u64,
+        since_epoch.millis(),
         std::sync::atomic::Ordering::Relaxed,
     );
 }
@@ -455,13 +455,13 @@ static LAST_REAL_PREFILL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 
 /// Record that a real generation's PREFILL advanced on the served lane.
 pub fn note_real_prefill_progress() {
-    let Ok(since_epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+    let Ok(since_epoch) = crate::time::EpochMs::read() else {
         // Same clock discipline as note_real_decode: 0 is the "never" sentinel,
         // an unreadable clock must not erase a real stamp.
         return;
     };
     LAST_REAL_PREFILL_MS.store(
-        since_epoch.as_millis() as u64,
+        since_epoch.millis(),
         std::sync::atomic::Ordering::Relaxed,
     );
 }
@@ -484,10 +484,7 @@ fn ms_since_stamp(stamp: &std::sync::atomic::AtomicU64) -> Option<u64> {
     if last == 0 {
         return None;
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as u64;
+    let now = crate::time::EpochMs::read().ok()?.millis();
     Some(now.saturating_sub(last))
 }
 
@@ -502,10 +499,7 @@ pub fn ms_since_real_decode() -> Option<u64> {
     // yield 0, i.e. "a token came out 0 ms ago" — an unreadable clock would present a
     // WEDGED lane as perfectly fresh, and the caller's documented fallback (probe it)
     // would never run. `None` already means "no usable evidence, go probe".
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as u64;
+    let now = crate::time::EpochMs::read().ok()?.millis();
     Some(now.saturating_sub(last))
 }
 
@@ -888,13 +882,13 @@ fn chosen_port() -> u16 {
 }
 
 /// Scan `[base, base + PORT_SCAN_WINDOW)` for a port we can bind right now, through the
-/// one probe ([`crate::utils::ports::first_bindable`]). The brief TOCTOU gap until
+/// one probe ([`crate::system_resources::ports::first_bindable`]). The brief TOCTOU gap until
 /// llama-server claims it is absorbed by the readiness poll (a lost race surfaces
 /// loudly as `NotReady`, never a silent wrong-port serve). If nothing in the
 /// window is free we return `base` and let the spawn fail loud
 /// ([[fallbacks-are-illegal-fail-loud]]).
 fn first_free_port(base: u16) -> u16 {
-    crate::utils::ports::first_bindable(DEFAULT_HOST, base..base.saturating_add(PORT_SCAN_WINDOW)).unwrap_or(base) // unwrap_or: nothing free in the window -> base, so the spawn's bind fails LOUD (never a silent wrong port)
+    crate::system_resources::ports::first_bindable(DEFAULT_HOST, base..base.saturating_add(PORT_SCAN_WINDOW)).unwrap_or(base) // unwrap_or: nothing free in the window -> base, so the spawn's bind fails LOUD (never a silent wrong port)
 }
 
 /// The OpenAI-compatible base url personas' inference adapters point at.
@@ -1405,7 +1399,7 @@ pub fn page_dirs_of(
 fn server_bin() -> Result<String, LlamaServerError> {
     use crate::inference::engine_slots::{self as slots, Resolved};
     let over = engine_override();
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return Ok(over.unwrap_or_else(|| "llama-server".to_string())); // no home: only an override or PATH can name an engine
     };
     if let Some(bin) = over { return Ok(bin); }
@@ -1437,14 +1431,11 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
     if !matches!(error, LlamaServerError::Spawn(_) | LlamaServerError::NotReady(..)) || engine_override().is_some() {
         return false;
     }
-    let Ok(home) = crate::commands::benchmark::continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return false; // no home: no slots to roll between
     };
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0); // unwrap_or: a clock before the epoch reads as age 0, which keeps a live claim blocking
-    if crate::runtime::deploy_claim::in_flight(&home, now_ms).blocks() {
+    let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch reads as age 0, which keeps a live claim blocking
+    if continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks() {
         return false;
     }
     match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch(&root)) {
@@ -1477,7 +1468,7 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
 /// ([`crate::inference::engine_slots::rollback_after_failed_launch`]). `program` is the binary
 /// the launch actually ran, not a fresh resolution (a promote may have moved `current` since).
 fn mark_engine_proven(program: Option<String>) {
-    let (Some(program), Ok(home)) = (program, crate::commands::benchmark::continuum_home()) else {
+    let (Some(program), Ok(home)) = (program, crate::paths::continuum_home()) else {
         return; // no launch record or no home: nothing to mark
     };
     let root = match crate::inference::engine_slots::root(&home) {
@@ -1565,7 +1556,7 @@ pub fn warm_build_jobs_for_memory(free_bytes: u64) -> Option<u32> {
 /// (prefix either way, credible hex). A lane is stale only when both commits are credible
 /// SHAs and they disagree; anything unreadable is not evidence (BigMama on 7c5f139d).
 pub(crate) fn lane_runs_installed_engine(build_info: &str, installed: &str) -> bool {
-    use crate::runtime::deploy_provenance::sha_matches;
+    use continuum_cli_lifecycle::deploy_provenance::sha_matches;
     let lane = build_info.rsplit('-').next().unwrap_or(build_info).trim(); // unwrap_or: rsplit always yields one piece
     let credible = |sha: &str| sha_matches(sha, sha); // a SHA matches itself iff it is credible
     if !credible(lane) || !credible(installed) {
@@ -5430,7 +5421,7 @@ impl LlamaServerProcess {
         // flags with: if these two ever disagreed, the box would over- or under-commit
         // its whole budget by 2×.
         let engine_advertised = crate::cognition::kv_cache_plan::engine_quantized_kv_support();
-        let planned_kv_per_token = crate::modules::serving_daemon::footprint_for(&target.model)
+        let planned_kv_per_token = crate::cognition::serving_plan::footprint::footprint_for(&target.model)
             .map(|fp| fp.kv_per_token)
             .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
         crate::probe!(

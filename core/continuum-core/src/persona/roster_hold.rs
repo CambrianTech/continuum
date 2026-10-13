@@ -17,6 +17,7 @@
 //! capped). An operator's EXPLICIT `persona/spawn` stays sovereign — the hold
 //! gates the RECONCILER's adoption, never a human's direct command.
 
+use crate::time::EpochMs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -59,13 +60,6 @@ fn hold_path() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".continuum").join("roster-hold.json"))
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // pre-epoch clock: 0 makes every hold read as expired — fail OPEN (fleet hosts), never a stuck hold
-}
-
 /// The active hold, or `None` when absent, expired, or unreadable. An expired
 /// or corrupt file is REMOVED on read — the hold is self-cleaning, so a stale
 /// file can never quietly gate next week's boot.
@@ -75,7 +69,8 @@ fn now_ms() -> u64 {
 /// whichever test was running; a citizen is here because she lives here, and joins a
 /// round's room only if she chooses to take that test.
 pub fn active() -> Option<RosterHold> {
-    operator_hold(now_ms())
+    // A pre-1970 clock reads 0 here: every hold reads as expired: fail open (fleet hosts), never a stuck hold.
+    operator_hold(EpochMs::now().millis())
 }
 
 /// The operator's file as this process holds it: read from disk once, then held here
@@ -154,7 +149,7 @@ pub fn set(only: Vec<String>, minutes: u64, reason: String) -> Result<RosterHold
     let minutes = minutes.clamp(1, MAX_HOLD_MINUTES);
     let hold = RosterHold {
         only,
-        until_ms: now_ms() + minutes * 60_000,
+        until_ms: EpochMs::now().millis() + minutes * 60_000,
         reason,
         exclusive: true,
     };

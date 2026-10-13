@@ -123,7 +123,7 @@ impl ContextBudget {
     }
 
     /// Like [`Self::live`], but an unknown window resolves to the substrate's own declared
-    /// minimum ([`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX)) instead of
+    /// minimum ([`MIN_SERVE_CTX`](crate::inference::planning::MIN_SERVE_CTX)) instead of
     /// "no bound".
     ///
     /// Use this ONLY where an unbounded value would break assembly rather than be trimmed
@@ -141,7 +141,7 @@ impl ContextBudget {
         if live.total_chars.is_some() {
             live
         } else {
-            Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX)
+            Self::from_window(crate::inference::planning::MIN_SERVE_CTX)
         }
     }
 
@@ -169,7 +169,7 @@ fn affordable_for_rate(
     match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
         Some(tps) => crate::inference::prefill_rate::affordable_prompt_tokens(
             tps,
-            crate::cognition::serving_plan::MIN_SERVE_CTX,
+            crate::inference::planning::MIN_SERVE_CTX,
             served,
             audience,
         ),
@@ -314,12 +314,6 @@ const RECALL_DENOM: usize = 10;
         self.fraction(4)
     }
 
-    /// A single tool result folded into the next perception / engram. The most generous
-    /// bound: a traceback she must READ to self-correct has to survive intact.
-    pub fn result_fold_chars(&self) -> usize {
-        self.fraction(3)
-    }
-
     /// A dispatched command's result (a compile log, a sentinel's report) folded back in.
     /// Bounded harder than a foreground result because several can land at once and the
     /// full text stays recoverable through the command's own handle.
@@ -328,7 +322,7 @@ const RECALL_DENOM: usize = 10;
     }
 
     /// A rendered tool-output slice (`tool/output` grep windows). Kept under
-    /// [`Self::result_fold_chars`] so a normal investigation is not itself re-spilled.
+    /// [`Self::latest_action_chars`] so a normal investigation is not itself re-spilled.
     pub fn render_slice_chars(&self) -> usize {
         self.fraction(4)
     }
@@ -452,7 +446,7 @@ const RECALL_DENOM: usize = 10;
         match self.total_chars {
             Some(_) => self.fraction(16),
             None => {
-                Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX).fraction(16)
+                Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(16)
             }
         }
     }
@@ -467,20 +461,21 @@ const RECALL_DENOM: usize = 10;
         self.fraction(TRAIL_HEAD_DENOM)
     }
 
-    /// The RECENT-RESULTS buffer share — the last few acts' result TAILS, kept across
-    /// subsequent acts and turn boundaries. The `last_action` slot keeps only the
-    /// LATEST result and any act overwrites it, and the pinned block is settlement-
-    /// gated — so a finding survived exactly until the next trivial act or spoken
-    /// turn (measured 2026-08-16: Anwen's compile error was overwritten by a
-    /// `list_files` one act later; her next three turns wandered discovery tools and
-    /// she re-ran the same unfixed code — the missing-feedback loop). `1/32` of the
-    /// window holds a handful of ~300-char tails on a 16k lane, more on a big one.
+    /// The RECENT-RESULTS share: the last few acts' results kept WHOLE across subsequent acts
+    /// and turn boundaries, newest first, with the older ones collapsed to pointers at
+    /// settlement. The `last_action` slot keeps only the LATEST result and any act overwrites
+    /// it, and the pinned block is settlement-gated, so a finding survived exactly until the
+    /// next trivial act or spoken turn (measured 2026-08-16: Anwen's compile error was
+    /// overwritten by a `list_files` one act later). This share used to be `1/32` holding
+    /// result TAILS, and a tail of a code read is broken code: on 2026-10-12 Kimi read the same
+    /// file 25+ times in four hours and landed no edit. A quarter of the window, the same share
+    /// the latest action gets, because a working mind's own results ARE its work.
     /// Storage bound (same leak-honesty contract as [`Self::receipt_archive_chars`]).
     pub fn recent_results_chars(&self) -> usize {
         match self.total_chars {
-            Some(_) => self.fraction(32),
+            Some(_) => self.fraction(4),
             None => {
-                Self::from_window(crate::cognition::serving_plan::MIN_SERVE_CTX).fraction(32)
+                Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(4)
             }
         }
     }
@@ -517,7 +512,7 @@ mod tests {
         let got = afford(MeasuredRate { tps: Some(12.5), source: RateSource::Stale });
         assert_eq!(
             got,
-            crate::cognition::serving_plan::MIN_SERVE_CTX,
+            crate::inference::planning::MIN_SERVE_CTX,
             "last hour's rate is still evidence about this box — it must bound the prompt, not be discarded"
         );
         assert!(got < served, "the whole window is what the cancel loop was made of");
@@ -563,7 +558,6 @@ mod tests {
         };
         near(b.trail_head_chars(), 800); // WM_ACTION_HEAD_CHARS
         near(b.latest_action_chars(), 12_000); // WM_ACTION_FULL_MAX_CHARS
-        near(b.result_fold_chars(), 16_000); // RESULT_FOLD_MAX_CHARS
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
         near(b.catalog_summary_chars(), 96); // SUMMARY_MAX_CHARS
@@ -619,8 +613,8 @@ mod tests {
         let small = ContextBudget::from_window(16_384);
         let large = ContextBudget::from_window(1_048_576);
         assert_eq!(
-            large.result_fold_chars(),
-            small.result_fold_chars() * 64,
+            large.latest_action_chars(),
+            small.latest_action_chars() * 64,
             "a 64x window must yield a 64x fold bound"
         );
         assert!(large.latest_action_chars() > 700_000);
@@ -674,7 +668,7 @@ mod tests {
     #[test]
     fn an_unknown_window_folds_nothing_rather_than_inventing_a_number() {
         let b = ContextBudget::unknown();
-        assert_eq!(b.result_fold_chars(), usize::MAX);
+        assert_eq!(b.latest_action_chars(), usize::MAX);
         assert_eq!(b.trail_head_chars(), usize::MAX);
         assert_eq!(b.echoed_arg_chars(), usize::MAX);
     }

@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::experience::ledger::CardLedger;
-use crate::runtime::deploy_claim::DeployClaim;
+use continuum_cli_lifecycle::deploy_claim::DeployClaim;
 
 /// WHY a volatile write happens — the one fact the handoff needs that the memory itself
 /// cannot know. A periodic write says "the stop, if one comes, is unknown"; a seam write is
@@ -192,7 +192,7 @@ pub fn reload(persona: Uuid, previous: &Handoff) {
 /// reboot into "a deploy did NOT land" — a false alarm in the one line built to be trusted
 /// (Cormac on #4407). Only a claim whose owner is alive is a `Deploy`; the claim rides whole.
 pub fn torn_by_for(reason: SaveReason, root: Option<&std::path::Path>, now_ms: u64) -> TornBy {
-    use crate::runtime::deploy_claim::{in_flight, read, DeployGate};
+    use continuum_cli_lifecycle::deploy_claim::{in_flight, read, DeployGate};
     match reason {
         SaveReason::Periodic => TornBy::Periodic,
         SaveReason::Seam => match root {
@@ -636,7 +636,7 @@ mod tests {
             renewed_ms: 0,
             progress_ms: 0,
         };
-        crate::runtime::deploy_claim::write(&root, &dead).expect("claim written");
+        continuum_cli_lifecycle::deploy_claim::write(&root, &dead).expect("claim written");
         assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Stop);
         assert_eq!(torn_by_for(SaveReason::Periodic, Some(&root), now_ms), TornBy::Periodic);
         let live = DeployClaim {
@@ -646,7 +646,7 @@ mod tests {
             renewed_ms: 0,
             progress_ms: 0,
         };
-        crate::runtime::deploy_claim::write(&root, &live).expect("claim written");
+        continuum_cli_lifecycle::deploy_claim::write(&root, &live).expect("claim written");
         assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Deploy(live));
         assert_eq!(torn_by_for(SaveReason::Seam, None, now_ms), TornBy::Stop);
         let _ = std::fs::remove_dir_all(&root);

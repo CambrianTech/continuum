@@ -1444,7 +1444,7 @@ pub fn start_server(
     // its pin/unpin commands are handed the handle and never resolve a path of their
     // own (a global resolution let a unit test pin the real machine, 2026-09-16).
     let pin_store = crate::modules::serving_pin_store::ServingPinStore::under_home(
-        &crate::commands::benchmark::continuum_home().map_err(|e| {
+        &crate::paths::continuum_home().map_err(|e| {
             std::io::Error::other(format!("serving pin store needs the continuum home: {e}"))
         })?,
     );
@@ -1751,11 +1751,15 @@ pub fn start_server(
         const SPILL_POOL_SOFT_CAP_BYTES: u64 = 1024 * 1024 * 1024;
         match crate::cognition::tool_executor::spill::spill_root() {
             Ok(spill_dir) => {
-                broker.register(Arc::new(crate::paging::FilesystemTierPool::new(
-                    "tool-output-spill",
-                    spill_dir,
-                    SPILL_POOL_SOFT_CAP_BYTES,
-                ))
+                broker.register(Arc::new(
+                    crate::paging::FilesystemTierPool::new(
+                        "tool-output-spill",
+                        spill_dir,
+                        SPILL_POOL_SOFT_CAP_BYTES,
+                    )
+                    // A handle a live mind still points at is never evicted (card 9197cd01).
+                    .removing_with(Arc::new(crate::cognition::tool_executor::spill::evict_unless_live)),
+                )
                     as Arc<dyn crate::paging::pool::ResourcePool>);
                 log_info!(
                     "ipc",
@@ -2216,6 +2220,9 @@ pub fn start_server(
     // Phase 4: DataModule (database-agnostic storage via ORM adapters)
     // DB path is passed per-request from TypeScript - NO defaults
     runtime.register(Arc::new(DataModule::new()));
+    // RecipeModule: the node's durable recipe runs (`recipe_runs`) and the recipe/*
+    // verbs. Its store opens through DataModule's adapter at initialize.
+    runtime.register(Arc::new(crate::modules::recipe::RecipeModule::new()));
 
     // ChatModule: the kernel `chat/send` + `chat/poll` surface (aliases of
     // `collaboration/chat/*`). Unlike `search/*` these DynCommands are NOT
@@ -3049,7 +3056,7 @@ pub fn start_server(
                     crate::persona::grid_roster_memory::team_elsewhere_at(
                         &home,
                         crate::persona::operator_peer::operator_airc().map(|a| a.peer_id().as_uuid()),
-                        crate::modules::grid::frame::now_millis(),
+                        crate::time::EpochMs::now().millis(),
                     )
                 })
             });
@@ -3448,10 +3455,7 @@ pub fn start_server(
     // [[commands-are-dumb-daemons-are-smart]] the module is narrow;
     // selection logic lives in the coordinator.
     {
-        use crate::genome::fine_tuning::{
-            CudaLoraFineTuner, EngineLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner,
-            OpenAIFineTuningAdapter,
-        };
+        use crate::genome::fine_tuning::{CudaLoraFineTuner, EngineLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter};
         let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
         ft_registry.register(std::sync::Arc::new(CudaLoraFineTuner::new()));
         // In-engine training on the resident weights (the dream's trainer): selected by
@@ -3493,8 +3497,8 @@ pub fn start_server(
         // MlxLoraFineTuner — the REAL owned trainer (#32): Apple's
         // mlx_lm.lora on the Metal GPU → forge-custodian converts to a
         // GGUF-lora gene → llama-server serves it. Always registered; its
-        // capability declares `requires: TrainerHardware::Metal`, so the
-        // coordinator routes here only on a Metal host, and create_job
+        // capability declares `requires: TrainerHardware::AppleSilicon`, so the
+        // coordinator routes here only on Apple Silicon, and create_job
         // fails loud (never silently) when Metal / the mlx python env /
         // a base model / examples are missing. Without this slot the live
         // registry held only the synthetic Candle skeleton + conditional
@@ -3806,7 +3810,7 @@ pub fn start_server(
             // identity — the one the capacity beacon is stamped with and placement
             // targets — so a remote-bound mind's `ai/generate` reaches a handler
             // instead of every citizen saying "not for me" while it dies at 600 s.
-            let state_home = crate::commands::benchmark::continuum_home()
+            let state_home = crate::paths::continuum_home()
                 .map(|h| h.join("state").join("node-responder"));
             match state_home {
                 Ok(state_home) => {

@@ -22,6 +22,7 @@
 //! `ContextBudget::from_window` reads it, so every bound in cognition scales with it —
 //! one owner, no second profile type.
 
+use crate::time::EpochMs;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -207,7 +208,8 @@ pub fn rate_from(rates: &BTreeMap<String, PrefillPoint>, model: &str, now_ms: u6
 /// this over [`rate_for`] wherever an absence would otherwise become a constant: the
 /// difference between the two is a stale-but-real measurement and a guess.
 pub fn measured_rate_for(model: &str) -> MeasuredRate {
-    let now = now_ms();
+    // A pre-1970 clock reads 0 here: every point is stale, so the served window rules and nothing is clamped on a lie.
+    let now = EpochMs::now().millis();
     rate_from(&RATES.lock(), model, now)
 }
 
@@ -220,7 +222,7 @@ pub fn observe(model: &str, prefill_ms: f64, prefill_tps: f64) {
     if !(prefill_ms >= MIN_SAMPLE.as_millis() as f64) || !prefill_tps.is_finite() || prefill_tps <= 0.0 {
         return;
     }
-    let now = now_ms();
+    let now = EpochMs::now().millis();
     if let Some(why) = crate::inference::decode_knee::own_transient(now) {
         crate::probe!(
             class = "serving.prefill_rate.sample_skipped",
@@ -267,7 +269,7 @@ pub fn observe_bound(model: &str, prompt_tokens: usize, bound: std::time::Durati
         return;
     }
     let tps_upper = prompt_tokens as f64 / secs;
-    let now = now_ms();
+    let now = EpochMs::now().millis();
     if let Some(why) = crate::inference::decode_knee::own_transient(now) {
         crate::probe!(
             class = "serving.prefill_rate.sample_skipped",
@@ -301,19 +303,12 @@ pub fn observe_bound(model: &str, prompt_tokens: usize, bound: std::time::Durati
 
 /// The trusted, fresh prefill rate for `model`, if measured.
 pub fn rate_for(model: &str) -> Option<f64> {
-    let now = now_ms();
+    let now = EpochMs::now().millis();
     RATES.lock().get(model).filter(|p| p.trusted_at(now)).map(|p| p.tps_ema)
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a clock before 1970 makes every point stale — the served window rules, nothing is clamped on a lie
-}
-
 fn default_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|h| h.join("state").join("prefill-rate.json"))
 }

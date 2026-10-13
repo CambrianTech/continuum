@@ -203,7 +203,7 @@ impl TrainingCompletionSentinel {
                     &job.trait_kind,
                     std::path::Path::new(&path_str),
                     &job.base_model,
-                    chrono::Utc::now().timestamp_millis().max(0) as u64,
+                    crate::time::EpochMs::now().millis(),
                 )
             });
             let trial = match adopted {

@@ -1,4 +1,6 @@
-//! UTF-8-safe string truncation helpers.
+//! A bounded preview of text for a log line or a display label, cut on a UTF-8 boundary.
+//! Never for what a persona reads: her context holds a result whole or by handle
+//! (`spill::whole_or_handle`).
 //!
 //! `&str` indexing in Rust slices by BYTE offsets — `s[..N]` panics with
 //! "byte index N is not a char boundary" when N lands inside a multi-byte
@@ -39,7 +41,7 @@
 /// # Examples
 ///
 /// ```ignore
-/// # use continuum_core::utils::str_truncate::truncate_at_char_boundary;
+/// # use continuum_core::logging::preview::truncate_at_char_boundary;
 /// assert_eq!(truncate_at_char_boundary("hello", 3), "hel");
 /// assert_eq!(truncate_at_char_boundary("hello", 100), "hello");
 /// assert_eq!(truncate_at_char_boundary("\u{1F44B} hi", 2), ""); // 👋 is 4 bytes

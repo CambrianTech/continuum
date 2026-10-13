@@ -28,7 +28,7 @@
 //!
 //! # Why the existing guards could not catch it
 //!
-//! [`crate::runtime::core_bind_guard::decide`] is a function of (ping answered, core pids
+//! [`crate::core_bind_guard::decide`] is a function of (ping answered, core pids
 //! running). Mid-build BOTH are false — the honest reading of that state really is "no core
 //! is running, and starting one is safe." It is safe in general; it is wrong DURING A
 //! DEPLOY, and "a deploy is in flight" is a fact the bind guard cannot observe because it
@@ -46,7 +46,7 @@
 //!
 //! The decision is a pure function of (claim, owner_alive, now) so the `--lib` CI gate
 //! covers every row without a filesystem or a process — the same split as
-//! [`crate::runtime::core_bind_guard`], for the same reason.
+//! [`crate::core_bind_guard`], for the same reason.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -416,7 +416,7 @@ pub fn read(root: &Path) -> Option<DeployClaim> {
 /// every platform (the old Windows arm matched the pid as a substring of `tasklist`'s
 /// output, so pid 42 read alive whenever any pid containing "42" existed).
 pub fn owner_alive(pid: i32) -> bool {
-    u32::try_from(pid).is_ok_and(crate::inference::lane_process::is_alive)
+    u32::try_from(pid).is_ok_and(crate::process::is_alive)
 }
 
 /// The deploy in flight on this host, as the core sees it: `InProgress` while a live

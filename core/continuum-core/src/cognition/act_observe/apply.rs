@@ -3,6 +3,7 @@
 //! return the observation text so the caller can fold it into the next perception.
 //! Extracted verbatim from `act_observe` (pure code-motion, #386 decomposition).
 
+use crate::time::EpochMs;
 use uuid::Uuid;
 
 use crate::ai::types::{ToolCall, ToolResult};
@@ -10,7 +11,6 @@ use crate::cognition::context_budget::ContextBudget;
 use crate::cognition::workspace::WorkspaceCycle;
 
 use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
-use super::settle::now_ms;
 
 /// Recall salience for an action-observation receipt (#166). Below the neutral
 /// default (0.5) so genuine findings/facts win recall, but well above zero so the
@@ -99,9 +99,10 @@ impl ActChain {
 /// the one definition of "which board holds a card" (`modules::work::room_holding_card`,
 /// any activity, project or benchmark); else the room the turn was woken in. The wake room
 /// is a fallback for acts with no subject yet (a help call before she has chosen a task),
-/// never an override of one.
-async fn act_activity_room(persona_id: Uuid, wake_room: Uuid) -> Uuid {
-    let Some(card) = crate::cognition::persona_workspace::acting_card_of(persona_id) else {
+/// never an override of one. It's the card of THESE hands (`context`): an eval's or a fork's
+/// acts never inherit her live card's room (Astra's review of #5005).
+async fn act_activity_room(persona_id: Uuid, context: Option<crate::code::hands::HandsContext>, wake_room: Uuid) -> Uuid {
+    let Some(card) = crate::cognition::persona_workspace::acting_card_in(persona_id, context) else {
         return wake_room;
     };
     let Some(runtime) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
@@ -139,7 +140,11 @@ pub async fn apply_act(
     // (no thought line, no receipt; sink 6). Her tools still act on the world; telling the
     // room about it is hers to do, by publishing.
     let private = crate::persona::mind_room::is_private_room(body.persona_id, wake_room);
-    let room_id = if private { wake_room } else { act_activity_room(body.persona_id, wake_room).await };
+    let room_id = if private {
+        wake_room
+    } else {
+        act_activity_room(body.persona_id, body.executor.hands_context(), wake_room).await
+    };
     if room_id != wake_room {
         crate::probe!(
             class = "act.activity.resolved",
@@ -187,7 +192,7 @@ pub async fn apply_act(
     // expose it; harnesses don't → everything runs synchronously). No long-running calls —
     // the overwhelmingly common case — means `fg_calls == calls` and this is inert.
     // Her checkout before the batch: `wrote` is what the batch DID to it, by any verb.
-    let acting_root = crate::cognition::persona_workspace::acting_root_of(body.persona_id);
+    let acting_root = crate::cognition::persona_workspace::acting_root_in(body.persona_id, body.executor.hands_context());
     let disk_before = super::disk_change::fingerprint_at(acting_root.clone()).await;
     let mut bg_notes: Vec<String> = Vec::new();
     // The long-running calls that were dispatched (not run synchronously) — retained so a
@@ -250,10 +255,13 @@ pub async fn apply_act(
     // shell window hands back handles long before this) — firing means a
     // substrate hang, and the receipt says so.
     const TOOL_BATCH_CEILING: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    // Every result this batch saves stays live from before its file is written until working
+    // memory has recorded the batch below (card 12b080c3).
+    let pin = crate::cognition::tool_executor::spill::LivePin::new();
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
         body.executor
-            .execute_native_batch(&fg_calls, &ctx, budget.result_fold_chars()),
+            .execute_native_batch_pinned(&fg_calls, &ctx, budget.latest_action_chars(), &pin),
     )
     .await
     .unwrap_or_else(|_| { // timeout elapsed = the hang this bound exists to convert; the closure builds the honest error
@@ -332,7 +340,7 @@ pub async fn apply_act(
                 tool_use_id: call.id.clone(),
                 content: "(no result returned)".to_string(),
                 is_error: None,
-                spill_handle: None,
+                custody: crate::ai::types::ResultCustody::Unsaved,
             });
         // The COMMAND's own verdict, decoded once by the executor from the
         // PRE-FOLD value and carried here by tool_use_id. Absent (a test double, or
@@ -407,7 +415,7 @@ pub async fn apply_act(
                     result: ToolResult {
                         tool_use_id: call.id.clone(),
                         content: "dispatched — running in background".to_string(),
-                        spill_handle: None,
+                        custody: crate::ai::types::ResultCustody::Unsaved,
                         is_error: None,
                     },
                     verb: ToolVerb::classify(&call.name),
@@ -445,10 +453,7 @@ pub async fn apply_act(
         .command_executor()
         .and_then(|e| e.message_bus())
     {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = EpochMs::now().millis();
         for obs in &acts {
             // The human OBJECT of the act: the first extracted path (reads,
             // writes, edits), else the shell command head, else empty —
@@ -631,7 +636,7 @@ pub async fn apply_act(
     // result-as-memory choice: next tick, recall can surface "I ran X → got Y" the
     // same way it surfaces anything else the persona knows. Best-effort — an
     // admission hiccup must never wedge the act→observe loop.
-    let now_ms = now_ms();
+    let now_ms = EpochMs::now().millis();
     // Admit the outcome as a TOOL-ORIGIN Episodic engram via the self-produced path.
     // The origin is load-bearing (#166): a tool receipt is PROPRIOCEPTION, and
     // `recall_candidates` now gates `EngramOrigin::Tool` OUT of the SEMANTIC recall
@@ -724,8 +729,14 @@ pub async fn apply_act(
     // ALONGSIDE the typed acts, so `active_act()`/`recent_acts()` read the tool result
     // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
     // one-time recency rendering; `acts` are the id-correlated typed observations.
+    // The ring keeps this exact text; save THAT, so the pointer it leaves when it collapses
+    // resolves to what she saw, every call of the batch included.
+    let custody = pin.retain(body.persona_id, observation.trim());
     body.working_memory
-        .record_receipt_typed(&acts, &observation, Some(room_id));
+        .record_receipt_typed(&acts, &observation, Some(room_id), custody);
+    // Recorded and published: working memory now names every handle this batch saved, its
+    // receipt's and each call's, so the pin that held them since before they were written can go.
+    drop(pin);
     if let Some(f) = &tally_fact {
         body.working_memory.record_fact(f);
     }

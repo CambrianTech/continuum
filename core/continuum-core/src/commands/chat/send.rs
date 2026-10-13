@@ -9,6 +9,7 @@
 //! dual-write (data + airc) composition lives in one place. Assembled by
 //! [`command_objects`](super::command_objects).
 
+use crate::time::EpochMs;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -154,7 +155,7 @@ crate::action_command! {
                         .broadcast_envelope(
                             result.message_id,
                             &params,
-                            crate::modules::chat::now_ms(),
+                            EpochMs::now().millis(),
                         )
                         .await
                         .map_err(CommandError::Internal)?;
@@ -194,7 +195,7 @@ async fn publish_as_sender(
         ).await.map(|_| ()).map_err(|e| e.to_string());
     }
     let envelope: crate::airc::AircRealtimeEnvelope = serde_json::from_value(
-        ChatModule::transcript_envelope(message_id, params, crate::modules::chat::now_ms()),
+        ChatModule::transcript_envelope(message_id, params, EpochMs::now().millis()),
     ).map_err(|e| format!("chat transcript envelope invalid: {e}"))?;
     airc.publish(
         crate::persona::airc_citizen::publish_target_for(params.room_id),

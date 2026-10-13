@@ -16,6 +16,7 @@
 //!   - Node B: Events.subscribe('sensor:motion') → receives via UDP injection
 //!   - Transparent: application code doesn't know events crossed the network
 
+use crate::time::EpochMs;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -148,7 +149,7 @@ impl UdpEventTransport {
             RemoteSubscription {
                 addr,
                 patterns,
-                last_seen: now_millis(),
+                last_seen: EpochMs::now().millis(),
             },
         );
     }
@@ -194,7 +195,7 @@ impl UdpEventTransport {
                                         RemoteSubscription {
                                             addr: src,
                                             patterns,
-                                            last_seen: now_millis(),
+                                            last_seen: EpochMs::now().millis(),
                                         },
                                     );
                                     log.debug(&format!(
@@ -246,13 +247,6 @@ fn matches_pattern(patterns: &[String], event_name: &str) -> bool {
         }
     }
     false
-}
-
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 /// Create an event frame for UDP (uses existing GridFrame::event with empty correlation).

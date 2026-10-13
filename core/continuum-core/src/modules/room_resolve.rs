@@ -30,21 +30,111 @@ pub(crate) async fn resolve_room(airc: &Airc, named: Option<&str>) -> Result<air
     let wanted = named.trim_start_matches('#');
     let by_id = uuid::Uuid::parse_str(wanted).ok();
     let mut names = Vec::new();
+    let mut rooms = Vec::new();
     for sub in set.all() {
         let room = sub.as_room();
         if room.name == wanted || by_id == Some(room.channel.as_uuid()) {
             return Ok(room);
         }
-        names.push(room.name);
+        names.push(room.name.clone());
+        rooms.push(room);
     }
-    Err(CommandError::Invalid(not_in_reach(named, wanted, &names)))
+    // A CARD ID WHERE A ROOM GOES (card 7d03cef2): Kimi passed her card's id `db0aa5b2` as
+    // work/create's room twice on 2026-10-12 and the refusal never said what she had done. Only an
+    // id-shaped name is looked up, on the refusal path, across the boards she can read.
+    let lookup = match crate::id_resolve::handle_prefix(wanted) {
+        Some(needle) => cards_on_the_boards(airc, &rooms, &needle).await,
+        None => CardLookup::default(),
+    };
+    Err(CommandError::Invalid(not_in_reach(named, wanted, &names, &lookup)))
+}
+
+/// One card a name matched: its id, title and the room whose board holds it.
+struct CardMatch {
+    id: String,
+    title: String,
+    room: String,
+}
+
+/// What the card lookup found, and which boards it could NOT read: a match is only unique among
+/// the boards actually read (Codex on #4973).
+#[derive(Default)]
+struct CardLookup {
+    matches: Vec<CardMatch>,
+    unread: Vec<String>,
+}
+
+/// EVERY card on `rooms`' boards whose id starts with `needle`, matched by id_resolve's one rule
+/// (BigMama on #4973: short ids have an owner, and a first match could name the wrong card, so
+/// the refusal names a card only when exactly one matches, and lists them otherwise). A board that
+/// cannot be read is recorded, never skipped silently.
+async fn cards_on_the_boards(airc: &Airc, rooms: &[airc_lib::Room], needle: &str) -> CardLookup {
+    let mut seen: Vec<(uuid::Uuid, String, String)> = Vec::new();
+    let mut unread = Vec::new();
+    for room in rooms {
+        let Ok(board) = airc.work_board_in(room).await else {
+            unread.push(room.name.clone());
+            continue;
+        };
+        for card in board.snapshot().cards.iter() {
+            seen.push((card.card_id.as_uuid(), card.title.clone(), room.name.clone()));
+        }
+    }
+    let ids: Vec<uuid::Uuid> = seen.iter().map(|(id, _, _)| *id).collect();
+    let matches = crate::id_resolve::prefix_matches(needle, &ids)
+        .into_iter()
+        .filter_map(|id| {
+            // a card visible from two rooms is one card: its first room names it
+            seen.iter().find(|(seen_id, _, _)| *seen_id == id).map(|(id, title, room)| CardMatch {
+                id: id.to_string(),
+                title: title.clone(),
+                room: room.clone(),
+            })
+        })
+        .collect();
+    CardLookup { matches, unread }
 }
 
 /// PURE: the refusal for a room the caller is not in, leading with the room she most likely
 /// meant. Kimi sent `swe-bench` for `#bench-swe-bench-verified-1789170698` three times in an
 /// hour (2026-10-06, QA 598de62b): the list held the answer, but nothing pointed at it.
-fn not_in_reach(named: &str, wanted: &str, names: &[String]) -> String {
+fn not_in_reach(named: &str, wanted: &str, names: &[String], lookup: &CardLookup) -> String {
     let listed = names.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ");
+    // Only what the lookup established: an id match, never ownership (BigMama on #4973: Kimi
+    // takes a frame's statements as facts).
+    let verbs = "the work verbs that act on a card (work/note, work/get, work/state, work/submit) take it as card_id";
+    // Unique only among the boards read: with any board unread, a single match is "matches",
+    // never "is" (Codex on #4973).
+    let unread = if lookup.unread.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (among the boards that could be read; {} could not be)",
+            lookup.unread.iter().map(|n| format!("#{n}")).collect::<Vec<_>>().join(", ")
+        )
+    };
+    match lookup.matches.as_slice() {
+        [one] if lookup.unread.is_empty() => {
+            return format!(
+                "{named:?} is card \"{}\" in #{}, not a room: {verbs}; a room is one of these ({listed})",
+                one.title, one.room
+            )
+        }
+        [one] => {
+            return format!(
+                "{named:?} matches card \"{}\" in #{}{unread}, not a room: {verbs}; a room is one of these ({listed})",
+                one.title, one.room
+            )
+        }
+        [] => {}
+        many => {
+            return format!(
+                "{named:?} is the start of {} card ids{unread}, not a room: {}. Pass the full card_id to the work verbs; a room is one of these ({listed})",
+                many.len(),
+                many.iter().map(|c| format!("{} \"{}\" in #{}", c.id, c.title, c.room)).collect::<Vec<_>>().join("; ")
+            )
+        }
+    }
     let lower = wanted.to_lowercase();
     let containing: Vec<&String> = if lower.len() >= 3 {
         names.iter().filter(|n| n.to_lowercase().contains(&lower)).collect()
@@ -126,7 +216,7 @@ mod tests {
             ["general", "bench-swe-bench-verified-1789170698", "bench-humaneval-1789170001", "academy"]
                 .map(String::from)
                 .to_vec();
-        let lead = |want: &str| not_in_reach(want, want.trim_start_matches('#'), &names);
+        let lead = |want: &str| not_in_reach(want, want.trim_start_matches('#'), &names, &CardLookup::default());
 
         let contained = lead("swe-bench");
         assert!(contained.contains("did you mean #bench-swe-bench-verified-1789170698?"), "{contained}");
@@ -141,5 +231,35 @@ mod tests {
         assert!(lead("#acadmy").contains("did you mean #academy?"), "a typo resolves by edit distance");
         assert!(!lead("default").contains("did you mean"), "nothing close: no guess");
         assert!(!lead("ge").contains("did you mean"), "too short to contain-match");
+    }
+
+    // what this catches (card 7d03cef2): a card's id passed where a room goes, refused without
+    // saying so. Kimi sent her card `db0aa5b2` as work/create's room twice on 2026-10-12 and read
+    // only "not among the rooms". One match is named as that card (never as "your" card: the
+    // lookup checks ids, not ownership); several matches are all listed, never the first one.
+    #[test]
+    fn a_card_id_passed_as_a_room_is_named_only_when_it_is_unique() {
+        let names: Vec<String> = ["cambriantech", "general"].map(String::from).to_vec();
+        let card = |id: &str, title: &str| CardMatch { id: id.into(), title: title.into(), room: "cambriantech".into() };
+        let found = |matches: Vec<CardMatch>, unread: &[&str]| CardLookup { matches, unread: unread.iter().map(|s| s.to_string()).collect() };
+        let one = found(vec![card("db0aa5b2-9bba-4168-9b6f-df9b66c2270b", "wall paging: expand cursor")], &[]);
+        let text = not_in_reach("db0aa5b2", "db0aa5b2", &names, &one);
+        assert!(text.contains("is card \"wall paging: expand cursor\" in #cambriantech, not a room"), "{text}");
+        assert!(!text.contains("your"), "the lookup never checked ownership: {text}");
+        assert!(text.contains("card_id") && text.contains("work/note"), "names the verbs that take a card: {text}");
+        assert!(text.contains("#cambriantech, #general"), "still lists the rooms: {text}");
+        let two = found(vec![card("db0aa5b2-0000-4000-8000-000000000001", "one"), card("db0aa5b2-0000-4000-8000-000000000002", "two")], &[]);
+        let text = not_in_reach("db0aa5b2", "db0aa5b2", &names, &two);
+        assert!(text.contains("is the start of 2 card ids"), "{text}");
+        assert!(text.contains("\"one\"") && text.contains("\"two\""), "both are listed, neither is guessed: {text}");
+        // One survivor with a board unread is a match among what was read, never an identification.
+        let partial = found(vec![card("db0aa5b2-9bba-4168-9b6f-df9b66c2270b", "wall paging: expand cursor")], &["general"]);
+        let text = not_in_reach("db0aa5b2", "db0aa5b2", &names, &partial);
+        assert!(text.contains("matches card") && !text.contains("is card"), "{text}");
+        assert!(text.contains("#general could not be"), "names the board it could not read: {text}");
+        // what decides a lookup is id_resolve's strict handle reading, never a parse of our own
+        assert_eq!(crate::id_resolve::handle_prefix("db0aa5b2").as_deref(), Some("db0aa5b2"));
+        assert_eq!(crate::id_resolve::handle_prefix("academy"), None, "a room name is never looked up");
+        assert_eq!(crate::id_resolve::handle_prefix("abc"), None, "nor a short word");
     }
 }

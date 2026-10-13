@@ -7,6 +7,7 @@
 //! Frame format on the wire: length-prefixed JSON (same as IPC protocol).
 //! [4 bytes u32 BE length][JSON payload bytes]
 
+use crate::time::EpochMs;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -92,7 +93,7 @@ impl GridFrame {
             correlation_id,
             source_node,
             target_node,
-            timestamp: now_millis(),
+            timestamp: EpochMs::now().millis(),
             payload: GridPayload::Command { command, params },
         }
     }
@@ -104,7 +105,7 @@ impl GridFrame {
             correlation_id: request.correlation_id.clone(),
             source_node: request.target_node.clone(),
             target_node: request.source_node.clone(),
-            timestamp: now_millis(),
+            timestamp: EpochMs::now().millis(),
             payload: GridPayload::CommandResult {
                 success: true,
                 result: Some(result),
@@ -120,7 +121,7 @@ impl GridFrame {
             correlation_id: request.correlation_id.clone(),
             source_node: request.target_node.clone(),
             target_node: request.source_node.clone(),
-            timestamp: now_millis(),
+            timestamp: EpochMs::now().millis(),
             payload: GridPayload::CommandResult {
                 success: false,
                 result: None,
@@ -142,7 +143,7 @@ impl GridFrame {
             correlation_id,
             source_node,
             target_node,
-            timestamp: now_millis(),
+            timestamp: EpochMs::now().millis(),
             payload: GridPayload::Event {
                 event: event_name,
                 data,
@@ -166,13 +167,6 @@ impl GridFrame {
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, String> {
         serde_json::from_slice(bytes).map_err(|e| format!("Frame deserialization failed: {e}"))
     }
-}
-
-pub fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 #[cfg(test)]

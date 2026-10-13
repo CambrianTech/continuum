@@ -1,14 +1,14 @@
 //! A node's measured SERVING RATES per model (card df58b8b8): the server-total prefill rate
 //! and the clean per-stream decode rate at each concurrency, both read off `/slots` by the
 //! prefill knee ([`crate::inference::prefill_knee`]) and kept per model, so the rate bar
-//! ([`crate::cognition::service_rate`]) can judge a model this node is not serving right now.
+//! ([`crate::inference::planning::service_rate`]) can judge a model this node is not serving right now.
 //!
 //! Neither rate comes from a generation's own timings: those count a stream's stalls behind
 //! its neighbours' prefill as decode, and read the in-flight count at the stream's end
 //! (Cormac on #4489: the M5's 27B decodes ~27 t/s alone, its timings-built curve read 6.7).
 //! One record per model in `state/serving-rates.json`, bounded by the models on the node.
 
-use crate::cognition::service_rate::ModelRates;
+use crate::inference::planning::service_rate::ModelRates;
 use crate::inference::decode_knee::DecodeCurve;
 use crate::inference::prefill_rate::PrefillPoint;
 use std::collections::BTreeMap;
@@ -83,7 +83,7 @@ pub fn rates_for(model: &str) -> ModelRates {
 }
 
 fn default_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|h| h.join("state").join("serving-rates.json"))
 }

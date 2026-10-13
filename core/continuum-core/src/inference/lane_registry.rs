@@ -242,7 +242,7 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 
 /// Reap EVERY lane this install owns — live and ephemeral — for shutdown.
 ///
-/// `stop` reaps cores ([`crate::runtime::core_bind_guard`]) and owned engine
+/// `stop` reaps cores ([`continuum_cli_lifecycle::core_bind_guard`]) and owned engine
 /// orphans, but until this existed it never touched a `llama-server`: the whole
 /// registry was swept only on the NEXT boot, so shutting Continuum down left
 /// every lane resident. Measured 2026-08-17 on the M5: an ephemeral 27B lane
@@ -386,7 +386,7 @@ fn records_in(dir: &Path) -> Vec<LaneRecord> {
 // A successful signal request is not exit evidence (notably taskkill access
 // denial on Windows). Preserve ownership until the process is actually gone.
 fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
-    if lane_process::is_alive(rec.pid) {
+    if continuum_cli_lifecycle::process::is_alive(rec.pid) {
         return SweepOutcome::ExitUnconfirmed { pid: rec.pid, port: rec.port };
     }
     let _ = std::fs::remove_file(path);
@@ -422,7 +422,7 @@ fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
 
         // Dead record of ANY role → garbage-collect, never a kill on a recycled
         // number.
-        if !lane_process::is_alive(rec.pid) {
+        if !continuum_cli_lifecycle::process::is_alive(rec.pid) {
             let _ = std::fs::remove_file(&path);
             outcomes.push(SweepOutcome::RemovedDead { pid: rec.pid });
             continue;
@@ -528,7 +528,7 @@ mod tests {
         let dead = rec(u32::MAX, 58201, LaneRole::Ephemeral);
         record_in(dir.path(), &dead).expect("dead record");
         let dead_path = record_path(dir.path(), dead.pid);
-        assert!(!lane_process::is_alive(dead.pid));
+        assert!(!continuum_cli_lifecycle::process::is_alive(dead.pid));
         assert_eq!(finish_reap(&dead_path, &dead), SweepOutcome::ReapedEphemeral { pid: dead.pid, port: dead.port });
         assert!(!dead_path.exists());
         assert!(path.exists(), "cleaning a dead lane must preserve the survivor");
@@ -596,7 +596,7 @@ mod tests {
         let outcomes = sweep_in(&dir, SweepMode::Boot);
         assert_eq!(outcomes, vec![SweepOutcome::RemovedReused { pid: me }]);
         assert!(
-            lane_process::is_alive(me),
+            continuum_cli_lifecycle::process::is_alive(me),
             "sweep must never kill a non-llama pid"
         );
         assert!(!record_path(&dir, me).exists(), "stale record removed");
@@ -691,7 +691,7 @@ mod tests {
              guard must hold on the shutdown path too"
         );
         assert!(
-            lane_process::is_alive(me),
+            continuum_cli_lifecycle::process::is_alive(me),
             "the shutdown sweep must never signal a non-llama process"
         );
         assert!(!record_path(&stop_dir, me).exists(), "record cleared");

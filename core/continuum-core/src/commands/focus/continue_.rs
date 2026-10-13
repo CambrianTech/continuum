@@ -11,6 +11,7 @@
 //!
 //! Keyed on the AUTHENTICATED caller, like `focus/nudge`: she writes her own mind only.
 
+use crate::time::EpochMs;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -102,7 +103,7 @@ impl ActionCommand for FocusContinue {
             ));
         }
         let persona = caller.peer_id.as_uuid();
-        let now = crate::persona::trace::now_ms();
+        let now = EpochMs::now().millis();
 
         let continuation = if p.clear {
             None

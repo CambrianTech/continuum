@@ -34,7 +34,7 @@
 use continuum_client::Connection;
 use continuum_core::modules::mcp_protocol::McpServer;
 use continuum_core::modules::mcp_transport::{ConnectionDispatch, StdioRunner};
-use continuum_core::runtime::core_ipc_transport::CoreIpcTransport;
+use continuum_client::core_ipc::CoreIpcTransport;
 
 const SERVER_NAME: &str = "continuum-mcp";
 const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");

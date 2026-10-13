@@ -11,9 +11,9 @@
 //! interesting (correlation, framing, peer discovery, retries,
 //! timeouts) lives in the transport.
 
+use crate::time::EpochMs;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 
@@ -94,13 +94,6 @@ pub struct AircRemoteInferenceAdapter {
     breaker: Arc<PeerBreaker>,
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(u64::MAX) // unwrap_or: a broken clock FAILS OPEN — `now < until` is false at MAX, so the lane reads warm and requests still go out; 0 would read every tripped lane cold forever (BigMama's review of #3814)
-}
-
 impl AircRemoteInferenceAdapter {
     pub fn new(transport: Arc<dyn AircInferenceTransport>) -> Self {
         Self {
@@ -117,7 +110,7 @@ impl AircRemoteInferenceAdapter {
 
     /// Whether the lane currently refuses requests without a round trip.
     pub fn is_cold(&self) -> bool {
-        self.breaker.is_cold(now_ms())
+        self.breaker.is_cold(EpochMs::now_or_latest().millis())
     }
 
     /// Fold one transport outcome into the breaker. A deadline miss counts;
@@ -128,7 +121,7 @@ impl AircRemoteInferenceAdapter {
             Err(RemoteInferenceError::Timeout { .. }) => {
                 // Fold this miss into the PEER's shared breaker: `Some(n)` means THIS
                 // miss — summed across every persona on the peer — tripped it cold.
-                if let Some(n) = self.breaker.observe_timeout(now_ms()) {
+                if let Some(n) = self.breaker.observe_timeout(EpochMs::now_or_latest().millis()) {
                     crate::probe!(
                         class = "remote_lane.cold",
                         peer = %self.default_target_peer.as_deref().unwrap_or("-"),  // unwrap_or: probe label only — "-" = no pinned peer, never a routing decision

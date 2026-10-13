@@ -1,5 +1,5 @@
 //! THE DEPLOY TRACKER MODULE — the fleet's cadence-deploy DECISION, in Rust, wiring the
-//! pure core ([`crate::runtime::deploy_tracker`]) to git/gh and the supervisor seam.
+//! pure core ([`continuum_cli_lifecycle::deploy_tracker`]) to git/gh and the supervisor seam.
 //!
 //! Joel, 2026-09-17: "It's supposed to be rust for infrastructure not shell jacks." The
 //! decision that `tools/scripts/track-canary.sh` (bash + launchd, Unix-only) makes now
@@ -22,6 +22,7 @@
 //! guess. `gh` manages its own rate-limiting, so the reqwest rate-limit primitive
 //! (`provisioning::rate_limit`, for direct HF calls) is not threaded here.
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -31,10 +32,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::modules::deploy_actuator::{ActuateOutcome, DeployActuator};
-use crate::runtime::deploy_tracker::{
-    decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold,
-    RequestOutcome, TickInputs,
-};
+use continuum_cli_lifecycle::deploy_tracker::{decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, RequestOutcome, TickInputs};
 use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
 /// The deploy tracker checks the tip on this cadence.
@@ -291,8 +289,8 @@ fn read_hold(state_dir: &std::path::Path) -> Option<Hold> {
     let created_ms = std::fs::metadata(state_dir.join("deploy-hold"))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
+        .and_then(|t| crate::time::EpochMs::of(t).ok())
+        .map(crate::time::EpochMs::millis)
         .unwrap_or(0); // unwrap_or: an unreadable mtime = epoch 0 = immediately stale, which is loud not silent
     Some(Hold { reason: text.trim().chars().take(200).collect(), created_ms, ttl_ms: None })
 }
@@ -339,7 +337,7 @@ pub struct DeployTrackerModule {
 
 impl DeployTrackerModule {
     pub fn new() -> Self {
-        let root = crate::commands::benchmark::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
+        let root = crate::paths::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         let state_dir = root.join("state");
         let actuator = Arc::new(DeployActuator::new(root.clone()));
         Self {
@@ -349,13 +347,6 @@ impl DeployTrackerModule {
             stranded_reported: parking_lot::Mutex::new(None),
             actuator,
         }
-    }
-
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0) // unwrap_or: a clock before 1970 = 0; the decision degrades safely
     }
 
     fn tree_dirty(&self) -> bool {
@@ -399,12 +390,13 @@ impl ServiceModule for DeployTrackerModule {
     async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
         // The last actuation, graded against the build now running: landed / stale /
         // unknown, once per boot, on the receipt (`deploy.actuate.outcome`).
-        self.actuator.report_boot_outcome(running_sha(), Self::now_ms());
+        // A pre-1970 clock reads 0 here: the decision degrades safely.
+        self.actuator.report_boot_outcome(running_sha(), EpochMs::now().millis());
         Ok(())
     }
 
     async fn tick(&self) -> Result<(), String> {
-        let now = Self::now_ms();
+        let now = EpochMs::now().millis();
         let (tip_sha, source_error, checks) = match self.source.tip().await {
             Ok(Some((sha, checks))) => (Some(sha), None, checks),
             Ok(None) => (None, Some("branch has no tip".to_string()), Checks::Unknown),
@@ -412,7 +404,7 @@ impl ServiceModule for DeployTrackerModule {
         };
         // a live owner excludes a new deploy even past its claim's expiry (card 634f644d)
         let build_in_flight =
-            crate::runtime::deploy_claim::in_flight(&self.root, now).excludes_deploy();
+            continuum_cli_lifecycle::deploy_claim::in_flight(&self.root, now).excludes_deploy();
         let tip_build_key = match &tip_sha {
             Some(tip) => self.source.build_key(tip).await,
             None => None,
@@ -446,7 +438,7 @@ impl ServiceModule for DeployTrackerModule {
             Some(req) => self.source.build_key(&req.tip_sha).await,
             None => None,
         };
-        match crate::runtime::deploy_tracker::reconcile_request(
+        match continuum_cli_lifecycle::deploy_tracker::reconcile_request(
             request.as_ref(),
             running_sha(),
             request_build_key.as_deref(),
@@ -499,7 +491,7 @@ impl ServiceModule for DeployTrackerModule {
                 // made every age-based decision downstream meaningless (card c48fc453). The
                 // probe follows the write, so a standing request stops repeating itself too.
                 let standing = read_deploy_request(state_dir);
-                let persisted = crate::runtime::deploy_tracker::request_to_persist(
+                let persisted = continuum_cli_lifecycle::deploy_tracker::request_to_persist(
                     standing.as_ref(),
                     tip_sha,
                     now,
@@ -518,7 +510,7 @@ impl ServiceModule for DeployTrackerModule {
                 // request is exactly what a retry must be judged against.
                 let req = persisted
                     .or(standing)
-                    .unwrap_or_else(|| crate::runtime::deploy_tracker::DeployRequest::new(tip_sha, now));
+                    .unwrap_or_else(|| continuum_cli_lifecycle::deploy_tracker::DeployRequest::new(tip_sha, now));
                 // THE ACTION, off the tick: the actuator defers to an installed owner,
                 // launches the consumer once per request, and keeps the receipt.
                 let actuator = self.actuator.clone();
@@ -587,7 +579,7 @@ impl ServiceModule for DeployTrackerModule {
                 // request on disk is how it learns that. Recorded, never actuated here.
                 if let Some(tip_sha) = deployable_tip {
                     let standing = read_deploy_request(state_dir);
-                    if let Some(req) = crate::runtime::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
+                    if let Some(req) = continuum_cli_lifecycle::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
                         write_deploy_request(state_dir, &req);
                         crate::probe!(
                             class = "deploy.track.request_moved_in_flight",

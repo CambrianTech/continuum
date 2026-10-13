@@ -75,6 +75,7 @@ pub mod source;
 pub mod ledger;
 pub mod activity_state;
 pub mod standing;
+pub mod wall_records;
 
 pub use membership::project_membership;
 pub use recipe::{AffordanceRecipe, ExperienceRecipe};

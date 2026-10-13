@@ -194,6 +194,66 @@ jobs:
             cargo build --manifest-path core/livekit-bridge/Cargo.toml --bin livekit-bridge --release
           fi
 
+      # The published engine is a pure function of the pinned llama.cpp (core/vendor/LLAMA_CPP_PIN),
+      # the scripts that build it, and the CUDA contract the Build step records. Rebuilding it on
+      # every canary merge cost 26.7 min of a ~80 min Windows run (2026-10-11, run 38115399314)
+      # for a byte-identical engine. Restored here, Mod-LlamaServer's own stamp (submodule HEAD,
+      # backend, CUDA targets) still decides whether it is current, so this cache only gives the
+      # one owner its last output back; it never decides currency itself. The runner image is in
+      # the key too (Fable): a new image's compiler rebuilds it once, never reuses an old build.
+      # The runner image's version is in the runner's process environment, which the `env`
+      # context does not see (Cormac on #4941), so it is read into a step output; empty fails
+      # here rather than keying every image the same.
+      - name: Read the runner image (Windows)
+        id: runner-image
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -n "${ImageVersion:-}" ] || { echo "::error::the runner exports no ImageVersion; the engine cache cannot key on its toolchain"; exit 1; }
+          echo "version=$ImageVersion" >> "$GITHUB_OUTPUT"
+          echo "runner image $ImageVersion"
+
+      # The engine is an IMMUTABLE artifact named by everything that decides its bytes, so it is a
+      # release asset, not an Actions-cache entry. The repo's Actions cache sits at its 10 GB limit
+      # and LRU-evicts: the 2.4-2.6 GB cargo caches pushed this 523 MB engine out within hours, and
+      # it was rebuilt on 5 of 5 canary runs (16-26 min each, card 2a805524). A release asset is
+      # never evicted; the prune job below keeps the newest few.
+      - name: Restore the published engine (Windows NVIDIA)
+        id: engine-cache
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
+        # The completion contract: `published-engine.ready` is uploaded LAST and names the archive
+        # by its sha256; a reader trusts nothing else. Any failure here (no release, no marker yet,
+        # a partial download, a checksum mismatch, a release pruned mid-download) is a MISS and the
+        # engine is built below, never a failed job (Astra on #4974).
+        run: |
+          set -uo pipefail
+          tag="engine-windows-$(printf '%s' "$ENGINE_KEY" | sha256sum | cut -c1-16)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "engine key $ENGINE_KEY -> $tag"
+          miss() { echo "engine not restored: $1"; echo "cache-hit=false" >> "$GITHUB_OUTPUT"; exit 0; }
+          dl="$RUNNER_TEMP/engine-download"
+          mkdir -p "$dl"
+          gh release download "$tag" -D "$dl" -p published-engine.ready || miss "no complete publication for $tag"
+          read -r want archive < "$dl/published-engine.ready" || miss "unreadable marker"
+          gh release download "$tag" -D "$dl" -p "$archive" || miss "archive $archive unavailable"
+          # Relative name from inside the directory: GNU sha256sum (Git for Windows) prefixes
+          # its line with a backslash when the path holds one (D:\a\_temp), which read back as
+          # a "\<hex>" digest in run 38238808902.
+          got="$(cd "$dl" && sha256sum "$archive" | cut -d' ' -f1)"
+          [ "$got" = "$want" ] || miss "checksum mismatch on $archive"
+          mkdir -p "$RUNNER_TEMP/published-engine"
+          # Relative names from inside the directory, as Package does below: GNU tar (Git for
+          # Windows) reads `D:\...` as host:path (canary run 38223974097 failed on exactly that).
+          (cd "$RUNNER_TEMP/published-engine" && tar -xzf "../engine-download/$archive") \
+            || { rm -rf "$RUNNER_TEMP/published-engine"; miss "archive did not unpack"; }
+          echo "restored $archive from $tag"
+          echo "cache-hit=true" >> "$GITHUB_OUTPUT"
+
       - name: Build the receipted inference engine (Windows NVIDIA)
         if: runner.os == 'Windows'
         shell: powershell
@@ -214,6 +274,44 @@ jobs:
           Mod-LlamaServer -RepoRoot $PWD.Path -InstallDirectory $engine -RequireReceipt `
             -PublishedCudaArchitectures $env:CUDA_COMPUTE_CAP -PublishedCpuDefinitions $definitions
           Get-CoreEngineReceipt -Directory $engine | Out-Null
+
+      # Saved as soon as it is built and receipted, not at job end, so a later failing step does
+      # not send the next run back to a 27-minute rebuild.
+      - name: Save the published engine (Windows NVIDIA)
+        if: runner.os == 'Windows' && steps.engine-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        # The engine cache is an optimization; the core binary is the product. A failed save
+        # shows as this step failing (and the run annotated), never as an unpublished binary:
+        # run 38238808902 built the engine and core for the 5090 and published neither,
+        # because this step failed (card 5793d2c6).
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # Archive first, under its own sha256, then the marker that names it: a concurrent publisher
+        # uploads its own archive before replacing the marker, so the marker always names a
+        # complete archive. Any key that did not restore (no marker, or a marker naming a missing
+        # or mismatched archive) is repaired here, never left permanently broken.
+        run: |
+          set -euo pipefail
+          tag="${{ steps.engine-cache.outputs.tag }}"
+          # Relative names from inside the directory: GNU tar (Git for Windows) reads `D:\...` as
+          # host:path, which failed canary run 38223974097 at exactly this line.
+          (cd "$RUNNER_TEMP/published-engine" && tar -czf ../published-engine.tar.gz .)
+          # Relative name, for the same backslash-escape reason as the restore's check above.
+          sum="$(cd "$RUNNER_TEMP" && sha256sum published-engine.tar.gz | cut -d' ' -f1)"
+          archive="published-engine-${sum:0:16}.tar.gz"
+          mv "$RUNNER_TEMP/published-engine.tar.gz" "$RUNNER_TEMP/$archive"
+          printf '%s %s\n' "$sum" "$archive" > "$RUNNER_TEMP/published-engine.ready"
+          # This step runs only when the restore MISSED, so whatever is published for this key did
+          # not restore (absent, partial, or a marker naming a missing or mismatched archive).
+          # Republish rather than trust the marker's existence: archive first, then the marker
+          # that names it (Astra on #4974).
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --prerelease --target "$GITHUB_SHA" --title "$tag" \
+                 --notes "Published Windows NVIDIA engine, built by core-binaries.yml. Its tag is the hash of every input that decides its bytes; published-engine.ready names the complete archive." \
+            || gh release view "$tag" >/dev/null
+          gh release upload "$tag" --clobber "$RUNNER_TEMP/$archive"
+          gh release upload "$tag" --clobber "$RUNNER_TEMP/published-engine.ready"
 
       - name: Package
         id: package
@@ -346,6 +444,19 @@ jobs:
           set -euo pipefail
           gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
             -q '[.[] | select(.tagName | startswith("canary-"))] | sort_by(.createdAt) | reverse | .[20:][] | .tagName' \
+          | while read -r tag; do
+              echo "pruning $tag"
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+            done
+
+      # The engine's drain. A pruned engine is never a failure: a reader that loses it (even
+      # mid-download) reads a miss and builds. Keeping the newest 3 keys means the current key
+      # and the two before it (a pin bump or a runner-image change) still restore.
+      - name: Keep the newest 3 published engines
+        run: |
+          set -euo pipefail
+          gh release list -R "$GITHUB_REPOSITORY" --limit 200 --json tagName,createdAt \
+            -q '[.[] | select(.tagName | startswith("engine-windows-"))] | sort_by(.createdAt) | reverse | .[3:][] | .tagName' \
           | while read -r tag; do
               echo "pruning $tag"
               gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag

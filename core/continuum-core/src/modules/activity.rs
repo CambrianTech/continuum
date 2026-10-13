@@ -169,6 +169,11 @@ pub struct ActivitySpawnResult {
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ActivityPipelineReceipt {
+    /// The birth's recipe run — `recipe/status` reads it again, after a restart too.
+    #[ts(type = "string")]
+    pub run_id: uuid::Uuid,
+    /// Where the run is: completed, held for approval, or waiting on recovery.
+    pub phase: crate::recipe::run_record::RunPhase,
     pub steps_run: u32,
     pub steps_skipped: u32,
     #[ts(optional)]
@@ -866,10 +871,7 @@ pub async fn spawn_activity_room(
                         recipe: recipe.to_string(),
                         driver: child_driver,
                         suite: child_suite,
-                        spawned_at_ms: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0), // unwrap_or: a pre-epoch clock stamps 0 — the record still names the room
+                        spawned_at_ms: crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-epoch clock stamps 0 — the record still names the room
                     };
                     match serde_json::to_string(&record) {
                         Ok(body) => match airc
@@ -940,6 +942,10 @@ pub async fn spawn_activity_room(
                         ));
                     let receipt = match crate::recipe::PipelineExecutor::new(exec)
                         .with_caller(caller.clone())
+                        .with_origin(crate::recipe::run_record::RunOrigin {
+                            recipe: Some((recipe_def.id.0, recipe_def.version)),
+                            room: Some(room.channel.as_uuid()),
+                        })
                         .with_state_sink(sink)
                         .run_with(&recipe_def.purpose, &recipe_def.pipeline, pipeline_args, seed)
                         .await
@@ -973,6 +979,8 @@ pub async fn spawn_activity_room(
                         }
                     };
                     Some(ActivityPipelineReceipt {
+                        run_id: receipt.run_id,
+                        phase: receipt.phase,
                         steps_run: receipt.steps_run,
                         steps_skipped: receipt.steps_skipped,
                         held_at: receipt.held_at,

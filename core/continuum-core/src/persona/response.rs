@@ -30,12 +30,12 @@
 //!   - <think> parsing is a hot path on every response; regex/str
 //!     manipulation in Rust is ~100x what TS does on the same input.
 
+use crate::time::EpochMs;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::cognition::{analyze, AnalysisInput, PersonaSlot, SharedAnalysis};
 use crate::persona::turn_context::TurnContext;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
-use std::time::SystemTime;
 use ts_rs::TS;
 use uuid::Uuid;
 
@@ -216,7 +216,7 @@ pub enum PersonaResponse {
 pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
     use crate::persona::trace::CognitionTrace;
 
-    let total_start = now_ms();
+    let total_start = EpochMs::now().millis();
     let mut trace = CognitionTrace::new();
 
     // Run the cognition pipeline. The inner fn carries every `?`
@@ -236,7 +236,7 @@ pub async fn respond(input: RespondInput) -> Result<PersonaResponse, String> {
         Err(error_msg) => crate::persona::recorder::record_failed_turn(
             &input,
             error_msg,
-            now_ms().saturating_sub(total_start),
+            EpochMs::now().millis().saturating_sub(total_start),
             &trace,
         ),
     }
@@ -284,7 +284,7 @@ async fn respond_inner(
     // error up further is a follow-up (would touch persona::respond
     // signature + IPC handler + recorder traces). For now the typed
     // info is preserved in logs via Display.
-    let analyze_start = now_ms();
+    let analyze_start = EpochMs::now().millis();
     // `time_probe!` wraps the analyze future in an `info_span!` with
     // `probe_class = "timing", seam = "persona.respond.analyze"` so
     // operators tailing the JSONL can baseline analyze latency on the
@@ -325,7 +325,7 @@ async fn respond_inner(
     trace.record(
         SEAM_ANALYZE,
         analyze_start,
-        now_ms().saturating_sub(analyze_start),
+        EpochMs::now().millis().saturating_sub(analyze_start),
         serde_json::json!({
             "from_cache": analysis.from_cache,
             "model_used": analysis.model_used,
@@ -349,7 +349,7 @@ async fn respond_inner(
         specialty = %input.persona.specialty,
         from_cache = analysis.from_cache,
         model_used = %analysis.model_used,
-        analyze_duration_ms = now_ms().saturating_sub(analyze_start),
+        analyze_duration_ms = EpochMs::now().millis().saturating_sub(analyze_start),
         suggested_angles_count = analysis.suggested_angles.len(),
         matched_angle_present = !matched_angle_for_probe.is_empty(),
         matched_angle_len = matched_angle_for_probe.len(),
@@ -375,7 +375,7 @@ async fn respond_inner(
     //    if the analyzer extracted a per-specialty angle, the prompt
     //    assembler injects it; if not, the persona just sees the
     //    plain message + history + media, same as a human.
-    let inference_start = now_ms();
+    let inference_start = EpochMs::now().millis();
     // `time_probe!` for the LLM bulk — the dominant cost of most
     // turns and the primary optimization target (see task #195 +
     // probe sprinkles #206/#207). Lands on the same JSONL channel as
@@ -383,7 +383,7 @@ async fn respond_inner(
     // turn breakdowns.
     let raw_response =
         crate::time_probe!("persona.respond.run_render", run_render(input, &analysis))?;
-    let inference_ms = now_ms().saturating_sub(inference_start);
+    let inference_ms = EpochMs::now().millis().saturating_sub(inference_start);
     trace.record(
         SEAM_INFERENCE,
         inference_start,
@@ -414,7 +414,7 @@ async fn respond_inner(
         "LLM produced raw output"
     );
 
-    let post_start = now_ms();
+    let post_start = EpochMs::now().millis();
     let (think_stripped_text, think_count) = strip_thinks_emit_events(
         &raw_response.text,
         input.persona.persona_id,
@@ -424,7 +424,7 @@ async fn respond_inner(
     trace.record(
         SEAM_POST_PROCESS,
         post_start,
-        now_ms().saturating_sub(post_start),
+        EpochMs::now().millis().saturating_sub(post_start),
         serde_json::json!({
             "think_blocks": think_count,
             "leaked_markup_chars_stripped": think_stripped_text.len().saturating_sub(visible_text.len()),
@@ -432,7 +432,7 @@ async fn respond_inner(
         }),
     );
 
-    let total_ms = now_ms().saturating_sub(total_start);
+    let total_ms = EpochMs::now().millis().saturating_sub(total_start);
 
     // Silence-affordance recognition. `prompt_assembly::assemble`
     // appends `SILENCE_AFFORDANCE_BLOCK` to every persona's system
@@ -1106,13 +1106,6 @@ fn emit_think_block(persona_id: Uuid, message_id: Uuid, think_text: &str) {
         think_text_len = think_text.len(),
         "captured think block (event emission TBD)"
     );
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

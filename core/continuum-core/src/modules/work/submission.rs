@@ -1,6 +1,7 @@
 //! Public submission/review commands on the existing work owner. Artifact
 //! references carry content identity; publication does not imply blob verification.
 
+use crate::time::EpochMs;
 use super::*;
 use crate::persona::training_producer::reviewed::{self, SubmissionSelection};
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
@@ -376,7 +377,7 @@ async fn stage_for_owner_on_demand(
     card: &airc_lib::WorkCard,
 ) -> Result<std::path::PathBuf, CommandError> {
     use crate::modules::card_staging::Staging;
-    let home = crate::commands::benchmark::continuum_home()
+    let home = crate::paths::continuum_home()
         .map_err(|e| CommandError::Internal(format!("continuum home: {e}")))?;
     let card_uuid = card.card_id.as_uuid();
     match crate::modules::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
@@ -405,7 +406,7 @@ async fn stage_for_owner_on_demand(
 /// (a superseded claim, a node race) is a probe, not a reason to stop her submit,
 /// because `holder_guard` already established she is the owner.
 async fn renew_owner_lease(airc: &airc_lib::Airc, card: &airc_lib::WorkCard, claim_id: ClaimId) {
-    let lapsed = card.claim_expires_at_ms.is_none_or(|e| e <= crate::persona::trace::now_ms());
+    let lapsed = card.claim_expires_at_ms.is_none_or(|e| e <= EpochMs::now().millis());
     if !lapsed {
         return;
     }
@@ -658,6 +659,45 @@ pub struct WorkSubmitResult {
     /// Present only after the selected copy and reservations were persisted.
     #[ts(type = "string | null")]
     pub bound_staged_revision_id: Option<Uuid>,
+    /// What happens next, in one line: after a submit, nothing more on this card (card aff659aa).
+    pub next: String,
+}
+
+/// PURE: what happens next for the holder of a card whose latest submission is `latest`, given
+/// the outcomes its reviews have reached and whether it is a bench card. The ONE place this is
+/// said, read by `work/submit`'s receipt, `work/get` and `work/submission`. `None` before anything
+/// is submitted.
+///
+/// What this exists for (card aff659aa; the 5090 2026-10-11): Kimi spent ~5 h of work turns on an
+/// already-submitted card asking which state transition triggers grading. The answer differs by
+/// card, and this says the right one:
+/// - a card graded at submit (`benchmark_grade::graded_at_submit`: a known SWE bench card) is graded
+///   by its test oracle the moment it is submitted (`work/submit` spawns `grade_submission`, which
+///   grades by the same predicate), and marking it done (`work/state <id> done`) also
+///   runs the grade (grade-on-done). The verdict posts to the room. The bench card's own text says
+///   the same, so this must never contradict it (#4954: the first wording said "no state you set
+///   triggers it", which is false here);
+/// - any other card is graded when a reviewer's verdict passes the submission.
+/// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
+/// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
+pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool) -> Option<String> {
+    let submission = short8(latest?);
+    Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
+        format!("Submission {submission} passed review: the grade fired. Nothing more to do on this card.")
+    } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
+        format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
+    } else if graded_at_submit {
+        format!(
+            "Submitted as {submission}. The test oracle grades it now and posts the verdict in the room \
+             (marking the card done runs the same grade). A failed grade: revise and work/submit again. \
+             A passed grade: nothing more to do."
+        )
+    } else {
+        format!(
+            "Submitted as {submission}. Nothing more to do on this card until its reviewer's verdict: a pass \
+             grades it; a send-back appears in its reviews. Do not submit again unless it is sent back."
+        )
+    })
 }
 
 #[async_trait]
@@ -786,6 +826,15 @@ impl ActionCommand for WorkSubmit {
             "the submission as it goes to the board"
         );
         let artifact = artifact_ref.into_artifact()?;
+        if typed_in_full {
+            // A typed artifact is honoured only if its bytes are retained: a reference with
+            // nothing behind it published a submission no reviewer could read (card e1babb61).
+            crate::media::artifact::read_text_blob(&artifact).map_err(|why| {
+                CommandError::Invalid(format!(
+                    "the artifact you typed has no retained bytes ({why}); omit `artifact` and work/submit derives the patch from your checkout and keeps it"
+                ))
+            })?;
+        }
         let base_sha = airc_work::GitObjectId::new(base_sha_text)
             .map_err(|e| CommandError::Invalid(format!("base_sha: {e}")))?;
         // THE SAME PATCH, SUBMITTED AGAIN, is refused by name (Kimi, 2026-09-28: her
@@ -833,7 +882,7 @@ impl ActionCommand for WorkSubmit {
             base_sha,
             artifact,
             publisher: airc.peer_id(),
-            submitted_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+            submitted_at_ms: crate::time::EpochMs::now().millis(),
         };
         candidate
             .validate_for_card(card)
@@ -901,7 +950,8 @@ impl ActionCommand for WorkSubmit {
             bound_staged_revision_id = Some(binding.selection.staged_revision_id);
         }
         let grade_title = card.title.clone();
-        let grade_hash = candidate.artifact.hash.to_string();
+        let bench = crate::modules::benchmark_grade::graded_at_submit(&grade_title);
+        let grade_patch = candidate.artifact.clone();
         let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
             instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
@@ -914,7 +964,7 @@ impl ActionCommand for WorkSubmit {
             room.channel.as_uuid(),
             grade_title,
             published.instance.clone(),
-            grade_hash,
+            grade_patch,
         ));
         Ok(WorkSubmitResult {
             submission_id: published.submission_id.as_uuid(),
@@ -927,6 +977,7 @@ impl ActionCommand for WorkSubmit {
             artifact: (&published.artifact).into(),
             submitted_at_ms: published.submitted_at_ms,
             bound_staged_revision_id,
+            next: next_after_submission(Some(published.submission_id.as_uuid()), &[], bench).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
         })
     }
 }
@@ -1281,6 +1332,11 @@ pub struct WorkSubmissionResult {
     pub credit_error: Option<String>,
     pub staged_evidence: Option<Vec<reviewed::StagedCreditEvidence>>,
     pub staged_evidence_error: Option<String>,
+    // The submitted patch itself, read from the retained blob and verified against the
+    // artifact's hash and size: what the reviewer reviews (card e1babb61). Absent with
+    // `patch_error` naming why when this node holds no such bytes.
+    pub patch: Option<String>,
+    pub patch_error: Option<String>,
 }
 
 #[async_trait]
@@ -1386,11 +1442,20 @@ impl ActionCommand for WorkSubmission {
             Ok(value) => (Some(value), None),
             Err(e) => (None, Some(e.to_string())),
         };
+        let outcomes: Vec<_> = board
+            .submission_reviews_for(submitted.submission_id)
+            .filter(|r| r.card_id == submitted.card_id)
+            .map(|r| r.outcome)
+            .collect();
         let reviews = board
             .submission_reviews_for(submitted.submission_id)
             .filter(|r| r.card_id == submitted.card_id)
             .map(WorkReviewResult::from)
             .collect();
+        let (patch, patch_error) = match crate::media::artifact::read_text_blob(&submitted.artifact) {
+            Ok(text) => (Some(text), None),
+            Err(why) => (None, Some(why)),
+        };
         Ok(WorkSubmissionResult {
             submission: WorkSubmitResult {
                 submission_id: submission_uuid,
@@ -1403,6 +1468,7 @@ impl ActionCommand for WorkSubmission {
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
+                next: next_after_submission(Some(submission_uuid), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title)).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
             },
             claim_id: submitted.claim_id.as_uuid(),
             base_sha: submitted.base_sha.to_string(),
@@ -1412,6 +1478,8 @@ impl ActionCommand for WorkSubmission {
             credit_error,
             staged_evidence,
             staged_evidence_error,
+            patch,
+            patch_error,
         })
     }
 }
@@ -1464,6 +1532,30 @@ mod tests {
     // and a repo worktree names the card; a worktree with no base to diff against is a
     // named refusal, never a diff against HEAD.
     use super::{artifact_of_patch, base_sha_of, holder_guard, instance_of_checkout, is_placeholder_hash, resolve_shown, room_label, short8};
+
+    // what this catches (card aff659aa; the 5090 2026-10-11, Kimi on 27f133e4): ~5 h of work turns
+    // asking which state transition triggers grading, and then (#4954) a first wording that said
+    // "no state you set triggers it" while a bench card's own text says marking it done does. The
+    // line now differs by card: a bench card is graded by its oracle at submit (done runs it too)
+    // and the verdict posts to the room; a reviewed card waits on its reviewer. A send-back says
+    // revise and resubmit, a pass says it fired, and nothing submitted says nothing.
+    #[test]
+    fn after_a_submit_the_receipt_says_what_happens_next() {
+        use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
+        let id = uuid::Uuid::new_v4();
+        let bench = super::next_after_submission(Some(id), &[], true).expect("submitted");
+        assert!(bench.contains(&short8(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
+        assert!(bench.contains("marking the card done") && !bench.contains("No state"), "never contradicts the bench card's own text: {bench}");
+        assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
+        let reviewed = super::next_after_submission(Some(id), &[], false).expect("submitted");
+        assert!(reviewed.contains("reviewer's verdict") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
+        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false), Some(reviewed.clone()), "an unknown verdict is still waiting");
+        let back = super::next_after_submission(Some(id), &[Failed], true).expect("sent back");
+        assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
+        let done = super::next_after_submission(Some(id), &[Failed, Passed], false).expect("passed");
+        assert!(done.contains("passed review") && done.contains("grade fired"), "a pass outranks an earlier send-back: {done}");
+        assert_eq!(super::next_after_submission(None, &[], true), None, "nothing submitted, nothing to say");
+    }
 
     // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a
     // second submission, including across a re-taken claim (her a0bc9421 then 5656d7eb

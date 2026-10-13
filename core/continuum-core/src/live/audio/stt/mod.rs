@@ -299,5 +299,3 @@ pub async fn initialize() -> Result<(), STTError> {
     )))
 }
 
-// Audio utility functions moved to crate::utils::audio
-// Use crate::utils::audio::{i16_to_f32, resample, resample_to_16k} instead

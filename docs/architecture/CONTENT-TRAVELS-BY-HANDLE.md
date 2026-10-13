@@ -10,7 +10,7 @@
 >
 > | want | use | where |
 > |---|---|---|
-> | park an oversized tool result and hand back a reference | `spill::spill()` | `cognition/tool_executor/spill.rs` |
+> | park an oversized tool result and hand back a reference | `spill::LivePin::whole_or_handle()` | `cognition/tool_executor/spill.rs` |
 > | let a citizen page / grep it | **`tool/output`** | `commands/tool/output.rs` |
 >
 > `spill` is content-addressed, per-persona-scoped *by directory layout* (hex-only handle
@@ -229,15 +229,28 @@ the one-prompt constraint lifts, it is encoding the constraint instead of the in
    of `spill` at the moment a second implementation actually exists, so the trait is
    extracted from two real cases rather than imagined from zero (CLAUDE.md's outlier
    rule, applied honestly).
-3. **The remaining real defect:** `working_memory`'s `recent_results_chars` re-cuts a
-   result that the executor ALREADY bounded and handle-backed, severing the
-   "your full output is saved as `<handle>`, page it with `tool/output`" sentence the
-   executor wrote. The citizen is told how to recover her output and the budget layer
-   cuts the telling off. Fixing it properly means `fold_with_recovery` returning
-   `{preview, Option<SpillRef>}` instead of a String with the handle baked into prose,
-   so the handle travels as DATA to working memory and the render layer cannot cut it.
-4. **Then** the recency fold and recent-results tail-keep can go, because a handle-backed
-   result has nothing left worth re-cutting.
+3. ~~Working memory re-cuts a handle-backed result~~ — **done (card 735a3183,
+   2026-10-12).** The handle travels as DATA (`NativeToolResult.spill_handle`), and
+   `spill::LivePin::whole_or_handle` is the ONE decision: a result within the window's share for one
+   result is shown whole; over it, it is saved whole and the mind is shown a pointer naming
+   the handle and the `tool/output` filters, never a head, a tail or a head+tail. The
+   executor's head+tail fold, the recency head cut and the recent-results tail-keep are
+   deleted; the executor spills at `latest_action_chars`, the share working memory shows a
+   result at, so nothing reaches working memory over its view without a handle.
+4. **Still cutting, owner to settle:** the `tool/output` grep-window cut in `spill::bound`,
+   the dispatch-result head cut in `dispatch_listener::summarize_result`, and the act/wall
+   fact cuts, and working memory's collapsed-pointer ring, which still keeps a fixed 12
+   pointers and drops the oldest. Each goes through `whole_or_handle` or the budget, or names
+   why its unit differs.
+5. **Custody is pinned from before the write (cards 12b080c3, df0035bf, 2026-10-12).** Every
+   save goes through one `LivePin`, one per batch: the handle (a content hash) enters the
+   live set before its file is written, and eviction (`evict_unless_live`) decides and deletes
+   under that same lock. The act seam holds the batch's pin until working memory has recorded
+   the batch. A receipt's per-call results are its DEPENDENCIES (`receipt_children`, keyed by
+   the receipt and checkpointed with it): they are reachable exactly as long as the receipt is,
+   in the ring or collapsed to a pointer, across a restart, whatever the entries' capacity
+   dropped. `working_memory::reachable_handles` is the one owner of that set, for the live
+   publish and the checkpoint eviction reads alike (Codex on #4987).
 
 ## Forbidden moves
 

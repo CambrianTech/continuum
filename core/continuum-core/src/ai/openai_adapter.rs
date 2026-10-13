@@ -1416,7 +1416,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", chrono::Utc::now().timestamp_millis()));
+            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis()));
         let raw_model = request
             .model
             .as_deref()
@@ -1643,6 +1643,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 persona = request.persona_id.as_deref(),
                 room = request.room_id.as_deref(),
                 traffic = class.as_str(),
+                // the caller, so an unmapped purpose that defaults to Background can be named and
+                // mapped (BigMama, the 5090 2026-10-11: 41 background requests on a one-slot lane,
+                // each saving the resident and forcing a re-prefill, with no way to say whose)
+                purpose = request.purpose.as_deref().unwrap_or("none"), // unwrap_or: an unset purpose is itself the fact to see
                 pinned = placement.is_some(),
                 slot = placement.map(|s| s as u64),
                 "id_slot decision — Turn pins its activity slot; every other class lands on scratch"
@@ -2253,7 +2257,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms: 0,
                 error_rate: 1.0,
-                last_checked: chrono::Utc::now().timestamp_millis() as u64,
+                last_checked: crate::time::EpochMs::now().millis(),
                 message: Some(format!("{} API key not configured", self.config.name)),
             };
         }
@@ -2286,7 +2290,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: true,
                 response_time_ms,
                 error_rate: 0.0,
-                last_checked: chrono::Utc::now().timestamp_millis() as u64,
+                last_checked: crate::time::EpochMs::now().millis(),
                 message: Some(format!("{} API is accessible", self.config.name)),
             },
             Ok(resp) => HealthStatus {
@@ -2294,7 +2298,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms,
                 error_rate: 1.0,
-                last_checked: chrono::Utc::now().timestamp_millis() as u64,
+                last_checked: crate::time::EpochMs::now().millis(),
                 message: Some(format!("{} returned {}", self.config.name, resp.status())),
             },
             Err(e) => HealthStatus {
@@ -2302,7 +2306,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms,
                 error_rate: 1.0,
-                last_checked: chrono::Utc::now().timestamp_millis() as u64,
+                last_checked: crate::time::EpochMs::now().millis(),
                 message: Some(format!("{} error: {}", self.config.name, e)),
             },
         }

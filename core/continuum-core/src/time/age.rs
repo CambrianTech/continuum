@@ -21,27 +21,42 @@
 //! per minute. A reader judges "take it over?" from "silent 40m+" exactly as from
 //! "silent 41m".
 
-/// Coarse human age — a memory's rough distance in time, not a timestamp. "moments
-/// ago" under two minutes, then the bucket floor: "5m+ ago", "2h+ ago", "1d+ ago".
-pub fn humanize_age(delta_ms: u64) -> String {
-    if delta_ms < 2 * MIN {
-        "moments ago".to_string()
-    } else {
-        format!("{} ago", humanize_span(delta_ms))
-    }
-}
+/// How long ago something happened: a span of milliseconds that renders in the coarse
+/// buckets above, never as a timestamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Age(u64);
 
-/// The same buckets as a span — "under 2m", "5m+", "40m+", "2h+", "1d+" — for
-/// "silent 2h+". Byte-identical across the whole bucket (see the module note).
-pub fn humanize_span(delta_ms: u64) -> String {
-    let floor = BUCKET_FLOORS
-        .iter()
-        .rev()
-        .find(|(floor_ms, _)| delta_ms >= *floor_ms)
-        .map(|(_, label)| *label);
-    match floor {
-        None => "under 2m".to_string(),
-        Some(label) => format!("{label}+"),
+impl Age {
+    pub const fn from_millis(millis: u64) -> Self {
+        Age(millis)
+    }
+
+    pub const fn millis(self) -> u64 {
+        self.0
+    }
+
+    /// "moments ago" under two minutes, then the bucket floor: "5m+ ago", "2h+ ago",
+    /// "1d+ ago".
+    pub fn ago(self) -> String {
+        if self.0 < 2 * MIN {
+            "moments ago".to_string()
+        } else {
+            format!("{} ago", self.span())
+        }
+    }
+
+    /// The same buckets as a span, for "silent 2h+": "under 2m", "5m+", "40m+", "2h+",
+    /// "1d+". It is byte-identical across the whole bucket (see the module note).
+    pub fn span(self) -> String {
+        let floor = BUCKET_FLOORS
+            .iter()
+            .rev()
+            .find(|(floor_ms, _)| self.0 >= *floor_ms)
+            .map(|(_, label)| *label);
+        match floor {
+            None => "under 2m".to_string(),
+            Some(label) => format!("{label}+"),
+        }
     }
 }
 
@@ -82,20 +97,20 @@ mod tests {
     // strings a reader acts on are what the board and recall now carry.
     #[test]
     fn an_age_renders_the_same_bytes_for_its_whole_bucket_and_never_per_minute() {
-        assert_eq!(humanize_span(30_000), "under 2m");
-        assert_eq!(humanize_span(2 * MIN), "2m+");
-        assert_eq!(humanize_span(2 * MIN + 59_999), "2m+", "a minute later, the same bytes");
-        assert_eq!(humanize_span(4 * MIN + 59_999), "2m+");
-        assert_eq!(humanize_span(5 * MIN), "5m+");
-        assert_eq!(humanize_span(41 * MIN), "40m+", "the board line that forfeited the cache");
-        assert_eq!(humanize_span(59 * MIN + 59_999), "40m+");
-        assert_eq!(humanize_span(HOUR), "1h+");
-        assert_eq!(humanize_span(3 * HOUR), "2h+");
-        assert_eq!(humanize_span(23 * HOUR), "16h+");
-        assert_eq!(humanize_span(3 * DAY), "2d+");
-        assert_eq!(humanize_span(10 * WEEK), "8w+", "the last bucket is open-ended");
-        assert_eq!(humanize_age(30_000), "moments ago");
-        assert_eq!(humanize_age(5 * MIN), "5m+ ago");
+        assert_eq!(Age(30_000).span(), "under 2m");
+        assert_eq!(Age(2 * MIN).span(), "2m+");
+        assert_eq!(Age(2 * MIN + 59_999).span(), "2m+", "a minute later, the same bytes");
+        assert_eq!(Age(4 * MIN + 59_999).span(), "2m+");
+        assert_eq!(Age(5 * MIN).span(), "5m+");
+        assert_eq!(Age(41 * MIN).span(), "40m+", "the board line that forfeited the cache");
+        assert_eq!(Age(59 * MIN + 59_999).span(), "40m+");
+        assert_eq!(Age(HOUR).span(), "1h+");
+        assert_eq!(Age(3 * HOUR).span(), "2h+");
+        assert_eq!(Age(23 * HOUR).span(), "16h+");
+        assert_eq!(Age(3 * DAY).span(), "2d+");
+        assert_eq!(Age(10 * WEEK).span(), "8w+", "the last bucket is open-ended");
+        assert_eq!(Age(30_000).ago(), "moments ago");
+        assert_eq!(Age(5 * MIN).ago(), "5m+ ago");
         // Monotone: a later age never renders an earlier bucket.
         let mut last = 0;
         for (floor, _) in BUCKET_FLOORS {
@@ -108,7 +123,7 @@ mod tests {
             let (hi, _) = w[1];
             let mut t = lo;
             while t < hi {
-                assert_eq!(humanize_span(t), format!("{label}+"), "at {t} ms");
+                assert_eq!(Age(t).span(), format!("{label}+"), "at {t} ms");
                 t += MIN;
             }
         }

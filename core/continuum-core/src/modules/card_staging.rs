@@ -460,8 +460,8 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
         let verdict_ms = std::fs::metadata(swe_bench::verdict_path(&instance.instance_id))
             .ok()
             .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64);
+            .and_then(|t| crate::time::EpochMs::of(t).ok())
+            .map(crate::time::EpochMs::millis);
         let work_ms = crate::persona::staged_workspace::work_mtime_of(&dir);
         let resolved = swe_bench::read_verdict(&instance.instance_id).map(|v| v.resolved);
         let verdict = verdict_ms.zip(resolved);

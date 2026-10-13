@@ -16,7 +16,8 @@
 //! RTOS shape per CONCURRENCY-STYLE-GUIDE: own task, `interval`, no locks, no blocking,
 //! nothing on the hot path; the only side effect is a probe row.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use crate::time::EpochMs;
+use std::time::Duration;
 
 /// How often the watch ticks. Short enough that a tick gap names the absence to the
 /// nearest half-minute; long enough to cost nothing.
@@ -34,22 +35,15 @@ pub fn absence_gap_s(prev_ms: u64, now_ms: u64) -> Option<u64> {
     (gap_ms > threshold_ms).then_some(gap_ms / 1000)
 }
 
-fn now_ms() -> Option<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as u64)
-}
-
 /// Spawn the watch. Called once from main after the runtime is up.
 pub fn spawn() {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(PERIOD);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        let mut prev = now_ms();
+        let mut prev = EpochMs::read().ok().map(EpochMs::millis);
         loop {
             ticker.tick().await;
-            let Some(now) = now_ms() else {
+            let Some(now) = EpochMs::read().ok().map(EpochMs::millis) else {
                 // A clock before the epoch is its own absence of measurement; say so once.
                 crate::probe!(
                     class = "boot.absent",

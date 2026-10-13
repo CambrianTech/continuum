@@ -83,6 +83,7 @@
 //! against "714 workspaces" would have been wrong by two orders of magnitude, which is
 //! why the pool reads the tree instead of a number someone remembered.
 
+use crate::time::EpochMs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -509,15 +510,15 @@ fn node_quiescence(home: &Path) -> Result<(), String> {
     if turns > 0 {
         return Err(format!("citizen_turn_in_flight: {turns}"));
     }
-    let now_ms = crate::persona::trace::now_ms();
-    if crate::runtime::deploy_claim::in_flight(home, now_ms).excludes_deploy() {
+    let now_ms = EpochMs::now().millis();
+    if continuum_cli_lifecycle::deploy_claim::in_flight(home, now_ms).excludes_deploy() {
         return Err("deploy_in_flight".to_string());
     }
     let mut sys = sysinfo::System::new();
     sys.refresh_processes(sysinfo::ProcessesToUpdate::All, true);
     if let Some((pid, name)) = sys.processes().iter().find_map(|(pid, p)| {
         let name = p.name().to_string_lossy().into_owned();
-        crate::runtime::deploy_claim::is_compiler(&name).then(|| (pid.as_u32(), name))
+        continuum_cli_lifecycle::deploy_claim::is_compiler(&name).then(|| (pid.as_u32(), name))
     }) {
         return Err(format!("compiler_running: {name} (pid {pid})"));
     }
@@ -592,8 +593,8 @@ fn dir_bytes_and_newest_to(dir: &Path, max_depth: u32) -> (u64, u64) {
         for entry in entries.flatten() {
             let Ok(meta) = entry.metadata() else { continue };
             if let Ok(modified) = meta.modified() {
-                if let Ok(d) = modified.duration_since(std::time::UNIX_EPOCH) {
-                    newest = newest.max(d.as_millis() as u64);
+                if let Ok(at) = crate::time::EpochMs::of(modified) {
+                    newest = newest.max(at.millis());
                 }
             }
             if meta.is_dir() {
@@ -924,10 +925,7 @@ impl ResourcePool for CitizenWorkspacePool {
             return 0;
         }
         let peers = Self::peers_on_disk(&root);
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0); // unwrap_or: a pre-epoch clock makes every peer look ACTIVE, which evicts nothing — the safe side
+        let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock makes every peer look ACTIVE, which evicts nothing — the safe side
         let drop = workspaces_to_drop(&peers, &roster, now_ms, want_bytes);
         let mut freed = 0u64;
         let mut archived_total = 0usize;

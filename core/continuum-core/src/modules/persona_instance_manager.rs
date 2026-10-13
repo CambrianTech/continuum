@@ -47,6 +47,7 @@
 //!   identity across restarts is a follow-up slice that adds
 //!   on-disk seed storage.
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -60,12 +61,9 @@ use uuid::Uuid;
 
 use crate::identity::PeerId;
 use crate::persona::identity_provider::{PersonaIdentityIntent, PersonaIdentitySource};
-use crate::persona::resume_or_mint_provider::now_ms;
 use crate::persona::seed::ensure_seed;
 use crate::persona::{PersonaAircRuntime, PersonaAircRuntimeError, PersonaAircRuntimeRegistry};
-use crate::runtime::{
-    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 
 /// Compact info about a registered persona — what the IPC surface
 /// returns for list/get/bootstrap responses.
@@ -268,7 +266,7 @@ impl PersonaBirth {
             &seed_path,
             runtime.persona_id(),
             runtime.agent_name(),
-            now_ms(),
+            EpochMs::now().millis(),
         )
         .await
         {
@@ -602,7 +600,7 @@ impl ServiceModule for PersonaInstanceManagerModule {
         let runtimes: Vec<_> = self.registry.iter().collect();
         let work = async {
             let mut renewed = 0usize;
-            let now_ms = crate::modules::chat::now_ms();
+            let now_ms = EpochMs::now().millis();
             for rt in &runtimes {
                 // ONE walk of the boards she stands in: everything she OWNS, whole. The seam
                 // renewal takes the live holds from it; the handoff record takes the rest
@@ -684,9 +682,7 @@ pub fn resolve_continuum_root() -> PathBuf {
 /// never drift. `Custom` has no authored template → a neutral one-liner (the
 /// persona edits her own card from there; profile facets override upstream).
 fn role_bio_template(role: crate::persona::role_template::RoleId) -> String {
-    use crate::persona::role_template::{
-        coder_template, designer_template, helper_template, RoleId,
-    };
+    use crate::persona::role_template::{coder_template, designer_template, helper_template, RoleId};
     match role {
         RoleId::Helper => helper_template().identity.bio_template,
         RoleId::Coder => coder_template().identity.bio_template,

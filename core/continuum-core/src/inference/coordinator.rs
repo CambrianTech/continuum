@@ -16,7 +16,7 @@
 //!
 //! ### Composition (no reinvention)
 //!
-//! - `plan_adaptive_throughput` from `cognition::adaptive_throughput`
+//! - `plan_adaptive_throughput` from `inference::planning::adaptive_throughput`
 //!   makes admission decisions keyed by `target_silicon`.
 //! - `FootprintRegistry::acquire_lease` / `release_lease` from
 //!   `inference::footprint_registry` mirrors the lease into byte
@@ -48,11 +48,11 @@ use uuid::Uuid;
 
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::ActiveAdapterRequest;
-use crate::cognition::adaptive_throughput::{
+use crate::inference::planning::adaptive_throughput::{
     plan_adaptive_throughput, AdaptiveThroughputRequest, ResourceClass, TargetSilicon,
     ThroughputJob, ThroughputLaneBudget,
 };
-use crate::cognition::throughput_lease::ThroughputLease;
+use crate::inference::planning::throughput_lease::ThroughputLease;
 use crate::governor::classify_hardware;
 use crate::governor::types::TargetSilicon as GovernorSilicon;
 use crate::identity::PeerId;
@@ -597,7 +597,7 @@ impl InferenceCoordinator {
     pub fn close_lane(&self, handle: &HandleRef) -> Result<bool, CoordinatorError> {
         let Some((_, lane)) = self.lanes.remove(&handle.id.as_uuid()) else {
             self.capture_sink.record(LaneCaptureEvent::LaneClosed {
-                captured_at_ms: now_ms_for_capture(),
+                captured_at_ms: crate::time::EpochMs::now().millis(),
                 persona: PeerId::from_uuid(Uuid::nil()),
                 task: TaskKind::Chat,
                 handle_id: handle.id.as_uuid(),
@@ -612,7 +612,7 @@ impl InferenceCoordinator {
         let _ = self.footprint.release_lease(&lease_id);
         let _ = self.handle_store.close(handle);
         self.capture_sink.record(LaneCaptureEvent::LaneClosed {
-            captured_at_ms: now_ms_for_capture(),
+            captured_at_ms: crate::time::EpochMs::now().millis(),
             persona,
             task,
             handle_id: handle.id.as_uuid(),
@@ -870,14 +870,6 @@ impl InferenceCoordinator {
     pub fn handle_store(&self) -> Arc<InferenceHandleStore> {
         self.handle_store.clone()
     }
-}
-
-fn now_ms_for_capture() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 fn task_kind_str(t: TaskKind) -> &'static str {

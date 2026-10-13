@@ -159,7 +159,7 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
         return ReclaimOutcome::NoPidfile;
     };
 
-    if !super::lane_process::is_alive(pid) {
+    if !continuum_cli_lifecycle::process::is_alive(pid) {
         clear_at(path);
         return ReclaimOutcome::AlreadyGone { pid };
     }
@@ -251,7 +251,7 @@ mod tests {
         }
         // We must still be alive — reclaim must not have signalled us.
         assert!(
-            super::super::lane_process::is_alive(me),
+            continuum_cli_lifecycle::process::is_alive(me),
             "reclaim must never kill a non-llama pid"
         );
         // Stale pidfile removed.

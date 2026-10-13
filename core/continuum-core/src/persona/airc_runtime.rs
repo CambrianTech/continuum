@@ -50,6 +50,7 @@
 //!   inside the `Airc` handle (delegating to airc-identity) — this
 //!   struct only holds the Arc.
 
+use crate::time::EpochMs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -763,10 +764,7 @@ impl PersonaAircRuntime {
                     // DEFERS on serving pressure still stamps the pulse —
                     // trying to think counts; only true silence lapses.
                     {
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or_default(); // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
+                        let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: nothing recorded / a pre-epoch clock = 0, never a guess
                         let idle =
                             crate::persona::cognition_pulse::work_idle_ms(hb_persona, None, now_ms);
                         if !crate::persona::cognition_pulse::renewal_earned(
@@ -812,10 +810,7 @@ impl PersonaAircRuntime {
                     // and the card was re-pulled by someone else — or by her, twice.
                     // A lapsed hold nobody else has taken is re-claimed here.
                     {
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or_default(); // unwrap_or: nothing recorded / a pre-epoch clock = 0, never a guess
+                        let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: nothing recorded / a pre-epoch clock = 0, never a guess
                         if let Ok(board) = hb_airc
                             .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                             .await
@@ -909,7 +904,7 @@ impl PersonaAircRuntime {
                                     crate::persona::cognition_pulse::work_idle_ms(
                                         hb_persona,
                                         Some(card.card_id.as_uuid()),
-                                        crate::modules::chat::now_ms(),
+                                        EpochMs::now().millis(),
                                     ),
                                     crate::modules::work::DEFAULT_CLAIM_TTL_MS,
                                 ) {
@@ -990,7 +985,7 @@ impl PersonaAircRuntime {
                                     crate::persona::cognition_pulse::work_idle_ms(
                                         hb_persona,
                                         Some(h.card_id),
-                                        crate::modules::chat::now_ms(),
+                                        EpochMs::now().millis(),
                                     ),
                                     crate::modules::work::DEFAULT_CLAIM_TTL_MS,
                                 ) {
@@ -1473,6 +1468,11 @@ impl crate::persona::wall_source::WallReader for PersonaAircRuntime {
         )
         .await
     }
+
+    /// The same board read the `Airc` impl answers (UFCS, for the reason above).
+    async fn card_labels(&self, room: Option<uuid::Uuid>) -> Option<crate::persona::wall_source::CardLabels> {
+        <airc_lib::Airc as crate::persona::wall_source::WallReader>::card_labels(self.airc.as_ref(), room).await
+    }
 }
 
 #[async_trait::async_trait]
@@ -1732,10 +1732,7 @@ pub(crate) async fn board_held_by(airc: &Airc) -> Result<Vec<airc_lib::WorkCard>
 pub(crate) async fn scoped_board_held_by(
     airc: &Airc,
 ) -> Result<Vec<(airc_lib::Room, airc_lib::WorkCard)>, AircError> {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or_default(); // unwrap_or: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
+    let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock reads 0 — every lease then reads live, the conservative side
     Ok(held_of_owned(scoped_board_owned_by(airc).await?, now_ms))
 }
 

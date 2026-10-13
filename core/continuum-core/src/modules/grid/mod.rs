@@ -28,16 +28,14 @@ pub mod commands;
 pub mod connection;
 pub mod frame;
 pub mod handlers;
-pub mod helpers;
 pub mod node;
 pub mod registry;
 pub mod router;
 pub mod transport;
 pub mod transports;
 
-use crate::runtime::{
-    CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
-};
+use crate::time::EpochMs;
+use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use audit::AuditLog;
 use dashmap::DashMap;
 use frame::GridFrame;
@@ -361,7 +359,7 @@ impl ServiceModule for GridModule {
             );
         }
         let transitions = self.state.registry.fold_liveness(
-            crate::modules::grid::frame::now_millis(),
+            EpochMs::now().millis(),
             FLEET_SILENT_AFTER_MS,
             env!("CONTINUUM_BUILD_NUMBER").parse().unwrap_or(0), // JUSTIFIED unwrap_or: no number = judge nobody as behind
         );
@@ -369,7 +367,7 @@ impl ServiceModule for GridModule {
         // their seat goes dark and return when it beacons again — the two hand moves of
         // 2026-09-07, now the substrate's, once per tick, receipted in the org room.
         {
-            let now = crate::modules::grid::frame::now_millis();
+            let now = EpochMs::now().millis();
             // Foreign offers only: a node hears its own beacon back under every scope it
             // speaks in, each with its own transport id — the operator id alone once
             // missed the M5's project-scope self and it spilled minds to itself
@@ -417,7 +415,7 @@ impl ServiceModule for GridModule {
                     .active_model
                     .as_deref()
                     .and_then(rank_of)
-                    .unwrap_or(crate::modules::serving_daemon::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
+                    .unwrap_or(crate::cognition::serving_plan::footprint::UNMEASURED_RANK_CAP), // JUSTIFIED unwrap_or: an unmeasured local model ranks at the planner's proxy cap, the number the planner itself uses
             };
             for line in crate::persona::placement_switch::follow_the_fleet(now, peers, local, &rank_of).await {
                 say_in_org_room(&line).await;

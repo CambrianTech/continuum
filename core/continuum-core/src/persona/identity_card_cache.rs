@@ -9,6 +9,7 @@
 //! changes when the peer republishes it, not every two seconds. This cache is the
 //! one place a card is fetched, with a TTL and an explicit invalidate; a peer with
 //! no card is remembered as such for the same TTL so it is not re-asked per tick.
+use crate::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use airc_core::identity::Identity;
@@ -59,20 +60,14 @@ fn global() -> &'static CardCache {
     CACHE.get_or_init(CardCache::default)
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a pre-epoch clock reads every entry as stale — a refetch, never a wrong card
-}
-
 /// The identity for `peer`: from the cache, else ONE daemon round-trip, then cached
 /// (absence included) for [`CARD_TTL_MS`].
 pub async fn identity_for(
     airc: &airc_lib::Airc,
     peer: PeerId,
 ) -> Result<Option<Identity>, airc_lib::AircError> {
-    let now = now_ms();
+    // A pre-1970 clock reads 0 here: every entry reads as stale: a refetch, never a wrong card.
+    let now = EpochMs::now().millis();
     if let Some(hit) = global().get(peer, now, CARD_TTL_MS) {
         return Ok(hit);
     }

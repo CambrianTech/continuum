@@ -265,17 +265,10 @@ impl PersonaChannelView for ChatChannelView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::EpochMs;
     use crate::persona::channel_items::ChatQueueItem;
     use crate::persona::types::SenderType;
     use std::sync::OnceLock;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    }
 
     fn make_chat_arc(
         content: &str,
@@ -290,8 +283,8 @@ mod tests {
             sender_name: sender.into(),
             sender_type: SenderType::Human,
             mentions: false,
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority: 0.5,
             consolidated_context: Vec::new(),
             media: Vec::new(),

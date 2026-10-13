@@ -133,14 +133,14 @@ pub fn resolve_from_footprint(
 /// the live [`GridSnapshot`] (`None` on a solo box); the grid verdict is derived from
 /// it via [`grid_has_fit`].
 ///
-/// [`footprint_for`]: crate::modules::serving_daemon::footprint_for
+/// [`footprint_for`]: crate::cognition::serving_plan::footprint::footprint_for
 pub fn resolve_placement(
     profile: &SystemProfile,
     model: &Model,
     is_moe: bool,
     grid: Option<&GridSnapshot>,
 ) -> PlacementResolution {
-    let fp = crate::modules::serving_daemon::footprint_for(model);
+    let fp = crate::cognition::serving_plan::footprint::footprint_for(model);
     let grid_fit = match (grid, fp.as_ref()) {
         (Some(snapshot), Some(f)) => grid_has_fit(snapshot, f),
         _ => false,

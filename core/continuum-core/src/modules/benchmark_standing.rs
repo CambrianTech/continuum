@@ -17,6 +17,7 @@
 //! BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md). Every skip states its reason as a
 //! probe; a silent autopilot would be the launch-and-pray shape all over again.
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,9 +27,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
-use crate::runtime::{
-    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule};
 
 /// How often the standing check runs. Rounds run for hours; five minutes keeps
 /// the gap between "round done" and "next round dispatched" small without
@@ -97,7 +96,7 @@ fn team_for_round(configured: &[String], residents: &[(String, Uuid)]) -> Vec<St
 }
 
 fn standing_path() -> Result<PathBuf, String> {
-    Ok(crate::commands::benchmark::continuum_home()
+    Ok(crate::paths::continuum_home()
         .map_err(|e| format!("no continuum home: {e}"))?
         .join("state")
         .join("benchmark_standing.json"))
@@ -203,7 +202,7 @@ impl BenchmarkStandingModule {
             runs.iter().map(crate::commands::benchmark::card_run_facts).collect();
         if !crate::cognition::bench_round::only_stale_or_no_working_rounds(
             &facts,
-            crate::persona::trace::now_ms(),
+            EpochMs::now().millis(),
         ) {
             return Ok(false); // silent: a round is healthily grinding
         }
@@ -240,7 +239,7 @@ impl BenchmarkStandingModule {
         // "benchmarks dispatch themselves into a pile."
         let backlog = crate::cognition::bench_round::unworked_backlog(
             &facts,
-            crate::persona::trace::now_ms(),
+            EpochMs::now().millis(),
         );
         if backlog > residents.len() {
             crate::probe!(

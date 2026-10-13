@@ -11,8 +11,8 @@ use crate::live::audio::stt;
 use crate::live::types::FrameKind;
 use crate::live::video::source::{TestPatternSource, VideoSource};
 use crate::runtime::handle::Handle;
-use crate::utils::audio::{
-    base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence, resample_to_16k,
+use crate::live::audio::pcm::{
+    base64_decode_i16, bytes_to_i16, i16_to_f32, is_silence,
 };
 use crate::{clog_error, clog_info, clog_warn};
 use futures_util::{SinkExt, StreamExt};
@@ -1182,14 +1182,10 @@ impl CallManager {
             samples.len() as f32 / AUDIO_SAMPLE_RATE as f32
         );
 
-        // Convert i16 to f32 for Whisper
+        // Whisper takes f32 at the standard rate, which call audio already is (AUDIO_SAMPLE_RATE).
         let f32_samples = i16_to_f32(&samples);
 
-        // Resample if needed (Whisper expects standard sample rate)
-        let samples_16k = resample_to_16k(&f32_samples, AUDIO_SAMPLE_RATE);
-
-        // Transcribe
-        match stt::transcribe(samples_16k, Some("en")).await {
+        match stt::transcribe(f32_samples, Some("en")).await {
             Ok(result) => {
                 let text = result.text.trim();
                 if !text.is_empty() {
@@ -1817,7 +1813,7 @@ mod tests {
     use super::*;
     use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::live::audio::mixer::test_utils::*;
-    use crate::utils::audio::base64_encode_i16;
+    use crate::live::audio::pcm::base64_encode_i16;
 
     /// A valid airc RoomId (uuid) to key test calls. Post-#193 the call room IS the airc
     /// room, so `join_call` accepts only an airc RoomId — a bare name is refused. Tests dial

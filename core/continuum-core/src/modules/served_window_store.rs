@@ -60,7 +60,7 @@ fn path_under(home: &Path) -> PathBuf {
 }
 
 fn default_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|h| path_under(&h))
 }
@@ -131,10 +131,7 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, ty
     }) {
         return;
     }
-    let set_at_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0); // JUSTIFIED unwrap_or: a clock before the epoch stamps 0 — the stamp is informational, the window is the fact
+    let set_at_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch stamps 0 — the stamp is informational, the window is the fact
     let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, lanes, typical_prompt_tokens, set_at_ms };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

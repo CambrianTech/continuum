@@ -126,10 +126,7 @@ impl PersonaCognitionEngine {
         let start = Instant::now();
 
         // Recency score (newer = higher, decay over 5 minutes)
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = crate::time::EpochMs::now().millis();
         let age_ms = now.saturating_sub(timestamp);
         let recency_score = 1.0 - (age_ms as f32 / 300_000.0).min(1.0);
 
@@ -161,7 +158,7 @@ impl PersonaCognitionEngine {
 
         debug!(
             "Priority calc for {} in {:.2}ms: {:.2} (mention={:.2}, sender={:.2}, recency={:.2})",
-            crate::utils::str_truncate::truncate_at_char_boundary(content, 30),
+            crate::logging::preview::truncate_at_char_boundary(content, 30),
             start.elapsed().as_secs_f64() * 1000.0,
             final_score,
             mention_score,
@@ -199,8 +196,8 @@ impl PersonaCognitionEngine {
     /// compare byte-for-byte (cannot false-match ASCII bytes — see
     /// [`u8::eq_ignore_ascii_case`]).
     fn is_mentioned(&self, content: &str) -> bool {
-        crate::utils::str_case::contains_ascii_case_insensitive(content, &self.mention_marker)
-            || crate::utils::str_case::contains_ascii_case_insensitive(content, &self.name_lower)
+        crate::persona::text_analysis::ascii_case::contains_ascii_case_insensitive(content, &self.mention_marker)
+            || crate::persona::text_analysis::ascii_case::contains_ascii_case_insensitive(content, &self.name_lower)
     }
 
     /// Fast-path decision: should we even consider responding?
@@ -347,10 +344,7 @@ mod tests {
     async fn test_priority_calculation() {
         let engine = create_test_engine().await;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now = crate::time::EpochMs::now().millis();
 
         // High priority: human sender, mentioned, recent
         let score = engine.calculate_priority(
@@ -427,7 +421,7 @@ mod tests {
     }
 
     // The contains_ascii_case_insensitive helper tests moved with the
-    // helper itself to utils::str_case (see #1478 + the str_case
+    // helper itself to persona::text_analysis::ascii_case (see #1478 + the str_case
     // promotion). The engine-level mention test below remains here
     // because it exercises the cached-state pipeline specifically.
 

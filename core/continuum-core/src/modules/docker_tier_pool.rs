@@ -25,12 +25,13 @@
 //!   is configured to allow, NOT what continuum has set as a policy
 //!   bound. PR-4 caps that on install + alerts on >90% capacity.
 
+use crate::time::EpochMs;
 use crate::modules::docker_tier::DockerTierProbe;
 use crate::paging::{ResourcePool, ResourcePoolEntry};
 use crate::runtime;
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use ts_rs::TS;
 
 /// Hard deadline for any single `docker` shell-out. Tuned to be
@@ -106,7 +107,7 @@ impl Default for DockerTierPool {
 impl DockerTierPool {
     pub fn new() -> Self {
         Self {
-            loaded_at_ms: now_ms(),
+            loaded_at_ms: EpochMs::now().millis(),
         }
     }
 
@@ -245,7 +246,7 @@ impl ResourcePool for DockerTierPool {
                 used_bytes,
                 path,
             } => {
-                let now = now_ms();
+                let now = EpochMs::now().millis();
                 vec![ResourcePoolEntry {
                     // Use the absolute path as the entry key. Stable
                     // across calls; the broker can correlate snapshots
@@ -268,13 +269,6 @@ impl ResourcePool for DockerTierPool {
             _ => Vec::new(),
         }
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// Run `docker <args>` and parse the freed-bytes total from stdout.

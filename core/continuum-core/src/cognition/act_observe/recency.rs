@@ -14,35 +14,6 @@ fn truncate_chars(s: &str, max: usize) -> String {
     format!("{}…", s.chars().take(max).collect::<String>())
 }
 
-/// The RECENCY channel keeps the WHOLE latest result so the mind can act on what
-/// it just fetched — but "whole" for a 5000-entry `code/list` or a multi-match
-/// `code/search` is a multi-KB raw-JSON blob that (a) floods working memory and
-/// (b) gets cut MID-JSON by the downstream budget, which is the garbled/nested
-/// `line_content` a persona then reasons over and loops on (#165, glass-boxed
-/// 2026-07-13). So bound it HERE, at the source, with a CLEAN cut on a char
-/// boundary + a teaching marker that names how to narrow — never a mid-structure
-/// garble. Generous (the mind still needs enough of the result to act), but
-/// finite. A result already within budget is untouched.
-pub(super) fn bound_recency_result(body: &str, budget: &ContextBudget) -> String {
-    // Hold the WHOLE fetched result up to the ONE result bound, which is a FRACTION OF HER
-    // LIVE WINDOW (`ContextBudget::result_fold_chars`) — not a constant. Joel said this twice:
-    // 2026-07-13 "you always choke context down to stupid small sizes", and again 2026-08-03
-    // when the constant was still a constant. A 1600-char clamp chopped a read file to ~25
-    // lines; a 16_000-char one does the same thing to a 1M-context mind. This is a FLOOD guard
-    // for a pathological result (a 5000-entry glob), not the context budget: the real fit is
-    // the downstream window-sized prompt packing. One bound, reused, derived.
-    let cap = budget.result_fold_chars();
-    let trimmed = body.trim();
-    if trimmed.chars().count() <= cap {
-        return trimmed.to_string();
-    }
-    let head: String = trimmed.chars().take(cap).collect();
-    format!(
-        "{head}\n… (result truncated — it was too large to hold whole; narrow it with \
-         a more specific query/path, or read a single file)"
-    )
-}
-
 /// Decode a tool result for HER WINDOW (card 0a4c0648, Joel's encoding catch 2026-08-08).
 ///
 /// The executor hands back each command's response as serde-serialized JSON, and this
@@ -113,7 +84,7 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
 /// The recall path has collapsed big args since it was written — `summarize_args_for_recall`
 /// turns a whole-file `content` into `content: N chars`, because re-showing that file every
 /// future turn is measured dead weight. The recency path rendered
-/// `serde_json::to_string(&call.input)` RAW, unbounded, and `bound_recency_result` bounds only
+/// `serde_json::to_string(&call.input)` RAW, unbounded, and the result's producer fitted only
 /// the RESULT. So one code path had the rule and its sibling didn't.
 ///
 /// What that costs, glass-boxed on sympy-21379: her single `code/edit` of the run passed
@@ -434,42 +405,6 @@ mod tests {
             kept.contains("refine_arg"),
             "an ordinary edit stays visible verbatim: {kept}"
         );
-    }
-
-    #[test]
-    fn recency_result_is_bounded_cleanly_not_flooded() {
-        // a normal fetched result — e.g. a ~400-line source file — passes WHOLE now
-        // (the old 1600-char clamp chopped it to ~25 lines; #app-context un-choke).
-        let real_file = "fn line() {}\n".repeat(500); // ~6k chars, a real file
-        assert_eq!(
-            bound_recency_result(&real_file, &ContextBudget::from_window(16_384)),
-            real_file.trim(),
-            "a real file stays whole"
-        );
-        // only a PATHOLOGICAL result (a 50k-char runaway glob) is flood-bounded — to
-        // the ONE result bound (a fraction of the live window), not a tiny hand cap.
-        let huge = "x".repeat(50_000);
-        let bounded = bound_recency_result(&huge, &ContextBudget::from_window(16_384));
-        assert!(
-            bounded.chars().count() < ContextBudget::from_window(16_384).result_fold_chars() + 200,
-            "flood bounded to the fold max: {} chars",
-            bounded.chars().count()
-        );
-        assert!(
-            bounded.chars().count() > 8_000,
-            "but still generous — not re-choked small"
-        );
-        assert!(
-            bounded.contains("truncated"),
-            "cut is announced, not silent"
-        );
-        assert!(
-            bounded.contains("narrow"),
-            "teaches how to get a usable result"
-        );
-        // char-boundary safe on multibyte content (never panics mid-codepoint)
-        let multibyte = "日本語".repeat(1_000);
-        let _ = bound_recency_result(&multibyte, &ContextBudget::from_window(16_384));
     }
 
     /// what this catches (Astra on #4352): the COLLAPSE branch saying "ok" for work

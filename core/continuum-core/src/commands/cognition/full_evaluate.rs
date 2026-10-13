@@ -48,10 +48,7 @@ crate::action_command! {
             .get(&req.persona_id)
             .ok_or_else(|| CommandError::NotFound(format!("No cognition for {}", req.persona_id)))?;
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = crate::time::EpochMs::now().millis();
 
         let result = evaluator::full_evaluate(
             &req,

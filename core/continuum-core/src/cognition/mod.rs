@@ -32,7 +32,6 @@ pub mod not_speech;
 pub mod act_observe;
 pub mod directed_pending;
 pub mod act_replay;
-pub mod adaptive_throughput;
 pub mod audit;
 pub mod bench_round;
 pub mod grid_allocation;
@@ -113,7 +112,6 @@ pub mod response_validator;
 pub mod self_repeat;
 pub mod kv_cache_plan;
 pub mod serving_plan;
-pub mod service_rate;
 pub mod window_allocator;
 pub mod shared_analysis;
 pub mod should_respond;
@@ -121,7 +119,6 @@ pub mod should_respond_module;
 pub mod swe_bench;
 pub mod swe_verdict_sweep;
 pub mod threat_detector;
-pub mod throughput_lease;
 pub mod token_budget;
 pub mod tool_dialect;
 pub mod tool_embedding;
@@ -140,7 +137,6 @@ pub mod workspace;
 pub mod workspace_capture;
 pub mod workspace_dashboard;
 
-pub use adaptive_throughput::*;
 pub use model_resolver::*;
 pub use resource_admission::*;
 pub use response_orchestrator::{
@@ -150,7 +146,6 @@ pub use response_validator::{clean_and_validate, is_hard_failure, ValidationOutc
 pub use shared_analysis::{analyze, AnalysisInput, RecentMessage};
 pub use should_respond::*;
 pub use threat_detector::*;
-pub use throughput_lease::*;
 pub use tool_executor::{
     MediaItemLite, NativeBatchOutcome, ParsedToolBatch, PersonaMediaConfigLite,
     ToolExecutionContext, ToolExecutor, ToolInvocation, ToolOutcome,

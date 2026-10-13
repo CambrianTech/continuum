@@ -54,6 +54,55 @@ impl CodeState {
         }
     }
 
+    /// Begin ending one set of hands: an acting context that is over (an eval or a fork
+    /// finished). Kills every execution its current and parked shells still RUN, and returns
+    /// every execution not yet PROVEN ended, including ones already killed whose child hasn't
+    /// been reaped, so the caller can wait each one out. Nothing is removed here: the context's
+    /// handles stay until the caller has confirmed termination and calls
+    /// [`Self::finish_release`], so a release that can't confirm can be retried (Astra on #5005).
+    /// Never called for a caller's default (live) hands; `code/release-hands` refuses that.
+    ///
+    /// Scope, stated: a kill ends the execution's DIRECT child. The shell isn't spawned in its
+    /// own process group, so a compound command's grandchildren can outlive it; that is a
+    /// shell-wide gap (code/shell-kill has it too), carded separately (ea06701d).
+    pub fn begin_release(&self, who: &str) -> Vec<std::sync::Arc<std::sync::Mutex<crate::code::shell_session::ExecutionState>>> {
+        let mut pending = Vec::new();
+        let mut visit = |shell: &ShellSession| {
+            let ids: Vec<String> = shell.execution_ids().map(str::to_string).collect();
+            for id in ids {
+                let Ok(state) = shell.get_execution_state(&id) else { continue };
+                let (running, ended) = match state.lock() {
+                    Ok(s) => (s.status == crate::code::shell_types::ShellExecutionStatus::Running, s.process_ended),
+                    Err(p) => (p.get_ref().status == crate::code::shell_types::ShellExecutionStatus::Running, p.get_ref().process_ended), // poisoned: read the last state
+                };
+                if ended {
+                    continue;
+                }
+                if running {
+                    let _ = shell.kill(&id); // a kill that lost a race with the exit is fine: the wait-out below decides
+                }
+                pending.push(state);
+            }
+        };
+        if let Some(current) = self.shell_sessions.get(who) {
+            visit(&current);
+        }
+        if let Some(parked) = self.parked_shells.get(who) {
+            for shell in parked.iter() {
+                visit(shell);
+            }
+        }
+        pending
+    }
+
+    /// Finish ending one set of hands, once every execution `begin_release` returned is
+    /// confirmed gone: drop its file engine, its shell and its parked shells.
+    pub fn finish_release(&self, who: &str) {
+        self.shell_sessions.remove(who);
+        self.parked_shells.remove(who);
+        self.file_engines.remove(who);
+    }
+
     /// Move `who`'s shell to `new_root`. A no-op at the same root. Otherwise: first take back
     /// a session she parked at `new_root` (so returning is never lost to eviction), then set
     /// the current one aside, then trim the parked set, dropping only IDLE sessions, oldest
@@ -271,6 +320,47 @@ mod tests {
         let back = state.shell_sessions.get("kimi").expect("returning reinstates it");
         assert_eq!(back.id(), "s0", "the very same session, with its handles");
         back.kill(&exec).expect("clean up the test command");
+    }
+
+    // what this catches (Astra's review of #5005): ending a context's hands dropping its
+    // handles before every execution is proven gone, and skipping one already killed but not
+    // yet reaped. Both executions must be returned to wait out, and the shell must stay
+    // reachable (so a release that can't confirm can retry) until `finish_release`.
+    #[tokio::test]
+    async fn ending_hands_keeps_every_handle_until_each_execution_is_proven_ended() {
+        let rt = tokio::runtime::Handle::current();
+        let root = tempfile::tempdir().unwrap();
+        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
+        let who = "kimi#context";
+        let mut shell = ShellSession::new("s0", who, root.path()).expect("session");
+        let running = shell.execute("sleep 30", Some(60_000), &rt).expect("a command starts");
+        let killed = shell.execute("sleep 30", Some(60_000), &rt).expect("a command starts");
+        // Killed, and on this single-threaded test runtime its task can't have reaped it yet.
+        shell.kill(&killed).expect("kill");
+        state.shell_sessions.insert(who.into(), shell);
+
+        let pending = state.begin_release(who);
+        assert_eq!(pending.len(), 2, "the running execution AND the killed-but-unreaped one are both waited out");
+        assert!(state.shell_sessions.contains_key(who), "nothing is dropped before termination is confirmed");
+        let shell = state.shell_sessions.get(who).expect("still there");
+        for id in [&running, &killed] {
+            assert_eq!(
+                shell.get_execution_state(id).unwrap().lock().unwrap().status,
+                crate::code::shell_types::ShellExecutionStatus::Killed,
+                "every execution not proven ended is killed"
+            );
+        }
+        drop(shell);
+
+        for exec in &pending {
+            while !exec.lock().unwrap().process_ended {
+                assert!(exec.lock().unwrap().process_end_error.is_none(), "a direct child's reap succeeds");
+                tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
+            }
+        }
+        assert!(state.begin_release(who).is_empty(), "once reaped, nothing is left to wait out");
+        state.finish_release(who);
+        assert!(!state.shell_sessions.contains_key(who), "a confirmed release drops the context's shell");
     }
 
     fn module() -> CodeModule {

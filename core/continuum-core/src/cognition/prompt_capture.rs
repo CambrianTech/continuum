@@ -1,10 +1,10 @@
 //! The existing deliberation capture owner: borrowed request submission before
 //! inference, then a small terminal record. Playback reads never run cognition.
+use crate::time::EpochMs;
 use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
 use serde::Serialize;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[path = "capture_owner.rs"]
@@ -16,13 +16,6 @@ pub(crate) use store::{detail, page};
 pub use store::{CallHeader, CallStatus, PlaybackDetail, PlaybackPage};
 use store::{PayloadRef, Store};
 pub(crate) const FIXTURE_DIR: &str = ".continuum/fixtures/prompt-captures";
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0) // A pre-epoch clock has no representable unsigned timestamp; zero marks that boundary.
-}
 
 #[derive(Debug, Serialize)]
 pub struct PromptCall {
@@ -112,6 +105,11 @@ impl CaptureLease {
         } else {
             sink.submitted(call, request)
         };
+        // A recorded call keeps its raw stream too, so the terminal entry can show the tokens
+        // the parse turned into this response (card fb6d7912).
+        if token.is_some() {
+            crate::inference::wire_tap::arm(&call.request_id);
+        }
         Self {
             sink,
             token,
@@ -126,18 +124,12 @@ impl CaptureLease {
     /// End the call. Returns the completed entry's cursor: the one entry that reads back
     /// as the request AND the response (the submission's own cursor holds only the request).
     pub fn finish(&mut self, response: Option<&TextGenerationResponse>, error: Option<&str>) -> Option<String> {
-        let token = self.token.take()?;
-        self.sink.terminal(
-            &token,
-            if response.is_some_and(|response| response.generation_error().is_none()) {
-                CallStatus::Completed
-            } else {
-                CallStatus::Failed
-            },
-            response,
-            error,
-            self.started.elapsed().as_millis() as u64,
-        )
+        let status = if response.is_some_and(|response| response.generation_error().is_none()) {
+            CallStatus::Completed
+        } else {
+            CallStatus::Failed
+        };
+        self.end(status, response, error)
     }
     /// ABANDONED BEFORE DISPATCH, SAID BY NAME (card ebce2ba0). A call the substrate
     /// gave up on at an admission gate — it never reached the model — is still a
@@ -148,28 +140,35 @@ impl CaptureLease {
     /// model was still producing when its awaiting side walked away. Naming the seam is
     /// the whole difference.
     pub fn abandon(&mut self, reason: &str) {
-        if let Some(token) = self.token.take() {
-            self.sink.terminal(
-                &token,
-                CallStatus::Cancelled,
-                None,
-                Some(reason),
-                self.started.elapsed().as_millis() as u64,
-            );
-        }
+        self.end(CallStatus::Cancelled, None, Some(reason));
+    }
+    /// The one way a call ends: record its terminal entry, then release its raw-stream
+    /// watch, so no armed watch outlives its call whichever sink is attached (card fb6d7912).
+    fn end(
+        &mut self,
+        status: CallStatus,
+        response: Option<&TextGenerationResponse>,
+        error: Option<&str>,
+    ) -> Option<String> {
+        let token = self.token.take()?;
+        let cursor = self.sink.terminal(
+            &token,
+            status,
+            response,
+            error,
+            self.started.elapsed().as_millis() as u64,
+        );
+        crate::inference::wire_tap::take(&token.header.request_id);
+        cursor
     }
 }
 impl Drop for CaptureLease {
     fn drop(&mut self) {
-        if let Some(token) = self.token.take() {
-            self.sink.terminal(
-                &token,
-                CallStatus::Cancelled,
-                None,
-                Some("request future dropped before a terminal response"),
-                self.started.elapsed().as_millis() as u64,
-            );
-        }
+        self.end(
+            CallStatus::Cancelled,
+            None,
+            Some("request future dropped before a terminal response"),
+        );
     }
 }
 
@@ -195,6 +194,34 @@ struct TerminalRecord<'a> {
     elapsed_ms: u64,
     response: Option<&'a TextGenerationResponse>,
     error: Option<&'a str>,
+    /// The raw stream the response was parsed from: each attempt's SSE events as received
+    /// (normalization named in `inference::wire_tap`), the last attempt being the response's
+    /// (card fb6d7912). Absent when no stream was watched.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wire: Option<crate::inference::wire_tap::Wire>,
+    /// Why a watched stream is NOT in this entry, when it is not: a stream that would push the
+    /// entry past the capture's row limit is dropped from it, so it is never the cause of an
+    /// unrecordable entry, and the drop is said.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wire_omitted: Option<String>,
+}
+/// The terminal record, kept within the capture's row limit by dropping its raw stream and
+/// saying so, measured with the store's own row contract (JSON plus newline). It removes the
+/// wire as a cause of an unrecordable entry; it cannot make an entry recordable whose response
+/// alone exceeds the limit, or survive a storage failure. An omitted wire is diagnostic
+/// incompleteness, never retention of the whole experience.
+fn within_row_limit(mut record: TerminalRecord<'_>, limit: u64) -> TerminalRecord<'_> {
+    if record.wire.is_none() {
+        return record;
+    }
+    let bytes = serde_json::to_vec(&record).map_or(u64::MAX, |v| v.len() as u64);
+    if store::row_bytes(bytes) > limit {
+        record.wire = None;
+        record.wire_omitted = Some(format!(
+            "the raw stream made this entry {bytes} bytes, over the capture's {limit}-byte row limit"
+        ));
+    }
+    record
 }
 #[derive(Serialize)]
 struct LegacyRecord<'a> {
@@ -292,7 +319,8 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         call: &PromptCall,
         request: &TextGenerationRequest,
     ) -> Option<CaptureToken> {
-        let captured_at_ms = now_ms();
+        // A pre-1970 clock reads 0 here: an unsigned timestamp cannot go lower; zero marks that boundary.
+        let captured_at_ms = EpochMs::now().millis();
         let header = CallHeader {
             request_id: call.request_id.clone(),
             session_id: self.session_id,
@@ -334,7 +362,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
     ) -> Option<String> {
         let mut header = token.header.clone();
         header.status = status;
-        header.captured_at_ms = now_ms();
+        header.captured_at_ms = EpochMs::now().millis();
         let record = TerminalRecord {
             schema_version: 4,
             event: &header.status,
@@ -345,7 +373,10 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             elapsed_ms,
             response,
             error,
+            wire: crate::inference::wire_tap::take(&header.request_id),
+            wire_omitted: None,
         };
+        let record = within_row_limit(record, store::MAX_PAYLOAD_BYTES);
         self.append(&record, header.clone(), true)
             .map(|recorded| recorded.cursor)
             .filter(|cursor| !cursor.is_empty())
@@ -361,7 +392,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         offered_tools: &[String],
         response: &TextGenerationResponse,
     ) {
-        let captured_at_ms = now_ms();
+        let captured_at_ms = EpochMs::now().millis();
         let record = LegacyRecord {
             schema_version: 3,
             captured_at_ms,
@@ -683,6 +714,84 @@ mod tests {
         assert_eq!(bytes(dir.path()), opened, "her mind room: nothing captured, even by Drop");
         drop(CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4()), &request));
         assert!(bytes(dir.path()) > opened, "an ordinary room still captures");
+    }
+    // what this catches: a recorded call whose wrong tool call cannot be traced to the model
+    // or to the parse (card fb6d7912: Kimi's 'x' calls, no raw tokens anywhere). A recorded
+    // call's terminal entry carries its raw stream payloads in order, the watch is released
+    // when the call ends, and a mind-room call never arms one.
+    #[test]
+    fn a_recorded_call_keeps_its_raw_stream_in_its_terminal_entry() {
+        let dir = tempfile::tempdir().expect("capture fixture directory");
+        let persona = Uuid::new_v4();
+        let sink: Arc<dyn PromptCaptureSink> =
+            Arc::new(JsonlPromptCaptureSink::open(dir.path(), persona).expect("capture owner"));
+        let request_id = format!("wire-{}", Uuid::new_v4());
+        let call = |room, id: &str| PromptCall {
+            request_id: id.into(),
+            persona_id: persona,
+            room_id: room,
+            cycle_id: Some(1),
+            context_window: Some(8192),
+            cause: "synthetic",
+            cause_root: None,
+            replay_of: None,
+        };
+        let request = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "close the stray cards")],
+            ..Default::default()
+        };
+        let mut lease = CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4(), &request_id), &request);
+        let mut stream = crate::inference::wire_tap::WireTap::open(Some(&request_id));
+        stream.push(r#"{"choices":[{"delta":{"reasoning_content":"close the stray cards"}}]}"#);
+        stream.push(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"work/create","arguments":"{\"title\":\"x\"}"}}]}}]}"#);
+        drop(stream);
+        let cursor = lease.finish(None, Some("parse refused")).expect("the call's end is recorded");
+        let terminal = detail(dir.path(), persona, &cursor)
+            .expect("read back")
+            .terminal
+            .expect("terminal entry");
+        let attempts = terminal["wire"]["attempts"].as_array().expect("the raw stream is in the entry");
+        assert_eq!(attempts.len(), 1, "one attempt");
+        let events = attempts[0].as_array().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events[1].as_str().unwrap().contains("work/create"), "as received, in order");
+        assert_eq!(terminal["wire"]["open_at_end"], false);
+        assert_eq!(crate::inference::wire_tap::take(&request_id), None, "released when the call ended");
+
+        // A stream too large for a row is dropped from the entry and said, never allowed to
+        // make the response itself unrecordable.
+        let header_ref = PayloadRef { generation: Uuid::nil(), offset: 0, bytes: 0 };
+        let status = CallStatus::Completed;
+        let big = || TerminalRecord {
+            schema_version: 4,
+            event: &status,
+            captured_at_ms: 0,
+            session_id: Uuid::nil(),
+            request_id: "r",
+            request_ref: &header_ref,
+            elapsed_ms: 0,
+            response: None,
+            error: None,
+            wire: Some(crate::inference::wire_tap::Wire {
+                attempts: vec![vec!["data: ".to_string() + &"t".repeat(4096)]],
+                open_at_end: false,
+            }),
+            wire_omitted: None,
+        };
+        let json = serde_json::to_vec(&big()).expect("json").len() as u64;
+        let at_json = within_row_limit(big(), json);
+        assert!(at_json.wire.is_none(), "JSON exactly at the limit: its newline does not fit");
+        assert!(at_json.wire_omitted.as_deref().is_some_and(|why| why.contains("row limit")));
+        let with_newline = within_row_limit(big(), store::row_bytes(json));
+        assert!(with_newline.wire.is_some() && with_newline.wire_omitted.is_none(), "JSON plus newline fits");
+
+        let private_id = format!("wire-{}", Uuid::new_v4());
+        let mind = crate::persona::mind_room::mind_room_id(persona);
+        drop(CaptureLease::start(Arc::clone(&sink), &call(mind, &private_id), &request));
+        let mut thought = crate::inference::wire_tap::WireTap::open(Some(&private_id));
+        thought.push("a private token");
+        drop(thought);
+        assert_eq!(crate::inference::wire_tap::take(&private_id), None, "her mind room arms nothing");
     }
     #[test]
     fn concurrent_capture_wrappers_share_one_owner_and_keep_distinct_sessions() {

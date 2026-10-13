@@ -29,11 +29,15 @@
 //!
 //! It loads nothing and schedules nothing. Its output feeds two existing
 //! primitives: the spawner's base-model pick, and
-//! [`crate::cognition::adaptive_throughput`] lane budgets
+//! [`crate::inference::planning::adaptive_throughput`] lane budgets
 //! (`lanes` → `ThroughputLaneBudget::max_concurrency`). Re-run it whenever
 //! the host budget changes — a model evicted under pressure, a LoRA paged in,
 //! GPU pressure shifting. Pure function, same shape as `adaptive_throughput`
 //! and `model_resolver`.
+
+pub mod footprint;
+
+use crate::inference::planning::MIN_SERVE_CTX;
 
 /// SAFETY backstop on continuous-batching lanes for a single base model on one
 /// node — NOT the binding constraint. The binding constraint is now the
@@ -105,16 +109,6 @@ pub const MAX_LANES: u32 = 8;
 // (pathological roster + llama.cpp `--parallel` practicality); the binding constraint is
 // the window floor, exactly as the earlier doc always claimed it should be.
 
-/// Bare-minimum served window for a model to be runnable at ALL — a hardware
-/// reality floor, NOT a serving target or a cheapening cap. The served window is
-/// sized UP from here to the largest that fits the host budget, capped by BOTH
-/// the model's own trained `context_window` AND the DEMAND ceiling
-/// ([`BOOTSTRAP_WORKING_SET`] / measured p95) — a lane is provisioned for what
-/// personas actually USE, never maximized to fill RAM. A model whose weights + KV
-/// at even this floor won't fit the GPU budget is simply not a serving option on
-/// this host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
-// context-budget-exempt: the hardware FLOOR the whole serving stack sizes UP from — the one substrate-owned minimum every other bound derives against, and never a cap on anything
-pub const MIN_SERVE_CTX: u32 = 2048;
 
 /// Cold-start DEMAND ceiling for the served window — the "B-now" half of the
 /// demand-derived cap (M5 + BigMama, 2026-07-26). Sizing a lane's window to fill
@@ -641,6 +635,89 @@ pub struct ServingPlan {
     pub fits_on_gpu: bool,
     /// Honest, loggable explanation of the decision.
     pub rationale: String,
+    /// WHAT decided `lanes`, from the planner's own decision rather than inferred from the
+    /// result afterwards (card eb8d1839). The daemon's `bound_by=host-fit` meant only
+    /// "the window came out below demand", whatever budget did it, so a one-lane plan on the
+    /// 5090 (2026-10-12, build 6160: `demand_lanes=2`, `fits_on_gpu=true`) could not say
+    /// whether the GPU, the per-lane floor or a cold boot's memory chose one lane.
+    pub lanes_bound: LanesBound,
+}
+
+/// What decided a plan's lane count. Each variant is a term the planner evaluated, so a
+/// lane count can always be traced to the number that set it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/serving/LanesBound.ts")]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum LanesBound {
+    /// No candidate fit one lane on the budget: the whole demand is off-box.
+    NoFit,
+    /// The requirements allocator chose lanes and window together. It would consider at most
+    /// `lane_cap` lanes, a cap `lane_cap_by` set before any packing. With `lanes < lane_cap` the
+    /// budget packed fewer (the geometry costs `device_bytes` of `budget_bytes`); with
+    /// `lanes == lane_cap` the cap decided, and `unserved` minds were never offered a lane,
+    /// whatever the budget (Codex on #4971).
+    #[serde(rename_all = "camelCase")]
+    Allocator {
+        served: u32,
+        unserved: u32,
+        window: u32,
+        lane_cap: u32,
+        lane_cap_by: LaneCapBy,
+        #[ts(type = "number")]
+        device_bytes: u64,
+        #[ts(type = "number")]
+        budget_bytes: u64,
+    },
+    /// Every demanded lane was granted (residents plus leased-in, bounded by the decode knee).
+    Demand,
+    /// The host's performance cores capped the lanes below demand.
+    Cores,
+    /// The `MAX_LANES` safety ceiling capped the lanes below demand.
+    MaxLanes,
+    /// One more lane would have left each lane a window below the per-lane floor, so the
+    /// budget stopped there. The evaluated candidate is reported, not just the verdict:
+    /// `rejected_lanes` lanes would each have had `rejected_window` tokens, against
+    /// `floor_tokens`, which `floor_term` set.
+    #[serde(rename_all = "camelCase")]
+    PerLaneFloor {
+        floor_tokens: u32,
+        floor_term: FloorTerm,
+        rejected_lanes: u32,
+        rejected_window: u32,
+    },
+    /// A cold boot's remembered lane count capped the plan (it only ever lowers it).
+    BootGeometry,
+}
+
+/// What capped the lanes the requirements allocator would consider, before packing: the
+/// smallest of the four wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/serving/LaneCapBy.ts")]
+#[serde(rename_all = "camelCase")]
+pub enum LaneCapBy {
+    /// One lane per mind with a requirement: no more minds to seat.
+    Requirements,
+    /// The host's performance cores.
+    Cores,
+    /// The `MAX_LANES` safety ceiling.
+    MaxLanes,
+    /// The demanded lane count (residents plus leased-in, knee-bounded).
+    Demand,
+}
+
+/// Which term set the per-lane floor: the largest of the four wins.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "../../../protocol/typescript/serving/FloorTerm.ts")]
+#[serde(rename_all = "camelCase")]
+pub enum FloorTerm {
+    /// `BOOTSTRAP_WORKING_SET`, one full turn: no larger term applied.
+    Bootstrap,
+    /// A pinned regime floor (solve-class work).
+    WindowFloor,
+    /// The residents' typical sent prompt, with headroom.
+    TypicalPrompt,
+    /// A cold boot's remembered window.
+    BootWindow,
 }
 
 /// Decide how to serve persona inference on `host` given the `candidates`.
@@ -782,6 +859,7 @@ pub fn plan_serving(
             grid_overflow_lanes: demand_lanes,
             resident_models: 1,
             fits_on_gpu: false,
+            lanes_bound: LanesBound::NoFit,
             rationale: format!(
                 "no candidate fits the {:.1}GB GPU budget; smallest is {} ({:.1}GB) — \
                  caller must CPU-serve (Intel-Mac exception) or route to a grid peer",
@@ -849,12 +927,19 @@ pub fn plan_serving(
     // residents' median sent prompt with headroom, never the ceiling: one 96k prompt
     // sized every lane to 120k and 16 minds ran on 3 lanes with 40 GB of KV idle.
     // The outlier is reconciled down to the served window; the roster gets its lanes.
-    let per_lane_floor = BOOTSTRAP_WORKING_SET
-        .max(demand.window_floor_tokens)
-        .max(demand.typical_prompt_floor().unwrap_or(0)) // JUSTIFIED unwrap_or: no sent prompt measured yet = no floor from it, the bootstrap prior stands
+    // The value and the term that set it are chosen TOGETHER (Codex on #4971), so a new term
+    // can never fall silently into another's label. Ties go to the earlier term.
+    let (per_lane_floor, floor_term) = [
+        (BOOTSTRAP_WORKING_SET, FloorTerm::Bootstrap),
+        (demand.window_floor_tokens, FloorTerm::WindowFloor),
+        // no sent prompt measured yet = no floor from it, the bootstrap prior stands
+        (demand.typical_prompt_floor().unwrap_or(0), FloorTerm::TypicalPrompt), // JUSTIFIED unwrap_or: an absent median contributes no floor; 0 never wins the max
         // A cold boot's remembered window is the last MEASURED demand: it floors the lane
         // choice so the boot never trades the window it will need for lanes it cannot keep.
-        .max(demand.boot_geometry.map(|(w, _)| w).unwrap_or(0)); // JUSTIFIED unwrap_or: no remembered geometry = no floor from it
+        (demand.boot_geometry.map(|(w, _)| w).unwrap_or(0), FloorTerm::BootWindow), // JUSTIFIED unwrap_or: no remembered geometry = no floor from it
+    ]
+    .into_iter()
+    .fold((0, FloorTerm::Bootstrap), |best, term| if term.0 > best.0 { term } else { best });
     // THE GOVERNED SIZE (card 2eec3977, Joel 2026-09-20: "context must go along with
     // required governed size"): when the roster's requirements are known, lanes × window
     // are the allocator's — every served mind at her requirement, minds shed before the
@@ -885,6 +970,7 @@ pub fn plan_serving(
                     grid_overflow_lanes: demand.lanes,
                     resident_models: 1,
                     fits_on_gpu: false,
+                    lanes_bound: LanesBound::NoFit,
                     rationale: format!(
                         "no candidate holds one lane at the roster's smallest requirement within the budget: {why:?} — shed the model, never the window"
                     ),
@@ -892,16 +978,46 @@ pub fn plan_serving(
             }
         }
     };
-    let lanes = match &allocation {
-        Some(a) => a.lanes,
-        None => (1..=lane_cap)
-            .rev()
-            .find(|&l| window_for(l as u64) >= per_lane_floor)
-            .unwrap_or(1),
+    let (lanes, lanes_bound) = match &allocation {
+        Some(a) => (
+            a.lanes,
+            LanesBound::Allocator {
+                served: a.served.len() as u32,
+                unserved: a.unserved.len() as u32,
+                window: a.window,
+                lane_cap: a.lane_cap,
+                lane_cap_by: a.lane_cap_by,
+                device_bytes: a.device_bytes,
+                budget_bytes: host.usable_bytes,
+            },
+        ),
+        None => {
+            let lanes = (1..=lane_cap)
+                .rev()
+                .find(|&l| window_for(l as u64) >= per_lane_floor)
+                .unwrap_or(1);
+            let bound = if lanes < lane_cap {
+                LanesBound::PerLaneFloor {
+                    floor_tokens: per_lane_floor,
+                    floor_term,
+                    rejected_lanes: lanes + 1,
+                    rejected_window: window_for(lanes as u64 + 1),
+                }
+            } else if lane_cap >= demand_lanes.max(1) {
+                LanesBound::Demand
+            } else if lane_cap == MAX_LANES && MAX_LANES < host.perf_cores.max(1) {
+                LanesBound::MaxLanes
+            } else {
+                LanesBound::Cores
+            };
+            (lanes, bound)
+        }
     };
     // And its lane count CAPS a cold boot's plan — never raises it: the boot budget is the
     // transient minimum of everything else resident, and the loaded seat keeps fewer lanes.
-    let lanes = demand.boot_geometry.map_or(lanes, |(_, l)| lanes.min(l.max(1)));
+    let booted = demand.boot_geometry.map_or(lanes, |(_, l)| lanes.min(l.max(1)));
+    let lanes_bound = if booted < lanes { LanesBound::BootGeometry } else { lanes_bound };
+    let lanes = booted;
     // Over-subscription: more resident personas than warm slots the window floor permits. The
     // remainder can't get a persistent slot — with N minds on M<N slots the llama.cpp per-slot
     // LRU eviction re-prefills a cold ~10k prefix every time an evicted mind speaks (#266). The
@@ -999,6 +1115,7 @@ pub fn plan_serving(
         grid_overflow_lanes: demand_lanes.saturating_sub(lanes),
         resident_models: resident,
         fits_on_gpu: true,
+        lanes_bound,
         rationale: format!(
             "most-capable model fitting {:.1}GB GPU budget: {} ({:.1}GB weights, rank {}), \
              {} lane(s) @ {} ctx, {} model(s) warm",
@@ -2767,5 +2884,54 @@ mod tests {
         // No geometry = no effect; a nonsense geometry (zero lanes, a window under the floor) is ignored.
         assert!(ServingDemand::new(17, None).with_boot_geometry(Some((67_340, 0))).boot_geometry.is_none());
         assert!(ServingDemand::new(17, None).with_boot_geometry(Some((MIN_SERVE_CTX - 1, 2))).boot_geometry.is_none());
+    }
+
+    // what this catches (card eb8d1839; the 5090, 2026-10-12, build 6160): a one-lane plan that
+    // could not say WHICH term chose one lane. `bound_by=host-fit` meant only "the window came out
+    // below demand", so the GPU accounting, the per-lane floor and a boot's memory all read alike.
+    // The plan now carries the term from its own decision: the floor when one more lane would
+    // starve each window, demand when every lane was granted, cores when the host capped it, and
+    // a boot's remembered lanes when that lowered it.
+    #[test]
+    fn a_plan_names_the_term_that_chose_its_lane_count() {
+        const GB: u64 = 1_000_000_000;
+        let model = ModelFootprint {
+            model_id: "native-27b".into(),
+            weights_bytes: 16 * GB,
+            kv_per_token: 32_768,
+            context_window: 262_144,
+            capability_rank: 42,
+            fixed_per_lane_bytes: 922_859_520,
+        };
+        let models = std::slice::from_ref(&model);
+        // A typical prompt of ~60k: two lanes on a tight host cannot each clear that floor.
+        let demand = ServingDemand::new(2, Some(60_000)).with_sent_median(Some(60_000));
+        let tight = HostBudget { usable_bytes: 23 * GB, perf_cores: 8 };
+        let plan = plan_serving(&tight, models, &demand).expect("plan");
+        assert_eq!(plan.lanes, 1, "{}", plan.rationale);
+        match plan.lanes_bound {
+            LanesBound::PerLaneFloor { floor_tokens, floor_term, rejected_lanes, rejected_window } => {
+                assert_eq!(rejected_lanes, 2, "the candidate it rejected was a second lane");
+                assert!(rejected_window < floor_tokens, "and that lane's window fell below the floor: {rejected_window} < {floor_tokens}");
+                let typical = demand.typical_prompt_floor().expect("a sent median");
+                assert_eq!(floor_tokens, typical.max(BOOTSTRAP_WORKING_SET).max(demand.window_floor_tokens));
+                if demand.window_floor_tokens < typical {
+                    assert_eq!(floor_term, FloorTerm::TypicalPrompt, "the typical prompt set the floor");
+                }
+            }
+            other => panic!("one lane on a tight host is the floor's decision, not {other:?}"),
+        }
+        // A roomy host grants every demanded lane.
+        let roomy = HostBudget { usable_bytes: 200 * GB, perf_cores: 8 };
+        let plan = plan_serving(&roomy, models, &demand).expect("plan");
+        assert_eq!((plan.lanes, plan.lanes_bound), (2, LanesBound::Demand));
+        // One performance core caps it below demand.
+        let one_core = HostBudget { usable_bytes: 200 * GB, perf_cores: 1 };
+        let plan = plan_serving(&one_core, models, &demand).expect("plan");
+        assert_eq!((plan.lanes, plan.lanes_bound), (1, LanesBound::Cores));
+        // A cold boot that remembers one lane only ever lowers the count, and says so.
+        let booted = demand.clone().with_boot_geometry(Some((60_000, 1)));
+        let plan = plan_serving(&roomy, models, &booted).expect("plan");
+        assert_eq!((plan.lanes, plan.lanes_bound), (1, LanesBound::BootGeometry));
     }
 }

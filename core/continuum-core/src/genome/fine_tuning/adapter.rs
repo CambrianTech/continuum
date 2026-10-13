@@ -56,6 +56,12 @@ pub enum FineTuningError {
     #[error("local trainer failed: {0}")]
     LocalTrainerFailed(String),
 
+    /// The memory the trainer is governed to has no room for the smallest window that trains
+    /// one of her examples, by measurement: the job is not created, and its examples wait,
+    /// owned by the trigger, until [`super::types::CapacityWait::wakes`] (card de9e1342).
+    #[error("waiting for capacity: window {} needs {} bytes, {} free", .0.window, .0.need_bytes, .0.governed_free)]
+    CapacityParked(super::types::CapacityWait),
+
     /// The job handle doesn't correspond to anything the adapter
     /// knows about. Common cause: substrate restart mid-job, the
     /// adapter's in-memory poll state was lost. Cloud adapters can
@@ -84,8 +90,9 @@ pub enum TrainerHardware {
     /// Runs on any host — cloud HTTP trainers and accelerator-agnostic
     /// in-process trainers (Candle selects Metal/CUDA/CPU itself).
     Any,
-    /// Requires an Apple-Silicon Metal device (Apple's `mlx_lm`).
-    Metal,
+    /// Requires Apple Silicon (Apple's `mlx_lm`). Not merely Metal: an Intel Mac's
+    /// discrete GPU reports Metal too, and `mlx_lm` cannot run there.
+    AppleSilicon,
     /// Requires an NVIDIA CUDA device.
     Cuda,
     /// Requires a Vulkan device (AMD / non-CUDA GPUs).
@@ -98,7 +105,12 @@ impl TrainerHardware {
     pub fn satisfied_by(&self, host: &HardwareProfile) -> bool {
         match self {
             TrainerHardware::Any => true,
-            TrainerHardware::Metal => host.has_metal,
+            // Apple Silicon, not merely Metal: an Intel Mac's discrete GPU reports Metal too, and
+            // `mlx_lm` cannot run there (IntelMac 2026-10-12: Delia's training dispatch wedged on
+            // "mlx python interpreter not found"). One classifier owns the distinction.
+            TrainerHardware::AppleSilicon => {
+                crate::governor::types::classify_silicon(host) == crate::governor::types::TargetSilicon::AppleM
+            }
             TrainerHardware::Cuda => host.has_cuda,
             TrainerHardware::Vulkan => host.has_vulkan,
         }

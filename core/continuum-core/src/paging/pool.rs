@@ -34,6 +34,7 @@
 //!
 //! See: docs/architecture/UNIFIED-PAGING.md
 
+use crate::time::EpochMs;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -42,7 +43,6 @@ use std::hash::Hash;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 use ts_rs::TS;
 
@@ -477,7 +477,7 @@ where
     pub fn get(&self, key: &K) -> Option<V> {
         let entries = self.inner.entries.read();
         if let Some(entry) = entries.get(key) {
-            entry.last_access_at.store(now_ms(), Ordering::Release);
+            entry.last_access_at.store(EpochMs::now().millis(), Ordering::Release);
             entry.access_count.fetch_add(1, Ordering::AcqRel);
             self.inner.hits.fetch_add(1, Ordering::Relaxed);
             return Some(entry.value.clone());
@@ -533,7 +533,7 @@ where
     /// already produced the value; this records it for future hits.
     pub fn insert(&self, key: K, value: V) {
         let size_bytes = (self.inner.config.sizer)(&value);
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         {
             let mut entries = self.inner.entries.write();
             entries.insert(
@@ -558,7 +558,7 @@ where
         let entries = self.inner.entries.read();
         let entry = entries.get(key)?;
         entry.pin_count.fetch_add(1, Ordering::AcqRel);
-        entry.last_access_at.store(now_ms(), Ordering::Release);
+        entry.last_access_at.store(EpochMs::now().millis(), Ordering::Release);
         Some(PinHandle {
             key: key.clone(),
             pool: self.inner.clone(),
@@ -836,14 +836,6 @@ where
     fn stats_snapshot(&self) -> PoolStats {
         self.stats_blocking()
     }
-}
-
-/// Current Unix ms — monotonic enough for LRU ordering.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

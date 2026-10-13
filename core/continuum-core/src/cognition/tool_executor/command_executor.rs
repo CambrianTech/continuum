@@ -71,11 +71,60 @@ pub struct CommandToolExecutor {
     /// async-dispatch listener. `None` when built from a bare `Connection` (harnesses,
     /// mocks) — those run every command synchronously. [[persona-async-dispatch-channel]]
     core: Option<Arc<CommandExecutor>>,
+    /// The acting context these hands are bound to (bound into the connection's identity,
+    /// so the kernel keys her code tools by it). `None` = her default (live) context.
+    hands: Option<crate::code::hands::HandsContext>,
+    /// For a context's hands: ends the context when the last clone of these hands drops (the
+    /// fork is over, on any exit path). `None` for her live hands, which never end.
+    _release: Option<Arc<ContextRelease>>,
+}
+
+/// Ends an acting context when the hands bound to it are gone: sends `code/release-hands`
+/// as that context, so its engine and shells (and anything they still run) don't outlive
+/// it. Tied to the hands' lifetime rather than to a restore call, so every exit path of a
+/// fork (finish, error, panic) releases it.
+struct ContextRelease {
+    core: Arc<CommandExecutor>,
+    identity: CallerIdentity,
+    persona: Uuid,
+    context: crate::code::hands::HandsContext,
+}
+
+impl Drop for ContextRelease {
+    fn drop(&mut self) {
+        let (core, identity, persona, context) = (self.core.clone(), self.identity.clone(), self.persona, self.context);
+        // Off the dropping thread: a release dispatches a command. With no runtime (a test
+        // tearing down outside one) there is nothing live to release into.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                // Forget the place only on a CONFIRMED release: an unresolved one keeps the
+                // handles and the record together, so neither claims the other is gone.
+                let outcome = core
+                    .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity))
+                    .await
+                    .and_then(|r| match r {
+                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)
+                            .map_err(|e| format!("the release's result isn't its own shape: {e}")),
+                        _ => Err("the release answered in a shape other than its own JSON".to_string()),
+                    });
+                match outcome {
+                    Ok(release) if release.released => crate::cognition::persona_workspace::forget_acting_context(persona, context),
+                    Ok(release) => tracing::warn!(
+                        context = %context.id(),
+                        unconfirmed = ?release.unconfirmed,
+                        errors = ?release.errors,
+                        "an acting context's processes were not confirmed gone; its handles and place are kept"
+                    ),
+                    Err(e) => tracing::warn!(error = %e, context = %context.id(), "an acting context's hands could not be released; its handles and place are kept"),
+                }
+            });
+        }
+    }
 }
 
 impl CommandToolExecutor {
     pub fn new(conn: Connection<InProcessTransport>) -> Self {
-        Self { conn, core: None }
+        Self { conn, core: None, hands: None, _release: None }
     }
 
     /// Build a persona's hands over the uniform client: a
@@ -91,6 +140,16 @@ impl CommandToolExecutor {
     /// at execution even though it may appear in the tool surface. Offer = the
     /// `AiSafe` surface; execute = authorized-by-identity ([[persona-is-a-client]]).
     pub fn for_persona(executor: Arc<CommandExecutor>, persona: Uuid) -> Self {
+        Self::for_persona_in(executor, persona, None)
+    }
+
+    /// [`Self::for_persona`] in an acting context: the same persona, gated the same way, with
+    /// her code tools keyed by `hands` (an eval's or a fork's own hands, never her live ones).
+    pub fn for_persona_in(
+        executor: Arc<CommandExecutor>,
+        persona: Uuid,
+        hands: Option<crate::code::hands::HandsContext>,
+    ) -> Self {
         // A local persona is the owner's own in-process agent, not a cross-grid
         // peer: it carries `LocalPersona` identity → resolves to `Trusted` at the
         // gate (file/shell access), capped below Owner. Unforgeable remotely (the
@@ -98,145 +157,24 @@ impl CommandToolExecutor {
         // `persona` is the persona's bare-Uuid id; the gate identity is the canonical
         // PeerId (== peer_id by invariant). Convert at this spawn boundary.
         let core = executor.clone();
-        let transport = InProcessTransport::new(
-            executor,
-            Some(CallerIdentity::local_persona(
-                crate::identity::PeerId::from_uuid(persona),
-            )),
-        );
+        let identity = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona));
+        let identity = match hands {
+            Some(context) => identity.in_hands(context),
+            None => identity,
+        };
+        let release = hands.map(|context| Arc::new(ContextRelease { core: core.clone(), identity: identity.clone(), persona, context }));
+        let transport = InProcessTransport::new(executor, Some(identity));
         Self {
             conn: Connection::new(transport),
             core: Some(core),
+            hands,
+            _release: release,
         }
     }
 
     /// The core executor behind these hands, if any (a live persona's; not a harness's).
     pub fn core_executor(&self) -> Option<Arc<CommandExecutor>> {
         self.core.clone()
-    }
-}
-
-/// Truncate to at most `max` bytes on a UTF-8 char boundary. Tool output (a file
-/// read, a cargo log) can be huge; the agent loop bounds it so the context
-/// doesn't blow up. Appends a marker so the model knows it was cut.
-fn truncate_on_boundary(mut s: String, max: usize) -> String {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max.min(s.len());
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s.truncate(end);
-    s.push_str("\n…[truncated]");
-    s
-}
-
-/// Bound a tool RESULT for re-injection, keeping BOTH ends and naming the cut.
-///
-/// A tool that floods — a build log, a giant file, a chatty command (an Xcode or
-/// cargo build is the canonical case) — must never blow the persona's context
-/// window. The cap (`max_result_chars`) is that protection. But a naive head-keep
-/// throws away exactly the part she needs for log-shaped output: the verdict (the
-/// errors, the failing target, the summary) lives at the END. So this keeps the
-/// HEAD (where a read/listing/JSON starts) AND the TAIL (where a build/test/log
-/// concludes), eliding the middle with a marker that (a) names how much was
-/// dropped and (b) reinforces the narrowing affordance — re-run the tool SCOPED,
-/// or grep with `code/search`, so she asks for less next time instead of drowning.
-///
-/// Like the failure-feedback translation, this is affordance quality, not output
-/// steering: it shapes what the tool layer hands back, never reads her generation.
-///
-/// When `spill` is `Some`, the FULL result was first persisted (tier 2) and the
-/// elision marker names the handle so she can grep/page the whole thing via
-/// `tool/output` — Joel's "even if it blows up, all is not lost". When it's
-/// `None` (small output, or the spill itself failed), the marker reinforces the
-/// re-run-scoped / `code/search` narrowing affordance instead.
-fn truncate_tool_output(s: String, max: usize, spill: Option<&spill::SpillRef>) -> String {
-    if s.len() <= max {
-        return s;
-    }
-    // Split the visible budget between the two ends — the head of a read/listing
-    // and the tail of a build/log are both load-bearing (~60/40 toward the head).
-    let head_budget = max * 3 / 5;
-    let tail_budget = max - head_budget;
-
-    let mut head_end = head_budget.min(s.len());
-    while head_end > 0 && !s.is_char_boundary(head_end) {
-        head_end -= 1;
-    }
-    let mut tail_start = s.len().saturating_sub(tail_budget);
-    while tail_start < s.len() && !s.is_char_boundary(tail_start) {
-        tail_start += 1;
-    }
-    // Degenerate tiny budget where the ends would overlap: fall back to head-only.
-    if tail_start <= head_end {
-        return truncate_on_boundary(s, max);
-    }
-    let dropped = tail_start - head_end;
-    // MAKE THE FLOOD OBSERVABLE. Without this probe there is no way to answer
-    // "does her output actually flood?" — and on 2026-08-28 that question blocked
-    // a real decision: `tool/output` (the verb that reads the spilled MIDDLE) is
-    // not in the native surface, and making it native costs ~1200 tokens on EVERY
-    // prompt forever against a ceiling guard that says "do not keep bumping this".
-    // The honest answer was "no spill has ever been recorded on this box" — the
-    // demand was UNMEASURED, not proven absent. She already receives head+tail;
-    // the middle is what a spill adds. This probe is the evidence that decides it:
-    // if floods are frequent in solves the verb earns its slot; if they never
-    // happen, the surface stays lean.
-    if let Some(r) = spill {
-        crate::probe!(
-            class = "tool.output.spilled",
-            handle = %r.handle,
-            dropped_chars = %dropped,
-            "a tool result flooded and was spilled to disk — its MIDDLE is reachable \
-             only through `tool/output`, which is NOT in the native surface today \
-             (she holds the handle, not the verb)"
-        );
-    }
-    let recovery = match spill {
-        // The whole result is recoverable — point her at the handle, and at the
-        // failure-hunting path specifically (grep for the error), per Joel: the
-        // build hands spit out a lot of crap and the job is finding the error.
-        Some(r) => format!(
-            "the FULL {} lines were saved as output `{}`. Find the part you need with \
-             `tool/output` — easiest, jump straight to what broke with a prebuilt filter: \
-             `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/\
-             `summary`); for a specific hunt use `\"pattern\":\"<regex>\"`, or read a line \
-             range with `startLine`/`endLine`",
-            r.lines, r.handle, r.handle,
-        ),
-        // Not recoverable — narrow at the source instead.
-        None => "Re-run the tool SCOPED to what you need (a narrower argument, e.g. \
-                 `filter`/`package`/`path`), or grep with `code/search`, instead of \
-                 reading it all"
-            .to_string(),
-    };
-    format!(
-        "{}\n…[{dropped} chars elided — this result is large. {recovery}. The start \
-         and end are kept below.]…\n{}",
-        &s[..head_end],
-        &s[tail_start..],
-    )
-}
-
-/// Bound a tool result for re-injection, spilling the FULL output to disk first
-/// when it overflows so nothing is lost (tier 2). The returned preview names the
-/// spill handle (when the spill succeeded) so the persona can grep/page it.
-///
-/// Spilling is best-effort: if it fails (no home dir, disk full) we STILL bound
-/// the output — context safety is non-negotiable — she just loses the recover-it
-/// affordance for that one result. We never fabricate a handle we couldn't write.
-fn fold_with_recovery(full: String, max: usize, persona_id: Uuid) -> (String, Option<String>) {
-    if full.len() <= max {
-        return (full, None);
-    }
-    match spill::spill(persona_id, &full) {
-        Ok(r) => {
-            let handle = r.handle.clone();
-            (truncate_tool_output(full, max, Some(&r)), Some(handle))
-        }
-        Err(_) => (truncate_tool_output(full, max, None), None),
     }
 }
 
@@ -531,11 +469,31 @@ impl ToolExecutor for CommandToolExecutor {
         self.core_executor()
     }
 
+    fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {
+        self.hands
+    }
+
+    fn in_fresh_hands(&self, persona: Uuid) -> Option<Arc<dyn ToolExecutor>> {
+        let core = self.core.clone()?;
+        Some(Arc::new(Self::for_persona_in(core, persona, Some(crate::code::hands::HandsContext::fresh()))))
+    }
+
     async fn execute_native_batch(
         &self,
         calls: &[NativeToolCall],
         ctx: &ToolExecutionContext,
         max_result_chars: usize,
+    ) -> Result<NativeBatchOutcome, ToolError> {
+        // No memory records this batch's handles, so its saves are pinned only while it runs.
+        self.execute_native_batch_pinned(calls, ctx, max_result_chars, &spill::LivePin::new()).await
+    }
+
+    async fn execute_native_batch_pinned(
+        &self,
+        calls: &[NativeToolCall],
+        ctx: &ToolExecutionContext,
+        max_result_chars: usize,
+        pin: &spill::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // Scope the persona's connection to THIS turn's room (the third ID tier);
         // identity is already the persona's, baked into the connection. The
@@ -672,13 +630,12 @@ impl ToolExecutor for CommandToolExecutor {
 
                     let full = value.to_string(); // boundary: tool-result transcript now contains a durable image reference.
                     {
-                        // Spill-then-bound: a flood-sized result is persisted whole
-                        // (recoverable via `tool/output`) before the preview is cut;
-                        // the HANDLE rides the result type-level so working memory
-                        // can leave a queryable pointer when this result is later
+                        // Whole, or saved whole and handed back as its handle: never a
+                        // fragment. The HANDLE rides the result type-level so working
+                        // memory can leave a queryable pointer when this result is later
                         // evicted (collapse, never delete — 2026-08-24).
-                        let (content, spill_handle) =
-                            fold_with_recovery(full, max_result_chars, ctx.persona_id);
+                        let (content, custody) =
+                            pin.whole_or_handle(full, max_result_chars, ctx.persona_id).into_parts();
                         NativeToolResult {
                             tool_use_id,
                             content,
@@ -687,7 +644,7 @@ impl ToolExecutor for CommandToolExecutor {
                             // be flattened into one here — they ride the typed
                             // `CallVerdict` to the receipt, which can say them.
                             is_error: verdict.failed().then_some(true),
-                            spill_handle,
+                            custody,
                         }
                     }
                 }
@@ -726,14 +683,18 @@ impl ToolExecutor for CommandToolExecutor {
                         verdict: ActVerdict::Declared(crate::sdk_codegen::ToolVerdict::Failed),
                         dispatch_handle: None,
                     });
+                    // The same one decision as a success: whole, or saved and handed back.
+                    let (content, custody) = pin.whole_or_handle(
+                        persona_tool_error(attempted, raw),
+                        max_result_chars,
+                        ctx.persona_id,
+                    )
+                    .into_parts();
                     NativeToolResult {
                         tool_use_id,
-                        content: truncate_on_boundary(
-                            persona_tool_error(attempted, raw),
-                            max_result_chars,
-                        ),
+                        content,
                         is_error: Some(true),
-                        spill_handle: None,
+                        custody,
                     }
                 }
             })
@@ -1070,82 +1031,6 @@ mod tests {
         let raw = "data/delete: refused — requires Owner trust".to_string();
         let out = persona_tool_error("data/delete", raw.clone());
         assert_eq!(out, raw);
-    }
-
-    // what this catches: a flood-sized tool result (a build log) is bounded AND
-    // keeps the END — where the verdict/errors live — not just the head, and the
-    // elision marker reinforces narrowing (re-run scoped / code/search grep).
-    #[test]
-    fn huge_output_keeps_both_ends_and_suggests_narrowing() {
-        let body = format!(
-            "BUILD START\n{}\nerror: linker failed — THE VERDICT AT THE END",
-            "compiling module …\n".repeat(5000)
-        );
-        // None spill ref → the narrow-at-source affordance (re-run scoped / grep).
-        let out = truncate_tool_output(body, 600, None);
-        assert!(
-            out.len() < 1200,
-            "stays bounded near the cap: {} chars",
-            out.len()
-        );
-        assert!(out.contains("BUILD START"), "keeps the head: {out}");
-        assert!(
-            out.contains("THE VERDICT AT THE END"),
-            "keeps the tail (the verdict): {out}"
-        );
-        assert!(
-            out.contains("code/search"),
-            "reinforces grep/narrowing: {out}"
-        );
-        assert!(out.contains("elided"), "names that output was cut: {out}");
-    }
-
-    // what this catches: when the full result was spilled, the elision marker
-    // names the recovery handle AND points at the failure-hunting path
-    // (grep the error via `tool/output`) — Joel's "all is not lost" affordance.
-    #[test]
-    fn spilled_output_marker_names_the_handle_and_recovery() {
-        let body = format!("BUILD START\n{}\nerror: boom", "noise\n".repeat(5000));
-        let fake = spill::SpillRef {
-            handle: "deadbeefcafe0001".to_string(),
-            path: std::path::PathBuf::from("/tmp/x.log"),
-            bytes: body.len(),
-            lines: body.lines().count(),
-        };
-        let out = truncate_tool_output(body, 600, Some(&fake));
-        assert!(out.contains("deadbeefcafe0001"), "names the handle: {out}");
-        assert!(
-            out.contains("tool/output"),
-            "names the recovery tool: {out}"
-        );
-        // #1917: the failure hunt is a PREBUILT one-word filter, not a regex.
-        assert!(
-            out.contains("\"filter\":\"errors\""),
-            "points at the prebuilt failure filter: {out}"
-        );
-    }
-
-    // what this catches: output within budget is returned verbatim — no marker,
-    // no elision when nothing was dropped.
-    #[test]
-    fn small_output_is_returned_verbatim() {
-        let out = truncate_tool_output("ok: 2 passed".to_string(), 16_000, None);
-        assert_eq!(out, "ok: 2 passed");
-    }
-
-    // what this catches: a multi-byte body never slices mid-codepoint (would panic),
-    // at both a normal and a pathologically tiny budget — the head/tail boundary
-    // walks must land on char boundaries on both ends.
-    #[test]
-    fn multibyte_body_never_panics_at_any_budget() {
-        let body = "αβγδε".repeat(2000); // 2-byte chars, well over any cap
-        for max in [8usize, 64, 600, 4096] {
-            let out = truncate_tool_output(body.clone(), max, None);
-            // round-trips as valid UTF-8 (the assertions themselves would panic on
-            // a mid-codepoint slice) and stays near the requested budget.
-            assert!(out.chars().count() > 1, "valid UTF-8 at max={max}");
-            assert!(out.contains("elided"), "marks the cut at max={max}: {out}");
-        }
     }
 
     /// Build a persona's tool executor over the uniform client: a

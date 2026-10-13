@@ -38,6 +38,7 @@
 //! steer the persona's behavior or output ([[no-hardcoded-heuristics-to-steer-cognition]]
 //! is about puppeting cognition; this is corpus hygiene).
 
+use crate::time::EpochMs;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::json;
@@ -1338,10 +1339,7 @@ async fn stage_credit<T: Transport>(
         prompt,
         completion,
         lived,
-        // Same clock the rest of this file already uses. `now_unix_ms` exists as a
-        // PRIVATE helper in three other modules and none is importable — copying it
-        // a fourth time would be the duplication the compression principle forbids.
-        staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+        staged_at_ms: crate::time::EpochMs::now().millis(),
         coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
         rejected_at_ms: None,
     };
@@ -2080,7 +2078,7 @@ pub(crate) fn pass_admits(rows: &[StagedCredit], failed_earlier: bool) -> PassAd
 /// A write that fails is named; that row may then train on a later pass, which is the
 /// old behaviour, never a new one.
 async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[StagedCredit]) {
-    let now = crate::persona::trace::now_ms();
+    let now = EpochMs::now().millis();
     for row in rows.iter().filter(|r| r.rejected_at_ms.is_none()) {
         let marked = conn
             .commands()
@@ -3800,6 +3798,13 @@ pub(crate) mod tests {
         // the way a citizen's call actually does: as JSON, in the 8-char form she was
         // shown, and the assertions below prove the whole path end to end.
         let short = |id: Uuid| id.simple().to_string().chars().take(8).collect::<String>();
+        // A typed artifact must have its bytes retained (card e1babb61), so the fixture
+        // retains a real patch in this test's store and types ITS hash and size.
+        let patch = "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-a\n+b\n";
+        let patch_hash = {
+            use airc_blobs::ContentAddressedStore;
+            crate::media::artifact::store().expect("test: store").put(patch.as_bytes()).expect("test: retain the patch").to_hex()
+        };
         let params: WorkSubmitParams = serde_json::from_value(serde_json::json!({
             "room": room.channel.as_uuid().to_string(),
             "submission_id": Uuid::new_v4().to_string(),
@@ -3807,7 +3812,7 @@ pub(crate) mod tests {
             "claim_id": short(claim.as_uuid()),
             "instance": "generic-project-work",
             "base_sha": "a".repeat(40),
-            "artifact": { "hash": "b".repeat(64), "size_bytes": 20, "mime": "text/x-diff" },
+            "artifact": { "hash": patch_hash, "size_bytes": patch.len(), "mime": "text/x-diff" },
             "staged_revision_id": selected.id.to_string(),
         }))
         .expect("a citizen's call carries the handles her board printed"); // expect: the fixture's own json, asserted decodable
@@ -4513,10 +4518,7 @@ pub(crate) mod tests {
     // not the periodically replaced row; overlapping bindings roll back whole.
     #[tokio::test]
     async fn submission_binding_survives_replacement_and_reserves_generations_atomically() {
-        use reviewed::{
-            CreditBindingError, CreditGenerationReservation, CreditTransferIntent,
-            SubmissionSelection, WorkCreditBinding,
-        };
+        use reviewed::{CreditBindingError, CreditGenerationReservation, CreditTransferIntent, SubmissionSelection, WorkCreditBinding};
         let home = tempfile::tempdir().unwrap();
         let _home = HomeGuard::set(home.path()).await;
         crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())

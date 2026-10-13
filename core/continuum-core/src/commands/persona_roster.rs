@@ -169,7 +169,7 @@ mod tests {
         }
         let peer = uuid::Uuid::new_v4();
         let peer_dir = PeerDir(
-            crate::commands::benchmark::continuum_home()
+            crate::paths::continuum_home()
                 .expect("test home")
                 .join("citizens")
                 .join("peers")

@@ -113,7 +113,7 @@ crate::action_command! {
                         level,
                         reason,
                         decided_by: ctx.caller.as_ref().map(|c| c.peer_id.as_uuid()),
-                        decided_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+                        decided_ms: crate::time::EpochMs::now().millis(),
                     });
                 }
             }

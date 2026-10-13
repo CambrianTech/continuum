@@ -39,6 +39,7 @@
 //!   "deliberately deferred" list. Lands in PR-4 alongside the
 //!   GenomeRegion + Op type definitions.
 
+use crate::time::EpochMs;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -48,9 +49,7 @@ use super::bus::{publish_access_denied, publish_page_fault};
 use super::manager::WorkingSetManager;
 use super::store::TierStore;
 use super::tier::{TierError, TierRole};
-use super::working_set::{
-    AccessDenied, PageFault, PageHandle, PageRef, ResidentPage, WorkingSet, WorkingSetCapacity,
-};
+use super::working_set::{AccessDenied, PageFault, PageHandle, PageRef, ResidentPage, WorkingSet, WorkingSetCapacity};
 use crate::identity::PeerId;
 use crate::runtime::message_bus::MessageBus;
 use crate::runtime::registry::ModuleRegistry;
@@ -211,7 +210,7 @@ impl WorkingSetManager for LocalWorkingSetManager {
                         ResidentPage {
                             page,
                             role: to_role,
-                            last_access_ms: now_ms(),
+                            last_access_ms: EpochMs::now().millis(),
                             access_count_window: 1,
                             pinned: false,
                         },
@@ -386,16 +385,6 @@ fn spawn_publish_access_denied(hook: &BusHook, denied: AccessDenied) {
             publish_access_denied(&bus, &registry, &denied).await;
         });
     }
-}
-
-/// Unix-ms timestamp. Used by `ResidentPage.last_access_ms` to record
-/// the wall-clock of a page promotion. Tests pass a fixed value to a
-/// stub clock; production reads `SystemTime::now()`.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -760,9 +749,7 @@ mod tests {
     use crate::genome::bus::{all_genome_artifact_selectors, ACCESS_DENIED_KEY, PAGE_FAULT_KEY};
     use crate::runtime::artifact_handle::{ArtifactKey, ArtifactSelector};
     use crate::runtime::runtime::Runtime;
-    use crate::runtime::service_module::{
-        CommandResult, ModuleConfig, ModulePriority, ServiceModule,
-    };
+    use crate::runtime::service_module::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
     use std::any::Any;
 
     /// Recording subscriber for the PR-5 bus tests. Captures every

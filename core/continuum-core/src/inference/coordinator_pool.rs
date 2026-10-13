@@ -65,7 +65,7 @@ impl CoordinatorResourcePool {
     pub fn new(coordinator: Arc<InferenceCoordinator>) -> Self {
         Self {
             coordinator,
-            clock: Box::new(wall_clock_now_ms),
+            clock: Box::new(|| crate::time::EpochMs::now().millis()),
             tier_name: TIER_NAME.to_string(),
             capacity_override: None,
         }
@@ -123,20 +123,12 @@ impl ResourcePool for CoordinatorResourcePool {
     }
 }
 
-fn wall_clock_now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ai::adapter::AIProviderAdapter;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
-    use crate::cognition::adaptive_throughput::{
+    use crate::inference::planning::adaptive_throughput::{
         ResourceClass, TargetSilicon, ThroughputLaneBudget,
     };
     use crate::identity::PeerId;

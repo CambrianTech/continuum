@@ -4,7 +4,7 @@
 //! High-quality voices, efficient inference, designed for production use.
 //! Used by Home Assistant and other production systems.
 
-use super::audio_utils;
+use super::normalize;
 use super::{Phonemizer, SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
@@ -128,7 +128,7 @@ impl PiperTTS {
 
         // Normalize to standard 16kHz i16 PCM via shared audio utilities
         let f32_samples: Vec<f32> = audio_data.to_vec();
-        let result = audio_utils::normalize_audio(&f32_samples, sample_rate)?;
+        let result = normalize::normalize_audio(&f32_samples, sample_rate)?;
 
         clog_info!(
             "Piper synthesized {} samples ({}ms) for '{}...'",
@@ -289,5 +289,4 @@ mod tests {
         assert_eq!(voices[0].id, "default");
     }
 
-    // Resample tests moved to audio_utils::tests (shared across all adapters)
 }

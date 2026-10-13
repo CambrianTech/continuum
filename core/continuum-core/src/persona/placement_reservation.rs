@@ -24,6 +24,7 @@
 //! No new primitive: the lease registry, the airc command envelope, and the admission
 //! gauges already existed; this composes them into the grant.
 
+use crate::time::EpochMs;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use schemars::JsonSchema;
@@ -31,10 +32,8 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::cognition::throughput_lease::{
-    ThroughputLease, ThroughputLeaseRegistry, ThroughputLeaseRevocationPolicy,
-};
-use crate::cognition::{ResourceClass, TargetSilicon};
+use crate::inference::planning::throughput_lease::{ThroughputLease, ThroughputLeaseRegistry, ThroughputLeaseRevocationPolicy};
+use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
 
 /// How long a granted slot stays reserved for a mind that has not arrived yet. The
 /// placement cadence bound: a spiller that could not bind within one move cooldown is
@@ -206,7 +205,7 @@ pub async fn request_reservation(
     if crate::persona::self_peer::is_this_node(peer) {
         return Err(format!("seat {peer} is this node — a node never asks itself for a slot"));
     }
-    let now = crate::persona::trace::now_ms();
+    let now = EpochMs::now().millis();
     // The guard lives in its own block: this fn awaits the wire below, and a std
     // MutexGuard in scope across an await point makes the future !Send.
     let remaining = {

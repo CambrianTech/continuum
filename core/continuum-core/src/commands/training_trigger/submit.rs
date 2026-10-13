@@ -105,6 +105,30 @@ pub(crate) fn returned_chunk_id(job: Uuid, index: usize) -> Uuid {
     }
 }
 
+/// WHAT one return hands back, and so the identity of each chunk of it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ReturnScope<'a> {
+    /// A job's whole input: an ended job that never trained ([`returned_chunk_id`]).
+    Whole,
+    /// Only the examples a job that TRAINED parked, by their request indices, ascending. Its
+    /// own namespace, keyed by the exact index set: it never collides with a whole return of
+    /// the same job, and the same remainder returned again is a replay (card 8a2334d9).
+    Parked(&'a [usize]),
+}
+
+impl ReturnScope<'_> {
+    /// The submission identity of the `index`-th chunk of this return of `job`.
+    pub(crate) fn chunk_id(self, job: Uuid, index: usize) -> Uuid {
+        match self {
+            Self::Whole => returned_chunk_id(job, index),
+            Self::Parked(indices) => {
+                let set = indices.iter().map(usize::to_string).collect::<Vec<_>>().join(",");
+                Uuid::new_v5(&job, format!("genome/training-trigger/return-parked/{set}/{index}").as_bytes())
+            }
+        }
+    }
+}
+
 impl SubmitParams {
     /// A job's examples handed back to her bucket: THE one conversion from a job's request
     /// to a submit, carrying the job's own policy (which [`return_request`] replaces with
@@ -149,12 +173,14 @@ impl SubmitParams {
 }
 
 /// A job's examples back into her bucket: THE one return (a held orphan at boot,
-/// `genome/training-trigger/return`). Into a key that already holds a batch they adopt its
-/// policy; into an empty key they pin the job's own.
+/// `genome/training-trigger/return`, a trained job's parked remainder). Into a key that already
+/// holds a batch they adopt its policy; into an empty key they pin the job's own. `scope` says
+/// what `request` carries, and so names each chunk.
 pub(crate) async fn return_request(
     state: &Arc<TrainingTriggerState>,
     request: crate::genome::fine_tuning::types::TrainingJobRequest,
     job: Uuid,
+    scope: ReturnScope<'_>,
 ) -> Result<SubmitOutcome, CommandError> {
     // RETURNED IN CHUNKS of the bucket's own threshold, each its own submission: a run's
     // time budget splits a bucket only at submission boundaries, so a job's examples returned
@@ -163,7 +189,7 @@ pub(crate) async fn return_request(
     // the accepted chunks by their derived identities and submits the rest.
     let size = (crate::modules::training_trigger::DEFAULT_MIN_EXAMPLES as usize).max(1);
     if request.dataset.examples.len() <= size {
-        return return_chunk(state, request, job, returned_id(job)).await;
+        return return_chunk(state, request, job, scope.chunk_id(job, 0)).await;
     }
     let mut reported: Option<SubmitOutcome> = None;
     let chunks = return_chunks(request.dataset.examples.clone(), size);
@@ -171,7 +197,7 @@ pub(crate) async fn return_request(
     for (index, part) in chunks.into_iter().enumerate() {
         let mut chunk = request.clone();
         chunk.dataset.examples = part;
-        let mut outcome = return_chunk(state, chunk, job, returned_chunk_id(job, index)).await?;
+        let mut outcome = return_chunk(state, chunk, job, scope.chunk_id(job, index)).await?;
         if !outcome.success {
             // say how far the return got: the first `index` chunks are in her bucket, and
             // re-running the return replays them and resumes at this one
@@ -486,6 +512,14 @@ mod tests {
         assert_eq!(ids.len(), 3, "each chunk its own identity");
         assert_eq!(returned_chunk_id(job, 2), returned_chunk_id(job, 2), "derived, so a re-run replays");
         assert_ne!(returned_chunk_id(job, 1), returned_chunk_id(Uuid::new_v4(), 1), "and per job");
+        // A trained job's parked remainder (card 8a2334d9) never wears a whole return's id,
+        // and its identity is the exact index set: the same set replays, another set is new.
+        let parked = ReturnScope::Parked(&[0, 1, 4]);
+        assert_eq!(ReturnScope::Whole.chunk_id(job, 0), returned_id(job), "a whole return is unchanged");
+        assert_ne!(parked.chunk_id(job, 0), returned_id(job), "a remainder never collides with a whole return");
+        assert_eq!(parked.chunk_id(job, 1), ReturnScope::Parked(&[0, 1, 4]).chunk_id(job, 1), "the same remainder replays");
+        assert_ne!(parked.chunk_id(job, 0), ReturnScope::Parked(&[0, 1]).chunk_id(job, 0), "another index set is another return");
+        assert_ne!(parked.chunk_id(job, 0), parked.chunk_id(job, 1), "each chunk its own identity");
     }
     use crate::commands::training_trigger::test_support::{
         build_runtime_trigger_only, build_runtime_with_trigger_and_genome, ex, submit_params,
@@ -901,7 +935,7 @@ mod tests {
         let mine = Uuid::new_v4();
         let reviewer = Uuid::new_v4();
         // The real clock: a tally is read inside its window, at the snapshot's own time.
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+        let now = crate::time::EpochMs::now().millis();
         let mind = tempfile::tempdir().unwrap();
         let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(persona), mind.path(), 1_000, now);
         region.join(activity, "career-wrangler");
@@ -960,7 +994,7 @@ mod tests {
         let trial = trigger
             .state
             .test_trials
-            .open(persona, "test-trait", &gene, "synthetic", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64)
+            .open(persona, "test-trait", &gene, "synthetic", crate::time::EpochMs::now().millis())
             .expect("the trial file takes a trial");
         assert_eq!(trial.state, crate::genome::gene_trial::TrialState::Trial);
 

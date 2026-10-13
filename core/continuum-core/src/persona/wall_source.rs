@@ -100,6 +100,74 @@ pub trait WallReader: Send + Sync {
     /// that merely tend to agree. `None` = unscoped legacy construction.
     async fn wall_posts(&self, room: Option<uuid::Uuid>)
         -> Result<Vec<WallPostPublished>, AircError>;
+
+    /// Each card on the bound room's work board, as (title, wire state), so a card-ledger
+    /// post can name the card it is about (card 4cfd4530). `None` when the board could not be
+    /// read (or this reader has none): ledgers then render verbatim. An EMPTY map is a board
+    /// that was read and holds no cards, and only that may say a card is off the board
+    /// (BigMama on #4959: one empty map for both told her every card was gone).
+    ///
+    /// REQUIRED, no default (the 5090, 2026-10-12, build 6153): with a `None` default, the two
+    /// PRODUCTION readers (`PersonaAircRuntime`, `AircHandleAdapter`) compiled without it and
+    /// silently answered "board unread", so #4959's labels and #4962's concluded-ledger drop
+    /// never ran on a persona's turn: Kimi's wall still carried a merged card's ledger,
+    /// unlabelled, while every test passed against a stub that supplied labels directly. A
+    /// reader now states what it knows about the board, so the next one cannot opt out by
+    /// omission.
+    async fn card_labels(&self, room: Option<uuid::Uuid>) -> Option<CardLabels>;
+}
+
+/// The work board's cards by id: (title, state).
+pub type CardLabels = std::collections::HashMap<uuid::Uuid, (String, airc_work::CardState)>;
+
+/// PURE: the card ledgers a persona's context carries, from the board as read. A ledger
+/// whose card is CONCLUDED on this room's board (merged or closed, `work::is_concluded`)
+/// leaves the context; every other ledger leads with one line naming the card it is
+/// about (short id, title, board state), or that it is not on this room's board. Other
+/// categories, and an unreadable ledger, pass through verbatim. Stored posts are never
+/// touched: this shapes the copy the context renders, and a concluded card's ledger stays
+/// readable on the wall and by id.
+///
+/// Why the concluded ones leave (Kimi's call from inside, card 7c8c44a1, 2026-10-11): 10 of
+/// the 14 ledgers on her wall (14,386 of 25,802 chars) were for merged or closed cards,
+/// re-prefilled every turn while her history was cut to fit. Their live value was "don't
+/// re-take a finished lane" (the board says that) and provenance (git and the submission
+/// record, reachable by id). A ledger for a card still open, claimed, blocked or in review
+/// is her resumption state and stays. This is her decision about her own context, carried
+/// out by the substrate (PERSONA-COGNITION-PIPELINE.md §5), not a relevance heuristic.
+///
+/// Why each kept ledger is labelled (card 4cfd4530): her failed work/submit on 27f133e4
+/// passed a staged revision lifted from another card's ledger (1f58fc16) that sat beside
+/// her active card's, labelled only `[card-ledger]` with the card's id buried in JSON.
+///
+/// Board unread (`None`): every post renders verbatim. Nothing is dropped and nothing is
+/// labelled, since a board that could not be read cannot say a card is over or gone.
+fn ledgers_for_context(posts: Vec<WallPostPublished>, labels: Option<&CardLabels>) -> Vec<WallPostPublished> {
+    let Some(labels) = labels else {
+        return posts;
+    };
+    posts
+        .into_iter()
+        .filter_map(|mut post| {
+            if post.category != crate::experience::ledger::LEDGER_WALL_CATEGORY {
+                return Some(post);
+            }
+            let Ok(ledger) = serde_json::from_str::<crate::experience::ledger::CardLedger>(&post.body) else {
+                return Some(post); // an unreadable ledger renders as it is, unlabelled
+            };
+            let short = ledger.card_id.simple().to_string();
+            let short = &short[..8];
+            let head = match labels.get(&ledger.card_id) {
+                Some((_, state)) if crate::modules::work::is_concluded(state) => return None,
+                Some((title, state)) => {
+                    format!("ledger of card {short} \"{title}\" ({})\n", crate::modules::work::state_str(state))
+                }
+                None => format!("ledger of card {short} (not on this room's board)\n"),
+            };
+            post.body = head + &post.body;
+            Some(post)
+        })
+        .collect()
 }
 
 /// `airc_lib::Airc` satisfies the reader contract directly. Orphan rule OK
@@ -168,6 +236,21 @@ impl WallReader for airc_lib::Airc {
             // Unscoped legacy/test construction: pre-binding behaviour.
             None => airc_lib::Airc::wall_posts(self, None).await,
         }
+    }
+
+    /// The bound room's work board through the same room_by_channel -> *_in pair the wall
+    /// read uses (the board returns in ~0 ms where the wall can stall). Any failure is `None`:
+    /// ledgers then read as before, never as cards that are gone.
+    async fn card_labels(&self, room: Option<uuid::Uuid>) -> Option<CardLabels> {
+        let id = room?;
+        let resolved = airc_lib::Airc::room_by_channel(self, airc_core::RoomId::from_uuid(id)).await.ok()??;
+        let board = airc_lib::Airc::work_board_in(self, &resolved).await.ok()?;
+        Some(board
+            .snapshot()
+            .cards
+            .iter()
+            .map(|card| (card.card_id.as_uuid(), (card.title.clone(), card.state)))
+            .collect())
     }
 }
 
@@ -462,9 +545,13 @@ impl RagSource for WallSource {
             return empty(resolution);
         }
 
-        // Ledger updates are durable wall records, not separate current guidance.
-        // Fold them through their existing owner before spending the context budget.
-        let posts = crate::experience::ledger::current_wall_records(posts);
+        // Ledgers, standings, recipes, child announcements and activity bundles are
+        // append-only records whose owners say newest wins: only the records still in
+        // force spend the context budget (one rule, `experience::wall_records`).
+        let posts = ledgers_for_context(
+            crate::experience::wall_records::current_wall_records(posts),
+            self.reader.card_labels(effective_room).await.as_ref(),
+        );
         let (items, used, next) = Self::pack(&posts, 0, budget);
         if items.is_empty() {
             // Budget too small to carry even a truncated first post.
@@ -531,8 +618,9 @@ impl RagSource for WallSource {
         // Re-read the wall: the projection is cheap (a transcript window) and
         // re-reading keeps the cursor honest against a wall edited between
         // turns, rather than caching a snapshot that can drift.
-        let posts = crate::experience::ledger::current_wall_records(
-            self.reader.wall_posts(effective_room).await.ok()?,
+        let posts = ledgers_for_context(
+            crate::experience::wall_records::current_wall_records(self.reader.wall_posts(effective_room).await.ok()?),
+            self.reader.card_labels(effective_room).await.as_ref(),
         );
         if start >= posts.len() {
             return None;
@@ -548,6 +636,64 @@ impl RagSource for WallSource {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (cards 4cfd4530 and 7c8c44a1; the 5090 2026-10-11): Kimi lifted a staged
+    // revision from ANOTHER card's ledger into her submit, because every ledger read only
+    // `[card-ledger]`; and 10 of her 14 ledgers were for merged or closed cards, re-prefilled
+    // every turn. A concluded card's ledger leaves her context (her call); every other ledger
+    // leads with the card it is about, or that it is off this room's board. Order is kept; other
+    // categories and an unreadable ledger pass through verbatim; an unread board changes nothing.
+    #[test]
+    fn each_card_ledger_names_its_card_and_a_concluded_cards_ledger_leaves_the_context() {
+        use crate::experience::ledger::{CardLedger, LEDGER_WALL_CATEGORY};
+        let mine = uuid::Uuid::parse_str("27f133e4-0000-4000-8000-000000000001").unwrap();
+        let other = uuid::Uuid::parse_str("1f58fc16-0000-4000-8000-000000000002").unwrap();
+        let gone = uuid::Uuid::parse_str("deadbeef-0000-4000-8000-000000000003").unwrap();
+        let reviewed = uuid::Uuid::parse_str("4972ba91-0000-4000-8000-000000000004").unwrap();
+        let merged = uuid::Uuid::parse_str("d61513e4-0000-4000-8000-000000000005").unwrap();
+        let ledger = |card_id| {
+            serde_json::to_string(&CardLedger { card_id, next_test: "run it".into(), ..Default::default() }).unwrap()
+        };
+        let posts = vec![
+            post("rules", "be kind"),
+            post(LEDGER_WALL_CATEGORY, &ledger(mine)),
+            post(LEDGER_WALL_CATEGORY, &ledger(other)),
+            post(LEDGER_WALL_CATEGORY, &ledger(gone)),
+            post(LEDGER_WALL_CATEGORY, "not json"),
+            post(LEDGER_WALL_CATEGORY, &ledger(reviewed)),
+            post(LEDGER_WALL_CATEGORY, &ledger(merged)),
+        ];
+        let mut labels = CardLabels::new();
+        labels.insert(mine, ("RenameIndex crashes".to_string(), airc_work::CardState::InProgress));
+        labels.insert(other, ("Q() objects".to_string(), airc_work::CardState::Closed));
+        labels.insert(reviewed, ("under review".to_string(), airc_work::CardState::Review));
+        labels.insert(merged, ("landed".to_string(), airc_work::CardState::Merged));
+        let out = ledgers_for_context(posts.clone(), Some(&labels));
+        // the closed (index 2) and merged (index 6) cards' ledgers leave; order is kept
+        let kept = [0usize, 1, 3, 4, 5];
+        assert_eq!(
+            out.iter().map(|p| p.post_id).collect::<Vec<_>>(),
+            kept.iter().map(|&i| posts[i].post_id).collect::<Vec<_>>(),
+            "concluded cards' ledgers leave; everything else stays, in order"
+        );
+        assert_eq!(out[0].body, "be kind", "other categories pass through verbatim");
+        assert!(out[1].body.starts_with("ledger of card 27f133e4 \"RenameIndex crashes\" (in_progress)\n{"), "{}", out[1].body);
+        assert!(out[2].body.starts_with("ledger of card deadbeef (not on this room's board)\n"), "{}", out[2].body);
+        assert_eq!(out[3].body, "not json", "an unreadable ledger renders as it is");
+        assert!(
+            out[4].body.starts_with("ledger of card 4972ba91 \"under review\" (review)\n"),
+            "a card in REVIEW is live work: its ledger is her resumption state and stays: {}",
+            out[4].body
+        );
+        assert!(out[1].body.ends_with(&posts[1].body), "the ledger itself is unchanged after its label line");
+        // BigMama on #4959: a board that could not be read says nothing about any card, never
+        // "not on this room's board" for all of them
+        let unread = ledgers_for_context(posts.clone(), None);
+        assert_eq!(unread.iter().map(|p| &p.body).collect::<Vec<_>>(), posts.iter().map(|p| &p.body).collect::<Vec<_>>(), "an unread board renders every post verbatim");
+        // and a board that was read but holds no cards does say so
+        let empty = ledgers_for_context(posts.clone(), Some(&CardLabels::new()));
+        assert!(empty[1].body.starts_with("ledger of card 27f133e4 (not on this room's board)\n"), "{}", empty[1].body);
+    }
     use super::*;
     use airc_core::PeerId;
     use std::sync::Mutex;
@@ -575,6 +721,8 @@ mod tests {
 
     struct StubReader {
         posts: Vec<WallPostPublished>,
+        /// The board this reader answers `card_labels` with: `None` = it has no board.
+        board: Option<CardLabels>,
         fail: Mutex<bool>,
         /// The room argument of the LAST read, so a test can assert which room
         /// the source actually asked for — the whole point of the bound-room
@@ -586,6 +734,7 @@ mod tests {
         fn new(posts: Vec<WallPostPublished>) -> Self {
             Self {
                 posts,
+                board: None,
                 fail: Mutex::new(false),
                 asked_for: Mutex::new(None),
             }
@@ -608,6 +757,40 @@ mod tests {
             }
             Ok(self.posts.clone())
         }
+
+        async fn card_labels(&self, _room: Option<uuid::Uuid>) -> Option<CardLabels> {
+            self.board.clone()
+        }
+    }
+
+    // what this catches (the 5090, 2026-10-12, build 6153): the labels and the concluded-ledger
+    // drop wired only in a helper, never through deliver(), the path a persona's turn takes. The
+    // helper-level test passed while production readers answered "board unread" and Kimi's wall
+    // kept a merged card's ledger, unlabelled. This drives the READER's board through deliver().
+    #[tokio::test]
+    async fn deliver_applies_the_readers_board_to_card_ledgers() {
+        use crate::experience::ledger::{CardLedger, LEDGER_WALL_CATEGORY};
+        let live = Uuid::from_u128(0x27f1_33e4);
+        let merged = Uuid::from_u128(0x1f58_fc16);
+        let ledger = |card_id| {
+            post(
+                LEDGER_WALL_CATEGORY,
+                &serde_json::to_string(&CardLedger { card_id, next_test: "run it".into(), ..Default::default() }).unwrap(),
+            )
+        };
+        let mut board = CardLabels::new();
+        board.insert(live, ("RenameIndex crashes".to_string(), airc_work::CardState::InProgress));
+        board.insert(merged, ("landed".to_string(), airc_work::CardState::Merged));
+        let mut reader = StubReader::new(vec![ledger(live), ledger(merged)]);
+        reader.board = Some(board);
+        let delivery = WallSource::new(persona(), Arc::new(reader))
+            .deliver(&ctx(), 10_000, ResolutionPreference::Raw)
+            .await;
+        let text = delivery.items.iter().map(|i| i.content.as_str()).collect::<Vec<_>>().join("\n");
+        let live8 = live.simple().to_string();
+        assert!(text.contains(&format!("ledger of card {} \"RenameIndex crashes\" (in_progress)", &live8[..8])), "{text}");
+        assert!(!text.contains(&merged.to_string()), "a merged card's ledger leaves the context: {text}");
+        assert_eq!(delivery.items.len(), 1, "only the live card's ledger is delivered");
     }
 
     /// what this catches (#3874): an id that names a thing it does not read. This

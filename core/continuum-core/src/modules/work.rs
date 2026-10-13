@@ -18,6 +18,7 @@
 //! remote `Provisional` peer (who could otherwise spam claims). Board READS can
 //! open up later; writes stay trusted.
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
 
@@ -28,16 +29,10 @@ use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use airc_lib::{
-    Airc, CardState, ChangeWorkCardState, ClaimId, ClaimWorkCard, CreateWorkCard,
-    HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCard, WorkCardId,
-};
+use airc_lib::{Airc, CardState, ChangeWorkCardState, ClaimId, ClaimWorkCard, CreateWorkCard, HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCard, WorkCardId};
 
 use crate::persona::{PersonaAircRuntime, PersonaAircRuntimeRegistry};
-use crate::runtime::{
-    CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry,
-    ServiceModule,
-};
+use crate::runtime::{CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
 pub mod review_gate;
@@ -630,7 +625,7 @@ pub(crate) async fn record_held_claim(airc: &Arc<Airc>, card_id: WorkCardId, cla
             room,
             card_id: card_id.as_uuid(),
             claim_id: claim_id.as_uuid(),
-            recorded_at_ms: crate::modules::chat::now_ms(),
+            recorded_at_ms: EpochMs::now().millis(),
             refusals: 0,
         },
     );
@@ -825,10 +820,7 @@ impl ActionCommand for WorkClaim {
                         // `hold_of` is the same predicate `work/list` renders through
                         // (card_holder::holder, below) — one rule for "is someone on this",
                         // not two in one file.
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0);
+                        let now_ms = EpochMs::now().millis();
                         // ASK WHO, NOT JUST WHETHER. `live_holder` says a person is on
                         // the card; `classify_refusal` says whether that person is YOU.
                         // Without the second question this arm told Anon her own card was
@@ -926,7 +918,7 @@ impl ActionCommand for WorkClaim {
                 Some((room, card)) => {
                     use crate::cognition::bench_round::WorkDriver;
                     use crate::modules::card_staging::Staging;
-                    let staging = match crate::commands::benchmark::continuum_home() {
+                    let staging = match crate::paths::continuum_home() {
                         Ok(home) => {
                             crate::modules::card_staging::stage_for_card(
                                 &home,
@@ -2075,7 +2067,7 @@ impl ActionCommand for WorkState {
         // claim path; it neither grants ownership nor marks review as passed.
         let resume_review = if state == CardState::InProgress {
             card_in_subscribed_rooms(&airc, card_id).await.is_some_and(|(_, card)| {
-                resumes_held_review(&card, state, airc.peer_id(), crate::modules::chat::now_ms())
+                resumes_held_review(&card, state, airc.peer_id(), EpochMs::now().millis())
             })
         } else {
             false
@@ -2198,8 +2190,8 @@ pub(crate) fn checkout_change(root: &std::path::Path) -> ChangeVerdict {
     let staged_ts = std::fs::metadata(root.join(".git"))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs());
+        .and_then(|t| crate::time::EpochMs::of(t).ok())
+        .map(crate::time::EpochMs::secs);
     change_verdict(porcelain, head_ts, staged_ts)
 }
 
@@ -2227,7 +2219,7 @@ pub(crate) async fn advance_card_state_effective(
     actor: Option<Uuid>,
 ) -> Result<CardState, String> {
     use crate::cognition::bench_round as round;
-    let finishing = matches!(state, CardState::Closed | CardState::Merged);
+    let finishing = is_concluded(&state);
     // THE GATE READS THE ROOM (card fa4aaaaa): a room that declares a review policy
     // decides; one that declares none keeps the round's gate (bench rooms, until their
     // recipes declare the policy). Read only on transitions that can finish.
@@ -2663,7 +2655,7 @@ impl ActionCommand for WorkNote {
             unknown: p.unknown,
             next_test: p.next_test,
             decided_fix: p.decided_fix.filter(|f| !f.trim().is_empty()),
-            at_ms: crate::modules::chat::now_ms(),
+            at_ms: EpochMs::now().millis(),
             by: airc.peer_id().as_uuid(),
         };
         crate::experience::ledger::WallLedgerStore::new(airc.clone())
@@ -2778,6 +2770,15 @@ pub(crate) fn state_str(s: &CardState) -> &'static str {
         CardState::Merged => "merged",
         CardState::Closed => "closed",
     }
+}
+
+/// Is this card CONCLUDED: merged or closed, its lane over. Narrower than airc's
+/// `CardState::is_settled`, which also counts Review (past claiming, but a card in review
+/// is still live work: its holder's ledger is her resumption state). The one place that
+/// says which states end a card's lane here (the transition gate's `finishing`, and which
+/// card ledgers leave a persona's context).
+pub(crate) fn is_concluded(s: &CardState) -> bool {
+    matches!(s, CardState::Merged | CardState::Closed)
 }
 
 /// The board's displayed 8-char short form of an id — what every surface
@@ -3029,10 +3030,7 @@ impl ActionCommand for WorkList {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let filter = p.state.as_deref().map(parse_state).transpose()?;
         let board = board_to_read(&airc, p.room.as_deref()).await?;
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = EpochMs::now().millis();
         // Resolve every distinct owner to a published name in ONE pass, then render
         // through the SHARED holder projection (`persona::card_holder`) — the same
         // answer the [room-kanban] grounding block and the service-loop anchor give.
@@ -3480,6 +3478,11 @@ pub struct WorkGetResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub ledger: Option<crate::experience::ledger::CardLedger>,
+    /// What happens next once this card has a submission (`submission::next_after_submission`):
+    /// after submitting, nothing more on the card; the grade fires on a reviewer's pass.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub next: Option<String>,
 }
 
 /// PURE: whole seconds until a claim expiring at `expires_at_ms` lapses, seen at `now_ms`;
@@ -3519,12 +3522,20 @@ impl WorkGet {
             .read(room, card_id.as_uuid())
             .await
             .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
-        let mut receipt = Self::receipt(room, card, ledger, crate::modules::chat::now_ms(), reader);
+        let mut receipt = Self::receipt(room, card, ledger, EpochMs::now().millis(), reader);
         let parent = card.reviews.and_then(|id| board.card(id)).unwrap_or(card);
         receipt.reviews = parent.submissions.iter()
             .flat_map(|s| board.submission_reviews_for(s.submission_id))
             .filter(|r| r.card_id == parent.card_id)
             .map(submission::WorkReviewResult::from).collect();
+        // the holder's card only: a review card's next step is its verdict, not a submission
+        if card.reviews.is_none() {
+            let latest = card.submissions.last().map(|s| s.submission_id);
+            let outcomes: Vec<_> = latest
+                .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
+                .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
+            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title));
+        }
         Ok(receipt)
     }
 
@@ -3559,6 +3570,7 @@ impl WorkGet {
             owner: card.owner.map(|o| short8(o.as_uuid())),
             claim_id: card.claim_id.map(|c| short8(c.as_uuid())),
             ledger,
+            next: None,
         }
     }
 }
@@ -3716,12 +3728,6 @@ impl ServiceModule for WorkModule {
             // dep-ownership reason.
             Arc::new(crate::commands::benchmark_pause::BenchmarkPause),
             Arc::new(crate::commands::benchmark_pause::BenchmarkResume),
-            // recipe/run composes arbitrary commands through the substrate
-            // executor — registered here for the same executor-slot-ownership
-            // reason benchmark/dispatch is (never registered-but-unroutable).
-            Arc::new(crate::commands::recipe_run::RecipeRun {
-                executor_slot: self.executor_slot.clone(),
-            }),
             // The recipe-facing benchmark verbs (S4): import is pure, the two round-*
             // verbs are the temporary tracker seam. Registered here beside dispatch so
             // they are routable from the same module that owns the board.

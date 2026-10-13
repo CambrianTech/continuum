@@ -23,6 +23,7 @@ pub mod types;
 pub use error::AnalysisError;
 pub use types::{AnalysisInput, RecentMessage};
 
+use crate::time::EpochMs;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::types::SharedAnalysis;
 use crate::concurrency::{ConcurrencyPolicy, TokioConcurrencyPolicy};
@@ -34,9 +35,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use prompt::{
-    build_prompt, parse_model_output, strip_think_blocks, ANALYSIS_TEMPERATURE, SYSTEM_PROMPT,
-};
+use prompt::{build_prompt, parse_model_output, strip_think_blocks, ANALYSIS_TEMPERATURE, SYSTEM_PROMPT};
 
 /// Per-process cache of analyses, keyed by `cache_key` (content-addressable).
 /// DashMap = lock-free concurrent reads; multiple personas hitting the
@@ -119,7 +118,7 @@ pub async fn analyze(input: AnalysisInput) -> Result<SharedAnalysis, AnalysisErr
             specialties_seen = ?input.known_specialties,
             "skipped LLM — single-specialty room"
         );
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         return Ok(SharedAnalysis {
             message_id: input.message_id,
             room_id: input.room_id,
@@ -217,14 +216,7 @@ fn compute_cache_key(input: &AnalysisInput) -> String {
 }
 
 fn is_stale(analysis: &SharedAnalysis) -> bool {
-    now_ms().saturating_sub(analysis.generated_at_ms) > CACHE_TTL_MS
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+    EpochMs::now().millis().saturating_sub(analysis.generated_at_ms) > CACHE_TTL_MS
 }
 
 async fn run_analysis(
@@ -347,7 +339,7 @@ async fn run_analysis(
         message_id: input.message_id,
         room_id: input.room_id,
         cache_key: cache_key.to_string(),
-        generated_at_ms: now_ms(),
+        generated_at_ms: EpochMs::now().millis(),
         summary: parsed.summary,
         key_concepts: parsed.key_concepts,
         intent: parsed.intent,
@@ -467,7 +459,7 @@ mod tests {
         // `fresh` assertion fails (fresh entry now reported as stale)
         // and the `stale` assertion fails (stale entry now reported as
         // fresh). Reverted.
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let fresh = SharedAnalysis {
             message_id: Uuid::nil(),
             room_id: Uuid::nil(),

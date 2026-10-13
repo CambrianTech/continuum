@@ -38,11 +38,6 @@ pub mod command_events;
 pub mod command_executor;
 pub mod command_interceptor;
 pub mod control;
-pub mod core_bind_guard;
-pub mod deploy_claim;
-pub mod core_ipc_transport;
-pub mod deploy_provenance;
-pub mod deploy_tracker;
 pub mod event_graph;
 pub mod tracked_checkout;
 pub mod daemon;
@@ -70,6 +65,7 @@ pub mod service_module;
 pub mod share_controller;
 pub mod shared_compute;
 pub mod substrate_governor;
+pub mod params;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
 

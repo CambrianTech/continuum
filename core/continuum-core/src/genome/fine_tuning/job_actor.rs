@@ -375,6 +375,7 @@ fn run_actor(
         // completion sentinel will refuse to page it in until that path is real.
         format: ArtifactFormat::CandleSafetensors,
         metrics: JobMetrics {
+            walk: None,
             trained_tokens,
             final_loss: final_train_loss.map(|v| v as f64),
             final_validation_loss: None,

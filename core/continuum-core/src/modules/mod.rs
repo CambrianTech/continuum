@@ -87,6 +87,7 @@ pub mod prompt_reuse;
 pub mod probe_stream;
 pub mod python_adapter;
 pub mod rag;
+pub mod recipe;
 pub mod resource_broker;
 pub mod resources_module;
 pub mod room;

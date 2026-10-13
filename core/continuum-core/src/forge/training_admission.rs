@@ -15,6 +15,11 @@ pub(crate) fn request(consumer: &str, bytes: u64) -> LeaseRequest {
     }
 }
 
+/// The smallest calibration grant worth dispatching: the engine's own minimum training budget
+/// (`/train` refuses `memory_budget_mib` under 1, fork server-train.cpp), so a smaller grant would
+/// only post a run the engine must refuse.
+const CALIBRATION_GRANT_MIN: u64 = 1024 * 1024;
+
 /// What a training run asks the governor for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TrainingNeed {
@@ -25,7 +30,9 @@ pub(crate) enum TrainingNeed {
     /// measured on the 5090 2026-10-10 (job a7893e09), a plan read 7.05 GB free while serving
     /// was mid-handoff at a 6k window, serving then re-homed to 68k, and the job waited for
     /// 7.05 GB with 4.26 GB free until a hand cancelled it.
-    Calibrate,
+    /// Unmeasured: lease everything governed and free at admission, once at least `at_least` (the
+    /// family's smallest measured whole run, when there is one) is free.
+    Calibrate { at_least: Option<u64> },
 }
 
 /// While the serving lifecycle refuses (unsettled, or an operation holds the gate),
@@ -75,7 +82,7 @@ pub(crate) async fn wait_for_training_memory_bound(
     }
     let mut bytes = match need {
         TrainingNeed::Measured(bytes) => bytes,
-        TrainingNeed::Calibrate => 0,
+        TrainingNeed::Calibrate { .. } => 0,
     };
     let mut changes = daemon.subscribe();
     let mut last_available = None;
@@ -112,10 +119,17 @@ pub(crate) async fn wait_for_training_memory_bound(
             }
         };
         serving_refusal_said = None;
-        if need == TrainingNeed::Calibrate {
+        if let TrainingNeed::Calibrate { at_least } = need {
             bytes = daemon.available_for(consumer, ResourceKind::Vram);
-            if bytes == 0 {
-                // nothing governed is free under the gate: wait for the authority to change
+            // the smallest whole run this family ever measured, else the engine's syntax floor:
+            // a grant under it can only post a run the engine must refuse (Cormac on #4949: the
+            // context alone was 2,543 MiB at w67584, so a few MiB is a guaranteed refusal)
+            if bytes < at_least.map_or(CALIBRATION_GRANT_MIN, |b| b.max(CALIBRATION_GRANT_MIN)) {
+                // less than the engine accepts as a budget is free under the gate (nothing, or a
+                // sliver a previous run has not yet released): wait for the authority to change.
+                // The 5090, 2026-10-11 14:08Z, job 61b782cd: a sub-MiB grant became
+                // memory_budget_mib=0, the engine refused it ('memory_budget_mib must be >= 1'),
+                // and a refusal of the request itself is not returnable, so its examples stranded
                 drop(hold);
                 if last_available != Some(0) {
                     waiting(0);

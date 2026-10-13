@@ -10,6 +10,9 @@ pub mod airc_ipc;
 pub mod attach;
 pub mod command;
 pub mod connection;
+/// Direct IPC to a running core on its local socket (the local-sidecar path; moved from
+/// continuum-core so a client binary never links the core).
+pub mod core_ipc;
 pub mod error;
 pub mod event;
 #[cfg(any(test, feature = "test-fixtures"))]

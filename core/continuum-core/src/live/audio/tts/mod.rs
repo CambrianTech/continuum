@@ -13,7 +13,7 @@
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
 
-pub(crate) mod audio_utils;
+pub(crate) mod normalize;
 mod kokoro;
 mod orpheus;
 mod phonemizer;

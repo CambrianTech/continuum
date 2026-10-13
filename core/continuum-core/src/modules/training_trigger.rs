@@ -70,14 +70,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::genome::fine_tuning::types::{
-    JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample,
-    TrainingJobRequest, TrainingSource,
-};
-use crate::runtime::{
-    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
-    PerKeyGate, ServiceModule,
-};
+use crate::genome::fine_tuning::types::{JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingJobRequest, TrainingSource};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, PerKeyGate, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 
 mod durable;
@@ -362,6 +356,61 @@ impl TrainingTriggerState {
             .or_else(|| self.active_dispatches.get(key).map(|active| active.batch.policy()))
     }
 
+    /// Hand back what each COMPLETED job parked (card 8a2334d9): the whole originals its
+    /// window couldn't hold, or its run skipped, which no route returned before. Through
+    /// `return_parked_remainder`, beside the one return: never an example the job trained, once
+    /// per job by its receipt, and a refused or failed return stays for the next tick.
+    pub(crate) async fn return_parked_remainders(self: &Arc<Self>) {
+        use crate::commands::training_trigger::return_::{return_parked_remainder, Remainder};
+        let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
+        let completed = board.take_completed();
+        if completed.is_empty() {
+            return;
+        }
+        let Some(root) = genome_root() else {
+            crate::probe!(class = "training.job.remainder_unrooted", jobs = completed.len() as u64, "no home: completed jobs cannot be found to return what they parked");
+            return;
+        };
+        let mut retry = Vec::new();
+        for job in completed {
+            match return_parked_remainder(self, board, &root, &job).await {
+                Ok(Remainder::Nothing | Remainder::AlreadyReturned) => {}
+                Ok(Remainder::Submitted(outcome)) if outcome.success => crate::probe!(
+                    class = "training.job.remainder_returned",
+                    job = %job.local_id,
+                    persona = %job.persona_name,
+                    "a completed job's parked examples went back to her bucket, whole; the next dispatch re-plans them"
+                ),
+                Ok(Remainder::Submitted(outcome)) => {
+                    crate::probe!(
+                        class = "training.job.remainder_refused",
+                        job = %job.local_id,
+                        error = ?outcome.error,
+                        "the return of a completed job's parked examples was refused; they stay in its directory and are tried again"
+                    );
+                    retry.push(job);
+                }
+                // A malformed record is refused loudly and not retried: retrying reads the same bytes.
+                Err(error @ crate::sdk_codegen::CommandError::Invalid(_)) => crate::probe!(
+                    class = "training.job.remainder_invalid",
+                    job = %job.local_id,
+                    error = %error,
+                    "a completed job's partition does not match its request; its parked examples stay in its directory for a human"
+                ),
+                Err(error) => {
+                    crate::probe!(
+                        class = "training.job.remainder_failed",
+                        job = %job.local_id,
+                        error = %error,
+                        "the return of a completed job's parked examples failed; they stay in its directory and are tried again"
+                    );
+                    retry.push(job);
+                }
+            }
+        }
+        board.requeue_completed(retry);
+    }
+
     /// Hand back the examples of jobs the ENGINE REFUSED, so her bucket re-fires and the next
     /// dispatch steps the chunk down (card 2dfce676; Fable's 739f1845). The sentinel claims a
     /// failed job and the board hands it here; only a job whose directory records a refusal,
@@ -435,7 +484,7 @@ impl TrainingTriggerState {
             return; // not installed yet: try again next tick, the orphans wait on the board
         };
         let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
-        let now = crate::persona::trace::now_ms();
+        let now = crate::time::EpochMs::now().millis();
         // the held ones whose time to ask again has come, and (once) the boot's orphans
         let mut due = self.take_due_orphans(now);
         if !self.resumed_orphans.swap(true, Ordering::AcqRel) {
@@ -522,7 +571,7 @@ impl TrainingTriggerState {
                     let resubmitted = match read_job_request(&dir) {
                         // The call returning is not the batch being taken: a refused submit
                         // (InconsistentBucket, …) comes back success=false.
-                        Ok(request) => match crate::commands::training_trigger::submit::return_request(self, request, orphan.local_id).await {
+                        Ok(request) => match crate::commands::training_trigger::submit::return_request(self, request, orphan.local_id, crate::commands::training_trigger::submit::ReturnScope::Whole).await {
                             Ok(outcome) if outcome.success => Ok(()),
                             Ok(outcome) => Err(format!("{:?}: {:?}", outcome.error_kind, outcome.error)),
                             Err(error) => Err(error.to_string()),
@@ -783,7 +832,14 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         "genome/job-create rejected: {}",
         response.error.unwrap_or_default()
     );
-    use crate::commands::genome::job_create::{ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
+    use crate::commands::genome::job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
+    if response.error_kind.as_deref() == Some(ERROR_KIND_CAPACITY_PARKED) {
+        // Parked only with its wake key: a refusal that names no wait is evidence of nothing.
+        return Err(match response.capacity_wait {
+            Some(wait) => DispatchFailure::Parked(wait),
+            None => DispatchFailure::Uncertain(format!("{error} (no capacityWait)")),
+        });
+    }
     Err(match response.error_kind.as_deref() {
         // No kind is the command's pre-provider validation/selection refusal.
         None | Some("InvalidRequest" | "MissingCredentials" | "ProviderRejected") => {
@@ -858,6 +914,7 @@ impl ServiceModule for TrainingTriggerModule {
     async fn tick(&self) -> Result<(), String> {
         self.state.resume_orphans_once().await;
         self.state.return_refused_jobs().await;
+        self.state.return_parked_remainders().await;
         self.state.recover_tick().await
     }
 
@@ -901,6 +958,24 @@ impl ServiceModule for TrainingTriggerModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card de9e1342): a capacity refusal decoded as a retry (re-planning
+    // every tick) or as recovery (left for a human), or parked with no wake key to wake by.
+    #[test]
+    fn a_capacity_refusal_decodes_as_parked_only_with_its_wait() {
+        use crate::genome::fine_tuning::types::CapacityWait;
+        use crate::inference::planning::training_plan::NeedSource;
+        let wait = CapacityWait { window: 16_128, need_bytes: 18 << 30, need_source: NeedSource::LowerBound, governed_free: 4 << 30, engine_stamp: Some("abc:cuda".into()) };
+        let refused = |wait: Option<&CapacityWait>| {
+            let mut v = serde_json::json!({"success": false, "error": "waiting for capacity", "errorKind": "CapacityParked"});
+            if let Some(w) = wait {
+                v["capacityWait"] = serde_json::to_value(w).expect("test: encode");
+            }
+            v
+        };
+        assert!(matches!(decode_job_create(refused(Some(&wait))), Err(DispatchFailure::Parked(w)) if w == wait));
+        assert!(matches!(decode_job_create(refused(None)), Err(DispatchFailure::Uncertain(_))), "no wake key, no park");
+    }
 
     // what this catches (Cormac on #4537): an orphan whose engine was silent at boot asked
     // once and dropped, holding serving off its run for the engine's life; or, worse, resumed

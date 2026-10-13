@@ -176,7 +176,7 @@ mod tests {
                 embedder: None,
                 tool_executor: None,
                 experience: None,
-                context_window: crate::cognition::serving_plan::MIN_SERVE_CTX,
+                context_window: crate::inference::planning::MIN_SERVE_CTX,
                 // Harness: synchronous perception (deferral is a live-path concern).
                 defer_recall: false,
                 defer_grounding: false,

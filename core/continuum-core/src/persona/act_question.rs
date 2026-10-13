@@ -31,6 +31,7 @@
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
 
+use crate::time::EpochMs;
 use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
 
@@ -161,7 +162,7 @@ pub(crate) async fn ask_the_act_question(
                     // progress (which leaves no detached-solve ledger entry). Without
                     // this the round reads "unstarted" while she works and the
                     // autopilot piles up duplicate rounds (A / #the-9-1-night-audit).
-                    let worked_at = crate::persona::trace::now_ms();
+                    let worked_at = EpochMs::now().millis();
                     for c in &held {
                         crate::cognition::bench_round::record_card_worked(
                             c.card_id.as_uuid(),
@@ -534,9 +535,7 @@ pub(crate) async fn ask_the_act_question(
                             // recipe that OWNS it reacts to WORK_CARD_STATE_CHANGED
                             // (bench grade-on-done is one such reactor, next_unworked
                             // another). [[activity-outcome-score-is-recipe-owned-gates-multiply-objectives-weigh]]
-                            use crate::cognition::pass_intent::{
-                                classify_pass, conclude_from_pass, ConcludeAction,
-                            };
+                            use crate::cognition::pass_intent::{classify_pass, conclude_from_pass, ConcludeAction};
                             let held_ids: Vec<uuid::Uuid> =
                                 held.iter().map(|c| c.card_id.as_uuid()).collect();
                             let intent = classify_pass(reason.as_deref());

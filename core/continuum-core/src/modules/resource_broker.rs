@@ -3,6 +3,7 @@
 //! This wraps `crate::resources::ResourceBroker` as a ServiceModule so TS,
 //! commands, and Rust subsystems can share one daemon-shaped resource contract.
 
+use crate::time::EpochMs;
 use crate::resources::{ResourceAdmissionReport, ResourceBroker, ResourceDemand};
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use async_trait::async_trait;
@@ -11,7 +12,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::any::Any;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const SYSTEM_RESOURCE_BROKER_STATE: &str = "system/resource-broker-state";
 const SYSTEM_RESOURCE_ADMIT: &str = "system/resource-admit";
@@ -79,7 +79,7 @@ impl ServiceModule for ResourceBrokerModule {
     async fn handle_command(&self, command: &str, params: Value) -> Result<CommandResult, String> {
         match command {
             SYSTEM_RESOURCE_BROKER_STATE => {
-                let now_ms = now_ms()?;
+                let now_ms = EpochMs::read().map_err(|e| e.to_string())?.millis();
                 let broker = self.broker.lock();
                 CommandResult::json(&serde_json::json!({
                     "laneBudgets": broker.lane_budgets(),
@@ -90,7 +90,7 @@ impl ServiceModule for ResourceBrokerModule {
             SYSTEM_RESOURCE_ADMIT => {
                 let params: AdmitParams = serde_json::from_value(params)
                     .map_err(|e| format!("resource-broker admit params invalid: {e}"))?;
-                let now_ms = params.now_ms.unwrap_or(now_ms()?);
+                let now_ms = params.now_ms.unwrap_or(EpochMs::read().map_err(|e| e.to_string())?.millis());
                 let report: ResourceAdmissionReport =
                     self.broker
                         .lock()
@@ -116,13 +116,6 @@ impl ServiceModule for ResourceBrokerModule {
     fn as_any(&self) -> &dyn Any {
         self
     }
-}
-
-fn now_ms() -> Result<u64, String> {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|e| format!("system clock before UNIX_EPOCH: {e}"))?;
-    u64::try_from(duration.as_millis()).map_err(|_| "system clock millis overflow u64".to_string())
 }
 
 #[cfg(test)]

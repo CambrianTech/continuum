@@ -37,7 +37,7 @@
 //! working memory SELF-ACTIVATES only where thinking is enabled — "reason when it
 //! helps, remember what you reasoned." No config flag needed.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
@@ -109,19 +109,6 @@ pub fn collapse_thought(text: &str, keep: usize) -> String {
     }
     let tail: String = text.chars().skip(total - keep).collect();
     format!("[{} earlier chars — my full thought, collapsed] …{tail}", total - keep)
-}
-
-pub fn clip_action_full<'a>(full: &'a str, budget: &ContextBudget) -> std::borrow::Cow<'a, str> {
-    let cap = budget.latest_action_chars();
-    if full.chars().count() <= cap {
-        return std::borrow::Cow::Borrowed(full);
-    }
-    let head: String = full.chars().take(cap).collect();
-    let dropped = full.chars().count() - cap;
-    std::borrow::Cow::Owned(format!(
-        "{head}\n[… +{dropped} chars truncated — re-run the tool with a narrower scope \
-         (a path or line range) to see the rest]"
-    ))
 }
 
 /// Max distinct dispatched (background) handles tracked at once. A persona with more than
@@ -198,7 +185,8 @@ struct TurnPinnedFact {
 
 #[derive(Debug)]
 pub struct WorkingMemory {
-    /// Process-unique construction ordinal. Purely diagnostic: lets any probe
+    /// Process-unique construction ordinal. It keys this mind's set of live spill handles
+    /// (`spill::publish_live_handles`), and it lets any probe
     /// that renders from this instance say WHICH instance it is, so a duplicate
     /// cycle serving the same persona (two working memories alternating under
     /// one mind — the 2026-08-21 split-brain, taken=3389 vs taken=0 in the same
@@ -297,16 +285,22 @@ pub struct WorkingMemory {
     /// Anwen's compile error was overwritten by a `list_files` one act later —
     /// her next three turns wandered discovery tools and she re-ran the same
     /// unfixed code). Char-bounded by the window-derived
-    /// [`ContextBudget::recent_results_chars`] share; tails are the result's
-    /// FINAL chars (errors and conclusions live at the end; the head is already
-    /// in the receipt trail).
+    /// [`ContextBudget::recent_results_chars`] share. Each result is held WHOLE:
+    /// a tail of a code read is broken code (2026-10-12). What no longer fits
+    /// collapses to a pointer at settlement.
     recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String, String, Option<String>)>>,
     /// One-line pointers for results EVICTED from the channel above — collapse,
     /// never delete (2026-08-24): "[result #N (verb, Nk chars) — evicted; …]".
     /// Bounded ring; when IT overflows, the oldest pointer drops silently (a
     /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
     /// message ahead of the recent-results banner.
-    evicted_pointers: Mutex<VecDeque<String>>,
+    evicted_pointers: Mutex<VecDeque<(String, String)>>,
+    /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
+    /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
+    /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
+    /// what it points at stays reachable, whatever the entries' capacity dropped (Codex on
+    /// #4987). Pruned to the live receipts at every publish.
+    receipt_children: Mutex<BTreeMap<String, Vec<String>>>,
     /// The lowest action `seq` whose FULL result is still "active" — i.e. the mind is
     /// still inside the act→observe loop that produced it and hasn't yet spoken. The
     /// full raw result exists to answer "what next" the moment the hands fetch it; once
@@ -433,6 +427,80 @@ pub struct VolatileSnapshot {
     /// snapshots from before this field and for a citizen at home with nothing to hand.
     #[serde(default)]
     pub handoff: Option<crate::cognition::handoff::Handoff>,
+    /// The collapsed results' pointers, each with the handle it reopens: what a result
+    /// leaves when it collapses out of the ring is HOW she reaches it again, so it survives
+    /// a restart exactly as the ring does (Astra on #4963: a read collapsed at settlement
+    /// lost its only handle on restart). Empty on snapshots written before this field.
+    #[serde(default)]
+    pub evicted_pointers: Vec<(String, String)>,
+    /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
+    /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
+    /// written before this field.
+    #[serde(default)]
+    pub receipt_children: BTreeMap<String, Vec<String>>,
+}
+
+impl VolatileSnapshot {
+    /// Save every restored receipt that has no handle (a snapshot written before results were
+    /// saved, #4963) through one pin held until the restored memory publishes, and re-file each
+    /// newly saved receipt's dependencies under its new key: from `seq:N` to its handle, or the
+    /// next publish would prune them as belonging to no receipt (Codex on #4987).
+    pub fn retain_handleless(&mut self, persona_id: Uuid) -> crate::cognition::tool_executor::spill::LivePin {
+        let unsaved = self.unsaved_receipts();
+        let pin = crate::cognition::tool_executor::spill::retain_handleless(
+            persona_id,
+            self.recent_results.iter_mut().map(|(_, _, text, _, handle)| (text.as_str(), handle)),
+        );
+        self.refile_children(&unsaved);
+        pin
+    }
+
+    fn unsaved_receipts(&self) -> Vec<u64> {
+        self.recent_results.iter().filter(|(.., handle)| handle.is_none()).map(|(seq, ..)| *seq).collect()
+    }
+
+    /// Move each of `unsaved`'s dependencies from its `seq:N` key to the handle it now has.
+    fn refile_children(&mut self, unsaved: &[u64]) {
+        for (seq, .., handle) in &self.recent_results {
+            if let (true, Some(handle)) = (unsaved.contains(seq), handle) {
+                if let Some(children) = self.receipt_children.remove(&receipt_key(*seq, None)) {
+                    self.receipt_children.insert(handle.clone(), children);
+                }
+            }
+        }
+    }
+}
+
+/// The key a receipt's dependencies are filed under: its saved handle, or `seq:N` for a
+/// receipt whose save failed (it is held whole in the ring and never collapses).
+fn receipt_key(seq: u64, handle: Option<&str>) -> String {
+    handle.map_or_else(|| format!("seq:{seq}"), str::to_owned)
+}
+
+/// EVERY handle a mind can still reach from what it holds: each retained receipt's own, each
+/// collapsed pointer's, and the per-call results each of those receipts points at. The one
+/// owner of that set: working memory publishes it live, and eviction reads the same set from
+/// the persisted checkpoint (`persona_workspace::persisted_result_handles`).
+pub(crate) fn reachable_handles<'a>(
+    recent_results: impl IntoIterator<Item = &'a (u64, Option<Uuid>, String, String, Option<String>)>,
+    evicted_pointers: impl IntoIterator<Item = &'a (String, String)>,
+    receipt_children: &BTreeMap<String, Vec<String>>,
+) -> HashSet<String> {
+    let mut roots: Vec<String> = recent_results
+        .into_iter()
+        .map(|(seq, _, _, _, handle)| receipt_key(*seq, handle.as_deref()))
+        .collect();
+    roots.extend(evicted_pointers.into_iter().map(|(_, handle)| handle.clone()));
+    let mut reachable: HashSet<String> = HashSet::new();
+    for root in roots {
+        if let Some(children) = receipt_children.get(&root) {
+            reachable.extend(children.iter().cloned());
+        }
+        if !root.starts_with("seq:") {
+            reachable.insert(root);
+        }
+    }
+    reachable
 }
 
 /// One typed working-memory entry: kind + the FINAL rendered line (rendered
@@ -480,6 +548,7 @@ impl WorkingMemory {
             receipt_heads: Mutex::new(VecDeque::new()),
             recent_results: Mutex::new(VecDeque::new()),
             evicted_pointers: Mutex::new(VecDeque::new()),
+            receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
         }
     }
@@ -576,7 +645,7 @@ impl WorkingMemory {
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
     pub fn record_receipt(&self, result: &str) {
-        self.record_receipt_inner(result, Vec::new(), None);
+        self.record_receipt_inner(result, Vec::new(), None, None);
     }
 
     /// TYPED sibling of [`record_receipt`](Self::record_receipt): store the same
@@ -589,8 +658,16 @@ impl WorkingMemory {
     /// `room` scopes the archived head to the room the act was FOR (the act
     /// path passes it; legacy text callers don't have it) — the steps ledger
     /// renders this-room acts first (CAUSAL-MEMORY-GRAPH.md slice B).
-    pub fn record_receipt_typed(&self, acts: &[Observation], rendered: &str, room: Option<Uuid>) {
-        self.record_receipt_inner(rendered, acts.to_vec(), room);
+    /// `custody` is where `rendered` itself is saved (`spill::LivePin::retain`): the handle the results
+    /// ring's pointer names when this entry collapses. `Unsaved` entries never collapse.
+    pub fn record_receipt_typed(
+        &self,
+        acts: &[Observation],
+        rendered: &str,
+        room: Option<Uuid>,
+        custody: crate::ai::types::ResultCustody,
+    ) {
+        self.record_receipt_inner(rendered, acts.to_vec(), room, custody.handle().map(str::to_owned));
     }
 
     /// Shared body: mint the monotonic `#seq`, keep the FULL latest result, and push
@@ -598,7 +675,13 @@ impl WorkingMemory {
     /// plus the (possibly empty) typed acts. One entry per batch so `recent()` stays
     /// byte-stable (a multi-call batch renders as one receipt exactly as before);
     /// `acts` carries every call's typed observation for the typed consumers.
-    fn record_receipt_inner(&self, result: &str, acts: Vec<Observation>, room: Option<Uuid>) {
+    fn record_receipt_inner(
+        &self,
+        result: &str,
+        acts: Vec<Observation>,
+        room: Option<Uuid>,
+        handle: Option<String>,
+    ) {
         let a = result.trim();
         if a.is_empty() {
             return;
@@ -608,19 +691,17 @@ impl WorkingMemory {
         // file, read a screenshot description, scan a log). Overwrites the prior latest —
         // older acts survive only as heads in the trail below.
         *self.last_action.lock() = Some((seq, a.to_string()));
-        // Recent-results feedback channel: keep this result's TAIL past the next act
-        // and the next turn (the overwrite above and the settlement gate both destroy
-        // it exactly when a multi-turn task still needs it — the Anwen regression).
-        // Per-entry share is a third of the buffer so ~3 tails coexist; eviction by
-        // total chars keeps the whole buffer inside its window-derived bound.
+        // Recent-results feedback channel: keep this result WHOLE past the next act and
+        // the next turn (the overwrite above and the settlement gate both destroy it
+        // exactly when a multi-turn task still needs it — the Anwen regression). Never a
+        // tail: a code read's last lines are broken code, and on 2026-10-12 Kimi read
+        // wall_source.rs 25+ times in four hours and landed no edit because every earlier
+        // read reached her next turn as its last ~2,100 chars (Joel: "the clipping I've
+        // yelled about for months"). The producer already fitted it (whole, or its
+        // handle: `spill::LivePin::whole_or_handle`); the budget decides how many of these units
+        // fit (`recent_results_chars`) and the rest collapse to pointers at settlement.
         {
-            let cap = self.budget().recent_results_chars();
-            let per_entry = (cap / 3).max(1);
-            let tail: String = {
-                let chars: Vec<char> = a.chars().collect();
-                let start = chars.len().saturating_sub(per_entry);
-                chars[start..].iter().collect()
-            };
+            let tail = a.to_string();
             // A receipt can contain several operations. Retain their typed names
             // in order instead of attributing the whole batch to its first call.
             let mut label = String::new();
@@ -633,9 +714,13 @@ impl WorkingMemory {
             if label.is_empty() {
                 label.push_str("unrecorded");
             }
-            let handle = acts
+            let children: Vec<String> = acts
                 .iter()
-                .find_map(|o| o.output.result.spill_handle.clone());
+                .filter_map(|act| act.output.result.custody.handle().map(str::to_owned))
+                .collect();
+            if !children.is_empty() {
+                self.receipt_children.lock().insert(receipt_key(seq, handle.as_deref()), children);
+            }
             let mut rr = self.recent_results.lock();
             rr.push_back((seq, room, tail, label, handle));
             // NO mid-settle eviction (2026-08-24, the third head-rotation): evicting
@@ -691,6 +776,11 @@ impl WorkingMemory {
         while e.len() > self.capacity {
             e.pop_front();
         }
+        drop(e);
+        // After BOTH the ring and the entry carrying this batch's acts: the set published
+        // here names the receipt's handle and each call's, which is what lets the act seam
+        // drop the pin that held them since before they were written (card 12b080c3).
+        self.publish_live_handles();
     }
 
     /// Append one receipt head line to the proprioception archive and evict oldest-first
@@ -854,10 +944,7 @@ impl WorkingMemory {
             receipt_head_rooms,
             recent_results: self.recent_results.lock().iter().cloned().collect(),
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
-            saved_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0),
+            saved_at_ms: crate::time::EpochMs::now().millis(),
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
             // Stamped by `save_volatile`, which knows WHOSE memory this is; the memory
             // itself carries no persona id.
@@ -870,6 +957,8 @@ impl WorkingMemory {
                 .filter(|d| d.status == DispatchStatus::Running)
                 .map(|d| d.label.clone())
                 .collect(),
+            evicted_pointers: self.evicted_pointers.lock().iter().cloned().collect(),
+            receipt_children: self.receipt_children.lock().clone(),
         }
     }
 
@@ -912,19 +1001,27 @@ impl WorkingMemory {
         }
         *self.last_action.lock() = snap.last_action;
         {
-            // Restore the feedback channel; bounded by the same eviction the live
-            // writer applies (re-clamp contract), so an oversized snapshot trims.
-            let cap = self.budget().recent_results_chars();
+            // Restore the feedback channel, then bound it by the SAME collapse the live
+            // writer's settlement applies (re-clamp contract): a snapshot from a bigger
+            // window leaves pointers to what no longer fits, never a silent deletion.
             let mut rr = self.recent_results.lock();
             rr.clear();
             rr.extend(snap.recent_results);
-            let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
-            while total > cap && rr.len() > 1 {
-                if let Some((_, _, evicted, _, _)) = rr.pop_front() {
-                    total -= evicted.chars().count() + 1;
-                }
-            }
         }
+        {
+            let mut ptrs = self.evicted_pointers.lock();
+            ptrs.clear();
+            ptrs.extend(snap.evicted_pointers);
+        }
+        *self.receipt_children.lock() = snap.receipt_children;
+        // Collapse only against the REAL window. Before set_served_window the budget is the
+        // floor (cap 1,536 measured at restore on the 5090), which would fold results the
+        // served window holds; the next settlement collapses against the window she is
+        // actually served with (card df0035bf).
+        if self.served_window.load(Ordering::Relaxed) != 0 {
+            self.collapse_results_over_cap();
+        }
+        self.publish_live_handles();
         {
             let mut f = self.action_fps.lock();
             f.clear();
@@ -943,10 +1040,7 @@ impl WorkingMemory {
         // wake's turn and the one that acts on it. The build compared is the one that
         // BOOTED, so a deploy that failed to land is said as such (Kimi's #3).
         if let Some(handoff) = snap.handoff.as_ref() {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
+            let now_ms = crate::time::EpochMs::now().millis();
             self.pin_fact_for_turns(
                 "handoff",
                 &crate::cognition::handoff::render_on_wake(
@@ -962,10 +1056,7 @@ impl WorkingMemory {
         // NEWEST thing in her window when she wakes. A fact, never an instruction.
         let checkpoint_age = (snap.saved_at_ms > 0)
             .then(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| (d.as_millis() as u64).saturating_sub(snap.saved_at_ms))
-                    .ok()
+                crate::time::EpochMs::read().map(|now| now.millis().saturating_sub(snap.saved_at_ms)).ok()
             })
             .flatten()
             .map(|ms| {
@@ -1207,18 +1298,19 @@ impl WorkingMemory {
     /// builder now reads this DIRECTLY and appends it as its own durable trailing
     /// turn, so no `focus()` pass stands between the hands and the mind.
     ///
-    /// Identical gating + clipping to the old faculty block: settlement-gated via
+    /// Identical gating to the old faculty block: settlement-gated via
     /// [`active_action_full`](Self::active_action_full) (stops re-prefilling once the
     /// turn settles — #139/#165), and shown only when the full result carries MORE
     /// than the trail head already does. `None` when there is no active result or it
     /// would add nothing.
     pub fn pinned_active_result_block(&self) -> Option<String> {
         let (seq, full) = self.active_action_full()?;
-        let budget = self.budget();
-        if full.chars().count() <= budget.trail_head_chars() {
+        if full.chars().count() <= self.budget().trail_head_chars() {
             return None;
         }
-        Some(self.full_result_message(seq, &clip_action_full(&full, &budget)))
+        // Shown as the producer handed it over: whole, or its handle. A consumer never
+        // re-cuts (CONTENT-TRAVELS-BY-HANDLE.md, forbidden moves).
+        Some(self.full_result_message(seq, &full))
     }
 
     /// The RECENT-RESULTS feedback block: the last few acts' result tails, kept
@@ -1240,8 +1332,13 @@ impl WorkingMemory {
     /// instead of re-ingesting it. First message carries the banner so the
     /// semantics of the ledger stay stated.
     pub fn recent_results_messages(&self) -> Vec<String> {
+        // The active result renders WHOLE as the "Full result of your most recent action"
+        // message; holding it here too would spend its share twice. It joins the ring's
+        // tail when the next act replaces it: an append at the frontier, so the prefix
+        // ahead of it stays byte-stable.
+        let active = self.active_action_full().map(|(seq, _)| seq);
         let rr = self.recent_results.lock();
-        if rr.is_empty() {
+        if rr.iter().all(|(seq, ..)| Some(*seq) == active) && self.evicted_pointers.lock().is_empty() {
             return Vec::new();
         }
         // Banner as its OWN byte-stable message (never an rr entry, so eviction
@@ -1252,7 +1349,7 @@ impl WorkingMemory {
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(),
         );
-        out.extend(rr.iter().map(|(seq, room, tail, operation, handle)| {
+        out.extend(rr.iter().filter(|(seq, ..)| Some(*seq) != active).map(|(seq, room, tail, operation, handle)| {
             let attribution = ResultAttribution {
                 seq: *seq,
                 room: *room,
@@ -1270,35 +1367,11 @@ impl WorkingMemory {
             if !ptrs.is_empty() {
                 out.push(format!(
                     "Older results, collapsed to pointers (query to expand):\n{}",
-                    ptrs.iter().cloned().collect::<Vec<_>>().join("\n")
+                    ptrs.iter().map(|(pointer, _)| pointer.as_str()).collect::<Vec<_>>().join("\n")
                 ));
             }
         }
         out
-    }
-
-    pub fn recent_results_block(&self) -> Option<String> {
-        let rr = self.recent_results.lock();
-        if rr.is_empty() {
-            return None;
-        }
-        let lines: Vec<String> = rr
-            .iter()
-            .map(|(seq, room, tail, operation, handle)| {
-                let attribution = ResultAttribution {
-                    seq: *seq,
-                    room: *room,
-                    operation: Some(operation),
-                    spill_handle: handle.as_deref(),
-                };
-                format!("[result {attribution}] {tail}")
-            })
-            .collect();
-        Some(format!(
-            "Recent results of your own actions (oldest first; #n matches the \
-             action ledger):\n{}",
-            lines.join("\n")
-        ))
     }
 
     /// Fold a streamed event from a DISPATCHED (background) command into the mind's
@@ -1372,6 +1445,26 @@ impl WorkingMemory {
             .collect()
     }
 
+    /// Tell the spill owner which saved results this mind still points at (ring entries and
+    /// collapsed pointers), so disk-pressure eviction never deletes one (card 9197cd01).
+    /// The whole set, replaced, so nothing can drift.
+    fn publish_live_handles(&self) {
+        let rr = self.recent_results.lock();
+        let ptrs = self.evicted_pointers.lock();
+        let mut children = self.receipt_children.lock();
+        // Dependencies live exactly as long as their receipt: drop those of receipts that
+        // left both the ring and the pointer ring.
+        let receipts: HashSet<String> = rr
+            .iter()
+            .map(|(seq, _, _, _, handle)| receipt_key(*seq, handle.as_deref()))
+            .chain(ptrs.iter().map(|(_, handle)| handle.clone()))
+            .collect();
+        children.retain(|key, _| receipts.contains(key));
+        let handles = reachable_handles(rr.iter(), ptrs.iter(), &children);
+        drop((rr, ptrs, children));
+        crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
+    }
+
     /// Record that the persona SETTLED — produced an utterance and closed the current
     /// concern. Pushes a [`WM_SETTLEMENT_PREFIX`]-marked boundary into the same rolling
     /// buffer (honest proprioception: "I already answered X", perceivable by the mind
@@ -1403,30 +1496,42 @@ impl WorkingMemory {
             return;
         }
         let target = cap / 2;
-        while total > target && rr.len() > 1 {
-            if let Some((eseq, room, evicted, elabel, ehandle)) = rr.pop_front() {
-                total -= evicted.chars().count() + 1;
-                // COLLAPSE, never delete: the evicted result leaves a queryable
-                // one-line pointer so she can expand or re-run deliberately
-                // instead of forgetting it ever happened.
-                let mut ptrs = self.evicted_pointers.lock();
-                let attribution = ResultAttribution {
-                    seq: eseq,
-                    room,
-                    operation: Some(&elabel),
-                    spill_handle: ehandle.as_deref(),
-                };
-                ptrs.push_back(match &ehandle {
-                    Some(_) => format!("[result {attribution} — collapsed]"),
-                    None => format!(
-                        "[result {attribution}, {} chars — collapsed from view; re-run if needed]",
-                        evicted.chars().count()
-                    ),
-                });
-                while ptrs.len() > 12 {
-                    ptrs.pop_front();
-                }
+        // Oldest first, SAVED entries collapse to pointers until the ring is under target. An
+        // UNSAVED entry (its save failed) never collapses: nothing else holds its bytes, so
+        // custody outranks the share (Astra on #4963). The newest entry always stays.
+        let mut survivors = VecDeque::with_capacity(rr.len());
+        while let Some(entry) = rr.pop_front() {
+            let (eseq, room, evicted, elabel, ehandle) = entry;
+            let newest = rr.is_empty() && survivors.is_empty();
+            let Some(handle) = ehandle.as_deref().filter(|_| total > target && !newest) else {
+                survivors.push_back((eseq, room, evicted, elabel, ehandle));
+                continue;
+            };
+            total -= evicted.chars().count() + 1;
+            // COLLAPSE, never delete: the evicted result leaves a one-line pointer whose
+            // handle resolves to exactly what she saw.
+            let attribution = ResultAttribution {
+                seq: eseq,
+                room,
+                operation: Some(&elabel),
+                spill_handle: Some(handle),
+            };
+            let mut ptrs = self.evicted_pointers.lock();
+            ptrs.push_back((format!("[result {attribution} — collapsed]"), handle.to_owned()));
+            while ptrs.len() > 12 {
+                ptrs.pop_front();
             }
+        }
+        *rr = survivors;
+        drop(rr);
+        self.publish_live_handles();
+        if total > cap {
+            crate::probe!(
+                class = "wm.results.unsaved_over_share",
+                total = %total,
+                cap = %cap,
+                "results whose save failed are kept whole over the results share"
+            );
         }
     }
 
@@ -1818,9 +1923,27 @@ mod rebuilt_marker {
     }
 }
 
+impl Drop for WorkingMemory {
+    /// A mind that is gone points at nothing: its saved results may be evicted again.
+    fn drop(&mut self) {
+        crate::cognition::tool_executor::spill::withdraw_live_handles(self.instance);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A receipt saved under `handle` (what `spill::LivePin::retain` returns in production).
+    fn saved(handle: &str) -> crate::ai::types::ResultCustody {
+        crate::ai::types::ResultCustody::Whole { handle: handle.into() }
+    }
+
+    /// Record `text` as a saved receipt with no typed acts: the shape a settlement collapse
+    /// acts on. An unsaved receipt never collapses.
+    fn record_saved(wm: &WorkingMemory, text: &str) {
+        wm.record_receipt_typed(&[], text, None, saved("ring-test"));
+    }
 
     // what this catches: her collapsed thought keeping the re-orientation and losing
     // the decision (Kimi, 2026-10-04: "keep the end"). The decision survives, the
@@ -1860,6 +1983,233 @@ mod tests {
         );
     }
 
+    // what this catches: eviction deleting a saved result a mind still points at (card
+    // 9197cd01). A handle in the ring, and the same handle after it collapses to a pointer,
+    // is live to the spill pool's guard; when the mind drops, it is released.
+    #[test]
+    fn a_mind_s_saved_handles_are_live_until_it_drops() {
+        let handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let file = std::path::PathBuf::from(format!("/spill/p/{handle}.log"));
+        let live = |p: &std::path::Path| crate::cognition::tool_executor::spill::is_live(p);
+        let wm = WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        let cap = wm.budget().recent_results_chars();
+        wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved(&handle));
+        assert!(live(&file), "referenced by the ring");
+        for _ in 0..4 {
+            record_saved(&wm, &"s".repeat(cap / 2));
+        }
+        wm.record_settlement("done");
+        assert!(
+            wm.recent_results_messages().join("\n").contains(&format!("{handle} — collapsed")),
+            "it collapsed to a pointer"
+        );
+        assert!(live(&file), "still referenced by its pointer");
+        drop(wm);
+        assert!(!live(&file), "released when the mind drops");
+    }
+
+    // what this catches (Codex on #4987): per-call results reachable only while the ENTRY that
+    // carried their acts survives. Entries roll over at capacity while the receipt that points
+    // at those results stays in the ring, then collapses to a pointer, then is checkpointed and
+    // restored; at every step each child stays reachable, because it belongs to the receipt.
+    #[test]
+    fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
+        use crate::ai::types::{ResultCustody, ToolCall, ToolResult};
+        use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+        let id = || format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let act = |handle: &str| Observation {
+            call: ToolCall { id: handle.into(), name: "code/read".into(), input: serde_json::json!({}) },
+            output: ToolOutput {
+                image: None,
+                additional_images: None,
+                result: ToolResult {
+                    tool_use_id: handle.into(),
+                    content: format!("[saved as output `{handle}`]"),
+                    is_error: None,
+                    custody: ResultCustody::Pointer { handle: handle.to_owned() },
+                },
+                verb: ToolVerb::classify("code/read"),
+                paths: Vec::new(),
+                verdict: Default::default(),
+            },
+            status: ActStatus::Executed,
+        };
+        let live = |h: &str| {
+            crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{h}.log")))
+        };
+        let (receipt, children) = (id(), [id(), id()]);
+        let wm = WorkingMemory::new(2); // two entries: the third receipt rolls the first out
+        wm.set_served_window(16_384);
+        let cap = wm.budget().recent_results_chars();
+        wm.record_receipt_typed(&[act(&children[0]), act(&children[1])], &"r".repeat(cap / 2), None, saved(&receipt));
+        for _ in 0..3 {
+            record_saved(&wm, &"s".repeat(cap / 2));
+        }
+        assert!(!wm.entries.lock().iter().any(|e| e.acts.iter().any(|a| a.call.id == children[0])), "its entry rolled out");
+        assert!(children.iter().all(|c| live(c)), "the receipt still holds its children");
+
+        wm.record_settlement("done");
+        assert!(wm.recent_results_messages().join("\n").contains(&format!("{receipt} — collapsed")), "collapsed to a pointer");
+        assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
+
+        let snapshot = wm.snapshot();
+        let checkpointed = reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children);
+        assert!(children.iter().all(|c| checkpointed.contains(c)), "the checkpoint names each child");
+        // Through the checkpoint's own encoding, not just in memory.
+        let written = serde_json::to_string(&snapshot).expect("test: encode");
+        let read: VolatileSnapshot = serde_json::from_str(&written).expect("test: decode");
+        assert_eq!(read.receipt_children, snapshot.receipt_children, "the dependencies survive the checkpoint's serde");
+        drop(wm);
+        assert!(children.iter().all(|c| !live(c)), "released with the mind");
+
+        // Real child files through the guarded eviction the spill pool runs under pressure.
+        use crate::paging::filesystem_tier_pool::Removal;
+        let root = std::env::temp_dir().join(format!("wm-deps-{}", Uuid::new_v4()));
+        let dir = root.join(Uuid::new_v4().to_string());
+        std::fs::create_dir_all(&dir).expect("test: dir");
+        let files: Vec<std::path::PathBuf> = children.iter().map(|c| dir.join(format!("{c}.log"))).collect();
+        for (file, child) in files.iter().zip(&children) {
+            std::fs::write(file, child).expect("test: child file");
+        }
+        let restored = WorkingMemory::new(2);
+        restored.restore(read);
+        assert!(children.iter().all(|c| live(c)), "held again by the restored mind");
+        for file in &files {
+            let evict = crate::cognition::tool_executor::spill::evict_unless_live(file);
+            assert!(matches!(evict, Removal::Protected) && file.exists(), "pressure cannot evict a restored receipt's child");
+        }
+        drop(restored);
+        for file in &files {
+            let evict = crate::cognition::tool_executor::spill::evict_unless_live(file);
+            assert!(matches!(evict, Removal::Removed) && !file.exists(), "released, it is evictable");
+        }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // what this catches (Codex on #4987): a legacy receipt with no handle files its children
+    // under `seq:N`; restore saves it and it takes a handle, so the children must move to that
+    // key or the next publish prunes them as belonging to no receipt.
+    #[test]
+    fn a_restored_legacy_receipt_keeps_its_children_under_its_new_handle() {
+        let child = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let mut snapshot = WorkingMemory::new(8).snapshot();
+        snapshot.recent_results.push((7, None, "a legacy receipt".into(), "code/read".into(), None));
+        snapshot.receipt_children.insert(receipt_key(7, None), vec![child.clone()]);
+        let unsaved = snapshot.unsaved_receipts();
+        let handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        snapshot.recent_results[0].4 = Some(handle.clone()); // what a successful save sets
+        snapshot.refile_children(&unsaved);
+        assert_eq!(snapshot.receipt_children.get(&handle), Some(&vec![child.clone()]), "re-filed under its handle");
+        assert!(!snapshot.receipt_children.contains_key("seq:7"));
+        let wm = WorkingMemory::new(8);
+        wm.restore(snapshot);
+        assert!(
+            crate::cognition::tool_executor::spill::is_live(&std::path::PathBuf::from(format!("/spill/p/{child}.log"))),
+            "and still reachable after the restore's publish"
+        );
+    }
+
+    // what this catches (card 12b080c3): a call's own saved result, shown to her as a pointer
+    // inside its receipt, left out of the live set, so eviction could delete it while the
+    // receipt still names it, and the act seam's pin released before it was published.
+    #[test]
+    fn each_call_s_saved_result_is_live_once_its_receipt_is_recorded() {
+        use crate::ai::types::{ResultCustody, ToolCall, ToolResult};
+        use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+        let call_handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
+        let act = Observation {
+            call: ToolCall { id: "c1".into(), name: "code/read".into(), input: serde_json::json!({}) },
+            output: ToolOutput {
+                image: None,
+                additional_images: None,
+                result: ToolResult {
+                    tool_use_id: "c1".into(),
+                    content: format!("[saved as output `{call_handle}`]"),
+                    is_error: None,
+                    custody: ResultCustody::Pointer { handle: call_handle.clone() },
+                },
+                verb: ToolVerb::classify("code/read"),
+                paths: Vec::new(),
+                verdict: Default::default(),
+            },
+            status: ActStatus::Executed,
+        };
+        let file = std::path::PathBuf::from(format!("/spill/p/{call_handle}.log"));
+        let wm = WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        wm.record_receipt_typed(&[act], "read it", None, ResultCustody::Unsaved);
+        assert!(
+            crate::cognition::tool_executor::spill::is_live(&file),
+            "published by the record itself, before the act seam drops its pin"
+        );
+        drop(wm);
+        assert!(!crate::cognition::tool_executor::spill::is_live(&file), "released with the mind");
+    }
+
+    // what this catches (BigMama's live receipt of #4963 on the 5090, card df0035bf): restore
+    // collapsing against the FLOOR budget. Restore runs before the served window is known, so
+    // its budget is the floor (a 1,536-char share measured there) and it folded results her
+    // real window holds. With no window yet, restore keeps the ring as saved; once a window is
+    // set, the same snapshot collapses against it.
+    #[test]
+    fn restore_collapses_only_against_a_known_window() {
+        let source = WorkingMemory::new(8);
+        source.set_served_window(65_536);
+        let share = source.budget().recent_results_chars();
+        for i in 0..4 {
+            source.record_receipt_typed(
+                &[],
+                &format!("r{i} {}", "w".repeat(share / 3)),
+                None,
+                saved(&format!("restore-{i}")),
+            );
+        }
+        let snapshot = source.snapshot();
+        let entries = |wm: &WorkingMemory| {
+            wm.recent_results_messages().iter().filter(|m| m.starts_with("[result ")).count()
+        };
+
+        // The source settles against its own window as it records, so the count to keep is
+        // what it held, not how many were recorded.
+        let held = entries(&source);
+        let unknown = WorkingMemory::new(8);
+        unknown.restore(snapshot.clone());
+        assert_eq!(entries(&unknown), held, "no window yet: nothing folds against the floor");
+
+        let known = WorkingMemory::new(8);
+        known.set_served_window(16_384);
+        known.restore(snapshot);
+        assert!(entries(&known) < held, "a known smaller window collapses on restore");
+    }
+
+    // what this catches: an unsaved result dropped at collapse (Astra on #4963 at 4840af859:
+    // a pointer saying "never saved" documents the loss instead of preventing it). Its save
+    // failed, so nothing else holds its bytes: it stays WHOLE through settlement and restore
+    // while the saved results around it collapse to pointers.
+    #[test]
+    fn an_unsaved_result_keeps_its_bytes_through_settlement_and_restore() {
+        let wm = WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        let cap = wm.budget().recent_results_chars();
+        let unsaved = format!("UNSAVED {}", "u".repeat(cap / 2));
+        wm.record_receipt_typed(&[], &unsaved, None, crate::ai::types::ResultCustody::Unsaved);
+        for _ in 0..4 {
+            record_saved(&wm, &"s".repeat(cap / 2));
+        }
+        wm.record_settlement("done");
+        let whole = |m: &WorkingMemory| m.recent_results_messages().iter().any(|r| r.ends_with(&unsaved));
+        assert!(whole(&wm), "kept whole through settlement");
+        assert!(
+            wm.recent_results_messages().join("\n").contains("ring-test — collapsed"),
+            "the saved ones around it collapsed"
+        );
+        let restored = WorkingMemory::new(8);
+        restored.set_served_window(16_384);
+        restored.restore(wm.snapshot());
+        assert!(whole(&restored), "and through restore");
+    }
+
     // what this catches: the Anwen regression (2026-08-16). Act results used to
     // live only in the K=1 `last_action` slot (any act overwrites) and the
     // settlement-gated pinned block — so a compile error vanished the moment she
@@ -1870,10 +2220,10 @@ mod tests {
     #[test]
     fn recent_results_survive_subsequent_acts_and_stay_bounded() {
         let wm = WorkingMemory::new(8);
-        wm.record_receipt("[action] code/run(sol.rs) error[E0601]: `main` function not found");
-        wm.record_receipt("[action] code/list() sol.rs sol2.rs");
-        wm.record_receipt("[action] code/tree() workspace/");
-        let block = wm.recent_results_block().expect("results recorded");
+        record_saved(&wm, "[action] code/run(sol.rs) error[E0601]: `main` function not found");
+        record_saved(&wm, "[action] code/list() sol.rs sol2.rs");
+        record_saved(&wm, "[action] code/tree() workspace/");
+        let block = wm.recent_results_messages().join("\n");
         assert!(
             block.contains("E0601"),
             "the compile error must survive later trivial acts: {block}"
@@ -1884,39 +2234,40 @@ mod tests {
         // is enforced at SETTLEMENT (the boundary where the prompt re-prefills
         // anyway). So: flooding mid-settle keeps everything visible…
         let cap = wm.budget().recent_results_chars();
+        // Whole results an eighth of the share each, so several fit and the collapse is visible.
+        let unit = (cap / 8).max(1);
         for _ in 0..8 {
-            wm.record_receipt(&"x".repeat(cap));
+            record_saved(&wm, &"x".repeat(unit));
         }
         assert!(
-            wm.recent_results_block()
-                .unwrap_or_default()
-                .contains("E0601"),
+            wm.recent_results_messages().join("\n").contains("E0601"),
             "mid-settle the ring is append-only — no head rotation before settlement"
         );
-        // …and SETTLEMENT collapses over-cap tails to pointers, restoring the bound.
+        // …and SETTLEMENT collapses over-cap results to pointers, restoring the bound. The
+        // results that stay are WHOLE (never a tail); the rest are one-line pointers.
         wm.record_settlement("done");
-        let total: usize = wm
-            .recent_results_block()
-            .unwrap_or_default()
-            .chars()
-            .count();
+        let messages = wm.recent_results_messages();
+        let kept: Vec<&String> = messages.iter().filter(|m| m.starts_with("[result ")).collect();
+        assert!(!kept.is_empty(), "the newest results stay");
         assert!(
-            total <= cap + 256,
-            "settlement must restore the window-derived bound: {total} > {cap}"
+            kept.iter().all(|m| m.contains(&"x".repeat(unit))),
+            "every result still shown is shown WHOLE, never a tail"
         );
+        assert!(messages.iter().any(|m| m.contains("collapsed")), "the rest are pointers");
         // …in ONE CHUNK: the collapse lands at half the cap so the surviving head
         // stays byte-identical across the next settles (the KV divergence audit,
         // 2026-09-13: the oldest surviving result was the first differing block in
         // 28 of 55 consecutive turns under one-entry-per-settle eviction).
+        let total: usize = kept.len() * unit;
         assert!(
-            total <= cap / 2 + 256,
+            total <= cap / 2 + unit,
             "an over-cap collapse lands at half the cap, not at the cap: {total} > {}",
             cap / 2
         );
         let head_after_collapse = wm.recent_results_messages().get(1).cloned();
-        wm.record_receipt("[action] code/read(a.rs) fine");
+        record_saved(&wm, "[action] code/read(a.rs) fine");
         wm.record_settlement("one");
-        wm.record_receipt("[action] code/read(b.rs) fine");
+        record_saved(&wm, "[action] code/read(b.rs) fine");
         wm.record_settlement("two");
         assert_eq!(
             wm.recent_results_messages().get(1).cloned(),
@@ -1924,9 +2275,7 @@ mod tests {
             "the ledger head is byte-stable across settles that fit under the cap"
         );
         assert!(
-            !wm.recent_results_block()
-                .unwrap_or_default()
-                .contains("E0601"),
+            !wm.recent_results_messages().join("\n").contains("E0601"),
             "oldest tails collapse to pointers at settlement — bounded, not immortal"
         );
     }
@@ -2180,6 +2529,8 @@ mod tests {
             receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
             recent_results: Vec::new(),
             handoff: None,
+            evicted_pointers: Vec::new(),
+            receipt_children: Default::default(),
         });
         assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
         let q = quiet.pinned_facts();
@@ -2220,7 +2571,7 @@ mod tests {
                     tool_use_id: "call-42".into(),
                     content: "match at foo.rs:42".into(),
                     is_error: None,
-                    spill_handle: None,
+                    custody: crate::ai::types::ResultCustody::Unsaved,
                 },
                 verb: ToolVerb::Search,
                 paths: Vec::new(),
@@ -2231,7 +2582,7 @@ mod tests {
         let rendered = "code/search({\"query\":\"needle\"})\nResult:\nmatch at foo.rs:42\n\n";
 
         let typed = WorkingMemory::new(8);
-        typed.record_receipt_typed(std::slice::from_ref(&obs), rendered, None);
+        typed.record_receipt_typed(std::slice::from_ref(&obs), rendered, None, crate::ai::types::ResultCustody::Unsaved);
         let legacy = WorkingMemory::new(8);
         legacy.record_receipt(rendered);
         assert_eq!(
@@ -2266,7 +2617,7 @@ mod tests {
         let mut second = obs.clone();
         second.call.id = "call-43".into();
         second.output.result.tool_use_id = second.call.id.clone();
-        typed.record_receipt_typed(&[obs.clone(), second], "two results", None);
+        typed.record_receipt_typed(&[obs.clone(), second], "two results", None, crate::ai::types::ResultCustody::Unsaved);
         let (seq, _) = typed.active_action_full().unwrap();
         let batch = typed.active_action_observations(seq);
         assert_eq!(batch.len(), 2);
@@ -2278,7 +2629,7 @@ mod tests {
         typed.set_scope(None);
         typed.record_settlement("observed");
         assert!(typed.active_action_observations(seq).is_empty());
-        typed.record_receipt_typed(&[obs], "new result", None);
+        typed.record_receipt_typed(&[obs], "new result", None, crate::ai::types::ResultCustody::Unsaved);
         assert!(typed.active_action_observations(seq).is_empty());
         let (new_seq, _) = typed.active_action_full().unwrap();
         assert_eq!(typed.active_action_observations(new_seq).len(), 1);
@@ -2306,7 +2657,9 @@ mod tests {
                     tool_use_id: id.into(),
                     content: "same result".into(),
                     is_error: None,
-                    spill_handle: handle.map(str::to_owned),
+                    custody: handle.map_or(crate::ai::types::ResultCustody::Unsaved, |h| {
+                        crate::ai::types::ResultCustody::Whole { handle: h.to_owned() }
+                    }),
                 },
                 verb: ToolVerb::classify(name),
                 paths: Vec::new(),
@@ -2325,21 +2678,24 @@ mod tests {
             ],
             "same result",
             Some(room_a),
+            saved("search-output"),
         );
         wm.record_receipt_typed(
             &[observation("b1", "code/run", None)],
             "same result",
             Some(room_b),
+            crate::ai::types::ResultCustody::Unsaved,
         );
+        // #2 is the active result: it renders whole as the full-result message below, so
+        // the ring shows only #1 rather than paying for #2 twice.
         let expected = vec![
             format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output] same result"),
-            format!("[result #2; room {room_b}; operation code/run] same result"),
         ];
         let messages = wm.recent_results_messages();
         assert_eq!(
             messages.len(),
-            3,
-            "banner plus two separately attributed results"
+            2,
+            "banner plus the one result that is not the active full result"
         );
         assert_eq!(&messages[1..], expected.as_slice());
         let (seq, full) = wm
@@ -2368,15 +2724,51 @@ mod tests {
             wm.full_result_message(seq, &full)
         );
 
-        // Actual settlement collapses old tails; its pointers must still tell
+        // Actual settlement collapses old results; its pointers must still tell
         // the mind which activity and operation the retained handle belongs to.
         for _ in 0..4 {
-            restored.record_receipt(&"x".repeat(restored.budget().recent_results_chars()));
+            record_saved(&restored, &"x".repeat(restored.budget().recent_results_chars()));
         }
         restored.record_settlement("reported");
         assert!(restored.recent_results_messages().join("\n").contains(
             &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
         ));
+
+        // Regression 735a3183: Kimi's 274-line read disappeared after a poll;
+        // other reads survived only as their last ~36 lines. A retained handle
+        // must replace the body as a unit, never decorate an arbitrary suffix.
+        let read = (387..=660)
+            .map(|line| format!("{line}: complete source line with enough context to exceed the old per-entry share\n"))
+            .collect::<String>();
+        let memory = WorkingMemory::new(8);
+        memory.set_served_window(16_384);
+        let mut read_observation = observation("read-274", "code/read", Some("read-274-output"));
+        read_observation.output.result.content = read.clone();
+        memory.record_receipt_typed(&[read_observation], &read, Some(room_a), saved("read-274-output"));
+        memory.record_receipt_typed(
+            &[observation("poll-next", "shell/poll", None)],
+            "process still running",
+            Some(room_a),
+            saved("poll-next-output"),
+        );
+        let assert_whole_or_handle = |memory: &WorkingMemory| {
+            let view = memory.recent_results_messages().join("\n");
+            assert!(view.contains("read-274-output"), "the read remains addressable");
+            assert!(view.contains(&room_a.to_string()), "the view retains its room");
+            assert!(
+                // The ring stores the receipt trimmed of surrounding whitespace, which is not
+                // a cut: every line of the read must be there.
+                !view.contains("660: complete source line") || view.contains(read.trim()),
+                "a suffix of a source read must never masquerade as the retained result"
+            );
+        };
+        assert_whole_or_handle(&memory);
+        memory.record_settlement("work remains on this card");
+        assert_whole_or_handle(&memory);
+        let restarted = WorkingMemory::new(8);
+        restarted.set_served_window(16_384);
+        restarted.restore(memory.snapshot());
+        assert_whole_or_handle(&restarted);
     }
 
     // e731: pre-result-ring snapshots have a full body but no room/operation
@@ -2604,64 +2996,20 @@ mod tests {
         assert_eq!(seq2, 2, "latest-full tracks the most recent act");
     }
 
-    // what this catches: #139 latency — a PATHOLOGICAL tool result (a huge code/tree
-    // dump ≈ 4k tokens, HALF the whole prompt) is clipped in the full-result block so it
-    // stops re-prefilling verbatim every turn it rides along as "most recent action",
-    // while a GENUINE read (a ~130-line file, the design's stated legit case) still comes
-    // through WHOLE. The clip is re-fetchable, never silent: it names the dropped size and
-    // how to see the rest. Bounding this volatile tail is the OOM-safe prefill lever.
+    // what this catches: a consumer re-cut (the #392 pinned-block clip until 2026-10-12). The
+    // producer fits a result (`spill::LivePin::whole_or_handle`: whole, or its handle, or whole with
+    // a failed save said first); working memory shows exactly that, never a head of it,
+    // even when it is over the window's share.
     #[tokio::test]
-    async fn oversized_action_result_is_clipped_but_genuine_reads_survive_whole() {
-        // A genuine read at the design's stated legit size (5k chars ≈ 130-line file) is
-        // BELOW the cap → unchanged, matches the sibling test's guarantee.
-        // Bounds are a fraction of a live window now, so the test states the window it is
-        // measuring against instead of importing a constant that no longer exists.
-        let budget = ContextBudget::from_window(16_384);
-        let cap = budget.latest_action_chars();
-        let genuine = "y".repeat(5_000);
-        assert_eq!(
-            clip_action_full(&genuine, &budget),
-            genuine,
-            "a genuine file read stays whole — never clipped"
-        );
-
-        // A pathological dump ABOVE the cap → clipped to the head + a re-fetch marker.
-        let dump = "z".repeat(cap + 4_000);
-        let clipped = clip_action_full(&dump, &budget);
-        assert!(
-            clipped.chars().count() < dump.chars().count(),
-            "the pathological dump is shorter than the raw body"
-        );
-        assert!(
-            clipped.chars().count() <= cap + 120,
-            "clipped to ~the cap plus the short marker, not the full 16k"
-        );
-        assert!(
-            clipped.contains("+4000 chars truncated"),
-            "the marker names exactly how much was dropped"
-        );
-        assert!(
-            clipped.contains("narrower scope"),
-            "the marker tells the mind how to see the rest — never a silent starve"
-        );
-
-        // End-to-end through the PINNED block (#392): the oversized result renders clipped.
+    async fn the_pinned_result_is_what_the_producer_handed_over_never_re_cut() {
         let wm = Arc::new(WorkingMemory::new(8));
-        // Truncation bounds are fractions of a LIVE window now; an unknown-window memory
-        // is unbounded by contract, so a clipping test must declare the window it measures.
         wm.set_served_window(16_384);
-        wm.record_receipt(&dump);
+        let over_share = "z".repeat(wm.budget().latest_action_chars() + 4_000);
+        wm.record_receipt(&over_share);
         let pinned = wm
             .pinned_active_result_block()
-            .expect("the oversized result still surfaces, clipped");
-        assert!(
-            pinned.contains("Full result of your most recent action (#1; room unrecorded; operation unrecorded):"),
-            "the block still surfaces"
-        );
-        assert!(
-            pinned.contains("chars truncated"),
-            "and it's the CLIPPED body, not the raw 16k dump"
-        );
+            .expect("the result surfaces");
+        assert!(pinned.ends_with(&over_share), "whole, as handed over");
     }
 
     // what this catches: #139/#165 — the FULL action result rides in the prompt only while

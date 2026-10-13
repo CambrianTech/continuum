@@ -41,6 +41,7 @@
 //! See [docs/grid/L0-PERSONA-COGNITION-E2E-PLAN.md] for the full
 //! sequencing.
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -631,17 +632,6 @@ impl PersonaServiceModule {
     }
 }
 
-/// Wall-clock helper. Tied off behind a free function so production +
-/// tests use the same monotonic source; tests that want determinism
-/// pass an explicit `now_ms` into the lower-level helpers.
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .expect("system time before UNIX_EPOCH")
-}
-
 #[async_trait]
 impl ServiceModule for PersonaServiceModule {
     fn config(&self) -> ModuleConfig {
@@ -737,7 +727,7 @@ impl ServiceModule for PersonaServiceModule {
         // per tick. Production-safety: no production code calls
         // `persona/enroll` yet — until L0-2-cutover wires enrollment,
         // this tick runs over an empty map (no-op).
-        self.drain_all_personas(now_ms()).await
+        self.drain_all_personas(EpochMs::now().millis()).await
     }
 
     fn as_any(&self) -> &dyn Any {

@@ -833,11 +833,11 @@ impl WorkingSetRegistry {
     /// Loading all of them cannot over-commit the GPU, and that is worth stating because
     /// it is where the caution belongs and does NOT: demand is a REQUEST, not an
     /// allocation. `plan_serving_stable` clamps it against what the host can fit — that is
-    /// precisely what a `bound_by=host-fit` plan is — under the power mode's fraction (the
+    /// precisely what a `bound_by=below-demand` plan is — under the power mode's fraction (the
     /// plan's only headroom since #4230; Performance keeps the thinnest, 4%) and the
     /// governor's own `budget_for_replacing`. Raising demand can only raise the ASK; the
     /// governor still decides. The failure mode of asking for too little is the one we
-    /// measured; the failure mode of asking for too much is a plan that says `host-fit`.
+    /// measured; the failure mode of asking for too much is a plan that says `below-demand`.
     ///
     /// Unreadable or absent files stay silent — the same honesty `rehydrate` keeps. A
     /// ghost persona dir with no `working-set.json` contributes nothing rather than a zero.

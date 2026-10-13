@@ -28,7 +28,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -39,10 +38,7 @@ use crate::ai::types::{ChatMessage, TextGenerationRequest};
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
 use crate::persona::training_producer::reviewed::boundaries::ReviewBoundaryStore;
-use crate::runtime::brain_region::{
-    BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile,
-    PressureSignalKind, RegionContext, RegionId, TickOutcome,
-};
+use crate::runtime::brain_region::{BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile, PressureSignalKind, RegionContext, RegionId, TickOutcome};
 
 /// One durable fact distilled from a cluster of episodic engrams.
 ///
@@ -121,7 +117,7 @@ pub fn default_max_observation_chars() -> usize {
     let window = if live.ready && live.served_context_window > 0 {
         live.served_context_window
     } else {
-        crate::cognition::serving_plan::MIN_SERVE_CTX
+        crate::inference::planning::MIN_SERVE_CTX
     };
     crate::cognition::context_budget::ContextBudget::from_window(window).latest_action_chars()
 }
@@ -968,7 +964,7 @@ impl DreamConsolidationRegion {
         // rehearsed knowledge (high access_count) stays strong.
         let decay = crate::persona::decay_tick::apply_decay_sweep(
             reflector.admission.recall_metadata(),
-            now_ms(),
+            crate::time::EpochMs::now().millis(),
         );
         if decay.engrams_decayed > 0 {
             crate::probe!(
@@ -1111,7 +1107,7 @@ impl DreamConsolidationRegion {
                     crate::inference::measured_hold::subscribe()
                         .borrow()
                         .is_some(),
-                    crate::persona::trace::now_ms(),
+                    crate::time::EpochMs::now().millis(),
                 ) {
                     crate::probe!(
                         class = "dream.awaiting_boredom",
@@ -1225,7 +1221,7 @@ impl DreamConsolidationRegion {
         // — the lane stays free for reactive responding + real work rather than
         // a back-to-back review storm (see REVIEW_ONLY_COOLDOWN_MS). The first
         // pass (no prior timestamp) is always allowed.
-        let now = now_ms();
+        let now = crate::time::EpochMs::now().millis();
         if let Some(&last) = self.last_review_ms.lock().unwrap().get(&persona_id) {
             if now.saturating_sub(last) < REVIEW_ONLY_COOLDOWN_MS {
                 return None;
@@ -1248,12 +1244,32 @@ impl DreamConsolidationRegion {
         if beliefs.is_empty() {
             return None;
         }
+        // THE REST GATE IS ONLY REAL IF IT IS RECORDED (card 07188783): this read had no writer,
+        // so a review relaunched on every tick it found work (the 5090, 00:54-01:03Z: three
+        // dream-belief-review passes ~4.5 minutes apart, under the 5-minute cooldown). Marked at
+        // launch, like the received-lesson gate: a cancelled pass leaves its beliefs unreviewed
+        // for the next one.
+        self.last_review_ms.lock().unwrap().insert(persona_id, now);
         let permit = permit.take();
         let reviewed = Arc::clone(&self.reviewed);
         let reflector = reflector.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            review_pass(reflector, persona_id, beliefs, reviewed).await;
+            // HER GAP, NOT BETWEEN HER TURNS (card 07188783): belief hygiene waits for her
+            // sustained idle, the same gate the idle consolidation pass takes, and her next act
+            // cancels it; its beliefs stay unreviewed for the next pass. Nothing about it is
+            // urgent, so it never interleaves with her turns.
+            crate::cognition::activity_gate::wait_for_boredom_of(persona_id).await;
+            tokio::select! {
+                _ = review_pass(reflector, persona_id, beliefs, reviewed) => {}
+                _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
+                    crate::probe!(
+                        class = "dream.review_paged_out",
+                        persona = %persona_id,
+                        "activity arrived mid-review: the review is cancelled and its beliefs stay unreviewed for the next pass"
+                    );
+                }
+            }
         });
         Some(TickOutcome {
             published: 0,
@@ -1281,7 +1297,7 @@ impl DreamConsolidationRegion {
         permit: &mut Option<DreamPermit>,
     ) -> Option<TickOutcome> {
         // Rest gate — trickle, never storm (a pass launches a training job).
-        let now = now_ms();
+        let now = crate::time::EpochMs::now().millis();
         let last = self
             .last_consolidated_ms
             .lock()
@@ -1492,7 +1508,7 @@ async fn dream_pass(
             };
             let rotating = reflector.admission.semantic_beliefs_oldest_excluding(
                 &already,
-                now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
+                crate::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
                 ROTATING_REVIEW_PER_PASS,
             );
             let mut seen = reviewed.lock().unwrap();
@@ -1613,7 +1629,7 @@ async fn dream_pass(
         .unwrap_or_default();
     let backlog = reflector.admission.semantic_beliefs_oldest_excluding(
         &already,
-        crate::persona::trace::now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
+        crate::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
         REVIEW_ONLY_BATCH,
     );
     if !backlog.is_empty() {
@@ -1641,7 +1657,7 @@ fn distiller_for(reflector: &PersonaReflector) -> SemanticDistiller {
         let window = if live.ready && live.served_context_window > 0 {
             live.served_context_window
         } else {
-            crate::cognition::serving_plan::MIN_SERVE_CTX
+            crate::inference::planning::MIN_SERVE_CTX
         };
         let completion_reserve = window / 4;
         (window.saturating_sub(completion_reserve) as usize).saturating_mul(4)
@@ -1670,7 +1686,7 @@ fn apply_supersessions(reflector: &PersonaReflector, persona_id: Uuid, supersede
     if superseded.is_empty() {
         return;
     }
-    let now = crate::persona::trace::now_ms();
+    let now = crate::time::EpochMs::now().millis();
     for id in superseded {
         reflector
             .admission
@@ -1940,7 +1956,7 @@ fn semantic_engram(fact: &DistilledFact) -> Engram {
             parent_engram_id: fact.source_ids.first().copied().unwrap_or_else(Uuid::nil),
         },
         recall_keys: fact.tags.clone(),
-        admitted_at_ms: now_ms(),
+        admitted_at_ms: crate::time::EpochMs::now().millis(),
         trust_state_at_admission: TrustState::SelfTrust,
         admission_trace_id: None,
     }
@@ -1985,15 +2001,6 @@ impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWor
                 model,
             })
     }
-}
-
-/// Wall-clock epoch ms for stamping an admitted fact. `SystemTime` is fine in
-/// the core (the `Date.now` ban is workflow-script-only).
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -2633,6 +2640,15 @@ pub(crate) mod tests {
             let second = region.tick(&RegionContext::for_persona(1, persona)).await;
             assert!(!region.dreaming(), "review queue drained — no second pass");
             assert_eq!(second.cadence_hint, Some(CadenceHint::Sleep));
+
+            // what this catches (card 07188783; the 5090, three review passes in 14 minutes):
+            // the cooldown read had no writer. Another age-eligible belief arrives within the
+            // cooldown: the rest gate holds, and no second review launches.
+            let mut another = episodic(Uuid::from_u128(42), "Cargo workspaces share one target directory", &["rust"]);
+            another.kind = EngramKind::Semantic;
+            admission.admit_reflection(another).expect("test: an old belief");
+            region.tick(&RegionContext::for_persona(2, persona)).await;
+            assert!(!region.dreaming(), "within the review cooldown, no second review pass");
         }
 
         // what this catches: a lone episode is not yet a pattern — below

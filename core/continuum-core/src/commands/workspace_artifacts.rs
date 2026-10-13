@@ -48,7 +48,7 @@ pub(crate) fn candidate_diff(ws: &Path) -> Option<Option<Arc<str>>> {
 /// `<continuum home>/citizens/peers` — the same root the board scan walks, so the
 /// registry's keys are byte-identical to the paths the scan looks up.
 fn peers_root() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|home| home.join("citizens").join("peers"))
 }

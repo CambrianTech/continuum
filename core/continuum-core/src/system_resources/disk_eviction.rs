@@ -434,12 +434,9 @@ impl CargoTargetPool {
     /// 356 GB of destroyed compilation looked exactly like 36 successful runs.
     fn note_eviction(&self) {
         use std::sync::atomic::Ordering::Relaxed;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            // A clock we cannot read must not manufacture a "fast gap" — 0 makes the
+        let now = // A clock we cannot read must not manufacture a "fast gap" — 0 makes the
             // first comparison look ancient, which is the quiet side.
-            .unwrap_or(0);
+            crate::time::EpochMs::now().millis();
         let previous = self.last_eviction_ms.swap(now, Relaxed);
         // First eviction of the run has no gap to measure, and a zero clock is not a
         // measurement either.
@@ -1242,6 +1239,17 @@ mod tests {
             "eye-profiles",
         ];
         let deferred = [
+            // Registered by card 75dd8bfe. Each writer now bounds its own files per persona
+            // (prompt captures: two 64 MiB segments; workspace traces: 2 x MAX_LOG_BYTES), but
+            // the class total scales with persona count, so the broker needs an owner it can
+            // lower. Deferred, not owned, until that pool exists: a live sink's file must
+            // never be deleted beneath it.
+            (
+                "fixtures",
+                "6fc44bda: FixturesPool — evict rotated capture generations (*.jsonl.1, \
+                 *.prev.jsonl/.prev.pidx) oldest-first across personas, then non-resident \
+                 personas' live files; never a file a live sink holds",
+            ),
             // Registered 2026-09-28 with claim-time cloning: a repo card for a repo the
             // node never checked out is cloned here so the citizen's hands root in it.
             // Deferred, not owned, because blind deletion is UNSAFE: every live per-card

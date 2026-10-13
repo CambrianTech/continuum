@@ -10,6 +10,7 @@
 //! Thread safety: All state behind Arc<Mutex<>> — multiple agents can query concurrently.
 //! Frame processing runs on tokio::spawn_blocking (CPU-bound I420→RGBA→JPEG conversion).
 
+use crate::time::EpochMs;
 use image::{ImageBuffer, RgbaImage};
 use livekit::prelude::*;
 use std::collections::HashMap;
@@ -117,7 +118,7 @@ impl VideoFrameCapture {
         let snap = snapshots.get(identity)?;
 
         // Check freshness
-        let now = epoch_ms();
+        let now = EpochMs::now().millis();
         if now - snap.captured_at > SNAPSHOT_MAX_AGE_MS {
             return None;
         }
@@ -128,7 +129,7 @@ impl VideoFrameCapture {
     /// Get snapshots for all participants with fresh frames.
     pub async fn snapshot_all(&self) -> Vec<ParticipantSnapshot> {
         let snapshots = self.snapshots.lock().await;
-        let now = epoch_ms();
+        let now = EpochMs::now().millis();
         snapshots
             .values()
             .filter(|s| now - s.captured_at <= SNAPSHOT_MAX_AGE_MS)
@@ -289,7 +290,7 @@ async fn capture_video_stream(
                 display_name: name,
                 width,
                 height,
-                captured_at: epoch_ms(),
+                captured_at: EpochMs::now().millis(),
             };
 
             (Some(snapshot), hash)
@@ -408,7 +409,7 @@ fn compose_grid(participants: &[ParticipantSnapshot]) -> Option<ParticipantSnaps
         display_name: names.join(", "),
         width: grid_w,
         height: grid_h,
-        captured_at: epoch_ms(),
+        captured_at: EpochMs::now().millis(),
     })
 }
 
@@ -452,20 +453,13 @@ fn i420_to_rgba(
     rgba
 }
 
-fn epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_epoch_ms_is_reasonable() {
-        let ms = epoch_ms();
+        let ms = EpochMs::now().millis();
         // Should be after 2024 (in milliseconds)
         assert!(ms > 1_700_000_000_000);
     }
@@ -491,7 +485,7 @@ mod tests {
             display_name: "Test".to_string(),
             width: 2,
             height: 2,
-            captured_at: epoch_ms(),
+            captured_at: EpochMs::now().millis(),
         };
 
         // Single participant → returns as-is (no grid composition)
@@ -519,7 +513,7 @@ mod tests {
                 display_name: name.to_string(),
                 width: 4,
                 height: 4,
-                captured_at: epoch_ms(),
+                captured_at: EpochMs::now().millis(),
             }
         };
 

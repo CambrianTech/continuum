@@ -3,10 +3,10 @@
 //! Each handler takes GridState + params, returns CommandResult.
 //! Separated from the ServiceModule impl for testability and clarity.
 
+use crate::time::EpochMs;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
-use super::frame::{self, GridFrame, GridPayload};
-use super::helpers::{correlation_id, find_transport_for_address, parse_trust_level};
-use super::node::{GridNode, TransportAddress};
+use super::frame::{GridFrame, GridPayload};
+use super::node::{GridNode, TransportAddress, TrustLevel};
 use super::router::RouteDecision;
 use super::GridState;
 use crate::runtime::CommandResult;
@@ -62,7 +62,7 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
         .first()
         .ok_or_else(|| format!("Node {node_id} has no addresses"))?;
 
-    let transport = find_transport_for_address(&state.transports, address)
+    let transport = address.carrier(&state.transports)
         .ok_or_else(|| format!("No transport available for {}", address.display_address()))?;
 
     let start = std::time::Instant::now();
@@ -78,7 +78,7 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
         .unwrap_or_else(|| "unknown".into());
 
     let ping_frame = GridFrame::command_request(
-        format!("ping-{}", correlation_id()),
+        format!("ping-{}", uuid::Uuid::new_v4().simple()),
         our_address,
         node_id.to_string(),
         super::commands::PING.to_string(),
@@ -162,7 +162,7 @@ pub async fn dispatch_to_node(
         .first()
         .ok_or_else(|| format!("Node {} has no addresses", node.node_id))?;
 
-    let transport = find_transport_for_address(&state.transports, address)
+    let transport = address.carrier(&state.transports)
         .ok_or_else(|| format!("No transport for {}", address.display_address()))?;
 
     let our_address = transport
@@ -170,7 +170,7 @@ pub async fn dispatch_to_node(
         .map(|a| a.display_address())
         .unwrap_or_else(|| "unknown".into());
 
-    let corr_id = format!("cmd-{}", correlation_id());
+    let corr_id = format!("cmd-{}", uuid::Uuid::new_v4().simple());
     let frame = GridFrame::command_request(
         corr_id.clone(),
         our_address,
@@ -213,7 +213,7 @@ pub async fn dispatch_to_node(
     let _ = state
         .audit
         .log(&AuditEntry {
-            timestamp: frame::now_millis(),
+            timestamp: EpochMs::now().millis(),
             direction: AuditDirection::Outbound,
             remote_node: node.node_id.clone(),
             command: remote_command.to_string(),
@@ -290,7 +290,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         .and_then(|v| v.as_str())
         .unwrap_or("owner");
 
-    let trust = parse_trust_level(trust_str)?;
+    let trust = trust_str.parse::<TrustLevel>()?;
 
     // Parse optional capabilities: gpu name and vram
     let gpu = params.get("gpu").and_then(|v| v.as_str()).map(String::from);
@@ -319,7 +319,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         addresses: vec![address],
         capabilities: capabilities.clone(),
         trust_level: trust,
-        last_seen: frame::now_millis(),
+        last_seen: EpochMs::now().millis(),
         latency_ms: None,
         peer_id,
         build_sha: None,
@@ -355,7 +355,7 @@ pub async fn handle_trust(state: &Arc<GridState>, params: Value) -> Result<Comma
         .and_then(|v| v.as_str())
         .ok_or("trust parameter required")?;
 
-    let trust = parse_trust_level(trust_str)?;
+    let trust = trust_str.parse::<TrustLevel>()?;
     state.registry.set_trust(node_id, trust)?;
     let _ = state.registry.save_to_disk();
 
@@ -410,7 +410,7 @@ pub async fn handle_node_status(
         "jobs": jobs,
         "queue": queue,
         "nodeId": hostname,
-        "timestamp": chrono_now_iso(),
+        "timestamp": crate::time::EpochMs::now().rfc3339(),
     })))
 }
 
@@ -446,11 +446,8 @@ pub async fn handle_job_submit(
 
     let job_id = format!(
         "job-{}-{:06x}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-        rand_u32() & 0xFFFFFF
+        crate::time::EpochMs::now().millis(),
+        rand::random::<u32>() & 0xFFFFFF
     );
 
     let alloy_path = running_dir.join(format!("{job_id}.alloy.json"));
@@ -519,7 +516,7 @@ pub async fn handle_job_submit(
         "logPath": log_path.to_string_lossy(),
         "state": if pid > 0 { "running" } else { "queued" },
         "priority": priority,
-        "startedAt": chrono_now_iso(),
+        "startedAt": crate::time::EpochMs::now().rfc3339(),
         "alloyName": alloy_name,
     });
     std::fs::write(
@@ -533,7 +530,7 @@ pub async fn handle_job_submit(
         "jobId": job_id,
         "position": 0,
         "nodeId": gethostname(),
-        "estimatedStart": chrono_now_iso(),
+        "estimatedStart": crate::time::EpochMs::now().rfc3339(),
     })))
 }
 
@@ -876,7 +873,7 @@ fn query_forge_processes() -> Vec<Value> {
                         else if cmd.contains("train") || cmd.contains("fine") { "training" }
                         else { "unknown" };
 
-                    Some(json!({ "pid": pid, "type": job_type, "detail": crate::utils::str_truncate::truncate_at_char_boundary(&cmd, 120), "cpu": cpu, "mem": mem }))
+                    Some(json!({ "pid": pid, "type": job_type, "detail": crate::logging::preview::truncate_at_char_boundary(&cmd, 120), "cpu": cpu, "mem": mem }))
                 })
                 .collect()
         }
@@ -900,38 +897,6 @@ fn gethostname() -> String {
         .output()
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_else(|_| "unknown".to_string())
-}
-
-fn chrono_now_iso() -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = now.as_secs();
-    let millis = now.subsec_millis();
-    // Manual ISO 8601 without chrono dependency
-    let days_since_epoch = secs / 86400;
-    let time_of_day = secs % 86400;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-    // Compute year/month/day from days since epoch (1970-01-01)
-    let (year, month, day) = days_to_ymd(days_since_epoch);
-    format!("{year:04}-{month:02}-{day:02}T{hours:02}:{minutes:02}:{seconds:02}.{millis:03}Z")
-}
-
-fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
-    // Algorithm from https://howardhinnant.github.io/date_algorithms.html
-    days += 719468;
-    let era = days / 146097;
-    let doe = days - era * 146097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
 }
 
 fn find_alloy_executor() -> Option<std::path::PathBuf> {
@@ -1042,7 +1007,7 @@ fn list_meta_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
 }
 
 fn is_process_alive(pid: i32) -> bool {
-    u32::try_from(pid).is_ok_and(crate::inference::lane_process::is_alive)
+    u32::try_from(pid).is_ok_and(continuum_cli_lifecycle::process::is_alive)
 }
 
 enum JobSignal {
@@ -1080,14 +1045,6 @@ fn job_signal(pid: i32, signal: JobSignal) -> Result<(), String> {
             ),
         }
     }
-}
-
-fn rand_u32() -> u32 {
-    // Simple random without pulling in rand crate
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos()
 }
 
 /// grid/setup-check — comprehensive grid setup diagnostics.

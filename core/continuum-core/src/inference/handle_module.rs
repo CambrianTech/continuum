@@ -548,7 +548,7 @@ impl InferenceHandleModule {
         if let Some(coordinator) = &self.coordinator {
             let persona = PeerId::from_uuid(params.persona_id.unwrap_or_else(Uuid::new_v4));
             let task = params.task.unwrap_or(TaskKind::Chat);
-            let now_ms = now_ms_default();
+            let now_ms = crate::time::EpochMs::now().millis();
             let lane_req = OpenLaneRequest {
                 persona,
                 task,
@@ -659,14 +659,6 @@ impl InferenceHandleModule {
     }
 }
 
-fn now_ms_default() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -722,7 +714,7 @@ mod tests {
     /// to exercise the shared-registry fallback in `open`. `module_with_
     /// coordinator` layers a local heuristic registration on top.
     fn bare_coordinator_module() -> InferenceHandleModule {
-        use crate::cognition::adaptive_throughput::{
+        use crate::inference::planning::adaptive_throughput::{
             ResourceClass, TargetSilicon, ThroughputLaneBudget,
         };
         use crate::inference::coordinator::{CoordinatorConfig, InferenceCoordinator};

@@ -201,7 +201,7 @@ impl std::fmt::Display for VerbError {
 /// snapshot of idle is only good while no other builder or launch can move it).
 pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
     // The same home `server_bin` resolves the engine under: one root, never two.
-    let home = crate::commands::benchmark::continuum_home().map_err(|e| VerbError::Failed(e.to_string()))?;
+    let home = crate::paths::continuum_home().map_err(|e| VerbError::Failed(e.to_string()))?;
     let root = root(&home).map_err(VerbError::Failed)?;
     let usage = || {
         VerbError::Failed(
@@ -219,12 +219,20 @@ pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
             Ok(root.join(slot).to_string_lossy().into_owned())
         }
         ["promote", slot, stamp] => {
-            let live = live_lane_engines().map_err(VerbError::Failed)?;
-            if live.iter().flatten().any(|bin| slot_of(&root, bin) == Some(*slot)) {
-                return Err(VerbError::Failed(format!("{slot} is run by a live lane: it was never idle")));
+            // A live lane may run the slot only when promoting it switches nothing: it is
+            // already current with exactly this stamp (Codex installing on the 5090: the node
+            // already ran the verified engine the release names, and the refusal blocked the
+            // whole install). A real switch onto a slot a lane runs is still refused.
+            if !is_current_with(&root, slot, stamp) {
+                let live = live_lane_engines().map_err(VerbError::Failed)?;
+                if live.iter().flatten().any(|bin| slot_of(&root, bin) == Some(*slot)) {
+                    return Err(VerbError::Failed(format!("{slot} is run by a live lane: it was never idle")));
+                }
             }
-            promote(&root, slot, stamp).map_err(VerbError::Failed)?;
-            Ok(format!("{slot} is the current engine ({stamp})"))
+            match promote(&root, slot, stamp).map_err(VerbError::Failed)? {
+                Promotion::AlreadyCurrent => Ok(format!("{slot} is already the current engine ({stamp}); nothing changed")),
+                Promotion::Switched => Ok(format!("{slot} is the current engine ({stamp})")),
+            }
         }
         ["rollback", failed] => {
             let back = rollback(&root, failed).map_err(VerbError::Failed)?;
@@ -269,9 +277,43 @@ pub fn resolve(root: &Path, operator_override: Option<&str>, current: Option<&'s
     Resolved::Path
 }
 
+/// The build (`<commit>:<backend>` stamp) of the engine binary `bin`: the stamp of the slot it was
+/// launched from. `None` for a binary outside the slots (a pre-slot install), where one engine
+/// cannot be told from another.
+pub fn stamp_of_bin(bin: &Path) -> Option<String> {
+    let home = crate::paths::continuum_home().ok()?;
+    let root = root(&home).ok()?;
+    slot_stamp(&root, slot_of(&root, bin)?)
+}
+
+/// The build of the engine the live lane RUNS (not the slot most recently promoted: a lane
+/// relaunches onto a new engine after it is installed): the identity a training measurement was
+/// taken against (card de9e1342).
+pub fn live_lane_build() -> Option<String> {
+    stamp_of_bin(crate::inference::lane_registry::live_lane()?.engine_bin.as_deref()?)
+}
+
 /// A slot's stamp, trimmed, when it has one.
 pub fn slot_stamp(root: &Path, slot: &str) -> Option<String> {
     std::fs::read_to_string(root.join(slot).join(STAMP_FILE)).ok().map(|s| s.trim().to_string())
+}
+
+/// What a successful [`promote`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Promotion {
+    /// `slot` became current; the slot it replaced is `previous`, and `slot` must come up
+    /// ready again before it counts as verified.
+    Switched,
+    /// `slot` was already current with this exact stamp: nothing moved, so `previous` and its
+    /// verification stand.
+    AlreadyCurrent,
+}
+
+/// Whether `slot` is the current engine, with its binary present and exactly `want_stamp`.
+pub fn is_current_with(root: &Path, slot: &str, want_stamp: &str) -> bool {
+    current_slot(root) == Some(slot)
+        && slot_bin(root, slot).is_file()
+        && slot_stamp(root, slot).as_deref() == Some(want_stamp.trim())
 }
 
 /// Make `slot` the active engine: refused unless its binary exists and its stamp is exactly
@@ -279,7 +321,7 @@ pub fn slot_stamp(root: &Path, slot: &str) -> Option<String> {
 /// promoted. The slot it replaces becomes `previous`. Each pointer is replaced atomically
 /// (write a temp file, then rename); `previous` is written first, so a crash between the two
 /// leaves the old engine current and a harmless `previous`.
-pub fn promote(root: &Path, slot: &str, want_stamp: &str) -> Result<(), String> {
+pub fn promote(root: &Path, slot: &str, want_stamp: &str) -> Result<Promotion, String> {
     let slot = known(slot)?;
     let bin = slot_bin(root, slot);
     if !bin.is_file() {
@@ -291,11 +333,15 @@ pub fn promote(root: &Path, slot: &str, want_stamp: &str) -> Result<(), String> 
         return Err(format!("{slot} holds {stamp} but the deploy built {}: not promoted", want_stamp.trim()));
     }
     match current_slot(root) {
-        Some(old) if old != slot => write_pointer(root, PREVIOUS_FILE, old)?,
-        _ => {}
+        // Already current with this stamp: a reinstall of the engine the node runs. Clearing
+        // VERIFIED here demoted a proven engine to unverified for no change (Codex, 5090).
+        Some(old) if old == slot => return Ok(Promotion::AlreadyCurrent),
+        Some(old) => write_pointer(root, PREVIOUS_FILE, old)?,
+        None => {}
     }
     clear_verified(root, slot)?;
-    write_pointer(root, CURRENT_FILE, slot)
+    write_pointer(root, CURRENT_FILE, slot)?;
+    Ok(Promotion::Switched)
 }
 
 /// Record that `slot`'s engine came up ready on this machine. Idempotent.
@@ -442,7 +488,7 @@ pub fn bootstrap_service_engine(root: &Path, engine: &Path) -> Result<bool, Stri
 /// under `<continuum_home>/bin`. What the Windows deploy's drift check compares the pin against,
 /// since with `current` as the truth the registered descriptor can name an older slot.
 pub fn active_engine_dir() -> Result<Option<PathBuf>, String> {
-    let home = crate::commands::benchmark::continuum_home().map_err(|e| e.to_string())?;
+    let home = crate::paths::continuum_home().map_err(|e| e.to_string())?;
     let root = root(&home)?;
     Ok(current_slot(&root)
         .filter(|slot| slot_bin(&root, slot).is_file() && slot_stamp(&root, slot).is_some())
@@ -566,6 +612,15 @@ mod tests {
         promote(root, "engine-a", "aaa000:cuda").expect("reset actual prior");
         promote(root, "engine-b", "abc123:cuda").expect("reset promotion");
         assert_eq!((current_slot(root), previous_slot(root)), (Some("engine-b"), Some("engine-a")));
+        // Reinstalling the engine already current with its own stamp (the 5090, Codex): a
+        // no-op that keeps its verification and the rollback; a different stamp still refuses.
+        mark_verified(root, "engine-b").unwrap();
+        assert!(is_current_with(root, "engine-b", "abc123:cuda"));
+        assert_eq!(promote(root, "engine-b", "abc123:cuda"), Ok(Promotion::AlreadyCurrent));
+        assert!(is_verified(root, "engine-b"), "a reinstall keeps the proven engine verified");
+        assert_eq!(previous_slot(root), Some("engine-a"), "and keeps the rollback");
+        assert!(!is_current_with(root, "engine-b", "zzz999:cuda"));
+        assert!(promote(root, "engine-b", "zzz999:cuda").is_err(), "a different stamp is still refused");
         assert!(rollback(root, "engine-a").is_err(), "a stale failure report for a slot no longer current");
         assert_eq!(current_slot(root), Some("engine-b"), "the newer promotion stands");
         assert_eq!(rollback(root, "engine-b"), Ok("engine-a"));

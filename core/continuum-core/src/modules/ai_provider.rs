@@ -125,7 +125,7 @@ pub struct AIProviderModule {
 /// an unknown budget must not become an invented ceiling.
 fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
     let trained = model.context_window;
-    let Some(fp) = crate::modules::serving_daemon::footprint_for(model) else {
+    let Some(fp) = crate::cognition::serving_plan::footprint::footprint_for(model) else {
         return trained;
     };
     if fp.kv_per_token == 0 {
@@ -148,7 +148,7 @@ fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
     let fits = (kv_budget / fp.kv_per_token).min(u32::MAX as u64) as u32;
     trained
         .min(fits)
-        .max(crate::cognition::serving_plan::MIN_SERVE_CTX)
+        .max(crate::inference::planning::MIN_SERVE_CTX)
 }
 
 impl AIProviderModule {

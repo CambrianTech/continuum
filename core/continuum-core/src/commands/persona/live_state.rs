@@ -25,6 +25,7 @@
 //! "persona/live-state", params}`. Benchmark work and real work read through the same rows,
 //! because both are turns and acts of the same citizen.
 
+use crate::time::EpochMs;
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
@@ -345,7 +346,7 @@ crate::action_command! {
             Some((name, id)) => (name.clone(), Some(PeerId::from_uuid(*id))),
             None => (wanted.clone(), None),
         };
-        let as_of_ms = crate::persona::trace::now_ms();
+        let as_of_ms = EpochMs::now().millis();
         let since_ms = p.since_ms.unwrap_or_else(|| as_of_ms.saturating_sub(DEFAULT_WINDOW_MS));
         let dir = std::env::var(ENV_PROBE_DIR).map_err(|_| {
             CommandError::Invalid(format!(

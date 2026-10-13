@@ -23,22 +23,17 @@
 
 pub(crate) mod academy_batch;
 
+use crate::time::EpochMs;
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
-use crate::cognition::serving_plan::{
-    plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint,
-    ServingDemand, ServingPlan,
-    MIN_SERVE_CTX,
-};
+use crate::cognition::serving_plan::footprint::{footprint_for, footprint_from_parts};
+use crate::cognition::serving_plan::{plan_serving, plan_serving_at_rest, plan_serving_stable, HostBudget, ModelFootprint, ServingDemand, ServingPlan};
 use crate::gpu::GpuMemoryManager;
 use crate::inference::lane_registry::LaneRecord;
-use crate::inference::llama_server::{
-    ensure_model_serving_if_current, serving_v1_url, AdapterEntry, EnsureOutcome,
-    LlamaServerControl, LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT,
-};
+use crate::inference::llama_server::{ensure_model_serving_if_current, serving_v1_url, AdapterEntry, EnsureOutcome, LlamaServerControl, LlamaServerProcess, ServingSnapshot, ServingTarget, READY_TIMEOUT};
 use crate::model_registry::live::{Availability, CatalogSnapshot, ModelCatalog};
-use crate::model_registry::types::{Capability, Model};
+use crate::model_registry::types::Model;
 use crate::persona::hw_tier_descriptor::HwTierCategory;
 use crate::resources::{LeaseBoard, ResourceDaemon, ResourceKind};
 use crate::runtime::message_bus::MessageBus;
@@ -565,7 +560,7 @@ impl ServingOperation {
     ) -> Option<Self> {
         gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
-        started_ms.store(crate::modules::chat::now_ms(), Ordering::Release);
+        started_ms.store(EpochMs::now().millis(), Ordering::Release);
         step.store(ReconcileStep::None as u8, Ordering::Release);
         Some(Self {
             gate,
@@ -2362,7 +2357,7 @@ impl ServingDaemonModule {
         let Some(rec) = (self.inherited_lane)() else {
             return Occupancy::Free;
         };
-        match crate::commands::benchmark::continuum_home() {
+        match crate::paths::continuum_home() {
             Ok(home) => occupancy(&store_path(&home), rec.port),
             Err(e) => Occupancy::Unknown(format!("no home to read the engine's residency from: {e}")),
         }
@@ -2408,7 +2403,7 @@ impl ServingDaemonModule {
         // credit would read a freshly relaunched engine as nobody's for up to a minute, which
         // is exactly when a relaunch is sized. `/props` is one local call per tick.
         self.refresh_engine_device_credit().await;
-        let now = crate::persona::trace::now_ms();
+        let now = EpochMs::now().millis();
         if !crate::inference::lane_footprint::sample_due(now) {
             return;
         }
@@ -2464,24 +2459,87 @@ impl ServingDaemonModule {
         // CPU-placed lane (#3729) holds nothing on the device whatever the host class,
         // so the device delta would read zero for a lane whose KV fills system RAM —
         // the process read is the one that sees it.
+        //
+        // ON A DISCRETE GPU THE ENGINE'S OWN KV SPEAKS FIRST (card 03cdeee3; BigMama's 5090
+        // receipt and Codex's design, 2026-10-11). The device delta holds every tenant of the
+        // GPU (the embedding lane's 1.75 GiB lease) and the engine's unreported overhead; divided
+        // by tokens it read 85.8 KB/token where this engine's own context bytes read 46.4 KB, and
+        // the plan carried the excess as fixed bytes PER LANE, so every extra lane paid for the
+        // other tenants again. The reading is now the engine's KV over the tokens it allocated;
+        // what the delta holds beyond everything the engine claims is probed as UNATTRIBUTED and
+        // never enters this model's record. The delta still speaks for an engine that predates
+        // `memory_breakdown`.
+        // On a HYBRID model the context buffer also holds each slot's fixed recurrent state, so the
+        // rate is an UPPER bound by that state spread over the slot's tokens, and a plan for more,
+        // shorter slots is short one recurrent state per extra slot (BigMama on #4961). Splitting
+        // it out needs the engine to report it per sequence: card c8b2e1df.
         let placement = crate::inference::llama_server::main_lane_placement();
-        let (source, beyond_weights) = match (placement, self.system.gpu_memory_mode()) {
+        let (source, beyond_weights, allocated) = match (placement, self.system.gpu_memory_mode()) {
             (
                 crate::inference::llama_server::LanePlacement::Gpu,
                 Some(crate::gpu::monitor::MemoryMode::Discrete),
             ) => {
                 let baseline = self.spawn_baseline_vram.load(Ordering::Relaxed);
                 let now = vram_physical_used(&self.resource_daemon);
-                match device_delta_beyond_weights(baseline, now, fp.weights_bytes) {
-                    Some(delta) => ("device_delta", Some(delta)),
-                    // No spawn baseline (an adopted lane) — ask the engine what it allocated
-                    // (`/props` memory_breakdown, card 27fe9f8b): KV + compute on the device.
-                    None => ("engine_props", engine_beyond_weights().await),
+                let delta = device_delta_beyond_weights(baseline, now, fp.weights_bytes);
+                // An engine that did not ANSWER is an unavailable observation, not an engine
+                // without the field: falling to the delta there would write the tenant-charged
+                // rate back under the same record on one 500 ms miss (Codex on #4961). Only an
+                // engine that answered WITHOUT `memory_breakdown` (one predating it) is measured
+                // by the delta; a breakdown or geometry that is present but unusable is no reading.
+                let Some(props) = engine_props().await else {
+                    crate::probe!(
+                        class = "serving.footprint.unmeasured",
+                        leg = "engine_unanswered",
+                        model = %active,
+                        pid = pid as u64,
+                        "the engine's /props did not answer in time: no reading this sample, and the device delta does not stand in for it"
+                    );
+                    return;
+                };
+                use crate::inference::weight_residency::EngineContextReading;
+                match (EngineContextReading::of(&props), delta) {
+                    (EngineContextReading::Invalid, _) => {
+                        crate::probe!(
+                            class = "serving.footprint.unmeasured",
+                            leg = "engine_breakdown_invalid",
+                            model = %active,
+                            pid = pid as u64,
+                            "the engine reports a memory breakdown, but it or its slot geometry is unusable: no reading this sample, and the device delta does not stand in for it"
+                        );
+                        return;
+                    }
+                    (EngineContextReading::Read(ctx), _) => {
+                        crate::probe!(
+                            class = "serving.footprint.device_residual",
+                            model = %active,
+                            engine_context_bytes = ctx.context_bytes,
+                            engine_beyond_weights = ctx.beyond_weights,
+                            device_delta_read = delta.is_some(),
+                            device_delta_beyond_weights = delta.unwrap_or(0), // unwrap_or: probe label; `device_delta_read` says whether it exists
+                            // absent, never 0: an unread delta is not "nothing unattributed" (BigMama on #4961)
+                            unattributed_bytes = %delta.map_or_else(|| "none".to_string(), |d| d.saturating_sub(ctx.beyond_weights).to_string()),
+                            "the device's growth beyond the weights against what the engine says it holds: the excess is other tenants or engine overhead, never this model's per-token cost"
+                        );
+                        ("engine_context", Some(ctx.context_bytes), Some(ctx))
+                    }
+                    (EngineContextReading::Absent, Some(delta)) => ("device_delta", Some(delta), None),
+                    (EngineContextReading::Absent, None) => {
+                        crate::probe!(
+                            class = "serving.footprint.device_delta_unread",
+                            baseline_bytes = baseline,
+                            now_bytes = now,
+                            weights_bytes = fp.weights_bytes,
+                            "neither the engine's breakdown nor a device delta beyond the weights (no baseline, no reading, or a baseline that already held the weights)"
+                        );
+                        ("device_delta", None, None)
+                    }
                 }
             }
             _ => (
                 "process_anon",
                 crate::inference::lane_footprint::anon_footprint_of(pid),
+                None,
             ),
         };
         let outcome = match beyond_weights {
@@ -2534,10 +2592,22 @@ impl ServingDaemonModule {
                 "unmeasured"
             }
             Some(anon) => {
-                let predicted = fp
-                    .kv_at(live.served_context_window)
-                    .saturating_mul(live.lanes as u64)
-                    .saturating_add(fp.prefill_compute_reserve(live.served_context_window, live.lanes));
+                // The engine's KV is decomposed over the geometry the ENGINE holds (its slots, a
+                // scratch slot included, at its per-slot context) with no compute floor: the
+                // reading holds no compute. Every other source is the plan's own decomposition.
+                let (lanes, window, compute_floor) = match allocated {
+                    Some(ctx) => (ctx.slots, ctx.n_ctx_per_slot, 0),
+                    // the BASE buffer: the fixed term is derived from this reading
+                    // (`base_compute_buffer_per_lane`, the M5's two-tick flap)
+                    None => (live.lanes, live.served_context_window, fp.base_compute_buffer_per_lane()),
+                };
+                let predicted = match allocated {
+                    Some(_) => fp.kv_at(window).saturating_mul(lanes as u64),
+                    None => fp
+                        .kv_at(window)
+                        .saturating_mul(lanes as u64)
+                        .saturating_add(fp.prefill_compute_reserve(window, lanes)),
+                };
                 // The host prompt cache the ENGINE was launched with (`--cache-ram`, on
                 // the snapshot as a fact about the process): it fills the same anonymous
                 // footprint over the serve's life and is not per-token cost — subtracted
@@ -2546,7 +2616,7 @@ impl ServingDaemonModule {
                 // 07:52Z that cell went 14,396 → 256 MiB under a running 2-lane engine
                 // and the reading here went 33k → 262k B/token, saved to disk.
                 // `--cache-ram` lives in HOST RAM: only a process reading contains it. The device
-                // readings (device_delta, engine_props) never saw it, so subtracting it there
+                // readings (device_delta, engine_context) never saw it, so subtracting it there
                 // would undercount the per-token cost or retire the record (Cormac on #4459).
                 let host_cache_bytes = if source == "process_anon" {
                     (live.host_prompt_cache_mib as u64) * 1024 * 1024
@@ -2556,12 +2626,10 @@ impl ServingDaemonModule {
                 let measured = crate::inference::lane_footprint::observe(
                     token,
                     &active,
-                    live.lanes,
-                    live.served_context_window,
+                    lanes,
+                    window,
                     anon,
-                    // the BASE buffer: the fixed term is derived from this reading
-                    // (`base_compute_buffer_per_lane`, the M5's two-tick flap)
-                    fp.base_compute_buffer_per_lane(),
+                    compute_floor,
                     host_cache_bytes,
                 );
                 let Ok(measured) = measured else {
@@ -2581,15 +2649,17 @@ impl ServingDaemonModule {
                     model = %active,
                     pid = pid as u64,
                     source,
-                    lanes = live.lanes as u64,
-                    window = live.served_context_window as u64,
+                    lanes = lanes as u64,
+                    window = window as u64,
                     anon_bytes = anon,
                     host_cache_bytes,
                     predicted_beyond_weights = predicted,
                     ratio = anon as f64 / predicted.max(1) as f64,
                     per_token_estimate = fp.kv_per_token,
-                    per_token_measured = measured.unwrap_or(0),
-                    "the lane's anonymous footprint, read off its process, against the plan's arithmetic"
+                    // absent, never 0: a reading that yields no per-token rate is not a rate of
+                    // zero (card b5230492: 0 printed every minute read like a measurement)
+                    per_token_measured = %measured.map_or_else(|| "none".to_string(), |rate| rate.to_string()),
+                    "the lane's footprint (its process, or on a discrete GPU the engine's own KV) against the plan's arithmetic"
                 );
                 "read"
             }
@@ -2962,7 +3032,7 @@ impl ServingDaemonModule {
         if ticks < PLAN_NONE_LIVE_LANE_TICKS {
             return;
         }
-        let now = crate::modules::chat::now_ms();
+        let now = EpochMs::now().millis();
         let said = self.plan_none_said_ms.load(Ordering::Acquire);
         if now.saturating_sub(said) < RECONCILE_BUSY_SAY_EVERY.as_millis() as u64 {
             return;
@@ -2983,7 +3053,7 @@ impl ServingDaemonModule {
         if started == 0 {
             return;
         }
-        let now = crate::modules::chat::now_ms();
+        let now = EpochMs::now().millis();
         let age = Duration::from_millis(now.saturating_sub(started));
         let said = self.reconcile_busy_said_ms.load(Ordering::Acquire);
         if now.saturating_sub(said) < RECONCILE_BUSY_SAY_EVERY.as_millis() as u64 {
@@ -3107,7 +3177,7 @@ impl ServingDaemonModule {
         if occupancy.holds() {
             let port = (self.inherited_lane)().map(|r| r.port);
             if self.server.paging_recovery_required() {
-                let told = match (port, crate::commands::benchmark::continuum_home()) {
+                let told = match (port, crate::paths::continuum_home()) {
                     (Some(port), Ok(home)) => crate::inference::engine_residency::interrupt(
                         &crate::inference::engine_residency::store_path(&home),
                         port,
@@ -3129,7 +3199,7 @@ impl ServingDaemonModule {
                 self.downshift_streak.store(0, Ordering::Relaxed);
                 *self.pending_model_change.lock().unwrap_or_else(|p| p.into_inner()) = None; // unwrap_or_else: a poisoned streak cell is still cleared
                 static LAST_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let now = crate::persona::trace::now_ms();
+                let now = EpochMs::now().millis();
                 // one row a minute while held, not one a tick
                 if now.saturating_sub(LAST_HELD.load(Ordering::Relaxed)) >= 60_000 {
                     LAST_HELD.store(now, Ordering::Relaxed);
@@ -3716,8 +3786,8 @@ impl ServingDaemonModule {
             .and_then(|live| footprint_for(&live.model))
             .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
         {
-            Some(fits) if floored > fits.max(crate::cognition::serving_plan::MIN_SERVE_CTX) => {
-                let bound = fits.max(crate::cognition::serving_plan::MIN_SERVE_CTX);
+            Some(fits) if floored > fits.max(crate::inference::planning::MIN_SERVE_CTX) => {
+                let bound = fits.max(crate::inference::planning::MIN_SERVE_CTX);
                 crate::probe!(
                     class = "serving.reconcile.window",
                     decision = "kept-window-exceeds-physical-fit",
@@ -4379,7 +4449,7 @@ impl ServingDaemonModule {
             if let Some(slots) = server.slots_body().await {
                 crate::inference::prefill_knee::observe_slots(
                     &slots,
-                    crate::persona::trace::now_ms(),
+                    EpochMs::now().millis(),
                     crate::cognition::resource_admission::served_lane_count(),
                     engine,
                 );
@@ -4463,6 +4533,28 @@ impl ServingDaemonModule {
                 return None;
             }
         }
+        // NEVER DECODE ON A RESIDENT'S ONLY SLOT (card 9e3350bd, the 5090 2026-10-11): with no
+        // scratch slot the smoke probe lands on the slot a resident's live KV occupies; the
+        // 72-token prompt replaced a 53,980-token conversation and the next save wrote that as
+        // her page, so every restore after it re-prefilled from ~0. A quiet lane with a seated
+        // resident is not probed: a wedge there surfaces on her next real turn, which the
+        // real-turn-failure arm above already condemns.
+        // This check is the CHEAP early-out; the authority is the slot permit taken in the spawned
+        // probe below (Codex on #4960: a check here races a turn that seats a resident before the
+        // probe's POST).
+        let live_root = self.serving_tx.borrow().base_url.strip_suffix("/v1").map(str::to_string);
+        let live_pool = live_root.as_deref().and_then(|root| crate::inference::slots::directory().get(root)).flatten();
+        if let Some(pool) = live_pool.as_ref() {
+            if pool.smoke_would_overwrite_a_resident() {
+                crate::probe!(
+                    class = "serving.health",
+                    via = "skipped_resident_slot",
+                    "no scratch slot and a resident is seated: the smoke probe would overwrite her KV and \
+                     her next saved page, so it is skipped; her next real turn proves the lane"
+                );
+                return None;
+            }
+        }
         // Never race the reconcile's own spawn/kill/swap, and never stack heartbeat probes.
         if self.reconciling.load(Ordering::Acquire) {
             return None;
@@ -4482,6 +4574,39 @@ impl ServingDaemonModule {
             // distinguishes a healthy lane from an OOM-poisoned one (control-plane reads
             // stay 200 on a wedged backend). `decode_smoke_ok` is already bounded by
             // `DECODE_SMOKE_TIMEOUT`, so a wedged compute path resolves to `false` fast.
+            //
+            // THE SLOT PERMIT IS THE AUTHORITY (Codex on #4960). On a ONE-slot pool with no
+            // scratch slot, the unpinned probe can only land on slot 0, so holding slot 0's
+            // operation permit across BOTH smoke attempts (the ThinkStarved retry included)
+            // excludes a turn from seating a resident mid-probe, and the resident check is
+            // repeated under it. A 2-slot no-scratch pool would need the probe PINNED to the
+            // reserved slot; that is card 030ffc01. The pool is read AGAIN here, not
+            // taken from before the spawn: a first turn may have installed it since (Codex). An
+            // engine whose pool is still undiscovered has seated no turn yet; a first turn that
+            // discovers it DURING the probe is the remaining window, open on card 030ffc01 (the
+            // fix is the probe going through the shared /props discovery before its POST).
+            let live_pool = live_root.as_deref().and_then(|root| crate::inference::slots::directory().get(root)).flatten();
+            let _reserved = match live_pool.as_ref().filter(|p| p.scratch_slot().is_none() && p.n_slots() == 1) {
+                Some(pool) => match pool.acquire_slot(0).await {
+                    Ok(permit) if !pool.smoke_would_overwrite_a_resident() => Some(permit),
+                    Ok(_) => {
+                        crate::probe!(
+                            class = "serving.health",
+                            via = "skipped_resident_slot",
+                            under_permit = true,
+                            "a resident was seated while the probe waited for the slot: skipped under the permit"
+                        );
+                        health_probing.store(false, Ordering::Release);
+                        return;
+                    }
+                    Err(e) => {
+                        crate::probe!(class = "serving.health", via = "skipped_no_permit", error = %e, "the slot permit could not be taken; no probe this tick");
+                        health_probing.store(false, Ordering::Release);
+                        return;
+                    }
+                },
+                None => None,
+            };
             let ok = server.decode_smoke_ok().await;
             if ok {
                 health_fails.store(0, Ordering::Relaxed);
@@ -5131,9 +5256,16 @@ impl ServingDaemonModule {
                         } else if plan.served_context_window >= demand.window_tokens {
                             "demand"
                         } else {
-                            "host-fit"
+                            // the window came out below demand; WHICH term did it is `lanes_bound`
+                            // below and the plan's rationale (this read "host-fit" until card
+                            // eb8d1839, and was taken for a host-RAM finding)
+                            "below-demand"
                         },
                         demand_measured = demand.measured,
+                        // WHAT chose the lane count, from the planner's own decision. `bound_by`
+                        // above says only whether the WINDOW came out below demand, whatever
+                        // budget did it; this names the term that decided `lanes` (card eb8d1839).
+                        lanes_bound = ?plan.lanes_bound,
                         "serving plan recomputed",
                     );
                     // Warm-slot oversubscription for the ADOPTED plan (#266) —
@@ -5663,22 +5795,6 @@ static LAST_GOOD_VRAM_CEILING_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// boot never has to guess zero. 0 = no GPU reported a size.
 static DEVICE_VRAM_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-/// Epoch milliseconds for the ladder's staleness arithmetic. Local because `now_ms` is
-/// currently hand-rolled in five files tree-wide; adding a sixth private copy here would
-/// be worse than reusing one, and hoisting all five is its own change, not this one.
-fn epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        // JUSTIFIED unwrap_or: the error case is a system clock set before 1970, and the
-        // 0 it yields is not a fabricated quantity — it is the sentinel this module
-        // already defines as "never recorded" (`LAST_GOOD_VRAM_CEILING_AT_MS == 0`), which
-        // makes the last-known rung correctly UNAVAILABLE rather than falsely fresh. The
-        // failure direction is toward less trust, not more, which is the only direction a
-        // default may ever move a decision.
-        .unwrap_or(0)
-}
-
 /// Seed the cold-boot prior. Called once as the serving daemon starts, BEFORE the first
 /// plan, so the very first tick already has a real number to stand on.
 pub fn seed_device_vram_prior(total_bytes: u64) {
@@ -5762,48 +5878,51 @@ fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
         .unwrap_or(0)
 }
 
-/// The lane's bytes beyond its weights on the device, as the engine reports its own allocation.
-/// Bounded: a localhost read of cached meta, taken only on the sampler's interval; `None` when the
-/// lane does not answer in time or its engine predates `memory_breakdown`.
-/// What the serving engine holds on the accelerator, by its own account (`/props`): its
-/// weights there plus its KV and compute buffers. `None` when the engine does not answer or
-/// predates either field.
-async fn engine_device_bytes() -> Option<u64> {
+/// The serving engine's `/props`. Bounded: a localhost read of cached meta, taken only on the
+/// sampler's interval; `None` when the lane does not answer in time or answers with an error.
+async fn engine_props() -> Option<serde_json::Value> {
     let url = format!("{}/props", crate::inference::llama_server::serving_root());
-    let body = reqwest::Client::new()
+    reqwest::Client::new()
         .get(url)
         .timeout(std::time::Duration::from_millis(500))
         .send()
         .await
         .ok()?
+        // a 503 while loading, or a 500, is an engine that did not ANSWER its props, never
+        // an engine that predates a field (Codex on #4961): its error body must not be read
+        .error_for_status()
+        .ok()?
         .json::<serde_json::Value>()
         .await
-        .ok()?;
+        .ok()
+}
+
+/// What the serving engine holds on the accelerator, by its own account (`/props`): its
+/// weights there plus its KV and compute buffers. `None` when the engine does not answer or
+/// predates either field.
+async fn engine_device_bytes() -> Option<u64> {
+    let body = engine_props().await?;
     let weights = crate::inference::weight_residency::WeightResidency::from_props(&body)?.accelerator_bytes();
     let buffers = crate::inference::weight_residency::EngineMemory::from_props(&body)?.accelerator_beyond_weights();
     Some(weights.saturating_add(buffers))
 }
 
-async fn engine_beyond_weights() -> Option<u64> {
-    let url = format!("{}/props", crate::inference::llama_server::serving_root());
-    let body = reqwest::Client::new()
-        .get(url)
-        .timeout(std::time::Duration::from_millis(500))
-        .send()
-        .await
-        .ok()?
-        .json::<serde_json::Value>()
-        .await
-        .ok()?;
-    crate::inference::weight_residency::EngineMemory::from_props(&body).map(|m| m.accelerator_beyond_weights())
-}
-
 /// The discrete footprint arm: what the lane added to the device beyond its weights.
 /// `None` without a baseline (an adopted lane: this core never saw the spawn) or a
 /// reading — never a delta against zero, which would charge the desktop to the model.
+///
+/// Also `None` when the delta does not EXCEED the weights. A serving lane holds its KV and
+/// compute on the device, so "zero beyond the weights" is not a reading: it means the
+/// baseline trough already held the weights (or another engine), and the subtraction
+/// saturated. On the 5090 (2026-10-11, card b5230492) that printed `anon_bytes=0
+/// per_token_measured=0` every minute for a lane serving 67,584 tokens, and the planner
+/// sized lanes from the estimate while the probe read like a measurement. `None` falls
+/// through to the engine's own `/props` breakdown, which does not depend on a baseline.
 fn device_delta_beyond_weights(baseline: u64, now: u64, weights_bytes: u64) -> Option<u64> {
-    (baseline > 0 && baseline != u64::MAX && now > 0)
-        .then(|| now.saturating_sub(baseline).saturating_sub(weights_bytes))
+    if baseline == 0 || baseline == u64::MAX || now == 0 {
+        return None;
+    }
+    now.checked_sub(baseline)?.checked_sub(weights_bytes).filter(|&beyond| beyond > 0)
 }
 
 fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<u64> {
@@ -5907,7 +6026,7 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
     // Record every real reading so the NEXT silent tick has something honest to stand on.
     if let Some(bytes) = board {
         LAST_GOOD_VRAM_CEILING.store(bytes, Ordering::Relaxed);
-        LAST_GOOD_VRAM_CEILING_AT_MS.store(epoch_ms(), Ordering::Relaxed);
+        LAST_GOOD_VRAM_CEILING_AT_MS.store(EpochMs::now().millis(), Ordering::Relaxed);
     }
 
     let last_at = LAST_GOOD_VRAM_CEILING_AT_MS.load(Ordering::Relaxed);
@@ -5916,7 +6035,7 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
         last_good: (last_at > 0).then(|| {
             (
                 LAST_GOOD_VRAM_CEILING.load(Ordering::Relaxed),
-                epoch_ms().saturating_sub(last_at),
+                EpochMs::now().millis().saturating_sub(last_at),
             )
         }),
         // The device prior is a VRAM fact. The Ram row is never cold — its ceiling is
@@ -6128,7 +6247,7 @@ fn derived_prompt_cache_mib(
         .filter(|(id, _)| resident.contains(id))
         .map(|(_, d)| (d.last_seen_ms, d.prev_seen_ms))
         .collect();
-    let active = rotating_minds(&seen, crate::persona::trace::now_ms(), rotation_window_ms(&seen)).max(warm_floor);
+    let active = rotating_minds(&seen, EpochMs::now().millis(), rotation_window_ms(&seen)).max(warm_floor);
     let demands = with_measured_state(
         active_cache_states(&population, served_ctx, active),
         fp.map(|f| f.kv_per_token),
@@ -6673,252 +6792,6 @@ fn moe_host_cache_lease_inputs(
     })
 }
 
-pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
-    // THE ROW IS THE SOURCE OF TRUTH. `weights_bytes` is stamped once, where the GGUF
-    // path is resolved (`artifacts::hydrate_artifact_sizes`). This function runs on the
-    // governor's accounting tick, so re-`stat`ing the file per call put filesystem I/O
-    // on a hot path for a number that cannot change while the path is valid.
-    //
-    // The stat REMAINS as the fallback, and it is not dead code: rows built by hand in
-    // tests, fixtures, and any construction path that never went through the resolver
-    // carry `weights_bytes: None`. Falling back keeps those honest rather than sizing
-    // them at zero — but the fallback is the exception, not the steady state.
-    let weights_bytes = match model.weights_bytes {
-        Some(n) => n,
-        None => {
-            let path = crate::model_registry::artifacts::resolve_gguf_for_model(model)?;
-            crate::model_registry::artifacts::total_gguf_bytes(&path)
-        }
-    };
-    // The VERIFIED serving ceiling wins over the trained maximum: a GGUF that
-    // declares 262k trained context can still only be SERVED at the geometry we
-    // measured (Flash-Next: 32k verified, 46848 OOM'd all night, 2026-08-29).
-    let ctx_ceiling = model
-        .serving
-        .verified_ctx_ceiling
-        .map(|c| model.context_window.min(c))
-        .unwrap_or(model.context_window); // unwrap_or: no verified ceiling declared = trained max stands (the pre-2550 behavior)
-    let mut fp = footprint_from_parts(
-        &model.id,
-        weights_bytes,
-        ctx_ceiling,
-        model.has(Capability::ToolUse),
-        model.serving.measured_capability,
-    )?;
-    // THE ARTIFACT'S OWN KV GEOMETRY beats the weights-scaled guess. Measured
-    // 2026-09-01: the heuristic read a 35B fine-grained MoE at ~244 KB/token
-    // (experts add weights, zero KV) where the header declares ~61 KB f16 —
-    // and the 4× inflation starved --cache-ram to ONE mind's worth (686 MiB,
-    // every restore a miss, hit_rate 0.0 fleet-wide) AND under-granted lanes
-    // vs resident demand. Header read is memoized per path: this runs on the
-    // governor's accounting tick and a GGUF header parse is real I/O.
-    let header_rate = crate::model_registry::artifacts::resolve_gguf_for_model(model)
-        .and_then(|path| kv_rate_from_header_cached(&path));
-    if let Some(rate) = header_rate {
-        fp.kv_per_token = rate;
-    }
-    let fp = apply_kv_quantization(fp);
-    // A header-declared KV rate (÷ the launched cache type) is the physical cost of a
-    // token: the measurement may not raise it. "The process beats the arithmetic" was
-    // written for the weights-scaled GUESS; against the header it can only mis-attribute
-    // fixed residency (the draft model's KV, the vision projector, engine buffers) to
-    // tokens — and it does so WORST at the smallest geometry, which is exactly when a
-    // raised rate pins the shrink. Measured 2026-09-19 on the M5 (97f480e19): the header
-    // said 65,536 f16 → 32,768 q8; a one-lane sample at 67,584 read 55,925 B/token,
-    // `corrects()` fired, the plan carried 44,740, and two lanes stopped fitting a 30 GB
-    // budget where the arithmetic at the header rate holds two (84k) and at 34 GB three.
-    // The excess is a real fixed term — named on the probe below so a fixed-residency
-    // model can learn it — never a per-token one.
-    let mut fp = fp;
-    let measured = crate::inference::lane_footprint::measured_record(&fp.model_id);
-    fp.kv_per_token = kv_rate_for_plan(
-        header_rate.is_some(),
-        fp.kv_per_token,
-        measured.as_ref().map(|r| r.per_token_bytes),
-    );
-    if header_rate.is_some() {
-        if let Some(record) = &measured {
-            fp.fixed_per_lane_bytes = fixed_per_lane_from(fp.kv_per_token, record);
-            // One row when the value CHANGES: this runs on every footprint read (measured
-            // 2026-09-19 23:2xZ on the M5: 840 identical rows in 12 minutes, 70/min — the
-            // ledger-rotation class, the same shape the knee clamp's row had).
-            static LAST_FIXED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
-            if fp.fixed_per_lane_bytes > 0
-                && LAST_FIXED.swap(fp.fixed_per_lane_bytes, std::sync::atomic::Ordering::Relaxed) != fp.fixed_per_lane_bytes
-            {
-                crate::probe!(
-                    class = "serving.footprint.excess_is_fixed",
-                    model = fp.model_id.as_str(),
-                    header_rate = fp.kv_per_token,
-                    measured_per_token = record.per_token_bytes,
-                    measured_window = record.window as u64,
-                    fixed_per_lane_bytes = fp.fixed_per_lane_bytes,
-                    "the lane's measured per-token cost exceeds the header's physical KV rate — the excess is fixed residency (draft KV, projector, buffers) and is carried per lane; the header rate stands"
-                );
-            }
-        }
-    }
-    Some(fp)
-}
-
-/// The residency a sample measured BEYOND the header's per-token rate, as fixed bytes per
-/// lane: `(measured − rate) × the window it was measured at`. Zero when the sample agrees
-/// with the header. The rate stays physics; the residency stays counted.
-pub fn fixed_per_lane_from(header_rate: u64, record: &crate::inference::lane_footprint::MeasuredCost) -> u64 {
-    record
-        .per_token_bytes
-        .saturating_sub(header_rate)
-        .saturating_mul(record.window as u64)
-}
-
-/// THE PROCESS BEATS THE ARITHMETIC. When the live lane's anonymous footprint, read
-/// off the serving process (`inference::lane_footprint`), says a served token costs
-/// more than the header + quantization arithmetic claims, the plan's per-token cost
-/// rises to the measurement. Measured 2026-09-17 on the M5: arithmetic 10 KB/token,
-/// process 36 KB/token (compute buffers at ubatch 2048 over a 412k total context, the
-/// hybrid's recurrent state and checkpoints) — the plan fitted 8 × 51,712 into 30 GB,
-/// the server took 47 GB, the box swapped and every stream ran at 7.9 t/s. The plan's
-/// per-token cost is `kv + kv / PREFILL_COMPUTE_KV_DIVISOR`, so kv is set to make that
-/// sum the measurement; a smaller measurement never lowers it (a footprint is a lower
-/// bound of the need).
-/// The per-token rate the plan carries: a header-declared rate is physics and stands
-/// whatever the process measured; only a heuristic estimate is open to correction.
-pub fn kv_rate_for_plan(header_known: bool, estimate: u64, measured: Option<u64>) -> u64 {
-    match (header_known, measured) {
-        (true, _) | (false, None) => estimate,
-        (false, Some(m)) => kv_per_token_from_measured(estimate, m),
-    }
-}
-
-
-/// Pure half of [`apply_measured_cost`]: the kv rate whose plan cost (`kv + kv / D`)
-/// equals `measured`, or the estimate when the measurement does not correct it.
-fn kv_per_token_from_measured(estimate: u64, measured: u64) -> u64 {
-    use crate::cognition::serving_plan::PREFILL_COMPUTE_KV_DIVISOR as D;
-    let estimated_cost = estimate.saturating_add(estimate / D);
-    if !crate::inference::lane_footprint::corrects(estimated_cost, measured) {
-        return estimate;
-    }
-    // kv × (D + 1) / D = measured  →  kv = measured × D / (D + 1)
-    measured.saturating_mul(D) / (D + 1)
-}
-
-/// Memoized `gguf_keys::kv_bytes_per_token_f16` per artifact path. `None` is
-/// cached too (header unreadable / geometry keys absent → the heuristic
-/// stands), so a broken artifact costs one parse, not one per tick.
-fn kv_rate_from_header_cached(path: &std::path::Path) -> Option<u64> {
-    static CACHE: std::sync::OnceLock<
-        dashmap::DashMap<std::path::PathBuf, Option<u64>>,
-    > = std::sync::OnceLock::new();
-    let cache = CACHE.get_or_init(dashmap::DashMap::new);
-    if let Some(hit) = cache.get(path) {
-        return *hit;
-    }
-    let rate = (|| {
-        let mut file = std::fs::File::open(path).ok()?;
-        let content =
-            candle_core::quantized::gguf_file::Content::read(&mut file).ok()?;
-        let arch = crate::inference_capability::gguf_keys::architecture(&content)?;
-        crate::inference_capability::gguf_keys::kv_bytes_per_token_f16(&content, &arch)
-    })();
-    crate::probe!(
-        class = "serving.kv_rate.header",
-        path = %path.display(),
-        rate_f16 = rate.unwrap_or(0), // 0 = header did not answer; the weights heuristic stands (the probe's absence-vs-zero reading rides `answered`)
-        answered = rate.is_some(),
-        "KV bytes/token from the artifact's own declared geometry — replaces the \
-         weights-scaled guess that over-charged MoE models ~4x",
-    );
-    cache.insert(path.to_path_buf(), rate);
-    rate
-}
-
-/// KV CACHE QUANTIZATION (#232): a lane running quantized KV holds proportionally
-/// fewer bytes/token, so the plan can size a BIGGER window into the same budget —
-/// this is what turns the q8_0 cache type into an actual window GROWTH.
-/// Divide the f16 rate by the quant factor; f16 → 1 → byte-identical.
-///
-/// THE DIVISOR IS NOT A SECOND READ OF THE CONFIG. It is the SAME
-/// [`crate::cognition::kv_cache_plan::KvCachePlan`] the launcher takes its
-/// `--cache-type-k/v` and `--flash-attn` flags from, so the plan's arithmetic and the
-/// engine's flags cannot disagree. They shared a *key* before, which is how the 5090 —
-/// where nobody ever exported `SERVING_KV_CACHE_TYPE` — planned AND served half-size
-/// lanes self-consistently for its whole life (a 26,880-token lane, measured
-/// 2026-09-20). Sharing the key made the two halves agree about the wrong number;
-/// sharing the DECISION makes them agree about the right one.
-///
-/// ONE named transform (not inlined in `footprint_for`) so every derivation of the
-/// live footprint — production AND the tests that assert against it — rides the SAME
-/// resolved plan instead of silently assuming f16. The env-dependent-test incident
-/// this prevents: an operator serving `SERVING_KV_CACHE_TYPE=q8_0` ran the footprint
-/// test locally and it failed on a number CI called green, because the expectation
-/// was built from raw parts while the resolver divided by 2 (2026-08-24).
-fn apply_kv_quantization(mut fp: ModelFootprint) -> ModelFootprint {
-    fp.kv_per_token = (fp.kv_per_token / kv_cache_quant_divisor()).max(1);
-    fp
-}
-
-/// The resident-KV divisor of the resolved KV cache decision, so the plan sizes the
-/// served window against the KV the lane WILL actually hold, not the f16 default. (#232)
-fn kv_cache_quant_divisor() -> u64 {
-    crate::cognition::kv_cache_plan::resolve().bytes_per_token_divisor
-}
-
-/// Pure footprint estimate from the fields that drive it — split out from the
-/// fs/registry IO so the (coarse, tunable) heuristics are unit-testable.
-/// `None` when there are no weights to serve.
-/// An UNMEASURED model's weight-proxy rank never reaches a measured frontier
-/// score: the proxy says "bigger ≈ smarter within a family", nothing across
-/// families, so it must lose to any model someone actually measured.
-// context-budget-exempt: a rank ceiling on a 0–255 capability scale, not a window or token budget
-pub const UNMEASURED_RANK_CAP: u8 = 40;
-
-fn footprint_from_parts(
-    id: &str,
-    weights_bytes: u64,
-    context_window: u32,
-    tool_capable: bool,
-    measured_capability: Option<u8>,
-) -> Option<ModelFootprint> {
-    if weights_bytes == 0 {
-        return None;
-    }
-    // Coarse per-token KV RATE: scale with model size (more weights ≈ more
-    // layers ≈ more KV/token). ~weights/20k bytes per token, floored. The
-    // planner multiplies this by the window IT derives from the host budget —
-    // we do NOT pre-collapse it against an assumed serving window here (no
-    // PLANNED_CTX clamp; the served window is the planner's call, task #50).
-    // Realistic per-token KV. These Qwen coders use grouped-query attention (few KV
-    // heads), so KV is SMALL: ~200 KB/token for the 14B, ~260 KB/token for the 32B. The
-    // old `weights/20_000` gave ~1 MB/token for the 32B — 4× too high — which made a 32B
-    // that comfortably fits a 64 GB box read as ~32 GB of KV at 32k ctx and get falsely
-    // rejected by the fit-gate, so the planner kept a weaker model. `weights/80_000`
-    // (~110 KB for 14B, ~250 KB for 32B) tracks real Q4 GQA KV; still coarse, still floored.
-    let kv_per_token = (weights_bytes / 80_000).max(20_000);
-
-    // Coarse capability rank: GB of weights (bigger ≈ more capable within a
-    // family), +bonus for tool/code capability. Saturates into u8.
-    let gb = (weights_bytes / 1_000_000_000).min(250) as u16;
-    let tool_bonus = if tool_capable { 2 } else { 0 };
-    // Measured beats proxy: a catalog score (one scale) IS the rank; the weight
-    // proxy is only for models nobody measured, and it caps below any measured
-    // frontier so the planner's "most capable that fits" means capable, not big.
-    let proxy_rank = gb.saturating_add(tool_bonus).min(u16::from(UNMEASURED_RANK_CAP)) as u8;
-    let capability_rank = measured_capability.unwrap_or(proxy_rank);
-
-    Some(ModelFootprint {
-        model_id: id.to_string(),
-        weights_bytes,
-        kv_per_token,
-        // The model's trained ceiling, carried straight through — the planner
-        // caps the served window to it. Floored at MIN_SERVE_CTX so a registry
-        // entry with a bogus 0 window can't degrade below runnable.
-        context_window: context_window.max(MIN_SERVE_CTX),
-        capability_rank,
-        fixed_per_lane_bytes: 0,
-    })
-}
-
 /// The servable candidates from the LIVE model universe — every model that is
 /// [`Availability::Ready`] (its artifact is on disk, or it was just pulled and
 /// flipped Ready with its real path) and yields a footprint. Planning off the
@@ -7214,10 +7087,7 @@ fn snapshot_from_outcome(
                 // the honest answer is available — take it. Inventing a plausible
                 // number is the worse half of swallowing an error: it doesn't just
                 // hide the failure, it feeds fiction to every downstream reader.
-                ready_verified_at_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .ok(),
+                ready_verified_at_ms: crate::time::EpochMs::read().ok().map(crate::time::EpochMs::millis),
                 active_model: Some(desired.to_string()),
                 ready: true,
                 base_url: serving_v1_url(),
@@ -7956,6 +7826,20 @@ pub(crate) mod tests {
             None,
             "armed but never lowered = could not look"
         );
+        // card b5230492 (the 5090 2026-10-11: anon_bytes=0 per_token_measured=0 every minute
+        // for a lane serving 67,584 tokens): a trough baseline that already held the weights
+        // makes the delta saturate. Zero or less beyond the weights is not a reading; it
+        // falls through to the engine's own breakdown.
+        assert_eq!(
+            device_delta_beyond_weights(18_000 * MIB, 31_914 * MIB, weights),
+            None,
+            "the baseline held the weights: the delta is below them, so it is no reading"
+        );
+        assert_eq!(
+            device_delta_beyond_weights(752 * MIB, 752 * MIB + weights, weights),
+            None,
+            "exactly the weights beyond the baseline: nothing measured beyond them"
+        );
     }
 
     // what this catches (2026-09-17, the 5090 after #4144): with VRAM residency no
@@ -8127,88 +8011,7 @@ pub(crate) mod tests {
     // computed a negative gain and never relaunched — five residents thrashed
     // two slots at hit_rate 0.0 until an operator cycled the server by hand.
     // The evidence currency is window × lanes.
-    // what this catches (the M5, 2026-10-10 19:58-20:01Z: per-lane compute read 1.93 GB and
-    // 4.40 GB on alternate ticks, and the plan flipped between 2 lanes and 1 every tick): a
-    // lane measurement fed its own derived fixed term. The loop the daemon runs is sample
-    // (anon minus the floor the sampler subtracts) -> fixed term -> next floor. With the
-    // base buffer as that floor, the fixed term is the lane's true fixed residency after
-    // ONE sample and stays there; subtracting compute_buffer_per_lane (base + fixed) gives
-    // fixed(n+1) = C - fixed(n), which alternates and fails this.
     #[test]
-    fn a_lane_measurement_converges_and_never_feeds_back_its_own_fixed_term() {
-        let header_rate = 32_768u64;
-        let (lanes, window) = (1u32, 56_832u32);
-        let mut fp = crate::cognition::serving_plan::ModelFootprint {
-            model_id: "m5-27b".into(), weights_bytes: 19_000_000_000, kv_per_token: header_rate, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
-        };
-        let true_fixed = 3_950_000_000u64; // what the engine really holds per lane beyond KV and the base buffer
-        let anon = (fp.base_compute_buffer_per_lane() + true_fixed + header_rate * u64::from(window)) * u64::from(lanes);
-        let mut seen = Vec::new();
-        for _ in 0..4 {
-            let per_token = crate::inference::lane_footprint::per_token_from(anon, lanes, window, fp.base_compute_buffer_per_lane(), 0)
-                .expect("test: a reading");
-            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes: anon, last_ms: 0 };
-            fp.fixed_per_lane_bytes = fixed_per_lane_from(header_rate, &record);
-            seen.push(fp.fixed_per_lane_bytes);
-        }
-        let tolerance = u64::from(window); // integer division loses under one byte per token
-        assert!(seen.iter().all(|f| f.abs_diff(true_fixed) <= tolerance), "converges to the true fixed term at once and holds: {seen:?}");
-    }
-
-        // what this catches (2026-09-17, the M5 swapping at 8 × 51,712): a fresh measured
-    // per-token cost above the arithmetic raises the plan's kv rate so that kv + kv/D
-    // equals the measurement; agreement or a smaller reading leaves the estimate alone.
-    #[test]
-    fn a_measured_per_token_cost_corrects_the_plans_rate_upward_only() {
-        use super::kv_per_token_from_measured;
-        use crate::cognition::serving_plan::PREFILL_COMPUTE_KV_DIVISOR as D;
-        // what this catches (2026-09-19, the M5 pinned at one lane): a header-declared
-        // rate is never raised by a measurement — the excess is fixed residency; a
-        // heuristic estimate still is.
-        assert_eq!(kv_rate_for_plan(true, 32_768, Some(55_925)), 32_768, "header rate is physics");
-        assert_eq!(kv_rate_for_plan(true, 32_768, None), 32_768);
-        assert_eq!(kv_rate_for_plan(false, 32_768, None), 32_768);
-        assert!(kv_rate_for_plan(false, 10_240, Some(36_000)) > 10_240, "a guess still learns from the process");
-        // The excess is carried, not dropped: the M5 shape (header 32,768 q8, a one-lane
-        // sample of 55,925 at 67,340) yields ≈1.56 GB of fixed residency per lane, and
-        // across budgets the plan with it fits no more lanes than the header-only plan
-        // and no fewer than the raised-rate plan — strictly between them somewhere.
-        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, anon_bytes: 0, last_ms: 0 };
-        let fixed = fixed_per_lane_from(32_768, &record);
-        assert!((1_500_000_000..1_620_000_000).contains(&fixed), "{fixed} B per lane");
-        assert_eq!(fixed_per_lane_from(65_536, &record), 0, "a sample under the rate carries nothing");
-        let base = crate::cognition::serving_plan::ModelFootprint {
-            model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
-        };
-        let carried = crate::cognition::serving_plan::ModelFootprint { fixed_per_lane_bytes: fixed, ..base.clone() };
-        let raised = crate::cognition::serving_plan::ModelFootprint { kv_per_token: 44_740, ..base.clone() };
-        let lanes_at = |fp: &crate::cognition::serving_plan::ModelFootprint, usable: u64| (1..=4u32).rev().find(|&l| fp.window_within(usable, l) >= 67_340).unwrap_or(0);
-        // Carried never fits MORE than header-only (the fixed term only costs), and costs a
-        // lane somewhere in the range. It is NOT ordered against the raised-rate plan: a
-        // fixed cost bites hardest at small lane counts (31 GB: carried 1, raised 2) and a
-        // raised rate at large ones — which is the whole point of carrying it as fixed.
-        let mut strict = false;
-        for usable_gb in 28..=46u64 {
-            let usable = usable_gb * 1_000_000_000;
-            let (h, c) = (lanes_at(&base, usable), lanes_at(&carried, usable));
-            assert!(h >= c, "{usable_gb} GB: header {h} ≥ carried {c}");
-            strict |= h > c;
-        }
-        assert!(strict, "the carried term costs at least one lane somewhere in the range");
-        // The M5's own numbers, pinned, with the budget sized as handed (no second
-        // headroom on top of the mode's — `CACHE_GRANT_HEADROOM`): header-only 3 lanes at
-        // 30 GB and 4 at 34; carried 2 at 30 and 3 at 34; the raised rate the old code
-        // produced: 2 at 30, 3 at 34. (Under the stacked fractions these read 2/3, 1/2, 1/2.)
-        assert_eq!((lanes_at(&base, 30_000_000_000), lanes_at(&base, 34_000_000_000)), (3, 4));
-        assert_eq!((lanes_at(&carried, 30_000_000_000), lanes_at(&carried, 34_000_000_000)), (2, 3));
-        assert_eq!((lanes_at(&raised, 30_000_000_000), lanes_at(&raised, 34_000_000_000)), (2, 3));
-        let kv = kv_per_token_from_measured(10_240, 36_000);
-        assert_eq!(kv.saturating_add(kv / D) / 100, 36_000 / 100, "the plan's cost now equals the measurement");
-        assert_eq!(kv_per_token_from_measured(10_240, 12_000), 10_240, "within agreement: the estimate stands");
-        assert_eq!(kv_per_token_from_measured(36_000, 10_240), 36_000, "a smaller reading never lowers it");
-    }
-
-#[test]
     fn rehome_evidence_counts_lanes_not_just_per_slot_window() {
         use super::rehome_gain_evidence;
         // The live incident shape: more lanes, smaller per-slot, bigger total.
@@ -8357,6 +8160,7 @@ pub(crate) mod tests {
         );
     }
     use super::*;
+    use crate::cognition::serving_plan::footprint::apply_kv_quantization;
 
     const GB: u64 = 1_000_000_000;
 
@@ -8780,70 +8584,6 @@ pub(crate) mod tests {
             1,
             "cores floored at 1"
         );
-    }
-
-    // what this catches: the plan's resident-KV divisor is the SAME resolved decision
-    // the launcher flags with — not a second read of a config key. The two shared a
-    // KEY before, which is how the 5090 (and the CPU-serving IntelMac) planned AND
-    // served half-size lanes self-consistently: a 26,880-token lane, measured
-    // 2026-09-20. The divisor table itself is pinned in cognition/kv_cache_plan.rs.
-    #[test]
-    fn the_plans_kv_divisor_is_the_resolved_decisions_divisor() {
-        assert_eq!(
-            kv_cache_quant_divisor(),
-            crate::cognition::kv_cache_plan::resolve().bytes_per_token_divisor,
-            "the fit math and the launcher flag must be two projections of ONE decision"
-        );
-    }
-
-    #[test]
-    fn footprint_from_parts_is_footprint_aware() {
-        let fp = footprint_from_parts("present", 3 * GB, 8192, true, None).unwrap();
-        assert_eq!(fp.model_id, "present");
-        assert_eq!(fp.weights_bytes, 3 * GB);
-        assert!(fp.kv_per_token > 0);
-        assert_eq!(
-            fp.context_window, 8192,
-            "carries the model's trained ceiling, no clamp"
-        );
-        assert!(
-            fp.capability_rank >= 5,
-            "3GB + tool bonus, got {}",
-            fp.capability_rank
-        );
-
-        // A leaner non-tool model ranks below the bigger tool-capable one.
-        let small = footprint_from_parts("small", 1 * GB, 4096, false, None).unwrap();
-        assert!(small.capability_rank < fp.capability_rank);
-
-        assert!(
-            footprint_from_parts("empty", 0, 8192, false, None).is_none(),
-            "no weights → not servable"
-        );
-    }
-
-    // what this catches: the planner's "most capable that fits" meaning BIG again.
-    // A measured score is the rank; an unmeasured model keeps the weight proxy,
-    // capped below any measured frontier — so a 19 GB model someone measured at
-    // 42 outranks a 22 GB model nobody measured, and a 200 GB unmeasured model
-    // still cannot outrank it. (Joel 2026-09-05: "You guys aren't understanding
-    // how scaling works.")
-    #[test]
-    fn a_measured_capability_outranks_any_weight_proxy() {
-        let measured = footprint_from_parts("qwen3.8-27b", 19 * GB, 8192, true, Some(42)).unwrap();
-        let bigger_unmeasured = footprint_from_parts("ornith-35b", 22 * GB, 8192, true, None).unwrap();
-        let huge_unmeasured = footprint_from_parts("huge", 200 * GB, 8192, true, None).unwrap();
-        assert_eq!(measured.capability_rank, 42, "a measured score is the rank");
-        assert!(
-            measured.capability_rank > bigger_unmeasured.capability_rank,
-            "measured 42 beats the 22 GB proxy ({})",
-            bigger_unmeasured.capability_rank
-        );
-        assert_eq!(
-            huge_unmeasured.capability_rank, UNMEASURED_RANK_CAP,
-            "an unmeasured model caps at the proxy ceiling"
-        );
-        assert!(measured.capability_rank > huge_unmeasured.capability_rank);
     }
 
     // what this catches: an M5 Pro (or any capable silicon) must NOT classify
@@ -10229,7 +9969,7 @@ pub(crate) mod tests {
         let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
         daemon.publish_plan(budget, &candidates, &candidates);
 
-        let store = store_path(&crate::commands::benchmark::continuum_home().expect("test: a test home"));
+        let store = store_path(&crate::paths::continuum_home().expect("test: a test home"));
         let job = uuid::Uuid::from_u128(0xef9d_f13b);
         let bound = ResidentWork {
             job,
@@ -11539,6 +11279,7 @@ pub(crate) mod tests {
             resident_models: 1,
             fits_on_gpu: true,
             rationale: String::new(),
+            lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
         };
         // The 5090: 32 GB × 0.80 physical. The floor is the 27B — even though the
         // plan that asked was computed over a candidate list the unload had emptied
@@ -11609,6 +11350,7 @@ pub(crate) mod tests {
             resident_models: 1,
             fits_on_gpu: true,
             rationale: String::new(),
+            lanes_bound: crate::cognition::serving_plan::LanesBound::Demand,
         };
         let both = vec![devstral.clone(), tiny.clone()];
 

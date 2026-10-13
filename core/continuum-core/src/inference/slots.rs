@@ -291,6 +291,19 @@ pub fn note_page_dir(dir: &std::path::Path) {
 /// list, so every scan sizes a page whole and every trim removes it whole.
 const PAGE_SIDECARS: [&str; 2] = [".ckpt", ".lora"];
 
+/// The bytes of a page's sidecars (`.ckpt` + `.lora`) in the live page dir, or `None` when no dir
+/// is registered or none exists. A save or restore reads and writes them with the page, and the
+/// engine's own `n_read`/`n_written` count only the `.bin`, so a probe that times the whole switch
+/// names them separately (BigMama on #4957: ~1.2-1.6 GB of checkpoints on Kimi's page).
+pub fn page_sidecar_bytes(page: &str) -> Option<u64> {
+    let dir = PAGE_DIR.lock().clone()?;
+    let sizes: Vec<u64> = PAGE_SIDECARS
+        .iter()
+        .filter_map(|s| std::fs::metadata(dir.join(format!("{page}{s}"))).ok().map(|m| m.len()))
+        .collect();
+    (!sizes.is_empty()).then(|| sizes.iter().sum())
+}
+
 /// Every page in `dir` (`a-*.bin`), as (page name -> (the page file's mtime, bytes of the page
 /// and its sidecars)). Reads the dir once; anything unreadable is skipped.
 fn pages_in(dir: &std::path::Path) -> std::collections::HashMap<String, (std::time::SystemTime, u64)> {
@@ -470,10 +483,7 @@ impl KvSlotPool {
             // later drop-in behind this same closure seam.
             eviction_priority: Arc::new(|view, lease: &Arc<KvSlotLease>| {
                 let tokens = lease.tail_tokens.load(Ordering::Relaxed).max(1);
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(view.last_access_at); // engine has no view of a just-inserted key: fall back to its own stamp
+                let now_ms = crate::time::EpochMs::read().map_or(view.last_access_at, crate::time::EpochMs::millis); // engine has no view of a just-inserted key: fall back to its own stamp
                 let stale_hours =
                     now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
                 let cost = (tokens >> stale_hours.min(20)) as i64;
@@ -546,6 +556,15 @@ impl KvSlotPool {
     /// spare one.
     pub fn scratch_slot(&self) -> Option<u32> {
         self.scratch
+    }
+
+    /// Whether a synthetic decode (the serving heartbeat's smoke probe) could only run on a slot
+    /// holding a resident's live KV: no scratch slot, and some slot attributed to an activity.
+    /// The probe must not run then (card 9e3350bd, the 5090 2026-10-11: on a one-slot lane the
+    /// 72-token smoke prompt replaced a 53,980-token resident and the next save wrote that as
+    /// her page, 0 checkpoints; every restore after it re-prefilled from ~0).
+    pub(crate) fn smoke_would_overwrite_a_resident(&self) -> bool {
+        self.scratch.is_none() && !self.holders.lock().is_empty()
     }
 
     /// The citizen slot transient traffic borrows on a server with NO scratch slot:
@@ -877,7 +896,7 @@ impl SavedLedger {
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)?;
-        crate::utils::file_replace::replace_file(&tmp, &self.path)?;
+        crate::fs_portable::replace::replace_file(&tmp, &self.path)?;
         *written = generation;
         Ok(())
     }
@@ -1692,6 +1711,24 @@ pub fn directory() -> &'static SlotDirectory {
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (card 9e3350bd; the 5090 2026-10-11, build 6148): the heartbeat's smoke
+    // probe ran on a one-slot lane's only slot, replacing the resident's KV, and the next save
+    // wrote the probe's 72 tokens as her page. With no scratch slot and a resident seated, the
+    // probe must not run; with a scratch slot, or nobody seated, it may.
+    #[test]
+    fn the_smoke_probe_never_runs_on_a_seated_residents_only_slot() {
+        let one = KvSlotPool::new("test://one-slot", 1);
+        assert_eq!(one.scratch_slot(), None, "test: a one-slot pool has no scratch");
+        assert!(!one.smoke_would_overwrite_a_resident(), "nobody seated: probing costs no one");
+        one.holders.lock().insert(0, key(1, 2));
+        assert!(one.smoke_would_overwrite_a_resident(), "a seated resident on the only slot");
+        let many = KvSlotPool::new("test://four-slot", 4);
+        if many.scratch_slot().is_some() {
+            many.holders.lock().insert(0, key(1, 2));
+            assert!(!many.smoke_would_overwrite_a_resident(), "a scratch slot takes the probe");
+        }
+    }
     use super::*;
 
     // what this catches (IntelMac, 2026-10-11 02:46Z on #4930: the first sizing after a

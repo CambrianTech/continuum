@@ -59,6 +59,7 @@
 //! same whether the producer runs in-process, in a sibling module, or
 //! on a remote peer over grid/airc.
 
+use crate::time::EpochMs;
 use super::handle::Handle;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -160,7 +161,7 @@ impl HandleRef {
             owner: owner.into(),
             id: id.into(),
             type_tag: type_tag.into(),
-            created_at_ms: now_ms(),
+            created_at_ms: EpochMs::now().millis(),
         }
     }
 
@@ -237,14 +238,6 @@ impl HandleRef {
         }
         Ok(self.id.as_uuid())
     }
-}
-
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// Reserved: streaming result. **Returning a Stream result today is a

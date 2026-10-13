@@ -7,10 +7,7 @@
 //! When any channel receives work, the global signal wakes the service loop.
 
 use super::channel_queue::{ChannelQueue, ChannelQueueConfig};
-use super::channel_types::{
-    ActivityDomain, ChannelRegistryStatus, CoherentUnit, QueueItemBehavior, ServiceCycleResult,
-    DOMAIN_PRIORITY_ORDER,
-};
+use super::channel_types::{ActivityDomain, ChannelRegistryStatus, CoherentUnit, QueueItemBehavior, ServiceCycleResult, DOMAIN_PRIORITY_ORDER};
 use super::channel_view::{ChatChannelView, CoherentInput, PersonaChannelView};
 use super::persona_identity::PersonaIdentity;
 use super::types::PersonaState;
@@ -388,14 +385,8 @@ mod tests {
     use super::super::channel_items::*;
     use super::super::types::SenderType;
     use super::*;
+    use crate::time::EpochMs;
     use uuid::Uuid;
-
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    }
 
     fn arc_chat(room: Uuid, mentions: bool, priority: f32) -> Arc<dyn QueueItemBehavior> {
         Arc::new(ChatQueueItem {
@@ -406,8 +397,8 @@ mod tests {
             sender_name: "User".into(),
             sender_type: SenderType::Human,
             mentions,
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority,
             consolidated_context: Vec::new(),
             media: Vec::new(),
@@ -426,8 +417,8 @@ mod tests {
             sender_name: "test-user".into(),
             sender_type: SenderType::Human,
             voice_session_id: Uuid::new_v4(),
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority: 1.0,
             media: Vec::new(),
         })
@@ -788,8 +779,8 @@ mod tests {
             sender_name: "Operator".into(),
             sender_type: SenderType::Human,
             mentions: false,
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority: 0.5,
             consolidated_context: Vec::new(),
             media: Vec::new(),

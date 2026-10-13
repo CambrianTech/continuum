@@ -4,7 +4,7 @@
 //! IPC should NOT directly call STT - it should call this service.
 
 use crate::live::audio::stt::{self, STTError, TranscriptResult};
-use crate::utils::audio::i16_to_f32;
+use crate::live::audio::pcm::i16_to_f32;
 
 /// Transcribe speech from audio samples (async version).
 ///

@@ -55,10 +55,7 @@ crate::action_command! {
     params: CheckContentDedupParams,
     output: CheckContentDedupResult,
     run(this, _ctx, p) => {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?
-            .as_millis() as u64;
+        let now_ms = crate::time::EpochMs::read().map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?.millis();
         let persona = this
             .state
             .personas

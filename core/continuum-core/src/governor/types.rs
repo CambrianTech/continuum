@@ -411,7 +411,7 @@ pub fn classify_hardware(profile: &HardwareProfile) -> HardwareClass {
 /// over CUDA on a Mac (native path). CUDA wins over Vulkan when both
 /// present (CUDA kernels more complete than Vulkan in our llama.cpp
 /// build). ROCm detection is left for PR-2 (requires rocm-smi probe).
-fn classify_silicon(profile: &HardwareProfile) -> TargetSilicon {
+pub(crate) fn classify_silicon(profile: &HardwareProfile) -> TargetSilicon {
     if profile.has_metal {
         // Bug fix for task #52: `has_metal: true` is reported by BOTH
         // Apple Silicon (UMA) AND Mac Intel hosts with a discrete GPU

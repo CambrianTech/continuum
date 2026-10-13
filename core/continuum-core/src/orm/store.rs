@@ -49,7 +49,7 @@ use uuid::Uuid;
 
 use crate::orm::adapter::StorageAdapter;
 use crate::orm::entity::OrmEntity;
-use crate::orm::query::QueryBuilder;
+use crate::orm::query::{QueryBuilder, StorageQuery};
 use crate::orm::types::{DataRecord, RecordMetadata, StorageResult};
 
 /// Typed failure modes for OrmStore operations. Per [[no-fallbacks-
@@ -163,7 +163,12 @@ where
     /// specific order should drop down to QueryBuilder + sort_asc /
     /// sort_desc on the relevant field.
     pub async fn find_all(&self) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
-        let query = QueryBuilder::new(T::COLLECTION).build();
+        self.find_matching(QueryBuilder::new(T::COLLECTION).build()).await
+    }
+
+    /// Load the rows `query` selects, paired with their row ids. The query must
+    /// target this store's collection.
+    pub async fn find_matching(&self, query: StorageQuery) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
         let result = self.adapter.query(query).await;
         let records = unwrap_adapter(result, "query", T::COLLECTION)?;
         records

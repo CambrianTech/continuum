@@ -852,10 +852,7 @@ impl MemoryPressureMonitor {
         let total_budgeted = consumers.iter().map(|c| c.budget_bytes).sum();
         let total_used = consumers.iter().map(|c| c.used_bytes).sum();
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = crate::time::EpochMs::now().millis();
 
         MemoryBudgetSnapshot {
             level: pressure_snap.level,
@@ -1192,10 +1189,7 @@ impl MemoryPressureMonitor {
             };
 
             // Build the snapshot.
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            let now_ms = crate::time::EpochMs::now().millis();
             let snapshot = PressureSnapshot {
                 level,
                 pressure,

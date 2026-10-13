@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 fn registry_path() -> Option<PathBuf> {
-    crate::commands::benchmark::continuum_home()
+    crate::paths::continuum_home()
         .ok()
         .map(|h| h.join("state").join("repos.json"))
 }

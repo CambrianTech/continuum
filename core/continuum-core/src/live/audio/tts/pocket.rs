@@ -16,7 +16,7 @@
 //! Named <voice_id>.wav (e.g., morgan-freeman.wav).
 //! Sentinels can download reference audio from the web and store here.
 
-use super::audio_utils;
+use super::normalize;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::clog_info;
@@ -146,7 +146,7 @@ impl PocketTTS {
             .map_err(|e| TTSError::SynthesisFailed(format!("Tensor extract: {e}")))?;
 
         // Normalize to standard 16kHz i16 PCM via shared audio utilities
-        let result = audio_utils::normalize_audio(&f32_samples, state.native_sample_rate)?;
+        let result = normalize::normalize_audio(&f32_samples, state.native_sample_rate)?;
 
         clog_info!(
             "Pocket-TTS: {} samples ({}ms audio) in {}ms",

@@ -347,6 +347,7 @@ fn map_status(r: JobStatusResponse) -> TrainingStatus {
                     // no page-in of a local gene.
                     format: ArtifactFormat::ProviderHosted,
                     metrics: JobMetrics {
+            walk: None,
                         trained_tokens: r.trained_tokens.unwrap_or(0),
                         final_loss: None,
                         final_validation_loss: None,

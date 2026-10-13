@@ -656,7 +656,7 @@ impl ActionCommand for BenchmarkRecord {
         }
         let mut row = serde_json::to_value(&p)
             .map_err(|e| CommandError::Internal(format!("encode row: {e}")))?;
-        row["atMs"] = serde_json::json!(chrono::Utc::now().timestamp_millis());
+        row["atMs"] = serde_json::json!(crate::time::EpochMs::now().millis());
         let line = serde_json::to_string(&row)
             .map_err(|e| CommandError::Internal(format!("encode row: {e}")))?;
         use std::io::Write;
@@ -1154,30 +1154,6 @@ pub struct RecipeDispatch {
     pub review_gate: Option<bool>,
 }
 
-/// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
-/// roster, never our specific names. Pure over the snapshots so it is unit-testable
-/// without a running airc daemon (a real `PersonaSlot` needs one); the wrapper in `run`
-/// feeds `registry.resident_snapshot()` and `registry.roster_snapshot()` in.
-///
-/// - `requested` empty → the WHOLE RESIDENT roster (whoever THIS machine has in the room).
-///   This is the "dispatch to my citizens, whoever they are" default: a fresh clone runs
-///   `benchmark/dispatch --name=…` with no `--assignees` and it targets their own resident
-///   citizens. Directed dispatch is what actuates (a silent card does not — measured
-///   2026-08-07), so defaulting to the resident roster keeps the loop autonomous everywhere.
-/// - `requested` non-empty → every name MUST resolve to a RESIDENT citizen; anything else
-///   FAILS LOUD listing who is resident (never silently addresses a citizen who cannot
-///   hear, and never silently skips SWE staging). Order is preserved for round-robin.
-/// - nobody resident → `Denied`, and the message distinguishes "not spawned" (fix:
-///   `persona/spawn`) from "spawned but not hosted yet" (fix: wait — see below).
-/// Seconds since the epoch — the only impurity `default_run_room_name` needs, kept out
-/// of it so the name itself is a pure function with a real unit test.
-fn epoch_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 /// The room a run lands in when the caller names none: `bench-<benchmark>-<epoch>`.
 ///
 /// Named for the ACTIVITY and stamped so it is THIS run — the naming rule
@@ -1204,6 +1180,22 @@ fn default_run_room_name(benchmark: &str, epoch_secs: u64) -> String {
     format!("bench-{slug}-{epoch_secs}")
 }
 
+/// Resolve the citizens a directed dispatch addresses — GENERALIZED for any repo user's
+/// roster, never our specific names. Pure over the snapshots so it is unit-testable
+/// without a running airc daemon (a real `PersonaSlot` needs one); the wrapper in `run`
+/// feeds `registry.resident_snapshot()` and `registry.roster_snapshot()` in.
+///
+/// - `requested` empty → the WHOLE RESIDENT roster (whoever THIS machine has in the room).
+///   This is the "dispatch to my citizens, whoever they are" default: a fresh clone runs
+///   `benchmark/dispatch --name=…` with no `--assignees` and it targets their own resident
+///   citizens. Directed dispatch is what actuates (a silent card does not — measured
+///   2026-08-07), so defaulting to the resident roster keeps the loop autonomous everywhere.
+/// - `requested` non-empty → every name MUST resolve to a RESIDENT citizen; anything else
+///   FAILS LOUD listing who is resident (never silently addresses a citizen who cannot
+///   hear, and never silently skips SWE staging). Order is preserved for round-robin.
+/// - nobody resident → `Denied`, and the message distinguishes "not spawned" (fix:
+///   `persona/spawn`) from "spawned but not hosted yet" (fix: wait — see below).
+///
 /// `live` is the RESIDENT snapshot (service loop attached and running), NOT the registered
 /// roster — `registered` is passed alongside it purely so a refusal can tell the operator
 /// WHICH of the two states they are in. That distinction is the whole point:
@@ -1439,7 +1431,7 @@ pub(crate) fn eval_set_reference(suite: &str) -> Option<String> {
     if let Some(spec) = known_benchmarks().iter().find(|b| b.name == suite) {
         return spec.eval_set.map(str::to_string);
     }
-    let home = continuum_home().ok()?;
+    let home = crate::paths::continuum_home().ok()?;
     crate::cognition::coursework::set_path(&home, suite).map(|p| p.display().to_string())
 }
 
@@ -1982,7 +1974,7 @@ impl ActionCommand for BenchmarkDispatch {
         // To add work to a run that already exists, dispatch again: the round tracker
         // converges duplicates (`skipped_already_on_board`, `pruned_duplicates`) rather
         // than needing a caller to aim at a board by hand.
-        let room_name = default_run_room_name(spec.name, epoch_secs());
+        let room_name = default_run_room_name(spec.name, crate::time::EpochMs::now().secs());
         // The room binds to the SHIPPED benchmark recipe's declared purpose,
         // resolved from its constant — never a re-typed string. The old literal
         // here was "benchmark" while the recipe declares "benchmark/hard-rs",
@@ -2157,7 +2149,7 @@ impl ActionCommand for BenchmarkDispatch {
             .filter_map(|pc| bench_card_key(&pc.title).map(str::to_string))
             .collect();
         // Continuum home under which each citizen's workspace lives (for SWE staging).
-        let stage_home = continuum_home().ok();
+        let stage_home = crate::paths::continuum_home().ok();
         let mut card_ids = Vec::new();
         // FULL card uuids for the round tracker (#371) — the bus event carries the full
         // hyphenated uuid, so the round's membership set must too (the 8-char `card_ids`
@@ -2680,10 +2672,7 @@ impl ActionCommand for BenchmarkDispatch {
         let mut pruned_duplicates = 0u32;
         let mut contended_tasks = 0u32;
         if p.prune.unwrap_or(false) {
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
+            let now_ms = crate::time::EpochMs::now().millis();
             for key in planned_keys.iter() {
                 let Some(group) = live_by_task.get(key.as_str()) else {
                     continue;
@@ -3925,56 +3914,9 @@ mod swe_grade_tests {
         );
     }
 
-    // what this catches (2026-09-20): a test binary resolving the OPERATOR's home — a
-    // harness lane's settle wrote a fixture model into the M5's served-window record and
-    // the next boot planned 8 lanes on it. Under test the home is a per-process temp dir.
-    #[test]
-    fn a_test_binary_never_resolves_the_operators_home() {
-        if std::env::var_os("CONTINUUM_HOME").is_some() {
-            return; // an explicitly declared home is the test's own choice
-        }
-        let home = super::continuum_home().expect("a test home always resolves");
-        assert!(home.starts_with(std::env::temp_dir()), "{}", home.display());
-        assert!(home.to_string_lossy().contains("continuum-test-home-"), "{}", home.display());
-        assert_ne!(Some(home.clone()), dirs::home_dir().map(|h| h.join(".continuum")));
-        assert_eq!(super::continuum_home().unwrap(), home, "one home per process");
-    }
 }
 
-/// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
-/// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
-/// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
-/// layout as the grader that wrote the stream — one layout, never two.
-pub(crate) fn continuum_home() -> Result<std::path::PathBuf, CommandError> {
-    std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(test_home)
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| CommandError::Internal("no home dir".into()))
-}
 
-/// A TEST BINARY NEVER WRITES THE OPERATOR'S RECORDS (2026-09-20, the M5): a local
-/// `cargo test` run of the serving daemon settled its harness lane and `save`d the
-/// fixture's "coder-14b" into ~/.continuum/state/served-window.json; the next boot
-/// remembered that model, found no decode knee for it, planned 8 lanes unclamped on a box
-/// whose knee is 2, and swapped 4.6 GB. Every store resolves its path through this
-/// function, so under `cfg(test)` — when no `$CONTINUUM_HOME` is declared — the home is a
-/// per-process directory under the system temp dir. Not configurable, not a fixture to
-/// remember: a test cannot reach the operator's state by forgetting.
-#[cfg(test)]
-fn test_home() -> Option<std::path::PathBuf> {
-    static HOME: std::sync::LazyLock<std::path::PathBuf> = std::sync::LazyLock::new(|| {
-        let dir = std::env::temp_dir().join(format!("continuum-test-home-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        dir
-    });
-    Some(HOME.clone())
-}
-#[cfg(not(test))]
-fn test_home() -> Option<std::path::PathBuf> {
-    None
-}
 
 /// Resolve a solver to the ONE matching `citizens/peers/<uuid>/` directory. Accepts a
 /// citizen NAME (resolved through the live roster — the SAME `get_by_agent_name` identity
@@ -4122,7 +4064,7 @@ impl ActionCommand for BenchmarkSweSetup {
                 CommandError::NotFound(format!("no instance '{}' in {dataset}", p.instance))
             })?;
 
-        let home = continuum_home()?;
+        let home = crate::paths::continuum_home()?;
         let (solver_full, solver_dir) = resolve_solver_dir(&home, &p.solver)?;
         let target = solver_dir
             .join("workspace")
@@ -5311,7 +5253,7 @@ impl ActionCommand for BenchmarkRuns {
 /// Bounded on purpose: at most [`WORKSPACE_ARTIFACT_SCAN_CAP`] trees per call, and the count
 /// dropped is logged rather than silently truncated (no-silent-caps).
 fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<String>, now_ms: u64) -> Vec<BenchRunCard> {
-    let Ok(home) = continuum_home() else {
+    let Ok(home) = crate::paths::continuum_home() else {
         return Vec::new();
     };
     let peers = home.join("citizens").join("peers");
@@ -5363,8 +5305,8 @@ fn scan_workspace_artifact_cards(graded: &std::collections::HashSet<String>, now
             let last_activity_ms = std::fs::metadata(inst.path())
                 .and_then(|m| m.modified())
                 .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64)
+                .and_then(|t| crate::time::EpochMs::of(t).ok())
+                .map(crate::time::EpochMs::millis)
                 .unwrap_or(0);
             cards.push(BenchRunCard {
                 run_id: format!("workspace:{}:{instance}", &peer_id[..8.min(peer_id.len())]),
@@ -5439,8 +5381,8 @@ fn scan_verdict_cards(now_ms: u64) -> Vec<BenchRunCard> {
             let last_activity_ms = std::fs::metadata(swe_bench::verdict_path(&instance))
                 .and_then(|m| m.modified())
                 .ok()
-                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                .map(|d| d.as_millis() as u64)
+                .and_then(|t| crate::time::EpochMs::of(t).ok())
+                .map(crate::time::EpochMs::millis)
                 .unwrap_or(0);
             BenchRunCard {
                 run_id: format!("verdict:{instance}"),
@@ -5485,10 +5427,7 @@ pub(crate) fn scan_run_cards(
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
         .ok_or_else(|| "no home dir".to_string())?
         .join("progress");
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let now_ms = crate::time::EpochMs::now().millis();
     let mut cards: Vec<BenchRunCard> = Vec::new();
     let entries = std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
     for entry in entries.flatten() {
@@ -5513,10 +5452,9 @@ pub(crate) fn scan_run_cards(
         let mtime_ms = |p: &std::path::Path| -> Option<u64> {
             std::fs::metadata(p)
                 .and_then(|m| m.modified())
-                .ok()?
-                .duration_since(std::time::UNIX_EPOCH)
                 .ok()
-                .map(|d| d.as_millis() as u64)
+                .and_then(|t| crate::time::EpochMs::of(t).ok())
+                .map(crate::time::EpochMs::millis)
         };
         let result_path = entry.path();
         let grade_path = base.join(format!("agent-solve-{run_id}.grade.json"));
@@ -5682,7 +5620,7 @@ impl ActionCommand for BenchmarkRounds {
         crate::cognition::bench_round::enrich_rounds(
             &mut rounds,
             &facts,
-            crate::persona::trace::now_ms(),
+            crate::time::EpochMs::now().millis(),
         );
         enrich_rounds_from_board_and_verdicts(&mut rounds).await;
         Ok(BenchmarkRoundsResult {

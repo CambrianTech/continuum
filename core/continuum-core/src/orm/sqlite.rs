@@ -75,10 +75,7 @@ fn open_connection(path: &str, flags: OpenFlags) -> Result<Connection, String> {
 /// Adaptive memory management: adjust cache_size based on system memory pressure.
 /// Called before operations, rate-limited to once per 10 seconds via atomic timestamp.
 fn apply_memory_pressure(conn: &Connection, last_check: &AtomicU64) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = crate::time::EpochMs::now().secs();
     let last = last_check.load(Ordering::Relaxed);
     if now.saturating_sub(last) < 10 {
         return;
@@ -881,13 +878,29 @@ fn row_to_record(
     let mut version: Option<u32> = None;
 
     for (i, col) in columns.iter().enumerate() {
-        // Check if this column is likely a boolean (is_*, has_*, *_active, etc.)
-        let is_boolean_col = col.starts_with("is_")
-            || col.starts_with("has_")
-            || col.ends_with("_active")
-            || col.ends_with("_enabled")
-            || col.ends_with("_visible")
-            || col.ends_with("_deleted");
+        // The declared types are keyed by the ENTITY's field names (camelCase, what
+        // `ensure_schema` was given); the row's columns are snake_case. Looking a
+        // multi-word column up by its snake name found nothing, so every such column
+        // fell back to the shape sniff the declared types exist to replace
+        // (`cancel_requested` read back as 0, 2026-10-13).
+        let camel_col = naming::to_camel_case(col);
+        let declared = types.and_then(|t| t.get(camel_col.as_str()));
+        // A boolean is stored as INTEGER 0/1. DECODE IT BY THE DECLARED TYPE, the
+        // same rule the TEXT branch below follows: a `bool` field whose name the old
+        // prefix sniff did not know (`cancel_requested`, 2026-10-13) came back as `0`
+        // and the entity refused the row. The name sniff survives only for
+        // undeclared collections.
+        let is_boolean_col = match declared {
+            Some(declared) => matches!(declared, FieldType::Boolean),
+            None => {
+                col.starts_with("is_")
+                    || col.starts_with("has_")
+                    || col.ends_with("_active")
+                    || col.ends_with("_enabled")
+                    || col.ends_with("_visible")
+                    || col.ends_with("_deleted")
+            }
+        };
 
         let value: Value = match row.get_ref(i)? {
             rusqlite::types::ValueRef::Null => Value::Null,
@@ -910,7 +923,7 @@ fn row_to_record(
                 // failed whole, and the citizen whose store held that ONE row never
                 // seated (Atlas + Benchy, 2026-09-13: two of five seats in backoff
                 // forever). The sniff survives only for undeclared collections.
-                match types.and_then(|t| t.get(col.as_str())) {
+                match declared {
                     Some(FieldType::String | FieldType::Uuid | FieldType::Date) => json!(s),
                     Some(FieldType::Json) => serde_json::from_str(s).unwrap_or_else(|_| json!(s)), // unwrap_or_else: a declared-JSON column holding non-JSON text is handed back as that text, never dropped
                     Some(FieldType::Number | FieldType::Boolean) | None => {
@@ -932,7 +945,6 @@ fn row_to_record(
             }
         };
 
-        let camel_col = naming::to_camel_case(col);
         match col.as_str() {
             "id" => id = value.as_str().map(|s| s.to_string()),
             "created_at" => created_at = value.as_str().map(|s| s.to_string()),

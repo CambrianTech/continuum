@@ -46,7 +46,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -160,13 +159,6 @@ fn resolve_home(continuum_root: &Path, persona: &str) -> Option<PersonaHome> {
         .map(|root| PersonaHome::from_root(root.to_path_buf()))
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 crate::action_command! {
     /// Assign a persona a new base model durably AND make it live on this host now.
     /// Composes serving/pin: resolves her home, fit-gates + force-serves the model
@@ -262,11 +254,11 @@ crate::action_command! {
         //    the operator knows it won't survive a restart (we do NOT silently
         //    unpin — that would hide the disk fault behind a "reverted" lie).
         let override_record = match p.remote_peer.as_deref() {
-            None => PersonaModelOverride::new(p.model_id.clone(), p.set_by.clone(), now_ms()),
+            None => PersonaModelOverride::new(p.model_id.clone(), p.set_by.clone(), crate::time::EpochMs::now().millis()),
             Some(peer) => PersonaModelOverride::new_remote(
                 p.model_id.clone(),
                 p.set_by.clone(),
-                now_ms(),
+                crate::time::EpochMs::now().millis(),
                 peer,
             ),
         };

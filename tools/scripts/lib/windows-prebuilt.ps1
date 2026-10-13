@@ -125,6 +125,10 @@ function Copy-CorePublishedEngine {
     # before publication, including current lane/process and registered-slot guards.
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     $descriptor = if ($task) { Get-CoreRegisteredRelease -Task $task } else { $null }
+    # The release kept the registered engine (Get-CoreKeptEngineSlot): it is already installed,
+    # so there is nothing to copy. Re-proven here, under the install lease, before trusting it.
+    $kept = Get-CoreKeptEngineSlot -ArtifactDirectory $ArtifactDirectory -Descriptor $descriptor
+    if ($kept -and (ConvertTo-CoreImagePath $kept) -ieq (ConvertTo-CoreImagePath $InstallDirectory)) { return }
     $idle = Select-CoreEngineSlot -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe')
     if ((ConvertTo-CoreImagePath $idle) -ine (ConvertTo-CoreImagePath $InstallDirectory)) { throw 'Selected engine slot is no longer idle.' }
     Copy-CoreEnginePublication -SourceDirectory $source -Directory $InstallDirectory

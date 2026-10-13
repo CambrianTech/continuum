@@ -38,14 +38,9 @@ use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
-use super::workspace::{
-    Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace,
-};
+use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
-use crate::ai::types::{
-    ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest,
-    TextGenerationResponse,
-};
+use crate::ai::types::{ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
 
 /// Ambient deliberation yields to measured foreground work. Human opportunity
 /// keeps its existing turn class even when the message did not name the persona.
@@ -509,7 +504,7 @@ impl LlmDeliberationFaculty {
             // `with_model_binding` (so a `serving/pin` re-home is seen here), and
             // `with_model`/`with_context_window` mutate it for tests. Mirrors how
             // `new` builds an `empty_genome()` that `with_genome` then shares in.
-            binding: model_binding(adapter, None, crate::cognition::serving_plan::MIN_SERVE_CTX),
+            binding: model_binding(adapter, None, crate::inference::planning::MIN_SERVE_CTX),
             prompt_feedback: ArcSwapOption::empty(),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
@@ -869,7 +864,7 @@ impl LlmDeliberationFaculty {
     /// prompt within. The live spawn path passes `profile.context_length`
     /// (task #50 — for a Local persona that is the planner's
     /// `ServingPlan.served_context_window`). Default: the runnable floor
-    /// [`MIN_SERVE_CTX`](crate::cognition::serving_plan::MIN_SERVE_CTX) for a
+    /// [`MIN_SERVE_CTX`](crate::inference::planning::MIN_SERVE_CTX) for a
     /// faculty constructed outside the spawn path (tests, non-served).
     pub fn with_context_window(mut self, context_window: u32) -> Self {
         // Mutate the shared binding in place (keep adapter + model, set window).
@@ -954,7 +949,7 @@ impl LlmDeliberationFaculty {
     /// the learning possible.
     ///
     /// The measured floor as of 2026-08-06: tools 4609 + framing 1643 ⇒ **8336 tokens**.
-    /// `serving_plan::MIN_SERVE_CTX` is 2048 — FOUR TIMES below it. So the substrate will
+    /// `inference::planning::MIN_SERVE_CTX` is 2048 — FOUR TIMES below it. So the substrate will
     /// happily serve a window at which no citizen can act, which is #327.
     fn warn_if_window_cannot_host_the_agentic_surface(&self) {
         if self.native_specs.is_empty() {
@@ -1054,7 +1049,7 @@ impl LlmDeliberationFaculty {
             .map(|e| {
                 e.peak_tokens
                     .saturating_mul(2)
-                    .max(crate::cognition::serving_plan::MIN_SERVE_CTX)
+                    .max(crate::inference::planning::MIN_SERVE_CTX)
             });
         // `.max(FLOOR)` last and deliberately: below `MIN_SERVE_CTX` the floor can exceed the
         // whole window, and a zero reserve is a mute citizen — strictly worse than a prompt
@@ -1107,7 +1102,7 @@ impl LlmDeliberationFaculty {
     /// has spoken is guaranteed. Measurement then grows it toward the available share — and a turn
     /// that truncates against a too-small reserve records at DOUBLE, so an act that really
     /// needs more room earns it back within a turn instead of freezing.
-    const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX;
+    const COMPLETION_COLD_PRIOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX;
 
     const COMPLETION_SHARE_DENOM: u32 = 2;
 
@@ -1164,7 +1159,7 @@ impl LlmDeliberationFaculty {
     /// while it was wrong. Only the full suite sees this guard. Deriving it also means the
     /// floor tracks the substrate floor for free if `MIN_SERVE_CTX` ever moves, instead of
     /// becoming a second opinion about how small a window can get.
-    const COMPLETION_FLOOR_TOKENS: u32 = crate::cognition::serving_plan::MIN_SERVE_CTX / 8;
+    const COMPLETION_FLOOR_TOKENS: u32 = crate::inference::planning::MIN_SERVE_CTX / 8;
 
     /// Build a generation request for the message thread. Centralized so the
     /// first prompt and any future re-prompt share one shape. Takes the model
@@ -1460,10 +1455,7 @@ impl LlmDeliberationFaculty {
             // generation is her thinking this instant, the strongest witness there is.
             crate::persona::cognition_pulse::touch(
                 self.persona_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0), // JUSTIFIED unwrap_or: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
+                crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
             );
             crate::ipc::vitals_emitter::record_reasoning(self.persona_id);
             crate::probe!(
@@ -5549,7 +5541,7 @@ fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &s
         return;
     }
     let row = serde_json::json!({
-        "ts_ms": crate::persona::trace::now_ms(),
+        "ts_ms": crate::time::EpochMs::now().millis(),
         "persona": persona_name,
         "messages": request
             .messages
@@ -6438,7 +6430,7 @@ mod tests {
                                 tool_use_id: call_id,
                                 content: (*report).into(),
                                 is_error: None,
-                                spill_handle: None,
+                                custody: crate::ai::types::ResultCustody::Unsaved,
                             },
                             verb: ToolVerb::classify("code/run"),
                             paths: Vec::new(),
@@ -6448,6 +6440,7 @@ mod tests {
                     }],
                     report,
                     Some(result_rooms[step]),
+                    crate::ai::types::ResultCustody::Unsaved,
                 );
                 let mut ws = Workspace::new(crate::cognition::workspace::Burst::from_turns(
                     room,
@@ -7113,7 +7106,7 @@ mod tests {
             // here the test would encode one machine instead of the law.
             let prior = LlmDeliberationFaculty::COMPLETION_COLD_PRIOR_TOKENS;
             for window in [
-                crate::cognition::serving_plan::MIN_SERVE_CTX,
+                crate::inference::planning::MIN_SERVE_CTX,
                 4_096,
                 8_192,
                 16_384,
@@ -7221,7 +7214,7 @@ mod tests {
             .with_working_set(reg.clone());
             assert_eq!(
                 quiet_faculty.completion_reserve_within(window),
-                crate::cognition::serving_plan::MIN_SERVE_CTX
+                crate::inference::planning::MIN_SERVE_CTX
             );
             // (c) a turn cut at 5,000 records 10,000; peak×2 = 20,000 then re-caps at
             // the SHARE — a citizen who genuinely needs the room earns it back within a
@@ -8167,7 +8160,7 @@ mod tests {
                             tool_use_id: "capture".into(),
                             content: grep_result.clone(),
                             is_error: None,
-                            spill_handle: None,
+                            custody: crate::ai::types::ResultCustody::Unsaved,
                         },
                         verb: ToolVerb::classify("perception/observe"),
                         paths: Vec::new(),
@@ -8177,6 +8170,7 @@ mod tests {
                 }],
                 &grep_result,
                 None,
+                crate::ai::types::ResultCustody::Unsaved,
             );
 
             let faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", adapter)
@@ -9478,7 +9472,7 @@ mod tests {
         fn catalog_fits_the_minimum_serving_window() {
             let persona = Uuid::new_v4();
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-            let window = crate::cognition::serving_plan::MIN_SERVE_CTX; // 2048 floor
+            let window = crate::inference::planning::MIN_SERVE_CTX; // 2048 floor
             let tools: Vec<NativeToolSpec> = (0..120)
                 .map(|i| NativeToolSpec {
                     name: format!("cat{}/command_{i}", i % 8),
@@ -11406,9 +11400,7 @@ mod tests {
         #[tokio::test]
         async fn directed_turn_withholds_the_silence_escape() {
             use crate::ai::types::MessageContent;
-            use crate::cognition::workspace::{
-                SalienceArbiter, Situation, TurnFraming, WorkspaceCycle,
-            };
+            use crate::cognition::workspace::{SalienceArbiter, Situation, TurnFraming, WorkspaceCycle};
             use crate::inference::slots::SlotClass;
             use crate::persona::persona_identity::PersonaIdentity;
             let adapter = Arc::new(ScriptedAdapter::new(vec![]));

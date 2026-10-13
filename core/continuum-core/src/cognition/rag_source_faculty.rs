@@ -82,7 +82,7 @@ const GROUNDING_WINDOW_FRACTION: u32 = 4;
 /// so a faculty built without a window (tests) still gets a sane ceiling derived
 /// from a substrate constant, never a fresh magic number.
 pub fn grounding_budget_for(served_window: u32) -> u32 {
-    use crate::cognition::serving_plan::MIN_SERVE_CTX;
+    use crate::inference::planning::MIN_SERVE_CTX;
     (served_window / GROUNDING_WINDOW_FRACTION).max(MIN_SERVE_CTX / GROUNDING_WINDOW_FRACTION)
 }
 
@@ -129,15 +129,12 @@ impl SaliencePolicy {
 }
 
 /// Wall-clock seam — injectable so tests are deterministic. ms since unix epoch,
-/// matching the `now_ms()` convention across cognition (and `RecallFaculty`).
+/// matching the `EpochMs::now().millis()` convention across cognition (and `RecallFaculty`).
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 fn wall_clock() -> Clock {
     Arc::new(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+        crate::time::EpochMs::now().millis()
     })
 }
 
@@ -222,7 +219,7 @@ impl RagSourceFaculty {
             // Floor default (derived from the substrate serving floor, not a magic
             // number). Production overrides via `with_budget(grounding_budget_for(
             // cfg.context_window))` so the ceiling tracks the LIVE served window.
-            budget: grounding_budget_for(crate::cognition::serving_plan::MIN_SERVE_CTX),
+            budget: grounding_budget_for(crate::inference::planning::MIN_SERVE_CTX),
             clock: wall_clock(),
             // Not cold-start-critical until the assembler says so. The safe
             // direction for a LOUDNESS contract is the opposite of the safe
@@ -465,9 +462,7 @@ impl Faculty for RagSourceFaculty {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::persona::rag_budget::{
-        ContinuationCursor, RagDelivery, RagItem, ResolutionPreference,
-    };
+    use crate::persona::rag_budget::{ContinuationCursor, RagDelivery, RagItem, ResolutionPreference};
     use std::sync::Mutex;
 
     fn persona() -> Uuid {
@@ -944,9 +939,7 @@ mod tests {
     // in the assembled broadcast the decider reads in phase 2.
     #[tokio::test]
     async fn bridged_grounding_reaches_the_broadcast() {
-        use crate::cognition::workspace::{
-            Contribution, Decision, SalienceArbiter, WorkspaceCycle,
-        };
+        use crate::cognition::workspace::{Contribution, Decision, SalienceArbiter, WorkspaceCycle};
 
         // A deliberation faculty that proves it saw the bridged doctrine.
         struct SeesDoctrine;
@@ -1053,10 +1046,7 @@ mod tests {
     // bridge ships with.)
     #[tokio::test]
     async fn standing_framing_present_even_when_outsalienced() {
-        use crate::cognition::workspace::{
-            Contribution, FacultyId as FId, SalienceArbiter, Workspace as Ws, WorkspaceCaptureSink,
-            WorkspaceCycle, WorkspaceTrace,
-        };
+        use crate::cognition::workspace::{Contribution, FacultyId as FId, SalienceArbiter, Workspace as Ws, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
 
         // A retrieved-tier faculty that bids ABOVE the standing-framing floor
         // (a very relevant memory) — the adversarial case for the canary.

@@ -77,6 +77,20 @@ pub trait ToolExecutor: Send + Sync {
         max_result_chars: usize,
     ) -> Result<NativeBatchOutcome, ToolError>;
 
+    /// [`Self::execute_native_batch`], saving every result through `pin`: each saved file is
+    /// live from before it exists until the caller drops the pin, which the act seam does only
+    /// after working memory has recorded and published the batch (card 12b080c3). The default
+    /// runs the unpinned batch, for executors that save nothing.
+    async fn execute_native_batch_pinned(
+        &self,
+        calls: &[NativeToolCall],
+        context: &ToolExecutionContext,
+        max_result_chars: usize,
+        _pin: &spill::LivePin,
+    ) -> Result<NativeBatchOutcome, ToolError> {
+        self.execute_native_batch(calls, context, max_result_chars).await
+    }
+
     /// The core `CommandExecutor` behind these hands, if any. A live persona's executor
     /// returns `Some` — enabling fire-and-poll `dispatch_background` for long-running
     /// commands and `message_bus()` for the async-dispatch listener that folds their
@@ -85,6 +99,20 @@ pub trait ToolExecutor: Send + Sync {
     fn command_executor(
         &self,
     ) -> Option<std::sync::Arc<crate::runtime::command_executor::CommandExecutor>> {
+        None
+    }
+
+    /// The acting context these hands are bound to; `None` is the caller's default (live)
+    /// context. See [`crate::code::hands`].
+    fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {
+        None
+    }
+
+    /// The same caller's hands in a FRESH acting context of their own: what an eval or a
+    /// fork of a citizen acts with, so it can never move her live hands. `None` when these
+    /// hands can't open a context (the default: an executor must opt in). The fork then runs
+    /// without hands; it never borrows hers (docs/architecture/HER-HANDS.md).
+    fn in_fresh_hands(&self, _persona: uuid::Uuid) -> Option<std::sync::Arc<dyn ToolExecutor>> {
         None
     }
 

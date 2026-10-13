@@ -62,15 +62,11 @@ impl Default for ConnectionManagerConfig {
 struct ManagedPool {
     /// The underlying adapter
     adapter: Arc<RwLock<SqliteAdapter>>,
-    /// Last access time for LRU tracking. Stored in NANOSECONDS since
-    /// UNIX_EPOCH so that two consecutive operations within the same
-    /// millisecond produce strictly increasing timestamps. Storing
-    /// milliseconds caused `test_lru_eviction` to flake because all
-    /// three pool ops in the test happened within < 1 ms, leaving
-    /// `evict_lru` to break ties via DashMap iteration order
-    /// (non-deterministic). Nanos cast u128 → u64 truncates the high
-    /// bits but the current epoch nanos (~1.7e18) fit in u64 with
-    /// hundreds of years of headroom.
+    /// Last access for LRU order and idle age, in nanoseconds on a MONOTONIC clock
+    /// (since this process's first pool). The wall clock is the wrong clock here: it
+    /// can be set backwards, which reorders the LRU and makes a pool read as idle.
+    /// Nanoseconds because milliseconds tied: `test_lru_eviction` flaked when all three
+    /// pool ops landed in the same millisecond and DashMap order broke the tie.
     last_access: AtomicU64,
     /// Database path (stored for debugging/logging)
     #[allow(dead_code)]
@@ -95,10 +91,9 @@ impl ManagedPool {
     }
 
     fn now_nanos() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos() as u64
+        static ORIGIN: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        // u64 nanoseconds cover 584 years of process uptime.
+        ORIGIN.get_or_init(std::time::Instant::now).elapsed().as_nanos() as u64
     }
 }
 
@@ -191,7 +186,7 @@ impl ConnectionManager {
 
     /// Evict pools that have been idle too long
     pub async fn evict_idle(&self) -> Result<usize, String> {
-        let cutoff = ManagedPool::now_nanos() - self.config.idle_timeout.as_nanos() as u64;
+        let cutoff = ManagedPool::now_nanos().saturating_sub(self.config.idle_timeout.as_nanos() as u64);
         let mut evicted = 0;
 
         let idle_paths: Vec<PathBuf> = self

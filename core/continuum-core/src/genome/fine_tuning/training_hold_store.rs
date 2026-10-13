@@ -54,14 +54,6 @@ impl PersistedTrainingHold {
     }
 }
 
-/// Wall-clock unix ms: holds are created and expire in wall time, which a core restart keeps.
-pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a clock before 1970 reads every hold as live, never as expired early
-}
-
 /// The store's file under a continuum home.
 pub fn store_path(home: &Path) -> PathBuf {
     home.join("state").join("training-holds.json")

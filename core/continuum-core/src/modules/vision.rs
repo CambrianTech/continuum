@@ -25,6 +25,7 @@
 //! the typed params/results below carry snake_case field names with NO `rename_all`,
 //! so the contract matches the established wire exactly.
 
+use crate::time::EpochMs;
 use crate::log_info;
 use crate::runtime::MessageBus;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
@@ -309,19 +310,12 @@ impl VisionCache {
         *self.bus.write().unwrap_or_else(|e| e.into_inner()) = Some(bus);
     }
 
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64
-    }
-
     /// Get a description by content key. Bumps last_accessed_at on hit.
     pub fn get(&self, content_key: &str) -> VisionGetResult {
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
 
         if let Some(entry) = cache.get_mut(content_key) {
-            entry.last_accessed_at = Self::now_ms();
+            entry.last_accessed_at = EpochMs::now().millis();
             let result = VisionGetResult {
                 found: true,
                 description: Some(entry.description.clone()),
@@ -352,7 +346,7 @@ impl VisionCache {
         let processing_time_ms = p.processing_time_ms.unwrap_or(0);
         let confidence = p.confidence.unwrap_or(0.85);
 
-        let now = Self::now_ms();
+        let now = EpochMs::now().millis();
         let entry = CachedDescription {
             description: p.description.clone(),
             model: model.clone(),
@@ -429,7 +423,7 @@ impl VisionCache {
     /// Called by TS on startup to restore descriptions from ORM.
     pub fn warm(&self, entries: &[VisionWarmEntry]) -> VisionWarmResult {
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
-        let now = Self::now_ms();
+        let now = EpochMs::now().millis();
         let mut loaded = 0u64;
 
         for entry in entries {
@@ -478,7 +472,7 @@ impl VisionCache {
 
     /// Manual eviction — remove entries not accessed within idle_ms.
     pub fn evict(&self, idle_ms: u64) -> VisionEvictResult {
-        let cutoff = Self::now_ms().saturating_sub(idle_ms);
+        let cutoff = EpochMs::now().millis().saturating_sub(idle_ms);
 
         let mut cache = self.cache.write().unwrap_or_else(|e| e.into_inner());
         let before = cache.len();
@@ -723,8 +717,8 @@ mod tests {
                     provider: "test".to_string(),
                     processing_time_ms: 0,
                     confidence: 0.5,
-                    cached_at: VisionCache::now_ms(),
-                    last_accessed_at: VisionCache::now_ms(),
+                    cached_at: EpochMs::now().millis(),
+                    last_accessed_at: EpochMs::now().millis(),
                 },
             );
         }

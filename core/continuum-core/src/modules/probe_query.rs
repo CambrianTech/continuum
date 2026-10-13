@@ -249,10 +249,7 @@ impl ActionCommand for ProbeQuery {
         })?;
         let dir = PathBuf::from(dir);
 
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0); // unreadable clock → 0 disarms the check, never rejects on a guess
+        let now_ms = crate::time::EpochMs::now().millis(); // unreadable clock → 0 disarms the check, never rejects on a guess
         if let Some(msg) = future_watermark_error(p.since_ms, now_ms) {
             return Err(CommandError::Invalid(msg));
         }

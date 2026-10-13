@@ -37,6 +37,7 @@
 //! Access: `Privileged` — it spends real inference compute and executes
 //! model-generated code through the grader, same tier as `cognition/eval`.
 
+use crate::time::EpochMs;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -397,7 +398,7 @@ fn emit_teach_progress(
         total,
         solved: solved_count,
         current_task: Some(task_id.to_string()),
-        updated_at_ms: crate::persona::trace::now_ms(),
+        updated_at_ms: EpochMs::now().millis(),
     };
     write_teach_progress_ledger(&prog); // cross-process (file) so teach-status shows it
     set_teach_progress(prog); // in-process watch (same-process subscribers)
@@ -411,7 +412,7 @@ fn emit_teach_progress(
                 "task": task_id,
                 "solved": solved,
                 "withCorrection": with_correction,
-                "atMs": crate::persona::trace::now_ms(),
+                "atMs": EpochMs::now().millis(),
             }),
         );
     }
@@ -434,7 +435,7 @@ fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
         total,
         solved,
         current_task: None,
-        updated_at_ms: crate::persona::trace::now_ms(),
+        updated_at_ms: EpochMs::now().millis(),
     };
     write_teach_progress_ledger(&prog);
     set_teach_progress(prog);
@@ -446,7 +447,7 @@ fn emit_teach_milestone(phase: &str, done: usize, total: usize, solved: usize) {
                 "done": done,
                 "total": total,
                 "solved": solved,
-                "atMs": crate::persona::trace::now_ms(),
+                "atMs": EpochMs::now().millis(),
             }),
         );
     }
@@ -1043,7 +1044,7 @@ pub(crate) fn lesson_tasks(
         // citizen layout as the grader that wrote the stream (one resolver),
         // latest-per-task dedup so a later PASS retires the failure, then the
         // SAME salience selection every other experience consumer uses.
-        let home = crate::commands::benchmark::continuum_home()?;
+        let home = crate::paths::continuum_home()?;
         let (solver_full, solver_dir) =
             crate::commands::benchmark::resolve_solver_dir(&home, solver)?;
         let records = crate::cognition::experience::load_experiences(&solver_dir);

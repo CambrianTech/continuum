@@ -324,7 +324,7 @@ impl CardHolder {
         // like any engineer, always"). No advice about whether to take it.
         let quiet = self
             .quiet_for_ms
-            .map(|ms| format!(", silent {}", crate::utils::age::humanize_span(ms)))
+            .map(|ms| format!(", silent {}", crate::time::age::Age::from_millis(ms).span()))
             .unwrap_or_default();
         match self.hold {
             Hold::Unclaimed => "unclaimed".to_string(),
