@@ -1702,34 +1702,13 @@ impl TrainingTriggerState {
                         move || -> Result<(), (&'static str, String)> {
                             #[cfg(not(test))]
                             let board = TrainingJobBoard::global();
-                            // QUIESCENCE, not just absence (Codex root on #5028): a missing ledger
-                            // row doesn't show that no producer of this bucket is still running.
-                            // Two write-ahead fences do. This core's board holds a job in memory
-                            // even when its ledger append failed; and an engine run is recorded
-                            // against its live engine process (pid + start time) BEFORE its /train
-                            // is posted (engine_residency). Any in-flight, live or unknown one
-                            // refuses the retry until it has ended.
-                            if let Some(job) = board.snapshot().into_iter().find(|j| {
-                                j.persona_id == persona && j.trait_kind == trait_kind && j.base_model == base_model && !board.is_terminal(j.handle.local_id)
-                            }) {
-                                return Err(("Contradicted", format!("job {} of this bucket is still in flight on this core: a producer may be running; retry once it has ended", job.handle.local_id)));
-                            }
                             let residency = crate::paths::continuum_home()
                                 .map(|home| crate::inference::engine_residency::store_path(&home))
                                 .map_err(|e| ("PersistenceUnavailable", format!("no continuum home to read engine residency from, so quiescence can't be shown: {e}")))?;
                             let resident = crate::inference::engine_residency::all(&residency)
                                 .map_err(|e| ("PersistenceFailed", format!("engine residency unreadable, so quiescence can't be shown: {e}")))?;
-                            if let Some(work) = resident.into_iter().find(|w| {
-                                w.base_model == base_model
-                                    && !board.is_terminal(w.job)
-                                    && w.engine.liveness() != crate::inference::engine_residency::Liveness::Dead
-                            }) {
-                                return Err(("Contradicted", format!(
-                                    "engine work {} on base {base_model} is {:?}: a producer may still be running; retry once it has ended",
-                                    work.job,
-                                    work.engine.liveness()
-                                )));
-                            }
+                            producers_quiet(&board, persona, &trait_kind, &base_model, &resident, |engine| engine.liveness())
+                                .map_err(|why| ("Contradicted", why))?;
                             // The audit row lands BEFORE the intent changes: a retry is never
                             // taken without its record. It records the decision; the fences above,
                             // not the record, are what keep a second producer from starting.
@@ -2059,6 +2038,41 @@ fn registration_from(board: &crate::genome::fine_tuning::TrainingJobBoard, dispa
             }
         }
     }
+}
+
+/// QUIESCENCE of a bucket's producers: the fence a retry of an unconfirmed dispatch passes
+/// before its audit row (Codex root on #5028). A missing ledger row doesn't show that nothing is
+/// still producing. Two write-ahead records can. This core's board holds a job in memory even
+/// when its ledger append failed. And engine work is bound to its engine process (pid + start
+/// time) BEFORE its /train is posted (engine_residency), so a record on this base whose engine
+/// is Alive or Unknown fences WHATEVER the board says: a terminal ledger row is what this core
+/// concluded about the job, not proof that the engine stopped stepping it. Only a VERIFIED-dead
+/// engine releases its record; an Unknown one holds until it is retired by its owner.
+fn producers_quiet(
+    board: &crate::genome::fine_tuning::TrainingJobBoard,
+    persona: Uuid,
+    trait_kind: &str,
+    base_model: &str,
+    resident: &[crate::inference::engine_residency::ResidentWork],
+    liveness: impl Fn(&crate::inference::engine_residency::EngineIncarnation) -> crate::inference::engine_residency::Liveness,
+) -> Result<(), String> {
+    if let Some(job) = board
+        .snapshot()
+        .into_iter()
+        .find(|j| j.persona_id == persona && j.trait_kind == trait_kind && j.base_model == base_model && !board.is_terminal(j.handle.local_id))
+    {
+        return Err(format!("job {} of this bucket is still in flight on this core: a producer may be running; retry once it has ended", job.handle.local_id));
+    }
+    for work in resident.iter().filter(|w| w.base_model == base_model) {
+        let state = liveness(&work.engine);
+        if state != crate::inference::engine_residency::Liveness::Dead {
+            return Err(format!(
+                "engine work {} on base {base_model} is bound to an engine that is {state:?} (pid {}): a producer may still be running, whatever the board concluded; retry once that engine is verified gone",
+                work.job, work.engine.pid
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What `genome/training-trigger/resolve` settles an unconfirmed intent as. Owned, not Copy:
@@ -3153,6 +3167,40 @@ mod tests {
             .await;
         assert!(matches!(known, Err(("Contradicted", ref why)) if why.contains("resolve it as dispatched")), "a known job goes the dispatched + return path: {known:?}");
         assert!(other.state.test_job_board.retry_decisions(id2).is_empty(), "a refused retry journals nothing");
+    }
+
+    // what this catches (Codex root on #5028 at 7279392df): a terminal ledger row taken as proof
+    // that the engine stopped. Engine work whose engine is Alive or Unknown fences a retry even
+    // when the board has concluded the job; only a verified-dead engine, or another base's work,
+    // lets it through.
+    #[test]
+    fn engine_work_on_a_live_or_unknown_engine_fences_a_retry_whatever_the_board_concluded() {
+        use crate::inference::engine_residency::{EngineIncarnation, Liveness, ResidentWork};
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = dir.path().join("jobs-ledger.jsonl");
+        let job = Uuid::new_v4();
+        std::fs::write(&ledger, format!("{}\n", serde_json::json!({ "event": "terminal", "reason": "claimed", "local_id": job.to_string() }))).unwrap();
+        let board = crate::genome::fine_tuning::TrainingJobBoard::with_ledger(Some(ledger));
+        assert!(board.is_terminal(job), "the board has concluded the job");
+        let work = |base: &str| ResidentWork {
+            job,
+            out: format!("{job}.gguf"),
+            engine: EngineIncarnation { pid: 4242, started_s: 1, port: 1 },
+            base_model: base.into(),
+            created_ms: 1,
+            consumer: format!("genome-train:{job}"),
+            reserved_bytes: 0,
+            interrupted: None,
+            job_spec: None,
+        };
+        let persona = Uuid::new_v4();
+        let on_base = [work("synthetic")];
+        for state in [Liveness::Alive, Liveness::Unknown] {
+            let fenced = producers_quiet(&board, persona, "code", "synthetic", &on_base, |_| state);
+            assert!(matches!(fenced, Err(ref why) if why.contains(&format!("{state:?}"))), "{state:?} engine work fences: {fenced:?}");
+        }
+        assert_eq!(producers_quiet(&board, persona, "code", "synthetic", &on_base, |_| Liveness::Dead), Ok(()), "a verified-dead engine releases it");
+        assert_eq!(producers_quiet(&board, persona, "code", "synthetic", &[work("other-base")], |_| Liveness::Alive), Ok(()), "another base's work is not this bucket's producer");
     }
 
     // what this catches: named evidence never beats the ledger. A job registered under the
