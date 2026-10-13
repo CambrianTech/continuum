@@ -38,6 +38,56 @@ pub fn kill9(pid: u32) {
         .output();
 }
 
+/// What the platform said about a tree kill, reported as said, never upgraded to "exited".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TreeKill {
+    Delivered,
+    Refused,
+    NoPid,
+}
+
+impl std::fmt::Display for TreeKill {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TreeKill::Delivered => "delivered",
+            TreeKill::Refused => "refused by the platform",
+            TreeKill::NoPid => "impossible (no pid)",
+        })
+    }
+}
+
+/// Make `cmd`'s child lead its own process group, so [`kill_tree`] reaches every process it
+/// starts: a shell's pipeline, a test runner's workers, `gh`'s `git`. Unix only; Windows'
+/// `taskkill /T` walks the tree from the live parent and needs no group. THE one place a
+/// killable child is made a group leader (shell executions, `gh`, grading subprocesses).
+pub fn lead_own_group(cmd: &mut tokio::process::Command) {
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
+    #[cfg(not(unix))]
+    let _ = cmd;
+}
+
+/// Kill `pid` and every descendant, while `pid` is still alive so the walk can find them:
+/// Unix, the process group it leads (spawned with [`lead_own_group`]); Windows, `taskkill /F
+/// /T`. THE one tree kill; the outcome is kept, never assumed. A child that put itself in a
+/// new session (`setsid`) has left the group and is not reached; nothing claims it was.
+pub fn kill_tree(pid: u32) -> TreeKill {
+    #[cfg(unix)]
+    {
+        // SAFETY: killpg only sends a signal to the group `pid` leads; no memory is touched
+        let rc = unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
+        if rc == 0 { TreeKill::Delivered } else { TreeKill::Refused }
+    }
+    #[cfg(windows)]
+    {
+        let ok = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if ok { TreeKill::Delivered } else { TreeKill::Refused }
+    }
+}
+
 /// The command name (basename) of `pid` via `ps -p <pid> -o comm=`. `None` if the
 /// pid is gone or `ps` is unavailable — callers treat `None` as "unverifiable" and
 /// refuse to kill.

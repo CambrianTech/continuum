@@ -1855,9 +1855,11 @@ impl ActionCommand for CodeReleaseHands {
     // as a tool; her fork's own hands send it when the fork is dropped.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "End the caller's current acting context (an eval's or a fork's own hands): drop its \
-         workspace engine and shells, killing anything still running. Refused for the caller's \
-         default (live) hands.";
+        "End the caller's current acting context (an eval's or a fork's own hands): kill what its \
+         shells still run, wait each one out, and only once every one is confirmed gone drop its \
+         workspace engine and shells (released: true). Otherwise they are kept and the unconfirmed \
+         pids are named (released: false), so a retry finds them. Refused for the caller's default \
+         (live) hands.";
     type Params = CodeReleaseHandsParams;
     type Output = ReleaseHandsResult;
 
