@@ -2330,6 +2330,11 @@ mod tests {
         remainder.dataset.examples = parked.iter().map(|&i| remainder.dataset.examples[i].clone()).collect();
         let accepted = return_request(&crashed.state, remainder, job, ReturnScope::Parked(&parked)).await.unwrap();
         assert!(accepted.success, "the remainder is durably accepted before the crash: {accepted:?}");
+        assert!(!accepted.acceptance.as_ref().expect("an acceptance receipt").replayed, "the first acceptance is new: {accepted:?}");
+        assert_eq!(crashed.state.bucket_example_count(persona, "code", "synthetic"), Some(13), "exactly the thirteen: {accepted:?}");
+        assert!(crashed.state.active_dispatches.get(&key).is_none(), "a remainder below the threshold dispatches nothing: {accepted:?}");
+        let original = crashed.state.durable.require().unwrap().submissions.find_by_id(submission).await.unwrap().expect("the original submission");
+        assert!(!original.is_pending && original.dispatch_id == Some(dispatch), "the original submission stays owned by its completed dispatch");
         assert!(!jd.join(REMAINDER_RECEIPT).exists());
         crashed.shutdown().await.unwrap();
         drop(crashed_executor);
