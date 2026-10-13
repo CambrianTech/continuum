@@ -291,6 +291,18 @@ fn post_wait_for(render_per_example: Duration, sent: usize, floor: Duration) -> 
 
 /// What a lost POST /train turns out to have been, from the engine's status afterwards.
 #[derive(Debug, PartialEq)]
+/// What starting a run in the engine came to.
+enum Begin {
+    /// accepted (or re-attached): the watch loop takes it
+    Running(Box<EngineRun>),
+    /// the engine provably never started it: it refused, or a status read after a lost POST
+    /// showed another run or none
+    NeverStarted(InPlaceEnd),
+    /// it ended without starting and nothing proves the engine doesn't have it (an unreadable
+    /// status after a lost POST): its binding settles only the ordinary way
+    Unproven(InPlaceEnd),
+}
+
 enum LostPost {
     /// the engine has this job's run, in any state but cancelled (an error included): the watch
     /// loop takes it, and handles its end as it would any other
@@ -1019,6 +1031,20 @@ struct EngineProbe {
 }
 
 impl EngineProbe {
+    /// The end of a run the engine provably never started (card 26df): it refused the POST,
+    /// or a lost POST's status showed another run or none. `settled` can't decide this case,
+    /// since it waits for THIS run's terminal state and a refused run never has one. The
+    /// binding is settled when the bound incarnation is verifiably dead, or is still the same
+    /// process, which owns the lane that answered. An unreadable process keeps it.
+    async fn never_started(&self, engine: &crate::inference::engine_residency::EngineIncarnation) -> bool {
+        use crate::inference::engine_residency::Liveness;
+        let engine = *engine;
+        matches!(
+            tokio::task::spawn_blocking(move || engine.liveness()).await,
+            Ok(Liveness::Dead | Liveness::Alive)
+        )
+    }
+
     /// Is this run's end SETTLED (SHARED-RESIDENT-LIFECYCLE.md; Codex on #4531)? Only on
     /// positive evidence:
     /// - the incarnation is VERIFIABLY dead (no such process, or the pid was reused); or
@@ -1172,7 +1198,11 @@ impl InPlaceRun for EngineRun {
         let (store, job) = (self.hold_store.clone(), self.job);
         let residency = self.residency.clone();
         let probe_run = EngineProbe { http: self.http.clone(), lane: self.lane.clone(), out: self.out.clone() };
-        let mut end = self.run_steered(cancel, progress).await;
+        let (mut end, never_started) = match self.begin().await {
+            Begin::NeverStarted(end) => (end, true),
+            Begin::Unproven(end) => (end, false),
+            Begin::Running(run) => (run.run_steered(cancel, progress).await, false),
+        };
         // serving replaced the engine under this run anyway (an emergency): the failure says why
         if let (InPlaceEnd::Failed(why), Some((path, _))) = (&end, &residency) {
             if let Some(reason) = crate::inference::engine_residency::interruption_of(path, job) {
@@ -1185,7 +1215,12 @@ impl InPlaceRun for EngineRun {
         // training in it, so serving must not replace it on a guess (the explicit recovery act
         // resolves that case, never a timeout).
         if let Some((path, bound)) = residency {
-            if probe_run.settled(&bound.engine).await {
+            let settled = if never_started {
+                probe_run.never_started(&bound.engine).await
+            } else {
+                probe_run.settled(&bound.engine).await
+            };
+            if settled {
                 let released = tokio::task::spawn_blocking(move || crate::inference::engine_residency::release(&path, &bound)).await;
                 if !matches!(released, Ok(Ok(_))) {
                     crate::probe!(
@@ -1224,7 +1259,10 @@ impl InPlaceRun for EngineRun {
 }
 
 impl EngineRun {
-    async fn run_steered(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
+    /// Start the run in the engine, or say provably that it never started there. Split from
+    /// the watch so a refused start settles its engine binding as "never started" (card 26df),
+    /// not by waiting on a terminal state the engine will never report for this run.
+    async fn begin(self: Box<Self>) -> Begin {
         // a re-attached run is already in the engine: it is watched, never started again
         if let Some(body) = &self.start {
             match self
@@ -1239,7 +1277,7 @@ impl EngineRun {
                 Ok(r) => {
                     // refused before any thread started: nothing of ours runs
                     let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
-                    return InPlaceEnd::Failed(format!("the engine refused the training run: {why}"));
+                    return Begin::NeverStarted(InPlaceEnd::Failed(format!("the engine refused the training run: {why}")));
                 }
                 // LOST ON THE WAY BACK, RECONCILED BY THE RUN'S ID (card 93ffc555): the engine may
                 // have the run (fork #55 claims and shows it 'preparing' before its long prepare),
@@ -1257,11 +1295,22 @@ impl EngineRun {
                             error = %e,
                             "the POST was lost on the way back but the engine reports this job's run: it is watched to its end, not failed"
                         ),
-                        LostPost::NeverStarted => return self.failed(format!("POST /train on {}: {e}", self.lane)).await,
+                        LostPost::NeverStarted => {
+                            let end = self.failed(format!("POST /train on {}: {e}", self.lane)).await;
+                            // Only a status READ proves it never started; an unreadable one proves nothing.
+                            return match status {
+                                Some(_) => Begin::NeverStarted(end),
+                                None => Begin::Unproven(end),
+                            };
+                        }
                     }
                 }
             }
         }
+        Begin::Running(self)
+    }
+
+    async fn run_steered(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
         let mut tick = tokio::time::interval(POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut cancelling = false;
@@ -2594,6 +2643,12 @@ mod tests {
                 let lane = l1.clone();
                 let seen = seen1.clone();
                 async move {
+                    use axum::response::IntoResponse;
+                    // "post_400": the engine refuses the start before accepting it, and keeps
+                    // naming its PRIOR run (card 26df, the 5090)
+                    if mode == "post_400" {
+                        return (axum::http::StatusCode::BAD_REQUEST, "a run is already loaded").into_response();
+                    }
                     {
                         let mut l = lane.lock().unwrap();
                         l.out = b.get("out").and_then(Value::as_str).map(str::to_owned);
@@ -2605,7 +2660,7 @@ mod tests {
                     if mode == "lost_post" || mode == "lost_post_refused" {
                         tokio::time::sleep(Duration::from_secs(3)).await;
                     }
-                    axum::Json(json!({"ok": true}))
+                    axum::Json(json!({"ok": true})).into_response()
                 }
             }))
             .route("/train", get(move || {
@@ -2617,6 +2672,9 @@ mod tests {
                     let out = l.out.clone().unwrap_or_default();
                     if l.cancelled {
                         return axum::Json(json!({"state": "cancelled", "out": out}));
+                    }
+                    if mode == "post_400" {
+                        return axum::Json(json!({"state": "done", "out": "prior-run.gguf"}));
                     }
                     if mode == "flaky" && l.polls <= 2 {
                         return axum::Json(json!("not a status object"));
@@ -3270,6 +3328,80 @@ mod tests {
             "the settled end released the binding"
         );
         assert!(matches!(successor.reattach(job).await.expect("test: again"), ReattachOutcome::NotResident));
+        server.abort();
+    }
+
+    // what this catches: card 26df (Codex, the 5090). The engine refused the POST before
+    // accepting the run, while its /train kept naming the PRIOR run. `settled` waits for THIS
+    // run's terminal state, which a refused run never has, so the engine binding stayed
+    // forever and serving stayed off the engine. A start the engine provably refused settles
+    // as never-started once the bound incarnation is confirmed (here: this live process).
+    #[tokio::test]
+    async fn a_start_the_engine_refused_releases_its_binding() {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let home = tempfile::tempdir().expect("test: dir");
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), "post_400").await;
+        let job = Uuid::new_v4();
+        let out = format!("{job}.gguf");
+        let port: u16 = url.rsplit(':').next().and_then(|p| p.parse().ok()).expect("test: port");
+        let engine = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), port).expect("test: this process has a start time");
+        let store = crate::inference::engine_residency::store_path(home.path());
+        let job_dir = jobs.path().join(job.to_string());
+        let spec = EngineRunSpec {
+            adapter_path: train.path().join(&out),
+            job_dir: job_dir.clone(),
+            epochs: 1,
+            val_split: SplitPpm::from(0.1),
+            model_id: format!("{PROVIDER_ID}:code:{job}"),
+            corpus_chars: 0,
+            walk: None,
+            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
+        };
+        let work = crate::inference::engine_residency::ResidentWork {
+            job,
+            out: out.clone(),
+            engine,
+            base_model: "m".into(),
+            created_ms: 1,
+            consumer: format!("genome-train:{job}"),
+            reserved_bytes: 0,
+            interrupted: None,
+            job_spec: Some(spec.clone()),
+        };
+        crate::inference::engine_residency::record(&store, work.clone()).expect("test: record");
+        let tuner = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let last = Arc::new(Mutex::new(None));
+        let run = EngineRun {
+            shape: spec.shape.clone(),
+            footprints: tuner.footprints.clone(),
+            http: tuner.http.clone(),
+            lane: url,
+            start: Some(json!({"out": out})),
+            post_wait: POST_WAIT_FLOOR,
+            out: out.clone(),
+            adapter_path: spec.adapter_path.clone(),
+            job_dir: spec.job_dir.clone(),
+            epochs: spec.epochs,
+            last: last.clone(),
+            holds: tuner.holds.clone(),
+            job,
+            hold_store: None,
+            residency: Some((store.clone(), work)),
+            _lease: None,
+        };
+        let finish = finish_run(job, spec, tuner.footprints.clone(), last);
+        let handle = tuner.jobs.prepare(job, move |_progress| async move {
+            Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
+        });
+        let TrainingStatus::Failed { error } = wait_terminal(&tuner, &handle).await else {
+            panic!("test: a refused start fails the job");
+        };
+        assert!(error.contains("refused the training run"), "the failure names the refusal: {error}");
+        assert!(
+            crate::inference::engine_residency::find(&store, job).expect("test: read").is_none(),
+            "a start the engine refused releases its binding; it never waits on a terminal state the engine will not report"
+        );
         server.abort();
     }
 
