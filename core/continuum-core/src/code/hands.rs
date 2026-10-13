@@ -142,6 +142,12 @@ pub async fn admitted<F: std::future::Future>(admission: Option<std::sync::Arc<H
     ADMITTED.scope(admission, work).await
 }
 
+/// The admission of the command running on this task, for an owner of work that can outlive
+/// the command's future (a blocking thread, a child process) to keep until that work ends.
+pub fn current() -> Option<std::sync::Arc<HandsLease>> {
+    ADMITTED.try_with(|a| a.clone()).ok().flatten()
+}
+
 /// THE shared owner of blocking work started by a dispatched command: the work keeps the
 /// command's admission until IT returns, not until the command's future does. A dispatch
 /// that is cancelled or times out drops its future, but a blocking thread can't be cancelled
@@ -153,7 +159,7 @@ where
     F: FnOnce() -> R + Send + 'static,
     R: Send + 'static,
 {
-    let held = ADMITTED.try_with(|a| a.clone()).ok().flatten();
+    let held = current();
     tokio::task::spawn_blocking(move || {
         let _held = held;
         work()

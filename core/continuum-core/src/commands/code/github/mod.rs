@@ -125,22 +125,55 @@ async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
     buf
 }
 
-/// [`run_gh`] with a bound. A `gh` that outlives `bound` is killed with its whole tree
-/// (`gh repo clone` runs `git` as a descendant) BEFORE `gh` itself is reaped, because
-/// Windows' tree walk starts from the live parent; then `gh` is reaped. A timeout is
+/// A `gh` process a command owns, through its exit and reap (Astra on #5026). If the
+/// command's waiter is dropped (cancelled, or its own timeout) before `gh` exits, its whole
+/// tree is killed and a task keeps the command's admission until `gh` is reaped, so a release
+/// never completes under a live `gh` or the `git` it runs.
+struct OwnedGh {
+    child: Option<tokio::process::Child>,
+    held: Option<std::sync::Arc<crate::code::hands::HandsLease>>,
+}
+
+impl Drop for OwnedGh {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else { return }; // exited and reaped: nothing to own
+        let _ = child.id().map(kill_gh_tree); // the tree first: Windows' walk starts from the live parent
+        let _ = child.start_kill();
+        let held = self.held.take();
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            runtime.spawn(async move {
+                let _held = held; // the admission lasts until gh is reaped
+                let _ = child.wait().await;
+            });
+        }
+    }
+}
+
+/// Run one `gh` invocation in `root` as an owned process, with an optional bound: the ONE
+/// execution both [`run_gh`] and [`run_gh_within`] use. A `gh` that outlives `bound` is killed
+/// with its whole tree (`gh repo clone` runs `git` as a descendant) BEFORE `gh` itself is
+/// reaped, because Windows' tree walk starts from the live parent. A timeout is
 /// [`GhRunError::TimedOut`] carrying what the platform said about the tree kill, and never
 /// claims the tree exited.
-pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
+async fn run_gh_owned(root: &Path, args: &[String], bound: Option<std::time::Duration>) -> Result<String, GhRunError> {
     let mut cmd = gh_command(root, args);
-    cmd.kill_on_drop(true);
     #[cfg(unix)]
     std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
-    let mut child = cmd.spawn().map_err(|e| GhRunError::Spawn(e.to_string()))?;
+    let child = cmd.spawn().map_err(|e| GhRunError::Spawn(e.to_string()))?;
+    let mut owned = OwnedGh { child: Some(child), held: crate::code::hands::current() };
+    let Some(child) = owned.child.as_mut() else {
+        return Err(GhRunError::Spawn("the spawned gh vanished before it was owned".into()));
+    };
     let stdout = tokio::spawn(read_all(child.stdout.take()));
     let stderr = tokio::spawn(read_all(child.stderr.take()));
     let joined = args.join(" ");
-    match tokio::time::timeout(bound, child.wait()).await {
+    let waited = match bound {
+        Some(bound) => tokio::time::timeout(bound, child.wait()).await,
+        None => Ok(child.wait().await),
+    };
+    match waited {
         Ok(Ok(status)) => {
+            owned.child = None; // exited and reaped by wait()
             let out = stdout.await.unwrap_or_default(); // unwrap_or_default: a reader task that panicked reads as empty output
             let err = stderr.await.unwrap_or_default(); // unwrap_or_default: as above
             if status.success() {
@@ -153,33 +186,32 @@ pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time
         Err(_elapsed) => {
             let tree_kill = child.id().map_or(TreeKill::NoPid, kill_gh_tree);
             let _ = child.start_kill();
-            // reap gh so it is not left a zombie; this says nothing about its descendants
-            let _ = tokio::time::timeout(GH_REAP_BOUND, child.wait()).await;
-            Err(GhRunError::TimedOut { args: joined, secs: bound.as_secs(), tree_kill })
+            // reap gh so it is not left a zombie; this says nothing about its descendants. If it
+            // isn't reaped within the bound, the owner's drop keeps the admission until it is.
+            if let Ok(Ok(_)) = tokio::time::timeout(GH_REAP_BOUND, child.wait()).await {
+                owned.child = None;
+            }
+            Err(GhRunError::TimedOut { args: joined, secs: bound.map_or(0, |b| b.as_secs()), tree_kill })
         }
     }
 }
 
-/// Run one `gh` invocation in `root`, off the runtime worker. Returns trimmed stdout on
-/// success; a non-zero exit or a missing/unauthenticated `gh` FAILS LOUD with the fix.
-/// `gh` reads the repo + auth from the workspace + the host's gh config — never a param.
+/// [`run_gh`] with a bound; see [`run_gh_owned`].
+pub(crate) async fn run_gh_within(root: &Path, args: &[String], bound: std::time::Duration) -> Result<String, GhRunError> {
+    run_gh_owned(root, args, Some(bound)).await
+}
+
+/// Run one `gh` invocation in `root` as an owned process. Returns trimmed stdout on success; a
+/// non-zero exit or a missing/unauthenticated `gh` FAILS LOUD with the fix. `gh` reads the
+/// repo + auth from the workspace + the host's gh config — never a param.
 pub(crate) async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, CommandError> {
-    let out = gh_command(&root, &args).output().await.map_err(|e| {
-        CommandError::Internal(format!(
+    run_gh_owned(&root, &args, None).await.map_err(|e| match e {
+        GhRunError::Spawn(e) => CommandError::Internal(format!(
             "code/github: could not run `gh` — is the GitHub CLI installed and \
              authenticated? Install it, then `gh auth login`. ({e})"
-        ))
-    })?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(CommandError::Internal(format!(
-            "code/github: `gh {}` failed (exit {:?}): {}",
-            args.join(" "),
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )))
-    }
+        )),
+        other => CommandError::Internal(format!("code/github: {other}")),
+    })
 }
 
 /// THE one place a `gh` process is built (the source-hygiene rule: GitHub goes through this
@@ -238,6 +270,24 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
 #[cfg(test)]
 mod tests {
     use crate::sdk_codegen::ActionCommand;
+
+    // what this catches (Astra on #5026): a `gh` whose command waiter was cancelled kept running
+    // (run_gh had no owner at all) while a release removed the workspace under it. The owner,
+    // dropped mid-run, kills the process and keeps the command's admission until it is REAPED.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_dropped_gh_owner_holds_the_admission_until_the_process_is_reaped() {
+        let context = crate::code::hands::HandsContext::fresh();
+        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
+        let child = tokio::process::Command::new("sleep").arg("30").spawn().expect("a long process");
+        let pid = child.id().expect("a live pid");
+        drop(super::OwnedGh { child: Some(child), held: Some(lease) }); // the command's waiter is gone
+        tokio::time::timeout(std::time::Duration::from_secs(10), crate::code::hands::close(context))
+            .await
+            .expect("the release completes once the killed process is reaped, not before and not never");
+        let still = std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().expect("kill -0");
+        assert!(!still.success(), "the process is gone (reaped) when the release completes");
+    }
 
     // what this catches: the wire names mirror the file paths (the routing keys), and
     // NONE is pushed into every turn's native offer — a tool-call model treats an offered
