@@ -32,40 +32,15 @@ pub(crate) async fn bridge_review(event: &airc_core::TranscriptEvent, observer: 
         let runtime = registry.get(observer).ok_or_else(|| {
             crate::sdk_codegen::CommandError::Internal("review observer is not registered".into())
         })?;
-        let item = airc_work::decode_transcript_work_event(event)
-            .map_err(|e| crate::sdk_codegen::CommandError::Invalid(e.to_string()))?;
-        let airc_work::WorkEvent::WorkSubmissionReviewed(review) = item.event else {
+        let Some(verified) = verified_review(event, runtime.airc()).await? else {
             return Ok(None);
         };
-        if review.reviewer != event.peer_id {
-            return Err(crate::sdk_codegen::CommandError::Invalid(
-                "review author differs from signed sender".into(),
-            ));
-        }
-        let room = crate::modules::room_resolve::resolve_room(
-            runtime.airc(),
-            Some(&event.room_id.as_uuid().to_string()),
-        )
-        .await?;
-        let board = runtime
-            .airc()
-            .work_board_in(&room)
-            .await
-            .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))?;
-        if board.submission_review(review.review_id) != Some(&review) {
-            return Err(crate::sdk_codegen::CommandError::Invalid(
-                "review is not accepted in the room projection".into(),
-            ));
-        }
-        let executor = EXECUTOR.cloned().ok_or_else(|| {
-            crate::sdk_codegen::CommandError::Internal("credit executor is not ready".into())
-        })?;
-        let conn = Connection::new(InProcessTransport::new(
-            executor,
-            Some(CallerIdentity::local_persona(
-                crate::identity::PeerId::from_uuid(observer),
-            )),
-        ));
+        // An ordinary submission review settles ONLY through the exact binding (Codex
+        // root, #5017): a card-wide settle credited every resident's staged rows before
+        // exact validation. Card-wide settlement stays for bounded benchmark evidence.
+        let VerifiedReview { review, room, board } = verified;
+        let admission = self_review(runtime.airc(), &room).await;
+        let conn = credit_connection(observer)?;
         consume_observed_review(
             &conn,
             runtime.agent_name(),
@@ -73,6 +48,7 @@ pub(crate) async fn bridge_review(event: &airc_core::TranscriptEvent, observer: 
             room.channel.as_uuid(),
             &board,
             review.review_id,
+            &admission,
         )
         .await
         .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))
@@ -92,6 +68,106 @@ pub(crate) async fn bridge_review(event: &airc_core::TranscriptEvent, observer: 
     }
 }
 
+/// A review event that passed every check a settlement may rely on.
+pub(crate) struct VerifiedReview {
+    pub review: airc_work::WorkSubmissionReview,
+    pub room: airc_lib::Room,
+    pub board: airc_work::WorkBoardProjection,
+}
+
+/// Why a review event may not settle anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewRefusal {
+    /// The review names an author other than the event's signed sender.
+    NotSignedByReviewer,
+    /// The room's projection does not hold this exact review.
+    NotAccepted,
+}
+
+impl std::fmt::Display for ReviewRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ReviewRefusal::NotSignedByReviewer => "review author differs from signed sender",
+            ReviewRefusal::NotAccepted => "review is not accepted in the room projection",
+        })
+    }
+}
+
+/// THE event-level check a review passes before it may reach the exact path: it is signed
+/// by its author and the room's projection holds it. Pure. Whether a self-review earns
+/// credit is not decided here: [`SelfReview`] decides it once, in the exact path every
+/// entry shares.
+pub(crate) fn check_review(
+    signer: crate::identity::PeerId,
+    review: &airc_work::WorkSubmissionReview,
+    accepted: Option<&airc_work::WorkSubmissionReview>,
+) -> Result<(), ReviewRefusal> {
+    if review.reviewer != signer {
+        return Err(ReviewRefusal::NotSignedByReviewer);
+    }
+    if accepted != Some(review) {
+        return Err(ReviewRefusal::NotAccepted);
+    }
+    Ok(())
+}
+
+/// Whether an author's review of her OWN submission may earn credit in a room. Only where
+/// the room declares `self: true`. A room that declares no policy keeps the exact path's
+/// rule (an independent review is required); a policy that cannot be read is `Unknown`,
+/// which settles nothing now and is never admitted. Its retry owner is her registration
+/// replay (`reconcile_reviews`, each core start), not an assumed next delivery.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelfReview {
+    Admitted,
+    NotAdmitted,
+    Unknown(String),
+}
+
+/// THE self-review rule, read from the room's policy. Every entry (the live bridge,
+/// `work/review`, registration replay) passes its answer to the exact path.
+pub(crate) async fn self_review(airc: &airc_lib::Airc, room: &airc_lib::Room) -> SelfReview {
+    use crate::modules::work::review_gate::PolicyRead;
+    match crate::modules::work::review_gate::room_policy(airc, room).await {
+        PolicyRead::Declared(policy) if policy.self_review => SelfReview::Admitted,
+        PolicyRead::Declared(_) | PolicyRead::Absent => SelfReview::NotAdmitted,
+        PolicyRead::Unavailable(why) => SelfReview::Unknown(why),
+    }
+}
+
+/// Decode `event` as a review and run [`check_review`] against the room it was
+/// signed in. `Ok(None)` = not a review event; `Err` = a review that may not settle.
+pub(crate) async fn verified_review(
+    event: &airc_core::TranscriptEvent,
+    airc: &airc_lib::Airc,
+) -> Result<Option<VerifiedReview>, crate::sdk_codegen::CommandError> {
+    let item = airc_work::decode_transcript_work_event(event)
+        .map_err(|e| crate::sdk_codegen::CommandError::Invalid(e.to_string()))?;
+    let airc_work::WorkEvent::WorkSubmissionReviewed(review) = item.event else {
+        return Ok(None);
+    };
+    let room = crate::modules::room_resolve::resolve_room(airc, Some(&event.room_id.as_uuid().to_string())).await?;
+    let board = airc
+        .work_board_in(&room)
+        .await
+        .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))?;
+    check_review(event.peer_id, &review, board.submission_review(review.review_id))
+        .map_err(|refusal| crate::sdk_codegen::CommandError::Invalid(refusal.to_string()))?;
+    Ok(Some(VerifiedReview { review, room, board }))
+}
+
+/// The in-process connection a persona's credit store is reached through.
+pub(crate) fn credit_connection(
+    persona: Uuid,
+) -> Result<Connection<InProcessTransport>, crate::sdk_codegen::CommandError> {
+    let executor = EXECUTOR.cloned().ok_or_else(|| {
+        crate::sdk_codegen::CommandError::Internal("credit executor is not ready".into())
+    })?;
+    Ok(Connection::new(InProcessTransport::new(
+        executor,
+        Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+    )))
+}
+
 /// Remote fan-out has ONE transfer owner: the submitted artifact's publisher.
 /// Every observer may fold its accepted room projection, but unrelated residents
 /// never open another persona's SQLite store or dispatch its training transfer.
@@ -102,6 +178,7 @@ pub(crate) async fn consume_observed_review<T: Transport>(
     room_id: Uuid,
     board: &airc_work::WorkBoardProjection,
     review_id: airc_work::WorkReviewId,
+    self_review: &SelfReview,
 ) -> Result<Option<ReviewedCredit>, CreditBindingError> {
     let dream = crate::cognition::dream_consolidation::global();
     consume_observed_review_with_boundary(
@@ -111,6 +188,7 @@ pub(crate) async fn consume_observed_review<T: Transport>(
         room_id,
         board,
         review_id,
+        self_review,
         dream.as_deref(),
     )
     .await
@@ -123,6 +201,7 @@ pub(super) async fn consume_observed_review_with_boundary<T: Transport>(
     room_id: Uuid,
     board: &airc_work::WorkBoardProjection,
     review_id: airc_work::WorkReviewId,
+    self_review: &SelfReview,
     dream: Option<&crate::cognition::dream_consolidation::DreamConsolidationRegion>,
 ) -> Result<Option<ReviewedCredit>, CreditBindingError> {
     let review = board
@@ -146,6 +225,7 @@ pub(super) async fn consume_observed_review_with_boundary<T: Transport>(
         room_id,
         board,
         review_id,
+        self_review,
         dream,
     )
     .await
@@ -183,7 +263,8 @@ pub(crate) async fn consume_as_publisher(
         ));
     }
     // The publisher must actually inhabit this activity; never substitute focus.
-    crate::modules::room_resolve::resolve_room(runtime.airc(), Some(&room_id.to_string())).await?;
+    let room = crate::modules::room_resolve::resolve_room(runtime.airc(), Some(&room_id.to_string())).await?;
+    let admission = self_review(runtime.airc(), &room).await;
     let conn = Connection::new(InProcessTransport::new(
         executor,
         Some(CallerIdentity::local_persona(
@@ -197,6 +278,7 @@ pub(crate) async fn consume_as_publisher(
         room_id,
         board,
         review_id,
+        &admission,
     )
     .await
     .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))
@@ -316,6 +398,9 @@ pub enum ReviewedCreditState {
     FailedReview,
     UnknownReview,
     IndependentReviewRequired,
+    /// Her own review, in a room whose review policy could not be read: nothing settles
+    /// now and nothing is recorded; her next registration replay decides it.
+    PolicyUnavailable,
     IneligibleEvidence,
     AnotherReviewSelected,
     AwaitingAcceptance,
@@ -481,6 +566,7 @@ pub async fn consume_review<T: Transport>(
     room_id: Uuid,
     board: &airc_work::WorkBoardProjection,
     review_id: airc_work::WorkReviewId,
+    self_review: &SelfReview,
 ) -> Result<ReviewedCredit, CreditBindingError> {
     let dream = crate::cognition::dream_consolidation::global();
     consume_review_with_boundary(
@@ -490,6 +576,7 @@ pub async fn consume_review<T: Transport>(
         room_id,
         board,
         review_id,
+        self_review,
         dream.as_deref(),
     )
     .await
@@ -502,10 +589,11 @@ pub(super) async fn consume_review_with_boundary<T: Transport>(
     room_id: Uuid,
     board: &airc_work::WorkBoardProjection,
     review_id: airc_work::WorkReviewId,
+    self_review: &SelfReview,
     dream: Option<&crate::cognition::dream_consolidation::DreamConsolidationRegion>,
 ) -> Result<ReviewedCredit, CreditBindingError> {
     let credit =
-        consume_review_credit(conn, persona_name, persona_id, room_id, board, review_id).await?;
+        consume_review_credit(conn, persona_name, persona_id, room_id, board, review_id, self_review).await?;
     if credit.state == ReviewedCreditState::Accepted
         && credit.decision_review_id == Some(review_id.as_uuid())
     {
@@ -533,6 +621,7 @@ async fn consume_review_credit<T: Transport>(
     room_id: Uuid,
     board: &airc_work::WorkBoardProjection,
     review_id: airc_work::WorkReviewId,
+    self_review: &SelfReview,
 ) -> Result<ReviewedCredit, CreditBindingError> {
     let review = board
         .submission_review(review_id)
@@ -574,9 +663,14 @@ async fn consume_review_credit<T: Transport>(
     result.state = match review.outcome {
         airc_work::WorkReviewOutcome::Failed => ReviewedCreditState::FailedReview,
         airc_work::WorkReviewOutcome::Unknown => ReviewedCreditState::UnknownReview,
-        airc_work::WorkReviewOutcome::Passed if review.reviewer == submitted.publisher => {
-            ReviewedCreditState::IndependentReviewRequired
-        }
+        // Her own review earns credit only where the room admits it (`SelfReview`); an
+        // unreadable policy is `PolicyUnavailable`, nothing persisted, replayed at her next
+        // registration.
+        airc_work::WorkReviewOutcome::Passed if review.reviewer == submitted.publisher => match self_review {
+            SelfReview::Admitted => ReviewedCreditState::AwaitingAcceptance,
+            SelfReview::NotAdmitted => ReviewedCreditState::IndependentReviewRequired,
+            SelfReview::Unknown(_) => ReviewedCreditState::PolicyUnavailable,
+        },
         airc_work::WorkReviewOutcome::Passed => ReviewedCreditState::AwaitingAcceptance,
     };
     if result.state != ReviewedCreditState::AwaitingAcceptance {

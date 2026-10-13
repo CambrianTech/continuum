@@ -53,36 +53,57 @@ impl RoomReview {
     }
 }
 
-/// The review policy `room` declares, or `None` when it declares none (or its binding is
-/// unreadable, which is a probe, never a guessed gate). The one place a policy is read.
-pub(crate) async fn room_policy(airc: &Airc, room: &airc_lib::Room) -> Option<ReviewPolicy> {
-    let posts = airc
+/// What reading a room's review policy found. `Unavailable` is not `Absent`: a binding
+/// this build cannot read, or a wall it cannot reach, says nothing about what the room
+/// declares, so no caller may treat it as "no policy" (Codex root, review of #5017).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PolicyRead {
+    /// The room declares no review policy.
+    Absent,
+    /// The room's policy could not be read now; the reason is probed.
+    Unavailable(String),
+    Declared(ReviewPolicy),
+}
+
+/// The review policy `room` declares. The one place a policy is read.
+pub(crate) async fn room_policy(airc: &Airc, room: &airc_lib::Room) -> PolicyRead {
+    let posts = match airc
         .wall_posts_in(room, Some(crate::experience::binding::RECIPE_WALL_CATEGORY))
         .await
-        .ok()?;
+    {
+        Ok(posts) => posts,
+        Err(error) => return unavailable(room, error.to_string()),
+    };
     match crate::experience::binding::project_binding(&posts) {
         Ok(Some(binding)) => match binding.declared_review() {
-            Ok(policy) => policy,
-            Err(why) => {
-                crate::probe!(
-                    class = "work.review.policy_unreadable",
-                    room = %room.channel.as_uuid(),
-                    why = %why,
-                    "the room declares a review policy this build cannot read — no gate is guessed"
-                );
-                None
-            }
+            Ok(Some(policy)) => PolicyRead::Declared(policy),
+            Ok(None) => PolicyRead::Absent,
+            Err(why) => unavailable(room, why.to_string()),
         },
-        Ok(None) | Err(_) => None,
+        Ok(None) => PolicyRead::Absent,
+        Err(why) => unavailable(room, why.to_string()),
     }
+}
+
+fn unavailable(room: &airc_lib::Room, why: String) -> PolicyRead {
+    crate::probe!(
+        class = "work.review.policy_unreadable",
+        room = %room.channel.as_uuid(),
+        why = %why,
+        "the room's review policy could not be read: no caller treats that as no policy"
+    );
+    PolicyRead::Unavailable(why)
 }
 
 /// The review state of `card` in the room whose board holds it, or `None` when that room
 /// declares no review policy (the caller keeps its round fallback until every room's
-/// recipe declares one). An unreadable binding is a probe and `None`, never a guessed gate.
+/// recipe declares one). An unreadable binding is `None` here too, never a guessed gate:
+/// this is the finish gate, unchanged by #5017 (credit no longer reads it as admission).
 pub(crate) async fn room_review(airc: &std::sync::Arc<Airc>, card_id: WorkCardId) -> Option<RoomReview> {
     let (room, card) = super::card_in_subscribed_rooms(airc, card_id).await?;
-    let policy = room_policy(airc, &room).await?;
+    let PolicyRead::Declared(policy) = room_policy(airc, &room).await else {
+        return None;
+    };
     let board = airc.work_board_in(&room).await.ok()?;
     let latest = super::submission::latest_submission(&card);
     let author = latest.map(|s| s.publisher.as_uuid()).or(card.owner.map(|o| o.as_uuid()));

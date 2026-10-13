@@ -1208,13 +1208,8 @@ impl ActionCommand for WorkReview {
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
         // than counted as nothing after the fact.
         if submission.publisher == airc.peer_id() {
-            if let Some(policy) = crate::modules::work::review_gate::room_policy(airc, &room).await {
-                if !policy.self_review {
-                    return Err(CommandError::Invalid(format!(
-                        "this room's review policy does not admit the author's own review                          (review.self is false): a member other than you reviews card {card_id}.                          A room can allow it: activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."
-                    )));
-                }
-            }
+            let policy = crate::modules::work::review_gate::room_policy(airc, &room).await;
+            own_review_publishable(&policy, &card_id)?;
         }
         let artifact = match p.artifact.clone() {
             Some(a) => a.into_artifact()?,
@@ -1289,6 +1284,30 @@ impl ActionCommand for WorkReview {
 }
 
 crate::register_command!(WorkReview);
+
+/// May the author PUBLISH a review of her own submission, given the ONE policy read the
+/// command took? A declared `self: false` refuses; a policy that could not be read refuses
+/// (it was admitted on a read failure); a room that declares none keeps today's behaviour.
+/// Whether that review then earns credit is the exact path's `SelfReview`, a different question.
+fn own_review_publishable(
+    policy: &crate::modules::work::review_gate::PolicyRead,
+    card_id: &WorkCardId,
+) -> Result<(), CommandError> {
+    use crate::modules::work::review_gate::PolicyRead;
+    match policy {
+        PolicyRead::Absent => Ok(()),
+        PolicyRead::Declared(policy) if policy.self_review => Ok(()),
+        PolicyRead::Declared(_) => Err(CommandError::Invalid(format!(
+            "this room's review policy does not admit the author's own review (review.self is false): \
+             a member other than you reviews card {card_id}. A room can allow it: \
+             activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."
+        ))),
+        PolicyRead::Unavailable(why) => Err(CommandError::Invalid(format!(
+            "this room's review policy could not be read ({why}), so your own review of card {card_id} \
+             cannot be admitted now: retry, or have a member other than you review it."
+        ))),
+    }
+}
 
 pub struct WorkSubmission {
     pub registry: PersonaAircRuntimeRegistry,
@@ -1488,6 +1507,29 @@ crate::register_command!(WorkSubmission);
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (Codex root, review of #5017): work/review read the room's policy
+    // twice, so a Declared(self: false) read followed by an Unavailable read published the
+    // author's own review under a policy nobody could verify. The command now reads ONCE and
+    // decides on that snapshot; every outcome of the one read is pinned here.
+    #[test]
+    fn her_own_review_publishes_only_on_a_readable_policy_that_admits_it() {
+        use crate::experience::binding::ReviewPolicy;
+        use crate::modules::work::review_gate::PolicyRead;
+        use crate::sdk_codegen::CommandError;
+        let card = airc_work::WorkCardId::new();
+        assert!(super::own_review_publishable(&PolicyRead::Absent, &card).is_ok(), "no policy keeps today's behaviour");
+        let admits = ReviewPolicy { self_review: true, ..ReviewPolicy::default() };
+        assert!(super::own_review_publishable(&PolicyRead::Declared(admits), &card).is_ok());
+        let refuses = ReviewPolicy { self_review: false, ..ReviewPolicy::default() };
+        assert!(super::own_review_publishable(&PolicyRead::Declared(refuses), &card).is_err());
+        let Err(CommandError::Invalid(why)) =
+            super::own_review_publishable(&PolicyRead::Unavailable("wall unreachable".into()), &card)
+        else {
+            panic!("an unreadable policy must refuse her own review, by name");
+        };
+        assert!(why.contains("could not be read") && why.contains("wall unreachable"), "{why}");
+    }
 
     // what this catches (card d6e1b7a2, BigMama on #4836): a card she HOLDS on a room she is
     // not subscribed to, seen by her gate but unreachable by work/review, by full id or by the
