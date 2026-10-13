@@ -54,27 +54,6 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      postgres:
-        # The Docker-official image from ECR Public, not Docker Hub: hosted runners share one
-        # anonymous Docker Hub quota per IP, and on 2026-10-09 every Rust lane across the
-        # repo's PRs died in 16 s at "Initialize containers" with `toomanyrequests` (#4882,
-        # #4883, #4884), twice each on re-run. ECR Public mirrors docker/library with no
-        # anonymous pull limit. Same image, same tag.
-        image: ${{ needs.changes.outputs.rust != 'false' && 'public.ecr.aws/docker/library/postgres:17-alpine' || '' }}
-        env:
-          POSTGRES_DB: continuum_test
-          POSTGRES_USER: continuum
-          POSTGRES_PASSWORD: continuum
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    env:
-      DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
     steps:
       - uses: actions/checkout@v4
         if: needs.changes.outputs.rust != 'false'
@@ -183,10 +162,23 @@ jobs:
           fi
 
       # These tests share a database schema; run serially and reject zero matches.
+      # Postgres is the runner image's own preinstalled server, started here, not a
+      # pulled service container. Every registry has an anonymous quota: Docker Hub
+      # failed every Rust lane on 2026-10-09 (#4882-#4884), and the ECR Public mirror
+      # that replaced it failed #5017 and #5021 on 2026-10-13 with "toomanyrequests:
+      # Data limit exceeded" at "Initialize containers", before anything compiled. A
+      # job service also gated every other step on the pull; this gates only this step.
       - name: cargo test -p continuum-core --lib (Postgres, --ignored)
         if: needs.changes.outputs.rust != 'false'
+        # Only this step owns a database; the rest resolve "main" to SQLite, as locally.
+        env:
+          DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
         run: |
           set -o pipefail
+          sudo systemctl start postgresql.service
+          for _ in $(seq 1 30); do pg_isready -h localhost -p 5432 -q && break; sleep 1; done
+          pg_isready -h localhost -p 5432
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE USER continuum WITH PASSWORD 'continuum' SUPERUSER" -c "CREATE DATABASE continuum_test OWNER continuum"
           (cd core/continuum-core && LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" \
             "$CONTINUUM_LIB_TEST" orm::postgres --ignored --test-threads=1) 2>&1 | tee pg.log
           passed=$(grep -oE 'test result: ok\. [0-9]+ passed' pg.log | grep -oE '[0-9]+' | head -1)
