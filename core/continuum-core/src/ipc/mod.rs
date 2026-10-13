@@ -3455,12 +3455,11 @@ pub fn start_server(
     // [[commands-are-dumb-daemons-are-smart]] the module is narrow;
     // selection logic lives in the coordinator.
     {
-        use crate::genome::fine_tuning::{CudaLoraFineTuner, EngineLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter};
+        use crate::genome::fine_tuning::{EngineLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, OpenAIFineTuningAdapter};
         let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
-        ft_registry.register(std::sync::Arc::new(CudaLoraFineTuner::new()));
-        // In-engine training on the resident weights (the dream's trainer): selected by
-        // preference ("engine-local") until its measured 27B run makes it the default
-        // over the process trainers (charter S6); needs a live lane serving the base.
+        // In-engine training on the resident weights: the ONE trainer for the bases a lane
+        // serves (card 878f100f; Joel: "Python can't be part of code"). With no live lane
+        // serving the base, a job waits for one (AwaitingLane); it never goes elsewhere.
         // SHARED-RESIDENT-LIFECYCLE.md step 3: a run a previous core bound to a still-live engine
         // gets its lease back HERE, before any module ticks and so before anything can admit
         // into the memory it is using; the trigger's first tick then re-attaches it.
@@ -3492,24 +3491,6 @@ pub fn start_server(
             "server",
             "GenomeModule: registered LocalCandleFineTuner (skeleton — tasks #231-#233 \
              track the optimizer-loop landing)"
-        );
-
-        // MlxLoraFineTuner — the REAL owned trainer (#32): Apple's
-        // mlx_lm.lora on the Metal GPU → forge-custodian converts to a
-        // GGUF-lora gene → llama-server serves it. Always registered; its
-        // capability declares `requires: TrainerHardware::AppleSilicon`, so the
-        // coordinator routes here only on Apple Silicon, and create_job
-        // fails loud (never silently) when Metal / the mlx python env /
-        // a base model / examples are missing. Without this slot the live
-        // registry held only the synthetic Candle skeleton + conditional
-        // cloud OpenAI, so genome/job-create could never produce a
-        // real, loadable LoRA — the closed L1→L3 loop was broken here.
-        ft_registry.register(std::sync::Arc::new(MlxLoraFineTuner::new()));
-        log_info!(
-            "ipc",
-            "server",
-            "GenomeModule: registered MlxLoraFineTuner (mlx-local — real Apple-Silicon \
-             LoRA trainer; coordinator gates on a probed Metal device)"
         );
 
         // L3 completion sentinel shares the SAME registry — it polls the handles the

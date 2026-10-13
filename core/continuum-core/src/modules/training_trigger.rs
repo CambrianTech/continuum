@@ -210,6 +210,9 @@ pub struct TrainingTriggerState {
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
     #[cfg(test)]
     pub(crate) test_job_board: Arc<crate::genome::fine_tuning::TrainingJobBoard>,
+    /// Test-only: the bases a live lane serves, read where production asks the lane registry.
+    #[cfg(test)]
+    pub(crate) test_lanes: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
     /// and watch the bucket hold.
     #[cfg(test)]
@@ -288,6 +291,8 @@ impl TrainingTriggerState {
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]
             test_job_board: Arc::new(crate::genome::fine_tuning::TrainingJobBoard::default()),
+            #[cfg(test)]
+            test_lanes: std::sync::Mutex::new(std::collections::HashSet::new()),
             #[cfg(test)]
             test_trials: std::sync::Arc::new(crate::genome::gene_trial::GeneTrials::at(
                 std::env::temp_dir().join(format!("training-trigger-trials-{}.json", Uuid::new_v4())),
@@ -832,7 +837,10 @@ fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
         "genome/job-create rejected: {}",
         response.error.unwrap_or_default()
     );
-    use crate::commands::genome::job_create::{ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
+    use crate::commands::genome::job_create::{ERROR_KIND_AWAITING_LANE, ERROR_KIND_CAPACITY_PARKED, ERROR_KIND_REUSE_ADOPT_FAILED, ERROR_KIND_REUSE_PULL_FAILED, ERROR_KIND_TRIAL_FILE_UNREADABLE};
+    if response.error_kind.as_deref() == Some(ERROR_KIND_AWAITING_LANE) {
+        return Err(DispatchFailure::AwaitingLane(error));
+    }
     if response.error_kind.as_deref() == Some(ERROR_KIND_CAPACITY_PARKED) {
         // Parked only with its wake key: a refusal that names no wait is evidence of nothing.
         return Err(match response.capacity_wait {

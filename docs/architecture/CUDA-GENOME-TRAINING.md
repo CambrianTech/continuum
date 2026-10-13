@@ -1,5 +1,11 @@
 # Native genome training: shared ownership, backend kernels
 
+> **SUPERSEDED, 2026-10-13 (card 878f100f).** The CUDA (`cuda_train.py`) and MLX (`mlx_lm`) Python
+> trainers this document describes are deleted (Joel: "Python can't be part of code"). The engine,
+> training in place on the resident weights (`engine_lora_adapter.rs`), is the one trainer; with no
+> live lane serving a base, a job waits (`AwaitingLane`) and never goes to another trainer.
+> `native_jobs.rs` now owns only in-place runs. Kept for the history of the admission design.
+
 CUDA and MLX implement the existing `FineTuningAdapter` contract. Training jobs
 keep the existing UUID, coordinator, provenance, completion sentinel, evaluation
 and genome-paging path. This change does not create a second learning pipeline.

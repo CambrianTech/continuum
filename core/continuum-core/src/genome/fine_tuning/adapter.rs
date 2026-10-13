@@ -62,6 +62,11 @@ pub enum FineTuningError {
     #[error("waiting for capacity: window {} needs {} bytes, {} free", .0.window, .0.need_bytes, .0.governed_free)]
     CapacityParked(super::types::CapacityWait),
 
+    /// The trainer for this base trains on the resident weights and no live lane serves the
+    /// base now: no job; the examples wait, owned by the trigger, until a lane serves it.
+    #[error("waiting for a live lane: {0}")]
+    AwaitingLane(String),
+
     /// The job handle doesn't correspond to anything the adapter
     /// knows about. Common cause: substrate restart mid-job, the
     /// adapter's in-memory poll state was lost. Cloud adapters can
@@ -206,11 +211,13 @@ pub trait FineTuningAdapter: Send + Sync {
     /// registration time + occasionally for dispatcher inspection.
     fn capabilities(&self) -> FineTuningCapabilities;
 
-    /// Can this trainer take `base_model` on THIS node right now? The default is the
-    /// static answer (`capabilities`); a trainer bound to live state answers from it: the
-    /// in-engine trainer says yes only while a live lane serves that base, so the
-    /// coordinator never routes to it a job it would refuse at `create_job`.
-    fn serves_base(&self, _base_model: &str) -> bool {
+    /// Is this trainer AVAILABLE for `base_model` on this node right now? Distinct from
+    /// capability: the coordinator chooses by capability, and a chosen trainer that is not
+    /// available makes the job WAIT for it. It never routes past it to a lesser trainer,
+    /// which would be a fallback (card 878f100f: with no live lane, Kimi's 27B job went to
+    /// a Python trainer that a reboot killed). Only a trainer bound to live state varies:
+    /// the in-engine one is available while a live lane serves the base.
+    fn available_for(&self, _base_model: &str) -> bool {
         true
     }
 

@@ -87,6 +87,12 @@ pub enum CoordinatorError {
         registered: Vec<String>,
         capable: Vec<String>,
     },
+
+    /// The trainer chosen for this request is not available now (the in-engine trainer
+    /// with no live lane serving the base). The job waits for it; the coordinator never
+    /// routes past it to a lesser trainer ([[no-fallbacks-ever]], card 878f100f).
+    #[error("{provider} trains {base_model:?} and is not available now (no live lane serves it): the job waits for it")]
+    AwaitingAvailability { provider: String, base_model: String },
 }
 
 /// Provider selector. Stateless beyond the `Arc<FineTuningRegistry>`
@@ -136,9 +142,9 @@ impl FineTuningCoordinator {
             .filter_map(|id| self.registry.get(id).map(|a| (id.clone(), a)))
             .filter_map(|(id, adapter)| {
                 let caps = adapter.capabilities();
-                // A trainer bound to live state (the in-engine one) is asked whether it
-                // serves THIS base now, so it is never chosen for a job it would refuse.
-                if self.caps_match(&caps, request) && adapter.serves_base(&request.base_model) {
+                // Capability only. Availability is asked of the CHOSEN trainer below, so an
+                // unavailable best trainer is waited for, never skipped.
+                if self.caps_match(&caps, request) {
                     Some((id, adapter, caps))
                 } else {
                     None
@@ -151,7 +157,7 @@ impl FineTuningCoordinator {
             if let Some((id, adapter, _caps)) =
                 capable.iter().find(|(id, _, _)| id == pref).cloned()
             {
-                return Ok((id, adapter));
+                return available(id, adapter, &request.base_model);
             }
             return Err(CoordinatorError::PreferredUnavailable {
                 preferred: pref.to_string(),
@@ -166,7 +172,7 @@ impl FineTuningCoordinator {
         ranked.sort_by(|a, b| self.rank(&a.2).cmp(&self.rank(&b.2)).then(a.0.cmp(&b.0)));
 
         match ranked.into_iter().next() {
-            Some((id, adapter, _)) => Ok((id, adapter)),
+            Some((id, adapter, _)) => available(id, adapter, &request.base_model),
             None => {
                 // Build the supported_prefixes diagnostic — same
                 // adapter walk as the capability scan above, but
@@ -239,6 +245,7 @@ impl FineTuningCoordinator {
     /// first gene (job bcb7316f) went to the separate Python trainer and parked forever
     /// waiting for 30 GB the serving lane holds.
     fn rank(&self, caps: &FineTuningCapabilities) -> u8 {
+        // (the chosen trainer's availability is checked by `available`, never ranked)
         if caps.trains_on_resident_weights {
             0
         } else if caps.requires.is_specific_accelerator() && caps.requires.satisfied_by(&self.host) {
@@ -248,6 +255,19 @@ impl FineTuningCoordinator {
         } else {
             3
         }
+    }
+}
+
+/// The chosen trainer, or the wait for it when it is not available now.
+fn available(
+    id: String,
+    adapter: ArcFineTuningAdapter,
+    base_model: &str,
+) -> Result<(String, ArcFineTuningAdapter), CoordinatorError> {
+    if adapter.available_for(base_model) {
+        Ok((id, adapter))
+    } else {
+        Err(CoordinatorError::AwaitingAvailability { provider: id, base_model: base_model.to_string() })
     }
 }
 
@@ -335,6 +355,32 @@ mod tests {
             requires: TrainerHardware::Any,
             trains_on_resident_weights: false,
         }
+    }
+
+    // what this catches (card 878f100f, the 5090 2026-10-12T22:12Z): the resident trainer
+    // unavailable for a base (no live lane) must make the job WAIT. Routing it to the next
+    // capable trainer sent Kimi's 27B examples to a Python process a reboot killed.
+    #[test]
+    fn an_unavailable_resident_trainer_is_waited_for_never_skipped() {
+        use crate::genome::fine_tuning::RecordingFineTuningAdapter;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let lane = Arc::new(AtomicBool::new(false));
+        let reg = Arc::new(FineTuningRegistry::new());
+        reg.register(Arc::new(StubWithCaps(caps("lesser-process-trainer", true, true, true, &[]))));
+        reg.register(Arc::new(RecordingFineTuningAdapter::resident(lane.clone())));
+        let coord = FineTuningCoordinator::new(reg);
+        let request = base_request("recording-test-27b");
+        let Err(CoordinatorError::AwaitingAvailability { provider, .. }) = coord.select(&request, None) else {
+            panic!("an unavailable resident trainer must be waited for");
+        };
+        assert_eq!(provider, crate::genome::fine_tuning::RECORDING_PROVIDER_ID);
+        assert!(
+            matches!(coord.select(&request, Some(crate::genome::fine_tuning::RECORDING_PROVIDER_ID)), Err(CoordinatorError::AwaitingAvailability { .. })),
+            "a preference for it waits too"
+        );
+        lane.store(true, Ordering::SeqCst);
+        let (chosen, _) = coord.select(&request, None).expect("available: chosen");
+        assert_eq!(chosen, crate::genome::fine_tuning::RECORDING_PROVIDER_ID);
     }
 
     fn base_request(base_model: &str) -> TrainingJobRequest {

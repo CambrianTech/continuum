@@ -7,7 +7,7 @@
 //! as a GGUF-lora the genome pages in directly.
 //!
 //! This backend drives that run IN PLACE through the shared job owner ([`NativeJobs`] with
-//! [`Execution::InPlace`]): the same handles, probes, status and cancellation as the process
+//! [`InPlaceRun`]): the same handles, probes, status and cancellation as the process
 //! trainers. What is its own:
 //! - the lane: the live lane whose recorded model IS the request's base; none = refused.
 //! - the examples: a lived call (card ad107e18) is sent as the conversation it was served,
@@ -22,7 +22,7 @@
 //! - the artifact leaves the lanes' `--train-dir` (`engine-train`, swept of every file whose job
 //!   is not live) for the job's own directory BEFORE the job goes terminal (Fable's invariant on
 //!   #4438), and is a [`ArtifactFormat::GgufLora`].
-use super::native_jobs::{default_lora, default_schedule, job_dir_for, Execution, InPlaceEnd, InPlaceRun, NativeJobs, PreparedJob, RunProgress};
+use super::native_jobs::{default_lora, default_schedule, job_dir_for, InPlaceEnd, InPlaceRun, NativeJobs, PreparedJob, RunProgress};
 use super::{ArtifactFormat, FineTuningAdapter, FineTuningCapabilities, FineTuningError, JobHandle, JobMetrics, ReattachOutcome, TrainerHardware, TrainingArtifact, TrainingExample, TrainingJobRequest, TrainingStatus};
 use crate::inference::planning::training_plan::{calibration_floor, choose_chunk, choose_window, default_chunk, exact_ruled_out, partition_of, refit_middle, train_chunk_for, train_window, window_for_need, with_run_skipped, ExampleFit, GraphModel, MeasuredExample, need, Need, NeedSource, Partition, TRAINING_CHUNK, TRAINING_CHUNK_MIN, TRAINING_WINDOW_MIN};
 
@@ -882,6 +882,12 @@ fn incarnation_of(rec: &crate::inference::lane_registry::LaneRecord) -> Option<c
     }
 }
 
+/// Whether a live lane on this node serves `base` now: the in-engine trainer's
+/// availability, and the wake of a dispatch awaiting a lane.
+pub(crate) fn lane_serves(base: &str) -> bool {
+    live_lane_for(base).is_some()
+}
+
 fn live_lane_for(base: &str) -> Option<LaneChoice> {
     let rec = crate::inference::lane_registry::live_lane()?;
     crate::model_registry::artifacts::names_the_same_base(&rec.model, base).then(|| LaneChoice {
@@ -1682,7 +1688,7 @@ impl EngineLoraFineTuner {
                 };
                 let finish = finish_run(job, spec, self.footprints.clone(), last);
                 let handle = self.jobs.prepare(job, move |_progress| async move {
-                    Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
+                    Ok(PreparedJob { run: Box::new(run), finish })
                 });
                 crate::probe!(
                     class = "training.reattach.attached",
@@ -1710,7 +1716,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         }
     }
 
-    fn serves_base(&self, base_model: &str) -> bool {
+    fn available_for(&self, base_model: &str) -> bool {
         (self.lane)(base_model).is_some()
     }
 
@@ -1733,7 +1739,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         }
         let targets = gguf_targets(&lora.target_modules).map_err(FineTuningError::InvalidRequest)?;
         let LaneChoice { url: lane, window: served_window, engine, build } = (self.lane)(&request.base_model).ok_or_else(|| {
-            FineTuningError::InvalidRequest(format!(
+            FineTuningError::AwaitingLane(format!(
                 "no live lane serves {} on this node: in-engine training runs on the resident weights",
                 request.base_model
             ))
@@ -2172,7 +2178,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                 _lease: reservation,
             };
             Ok(PreparedJob {
-                execution: Execution::InPlace(Box::new(run)),
+                run: Box::new(run),
                 finish: finish_run(id, spec, job_footprints, last),
             })
         }))
@@ -3438,7 +3444,7 @@ mod tests {
         };
         let finish = finish_run(job, spec, tuner.footprints.clone(), last);
         let handle = tuner.jobs.prepare(job, move |_progress| async move {
-            Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
+            Ok(PreparedJob { run: Box::new(run), finish })
         });
         assert!(
             matches!(wait_terminal(&tuner, &handle).await, TrainingStatus::Failed { .. }),
@@ -3713,17 +3719,19 @@ mod tests {
         assert_eq!((train_window(1536), train_window(1600), train_window(100), train_window(61_696)), (1536, 1536, 256, 61_696), "no fixed ceiling: the served window is the window");
     }
 
-    // what this catches: a request the engine cannot run is refused before any job exists:
-    // a target with no GGUF equivalent (silently dropping it trains a different adapter), and a
-    // base no live lane serves (in-engine training has nothing to train on).
+    // what this catches: a target with no GGUF equivalent is refused before any job exists
+    // (silently dropping it trains a different adapter), and a base no live lane serves is a
+    // WAIT, not a refusal: its examples must not be failed for a lane that comes back.
     #[tokio::test]
-    async fn unknown_targets_and_unserved_bases_are_refused_up_front() {
+    async fn unknown_targets_are_refused_and_unserved_bases_wait() {
         assert_eq!(gguf_targets(&["q_proj".into(), "attn_v".into(), "q_proj".into()]).unwrap(), "attn_q,attn_v");
         assert!(gguf_targets(&["lm_head".into()]).is_err());
         let dir = tempfile::tempdir().expect("test: dir");
         let mut t = EngineLoraFineTuner::for_test(String::new(), dir.path().into(), dir.path().join("f.json"));
         t.lane = Box::new(|_| None);
-        assert!(matches!(t.create_job(request("some/other-base")).await, Err(FineTuningError::InvalidRequest(_))));
+        assert!(matches!(t.create_job(request("some/other-base")).await, Err(FineTuningError::AwaitingLane(_))));
+        // The wake's own answer, from the real lane registry: a test home has no live lane.
+        assert!(!lane_serves("some/other-base"), "no live lane record serves any base");
         let mut r = request("ggml-org/Qwen3.8-27B-GGUF");
         r.lora.as_mut().unwrap().target_modules = vec!["lm_head".into()];
         assert!(matches!(t.create_job(r).await, Err(FineTuningError::InvalidRequest(_))));

@@ -1,12 +1,8 @@
-//! Python subprocess adapter — unified Rust wrapper for all Python invocations.
+//! Python subprocess adapter — runs a CITIZEN's Python (`code/run` on a project of hers).
 //!
-//! Every Python call in the system goes through this adapter:
-//! - LoRA training (peft-train.py)
-//! - HuggingFace uploads
-//! - Dataset preparation
-//! - Model conversion (convert_hf_to_gguf.py)
-//!
-//! Python is a tool we invoke, not a dependency we link. The adapter:
+//! The system itself runs no Python (Joel, 2026-10-13: "Python can't be part of code").
+//! Training is the engine's (card 878f100f); this adapter is for the projects citizens work
+//! on, the way any developer's tools run the language of the repo in front of them. It:
 //! - Manages virtualenv/conda discovery
 //! - Captures stdout/stderr with structured parsing
 //! - Handles crashes, timeouts, OOM with proper error types
