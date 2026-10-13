@@ -388,12 +388,13 @@ pub(crate) async fn grade_submission(
     room_id: uuid::Uuid,
     card_title: String,
     instance: String,
-    patch_hash: String,
+    patch: airc_blobs::MediaRef,
 ) {
     let Some((bench, dataset)) = submission_oracle_dataset(&card_title) else {
         return;
     };
-    let patch = match crate::media::artifact::read_text_blob(&patch_hash, None) {
+    let patch_hash = patch.hash.to_hex();
+    let patch = match crate::media::artifact::read_text_blob(&patch) {
         Ok(p) => p,
         Err(why) => {
             crate::probe!(

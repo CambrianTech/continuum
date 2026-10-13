@@ -30,23 +30,15 @@ pub fn store() -> Result<FsStore, String> {
     FsStore::new(store_path()).map_err(|e| e.to_string())
 }
 
-/// A retained text blob (a submitted patch) by its content hash, verified: the bytes must hash
-/// to `hash` and, when the caller knows it, be `size_bytes` long. The one reader of a patch by
-/// hash. A reviewer reads the bytes the submitter published, or a named reason why not (card
-/// e1babb61: a submitted 343 B patch whose bytes no reviewer could reach).
-pub(crate) fn read_text_blob(hash: &str, size_bytes: Option<u64>) -> Result<String, String> {
-    use airc_blobs::ContentAddressedStore;
-    use sha2::Digest;
-    let key = airc_blobs::ContentHash::from_hex(hash).ok_or_else(|| format!("not a content hash: {hash}"))?;
-    let bytes = store()?.get(&key).map_err(|e| format!("no bytes for {hash} in {}: {e}", store_path().display()))?;
-    if let Some(want) = size_bytes.filter(|want| *want != bytes.len() as u64) {
-        return Err(format!("{hash}: {} bytes stored, the reference says {want}", bytes.len()));
-    }
-    let got = format!("{:x}", sha2::Sha256::digest(&bytes));
-    if got != hash {
-        return Err(format!("{hash}: the stored bytes hash to {got}"));
-    }
-    String::from_utf8(bytes).map_err(|e| format!("{hash} is not UTF-8 text: {e}"))
+/// A retained text blob (a submitted patch) read by its reference: the store's own verified
+/// read ([`FsStore::get_verified`]: bounded by the reference's size, digest checked), so the
+/// reviewer gets exactly the bytes the submitter published or a named reason why not (card
+/// e1babb61). The bound is the reference's own size, never a constant: a whole patch, unclipped.
+pub(crate) fn read_text_blob(reference: &MediaRef) -> Result<String, String> {
+    let bytes = store()?
+        .get_verified(reference, reference.size_bytes)
+        .map_err(|e| format!("{} ({} bytes) in {}: {e}", reference.hash.to_hex(), reference.size_bytes, store_path().display()))?;
+    String::from_utf8(bytes).map_err(|e| format!("{} is not UTF-8 text: {e}", reference.hash.to_hex()))
 }
 
 pub(crate) fn store_path() -> std::path::PathBuf {
@@ -258,11 +250,12 @@ mod tests {
         let home = tempfile::tempdir().expect("test: home");
         crate::test_env::with_test_home(home.path(), || {
             let patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
-            let hash = store().expect("test: store").put(patch.as_bytes()).expect("test: put").to_hex();
-            assert_eq!(read_text_blob(&hash, Some(patch.len() as u64)).as_deref(), Ok(patch), "the retained bytes, verified");
-            assert!(read_text_blob(&hash, Some(patch.len() as u64 + 1)).is_err(), "a size the store doesn't hold is named");
-            let absent = "0".repeat(63) + "1";
-            assert!(read_text_blob(&absent, None).is_err(), "no bytes behind a hash is named, not empty text");
+            let hash = store().expect("test: store").put(patch.as_bytes()).expect("test: put");
+            let reference = |size_bytes| MediaRef { hash: hash.clone(), size_bytes, mime: Some("text/x-patch".into()) };
+            assert_eq!(read_text_blob(&reference(patch.len() as u64)).as_deref(), Ok(patch), "the retained bytes, verified");
+            assert!(read_text_blob(&reference(patch.len() as u64 + 1)).is_err(), "a size the store doesn't hold is named");
+            let absent = MediaRef { hash: airc_blobs::ContentHash::from_hex(&("0".repeat(63) + "1")).expect("test: hex"), size_bytes: 1, mime: None };
+            assert!(read_text_blob(&absent).is_err(), "no bytes behind a hash is named, not empty text");
         });
     }
 }
