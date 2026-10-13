@@ -10,8 +10,15 @@
 //!
 //! Every step acts as THE CALLER of `recipe/run` (`Ctx::caller`), gated against
 //! AuthPolicy as that identity, never with the substrate's own trust. A caller of
-//! `None` is the substrate's own local code. Access stays Privileged for every verb
-//! here; widening it to personas is a separate decision.
+//! `None` is the substrate's own local code.
+//!
+//! WHO MAY SEE A RUN. Each verb declares `AccessLevel::Privileged`, but that level
+//! is not enforced by the gate today (see `sdk_codegen::AccessLevel`); only
+//! AuthPolicy restricts who calls these verbs. So `recipe/status`, `recipe/list` and
+//! `recipe/cancel` check each run themselves ([`may_access`]): the caller that
+//! started it, the substrate's own code, and the node's operator and agent
+//! identities. Anyone else is told the run does not exist, so one persona can
+//! neither read another's bindings nor cancel her run (Astra review of #5008, gap 1).
 
 use crate::recipe::run_record::{RecipeRunRecord, RecipeRuns, RunOrigin, RunPhase};
 use crate::recipe::{PipelineExecutor, RecipeRunReceipt};
@@ -36,6 +43,25 @@ pub fn command_objects(
         Arc::new(RecipeList { runs: runs.clone() }),
         Arc::new(RecipeCancel { runs }),
     ]
+}
+
+/// May this caller read or cancel `run`? The caller that started it, the
+/// substrate's own code (`None`), and the node's local operator and agent
+/// identities. Nobody else.
+fn may_access(ctx: &Ctx, run: &RecipeRunRecord) -> bool {
+    let Some(caller) = &ctx.caller else { return true };
+    let peer = caller.peer_id.as_uuid();
+    crate::persona::operator_peer::is_local_identity(peer) || run.caller.as_ref().is_some_and(|c| c.peer_id == peer)
+}
+
+/// The run `run_id` names, if this caller may see it. A run she may not see is
+/// "not found", exactly like one that never existed.
+async fn visible_run(runs: &RecipeRuns, ctx: &Ctx, run_id: Uuid) -> Result<RecipeRunRecord, CommandError> {
+    runs.get(run_id)
+        .await
+        .map_err(CommandError::Internal)?
+        .filter(|run| may_access(ctx, run))
+        .ok_or_else(|| CommandError::NotFound(format!("no recipe run {run_id}")))
 }
 
 fn runs_of(slot: &LateBound<RecipeRuns>) -> Result<&Arc<RecipeRuns>, CommandError> {
@@ -126,7 +152,7 @@ impl ActionCommand for RecipeRun {
             .executor_slot
             .get()
             .ok_or_else(|| CommandError::Internal("recipe/run: substrate executor not yet bound".into()))?;
-        runs_of(&self.runs)?;
+        let runs = runs_of(&self.runs)?.clone();
 
         // One registry for what a room IS and what an activity DOES (S2). Absence
         // of the source is a boot-order fact, not a recipe fact — say which.
@@ -137,7 +163,7 @@ impl ActionCommand for RecipeRun {
                     .into(),
             )
         })?;
-        run_recipe(source.as_ref(), executor.clone(), ctx, p).await
+        run_recipe(source.as_ref(), executor.clone(), runs, ctx, p).await
     }
 }
 
@@ -146,6 +172,7 @@ impl ActionCommand for RecipeRun {
 async fn run_recipe(
     source: &dyn crate::experience::source::ExperienceSource,
     executor: Arc<CommandExecutor>,
+    runs: Arc<RecipeRuns>,
     ctx: &Ctx,
     p: RecipeRunParams,
 ) -> Result<RecipeRunResult, CommandError> {
@@ -158,6 +185,7 @@ async fn run_recipe(
     })?;
 
     let receipt = PipelineExecutor::new(executor)
+        .with_ledger(runs)
         .with_caller(ctx.caller.clone())
         .with_origin(RunOrigin { recipe: Some((recipe.id.0, recipe.version)), room: None })
         .run(&recipe.purpose, &recipe.pipeline, p.args.unwrap_or(serde_json::Value::Null)) // unwrap_or: no args = null, steps referencing $args.* then fail loud by name
@@ -187,12 +215,8 @@ impl ActionCommand for RecipeStatus {
     type Params = RecipeRunRef;
     type Output = RecipeRunResult;
 
-    async fn run(&self, _ctx: &Ctx, p: RecipeRunRef) -> Result<RecipeRunResult, CommandError> {
-        let run = runs_of(&self.runs)?
-            .get(p.run_id)
-            .await
-            .map_err(CommandError::Internal)?
-            .ok_or_else(|| CommandError::NotFound(format!("no recipe run {}", p.run_id)))?;
+    async fn run(&self, ctx: &Ctx, p: RecipeRunRef) -> Result<RecipeRunResult, CommandError> {
+        let run = visible_run(runs_of(&self.runs)?, ctx, p.run_id).await?;
         RecipeRunResult::of(&run)
     }
 }
@@ -224,9 +248,15 @@ impl ActionCommand for RecipeList {
     type Params = RecipeListParams;
     type Output = RecipeListResult;
 
-    async fn run(&self, _ctx: &Ctx, _p: RecipeListParams) -> Result<RecipeListResult, CommandError> {
+    async fn run(&self, ctx: &Ctx, _p: RecipeListParams) -> Result<RecipeListResult, CommandError> {
         let active = runs_of(&self.runs)?.active().await.map_err(CommandError::Internal)?;
-        Ok(RecipeListResult { active: active.iter().map(RecipeRunResult::of).collect::<Result<_, _>>()? })
+        Ok(RecipeListResult {
+            active: active
+                .iter()
+                .filter(|run| may_access(ctx, run))
+                .map(RecipeRunResult::of)
+                .collect::<Result<_, _>>()?,
+        })
     }
 }
 
@@ -245,13 +275,9 @@ impl ActionCommand for RecipeCancel {
     type Params = RecipeRunRef;
     type Output = RecipeRunResult;
 
-    async fn run(&self, _ctx: &Ctx, p: RecipeRunRef) -> Result<RecipeRunResult, CommandError> {
+    async fn run(&self, ctx: &Ctx, p: RecipeRunRef) -> Result<RecipeRunResult, CommandError> {
         let runs = runs_of(&self.runs)?;
-        let run = runs
-            .get(p.run_id)
-            .await
-            .map_err(CommandError::Internal)?
-            .ok_or_else(|| CommandError::NotFound(format!("no recipe run {}", p.run_id)))?;
+        let run = visible_run(runs, ctx, p.run_id).await?;
         if run.phase.is_terminal() {
             return Err(CommandError::Invalid(format!("recipe run {} is already over ({:?})", p.run_id, run.phase)));
         }
@@ -296,6 +322,8 @@ mod tests {
         let source = crate::experience::source::RecipeExperienceSource::builtins(
             crate::ipc::room_purpose::default_source(),
         );
+        let (adapter, _db) = crate::orm::store::fresh_adapter().await;
+        let runs = Arc::new(RecipeRuns::open(adapter).await.expect("open recipe_runs")); // JUSTIFIED: a fresh temp db
         let params = || RecipeRunParams {
             name: "benchmark/round".into(),
             args: Some(serde_json::json!({
@@ -307,7 +335,7 @@ mod tests {
         for caller in [Some(persona), None] {
             seen.lock().unwrap().clear(); // JUSTIFIED: a test's own mutex
             let ctx = Ctx { caller: caller.clone(), ..Ctx::default() };
-            let refused = run_recipe(&source, executor.clone(), &ctx, params())
+            let refused = run_recipe(&source, executor.clone(), runs.clone(), &ctx, params())
                 .await
                 .expect_err("the policy refuses every step"); // JUSTIFIED: the invariant under test
             assert!(matches!(&refused, CommandError::Internal(e) if e.contains("forbidden")), "{refused:?}");
@@ -315,5 +343,47 @@ mod tests {
             assert!(!seen.is_empty(), "a step reached the gate");
             assert!(seen.iter().all(|c| c == &caller), "every gate saw {caller:?}, got {seen:?}");
         }
+    }
+
+    /// what this catches (Astra, #5008 gap 1): one persona reading another's run — its
+    /// bindings — or cancelling it. Run verbs are not restricted by the gate, so each
+    /// checks the run: its own caller sees and cancels it; another persona is told it
+    /// does not exist, and her list omits it.
+    #[tokio::test]
+    async fn a_run_answers_only_to_the_caller_that_started_it() {
+        use crate::recipe::run_record::{CallerRecord, RecipeRunRecord, RunLedger, RunPhase};
+        let (adapter, _db) = crate::orm::store::fresh_adapter().await;
+        let slot = Arc::new(LateBound::new("test::runs"));
+        slot.install(Arc::new(RecipeRuns::open(adapter).await.expect("open recipe_runs"))); // JUSTIFIED: a fresh temp db
+        let persona = |n: u128| CallerIdentity::local_persona(crate::identity::PeerId::from_u128(n));
+        let (alice, bob) = (persona(41), persona(42));
+        let mut run = RecipeRunRecord::begin(
+            Default::default(),
+            "t/private",
+            Vec::new(),
+            serde_json::Value::Null,
+            Default::default(),
+            Some(CallerRecord::of(&alice)),
+        );
+        run.phase = RunPhase::Held { step: 0 };
+        run.bindings.insert("secret".into(), serde_json::json!("alice's"));
+        slot.require().unwrap().write(&run).await.unwrap();
+        let id = run.run_id().unwrap();
+        let as_ = |who: &CallerIdentity| Ctx { caller: Some(who.clone()), ..Ctx::default() };
+        let (status, list, cancel) = (
+            RecipeStatus { runs: slot.clone() },
+            RecipeList { runs: slot.clone() },
+            RecipeCancel { runs: slot.clone() },
+        );
+
+        assert!(matches!(status.run(&as_(&bob), RecipeRunRef { run_id: id }).await, Err(CommandError::NotFound(_))));
+        assert!(matches!(cancel.run(&as_(&bob), RecipeRunRef { run_id: id }).await, Err(CommandError::NotFound(_))));
+        assert!(list.run(&as_(&bob), RecipeListParams {}).await.unwrap().active.is_empty());
+
+        let seen = status.run(&as_(&alice), RecipeRunRef { run_id: id }).await.expect("her own run");
+        assert_eq!(seen.bindings["secret"], "alice's");
+        assert_eq!(list.run(&as_(&alice), RecipeListParams {}).await.unwrap().active.len(), 1);
+        let cancelled = cancel.run(&as_(&alice), RecipeRunRef { run_id: id }).await.expect("she cancels her own held run");
+        assert_eq!(cancelled.phase, RunPhase::Cancelled);
     }
 }

@@ -19,6 +19,18 @@ use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
+/// Where a run's record goes. A run with no journal never starts: dispatching
+/// commands no record can account for is exactly what a durable run forbids
+/// (Astra review of #5008, gap 4).
+enum Journal {
+    Store(Arc<dyn RunLedger>),
+    /// The registry holds no recipe module, or its store has not opened.
+    Missing,
+    /// A test that wants the walk without a store says so by name.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    Unrecorded,
+}
+
 pub struct PipelineExecutor {
     executor: Arc<CommandExecutor>,
     /// The identity every step acts as (`operator_peer::acting_caller`). `None` =
@@ -30,18 +42,25 @@ pub struct PipelineExecutor {
     /// birth path. `None` for a bare `recipe/run`.
     state_sink: Option<Arc<dyn crate::experience::activity_state::StepStateSink>>,
     /// Where the run's record is written: the node's `recipe_runs`, found through
-    /// the executor's registry. `None` only in a registry with no recipe module
-    /// (a unit test's), where a run is probed as unrecorded.
-    ledger: Option<Arc<dyn RunLedger>>,
+    /// the executor's registry.
+    journal: Journal,
     /// The recipe and room a run belongs to, for its record.
     origin: RunOrigin,
 }
 
 impl PipelineExecutor {
     pub fn new(executor: Arc<CommandExecutor>) -> Self {
-        let ledger = crate::modules::recipe::RecipeModule::runs_in(executor.registry())
-            .map(|runs| runs as Arc<dyn RunLedger>);
-        Self { executor, caller: None, state_sink: None, ledger, origin: RunOrigin::default() }
+        let journal = match crate::modules::recipe::RecipeModule::runs_in(executor.registry()) {
+            Some(runs) => Journal::Store(runs),
+            None => Journal::Missing,
+        };
+        Self { executor, caller: None, state_sink: None, journal, origin: RunOrigin::default() }
+    }
+
+    /// A walk with no record at all — a test of the walk itself, never a node's run.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn unrecorded(executor: Arc<CommandExecutor>) -> Self {
+        Self { journal: Journal::Unrecorded, ..Self::new(executor) }
     }
 
     /// Save each step's `saves` bindings through `sink` (the activity's bundle).
@@ -64,7 +83,7 @@ impl PipelineExecutor {
 
     /// Write runs to `ledger` instead of the registry's store.
     pub fn with_ledger(mut self, ledger: Arc<dyn RunLedger>) -> Self {
-        self.ledger = Some(ledger);
+        self.journal = Journal::Store(ledger);
         self
     }
 }
@@ -149,9 +168,49 @@ impl PipelineExecutor {
     }
 
     /// Walk the run from its cursor to an end, a hold, or an uncertain
-    /// invocation, writing the record at every boundary. `Err` only when the
-    /// ledger refuses a write: the run's own outcomes are its phase.
+    /// invocation, writing the record at every boundary. The run's outcomes are its
+    /// phase. `Err` only when NOTHING was dispatched and the run could not be
+    /// recorded (no store, or its first write refused): then it never started.
+    ///
+    /// A write refused AFTER an invocation was sent is not a failure the run can
+    /// report as one: a handler may have committed while its result was never
+    /// recorded (Astra review of #5008, gap 3). The run is then `RecoveryRequired`
+    /// naming the last invocation, returned `Ok`, so the room and the run id
+    /// survive; the row's last durable state says the same at the next boot.
     pub async fn drive(&self, run: &mut RecipeRunRecord) -> Result<(), String> {
+        if matches!(self.journal, Journal::Missing) {
+            let error = "no recipe run store is open on this node (the recipe module is absent or \
+                         failed to initialize), so the run was refused before any dispatch"
+                .to_string();
+            run.phase = RunPhase::Failed { error: error.clone() };
+            run.is_active = false;
+            return Err(error);
+        }
+        match self.walk(run).await {
+            Ok(()) => Ok(()),
+            Err(error) => match run.invocations.last() {
+                None => {
+                    run.phase = RunPhase::Failed { error: format!("the run could not be recorded: {error}") };
+                    run.is_active = false;
+                    Err(error)
+                }
+                Some(last) => {
+                    let invocation = last.id;
+                    crate::probe!(class = "recipe.run.unrecorded_after_dispatch", recipe = %run.purpose, invocation = %invocation, error = %error, "a record write failed after a dispatch — the run waits for recovery");
+                    run.phase = RunPhase::RecoveryRequired {
+                        invocation,
+                        reason: format!("the run's record could not be written after this invocation was sent ({error}); its durable state is unknown"),
+                    };
+                    if let Err(again) = self.persist(run).await {
+                        crate::probe!(class = "recipe.run.recovery_unrecorded", recipe = %run.purpose, error = %again, "the RecoveryRequired phase could not be written either; the next boot finds the row Running and exposes it");
+                    }
+                    Ok(())
+                }
+            },
+        }
+    }
+
+    async fn walk(&self, run: &mut RecipeRunRecord) -> Result<(), String> {
         let name = run.purpose.clone();
         let pipeline = run.pipeline.clone();
         let mut state = ExecutionState::seeded(run.args.clone(), run.seed.clone());
@@ -159,13 +218,6 @@ impl PipelineExecutor {
             state.bind(k, v);
         }
         run.phase = RunPhase::Running;
-        if self.ledger.is_none() {
-            crate::probe!(
-                class = "recipe.run.unrecorded",
-                recipe = %name,
-                "this executor's registry has no recipe module — the run is not recorded and will not survive a restart"
-            );
-        }
         self.persist(run).await?;
 
         while (run.cursor.step as usize) < pipeline.len() {
@@ -314,7 +366,15 @@ impl PipelineExecutor {
     /// bundle write that fails leaves `pending_saves` for a later retry and never
     /// re-dispatches the step.
     async fn complete_step(&self, run: &mut RecipeRunRecord, idx: usize, step: &RecipeStep, state: &ExecutionState) -> Result<(), String> {
-        run.pending_saves = self.saves_patch(&run.purpose, idx, step, state);
+        // A patch MERGES into whatever earlier step's patch is still unsaved: a failed
+        // projection is retried with its input, never replaced by the next step's
+        // (Astra review of #5008, gap 2).
+        if let Some(patch) = self.saves_patch(&run.purpose, idx, step, state) {
+            let pending = run.pending_saves.get_or_insert_with(serde_json::Map::new);
+            for (key, value) in patch {
+                pending.insert(key, value);
+            }
+        }
         run.cursor = RunCursor { step: idx as u32 + 1, item: None };
         self.persist(run).await?;
         let Some(patch) = run.pending_saves.clone() else { return Ok(()) };
@@ -427,16 +487,20 @@ impl PipelineExecutor {
     async fn persist(&self, run: &mut RecipeRunRecord) -> Result<(), String> {
         run.revision += 1;
         run.is_active = !run.phase.is_terminal();
-        match &self.ledger {
-            Some(ledger) => ledger.write(run).await,
-            None => Ok(()),
+        match &self.journal {
+            Journal::Store(ledger) => ledger.write(run).await,
+            Journal::Missing => Err("no recipe run store is open on this node".into()),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Journal::Unrecorded => Ok(()),
         }
     }
 
     async fn cancel_requested(&self, run: &RecipeRunRecord) -> Result<bool, String> {
-        match &self.ledger {
-            Some(ledger) => ledger.cancel_requested(run.run_id()?).await,
-            None => Ok(false),
+        match &self.journal {
+            Journal::Store(ledger) => ledger.cancel_requested(run.run_id()?).await,
+            Journal::Missing => Err("no recipe run store is open on this node".into()),
+            #[cfg(any(test, feature = "test-fixtures"))]
+            Journal::Unrecorded => Ok(false),
         }
     }
 }
@@ -487,7 +551,7 @@ mod tests {
         let args = serde_json::json!({ "rows": [ {"title": "a"} ] });
         let sink = Arc::new(MemorySink(std::sync::Mutex::new(Vec::new())));
         let sink_dyn: Arc<dyn crate::experience::activity_state::StepStateSink> = sink.clone();
-        PipelineExecutor::new(exec.clone())
+        PipelineExecutor::unrecorded(exec.clone())
             .with_state_sink(sink_dyn)
             .run("bench/saves", std::slice::from_ref(&post), args.clone())
             .await
@@ -497,7 +561,7 @@ mod tests {
         assert_eq!(saved[0].get("cards"), Some(&Value::Array(vec![])), "the bound name is saved");
         assert!(saved[0].get("never_bound").is_none(), "an unbound name is skipped, not saved as null");
         drop(saved);
-        let receipt = PipelineExecutor::new(exec)
+        let receipt = PipelineExecutor::unrecorded(exec)
             .run("bench/saves-unsunk", &[post], args)
             .await
             .expect("no sink is a probe, never a failure"); // JUSTIFIED: the invariant under test
@@ -519,7 +583,7 @@ mod tests {
         post.on_error = OnError::Skip;
         post.output_to = Some("cards".to_string());
         let args = serde_json::json!({ "rows": [ {"title": "a"}, {"title": "b"}, {"title": "c"} ] });
-        let receipt = PipelineExecutor::new(exec)
+        let receipt = PipelineExecutor::unrecorded(exec)
             .run("bench/fan-out", &[post], args)
             .await
             .expect("skips are not failures");
@@ -539,7 +603,7 @@ mod tests {
             ModuleRegistry::new(),
         )));
         let pipeline = vec![step("browser/act", Some(super::super::types::Approval::Human)), step("mail/send", None)];
-        let receipt = PipelineExecutor::new(exec)
+        let receipt = PipelineExecutor::unrecorded(exec)
             .run("campaign/applications", &pipeline, Value::Null)
             .await
             .expect("a held run is a clean receipt, not an error");
@@ -552,7 +616,7 @@ mod tests {
     /// a real dispatch chain into the one canned module.
     mod durable {
         use super::*;
-        use crate::recipe::run_record::{InvocationState, RecipeRunRecord, RecipeRuns, RunPhase};
+        use crate::recipe::run_record::{InvocationState, RecipeRunRecord, RecipeRuns, RunLedger, RunPhase};
         use crate::runtime::command_executor::CommandExecutor;
         use crate::runtime::module_harness::CannedModule;
         use crate::runtime::CommandResult;
@@ -757,6 +821,98 @@ mod tests {
             let after = runs.settle_cancel_if_idle(stuck_id).await.unwrap();
             assert!(matches!(after.phase, RunPhase::RecoveryRequired { .. }), "{:?}", after.phase);
             assert!(after.cancel_requested);
+        }
+
+        /// A bundle sink that refuses its first save and records every save after.
+        struct FlakySink(Mutex<Vec<serde_json::Map<String, Value>>>, std::sync::atomic::AtomicBool);
+        #[async_trait::async_trait]
+        impl crate::experience::activity_state::StepStateSink for FlakySink {
+            async fn save(&self, patch: serde_json::Map<String, Value>) -> Result<(), String> {
+                if !self.1.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    return Err("the wall refused this write".into());
+                }
+                self.0.lock().unwrap().push(patch); // JUSTIFIED: a test's own mutex
+                Ok(())
+            }
+        }
+
+        /// what this catches (Astra, #5008 gap 2): a failed room projection lost to the
+        /// next step. Step 0's `saves` write is refused; step 1's write must carry
+        /// step 0's patch with its own, and nothing stays pending after it lands.
+        #[tokio::test]
+        async fn a_refused_projection_is_carried_into_the_next_steps_save() {
+            let (runs, _dir) = store().await;
+            let canned = Arc::new(CannedModule::answering(Ok(serde_json::json!(1))));
+            let sink = Arc::new(FlakySink(Mutex::new(Vec::new()), std::sync::atomic::AtomicBool::new(false)));
+            let sink_dyn: Arc<dyn crate::experience::activity_state::StepStateSink> = sink.clone();
+            let mut first = step("canned/a", None);
+            first.output_to = Some("a".into());
+            first.saves = vec!["a".into()];
+            let mut second = step("canned/b", None);
+            second.output_to = Some("b".into());
+            second.saves = vec!["b".into()];
+            let pipeline = PipelineExecutor::new(Arc::new(hosting(&canned))).with_ledger(runs.clone()).with_state_sink(sink_dyn);
+            let mut run = pipeline.begin("t/projection", &[first, second], Value::Null, Vec::new());
+            pipeline.drive(&mut run).await.unwrap();
+
+            let saved = sink.0.lock().unwrap().clone(); // JUSTIFIED: a test's own mutex
+            assert_eq!(saved.len(), 1, "only the second write landed");
+            assert_eq!(saved[0].get("a"), Some(&serde_json::json!(1)), "step 0's refused patch was carried forward");
+            assert_eq!(saved[0].get("b"), Some(&serde_json::json!(1)));
+            assert!(run_row(&runs, &run).await.pending_saves.is_none(), "nothing pending once it landed");
+        }
+
+        /// A ledger that refuses every write once an invocation has committed — the
+        /// moment between a handler's effect and its record.
+        struct LosesTheResult(Arc<RecipeRuns>);
+        #[async_trait::async_trait]
+        impl RunLedger for LosesTheResult {
+            async fn write(&self, run: &RecipeRunRecord) -> Result<(), String> {
+                if run.invocations.iter().any(|inv| matches!(inv.state, InvocationState::Committed { .. })) {
+                    return Err("disk full".into());
+                }
+                self.0.write(run).await
+            }
+            async fn cancel_requested(&self, run_id: Uuid) -> Result<bool, String> {
+                self.0.cancel_requested(run_id).await
+            }
+        }
+
+        /// what this catches (Astra, #5008 gap 3): a handler that committed while its
+        /// result could not be recorded, reported as a FAILED run (which archives an
+        /// activity's room). One dispatch; the run answers `Ok` in RecoveryRequired
+        /// naming that invocation; the row's last durable state is `Dispatching`, and
+        /// the boot pass exposes it as RecoveryRequired too.
+        #[tokio::test]
+        async fn a_committed_handler_whose_result_cannot_be_recorded_waits_for_recovery() {
+            let (runs, _dir) = store().await;
+            let canned = Arc::new(CannedModule::answering(Ok(serde_json::json!({ "posted": 12 }))));
+            let receipt = PipelineExecutor::new(Arc::new(hosting(&canned)))
+                .with_ledger(Arc::new(LosesTheResult(runs.clone())))
+                .run("t/lost-result", &[step("canned/post", None), step("canned/next", None)], Value::Null)
+                .await
+                .expect("an unknown outcome is not a failed run"); // JUSTIFIED: the invariant under test
+
+            assert_eq!(canned.calls(), 1);
+            let open = Invocation::id_for(receipt.run_id, 0, None);
+            assert!(matches!(&receipt.phase, RunPhase::RecoveryRequired { invocation, .. } if *invocation == open), "{:?}", receipt.phase);
+            let row = runs.get(receipt.run_id).await.unwrap().expect("the run's first writes landed"); // JUSTIFIED: writes before the commit succeed
+            assert!(matches!(row.invocations[0].state, InvocationState::Dispatching { .. }), "{:?}", row.invocations[0].state);
+            assert_eq!(runs.expose_interrupted().await.unwrap(), (1, 0));
+        }
+
+        /// what this catches (Astra, #5008 gap 4): a node with no run store dispatching
+        /// anyway. No recipe module in the registry: the run is refused, and no command
+        /// reaches a handler.
+        #[tokio::test]
+        async fn a_run_with_no_store_is_refused_before_any_dispatch() {
+            let canned = Arc::new(CannedModule::answering(Ok(Value::Null)));
+            let refused = PipelineExecutor::new(Arc::new(hosting(&canned)))
+                .run("t/no-store", &[step("canned/do", None)], Value::Null)
+                .await
+                .expect_err("no store, no run"); // JUSTIFIED: the invariant under test
+            assert!(refused.contains("no recipe run store"), "{refused}");
+            assert_eq!(canned.calls(), 0);
         }
     }
 }
