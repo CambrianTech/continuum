@@ -17,11 +17,11 @@
 //! meaning only the local operator can call it. The operator owns all its personas
 //! and chooses which one issues; a remote peer can never reach this command.
 
+use crate::time::EpochMs;
 use airc_core::PeerId;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 use crate::persona::PersonaAircRuntimeRegistry;
@@ -33,13 +33,6 @@ pub const ISSUE: &str = "grid/grant/issue";
 
 fn default_epoch() -> u64 {
     1
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// `grid/grant/issue` request — what to grant, to whom, signed by which persona.
@@ -121,7 +114,7 @@ impl ServiceModule for GrantIssuanceModule {
 
         let grant = issue_grant(
             runtime.airc(),
-            now_ms(),
+            EpochMs::now().millis(),
             IssueGrantParams {
                 grantee: PeerId(req.grantee),
                 capabilities: req.capabilities,

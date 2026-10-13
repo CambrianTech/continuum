@@ -142,19 +142,8 @@ pub(crate) fn build_topology(
         head_dim,
         parameter_reduction,
         precision_profile,
-        created_at: chrono_now(),
+        created_at: crate::time::EpochMs::now().rfc3339(),
     }
-}
-
-/// Current timestamp in ISO 8601 format.
-fn chrono_now() -> String {
-    // Use std time instead of chrono dependency
-    use std::time::SystemTime;
-    let duration = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default();
-    // Simple ISO format without pulling in chrono
-    format!("{}Z", duration.as_secs())
 }
 
 #[cfg(test)]

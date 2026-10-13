@@ -3053,7 +3053,7 @@ pub fn start_server(
                     crate::persona::grid_roster_memory::team_elsewhere_at(
                         &home,
                         crate::persona::operator_peer::operator_airc().map(|a| a.peer_id().as_uuid()),
-                        crate::modules::grid::frame::now_millis(),
+                        crate::time::EpochMs::now().millis(),
                     )
                 })
             });
@@ -3452,10 +3452,7 @@ pub fn start_server(
     // [[commands-are-dumb-daemons-are-smart]] the module is narrow;
     // selection logic lives in the coordinator.
     {
-        use crate::genome::fine_tuning::{
-            CudaLoraFineTuner, EngineLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner,
-            OpenAIFineTuningAdapter,
-        };
+        use crate::genome::fine_tuning::{CudaLoraFineTuner, EngineLoraFineTuner, FineTuningRegistry, LocalCandleFineTuner, MlxLoraFineTuner, OpenAIFineTuningAdapter};
         let ft_registry = std::sync::Arc::new(FineTuningRegistry::new());
         ft_registry.register(std::sync::Arc::new(CudaLoraFineTuner::new()));
         // In-engine training on the resident weights (the dream's trainer): selected by

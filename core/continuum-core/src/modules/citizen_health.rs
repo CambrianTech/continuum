@@ -21,6 +21,7 @@
 //! Cadence follows the RTOS shape: the module's own `tick_interval`, no task of its own
 //! ([[docs/architecture/CONCURRENCY-STYLE-GUIDE.md]]).
 
+use crate::time::EpochMs;
 use crate::runtime::{CommandResult, CommandSchema, ModuleConfig, ModulePriority, ServiceModule};
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -170,7 +171,7 @@ pub const LANE_MIN_BUCKETS: usize = 10;
 /// lane count, that is what the bucket reports. The bias is AGAINST resting the roster, which
 /// is the direction an error should take (Cormac's condition on #4244).
 fn note_lane_sample(lanes: u64) {
-    let now = crate::persona::recall_metadata::now_ms();
+    let now = EpochMs::now().millis();
     // First sample of the window opens the bucketing clock.
     let _ = LEDGER
         .lane_window_start_ms
@@ -819,10 +820,7 @@ async fn rest_seats(chosen: Vec<(uuid::Uuid, MindHour)>, cause: RestCause, h: &C
                 m.gate_refused, m.verdicts, m.acts
             ),
         };
-        let since_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0); // unwrap_or: a clock before the epoch is not a real host; 0 reads as "unknown"
+        let since_ms = EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch is not a real host; 0 reads as "unknown"
         let recorded = crate::persona::resting_seat::rest(crate::persona::resting_seat::RestingSeat {
             agent_name: agent_name.clone(),
             persona_id: persona,
@@ -873,7 +871,7 @@ impl CitizenHealthModule {
                 Some((id, hour.unwrap_or_else(|| MindHour { agent_name: rt.agent_name().to_string(), ..MindHour::default() }))) // unwrap_or_else: no row this hour = no verdict, act, write or grant: the truth
             })
             .collect();
-        let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+        let now_ms = crate::time::EpochMs::now().millis();
         let candidates = rotation_candidates(
             dormant_waiting,
             freed_this_pass,

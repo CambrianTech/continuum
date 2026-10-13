@@ -34,6 +34,7 @@
 //! 3. **Era.** Both the dependency graph AND the interpreter have one. 2014 code does
 //!    `from collections import Mapping`, deleted in 3.10; no pin rescues that.
 
+use crate::time::EpochMs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -652,7 +653,7 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
     // identical banked patch moved p2p 0/40 -> 40/40 (2026-08-28).
     let mut verdict = verdict.clone();
     verdict.harness_build = env!("CONTINUUM_BUILD_GIT_SHA").to_string();
-    verdict.graded_at_ms = crate::persona::trace::now_ms();
+    verdict.graded_at_ms = EpochMs::now().millis();
     verdict.served_model = crate::inference::llama_server::current_serving()
         .active_model
         .unwrap_or_default(); // unwrap_or: nothing serving at grade time = honest empty, never a guess
@@ -4456,10 +4457,7 @@ mod tests {
     // script it does not have. Fixtures are the real ruff-15309 / tokio-4384 tails.
     #[test]
     fn a_multilingual_instance_runs_its_own_harness_and_the_python_family_stays_native() {
-        use super::{
-            language_of_parser, parse_log_cargo, parse_log_gotest,
-            test_command_from_eval_script, Harness, LogParser, TestRunner,
-        };
+        use super::{language_of_parser, parse_log_cargo, parse_log_gotest, test_command_from_eval_script, Harness, LogParser, TestRunner};
         let ruff = "git apply -v - <<'EOF_1'\n+x\nEOF_1\n: '>>>>> Start Test Output'\n(cargo test --package ruff_linter 'f52') | cat\n: '>>>>> End Test Output'\ngit checkout 75a2 a.py\n";
         assert_eq!(
             test_command_from_eval_script(ruff).as_deref(),

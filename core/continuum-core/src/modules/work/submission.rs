@@ -1,6 +1,7 @@
 //! Public submission/review commands on the existing work owner. Artifact
 //! references carry content identity; publication does not imply blob verification.
 
+use crate::time::EpochMs;
 use super::*;
 use crate::persona::training_producer::reviewed::{self, SubmissionSelection};
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
@@ -405,7 +406,7 @@ async fn stage_for_owner_on_demand(
 /// (a superseded claim, a node race) is a probe, not a reason to stop her submit,
 /// because `holder_guard` already established she is the owner.
 async fn renew_owner_lease(airc: &airc_lib::Airc, card: &airc_lib::WorkCard, claim_id: ClaimId) {
-    let lapsed = card.claim_expires_at_ms.is_none_or(|e| e <= crate::persona::trace::now_ms());
+    let lapsed = card.claim_expires_at_ms.is_none_or(|e| e <= EpochMs::now().millis());
     if !lapsed {
         return;
     }
@@ -872,7 +873,7 @@ impl ActionCommand for WorkSubmit {
             base_sha,
             artifact,
             publisher: airc.peer_id(),
-            submitted_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+            submitted_at_ms: crate::time::EpochMs::now().millis(),
         };
         candidate
             .validate_for_card(card)

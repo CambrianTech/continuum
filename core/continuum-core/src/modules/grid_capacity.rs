@@ -15,6 +15,7 @@
 //! DISCOVERED default room (AircModule discovery, same dep the persona bootstrap and
 //! node-presence emitter consume) — never a hardcoded id (#124).
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -25,9 +26,7 @@ use serde_json::{json, Value};
 
 use crate::capacity::gossip::{global_ledger, CapacityOffer, PUBLISH_INTERVAL_MS};
 use crate::resources::{ResourceDaemon, ResourceKind};
-use crate::runtime::{
-    CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule};
 use airc_core::RoomId;
 
 pub struct GridCapacityModule {
@@ -55,16 +54,8 @@ impl GridCapacityModule {
     /// and offering a guess would be exactly the fabricated-capacity lie the grid's
     /// per-node-fit honesty exists to prevent.
     fn current_offer(&self) -> Option<CapacityOffer> {
-        offer_from_board(&self.resource_daemon.board(), now_ms())
+        offer_from_board(&self.resource_daemon.board(), EpochMs::now().millis())
     }
-}
-
-fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[async_trait]

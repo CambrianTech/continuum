@@ -431,7 +431,7 @@ pub(crate) async fn inspect_persona(
         )
     })?;
 
-    let now_ms = params.now_ms.unwrap_or_else(now_ms_default);
+    let now_ms = params.now_ms.unwrap_or_else(|| crate::time::EpochMs::now().millis());
     let mut request =
         RagInspectionRequest::defaults_for(resolution.persona_id, params.persona.clone(), now_ms);
     if let Some(cw) = params.context_window {
@@ -462,14 +462,6 @@ pub(crate) async fn inspect_persona(
             .await
             .map_err(|e| format!("{COMMAND_RAG_INSPECT}: {e}"))?;
     Ok(RagInspectResult::from_library(inspection))
-}
-
-fn now_ms_default() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

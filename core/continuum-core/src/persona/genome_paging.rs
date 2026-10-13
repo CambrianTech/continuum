@@ -412,10 +412,7 @@ impl GenomePagingEngine {
 
     /// Record domain activity (called after every inference).
     pub fn record_activity(&mut self, domain: &str, success: bool) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now_ms = crate::time::EpochMs::now().millis();
 
         let entry =
             self.domain_activity
@@ -516,10 +513,7 @@ pub fn calculate_eviction_score(adapter: &GenomeAdapterInfo) -> f64 {
         return f64::INFINITY; // Never evict critical adapters
     }
 
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64;
+    let now_ms = crate::time::EpochMs::now().millis();
 
     let age_seconds = (now_ms.saturating_sub(adapter.last_used_ms)) as f64 / 1000.0;
     age_seconds / (adapter.priority as f64 * 10.0)

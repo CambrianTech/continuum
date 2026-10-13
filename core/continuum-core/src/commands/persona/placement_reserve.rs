@@ -44,10 +44,7 @@ crate::action_command! {
     params: PlacementReserveParams,
     output: PlacementReservationReport,
     run(_this, _ctx, p) => {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0); // JUSTIFIED unwrap_or: a clock before the epoch grants nothing that can lapse — the ledger expires by the same clock
+        let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch grants nothing that can lapse — the ledger expires by the same clock
         Ok(crate::persona::placement_reservation::grant(p.mind, p.requester, now_ms))
     }
 }

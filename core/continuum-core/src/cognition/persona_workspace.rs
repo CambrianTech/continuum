@@ -12,6 +12,7 @@
 //! supplies the per-tick world-state (the consolidated burst), the persona
 //! supplies the unified memory + identity + faculties.
 
+use crate::time::EpochMs;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
@@ -963,7 +964,7 @@ pub(crate) async fn root_at_held_card(
                 // Three outcomes: the row shows her holding it (settled, silent); the row
                 // shows it gone (settled, said); no board she stands in shows the row
                 // (unsettled — said as unknown, the belief kept for the next read).
-                let now_ms = crate::modules::chat::now_ms();
+                let now_ms = EpochMs::now().millis();
                 let row = citizen.card(believed).await;
                 let verdict = row.as_ref().map(|card| claim_gone_verdict(card, now_ms, peer_id));
                 match verdict {
@@ -1003,7 +1004,7 @@ pub(crate) async fn root_at_held_card(
     };
     // Stamped for the seam as the turn roots: the handoff record carries this card WHOLE
     // (claim id, lease edge, submissions) without a board walk at stop time (card 49b5e806).
-    crate::cognition::handoff::note_held(peer_id, None, focus, crate::modules::chat::now_ms());
+    crate::cognition::handoff::note_held(peer_id, None, focus, EpochMs::now().millis());
     // ── FROM HERE THE CARD IS KNOWN ───────────────────────────────────────────────
     // Everything that can still fail below is a fact about the WORKSPACE — no checkout
     // on this node, no acting body, a rooting error. NONE of them is a fact about which
@@ -1940,7 +1941,7 @@ fn save_volatile(
     // THE HANDOFF (card 49b5e806): composed from what her turns already stamped (rooting,
     // work/note, the seam walk) plus the two things only the seam knows — what tears this
     // life, read from the deploy claim the reboot holds, and what stands on disk at her root.
-    let now_ms = crate::modules::chat::now_ms();
+    let now_ms = EpochMs::now().millis();
     let home = crate::paths::continuum_home().ok();
     let torn_by = crate::cognition::handoff::torn_by_for(reason, home.as_deref(), now_ms);
     let acting_root = acting_root_of(persona_id);
@@ -3146,10 +3147,7 @@ mod tests {
 
         use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
         use crate::cognition::recall_faculty::RecallFaculty;
-        use crate::cognition::workspace::{
-            Faculty, SalienceArbiter, Workspace, WorkspaceCaptureSink, WorkspaceCycle,
-            WorkspaceTrace,
-        };
+        use crate::cognition::workspace::{Faculty, SalienceArbiter, Workspace, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
 
         let persona = Uuid::new_v4();
         let admission = seed_admission(1_718_600_000_000);
@@ -3725,7 +3723,7 @@ mod tests {
             note_acting_card(persona, foreground);
             assert!(listing(&hands).await.contains("work.txt"));
             assert!(
-                work_idle_ms(persona, Some(foreground), crate::modules::chat::now_ms()).is_some()
+                work_idle_ms(persona, Some(foreground), EpochMs::now().millis()).is_some()
             );
 
             let exec = hands.executor.command_executor().unwrap();
@@ -3753,7 +3751,7 @@ mod tests {
             })
             .await
             .expect("background completion");
-            let now = crate::modules::chat::now_ms();
+            let now = EpochMs::now().millis();
             assert!(work_idle_ms(persona, Some(background), now).is_some());
             assert_eq!(work_idle_ms(persona, Some(next), now), None);
             note_acting_root(persona, None);

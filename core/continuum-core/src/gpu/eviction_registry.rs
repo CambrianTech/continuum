@@ -12,9 +12,9 @@
 //! Lower priority × older = higher score = evict first.
 //! Realtime entries have infinite weight → score = 0 → never evictable.
 
+use crate::time::EpochMs;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -63,7 +63,7 @@ impl EvictableEntry {
         if weight.is_infinite() {
             return 0.0;
         }
-        let now_ms = now_ms();
+        let now_ms = EpochMs::now().millis();
         let age_seconds = (now_ms.saturating_sub(self.last_used_ms)) as f64 / 1000.0;
         age_seconds / (weight as f64 * 10.0)
     }
@@ -133,7 +133,7 @@ impl EvictionRegistry {
     pub fn touch(&self, id: &str) {
         if let Ok(mut map) = self.entries.lock() {
             if let Some(entry) = map.get_mut(id) {
-                entry.last_used_ms = now_ms();
+                entry.last_used_ms = EpochMs::now().millis();
             }
         }
     }
@@ -219,16 +219,9 @@ impl std::fmt::Debug for EvictionRegistry {
 // HELPERS
 // =============================================================================
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Create an EvictableEntry with sensible defaults.
 pub fn make_entry(id: &str, label: &str, priority: GpuPriority, bytes: u64) -> EvictableEntry {
-    let now = now_ms();
+    let now = EpochMs::now().millis();
     EvictableEntry {
         id: id.to_string(),
         label: label.to_string(),

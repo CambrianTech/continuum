@@ -3,7 +3,6 @@
 //! Centralized utilities to avoid duplication across modules.
 //! These are generic helpers that don't belong to any specific domain.
 
-pub mod age;
 pub mod audio;
 pub mod file_replace;
 pub mod params;

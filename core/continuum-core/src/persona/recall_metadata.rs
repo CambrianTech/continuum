@@ -65,8 +65,8 @@
 //!   protection rule (high embedding-distance outliers get a
 //!   grace window to prove worth before they're forgotten).
 
+use crate::time::EpochMs;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
@@ -337,7 +337,7 @@ impl RecallMetadataRegistry {
     /// — many decades of decay applied in one call, collapsing
     /// salience to ~0 immediately.
     pub fn admit_with_defaults(&self, engram_id: Uuid) {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         self.inner
             .entry(engram_id)
             .or_insert_with(|| RecallMetadata {
@@ -464,7 +464,7 @@ impl RecallMetadataRegistry {
                 access_count: 0,
                 last_accessed_ms: 0,
                 protected_until_ms: PERMANENT_PROTECTION,
-                last_decayed_ms: now_ms(),
+                last_decayed_ms: EpochMs::now().millis(),
             });
     }
 
@@ -523,15 +523,6 @@ impl RecallMetadataRegistry {
     }
 }
 
-/// Helper for getting the current wallclock as ms since epoch.
-/// Used in admission + recall + decay paths to stamp timestamps.
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -547,9 +538,9 @@ mod tests {
     fn admit_with_defaults_creates_neutral_entry() {
         let r = RecallMetadataRegistry::new();
         let id = Uuid::new_v4();
-        let before = now_ms();
+        let before = EpochMs::now().millis();
         r.admit_with_defaults(id);
-        let after = now_ms();
+        let after = EpochMs::now().millis();
         let m = r.get(id).unwrap();
         // Salience/access/protected fields match Default; last_decayed_ms
         // is stamped to wallclock (so the first decay tick has a bounded
@@ -983,9 +974,7 @@ mod tests {
         use crate::orm::adapter::{AdapterConfig, StorageAdapter};
         use crate::orm::sqlite::SqliteAdapter;
         use crate::orm::OrmStore;
-        use crate::persona::engram::{
-            AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState,
-        };
+        use crate::persona::engram::{AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().expect("tempdir");

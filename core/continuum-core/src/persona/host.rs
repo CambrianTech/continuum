@@ -33,17 +33,14 @@
 //! concern: one struct, one entry point, one typed result. IPC boot
 //! shrinks to ~10 lines that construct + call the supervisor.
 
+use crate::time::EpochMs;
 use crate::persona::airc_persona_conversation::AircPersonaConversation;
 use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
 use crate::persona::identity_provider::PersonaIdentityProvider;
 use crate::persona::role_template::RoleId;
-use crate::persona::service_loop::{
-    serve_persona_loop, PersonaConversation, ServeOptions, ServeOutcome,
-};
+use crate::persona::service_loop::{serve_persona_loop, PersonaConversation, ServeOptions, ServeOutcome};
 use crate::persona::spawner_module::{bootstrap_planned, PersonaSpawnerModule};
-use crate::persona::supervisor::{
-    materialize_adapters, HostedPersona, PersonaAdapterFactory, PersonaContext, SupervisorError,
-};
+use crate::persona::supervisor::{materialize_adapters, HostedPersona, PersonaAdapterFactory, PersonaContext, SupervisorError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::task::JoinHandle;
@@ -416,13 +413,14 @@ impl PersonaSpawnSupervisor {
         &self,
         plans: Vec<crate::persona::spawner_module::MaterializedPersonaPlan>,
     ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
-        let now = now_ms();
+        // A pre-1970 clock reads 0 here: every backoff reads as expired: a retry, never a stuck seat.
+        let now = EpochMs::now().millis();
         let map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
         filter_by_backoff_with(now, &map, plans)
     }
 
     fn note_slot_failure(&self, persona_id: Uuid, reason: &str) {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let mut map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
         let entry = map.entry(persona_id).or_insert(SlotBackoff { attempts: 0, until_ms: 0 });
         entry.attempts = entry.attempts.saturating_add(1);
@@ -829,13 +827,6 @@ pub(crate) fn filter_by_backoff_with(
                 .map_or(true, |b| now_ms >= b.until_ms)
         })
         .collect()
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a pre-epoch clock reads every backoff as expired — a retry, never a stuck seat
 }
 
 /// The persona a failure names, when the error carries one.

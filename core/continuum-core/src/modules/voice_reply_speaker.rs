@@ -13,6 +13,7 @@
 //! speech (voices never overlap — one utterance at a time across the node),
 //! lag on the broadcast channel is skipped and counted, never a crash.
 
+use crate::time::EpochMs;
 use std::sync::Arc;
 
 use tokio::sync::broadcast::error::RecvError;
@@ -39,13 +40,6 @@ pub(crate) const MAX_LINE_AGE_MS: u64 = 20_000;
 /// Is a line posted at `posted_ms` still worth saying at `now_ms`?
 pub(crate) fn fresh_enough(posted_ms: u64, now_ms: u64) -> bool {
     now_ms.saturating_sub(posted_ms) <= MAX_LINE_AGE_MS
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a clock before 1970 is not a case this guard needs to reason about
 }
 
 pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
@@ -84,8 +78,9 @@ pub(crate) fn spawn(bus: Arc<MessageBus>, state: Arc<VoiceState>) {
                 continue;
             };
             // Checked at SPEAK time, after the queue ahead of it drained.
-            let age_ms = now_ms().saturating_sub(posted.timestamp);
-            if !fresh_enough(posted.timestamp, now_ms()) {
+            // A pre-1970 clock reads 0 here: not a case this guard needs to reason about.
+            let age_ms = EpochMs::now().millis().saturating_sub(posted.timestamp);
+            if !fresh_enough(posted.timestamp, EpochMs::now().millis()) {
                 crate::probe!(
                     class = "live.tts.stale_dropped",
                     module = "live",

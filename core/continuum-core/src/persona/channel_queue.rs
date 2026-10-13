@@ -8,18 +8,11 @@
 //!
 //! One ChannelQueue per ActivityDomain. The CNS iterates channels in priority order.
 
+use crate::time::EpochMs;
 use super::channel_items::{ChatQueueItem, TaskQueueItem};
 use super::channel_types::{ActivityDomain, ChannelStatus, CoherentUnit, QueueItemBehavior};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::debug;
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 /// Configuration for a channel queue
 pub struct ChannelQueueConfig {
@@ -75,7 +68,7 @@ impl ChannelQueue {
 
         // Capacity management: ASK ITEMS if they can be kicked
         while self.items.len() > self.max_size {
-            let now = now_ms();
+            let now = EpochMs::now().millis();
             // Find kickable items sorted by resistance (lowest first)
             let mut kickable_indices: Vec<(usize, f32)> = self
                 .items
@@ -317,7 +310,7 @@ impl ChannelQueue {
 
     /// Get the priority of the highest-priority item (for state gating check)
     pub fn peek_priority(&self) -> f32 {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         self.items
             .first()
             .map(|i| i.effective_priority(now, i.timestamp()))
@@ -479,7 +472,7 @@ impl ChannelQueue {
     // =========================================================================
 
     fn sort(&mut self) {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         self.items.sort_by(|a, b| {
             // Use item timestamp as enqueued_at proxy (items set enqueued_at = now on construction)
             let pa = a.effective_priority(now, a.timestamp());
@@ -518,8 +511,8 @@ mod tests {
             sender_name: "User".into(),
             sender_type: SenderType::Human,
             mentions,
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority,
             consolidated_context: Vec::new(),
             media: Vec::new(),
@@ -538,8 +531,8 @@ mod tests {
             sender_name: "test-user".into(),
             sender_type: SenderType::Human,
             voice_session_id: Uuid::new_v4(),
-            timestamp: now_ms(),
-            enqueued_at: now_ms(),
+            timestamp: EpochMs::now().millis(),
+            enqueued_at: EpochMs::now().millis(),
             priority: 1.0,
             media: Vec::new(),
         })

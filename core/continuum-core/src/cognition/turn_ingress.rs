@@ -21,6 +21,7 @@
 //! immediately afterwards; a reopen verb would exist solely to be called by mistake. A
 //! node that wants turns again starts a core.
 
+use crate::time::EpochMs;
 use crate::runtime::AdmissionGate;
 
 /// The process's turn gate. One [`AdmissionGate`]: open/closed and the in-flight count in
@@ -141,7 +142,7 @@ pub(crate) async fn settle(cap: std::time::Duration) -> TurnSettle {
     let started = std::time::Instant::now();
     let in_flight_at_close = in_flight();
     let cap_ms = cap.as_millis().min(u128::from(u64::MAX)) as u64;
-    let turns = crate::cognition::resource_admission::in_flight_turns(crate::persona::trace::now_ms());
+    let turns = crate::cognition::resource_admission::in_flight_turns(EpochMs::now().millis());
     let bound_ms = settle_bound_ms(&turns, in_flight_at_close > turns.len() as u64, cap_ms);
     let bound_source = if in_flight_at_close == 0 {
         "nothing_in_flight"

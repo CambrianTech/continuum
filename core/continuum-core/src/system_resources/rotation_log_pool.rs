@@ -205,10 +205,7 @@ impl ResourcePool for RotationLogPool {
             // Asked to free, nothing of mine to free: say so, and name what IS in the
             // directory — an owner that cannot own is the 2026-07-13 class one layer
             // down, and on 2026-09-07 it silently ate the probe ledger's history.
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);  // unwrap_or: pre-epoch clock — rate limit degrades to "every call", never a panic
+            let now = crate::time::EpochMs::now().millis();  // pre-1970 reads 0: pre-epoch clock — rate limit degrades to "every call", never a panic
             let last = self.last_blocked_ms.load(std::sync::atomic::Ordering::Relaxed);
             if now.saturating_sub(last) >= BLOCKED_PROBE_INTERVAL_MS {
                 self.last_blocked_ms.store(now, std::sync::atomic::Ordering::Relaxed);

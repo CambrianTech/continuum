@@ -1176,7 +1176,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 estimated_cost: None,
             },
             response_time_ms: elapsed.as_millis() as u64,
-            request_id: format!("llamacpp-{}", chrono::Utc::now().timestamp_millis()),
+            request_id: format!("llamacpp-{}", crate::time::EpochMs::now().millis()),
             content: None,
             tool_calls: None,
             // TODO: if this in-process backend serves a reasoning model (qwen3 etc.)
@@ -1346,7 +1346,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             api_available: healthy,
             response_time_ms: 0,
             error_rate: 0.0,
-            last_checked: chrono::Utc::now().timestamp_millis() as u64,
+            last_checked: crate::time::EpochMs::now().millis(),
             message: Some(if healthy {
                 "in-process llama.cpp backend ready".to_string()
             } else {

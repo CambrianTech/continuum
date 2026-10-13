@@ -50,18 +50,12 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::runtime::{
-    command_executor::CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority,
-    ServiceModule,
-};
+use crate::runtime::{command_executor::CommandExecutor, CommandResult, LateBound, ModuleConfig, ModulePriority, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 
 pub mod types;
 
-use types::{
-    ChatPollParams, ChatPollResult, ChatSendParams, ChatSendResult, CHAT_MESSAGES_COLLECTION,
-    DEFAULT_POLL_LIMIT,
-};
+use types::{ChatPollParams, ChatPollResult, ChatSendParams, ChatSendResult, CHAT_MESSAGES_COLLECTION, DEFAULT_POLL_LIMIT};
 
 /// Adapter handle the chat module reads/writes against. `"main"` is the
 /// kernel-wide convention for the primary continuum database — the
@@ -347,7 +341,7 @@ impl ChatModule {
     async fn persist(&self, params: &ChatSendParams) -> Result<(Uuid, u64), String> {
         let executor = self.executor()?;
         let message_id = Uuid::new_v4();
-        let now_ms = now_ms();
+        let now_ms = crate::time::EpochMs::now().millis();
         let now_iso = now_iso(now_ms);
 
         // ── Step 1: persist locally (ground truth) ───────────────────
@@ -705,14 +699,6 @@ pub fn spawn_persist_listener(
 // epoch instant so a stored timestamp and an airc envelope's
 // `createdAtMs` from the same `send()` call agree by construction
 // (rather than risking a tiny skew between two separate reads).
-
-pub(crate) fn now_ms() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 fn now_iso(unix_ms: u64) -> String {
     // The TS ChatMessageEntity carries `timestamp` as an ISO-8601

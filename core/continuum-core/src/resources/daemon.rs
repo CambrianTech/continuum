@@ -45,6 +45,7 @@
 //! we never hold it across an await — each tick phase drops the guard before any
 //! `.await`. Holding a sync lock across await is the bug this shape avoids.
 
+use crate::time::EpochMs;
 use std::collections::HashMap;
 use std::sync::{Arc, Weak};
 use std::time::Duration;
@@ -55,10 +56,7 @@ use tokio::sync::{mpsc, watch};
 
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 use crate::paging::PressureBroker;
-use crate::runtime::daemon::{
-    guarded, spawn_daemon, Daemon, DaemonChannel, Guarded, QuarantineLedger,
-    DEFAULT_QUARANTINE_LIMIT,
-};
+use crate::runtime::daemon::{guarded, spawn_daemon, Daemon, DaemonChannel, Guarded, QuarantineLedger, DEFAULT_QUARANTINE_LIMIT};
 use crate::{clog_info, clog_warn};
 
 use super::capacity::CapacitySource;
@@ -244,7 +242,7 @@ impl ResourceDaemon {
     /// Grant a lease (or fail-loud refusal). Microsecond in-memory critical
     /// section; publishes the fresh board after releasing the lock.
     pub fn acquire(&self, req: &LeaseRequest) -> Result<ResourceLease, LeaseError> {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let (lease, board) = {
             let mut g = self.governor.lock();
             let lease = g.acquire(req, now)?;
@@ -288,7 +286,7 @@ impl ResourceDaemon {
     }
 
     pub fn renew(&self, lease_id: &str, expires_at_ms: u64) -> Result<(), LeaseError> {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         let mut g = self.governor.lock();
         g.renew(lease_id, expires_at_ms, now)
     }
@@ -405,7 +403,7 @@ impl ResourceDaemon {
     /// embedded channel post-plan and post-reclaim; the channel re-derives the
     /// over-budget gate from each board, so there is no separate flag to maintain.
     async fn reconcile(&self) {
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         // 1. Drain broker evict asks (non-blocking) into a per-kind demand. Take
         //    the largest ask per kind this tick; it is a one-shot relief request
@@ -794,13 +792,6 @@ impl ResourcePool for LeasePoolView {
 }
 
 // ---- small helpers ----------------------------------------------------------
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
 
 fn kind_idx(kind: ResourceKind) -> usize {
     match kind {

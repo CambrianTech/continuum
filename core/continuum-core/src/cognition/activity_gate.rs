@@ -29,6 +29,7 @@
 //! clean discard — dreams are the cheapest resident in the paging economy:
 //! re-dreamable, evicted first, never contended.
 
+use crate::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, OnceLock};
 use std::time::Duration;
@@ -78,16 +79,10 @@ pub struct ActivitySnapshot {
 /// from the deliberation faculty — the one seam that knows directedness.
 static LAST_DIRECTED_MS: AtomicU64 = AtomicU64::new(0);
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: pre-epoch clock = 0 reads as never-directed, the safe side
-}
-
 /// A directed generation just ran — the organism is engaged with someone.
 pub fn note_directed() {
-    LAST_DIRECTED_MS.store(now_ms(), Ordering::Release);
+    // A pre-1970 clock reads 0 here: reads as never-directed, the safe side.
+    LAST_DIRECTED_MS.store(EpochMs::now().millis(), Ordering::Release);
 }
 
 /// PURE state computation — the whole decision, testable without a runtime.
@@ -201,10 +196,10 @@ pub fn spawn_activity_gate() {
         let mut ticker = tokio::time::interval(GATE_TICK);
         ticker.tick().await;
         let mut idle_since: Option<u64> = None;
-        let mut state_since: u64 = now_ms();
+        let mut state_since: u64 = EpochMs::now().millis();
         loop {
             ticker.tick().await;
-            let now = now_ms();
+            let now = EpochMs::now().millis();
             let hold_active = hold_rx.borrow().is_some();
             let inflight = crate::cognition::resource_admission::inflight_model_calls();
             let prev = gate().tx.borrow().state;
@@ -281,7 +276,7 @@ fn persona_tx(peer: Uuid) -> watch::Sender<PersonaActivity> {
     PERSONAS
         .entry(peer)
         .or_insert_with(|| {
-            watch::channel(PersonaActivity { engaged: false, since_ms: now_ms() }).0
+            watch::channel(PersonaActivity { engaged: false, since_ms: EpochMs::now().millis() }).0
         })
         .clone()
 }
@@ -303,7 +298,7 @@ fn set_persona(peer: Uuid, engaged: bool) {
         // send_replace, never send: the per-persona receiver is not guaranteed alive, and a
         // `send` with no receiver drops the value — persona_activity() would then read the
         // boot state forever (the gate-wide channel had exactly this bug, see `publish`).
-        tx.send_replace(PersonaActivity { engaged, since_ms: now_ms() });
+        tx.send_replace(PersonaActivity { engaged, since_ms: EpochMs::now().millis() });
     }
 }
 
@@ -333,7 +328,7 @@ pub async fn wait_for_boredom_of(peer: Uuid) {
     loop {
         let activity = *rx.borrow();
         let hold_active = hold_rx.borrow().is_some();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         if persona_bored(activity, hold_active, now) {
             return;
         }

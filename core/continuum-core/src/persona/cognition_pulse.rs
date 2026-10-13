@@ -210,6 +210,7 @@ pub fn renewal_earned(idle: Option<u64>, ttl_ms: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::time::EpochMs;
 
     // what this catches (card 7524aa5b): a citizen reading as running after her loop
     // exited (Kimi, 2026-09-28: fifty minutes of "ready" beacons from a dead loop). The guard
@@ -241,7 +242,7 @@ mod tests {
         let persona = Uuid::new_v4();
         let (card, other) = (Uuid::new_v4(), Uuid::new_v4());
         let ttl = crate::modules::work::DEFAULT_CLAIM_TTL_MS;
-        let now = crate::modules::chat::now_ms();
+        let now = EpochMs::now().millis();
         touch(persona, now.saturating_sub(ttl * 3));
         let captured = || CommandWork {
             key: (persona, card),

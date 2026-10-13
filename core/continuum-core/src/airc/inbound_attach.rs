@@ -4,6 +4,7 @@
 //! transport, trust, replay, and live delivery; Continuum subscribes through
 //! typed IPC and republishes valid EventBridge envelopes into MessageBus.
 
+use crate::time::EpochMs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -14,9 +15,7 @@ use airc_lib::decode_wire_event;
 use tracing::warn;
 
 use crate::airc::realtime::AircRealtimeEnvelope;
-use crate::airc::realtime_wire::{
-    bus_event_from_envelope, chat_transcript_message, envelope_from_event,
-};
+use crate::airc::realtime_wire::{bus_event_from_envelope, chat_transcript_message, envelope_from_event};
 use crate::ipc::positron_kanban_source::KANBAN_CHANGED;
 use crate::ipc::positron_source::CHAT_POSTED;
 use crate::ipc::positron_wall_source::WALL_CHANGED;
@@ -338,7 +337,7 @@ pub async fn publish_transcript_event(
     // core, instead of from a per-persona subscription (which on the 5090 never
     // carried other peers' durable pushes while this path did). Synchronous and
     // cheap: one classification, one lock per resident, no await.
-    let fed = crate::persona::perception_feed::feed(event, crate::persona::trace::now_ms());
+    let fed = crate::persona::perception_feed::feed(event, EpochMs::now().millis());
     if fed > 0 {
         crate::probe!(
             class = "mind.feed.event",
@@ -421,10 +420,7 @@ pub async fn publish_transcript_event(
         // process-global ledger, keyed on the WIRE's peer id (airc's authenticated
         // transport identity — the payload declares no identity to spoof). Our own
         // echoed offer lands here too: that IS the one-node-grid loopback proof.
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = EpochMs::now().millis();
         let is_new =
             crate::capacity::gossip::global_ledger().hear(event.peer_id.as_uuid(), offer.clone(), now_ms);
         if is_new {
@@ -595,13 +591,9 @@ fn kanban_changed_from_event(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::airc::realtime::{
-        AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema,
-    };
+    use crate::airc::realtime::{AircRealtimeEnvelope, AircRealtimePayload, AircRealtimePayloadRef, AircRealtimeSchema};
     use crate::airc::realtime_wire::headers_for_envelope;
-    use airc_core::{
-        Body, ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind,
-    };
+    use airc_core::{Body, ClientId, EventId, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind};
     use serde_json::json;
     use tokio::time::{timeout, Duration};
     use uuid::Uuid;

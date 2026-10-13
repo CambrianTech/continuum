@@ -6,9 +6,10 @@
 //! - Event frames: forward to local message bus
 //! - Stream frames: (future) large data transfer
 
+use crate::time::EpochMs;
 use super::acl::is_command_authorized;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
-use super::frame::{self, FrameType, GridFrame, GridPayload};
+use super::frame::{FrameType, GridFrame, GridPayload};
 use super::node::TrustLevel;
 use super::transport::{GridTransport, TransportError};
 use super::GridState;
@@ -111,7 +112,7 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
         let _ = state
             .audit
             .log(&AuditEntry {
-                timestamp: frame::now_millis(),
+                timestamp: EpochMs::now().millis(),
                 direction: AuditDirection::Inbound,
                 remote_node: request.source_node.clone(),
                 command: command.to_string(),
@@ -200,7 +201,7 @@ async fn execute_incoming_request(request: &GridFrame, state: &Arc<GridState>) -
     let _ = state
         .audit
         .log(&AuditEntry {
-            timestamp: frame::now_millis(),
+            timestamp: EpochMs::now().millis(),
             direction: AuditDirection::Inbound,
             remote_node: request.source_node.clone(),
             command: command.to_string(),

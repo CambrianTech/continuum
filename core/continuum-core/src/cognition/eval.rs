@@ -26,6 +26,7 @@
 //! [`cognition/trace`]: super::introspect_commands::CognitionTrace
 //! [`cognition/prompt`]: super::introspect_commands::CognitionPrompt
 
+use crate::time::EpochMs;
 use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -408,7 +409,7 @@ fn decide_eval_lane_placement(
     use crate::inference::placement_capture::{JsonlPlacementCaptureSink, PlacementDecisionRecord};
     JsonlPlacementCaptureSink::glass_box().record(&PlacementDecisionRecord {
         schema_version: 1,
-        captured_at_ms: JsonlPlacementCaptureSink::now_ms(),
+        captured_at_ms: EpochMs::now().millis(),
         context: context.to_string(),
         model: base.id.clone(),
         served_ctx,
@@ -677,9 +678,7 @@ fn governed_vram_available() -> Option<u64> {
 /// base not in the registry, or the lane not coming up.
 async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError> {
     use crate::ai::adapter::AIProviderAdapter; // brings `initialize` into scope
-    use crate::inference::llama_server::{
-        AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID,
-    };
+    use crate::inference::llama_server::{AdapterEntry, EphemeralServingLane, ServingTarget, PROVIDER_ID};
 
     // 1. The gene declares its forged base in the trained-adapter manifest.
     let manifest = crate::forge::adapter_manifest::load()
@@ -1313,7 +1312,7 @@ fn write_eval_run_marker(root: &std::path::Path, run_id: &str) {
     let marker = serde_json::json!({
         "runId": run_id,
         "corePid": std::process::id(),
-        "startedAtMs": crate::persona::trace::now_ms(),
+        "startedAtMs": EpochMs::now().millis(),
     });
     // Marker write is best-effort: the run must not die because its guard
     // breadcrumb could not be written; the reboot guard just loses this run.
@@ -3203,7 +3202,7 @@ impl LessonSink {
                 parent_engram_id: uuid::Uuid::nil(),
             },
             recall_keys: vec!["exam".to_string(), task.id.clone()],
-            admitted_at_ms: crate::persona::trace::now_ms(),
+            admitted_at_ms: EpochMs::now().millis(),
             trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
             admission_trace_id: None,
         };
@@ -3281,7 +3280,7 @@ fn admit_progress_engram(
                 parent_engram_id: uuid::Uuid::nil(),
             },
             recall_keys: vec!["progress".to_string(), eval_set.to_string()],
-            admitted_at_ms: crate::persona::trace::now_ms(),
+            admitted_at_ms: EpochMs::now().millis(),
             trust_state_at_admission: crate::persona::engram::TrustState::SelfTrust,
             admission_trace_id: None,
         };
@@ -3558,7 +3557,7 @@ fn append_failed_ledger(
     }
     let path = dir.join(format!("{persona_id}.jsonl"));
     let row = serde_json::json!({
-        "capturedAtMs": crate::persona::trace::now_ms(),
+        "capturedAtMs": EpochMs::now().millis(),
         "personaId": persona_id,
         "runId": run_id,
         "note": note,
@@ -3696,7 +3695,7 @@ fn append_task_ledger_row(
     }
     let row = serde_json::json!({
         "kind": "task",
-        "capturedAtMs": crate::persona::trace::now_ms(),
+        "capturedAtMs": EpochMs::now().millis(),
         "runId": run_id,
         "personaId": persona_id,
         "evalSet": eval_set,
@@ -3735,7 +3734,7 @@ fn append_progress_ledger(
         .is_some_and(eval_run_cancelled);
     let row = serde_json::json!({
         "cancelled": cancelled,
-        "capturedAtMs": crate::persona::trace::now_ms(),
+        "capturedAtMs": EpochMs::now().millis(),
         "personaId": result.persona_id,
         "evalSet": eval_set,
         "cleanLane": clean_lane,
@@ -3860,7 +3859,7 @@ pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
             serde_json::json!({
                 "phase": phase,
                 "detail": detail,
-                "atMs": crate::persona::trace::now_ms(),
+                "atMs": EpochMs::now().millis(),
             }),
         );
     }
@@ -4449,7 +4448,7 @@ fn report_task_graded(
         current_task: task_id.to_string(),
         last_ok: ok,
         output_tokens,
-        updated_at_ms: crate::persona::trace::now_ms(),
+        updated_at_ms: EpochMs::now().millis(),
         vram_free_gb,
         run_id: CURRENT_RUN_META
             .lock()

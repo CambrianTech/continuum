@@ -13,6 +13,7 @@
 //! ([`crate::system_resources::citizen_workspace_pool`]) and takes nothing. `--apply true`
 //! takes each tree that passes them. `Privileged`: it deletes files on the node.
 
+use crate::time::EpochMs;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -53,7 +54,7 @@ crate::action_command! {
     run(_this, _ctx, p) => {
         let home = crate::paths::continuum_home()?;
         let root = home.join("citizens");
-        let now_ms = crate::persona::trace::now_ms();
+        let now_ms = EpochMs::now().millis();
         let apply = p.apply;
         let outcomes = tokio::task::spawn_blocking(move || {
             CitizenWorkspacePool::reclaim_build_residue(&root, &home, now_ms, apply)

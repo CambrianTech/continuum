@@ -22,7 +22,6 @@ use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -102,12 +101,6 @@ impl JsonlPlacementCaptureSink {
         }
     }
 
-    pub fn now_ms() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
-    }
 }
 
 impl PlacementCaptureSink for JsonlPlacementCaptureSink {

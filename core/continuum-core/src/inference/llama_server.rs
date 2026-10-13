@@ -265,7 +265,7 @@ pub fn note_real_decode() {
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.
-    let Ok(since_epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+    let Ok(since_epoch) = crate::time::EpochMs::read() else {
         tracing::warn!(
             "system clock is before the UNIX epoch — cannot stamp this decode; \
              liveness will be judged from the previous stamp or by probing"
@@ -273,7 +273,7 @@ pub fn note_real_decode() {
         return;
     };
     LAST_REAL_DECODE_MS.store(
-        since_epoch.as_millis() as u64,
+        since_epoch.millis(),
         std::sync::atomic::Ordering::Relaxed,
     );
 }
@@ -455,13 +455,13 @@ static LAST_REAL_PREFILL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 
 /// Record that a real generation's PREFILL advanced on the served lane.
 pub fn note_real_prefill_progress() {
-    let Ok(since_epoch) = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) else {
+    let Ok(since_epoch) = crate::time::EpochMs::read() else {
         // Same clock discipline as note_real_decode: 0 is the "never" sentinel,
         // an unreadable clock must not erase a real stamp.
         return;
     };
     LAST_REAL_PREFILL_MS.store(
-        since_epoch.as_millis() as u64,
+        since_epoch.millis(),
         std::sync::atomic::Ordering::Relaxed,
     );
 }
@@ -484,10 +484,7 @@ fn ms_since_stamp(stamp: &std::sync::atomic::AtomicU64) -> Option<u64> {
     if last == 0 {
         return None;
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as u64;
+    let now = crate::time::EpochMs::read().ok()?.millis();
     Some(now.saturating_sub(last))
 }
 
@@ -502,10 +499,7 @@ pub fn ms_since_real_decode() -> Option<u64> {
     // yield 0, i.e. "a token came out 0 ms ago" — an unreadable clock would present a
     // WEDGED lane as perfectly fresh, and the caller's documented fallback (probe it)
     // would never run. `None` already means "no usable evidence, go probe".
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_millis() as u64;
+    let now = crate::time::EpochMs::read().ok()?.millis();
     Some(now.saturating_sub(last))
 }
 
@@ -1440,10 +1434,7 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
     let Ok(home) = crate::paths::continuum_home() else {
         return false; // no home: no slots to roll between
     };
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0); // unwrap_or: a clock before the epoch reads as age 0, which keeps a live claim blocking
+    let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch reads as age 0, which keeps a live claim blocking
     if continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks() {
         return false;
     }

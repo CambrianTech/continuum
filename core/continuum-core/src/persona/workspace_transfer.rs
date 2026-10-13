@@ -666,10 +666,7 @@ fn arrive_over(root: &Path, branch: &str, now_ms: u64) -> ArrivalOutcome {
 /// to node. The claim is authoritative and the checkout is convenience: no outcome here
 /// undoes a claim, every outcome is said.
 pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOutcome {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0); // unwrap_or: a pre-epoch clock stamps 0; the ref is still unique per branch per arrival in practice
+    let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock stamps 0; the ref is still unique per branch per arrival in practice
     let started = std::time::Instant::now();
     let (r, b) = (root.clone(), branch.clone());
     let outcome = match tokio::time::timeout(ARRIVE_BOUND, tokio::task::spawn_blocking(move || arrive(&r, &b, now_ms))).await {

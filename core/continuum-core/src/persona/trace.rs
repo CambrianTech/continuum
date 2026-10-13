@@ -39,8 +39,8 @@
 //! known cognition path. Recipe-specific seams (added in Phase B+)
 //! supply their own string at the call site.
 
+use crate::time::EpochMs;
 use serde::{Deserialize, Serialize};
-use std::time::SystemTime;
 
 /// Standard seam names used by `respond()` and the in-process
 /// cognition pipeline. Recipes / hosts adding their own seams supply
@@ -91,7 +91,7 @@ impl CognitionTrace {
     /// Start a fresh trace anchored at the current wall-clock time.
     pub fn new() -> Self {
         Self {
-            turn_started_at_ms: now_ms(),
+            turn_started_at_ms: EpochMs::now().millis(),
             seams: Vec::new(),
         }
     }
@@ -117,7 +117,7 @@ impl CognitionTrace {
     /// Total time across the trace = now() − turn start. Useful at
     /// the end of a turn for the outermost timing entry.
     pub fn total_duration_ms(&self) -> u64 {
-        now_ms().saturating_sub(self.turn_started_at_ms)
+        EpochMs::now().millis().saturating_sub(self.turn_started_at_ms)
     }
 
     /// Last seam recorded, by name. None if no seams ran. Used by the
@@ -142,15 +142,6 @@ impl Default for CognitionTrace {
     }
 }
 
-/// Wall-clock ms since UNIX_EPOCH. Single source of truth for the
-/// trace timestamps so seams compare apples-to-apples.
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,7 +153,7 @@ mod tests {
     fn new_trace_starts_empty_with_recent_anchor() {
         let trace = CognitionTrace::new();
         assert!(trace.seams.is_empty());
-        let now = now_ms();
+        let now = EpochMs::now().millis();
         assert!(
             trace.turn_started_at_ms <= now && now - trace.turn_started_at_ms < 5_000,
             "anchor should be within 5s of now"

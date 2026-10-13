@@ -53,12 +53,11 @@
 //! product, the recording is observability. Failures log a warning
 //! and the turn returns its real result.
 
+use crate::time::EpochMs;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::persona::response::{PersonaResponse, RespondInput};
 use crate::persona::trace::CognitionTrace;
-use crate::persona::{
-    PersonaTurnFrame, PersonaTurnFrameReplayRecord, PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION,
-};
+use crate::persona::{PersonaTurnFrame, PersonaTurnFrameReplayRecord, PERSONA_TURN_FRAME_REPLAY_SCHEMA_VERSION};
 use crate::runtime;
 use serde::Serialize;
 use serde_json::json;
@@ -175,7 +174,7 @@ struct TurnError {
 pub fn record_turn(input: &RespondInput, response: &PersonaResponse, trace: &CognitionTrace) {
     let payload = json!({
         "schemaVersion": 1,
-        "capturedAtMs": crate::persona::trace::now_ms(),
+        "capturedAtMs": EpochMs::now().millis(),
         "personaId": input.persona.persona_id,
         "personaName": input.persona.display_name,
         "messageId": input.message_id,
@@ -205,7 +204,7 @@ pub fn record_failed_turn(
     };
     let payload = json!({
         "schemaVersion": 1,
-        "capturedAtMs": crate::persona::trace::now_ms(),
+        "capturedAtMs": EpochMs::now().millis(),
         "personaId": input.persona.persona_id,
         "personaName": input.persona.display_name,
         "messageId": input.message_id,
@@ -493,7 +492,7 @@ impl Drop for EnvRestore {
 fn filename_for(persona_name: &str, message_id: Uuid) -> String {
     let safe_name = persona_name.replace(char::is_whitespace, "_");
     let id_prefix: String = message_id.to_string().chars().take(8).collect();
-    let ts = chrono_like_ts(crate::persona::trace::now_ms());
+    let ts = chrono_like_ts(EpochMs::now().millis());
     format!("{safe_name}-{id_prefix}-{ts}-rust.json")
 }
 
@@ -509,7 +508,7 @@ fn turn_frame_filename_for(record: &PersonaTurnFrameReplayRecord) -> String {
         .chars()
         .take(8)
         .collect();
-    let ts = chrono_like_ts(crate::persona::trace::now_ms());
+    let ts = chrono_like_ts(EpochMs::now().millis());
     format!("frame-{persona_prefix}-{trigger_prefix}-{ts}-rust.json")
 }
 

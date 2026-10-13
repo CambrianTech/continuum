@@ -46,6 +46,7 @@
 //! family: two citizens holding worked copies of one instance is ambiguity, and grading either
 //! would score one citizen's diff against the other's card, so it grades neither and says so.
 
+use crate::time::EpochMs;
 use std::path::PathBuf;
 
 use crate::persona::staged_workspace::{grade_target, owners_of, GradeTarget};
@@ -85,10 +86,7 @@ pub fn record_refusal(instance: &str, reason: &str, work_mtime_ms: Option<u64>) 
     let r = Refusal {
         instance: instance.to_string(),
         reason: reason.chars().take(400).collect(),
-        at_ms: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0),  // unwrap_or: pre-epoch clock — the marker still records the reason and the work mtime
+        at_ms: EpochMs::now().millis(),  // pre-1970 reads 0: pre-epoch clock — the marker still records the reason and the work mtime
         work_mtime_ms,
     };
     let path = refusal_path(instance);
@@ -146,13 +144,6 @@ pub fn refusal_stands_at(
         (Some(refused), Some(newest)) => newest <= refused,
         _ => now_ms.saturating_sub(refused_at_ms) < REFUSAL_TTL_MS,
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(u64::MAX)  // unwrap_or: pre-epoch clock — now reads as far future, every refusal reads EXPIRED, which errs toward grading (0 would make every refusal stand forever)
 }
 
 /// What the sweep decided for one instance — every non-grade outcome is NAMED, because
@@ -283,7 +274,7 @@ pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
                     .find(|c| c.path == workspace)
                     .and_then(|c| c.work_mtime_ms);
                 if let Some(r) = read_refusal(&instance) {
-                    if refusal_stands_at(r.work_mtime_ms, work_mtime_ms, r.at_ms, now_ms()) {
+                    if refusal_stands_at(r.work_mtime_ms, work_mtime_ms, r.at_ms, EpochMs::now_or_latest().millis()) {
                         // Refused before, nothing changed since: not pending. The
                         // marker file is the record; the count rides sweep_start.
                         skipped_refused += 1;

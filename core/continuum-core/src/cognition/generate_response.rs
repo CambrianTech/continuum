@@ -40,17 +40,14 @@ use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::inference::planning::adaptive_throughput::{ResourceClass, TargetSilicon};
-use crate::cognition::resource_admission::{
-    ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy,
-    ResourceAdmissionRequest,
-};
+use crate::cognition::resource_admission::{ResourceAdmissionError, ResourceAdmissionGate, ResourceAdmissionGuard, ResourceAdmissionPolicy, ResourceAdmissionRequest};
 use crate::cognition::should_respond::AIDecisionContext;
 use crate::inference::planning::throughput_lease::ThroughputLeaseRevocationPolicy;
 use crate::modules::ai_provider::global_registry;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::sync::LazyLock;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use ts_rs::TS;
 
 /// Default unknown-members string returned by `extract_room_members` when the
@@ -280,7 +277,7 @@ pub enum GenerateResponseError {
 pub async fn evaluate_response(
     request: GenerateResponseRequest,
 ) -> Result<GenerateResponseResult, GenerateResponseError> {
-    let start_ms = now_ms();
+    let start_ms = crate::time::EpochMs::now().millis();
     let timeout_ms = request.timeout_ms.unwrap_or(DEFAULT_GENERATE_TIMEOUT_MS);
     let _lease = acquire_generate_response_lease(&request, start_ms, timeout_ms)?;
 
@@ -351,7 +348,7 @@ pub async fn evaluate_response(
         Err(_) => return Err(GenerateResponseError::Timeout { timeout_ms }),
     };
 
-    let end_ms = now_ms();
+    let end_ms = crate::time::EpochMs::now().millis();
     Ok(result_from_response(response, model, start_ms, end_ms))
 }
 
@@ -467,14 +464,6 @@ pub fn result_from_response(
         timestamp: end_ms,
         tokens_used,
     }
-}
-
-/// Current unix-ms timestamp. Private helper — internal use only.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 // ─── Pure prompt builder ──────────────────────────────────────────────
@@ -654,10 +643,7 @@ fn hour_gap_marker(gap_ms: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::should_respond::{
-        AIDecisionContext, GatingConversationMessage, GatingMessageContent, GatingRagContext,
-        GatingRagMetadata, GatingTriggerMessage,
-    };
+    use crate::cognition::should_respond::{AIDecisionContext, GatingConversationMessage, GatingMessageContent, GatingRagContext, GatingRagMetadata, GatingTriggerMessage};
 
     // ─── Fixtures ─────────────────────────────────────────────────────
 

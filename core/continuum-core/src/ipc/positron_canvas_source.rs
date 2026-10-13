@@ -12,6 +12,7 @@
 //! the websocket store human eyes read AND the mind substrate a citizen's
 //! grounding reads, same revision in both.
 
+use crate::time::EpochMs;
 use std::sync::{Mutex, OnceLock};
 
 use continuum_positron::canvas::{CanvasViewState, CanvasViewport};
@@ -90,7 +91,7 @@ pub fn maybe_publish_observation(persona: &str, tool_name: &str, result_content:
             .and_then(|v| v.as_str())
             .map(str::to_string),
         persona: Some(persona.to_string()),
-        observed_at_ms: Some(crate::persona::trace::now_ms()),
+        observed_at_ms: Some(EpochMs::now().millis()),
         viewport: image.and_then(|i| {
             Some(CanvasViewport {
                 width: i.get("width")?.as_u64()? as u32,

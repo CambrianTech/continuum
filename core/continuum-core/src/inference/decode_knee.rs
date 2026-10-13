@@ -44,6 +44,7 @@
 //!    and no fresh point above contradicts it — one flap per model per hour at most.
 //! 3. The clamp probe fires when the clamp CHANGES, not every planning tick.
 
+use crate::time::EpochMs;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -191,13 +192,6 @@ impl DecodeCurve {
     }
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a clock before 1970 makes every point stale — the roster rules, nothing is clamped on a lie
-}
-
 /// The pure rule the planner applies: the roster's demand, clamped to the knee when one
 /// is known. A knee never RAISES demand, and never takes a seated roster below
 /// [`MIN_KNEE_LANES`].
@@ -233,7 +227,8 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
     if expected_tps <= 0.0 || measured_tps <= 0.0 {
         return;
     }
-    let now = now_ms();
+    // A pre-1970 clock reads 0 here: every point is stale, so the roster rules and nothing is clamped on a lie.
+    let now = EpochMs::now().millis();
     // A decode measured inside our own transients measures them, not the lane.
     if let Some(why) = own_transient(now) {
         crate::probe!(
@@ -289,7 +284,7 @@ pub(crate) fn own_transient(now: u64) -> Option<&'static str> {
 
 /// The knee for `model`, if measured.
 pub fn knee_for(model: &str) -> Option<u32> {
-    let now = now_ms();
+    let now = EpochMs::now().millis();
     CURVES.lock().get(model).and_then(|c| c.knee(DECODE_FLOOR_TPS, now))
 }
 
@@ -300,7 +295,7 @@ pub fn knee_for(model: &str) -> Option<u32> {
 /// knee of 8 (Cormac's condition on #4266), so the evidence this box has about a model it
 /// never measured is its LOWEST knee — the biggest model's, in practice. Ties: the newest.
 pub fn conservative_knee() -> Option<(String, u32)> {
-    let now = now_ms();
+    let now = EpochMs::now().millis();
     let curves = CURVES.lock();
     conservative(&curves, now).map(|(m, k)| (m.clone(), k))
 }
@@ -409,7 +404,7 @@ pub fn rate_from(curves: &BTreeMap<String, DecodeCurve>, model: &str, now_ms: u6
 /// Her decode rate on this box for an output allowance, with its source — see
 /// [`RateSource`] for the ladder. `tps` is never `Some(0.0)`.
 pub fn rate_for(model: &str) -> MeasuredRate {
-    let now = now_ms();
+    let now = EpochMs::now().millis();
     rate_from(&CURVES.lock(), model, now)
 }
 

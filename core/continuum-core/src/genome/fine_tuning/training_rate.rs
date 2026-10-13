@@ -30,7 +30,7 @@ pub(crate) const TRAINING_RUN_BUDGET: Duration = Duration::from_secs(3600);
 #[serde(rename_all = "camelCase")]
 struct RateRow {
     secs_per_char_epoch: f64,
-    measured_at_ms: i64,
+    measured_at_ms: u64,
     job: String,
 }
 
@@ -91,7 +91,7 @@ impl TrainingRates {
             format!("{base}|c{chunk}"),
             RateRow {
                 secs_per_char_epoch: (wall_ms as f64 / 1000.0) / (chars as f64 * f64::from(epochs)),
-                measured_at_ms: chrono::Utc::now().timestamp_millis(),
+                measured_at_ms: crate::time::EpochMs::now().millis(),
                 job: job.to_string(),
             },
         );

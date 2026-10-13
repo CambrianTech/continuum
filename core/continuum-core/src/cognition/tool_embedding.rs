@@ -34,12 +34,12 @@
 //! - No silent default-on-error elsewhere — caller in PR-2 surfaces
 //!   typed errors.
 
+use crate::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::{EmbeddingInput, EmbeddingRequest, EmbeddingResponse};
 use crate::modules::ai_provider::global_registry;
 use serde::{Deserialize, Serialize};
 use std::sync::{LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
 /// Default similarity threshold for `semantic_search_tools` — results
@@ -321,7 +321,7 @@ pub async fn embed_tools(
         });
     }
 
-    let generated_at_ms = now_ms();
+    let generated_at_ms = EpochMs::now().millis();
     let embeddings: Vec<ToolEmbedding> = request
         .tools
         .iter()
@@ -464,14 +464,6 @@ pub fn _install_cache_for_tests(
         descriptions,
         model,
     });
-}
-
-/// Current unix-ms timestamp. Private helper.
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

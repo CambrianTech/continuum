@@ -173,22 +173,6 @@ fn map_lane_state(state: LaneState) -> KanbanLaneState {
     }
 }
 
-/// Map the SHARED holder projection's lease verdict → positron's mirrored
-/// [`KanbanHold`].
-///
-/// The verdict itself is NOT computed here: it comes from
-/// [`crate::persona::card_holder::hold_of`], the same call the persona's board
-/// line and `work/list` make. That is the point — the human's card and the
-/// citizen's board line cannot disagree about whether a claim is still good,
-/// because there is one predicate and this is only its projection.
-/// Exhaustive for the same reason as [`map_card_state`].
-fn now_unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 fn map_hold(hold: crate::persona::card_holder::Hold) -> KanbanHold {
     use crate::persona::card_holder::Hold;
     match hold {
@@ -312,7 +296,7 @@ impl KanbanProjection {
             // boundary crossing mid-projection must not make one card claim a
             // different "now" than the predicate that judged it. Cheap, and
             // the projection is not a hot path.
-            hold: map_hold(crate::persona::card_holder::hold_of(card, now_unix_ms())),
+            hold: map_hold(crate::persona::card_holder::hold_of(card, crate::time::EpochMs::now().millis())),
             pull_request: card.pull_request.as_ref().map(|pr| KanbanPullRequest {
                 repo: pr.repo.to_string(),
                 number: pr.number,

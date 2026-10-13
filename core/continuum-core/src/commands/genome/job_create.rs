@@ -204,17 +204,6 @@ fn refused_decision(error_kind: &str, request: &TrainingJobRequest, error: &str)
     Ok(JobCreateOutcome { success: false, result: None, error: Some(error.to_string()), error_kind: Some(error_kind.to_string()), took: None, capacity_wait: None })
 }
 
-/// The one clock a decision reads: the signature's mint time, a trial's liveness, the
-/// adoption's opening, her surprise window. Unix ms; 0 on a pre-epoch clock, which
-/// reads every tally as outside its window (not measured, never low) and every open
-/// trial as live (held, never forked beside).
-fn now_ms_for_decision() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // pre-epoch clock: 0 puts every tally outside its window = not measured, which never halts training
-}
-
 crate::action_command! {
     /// Create a LoRA fine-tuning job. The coordinator picks a capable adapter
     /// (honoring `preferredProvider` if given and capable), the adapter starts the
@@ -362,7 +351,7 @@ crate::action_command! {
                 source_url: None,
             };
             let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
-            match crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, now_ms_for_decision())
+            match crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, crate::time::EpochMs::now().millis())
                 .await
             {
                 Ok(sig) => Some(sig),
@@ -419,7 +408,10 @@ crate::action_command! {
                 Ok(t) => t,
                 Err(e) => return refused_decision(ERROR_KIND_TRIAL_FILE_UNREADABLE, &p.request, &format!("her trial file could not be read: {e}")),
             };
-            let now_ms = now_ms_for_decision();
+            // A pre-1970 clock reads 0: every tally falls outside its window (not measured,
+            // which never halts training) and every open trial reads live (held, never
+            // forked beside).
+            let now_ms = crate::time::EpochMs::now().millis();
             let hers = |t: &&crate::genome::gene_trial::GeneTrial| t.persona_id == watched_persona_id;
             // Residency is HERS: a gene her work holds open or promoted on this base. The
             // node's manifest carries every citizen's genes; a teammate's promoted gene near
@@ -583,7 +575,7 @@ crate::action_command! {
                 let adopted = adoption
                     .as_ref()
                     .map_err(Clone::clone)
-                    .and_then(|a| a.adopt(watched_persona_id, &p.request.trait_kind, &path, &p.request.base_model, now_ms_for_decision()));
+                    .and_then(|a| a.adopt(watched_persona_id, &p.request.trait_kind, &path, &p.request.base_model, crate::time::EpochMs::now().millis()));
                 match adopted {
                     Ok(trial) => {
                         crate::probe!(
@@ -842,7 +834,7 @@ mod tests {
         }
         fn open_trial(&self, state: crate::genome::gene_trial::TrialState) -> crate::genome::gene_trial::GeneTrial {
             let trials = self.trials();
-            let t = trials.open(self.persona, &self.request.trait_kind, &self.gene_path, &self.request.base_model, now_ms_for_decision()).unwrap();
+            let t = trials.open(self.persona, &self.request.trait_kind, &self.gene_path, &self.request.base_model, crate::time::EpochMs::now().millis()).unwrap();
             if state != crate::genome::gene_trial::TrialState::Trial {
                 let mut all = trials.load().unwrap();
                 all[0].state = state;
@@ -932,7 +924,7 @@ mod tests {
         let w = decision_world().await;
         let activity = uuid::Uuid::new_v4();
         let mine = uuid::Uuid::new_v4();
-        let now = now_ms_for_decision();
+        let now = crate::time::EpochMs::now().millis();
         let mind = tempfile::tempdir().unwrap();
         let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(w.persona), mind.path(), 1_000, now);
         region.join(activity, "career-wrangler");
