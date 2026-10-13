@@ -3728,12 +3728,6 @@ impl ServiceModule for WorkModule {
             // dep-ownership reason.
             Arc::new(crate::commands::benchmark_pause::BenchmarkPause),
             Arc::new(crate::commands::benchmark_pause::BenchmarkResume),
-            // recipe/run composes arbitrary commands through the substrate
-            // executor — registered here for the same executor-slot-ownership
-            // reason benchmark/dispatch is (never registered-but-unroutable).
-            Arc::new(crate::commands::recipe_run::RecipeRun {
-                executor_slot: self.executor_slot.clone(),
-            }),
             // The recipe-facing benchmark verbs (S4): import is pure, the two round-*
             // verbs are the temporary tracker seam. Registered here beside dispatch so
             // they are routable from the same module that owns the board.

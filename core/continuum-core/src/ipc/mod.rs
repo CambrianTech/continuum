@@ -2220,6 +2220,9 @@ pub fn start_server(
     // Phase 4: DataModule (database-agnostic storage via ORM adapters)
     // DB path is passed per-request from TypeScript - NO defaults
     runtime.register(Arc::new(DataModule::new()));
+    // RecipeModule: the node's durable recipe runs (`recipe_runs`) and the recipe/*
+    // verbs. Its store opens through DataModule's adapter at initialize.
+    runtime.register(Arc::new(crate::modules::recipe::RecipeModule::new()));
 
     // ChatModule: the kernel `chat/send` + `chat/poll` surface (aliases of
     // `collaboration/chat/*`). Unlike `search/*` these DynCommands are NOT
