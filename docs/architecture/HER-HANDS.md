@@ -70,6 +70,39 @@ capture, not rejected.
 re-root and restore deleted. Deleting them first would leave eval and live turns fighting over
 one global executor.
 
+## Where the context goes (groundwork, read on canary 323dc8f91)
+
+- **What eval and live share is identity, not an executor.** The one `CommandExecutor` holds no
+  hands state. Every persona tool call carries `CallerIdentity::local_persona(pid)`
+  (`cognition/tool_executor/command_executor.rs:93-111`). An eval fork clones the same tool
+  executor and the same identity (`cognition/persona_workspace.rs:1658`, `:1716`). Every hands map
+  is keyed by that caller id: `CodeState.file_engines` / `shell_sessions` / `parked_shells`
+  (`modules/code.rs:24-37`), `ACTING_ROOTS` (`persona_workspace.rs:818`) and `ANNOUNCED_ROOTS`
+  (`:1109`). So eval and live collide by construction.
+- **A running harm today.** A default tool-bearing eval roots her hands at an ephemeral clone
+  (`cognition/eval.rs:2742-2746`, fallback at `:2444-2465`). It restores only
+  `if p.workspace_root.is_some()` (`:2278`), and the clone is deleted on drop (`:1426`). After
+  such an eval her live engine and shell can point at a deleted directory until something
+  re-roots her.
+- **The context needs no new mechanism.** `Ctx` already has `session_id`
+  (`sdk_codegen/handler.rs:117-138`), carried in the envelope (`runtime/command_envelope.rs:151`)
+  and in `ToolExecutionContext`. But it's never forwarded (`command_executor.rs:430` scopes only
+  `context_id`, which is the ROOM and must stay so), and background dispatch passes no context at
+  all (`runtime/command_executor.rs:301-326`). Forwarding the context there, and keying the code
+  maps by workspace and context instead of caller, reaches every `code/*` verb through four
+  seams:
+  - `engine!` (`modules/code_commands.rs:627`)
+  - `ensure_shell` (`:578`)
+  - `resolve_readable_path` (`:90`)
+  - `code/git` `workspace_root_for` (`commands/code/git/mod.rs:49`)
+  
+  Authorization keeps using the caller.
+- **Durable identities already exist.** A card's worktree is keyed by card id
+  (`modules/card_staging.rs:78`, via `airc_lib::work_worktree`). The home layer is keyed by peer
+  (`code_commands.rs:148`). `FileEngine` already carries a `workspace_id`
+  (`code/file_engine.rs:196`). `citizen_workspace_pool` stays the disk-lifecycle owner, checking
+  live workspaces before it evicts.
+
 ## Ownership
 
 Assigned in Astra's review; anything unassigned is open in the room.
