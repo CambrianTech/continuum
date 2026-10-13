@@ -566,8 +566,10 @@ impl RagSource for ArcRagSource {
     }
 
     fn expand_command(&self) -> Option<&'static str> {
-        // delegates to the inner source; expansion is that source's to declare.
-        None
+        // Delegates to the inner source; expansion is that source's to declare.
+        // It returned None, so every source wrapped for compose_for_turn lost the
+        // verb its truncation notice names (card e049aa82).
+        self.0.expand_command()
     }
 
     /// Delegates to the inner source — the floor is that source's to declare.

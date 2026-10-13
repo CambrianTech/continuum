@@ -435,7 +435,10 @@ impl Faculty for RagSourceFaculty {
 
         let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning)
             .with_parts(units)
-            .with_expand_command(self.source.expand_command());
+            .with_expand_command(self.source.expand_command())
+            // A continuation means the SOURCE stopped short of its own list; the
+            // packer's notice must say so (card e049aa82: nothing resumes cursors).
+            .with_source_truncated(delivery.continuation.is_some());
         let c = if self.standing_grounding {
             c.standing_grounding()
         } else {

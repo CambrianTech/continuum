@@ -211,6 +211,7 @@ mod tests {
             trailing: false,
             parts: Vec::new(),
             expand_command: None,
+            source_truncated: false,
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -234,6 +235,7 @@ mod tests {
             trailing: false,
             parts: Vec::new(),
             expand_command: None,
+            source_truncated: false,
         };
         let trace = WorkspaceTrace {
             cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
