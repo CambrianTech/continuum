@@ -36,7 +36,7 @@ use crate::runtime::{
     message_bus::MessageBus, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority,
     ModuleRegistry, ServiceModule,
 };
-use crate::utils::params::Params;
+use crate::runtime::params::Params;
 
 /// Global sentinel module reference for shutdown from signal handlers.
 /// Set during server startup, read during SIGTERM/SIGINT.

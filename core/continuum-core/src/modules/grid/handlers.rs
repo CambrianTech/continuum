@@ -6,8 +6,7 @@
 use crate::time::EpochMs;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
 use super::frame::{GridFrame, GridPayload};
-use super::helpers::{correlation_id, find_transport_for_address, parse_trust_level};
-use super::node::{GridNode, TransportAddress};
+use super::node::{GridNode, TransportAddress, TrustLevel};
 use super::router::RouteDecision;
 use super::GridState;
 use crate::runtime::CommandResult;
@@ -63,7 +62,7 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
         .first()
         .ok_or_else(|| format!("Node {node_id} has no addresses"))?;
 
-    let transport = find_transport_for_address(&state.transports, address)
+    let transport = address.carrier(&state.transports)
         .ok_or_else(|| format!("No transport available for {}", address.display_address()))?;
 
     let start = std::time::Instant::now();
@@ -79,7 +78,7 @@ pub async fn handle_ping(state: &Arc<GridState>, params: Value) -> Result<Comman
         .unwrap_or_else(|| "unknown".into());
 
     let ping_frame = GridFrame::command_request(
-        format!("ping-{}", correlation_id()),
+        format!("ping-{}", uuid::Uuid::new_v4().simple()),
         our_address,
         node_id.to_string(),
         super::commands::PING.to_string(),
@@ -163,7 +162,7 @@ pub async fn dispatch_to_node(
         .first()
         .ok_or_else(|| format!("Node {} has no addresses", node.node_id))?;
 
-    let transport = find_transport_for_address(&state.transports, address)
+    let transport = address.carrier(&state.transports)
         .ok_or_else(|| format!("No transport for {}", address.display_address()))?;
 
     let our_address = transport
@@ -171,7 +170,7 @@ pub async fn dispatch_to_node(
         .map(|a| a.display_address())
         .unwrap_or_else(|| "unknown".into());
 
-    let corr_id = format!("cmd-{}", correlation_id());
+    let corr_id = format!("cmd-{}", uuid::Uuid::new_v4().simple());
     let frame = GridFrame::command_request(
         corr_id.clone(),
         our_address,
@@ -291,7 +290,7 @@ pub async fn handle_pair(state: &Arc<GridState>, params: Value) -> Result<Comman
         .and_then(|v| v.as_str())
         .unwrap_or("owner");
 
-    let trust = parse_trust_level(trust_str)?;
+    let trust = trust_str.parse::<TrustLevel>()?;
 
     // Parse optional capabilities: gpu name and vram
     let gpu = params.get("gpu").and_then(|v| v.as_str()).map(String::from);
@@ -356,7 +355,7 @@ pub async fn handle_trust(state: &Arc<GridState>, params: Value) -> Result<Comma
         .and_then(|v| v.as_str())
         .ok_or("trust parameter required")?;
 
-    let trust = parse_trust_level(trust_str)?;
+    let trust = trust_str.parse::<TrustLevel>()?;
     state.registry.set_trust(node_id, trust)?;
     let _ = state.registry.save_to_disk();
 
@@ -874,7 +873,7 @@ fn query_forge_processes() -> Vec<Value> {
                         else if cmd.contains("train") || cmd.contains("fine") { "training" }
                         else { "unknown" };
 
-                    Some(json!({ "pid": pid, "type": job_type, "detail": crate::utils::str_truncate::truncate_at_char_boundary(&cmd, 120), "cpu": cpu, "mem": mem }))
+                    Some(json!({ "pid": pid, "type": job_type, "detail": crate::logging::preview::truncate_at_char_boundary(&cmd, 120), "cpu": cpu, "mem": mem }))
                 })
                 .collect()
         }

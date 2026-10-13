@@ -18,7 +18,7 @@
 //! Download from: https://huggingface.co/canopylabs/orpheus-3b-0.1-ft
 //! SNAC decoder: https://huggingface.co/hubertsiuzdak/snac_24khz
 
-use super::audio_utils;
+use super::normalize;
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
@@ -392,7 +392,7 @@ impl OrpheusTts {
         );
 
         // ── Step 5: Normalize to standard 16kHz i16 PCM ──────────────────
-        let result = audio_utils::normalize_audio(&pcm_24k, SNAC_SAMPLE_RATE)?;
+        let result = normalize::normalize_audio(&pcm_24k, SNAC_SAMPLE_RATE)?;
 
         clog_info!(
             "Orpheus: Synthesized \"{}\" → {}ms audio",

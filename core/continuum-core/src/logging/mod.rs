@@ -25,6 +25,7 @@ pub mod client;
 /// log_info!("personas/helper/cognition", "DecisionEngine", "Made decision: {}", decision);
 /// ```
 pub mod timing;
+pub mod preview;
 
 pub use client::LoggerClient;
 pub use timing::TimingGuard;

@@ -8,6 +8,8 @@
 //! (`seek_read` on Windows moves the HANDLE cursor, but each call seeks
 //! absolutely, so sequential callers see pread semantics).
 
+pub mod replace;
+
 use std::fs::File;
 use std::io;
 

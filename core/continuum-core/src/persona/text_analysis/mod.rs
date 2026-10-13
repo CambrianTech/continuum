@@ -15,6 +15,7 @@ pub mod response_cleaning;
 pub mod similarity;
 pub mod types;
 pub mod validation;
+pub mod ascii_case;
 
 pub use garbage_detection::is_garbage;
 pub use loop_detection::{has_truncated_tool_call, LoopDetector};

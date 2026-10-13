@@ -29,7 +29,7 @@ use crate::ai::{
 };
 use crate::logging::TimingGuard;
 use crate::modules::ai_provider::select_failure_message;
-use crate::utils::params::Params;
+use crate::runtime::params::Params;
 
 /// Result of `ai/generate` — the exact camelCase shape the inference seam has always
 /// returned. `success` is always `true` on the Ok path (errors return `Err`, which the

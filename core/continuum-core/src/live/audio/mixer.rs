@@ -48,7 +48,6 @@ pub mod test_utils {
         samples
     }
 
-    // Audio analysis utilities (is_silence, calculate_rms) moved to crate::utils::audio
 
     /// Detect dominant frequency using zero-crossing rate (simple method)
     pub fn detect_frequency_approx(samples: &[i16], sample_rate: u32) -> f32 {
@@ -675,7 +674,7 @@ impl AudioMixer {
 mod tests {
     use super::*;
     use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
-    use crate::utils::audio::is_silence;
+    use crate::live::audio::pcm::is_silence;
     use test_utils::*;
 
     #[test]

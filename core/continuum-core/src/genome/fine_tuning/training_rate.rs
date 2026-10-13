@@ -100,7 +100,7 @@ impl TrainingRates {
         }
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
-        crate::utils::file_replace::replace_file(&tmp, &self.path)
+        crate::fs_portable::replace::replace_file(&tmp, &self.path)
     }
 }
 

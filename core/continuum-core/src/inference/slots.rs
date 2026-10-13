@@ -896,7 +896,7 @@ impl SavedLedger {
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)?;
-        crate::utils::file_replace::replace_file(&tmp, &self.path)?;
+        crate::fs_portable::replace::replace_file(&tmp, &self.path)?;
         *written = generation;
         Ok(())
     }

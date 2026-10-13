@@ -65,6 +65,7 @@ pub mod service_module;
 pub mod share_controller;
 pub mod shared_compute;
 pub mod substrate_governor;
+pub mod params;
 
 pub use boot_mode::{extract_boot_mode, BootMode, BootModeParseError};
 

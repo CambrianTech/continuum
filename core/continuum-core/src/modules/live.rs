@@ -20,7 +20,7 @@ use crate::live::transport::bridge_client::LiveKitAgentManager;
 use crate::live::{UtteranceEvent, VoiceParticipant};
 use crate::logging::TimingGuard;
 use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
-use crate::utils::params::Params;
+use crate::runtime::params::Params;
 use crate::{log_error, log_info};
 use async_trait::async_trait;
 use serde_json::Value;
@@ -900,7 +900,7 @@ impl ServiceModule for VoiceModule {
                 let adapter_name = p.str("adapter")?;
 
                 use crate::live::audio::stt;
-                use crate::utils::audio::i16_to_f32;
+                use crate::live::audio::pcm::i16_to_f32;
                 use base64::Engine;
 
                 let bytes = base64::engine::general_purpose::STANDARD

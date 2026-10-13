@@ -66,7 +66,30 @@ pub enum TransportAddress {
     },
 }
 
+impl std::str::FromStr for TrustLevel {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "blocked" => Ok(Self::Blocked),
+            "provisional" => Ok(Self::Provisional),
+            "trusted" => Ok(Self::Trusted),
+            "owner" => Ok(Self::Owner),
+            _ => Err(format!("Invalid trust level: {s}. Use: blocked, provisional, trusted, owner")),
+        }
+    }
+}
+
 impl TransportAddress {
+    /// The started transport that carries this address, if this node runs one.
+    pub fn carrier<'a>(
+        &self,
+        transports: &'a [std::sync::Arc<dyn super::transport::GridTransport>],
+    ) -> Option<&'a std::sync::Arc<dyn super::transport::GridTransport>> {
+        let name = self.transport_name();
+        transports.iter().find(|t| t.name() == name && t.local_address().is_some())
+    }
+
     /// Which transport type this address belongs to.
     pub fn transport_name(&self) -> &'static str {
         match self {
@@ -95,7 +118,7 @@ impl TransportAddress {
                 // safe primitive removes the latent panic by construction
                 // per [[every-error-is-an-opportunity-to-battle-harden]].
                 let short =
-                    crate::utils::str_truncate::truncate_at_char_boundary(destination_hash, 8);
+                    crate::logging::preview::truncate_at_char_boundary(destination_hash, 8);
                 format!("ret:{short}...")
             }
         }
@@ -261,6 +284,29 @@ pub struct DiscoveredNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_trust_levels() {
+        assert_eq!("owner".parse::<TrustLevel>().unwrap(), TrustLevel::Owner);
+        assert_eq!("trusted".parse::<TrustLevel>().unwrap(), TrustLevel::Trusted);
+        assert_eq!("provisional".parse::<TrustLevel>().unwrap(), TrustLevel::Provisional);
+        assert_eq!("blocked".parse::<TrustLevel>().unwrap(), TrustLevel::Blocked);
+        assert!("invalid".parse::<TrustLevel>().is_err());
+    }
+
+    #[test]
+    fn test_carrier_needs_a_started_transport_of_the_same_kind() {
+        use crate::modules::grid::transport::GridTransport;
+        use crate::modules::grid::transports::tailscale::TailscaleTransport;
+        let transports: Vec<std::sync::Arc<dyn GridTransport>> =
+            vec![std::sync::Arc::new(TailscaleTransport::with_default_port())];
+        let ts_addr = TransportAddress::Tailscale { ip: "100.1.2.3".into(), port: 7117, machine_name: None };
+        // Transport not started → local_address() returns None → no match
+        assert!(ts_addr.carrier(&transports).is_none());
+        // Reticulum address shouldn't match tailscale transport
+        let ret_addr = TransportAddress::Reticulum { destination_hash: "abcd".into() };
+        assert!(ret_addr.carrier(&transports).is_none());
+    }
 
     #[test]
     fn test_transport_address_serde() {
