@@ -123,7 +123,7 @@ async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc
         );
     }
     if let Some(lease) = &held {
-        lease.keep_unconfirmed(&end); // an unproven reap is among the survivors (end_tree)
+        lease.keep_unconfirmed(&end);
     }
     end
 }
@@ -163,9 +163,9 @@ async fn run_gh_owned(root: &Path, args: &[String], bound: Option<std::time::Dur
         Err(_elapsed) => {
             let gh_pid = child.id();
             let unconfirmed = match owned.end() {
-                // gh itself counts as unconfirmed when its reap couldn't be proven
+                // gh itself counts as unconfirmed when its reap or its tree couldn't be confirmed
                 Some(end) => match end.await {
-                    Ok(end) => end.survivors.iter().map(|who| who.pid).chain(end.unwalked.and(gh_pid)).collect(),
+                    Ok(end) => end.survivors.iter().map(|who| who.pid).chain(end.unknown().next().and(gh_pid)).collect(),
                     Err(join) => return Err(GhRunError::Spawn(format!("ending the timed-out gh failed to run: {join}"))),
                 },
                 None => Vec::new(),

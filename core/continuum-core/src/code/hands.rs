@@ -137,15 +137,15 @@ impl Drop for HandsLease {
 
 impl HandsLease {
     /// Record what ending a process this admitted work owned left unconfirmed, BEFORE the lease
-    /// drops: the release that waits the lease out then finds it. A survivor (the child itself
-    /// when its reap is unproven, or a descendant) is re-checked; an unwalked tree is held.
+    /// drops: the release that waits the lease out then finds it. A surviving descendant is
+    /// re-checked; an unproven reap and an unwalked tree are held (`TreeEnd::unknown`).
     pub fn keep_unconfirmed(&self, end: &crate::inference::lane_process::TreeEnd) {
-        if end.survivors.is_empty() && end.unwalked.is_none() {
+        if end.confirmed() {
             return;
         }
         let mut g = self.cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
         g.lingering.processes.extend(end.survivors.iter().copied());
-        g.lingering.unknown.extend(end.unwalked.clone());
+        g.lingering.unknown.extend(end.unknown());
     }
 }
 
@@ -372,23 +372,28 @@ mod tests {
         });
     }
 
-    // what this catches (Codex root on #5026 at f014371be): an owned process whose tree couldn't
-    // be walked was recorded as having no descendants, so its release confirmed what nothing had
-    // checked. An unwalked tree, and an unproven reap among the survivors, reach the release.
+    // what this catches (Codex root on #5026 at f014371be and 9986ab232): an owned process's
+    // end that wasn't confirmed reached the release as nothing, so the release confirmed what
+    // nothing had checked: a tree no walk read, and an unproven reap even with no survivors and
+    // no walk error. Each case alone: a surviving descendant is re-checked, the others are held.
     #[tokio::test]
     async fn what_an_owned_process_left_unconfirmed_reaches_the_release() {
-        let context = HandsContext::fresh();
-        let lease = admit(context).expect("open hands");
-        let itself = crate::inference::lane_process::ProcessIdentity { pid: 4242, start_time: 7 };
-        lease.keep_unconfirmed(&crate::inference::lane_process::TreeEnd {
-            reaped: Err("could not confirm the process exited".into()),
-            survivors: vec![itself],
-            unwalked: Some("its descendants could not be walked".into()),
-        });
-        drop(lease);
-        let lingering = close(context).await;
-        assert_eq!(lingering.processes, vec![itself], "the unreaped child is re-checked by the release");
-        assert_eq!(lingering.unknown.len(), 1, "the unwalked tree is held, never counted gone: {lingering:?}");
+        use crate::inference::lane_process::{ProcessIdentity, TreeEnd};
+        let descendant = ProcessIdentity { pid: 4242, start_time: 7 };
+        let cases = [
+            ("an unproven reap alone", TreeEnd { reaped: Err("could not confirm the process exited".into()), survivors: Vec::new(), unwalked: None }, 0, 1),
+            ("an unwalked tree alone", TreeEnd { reaped: Ok(()), survivors: Vec::new(), unwalked: Some("its descendants could not be walked".into()) }, 0, 1),
+            ("a surviving descendant alone", TreeEnd { reaped: Ok(()), survivors: vec![descendant], unwalked: None }, 1, 0),
+            ("a confirmed end", TreeEnd { reaped: Ok(()), survivors: Vec::new(), unwalked: None }, 0, 0),
+        ];
+        for (case, end, processes, unknown) in cases {
+            let context = HandsContext::fresh();
+            let lease = admit(context).expect("open hands");
+            lease.keep_unconfirmed(&end);
+            drop(lease);
+            let lingering = close(context).await;
+            assert_eq!((lingering.processes.len(), lingering.unknown.len()), (processes, unknown), "{case}: {lingering:?}");
+        }
     }
 
     // what this catches (Astra on #5026): a dispatch cancelled while its blocking worker still

@@ -165,9 +165,9 @@ pub fn kill_if_same(who: ProcessIdentity) -> bool {
 }
 
 /// How ending a child and everything it started came out (Astra on ea06701d and #5026): whether
-/// the child's own reap was PROVEN, which processes still run as the same process (its
-/// descendants, and the child itself while its reap is unproven), and why the tree could not be
-/// walked at all. Delivering a signal is not confirming an exit, so nothing here is assumed.
+/// the child's own reap was PROVEN, which of its descendants still run as the same process, and
+/// why the tree could not be walked at all. Delivering a signal is not confirming an exit, so
+/// nothing here is assumed.
 #[derive(Debug)]
 pub struct TreeEnd {
     pub reaped: Result<(), String>,
@@ -182,6 +182,12 @@ impl TreeEnd {
     pub fn confirmed(&self) -> bool {
         self.reaped.is_ok() && self.survivors.is_empty() && self.unwalked.is_none()
     }
+
+    /// What no re-check can confirm: an unproven reap of the child itself, and a tree no walk
+    /// read. A holder of the end keeps these until its owner decides (Codex root on #5026).
+    pub fn unknown(&self) -> impl Iterator<Item = String> + '_ {
+        self.reaped.as_ref().err().cloned().into_iter().chain(self.unwalked.clone())
+    }
 }
 
 /// End `child` and its tree: THE one way an owned child is ended (the shell's execution task and
@@ -193,38 +199,26 @@ impl TreeEnd {
 pub async fn end_tree(child: &mut tokio::process::Child) -> TreeEnd {
     let walked = match child.id() {
         Some(pid) => tokio::task::spawn_blocking(move || {
-            let itself = identity(pid);
             let tree = descendants(pid);
             for who in &tree {
                 kill_if_same(*who);
             }
-            (itself, tree)
+            tree
         })
         .await
         .map_err(|join| format!("its descendants could not be walked, so what it started is unknown: {join}")),
-        None => Ok((None, Vec::new())),
+        None => Ok(Vec::new()),
     };
     let _ = child.start_kill(); // harmless when it already exited; the wait below is the proof
     let reaped = child.wait().await.map(|_| ()).map_err(|e| format!("could not confirm the process exited: {e}"));
-    let (itself, mut check, unwalked) = match walked {
-        Ok((itself, tree)) => (itself, tree, None),
-        Err(why) => (None, Vec::new(), Some(why)),
+    let (check, unwalked) = match walked {
+        Ok(tree) => (tree, None),
+        Err(why) => (Vec::new(), Some(why)),
     };
-    if reaped.is_err() {
-        check.extend(itself); // the child stays a candidate until its reap is proven
-    }
     let candidates = check.clone();
     // a re-check that didn't run confirms nothing: every candidate stays unconfirmed
     let survivors = tokio::task::spawn_blocking(move || still_present(&check)).await.unwrap_or(candidates);
     TreeEnd { reaped, survivors, unwalked }
-}
-
-/// `pid`'s identity as the process table sees it now, or `None` when it is gone.
-fn identity(pid: u32) -> Option<ProcessIdentity> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let mut sys = System::new();
-    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true, ProcessRefreshKind::nothing());
-    sys.process(Pid::from_u32(pid)).map(|p| ProcessIdentity { pid, start_time: p.start_time() })
 }
 
 /// Kill each of `survivors` again while its pid still names it, and return the ones still
