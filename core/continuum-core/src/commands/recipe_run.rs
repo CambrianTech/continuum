@@ -7,11 +7,11 @@
 //! [`crate::recipe::PipelineExecutor`]. Until S2 this read a second store — rows in
 //! a `recipes` data collection — of which zero ever existed on any node.
 //!
-//! Access is Privileged: a pipeline dispatches arbitrary commands with the
-//! substrate's own trust. Per-caller identity threading (so a persona-invoked
-//! recipe runs AS the persona against AuthPolicy) is the designed follow-up in
-//! RECIPE-EXECUTION-RUNTIME.md — until it lands, only the operator and
-//! substrate code may run pipelines.
+//! Every step acts as THE CALLER of `recipe/run` (`Ctx::caller`), the same way an
+//! activity birth runs its pipeline as the spawner: each step is gated against
+//! AuthPolicy as that identity, never with the substrate's own trust. A caller of
+//! `None` is the substrate's own local code. Access stays Privileged; widening it to
+//! personas is a separate decision.
 
 use crate::runtime::command_executor::CommandExecutor;
 use crate::runtime::LateBound;
@@ -72,7 +72,7 @@ impl ActionCommand for RecipeRun {
     type Params = RecipeRunParams;
     type Output = RecipeRunResult;
 
-    async fn run(&self, _ctx: &Ctx, p: RecipeRunParams) -> Result<RecipeRunResult, CommandError> {
+    async fn run(&self, ctx: &Ctx, p: RecipeRunParams) -> Result<RecipeRunResult, CommandError> {
         let executor = self
             .executor_slot
             .get()
@@ -96,6 +96,7 @@ impl ActionCommand for RecipeRun {
         })?;
 
         let receipt = crate::recipe::PipelineExecutor::new(executor.clone())
+            .with_caller(ctx.caller.clone())
             .run(&recipe.purpose, &recipe.pipeline, p.args.unwrap_or(serde_json::Value::Null)) // unwrap_or: no args = null, steps referencing $args.* then fail loud by name
             .await
             .map_err(CommandError::Internal)?;

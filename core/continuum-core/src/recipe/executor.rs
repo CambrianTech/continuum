@@ -422,6 +422,40 @@ mod tests {
         assert_eq!(receipt.steps_skipped, 1);
     }
 
+    /// what this catches: a pipeline's steps dispatched with the substrate's own
+    /// trust instead of as the caller that ran it (`recipe/run` dropped `Ctx::caller`
+    /// until 2026-10-13). The policy forbids any identified caller, so the same step
+    /// must be refused when the run acts as a persona and must pass the gate when the
+    /// run is the substrate's own code.
+    #[tokio::test]
+    async fn every_step_is_gated_as_the_caller_the_run_acts_as() {
+        let deny_identified = crate::routing::ClosurePolicy::new("deny-identified", |_decision, caller| match caller {
+            Some(_) => crate::routing::Verdict::Forbidden {
+                reason: crate::routing::ForbiddenReason::UnknownPeer,
+            },
+            None => crate::routing::Verdict::Allowed,
+        });
+        let exec = Arc::new(
+            crate::runtime::command_executor::CommandExecutor::new(Arc::new(ModuleRegistry::new()))
+                .with_policy(Arc::new(deny_identified)),
+        );
+        let steps = [step("work/create", None)];
+        let persona = crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_u128(7));
+
+        let as_persona = PipelineExecutor::new(exec.clone())
+            .with_caller(Some(persona))
+            .run("bench/as-caller", &steps, Value::Null)
+            .await
+            .expect_err("an identified caller is refused by this policy"); // JUSTIFIED: the invariant under test
+        assert!(as_persona.contains("forbidden"), "gated as the persona: {as_persona}");
+
+        let as_substrate = PipelineExecutor::new(exec)
+            .run("bench/as-substrate", &steps, Value::Null)
+            .await
+            .expect_err("an empty registry has no work/create"); // JUSTIFIED: no module is registered
+        assert!(!as_substrate.contains("forbidden"), "the substrate passes the gate: {as_substrate}");
+    }
+
     #[tokio::test]
     async fn each_fans_out_one_dispatch_per_item_never_once_with_the_whole_array() {
         // what this catches: fan-out is how one `work/create` step posts a whole
