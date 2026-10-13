@@ -581,11 +581,6 @@ impl Footprints {
             })
             .collect()
     }
-    /// A whole-run footprint (graph and context): [`Self::record_with`].
-    fn record(&self, shape: &Shape, bytes: u64, job: Uuid) -> std::io::Result<()> {
-        self.record_with(shape, bytes, true, job)
-    }
-
     /// Keeps the LARGEST footprint observed for a shape: the peak is sampled on the governor's
     /// scan cadence, which can miss the true peak but never invents one (Cormac on #4443). A
     /// whole-run row always replaces a graph-only one, whatever their sizes: they measure
@@ -3396,7 +3391,26 @@ mod tests {
             footprints: tuner.footprints.clone(),
             http: tuner.http.clone(),
             lane: url,
-            start: Some(json!({"out": out})),
+            start: Some(TrainRequest {
+                examples: Vec::new(),
+                out: out.clone(),
+                rank: 8,
+                alpha: 16,
+                targets: "attn_q,attn_v".into(),
+                window: 256,
+                epochs: 1,
+                lr: 1e-4,
+                val_split: 0.1,
+                seed: 1,
+                top_layers: None,
+                memory_budget_mib: None,
+                max_slowdown_ppm: 0,
+                fit: "middle",
+                exact: false,
+                walk_host_budget_mib: None,
+                chunk: None,
+                recompute: false,
+            }),
             post_wait,
             out: out.clone(),
             adapter_path: spec.adapter_path.clone(),
