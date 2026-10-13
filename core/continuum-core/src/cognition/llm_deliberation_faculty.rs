@@ -4188,7 +4188,11 @@ impl<'a> GroundingPiece<'a> {
     fn whole(c: &'a Contribution) -> Self {
         // A block whose SOURCE cut it short still owes its reader the notice, even
         // when every delivered part fits: reserve it here so the budget stays exact.
-        let notice = if c.source_truncated { 1 + Self::notice_bytes(c, 0) } else { 0 };
+        let notice = if c.source_truncated {
+            usize::from(!c.content.is_empty()) + Self::notice_bytes(c, 0)
+        } else {
+            0
+        };
         Self {
             contribution: c,
             units: None,
@@ -4289,7 +4293,9 @@ impl<'a> GroundingPiece<'a> {
             None => {
                 out.push_str(&c.content);
                 if c.source_truncated {
-                    out.push('\n');
+                    if !c.content.is_empty() {
+                        out.push('\n');
+                    }
                     Self::append_notice(c, 0, out);
                 }
             }
@@ -7764,6 +7770,13 @@ mod tests {
             let cut = render(board_like(60).with_expand_command(Some("work/list")).with_source_truncated(true), 120);
             assert!(cut.contains("+ more not shown (context budget)"), "a further cut must count what it left out PLUS the source's remainder\n{cut}");
             assert!(!cut.contains("to see all 62"), "the delivered parts are not the source's total\n{cut}");
+            let empty = render(
+                Contribution::context(FacultyId::Custom("room-board".to_string()), String::new(), 0.5, "nothing fit".to_string())
+                    .with_expand_command(Some("work/list"))
+                    .with_source_truncated(true),
+                4_000,
+            );
+            assert!(empty.contains("…more not shown (context budget) — run `work/list` to see all"), "an empty partial delivery keeps its notice\n{empty}");
             let honest = render(board_like(2).with_expand_command(Some("work/list")), 4_000);
             assert!(!honest.contains("more not shown"), "a complete block carries no notice\n{honest}");
         }

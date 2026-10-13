@@ -406,8 +406,10 @@ impl Faculty for RagSourceFaculty {
             .await;
 
         // Empty delivery → abstain (the source had nothing, or degraded to empty
-        // per the good-citizen doctrine). No empty bid clutters the workspace.
-        if delivery.items.is_empty() {
+        // per the good-citizen doctrine). No empty bid clutters the workspace. An
+        // empty PARTIAL delivery is different: nothing fit, but the source has more,
+        // so it still contributes its notice (card e049aa82) instead of vanishing.
+        if delivery.items.is_empty() && delivery.continuation.is_none() {
             let _ = self.note_absence(ws.room_id);
             return None;
         }
