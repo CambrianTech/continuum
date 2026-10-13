@@ -3384,6 +3384,31 @@ impl ConsumeLedger {
         *n
     }
 
+    /// The build a failed pass is charged to: the one it SELECTED (the tip's, or the
+    /// older published core it fell back to), or the tip's build when none was selected
+    /// yet (no artifact, a refused one, a failure before the CI wait ended).
+    fn charge_failure(&mut self, selected: Option<&str>, tip_build: &str) -> (String, u32) {
+        let build = selected.unwrap_or(tip_build).to_string(); // unwrap_or: nothing selected yet = the tip's attempt
+        let failures = self.record_failure(&build);
+        (build, failures)
+    }
+
+    /// A build landed: forget ITS failures only. Another build that already failed here
+    /// stays excluded (an exhausted newer build must not become eligible again because
+    /// an older one deployed, Astra review of #5011).
+    fn landed(&mut self, build: &str) {
+        self.failures.remove(build);
+    }
+
+    /// Persist, or remove the file when nothing is left to remember.
+    fn save(&self, path: &Path) {
+        if self.failures.is_empty() {
+            let _ = std::fs::remove_file(path);
+        } else {
+            self.write(path);
+        }
+    }
+
     /// The candidates still worth a pass: the tip's own build always (whether to give it
     /// up is the verdict's call), and any older one that has not already failed here
     /// CONSUME_MAX_ATTEMPTS times.
@@ -4426,6 +4451,11 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
             // 2026-10-07 the pass deployed 69a2c2b96 for request d2cf23221 and logged
             // "d2cf23221 handed off", a build that was not running (card 4752fea6).
             let mut deployed = tip.clone();
+            // The build this pass SELECTED, set the moment CI's answer is known and before
+            // any fallible handoff step (clearing the wait marker, the checkout, the
+            // submodules, the reboot), so a failure in any of them is charged to it, never
+            // to the tip (Astra review of #5011).
+            let mut selected: Option<String> = None;
             let attempt = async {
                 // The deploy claim, from BEFORE the checkout to the handoff (Fable on #4702).
                 // The CI wait below can run for hours, and without a claim nothing marks
@@ -4459,6 +4489,10 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
                 let candidates = ledger.admissible(deploy_candidates(&repo, running.as_deref(), &tip, &newest_key), &newest_key);
                 let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip).await;
+                if let CiCore::Built { key, .. } = &ci_core {
+                    selected = Some(key.clone());
+                    deployed = key.clone();
+                }
                 // The wait is over, whatever it found: from here the deploy promotes the
                 // engine and swaps the core, which the claim must block. A marker that cannot
                 // be removed ends this attempt rather than let a swap read as a wait.
@@ -4480,7 +4514,6 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         }
                         // CI's core for this pass: an older published one, or the build-key
                         // commit's core serving a docs-only tip (card 9080ffb0).
-                        deployed = key.clone();
                         core
                     }
                     CiCore::Refused(why) => return Err(why),
@@ -4503,7 +4536,10 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
             .await;
             match &attempt {
                 Ok(PassEnd::Done) => {
-                    let _ = std::fs::remove_file(&attempts_path);
+                    if let Some(build) = &selected {
+                        ledger.landed(build); // a pass that handed off selected a build
+                    }
+                    ledger.save(&attempts_path);
                     let request = if deployed == tip { String::new() } else { format!(" (request {tip})") };
                     deploy_note(&format!("✓ deploy-consume: {deployed} handed off{request}"));
                 }
@@ -4511,9 +4547,9 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 Err(why) => {
                     // Charged to the build this pass tried: the tip's, or the older published
                     // core it fell back to. A failure before any build was chosen is the tip's.
-                    let tried = if deployed == tip { tip_build_key.clone().unwrap_or_else(|| tip.clone()) } else { deployed.clone() }; // unwrap_or_else: no build key means the tip names its own core
-                    let failures = ledger.record_failure(&tried);
-                    ledger.write(&attempts_path);
+                    let tip_build = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
+                    let (tried, failures) = ledger.charge_failure(selected.as_deref(), &tip_build);
+                    ledger.save(&attempts_path);
                     deploy_note(&format!(
                         "deploy-consume: attempt {failures} of {CONSUME_MAX_ATTEMPTS} for build {tried} (request {tip}) failed: {why}"
                     ));
@@ -7423,6 +7459,33 @@ mod tests {
             vec!["34e8db15d".to_string()],
             "the tip's own build is never filtered here: giving it up is the verdict's call"
         );
+        // A pass that selected an older build and failed before its checkout (Astra review
+        // of #5011, P1) is charged to that build; one that selected nothing is the tip's.
+        let mut charged = super::ConsumeLedger::default();
+        assert_eq!(charged.charge_failure(Some("254d11e1c"), "34e8db15d"), ("254d11e1c".to_string(), 1));
+        assert_eq!(charged.charge_failure(None, "34e8db15d"), ("34e8db15d".to_string(), 1));
+        // An older build landing forgets only ITS failures (P2): the exhausted one stays
+        // excluded across a reload, and the tip keeps its own count.
+        let mut after = super::ConsumeLedger::default();
+        for _ in 0..3 {
+            after.record_failure("34e8db15d");
+        }
+        after.record_failure("254d11e1c");
+        after.landed("254d11e1c");
+        after.save(&path);
+        let after = super::ConsumeLedger::read(&path);
+        assert_eq!(after.failures("34e8db15d"), 3, "an exhausted build is not made eligible by another landing");
+        assert_eq!(after.failures("254d11e1c"), 0);
+        assert_eq!(
+            after.admissible(vec!["9f1c2d3e4".into(), "34e8db15d".into()], "9f1c2d3e4"),
+            vec!["9f1c2d3e4".to_string()],
+            "under a newer tip the exhausted build is still skipped"
+        );
+        let mut emptied = super::ConsumeLedger::default();
+        emptied.record_failure("254d11e1c");
+        emptied.landed("254d11e1c");
+        emptied.save(&path);
+        assert!(!path.exists(), "nothing left to remember removes the file");
         std::fs::write(&path, r#"{"failures":3,"tip":"34e8db15db2d543a5bb72ee599b74feef39ae7f8"}"#).unwrap(); // unwrap: test fixture write
         assert_eq!(super::ConsumeLedger::read(&path), super::ConsumeLedger::default(), "an old per-request ledger names no build");
         let _ = std::fs::remove_dir_all(&dir);
