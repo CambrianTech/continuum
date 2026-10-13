@@ -239,28 +239,33 @@ impl ResourceDaemon {
 
     // ---- non-blocking lease accounting (brief sync lock, no await held) -----
 
+    /// Publish the governor's CURRENT board while its lock is held, so boards reach
+    /// readers in the order the state changed. Card 26df: every mutation used to
+    /// build its board under the lock and publish it after letting go, so two
+    /// acquires racing could publish out of order. The older board, missing the
+    /// newer lease, landed last, and a guard reading it saw its own grant as 0.
+    /// `publish` is an atomic store plus a `watch::send`, cheap enough to hold
+    /// the lock across.
+    fn publish_locked(&self, governor: &ResourceGovernor) {
+        self.channel.publish(governor.board());
+    }
+
     /// Grant a lease (or fail-loud refusal). Microsecond in-memory critical
-    /// section; publishes the fresh board after releasing the lock.
+    /// section; the fresh board is published before the lock is released.
     pub fn acquire(&self, req: &LeaseRequest) -> Result<ResourceLease, LeaseError> {
         let now = EpochMs::now().millis();
-        let (lease, board) = {
-            let mut g = self.governor.lock();
-            let lease = g.acquire(req, now)?;
-            (lease, g.board())
-        };
+        let mut g = self.governor.lock();
+        let lease = g.acquire(req, now)?;
         // Publish synchronously (outside the tick) so a caller sees its lease on
         // the board immediately — the property the embedded channel exists for.
-        self.channel.publish(board);
+        self.publish_locked(&g);
         Ok(lease)
     }
 
     pub fn release(&self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
-        let (lease, board) = {
-            let mut g = self.governor.lock();
-            let lease = g.release(lease_id)?;
-            (lease, g.board())
-        };
-        self.channel.publish(board);
+        let mut g = self.governor.lock();
+        let lease = g.release(lease_id)?;
+        self.publish_locked(&g);
         Ok(lease)
     }
 
@@ -547,9 +552,10 @@ impl ResourceDaemon {
             }
         }
 
-        // Publish post-plan board so readers (and the gate) stay fresh even when
-        // calm.
-        self.channel.publish(board);
+        // Publish so readers (and the gate) stay fresh even when calm. The CURRENT
+        // board, not the one captured above: an observer may have acquired since,
+        // and that newer board must not be overwritten by this older one (card 26df).
+        self.publish_locked(&self.governor.lock());
 
         if plans.is_empty() {
             return;
@@ -632,16 +638,13 @@ impl ResourceDaemon {
         //    channel re-derives the over-budget gate against the POST-reclaim
         //    grants, so a freed lease clears the gate in the same tick, not one
         //    tick late.
-        let board = {
-            let mut g = self.governor.lock();
-            for (lease_id, outcome) in &outcomes {
-                if let Err(e) = g.apply_reclaim_outcome(lease_id, outcome) {
-                    clog_warn!("🧮 apply_reclaim_outcome failed for {lease_id}: {e:?}");
-                }
+        let mut g = self.governor.lock();
+        for (lease_id, outcome) in &outcomes {
+            if let Err(e) = g.apply_reclaim_outcome(lease_id, outcome) {
+                clog_warn!("🧮 apply_reclaim_outcome failed for {lease_id}: {e:?}");
             }
-            g.board()
-        };
-        self.channel.publish(board);
+        }
+        self.publish_locked(&g);
     }
 }
 
@@ -663,15 +666,12 @@ impl LeaseGuard {
         &self.lease_id
     }
 
-    /// The bytes this guard holds, read live off the board (0 if already gone).
+    /// The bytes this guard holds, read from the governor itself (0 once the lease
+    /// is released or swept). Not the published board: a board is a copy, and a copy
+    /// can lag the grant it describes (card 26df: an admitted 6.1 GB train run read
+    /// its own grant as 0).
     pub fn bytes(&self) -> u64 {
-        self.daemon
-            .board()
-            .leases
-            .iter()
-            .find(|l| l.lease_id == self.lease_id)
-            .map(|l| l.bytes)
-            .unwrap_or(0)
+        self.daemon.governor.lock().lease(&self.lease_id).map(|l| l.bytes).unwrap_or(0) // unwrap_or: no lease means nothing held, the documented answer once it is released or swept
     }
 
     /// Release the reservation early (idempotent). `Drop` calls this if the guard
@@ -1040,6 +1040,44 @@ mod tests {
             vram_available(&daemon),
             10_000,
             "the full ceiling is free again after drop"
+        );
+    }
+
+    // what this catches: card 26df. A board built under the lock and published after
+    // it is released can be overwritten by an older one: the tick captured its board,
+    // ran its observers (which acquire), and published the captured copy LAST, wiping
+    // the newer lease off the board. A guard that read the board then saw its own grant
+    // as 0 (an admitted 6.1 GB train run did). An observer here acquires on every tick,
+    // so after any tick the board must name every lease acquired, whatever the ticks'
+    // timing; the old order drops the newest one every time.
+    #[tokio::test]
+    async fn a_tick_never_publishes_a_board_older_than_a_lease_its_observers_took() {
+        let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 10_000));
+        let daemon = ResourceDaemon::start(
+            vec![src],
+            vec![],
+            DaemonConfig {
+                tick_interval: Duration::from_secs(3600),
+                min_reclaim_budget: Duration::from_millis(100),
+                governor: GovernorConfig { min_dwell_ms: 0, graceful_grace_ms: 50 },
+            },
+        );
+        let acquired = Arc::new(AtomicU64::new(0));
+        let (weak, count) = (Arc::downgrade(&daemon), acquired.clone());
+        daemon.on_tick(Arc::new(move |_board: &LeaseBoard| {
+            if let Some(d) = weak.upgrade() {
+                d.acquire(&req("observer", 1, 60_000, ReclaimPolicy::Graceful))
+                    .expect("1 byte of 10,000 is always free");
+                count.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+        daemon.tick().await;
+        let held = acquired.load(Ordering::SeqCst);
+        assert!(held >= 1, "the manual tick ran the observer");
+        assert_eq!(
+            daemon.board().leases.len() as u64,
+            held,
+            "the published board names every lease the observers took, including the one taken during the last tick"
         );
     }
 

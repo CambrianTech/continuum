@@ -301,6 +301,11 @@ impl ResourceGovernor {
 
     // ---- reporting ---------------------------------------------------------
 
+    /// The live lease by id, from the ledger the board is built from (card 26df).
+    pub fn lease(&self, lease_id: &str) -> Option<&ResourceLease> {
+        self.ledger.lease(lease_id)
+    }
+
     /// The board the daemon publishes and the `resources/*` commands return.
     pub fn board(&self) -> LeaseBoard {
         self.ledger.board()

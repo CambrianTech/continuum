@@ -289,6 +289,30 @@ fn post_wait_for(render_per_example: Duration, sent: usize, floor: Duration) -> 
     render_per_example.mul_f64(sent as f64 * 2.0).max(floor)
 }
 
+/// What starting a run in the engine came to.
+enum Begin {
+    /// accepted (or re-attached): the watch loop takes it
+    Running(Box<EngineRun>),
+    /// the engine provably never started it: its documented refusal (see
+    /// [`is_documented_train_refusal`])
+    NeverStarted(InPlaceEnd),
+    /// it ended without starting, and nothing proves the engine won't run it: a lost POST
+    /// (it may still be queued), or any other non-2xx. Its binding settles only the ordinary way.
+    Unproven(InPlaceEnd),
+}
+
+/// The fork's documented pre-acceptance refusal of `POST /train`: HTTP 400 with an
+/// `invalid_request_error` body. `server_trainer::start` (tools/server/server-train.cpp) is
+/// synchronous and answers `ok: false` only before claiming the run, or after releasing its
+/// claim (`running = false`). The server then maps it to exactly this, so when the answer
+/// arrives nothing of this run is running or will run.
+fn is_documented_train_refusal(status: reqwest::StatusCode, body: &str) -> bool {
+    status == reqwest::StatusCode::BAD_REQUEST
+        && serde_json::from_str::<Value>(body)
+            .ok()
+            .is_some_and(|b| b.pointer("/error/type").and_then(Value::as_str) == Some("invalid_request_error"))
+}
+
 /// What a lost POST /train turns out to have been, from the engine's status afterwards.
 #[derive(Debug, PartialEq)]
 enum LostPost {
@@ -557,11 +581,6 @@ impl Footprints {
             })
             .collect()
     }
-    /// A whole-run footprint (graph and context): [`Self::record_with`].
-    fn record(&self, shape: &Shape, bytes: u64, job: Uuid) -> std::io::Result<()> {
-        self.record_with(shape, bytes, true, job)
-    }
-
     /// Keeps the LARGEST footprint observed for a shape: the peak is sampled on the governor's
     /// scan cadence, which can miss the true peak but never invents one (Cormac on #4443). A
     /// whole-run row always replaces a graph-only one, whatever their sizes: they measure
@@ -1019,6 +1038,20 @@ struct EngineProbe {
 }
 
 impl EngineProbe {
+    /// The end of a run the engine provably never started (card 26df): its documented refusal
+    /// of the POST, and nothing else. `settled` can't decide this case,
+    /// since it waits for THIS run's terminal state and a refused run never has one. The
+    /// binding is settled when the bound incarnation is verifiably dead, or is still the same
+    /// process, which owns the lane that answered. An unreadable process keeps it.
+    async fn never_started(&self, engine: &crate::inference::engine_residency::EngineIncarnation) -> bool {
+        use crate::inference::engine_residency::Liveness;
+        let engine = *engine;
+        matches!(
+            tokio::task::spawn_blocking(move || engine.liveness()).await,
+            Ok(Liveness::Dead | Liveness::Alive)
+        )
+    }
+
     /// Is this run's end SETTLED (SHARED-RESIDENT-LIFECYCLE.md; Codex on #4531)? Only on
     /// positive evidence:
     /// - the incarnation is VERIFIABLY dead (no such process, or the pid was reused); or
@@ -1172,7 +1205,11 @@ impl InPlaceRun for EngineRun {
         let (store, job) = (self.hold_store.clone(), self.job);
         let residency = self.residency.clone();
         let probe_run = EngineProbe { http: self.http.clone(), lane: self.lane.clone(), out: self.out.clone() };
-        let mut end = self.run_steered(cancel, progress).await;
+        let (mut end, never_started) = match self.begin().await {
+            Begin::NeverStarted(end) => (end, true),
+            Begin::Unproven(end) => (end, false),
+            Begin::Running(run) => (run.run_steered(cancel, progress).await, false),
+        };
         // serving replaced the engine under this run anyway (an emergency): the failure says why
         if let (InPlaceEnd::Failed(why), Some((path, _))) = (&end, &residency) {
             if let Some(reason) = crate::inference::engine_residency::interruption_of(path, job) {
@@ -1185,7 +1222,12 @@ impl InPlaceRun for EngineRun {
         // training in it, so serving must not replace it on a guess (the explicit recovery act
         // resolves that case, never a timeout).
         if let Some((path, bound)) = residency {
-            if probe_run.settled(&bound.engine).await {
+            let settled = if never_started {
+                probe_run.never_started(&bound.engine).await
+            } else {
+                probe_run.settled(&bound.engine).await
+            };
+            if settled {
                 let released = tokio::task::spawn_blocking(move || crate::inference::engine_residency::release(&path, &bound)).await;
                 if !matches!(released, Ok(Ok(_))) {
                     crate::probe!(
@@ -1224,7 +1266,10 @@ impl InPlaceRun for EngineRun {
 }
 
 impl EngineRun {
-    async fn run_steered(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
+    /// Start the run in the engine, or say provably that it never started there. Split from
+    /// the watch so a refused start settles its engine binding as "never started" (card 26df),
+    /// not by waiting on a terminal state the engine will never report for this run.
+    async fn begin(self: Box<Self>) -> Begin {
         // a re-attached run is already in the engine: it is watched, never started again
         if let Some(body) = &self.start {
             match self
@@ -1237,9 +1282,12 @@ impl EngineRun {
             {
                 Ok(r) if r.status().is_success() => {}
                 Ok(r) => {
-                    // refused before any thread started: nothing of ours runs
+                    let status = r.status();
                     let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
-                    return InPlaceEnd::Failed(format!("the engine refused the training run: {why}"));
+                    let end = InPlaceEnd::Failed(format!("the engine refused the training run: HTTP {status}: {why}"));
+                    // Only the engine's documented refusal proves nothing of ours runs (Codex on
+                    // #5001): any other non-2xx (a 500, a proxy's answer) proves nothing.
+                    return if is_documented_train_refusal(status, &why) { Begin::NeverStarted(end) } else { Begin::Unproven(end) };
                 }
                 // LOST ON THE WAY BACK, RECONCILED BY THE RUN'S ID (card 93ffc555): the engine may
                 // have the run (fork #55 claims and shows it 'preparing' before its long prepare),
@@ -1257,11 +1305,20 @@ impl EngineRun {
                             error = %e,
                             "the POST was lost on the way back but the engine reports this job's run: it is watched to its end, not failed"
                         ),
-                        LostPost::NeverStarted => return self.failed(format!("POST /train on {}: {e}", self.lane)).await,
+                        // A lost POST may still be queued or in flight when the status is read, so a
+                        // status naming another run or none does not prove it will never start
+                        // (Codex on #5001). Its binding settles only the ordinary way.
+                        LostPost::NeverStarted => {
+                            return Begin::Unproven(self.failed(format!("POST /train on {}: {e}", self.lane)).await);
+                        }
                     }
                 }
             }
         }
+        Begin::Running(self)
+    }
+
+    async fn run_steered(self: Box<Self>, mut cancel: watch::Receiver<bool>, progress: RunProgress) -> InPlaceEnd {
         let mut tick = tokio::time::interval(POLL);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut cancelling = false;
@@ -2512,9 +2569,9 @@ mod tests {
         let dir = tempfile::tempdir().expect("test: dir");
         let store = Footprints::at(dir.path().join("fp.json"));
         let fam = Shape { model: "m".into(), window: 1536, rank: 8, targets: "attn_q".into(), depth: None, exact: true, chunk: 256, recompute: true };
-        store.record(&fam, 7, Uuid::nil()).expect("test: record");
-        store.record(&Shape { window: 68608, chunk: 512, ..fam.clone() }, 9, Uuid::nil()).expect("test: record");
-        store.record(&Shape { recompute: false, ..fam.clone() }, 99, Uuid::nil()).expect("test: record");
+        store.record_with(&fam, 7, true, Uuid::nil()).expect("test: record");
+        store.record_with(&Shape { window: 68608, chunk: 512, ..fam.clone() }, 9, true, Uuid::nil()).expect("test: record");
+        store.record_with(&Shape { recompute: false, ..fam.clone() }, 99, true, Uuid::nil()).expect("test: record");
         let mut got = store.rows_like(&fam);
         got.sort_unstable();
         assert_eq!(got, vec![(1536, 256, 7), (68608, 512, 9)], "its own family only, at every window");
@@ -2594,6 +2651,23 @@ mod tests {
                 let lane = l1.clone();
                 let seen = seen1.clone();
                 async move {
+                    use axum::response::IntoResponse;
+                    // "post_400": the engine refuses the start before accepting it, and keeps
+                    // naming its PRIOR run (card 26df, the 5090)
+                    if mode == "post_400" {
+                        return (axum::http::StatusCode::BAD_REQUEST, axum::Json(json!({"error": {
+                            "code": 400, "message": "a training run is already in progress", "type": "invalid_request_error"}}))).into_response();
+                    }
+                    // "post_500": a non-2xx that is NOT the engine's documented refusal
+                    if mode == "post_500" {
+                        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "upstream connect error").into_response();
+                    }
+                    // "post_stale": the POST is still queued past the caller's wait, and /train
+                    // meanwhile names the prior run (it has not claimed this one yet)
+                    if mode == "post_stale" {
+                        tokio::time::sleep(Duration::from_secs(3)).await;
+                        return axum::Json(json!({"ok": true})).into_response();
+                    }
                     {
                         let mut l = lane.lock().unwrap();
                         l.out = b.get("out").and_then(Value::as_str).map(str::to_owned);
@@ -2605,7 +2679,7 @@ mod tests {
                     if mode == "lost_post" || mode == "lost_post_refused" {
                         tokio::time::sleep(Duration::from_secs(3)).await;
                     }
-                    axum::Json(json!({"ok": true}))
+                    axum::Json(json!({"ok": true})).into_response()
                 }
             }))
             .route("/train", get(move || {
@@ -2617,6 +2691,9 @@ mod tests {
                     let out = l.out.clone().unwrap_or_default();
                     if l.cancelled {
                         return axum::Json(json!({"state": "cancelled", "out": out}));
+                    }
+                    if mode == "post_400" || mode == "post_500" || mode == "post_stale" {
+                        return axum::Json(json!({"state": "done", "out": "prior-run.gguf"}));
                     }
                     if mode == "flaky" && l.polls <= 2 {
                         return axum::Json(json!("not a status object"));
@@ -2879,8 +2956,8 @@ mod tests {
         let mib = 1024u64 * 1024;
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
         let store = Footprints::at(footprints.clone());
-        store.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
-        store.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        store.record_with(&fam, 2598 * mib, true, Uuid::nil()).expect("test: row");
+        store.record_with(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, true, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&store.rows_like(&fam)).expect("test: two windows");
         // her examples are 3,000 tokens whole: the window they need (3,072) is far under served, and
         // the grant holds it at the floor chunk but not at the served window
@@ -2942,8 +3019,8 @@ mod tests {
         let fam = Shape { model: "ggml-org/Qwen3.8-27B-GGUF".into(), window: 1536, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: 256, recompute: true };
         let probe_dir = tempfile::tempdir().expect("test: dir");
         let probe = Footprints::at(probe_dir.path().join("fp.json"));
-        probe.record(&fam, 2598 * mib, Uuid::nil()).expect("test: row");
-        probe.record(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, Uuid::nil()).expect("test: row");
+        probe.record_with(&fam, 2598 * mib, true, Uuid::nil()).expect("test: row");
+        probe.record_with(&Shape { window: 68_608, chunk: 512, ..fam.clone() }, 10_225 * mib, true, Uuid::nil()).expect("test: row");
         let model = GraphModel::fit(&probe.rows_like(&fam)).expect("test: two windows");
         for (case, free) in [
             ("raised", model.bytes(3_072, TRAINING_CHUNK_MIN) - 1),
@@ -3273,6 +3350,115 @@ mod tests {
         server.abort();
     }
 
+    /// Run one job against a fake lane in `mode` whose POST does not start it, with the engine
+    /// binding recorded, and answer whether the binding is still held when the job has ended.
+    async fn binding_held_after_a_start_that_did_not_run(mode: &'static str, post_wait: Duration) -> bool {
+        let train = tempfile::tempdir().expect("test: dir");
+        let jobs = tempfile::tempdir().expect("test: dir");
+        let home = tempfile::tempdir().expect("test: dir");
+        let (url, server, _seen) = fake_lane(train.path().to_path_buf(), mode).await;
+        let job = Uuid::new_v4();
+        let out = format!("{job}.gguf");
+        let port: u16 = url.rsplit(':').next().and_then(|p| p.parse().ok()).expect("test: port");
+        let engine = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), port).expect("test: this process has a start time");
+        let store = crate::inference::engine_residency::store_path(home.path());
+        let spec = EngineRunSpec {
+            adapter_path: train.path().join(&out),
+            job_dir: jobs.path().join(job.to_string()),
+            epochs: 1,
+            val_split: SplitPpm::from(0.1),
+            model_id: format!("{PROVIDER_ID}:code:{job}"),
+            corpus_chars: 0,
+            walk: None,
+            shape: Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q,attn_v".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false },
+        };
+        let work = crate::inference::engine_residency::ResidentWork {
+            job,
+            out: out.clone(),
+            engine,
+            base_model: "m".into(),
+            created_ms: 1,
+            consumer: format!("genome-train:{job}"),
+            reserved_bytes: 0,
+            interrupted: None,
+            job_spec: Some(spec.clone()),
+        };
+        crate::inference::engine_residency::record(&store, work.clone()).expect("test: record");
+        let tuner = EngineLoraFineTuner::for_test(url.clone(), train.path().to_path_buf(), jobs.path().join("footprints.json"));
+        let last = Arc::new(Mutex::new(None));
+        let run = EngineRun {
+            shape: spec.shape.clone(),
+            footprints: tuner.footprints.clone(),
+            http: tuner.http.clone(),
+            lane: url,
+            start: Some(TrainRequest {
+                examples: Vec::new(),
+                out: out.clone(),
+                rank: 8,
+                alpha: 16,
+                targets: "attn_q,attn_v".into(),
+                window: 256,
+                epochs: 1,
+                lr: 1e-4,
+                val_split: 0.1,
+                seed: 1,
+                top_layers: None,
+                memory_budget_mib: None,
+                max_slowdown_ppm: 0,
+                fit: "middle",
+                exact: false,
+                walk_host_budget_mib: None,
+                chunk: None,
+                recompute: false,
+            }),
+            post_wait,
+            out: out.clone(),
+            adapter_path: spec.adapter_path.clone(),
+            job_dir: spec.job_dir.clone(),
+            epochs: spec.epochs,
+            last: last.clone(),
+            holds: tuner.holds.clone(),
+            job,
+            hold_store: None,
+            residency: Some((store.clone(), work)),
+            _lease: None,
+        };
+        let finish = finish_run(job, spec, tuner.footprints.clone(), last);
+        let handle = tuner.jobs.prepare(job, move |_progress| async move {
+            Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
+        });
+        assert!(
+            matches!(wait_terminal(&tuner, &handle).await, TrainingStatus::Failed { .. }),
+            "test ({mode}): a start that did not run fails the job"
+        );
+        let held = crate::inference::engine_residency::find(&store, job).expect("test: read").is_some();
+        server.abort();
+        held
+    }
+
+    // what this catches: card 26df (Codex, the 5090), both directions. The engine's
+    // documented refusal (HTTP 400, invalid_request_error) proves nothing of this run runs.
+    // `settled` waits for THIS run's terminal state, which a refused run never has, so the
+    // binding stayed forever and serving stayed off the engine; it must be released. And
+    // nothing weaker may release it (Codex on #5001): a 500 or proxy answer is not the
+    // engine's refusal, and a lost POST may still be queued while /train names the prior run.
+    // Releasing on those would let serving replace an engine a run is about to start in.
+    #[tokio::test]
+    async fn only_the_engines_documented_refusal_releases_a_never_started_runs_binding() {
+        assert!(
+            !binding_held_after_a_start_that_did_not_run("post_400", POST_WAIT_FLOOR).await,
+            "the documented refusal releases the binding"
+        );
+        assert!(
+            binding_held_after_a_start_that_did_not_run("post_500", POST_WAIT_FLOOR).await,
+            "a non-2xx that is not the engine's refusal keeps the binding"
+        );
+        assert!(
+            binding_held_after_a_start_that_did_not_run("post_stale", Duration::from_millis(300)).await,
+            "a lost POST whose status still names the prior run keeps the binding: it may yet start"
+        );
+    }
+
     // what this catches (Codex on #4472): the finish path filing a measured graph under the
     // depth that was ASKED rather than the depth the engine ADAPTED. An engine without
     // top_layers ignores it and measures a full-depth graph; filed under |d8, that number
@@ -3473,10 +3659,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("test: dir");
         let f = Footprints::at(dir.path().join("f.json"));
         let s = Shape { model: "m".into(), window: 256, rank: 8, targets: "attn_q".into(), depth: None, exact: false, chunk: TRAINING_CHUNK, recompute: false };
-        f.record(&s, 900, Uuid::nil()).unwrap();
-        f.record(&s, 700, Uuid::nil()).unwrap();
+        f.record_with(&s, 900, true, Uuid::nil()).unwrap();
+        f.record_with(&s, 700, true, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(900));
-        f.record(&s, 1200, Uuid::nil()).unwrap();
+        f.record_with(&s, 1200, true, Uuid::nil()).unwrap();
         assert_eq!(f.get(&s), Some(1200));
     }
 
@@ -3501,7 +3687,7 @@ mod tests {
         let f = Footprints::at(path.clone());
         assert_eq!(f.get(&full), Some(41_500), "the legacy row is full depth");
         assert_eq!(f.get(&top8), None, "a reduced-depth lookup never falls back to the legacy row");
-        f.record(&top8, 5_200, Uuid::nil()).unwrap();
+        f.record_with(&top8, 5_200, true, Uuid::nil()).unwrap();
         let reloaded = Footprints::at(path);
         assert_eq!(reloaded.get(&top8), Some(5_200));
         assert_eq!(reloaded.get(&full), Some(41_500), "the reduced row never answers for full depth");
