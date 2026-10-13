@@ -2984,13 +2984,6 @@ fn continuum_root() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home_dir()?).join(".continuum"))
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Consult the deploy claim before minting a core, and REPORT what it found.
 ///
 /// Returns `Err` only while a deploy is genuinely in flight. See
@@ -3007,7 +3000,7 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
     };
     let claim = deploy_claim::read(&root);
     let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
-    let now = now_ms();
+    let now = continuum_core::time::EpochMs::now().millis();
     match deploy_claim::with_wait(deploy_claim::decide(claim.as_ref(), alive, now), deploy_claim::read_waiting(&root).as_ref(), now) {
         // A deploy waiting on CI has swapped nothing: the installed core is the running build.
         DeployGate::Clear | DeployGate::Waiting { .. } => Ok(()),
@@ -3082,7 +3075,7 @@ impl DeployClaimGuard {
         use continuum_cli_lifecycle::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
         let root = continuum_root().ok()?;
         let pid = std::process::id() as i32;
-        let started = now_ms();
+        let started = continuum_core::time::EpochMs::now().millis();
         let claim = DeployClaim {
             pid,
             started_ms: started,
@@ -3105,7 +3098,7 @@ impl DeployClaimGuard {
                             match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                                     let working = deploy_working(&mut sys, pid);
-                                    if !deploy_claim::renew(&renew_root, pid, now_ms(), working) {
+                                    if !deploy_claim::renew(&renew_root, pid, continuum_core::time::EpochMs::now().millis(), working) {
                                         return; // no longer ours (or unwritable): stop renewing
                                     }
                                 }
@@ -4334,7 +4327,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
     // claim is swept (by `reboot` itself).
     let gate = continuum_root()
-        .map(|root| continuum_cli_lifecycle::deploy_claim::in_flight(&root, now_ms()))
+        .map(|root| continuum_cli_lifecycle::deploy_claim::in_flight(&root, continuum_core::time::EpochMs::now().millis()))
         .ok(); // no root = no claim file = nothing in flight
     if let Some(continuum_cli_lifecycle::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
         .as_ref()
@@ -4552,7 +4545,7 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                 // it before the install).
                 if let Ok(root) = continuum_root() {
                     let pid = std::process::id() as i32;
-                    let now = now_ms();
+                    let now = continuum_core::time::EpochMs::now().millis();
                     let _ = continuum_cli_lifecycle::deploy_claim::renew(&root, pid, now, true);
                     if let Err(e) = continuum_cli_lifecycle::deploy_claim::mark_waiting(&root, pid, now) {
                         deploy_note(&format!(
@@ -4852,10 +4845,8 @@ fn tip_age_secs(repo: &Path, tip: &str) -> u64 {
     let committed = git_in(repo, &["log", "-1", "--format=%ct", tip])
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0); // unwrap_or: a clock before 1970 makes every tip "new", so the consumer waits
+    // A clock before 1970 reads as the epoch, so every tip is "new" and the consumer waits.
+    let now = continuum_core::time::EpochMs::now().secs();
     committed.map(|c| now.saturating_sub(c)).unwrap_or(0) // unwrap_or: an unreadable commit time waits, it does not compile early
 }
 

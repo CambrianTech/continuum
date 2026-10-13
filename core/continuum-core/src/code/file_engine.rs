@@ -6,6 +6,7 @@
 //! Thread safety: Each persona gets their own FileEngine instance.
 //! The underlying ChangeGraph and PathSecurity handle concurrency.
 
+use crate::time::EpochMs;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -335,7 +336,7 @@ impl FileEngine {
             id: Uuid::new_v4(),
             parent_ids: self.latest_parent(relative_path),
             author_id: self.persona_id.clone(),
-            timestamp: now_millis(),
+            timestamp: EpochMs::now().millis(),
             file_path: relative_path.to_string(),
             operation,
             forward_diff,
@@ -556,7 +557,7 @@ impl FileEngine {
             id: Uuid::new_v4(),
             parent_ids: self.latest_parent(relative_path),
             author_id: self.persona_id.clone(),
-            timestamp: now_millis(),
+            timestamp: EpochMs::now().millis(),
             file_path: relative_path.to_string(),
             operation: FileOperation::Edit,
             forward_diff,
@@ -638,7 +639,7 @@ impl FileEngine {
             id: Uuid::new_v4(),
             parent_ids: self.latest_parent(relative_path),
             author_id: self.persona_id.clone(),
-            timestamp: now_millis(),
+            timestamp: EpochMs::now().millis(),
             file_path: relative_path.to_string(),
             operation: FileOperation::Delete,
             forward_diff,
@@ -2183,14 +2184,6 @@ fn extract_added_content(diff: &FileDiff) -> String {
         result.push('\n');
     }
     result
-}
-
-/// Get current time in milliseconds since epoch.
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 #[cfg(test)]

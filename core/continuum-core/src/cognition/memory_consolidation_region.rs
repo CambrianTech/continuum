@@ -50,10 +50,7 @@ use crate::memory::consolidation_adapter::{ConsolidationAdapter, ConsolidationCo
 use crate::memory::consolidation_pipeline::run_consolidation_pass;
 use crate::memory::consolidator::Consolidator;
 use crate::memory::PersonaMemoryManager;
-use crate::runtime::brain_region::{
-    BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile,
-    PressureSignalKind, RegionContext, RegionId, TickOutcome,
-};
+use crate::runtime::brain_region::{BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile, PressureSignalKind, RegionContext, RegionId, TickOutcome};
 
 /// What the region needs for ONE persona. Mirrors `PersonaReflector` in the
 /// dream region: everything is `Arc` — shared, never owned here.
@@ -168,7 +165,7 @@ impl MemoryConsolidationRegion {
             return sleep();
         }
 
-        let now_ms = now_ms();
+        let now_ms = crate::time::EpochMs::now().millis();
         let thoughts: Vec<Thought> = fresh
             .iter()
             .map(|text| Thought {
@@ -317,16 +314,6 @@ fn deterministic_thought_id(persona_id: Uuid, content: &str) -> Uuid {
     const NS: Uuid = Uuid::from_u128(0x5f3a_9c21_7d44_4e6b_9a12_c8e0_51b7_2d40);
     let name = format!("{persona_id}:{content}");
     Uuid::new_v5(&NS, name.as_bytes())
-}
-
-/// Unix milliseconds. Local helper: several cognition modules keep their own
-/// private `now_ms`, so this follows the neighbourhood convention rather than
-/// inventing a shared one nobody asked for.
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 /// Sleep until experience accrues — resting, not spinning a clock.

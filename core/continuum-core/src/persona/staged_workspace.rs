@@ -460,8 +460,8 @@ fn newest_work_mtime_ms(root: &std::path::Path, porcelain: &str) -> Option<u64> 
                 .or_else(|| path.parent().and_then(|p| std::fs::metadata(p).ok()))
         })
         .filter_map(|m| m.modified().ok())
-        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
+        .filter_map(|t| crate::time::EpochMs::of(t).ok())
+        .map(crate::time::EpochMs::millis)
         .max()
 }
 

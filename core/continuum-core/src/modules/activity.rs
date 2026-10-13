@@ -866,10 +866,7 @@ pub async fn spawn_activity_room(
                         recipe: recipe.to_string(),
                         driver: child_driver,
                         suite: child_suite,
-                        spawned_at_ms: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0), // unwrap_or: a pre-epoch clock stamps 0 — the record still names the room
+                        spawned_at_ms: crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-epoch clock stamps 0 — the record still names the room
                     };
                     match serde_json::to_string(&record) {
                         Ok(body) => match airc

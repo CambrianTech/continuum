@@ -89,10 +89,7 @@ impl ServingPinStore {
     pub fn save(&self, model_id: &str) {
         let pin = StoredServingPin {
             model_id: model_id.to_string(),
-            set_at_ms: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0), // unwrap_or: a clock before 1970 is impossible on a running host; 0 only labels the record
+            set_at_ms: crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a clock before 1970 is impossible on a running host; 0 only labels the record
         };
         let path = &self.path;
         let result = (|| -> std::io::Result<()> {

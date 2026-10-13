@@ -38,6 +38,7 @@
 //! steer the persona's behavior or output ([[no-hardcoded-heuristics-to-steer-cognition]]
 //! is about puppeting cognition; this is corpus hygiene).
 
+use crate::time::EpochMs;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::json;
@@ -1338,10 +1339,7 @@ async fn stage_credit<T: Transport>(
         prompt,
         completion,
         lived,
-        // Same clock the rest of this file already uses. `now_unix_ms` exists as a
-        // PRIVATE helper in three other modules and none is importable — copying it
-        // a fourth time would be the duplication the compression principle forbids.
-        staged_at_ms: chrono::Utc::now().timestamp_millis().max(0) as u64,
+        staged_at_ms: crate::time::EpochMs::now().millis(),
         coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
         rejected_at_ms: None,
     };
@@ -2080,7 +2078,7 @@ pub(crate) fn pass_admits(rows: &[StagedCredit], failed_earlier: bool) -> PassAd
 /// A write that fails is named; that row may then train on a later pass, which is the
 /// old behaviour, never a new one.
 async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, rows: &[StagedCredit]) {
-    let now = crate::persona::trace::now_ms();
+    let now = EpochMs::now().millis();
     for row in rows.iter().filter(|r| r.rejected_at_ms.is_none()) {
         let marked = conn
             .commands()
@@ -4513,10 +4511,7 @@ pub(crate) mod tests {
     // not the periodically replaced row; overlapping bindings roll back whole.
     #[tokio::test]
     async fn submission_binding_survives_replacement_and_reserves_generations_atomically() {
-        use reviewed::{
-            CreditBindingError, CreditGenerationReservation, CreditTransferIntent,
-            SubmissionSelection, WorkCreditBinding,
-        };
+        use reviewed::{CreditBindingError, CreditGenerationReservation, CreditTransferIntent, SubmissionSelection, WorkCreditBinding};
         let home = tempfile::tempdir().unwrap();
         let _home = HomeGuard::set(home.path()).await;
         crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())

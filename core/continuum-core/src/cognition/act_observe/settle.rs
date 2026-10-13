@@ -7,18 +7,14 @@
 //! and the eval driver (`drive_to_settle`, which loops because the grader replaces
 //! the metronome). Live and eval make a turn the IDENTICAL way; only pacing differs.
 
+use crate::time::EpochMs;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::cognition::workspace::{
-    Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle,
-};
+use crate::cognition::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle};
 
 use super::apply::apply_act;
-use super::perception::{
-    any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace,
-    wrote_without_observation,
-};
+use super::perception::{any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace, wrote_without_observation};
 use super::types::{SettleOutcome, SettleStep};
 
 /// The FLOOR under one ACT — perceive, deliberate, act, observe — never the ceiling.
@@ -503,7 +499,7 @@ async fn settle_to_outcome(
                             sender_name: message.peer_id.to_string(),
                             sender_type: crate::persona::types::SenderType::Persona,
                             content: message.text.clone(),
-                            timestamp: crate::persona::trace::now_ms(),
+                            timestamp: EpochMs::now().millis(),
                             priority: 0.5,
                             source_modality: None,
                             voice_session_id: None,
@@ -530,7 +526,7 @@ async fn settle_to_outcome(
                             message.room_id,
                             message.lamport,
                             Some(message.event_id),
-                            crate::persona::trace::now_ms(),
+                            EpochMs::now().millis(),
                         );
                         Arc::make_mut(&mut burst.room_updates).push(Arc::clone(message));
                     }
@@ -1431,15 +1427,6 @@ pub async fn settle_step(
         None => SettleStep::Passed { reason: None },
     };
     (step, metrics, step_receipts)
-}
-
-/// Epoch-ms wall clock for stamping a self-observation. A real timestamp (not a
-/// monotonic tick) so the engram orders correctly against chat messages in recall.
-pub(super) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

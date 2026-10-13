@@ -8,6 +8,7 @@
 //! `/train/pause` with no hold is steered back by design. A paused run KEEPS its allocation,
 //! so a pause reduces compute demand and never relieves memory.
 
+use crate::time::EpochMs;
 use std::sync::Arc;
 
 use schemars::JsonSchema;
@@ -103,7 +104,7 @@ crate::action_command! {
             Ok(path) => path,
             Err(outcome) => return Ok(outcome),
         };
-        match store::add(&path, p.handle.local_id, &p.reason, p.ttl_ms, store::now_ms()) {
+        match store::add(&path, p.handle.local_id, &p.reason, p.ttl_ms, EpochMs::now().millis()) {
             Ok(hold) => Ok(JobPauseOutcome {
                 success: true,
                 hold_id: Some(hold.id.to_string()),
@@ -128,7 +129,7 @@ crate::action_command! {
             Ok(path) => path,
             Err(outcome) => return Ok(outcome),
         };
-        match store::release_job(&path, p.handle.local_id, store::now_ms()) {
+        match store::release_job(&path, p.handle.local_id, EpochMs::now().millis()) {
             Ok(released) => Ok(JobPauseOutcome { success: true, released: Some(released as u64), ..Default::default() }),
             Err(e) => Ok(refused("Store", e)),
         }

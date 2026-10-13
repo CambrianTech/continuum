@@ -126,10 +126,7 @@ impl PersonaCognitionEngine {
         let start = Instant::now();
 
         // Recency score (newer = higher, decay over 5 minutes)
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis() as u64;
+        let now = crate::time::EpochMs::now().millis();
         let age_ms = now.saturating_sub(timestamp);
         let recency_score = 1.0 - (age_ms as f32 / 300_000.0).min(1.0);
 
@@ -347,10 +344,7 @@ mod tests {
     async fn test_priority_calculation() {
         let engine = create_test_engine().await;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64;
+        let now = crate::time::EpochMs::now().millis();
 
         // High priority: human sender, mentioned, recent
         let score = engine.calculate_priority(

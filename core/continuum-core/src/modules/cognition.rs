@@ -36,15 +36,10 @@
 use crate::gpu::GpuMemoryManager;
 use crate::logging::TimingGuard;
 use crate::persona::text_analysis::LoopDetector;
-use crate::persona::{
-    InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame,
-    PersonaTurnFrameReplayRecord, SenderType,
-};
+use crate::persona::{InboxMessage, Modality, PersonaCognition, PersonaInboxFrame, PersonaTurnFrame, PersonaTurnFrameReplayRecord, SenderType};
 use crate::rag::RagEngine;
 use crate::runtime;
-use crate::runtime::{
-    CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule,
-};
+use crate::runtime::{CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::utils::params::Params;
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -798,7 +793,7 @@ pub(crate) fn run_inline_admission_gate(
     // an admission trace seam to its caller; the recorder doesn't
     // capture admission seams as part of the per-turn fixture). With
     // `None`, the admission codepath skips `record_seam` entirely:
-    // no `now_ms()` syscall, no `serde_json::json!` Map allocation,
+    // no `EpochMs::now().millis()` syscall, no `serde_json::json!` Map allocation,
     // no String allocations for seam name/metadata. Cuts ~7
     // allocations per chat turn per persona. The TS-IPC
     // `cognition/admit-inbox-message` handler still passes `Some` —

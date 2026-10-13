@@ -10,8 +10,8 @@
 //! The TypeScript ResourcePressureWatcher calls refresh() on its adaptive
 //! polling interval — same pattern as GpuPressureWatcher polling gpuPressure().
 
+use crate::time::EpochMs;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sysinfo::{ProcessesToUpdate, System};
@@ -202,7 +202,7 @@ impl SystemResourceMonitor {
                 cpu,
                 memory,
                 gpu: None,
-                last_refresh_ms: now_ms(),
+                last_refresh_ms: EpochMs::now().millis(),
                 processes_baselined: false,
             }),
         }
@@ -246,7 +246,7 @@ impl SystemResourceMonitor {
                 .map(|c| c.cpu_usage() / 100.0)
                 .collect();
             inner.memory = Self::read_memory(&inner.system);
-            inner.last_refresh_ms = now_ms();
+            inner.last_refresh_ms = EpochMs::now().millis();
 
             SystemResourceSnapshot {
                 cpu: inner.cpu.clone(),
@@ -293,7 +293,7 @@ impl SystemResourceMonitor {
                 .map(|c| c.cpu_usage() / 100.0)
                 .collect();
             inner.memory = Self::read_memory(&inner.system);
-            inner.last_refresh_ms = now_ms();
+            inner.last_refresh_ms = EpochMs::now().millis();
 
             let processes = Self::read_processes(&inner.system, top_n);
 
@@ -457,13 +457,6 @@ impl std::fmt::Debug for SystemResourceMonitor {
 // =============================================================================
 // Helpers
 // =============================================================================
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
 
 // =============================================================================
 // Tests

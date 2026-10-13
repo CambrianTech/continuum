@@ -18,6 +18,7 @@
 //! remote `Provisional` peer (who could otherwise spam claims). Board READS can
 //! open up later; writes stay trusted.
 
+use crate::time::EpochMs;
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
 
@@ -28,16 +29,10 @@ use serde_json::Value;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use airc_lib::{
-    Airc, CardState, ChangeWorkCardState, ClaimId, ClaimWorkCard, CreateWorkCard,
-    HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCard, WorkCardId,
-};
+use airc_lib::{Airc, CardState, ChangeWorkCardState, ClaimId, ClaimWorkCard, CreateWorkCard, HeartbeatWorkClaim, Priority, ReleaseWorkClaim, RepoId, WorkCard, WorkCardId};
 
 use crate::persona::{PersonaAircRuntime, PersonaAircRuntimeRegistry};
-use crate::runtime::{
-    CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry,
-    ServiceModule,
-};
+use crate::runtime::{CommandResult, MessageBus, ModuleConfig, ModuleContext, ModulePriority, ModuleRegistry, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
 pub mod review_gate;
@@ -630,7 +625,7 @@ pub(crate) async fn record_held_claim(airc: &Arc<Airc>, card_id: WorkCardId, cla
             room,
             card_id: card_id.as_uuid(),
             claim_id: claim_id.as_uuid(),
-            recorded_at_ms: crate::modules::chat::now_ms(),
+            recorded_at_ms: EpochMs::now().millis(),
             refusals: 0,
         },
     );
@@ -825,10 +820,7 @@ impl ActionCommand for WorkClaim {
                         // `hold_of` is the same predicate `work/list` renders through
                         // (card_holder::holder, below) — one rule for "is someone on this",
                         // not two in one file.
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_millis() as u64)
-                            .unwrap_or(0);
+                        let now_ms = EpochMs::now().millis();
                         // ASK WHO, NOT JUST WHETHER. `live_holder` says a person is on
                         // the card; `classify_refusal` says whether that person is YOU.
                         // Without the second question this arm told Anon her own card was
@@ -2075,7 +2067,7 @@ impl ActionCommand for WorkState {
         // claim path; it neither grants ownership nor marks review as passed.
         let resume_review = if state == CardState::InProgress {
             card_in_subscribed_rooms(&airc, card_id).await.is_some_and(|(_, card)| {
-                resumes_held_review(&card, state, airc.peer_id(), crate::modules::chat::now_ms())
+                resumes_held_review(&card, state, airc.peer_id(), EpochMs::now().millis())
             })
         } else {
             false
@@ -2198,8 +2190,8 @@ pub(crate) fn checkout_change(root: &std::path::Path) -> ChangeVerdict {
     let staged_ts = std::fs::metadata(root.join(".git"))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs());
+        .and_then(|t| crate::time::EpochMs::of(t).ok())
+        .map(crate::time::EpochMs::secs);
     change_verdict(porcelain, head_ts, staged_ts)
 }
 
@@ -2663,7 +2655,7 @@ impl ActionCommand for WorkNote {
             unknown: p.unknown,
             next_test: p.next_test,
             decided_fix: p.decided_fix.filter(|f| !f.trim().is_empty()),
-            at_ms: crate::modules::chat::now_ms(),
+            at_ms: EpochMs::now().millis(),
             by: airc.peer_id().as_uuid(),
         };
         crate::experience::ledger::WallLedgerStore::new(airc.clone())
@@ -3038,10 +3030,7 @@ impl ActionCommand for WorkList {
         let airc = persona_airc(&self.registry, ctx, "work commands")?;
         let filter = p.state.as_deref().map(parse_state).transpose()?;
         let board = board_to_read(&airc, p.room.as_deref()).await?;
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now_ms = EpochMs::now().millis();
         // Resolve every distinct owner to a published name in ONE pass, then render
         // through the SHARED holder projection (`persona::card_holder`) — the same
         // answer the [room-kanban] grounding block and the service-loop anchor give.
@@ -3533,7 +3522,7 @@ impl WorkGet {
             .read(room, card_id.as_uuid())
             .await
             .unwrap_or(None); // unwrap_or: an unreadable wall reads as no ledger, named by the store's own probe
-        let mut receipt = Self::receipt(room, card, ledger, crate::modules::chat::now_ms(), reader);
+        let mut receipt = Self::receipt(room, card, ledger, EpochMs::now().millis(), reader);
         let parent = card.reviews.and_then(|id| board.card(id)).unwrap_or(card);
         receipt.reviews = parent.submissions.iter()
             .flat_map(|s| board.submission_reviews_for(s.submission_id))

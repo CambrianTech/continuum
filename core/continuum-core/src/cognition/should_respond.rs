@@ -5,13 +5,13 @@
 //! around slot coordination and logging; Rust owns the cognition decision
 //! contract, prompt construction, model call, and response parsing.
 
+use crate::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::modules::ai_provider::global_registry;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
 const GATING_PROVIDER: &str = "groq";
@@ -249,7 +249,7 @@ pub async fn evaluate_gating(
         confidence: parsed.confidence,
         reason: parsed.reason,
         model,
-        timestamp: now_ms(),
+        timestamp: EpochMs::now().millis(),
         factors: parsed.factors,
     })
 }
@@ -455,13 +455,6 @@ fn starts_with_word(text: &str, needle: &str) -> bool {
     text.split(|c: char| !c.is_ascii_alphanumeric())
         .find(|word| !word.is_empty())
         .is_some_and(|word| word == needle)
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

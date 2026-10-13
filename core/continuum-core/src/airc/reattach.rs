@@ -27,6 +27,7 @@
 //! socket is RE-RESOLVED on every attempt (`discover_airc_socket`), so a daemon that is
 //! installed, started, or moved after boot is found without a restart.
 
+use crate::time::EpochMs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -157,7 +158,8 @@ pub async fn attach_until_live(
                 return;
             }
             Err((blocker, why)) => {
-                let now_ms = now_ms();
+                // A pre-1970 clock reads 0 here: only affects report spacing, never the retry.
+                let now_ms = EpochMs::now().millis();
                 if should_report(last_report_ms, now_ms) {
                     last_report_ms = Some(now_ms);
                     crate::probe!(
@@ -173,13 +175,6 @@ pub async fn attach_until_live(
             }
         }
     }
-}
-
-pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0) // unwrap_or: a pre-epoch clock only affects report spacing, never the retry
 }
 
 #[cfg(test)]

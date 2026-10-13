@@ -102,10 +102,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         loop {
             let queued = crate::cognition::bench_round::total_unworked_cards() as u32;
             if queued > 0 {
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0); // recency stamp is display-only for demand entries
+                let now_ms = crate::time::EpochMs::now().millis(); // recency stamp is display-only for demand entries
                 crate::cognition::working_set::global().record(regime_id, REGIME_WINDOW, now_ms);
             }
             // THE LEASE IS FOR DETACHED SOLVES ONLY (2026-09-14). `quiesce_lane_demand`
@@ -719,10 +716,7 @@ const IDLE_CLAIM_RELEASE_MS: u64 = 3 * 60 * 60 * 1000;
 /// it again. Review cards are never released here (their lifetime is the gate's).
 async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::PersonaAircRuntimeRegistry) {
     use crate::persona::airc_citizen::AircCitizen as _;
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0); // JUSTIFIED unwrap_or: a pre-epoch clock releases nothing (every claim reads fresh)
+    let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock releases nothing (every claim reads fresh)
     let (mut settled, mut released, mut unread, mut release_failed) = (0u64, 0u64, 0u64, 0u64);
     let mut boards: std::collections::HashMap<uuid::Uuid, Vec<airc_lib::WorkCard>> = std::collections::HashMap::new();
     for (room_id, card, instance) in crate::cognition::bench_round::unsettled_cards() {

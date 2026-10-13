@@ -32,7 +32,7 @@ impl ServingDaemonModule {
         if ticks < PLAN_NONE_LIVE_LANE_TICKS {
             return;
         }
-        let now = crate::modules::chat::now_ms();
+        let now = EpochMs::now().millis();
         let said = self.plan_none_said_ms.load(Ordering::Acquire);
         if now.saturating_sub(said) < RECONCILE_BUSY_SAY_EVERY.as_millis() as u64 {
             return;
@@ -53,7 +53,7 @@ impl ServingDaemonModule {
         if started == 0 {
             return;
         }
-        let now = crate::modules::chat::now_ms();
+        let now = EpochMs::now().millis();
         let age = Duration::from_millis(now.saturating_sub(started));
         let said = self.reconcile_busy_said_ms.load(Ordering::Acquire);
         if now.saturating_sub(said) < RECONCILE_BUSY_SAY_EVERY.as_millis() as u64 {
@@ -199,7 +199,7 @@ impl ServingDaemonModule {
                 self.downshift_streak.store(0, Ordering::Relaxed);
                 *self.pending_model_change.lock().unwrap_or_else(|p| p.into_inner()) = None; // unwrap_or_else: a poisoned streak cell is still cleared
                 static LAST_HELD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-                let now = crate::persona::trace::now_ms();
+                let now = EpochMs::now().millis();
                 // one row a minute while held, not one a tick
                 if now.saturating_sub(LAST_HELD.load(Ordering::Relaxed)) >= 60_000 {
                     LAST_HELD.store(now, Ordering::Relaxed);

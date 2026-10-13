@@ -414,7 +414,7 @@ async fn drain(
         log.write_all(format!("{line}\n").as_bytes()).await?;
         if let Some((iter, kind, loss)) = parser.and_then(|parse| parse(&line)) {
             let row = serde_json::json!({"iter":iter,"kind":kind,"loss":loss,
-                "atMs":chrono::Utc::now().timestamp_millis()});
+                "atMs":crate::time::EpochMs::now().millis()});
             losses.write_all(format!("{row}\n").as_bytes()).await?;
         }
         if let Some(tail) = &tail {

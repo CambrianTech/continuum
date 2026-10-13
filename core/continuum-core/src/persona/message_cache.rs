@@ -278,13 +278,7 @@ impl Default for ContentDeduplicator {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn now_ms() -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_millis() as u64
-    }
+    use crate::time::EpochMs;
 
     fn make_msg(sender_type: SenderCategory, timestamp_ms: u64) -> CachedMessage {
         CachedMessage {
@@ -302,14 +296,14 @@ mod tests {
     #[test]
     fn test_no_echo_chamber_with_human() {
         let cache = RecentMessageCache::new();
-        let result = cache.check_echo_chamber(Uuid::new_v4(), true, false, now_ms());
+        let result = cache.check_echo_chamber(Uuid::new_v4(), true, false, EpochMs::now().millis());
         assert!(!result.is_echo_chamber);
     }
 
     #[test]
     fn test_no_echo_chamber_when_mentioned() {
         let cache = RecentMessageCache::new();
-        let result = cache.check_echo_chamber(Uuid::new_v4(), false, true, now_ms());
+        let result = cache.check_echo_chamber(Uuid::new_v4(), false, true, EpochMs::now().millis());
         assert!(!result.is_echo_chamber);
     }
 
@@ -317,7 +311,7 @@ mod tests {
     fn test_echo_chamber_detected() {
         let mut cache = RecentMessageCache::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         // 6 AI messages, no human
         for i in 0..6 {
@@ -334,7 +328,7 @@ mod tests {
     fn test_no_echo_chamber_with_human_in_window() {
         let mut cache = RecentMessageCache::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         // 5 AI messages + 1 human
         for i in 0..5 {
@@ -351,7 +345,7 @@ mod tests {
     fn test_echo_chamber_old_messages_excluded() {
         let mut cache = RecentMessageCache::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         // 6 AI messages but all >2min ago
         for i in 0..6 {
@@ -376,7 +370,7 @@ mod tests {
     #[test]
     fn test_content_not_duplicate() {
         let dedup = ContentDeduplicator::new();
-        let result = dedup.is_duplicate("Hello world", Uuid::new_v4(), now_ms());
+        let result = dedup.is_duplicate("Hello world", Uuid::new_v4(), EpochMs::now().millis());
         assert!(!result.is_duplicate);
     }
 
@@ -384,7 +378,7 @@ mod tests {
     fn test_content_duplicate_detected() {
         let mut dedup = ContentDeduplicator::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         dedup.record("Hello world", room, now);
         let result = dedup.is_duplicate("Hello world", room, now + 1000);
@@ -395,7 +389,7 @@ mod tests {
     fn test_content_duplicate_case_insensitive() {
         let mut dedup = ContentDeduplicator::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         dedup.record("Hello World", room, now);
         let result = dedup.is_duplicate("hello world", room, now + 1000);
@@ -405,7 +399,7 @@ mod tests {
     #[test]
     fn test_content_different_room_not_duplicate() {
         let mut dedup = ContentDeduplicator::new();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         dedup.record("Hello world", Uuid::new_v4(), now);
         let result = dedup.is_duplicate("Hello world", Uuid::new_v4(), now + 1000);
@@ -416,7 +410,7 @@ mod tests {
     fn test_content_expired_not_duplicate() {
         let mut dedup = ContentDeduplicator::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         dedup.record("Hello world", room, now);
         // 61 seconds later — outside window
@@ -428,7 +422,7 @@ mod tests {
     fn test_ring_buffer_eviction() {
         let mut cache = RecentMessageCache::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         // Push MAX_CACHED_PER_ROOM + 10 messages
         for i in 0..(MAX_CACHED_PER_ROOM + 10) {
@@ -447,7 +441,7 @@ mod tests {
     fn test_echo_chamber_check_is_fast() {
         let mut cache = RecentMessageCache::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         for i in 0..50 {
             cache.push(room, make_msg(SenderCategory::AI, now - (50 - i) * 1000));
@@ -467,7 +461,7 @@ mod tests {
     fn test_content_dedup_check_is_fast() {
         let mut dedup = ContentDeduplicator::new();
         let room = Uuid::new_v4();
-        let now = now_ms();
+        let now = EpochMs::now().millis();
 
         for i in 0..50 {
             dedup.record(&format!("Message {i}"), room, now - (50 - i) * 1000);

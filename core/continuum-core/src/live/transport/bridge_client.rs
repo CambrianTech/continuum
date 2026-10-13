@@ -6,6 +6,7 @@
 //! Bidirectional: sends commands (request/response), receives pushed events
 //! (audio frames from human participants for VAD/STT processing).
 
+use crate::time::EpochMs;
 use continuum_bridge_protocol::{BridgeCommand, BridgeEvent, BridgeResponse};
 use std::collections::{HashMap, VecDeque};
 use std::io::{Read, Write};
@@ -922,7 +923,7 @@ fn reader_loop(mut stream: UnixStream, pending: Arc<Mutex<HashMap<u64, Arc<Pendi
                             {
                                 crate::media::perception_ingest::try_enqueue(
                                     crate::media::perception_ingest::IngestFrame {
-                                        received_at_ms: crate::persona::recall_metadata::now_ms(),
+                                        received_at_ms: EpochMs::now().millis(),
                                         call_id: binding.call_id.to_string(),
                                         speaker_id: binding.speaker_id.to_string(),
                                         jpeg: jpeg.to_vec(),
@@ -1195,7 +1196,7 @@ fn handle_bridge_event(
                     // ~2 Hz regardless of the frame rate ([[perceive-the-room-as-it-is-now]]).
                     crate::media::perception_ingest::try_enqueue(
                         crate::media::perception_ingest::IngestFrame {
-                            received_at_ms: crate::persona::recall_metadata::now_ms(),
+                            received_at_ms: EpochMs::now().millis(),
                             call_id,
                             speaker_id,
                             jpeg: jpeg.to_vec(),

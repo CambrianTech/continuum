@@ -9,7 +9,6 @@
 //! `access: Internal` — host-driven cognition IPC, not a persona toolbelt verb.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use uuid::Uuid;
 
@@ -62,10 +61,7 @@ crate::action_command! {
     params: SetSleepModeParams,
     output: SetSleepModeResult,
     run(this, _ctx, p) => {
-        let now_ms = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?
-            .as_millis() as u64;
+        let now_ms = crate::time::EpochMs::read().map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?.millis();
 
         let wake_at_ms = p.duration_minutes.map(|d| now_ms + (d * 60_000.0) as u64);
 

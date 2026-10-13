@@ -464,7 +464,7 @@ fn write_header(
          \n",
         component,
         category,
-        Utc::now().timestamp_millis(),
+        crate::time::EpochMs::now().millis(),
         timestamp,
         std::process::id()
     );

@@ -23,6 +23,7 @@
 
 pub(crate) mod academy_batch;
 pub(crate) mod lane_demand;
+use crate::time::EpochMs;
 use lane_demand::*;
 pub(crate) mod gates;
 use gates::*;
@@ -586,7 +587,7 @@ impl ServingOperation {
     ) -> Option<Self> {
         gate.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
-        started_ms.store(crate::modules::chat::now_ms(), Ordering::Release);
+        started_ms.store(EpochMs::now().millis(), Ordering::Release);
         step.store(ReconcileStep::None as u8, Ordering::Release);
         Some(Self {
             gate,

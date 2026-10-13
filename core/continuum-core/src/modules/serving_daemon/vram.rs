@@ -11,22 +11,6 @@ pub(super) static LAST_GOOD_VRAM_CEILING_AT_MS: AtomicU64 = AtomicU64::new(0);
 /// boot never has to guess zero. 0 = no GPU reported a size.
 pub(super) static DEVICE_VRAM_TOTAL: AtomicU64 = AtomicU64::new(0);
 
-/// Epoch milliseconds for the ladder's staleness arithmetic. Local because `now_ms` is
-/// currently hand-rolled in five files tree-wide; adding a sixth private copy here would
-/// be worse than reusing one, and hoisting all five is its own change, not this one.
-pub(super) fn epoch_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        // JUSTIFIED unwrap_or: the error case is a system clock set before 1970, and the
-        // 0 it yields is not a fabricated quantity — it is the sentinel this module
-        // already defines as "never recorded" (`LAST_GOOD_VRAM_CEILING_AT_MS == 0`), which
-        // makes the last-known rung correctly UNAVAILABLE rather than falsely fresh. The
-        // failure direction is toward less trust, not more, which is the only direction a
-        // default may ever move a decision.
-        .unwrap_or(0) // unwrap_or: pre-1970 clock = the "never recorded" sentinel, see above
-}
-
 /// Seed the cold-boot prior. Called once as the serving daemon starts, BEFORE the first
 /// plan, so the very first tick already has a real number to stand on.
 pub fn seed_device_vram_prior(total_bytes: u64) {
@@ -258,7 +242,7 @@ pub(super) fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, 
     // Record every real reading so the NEXT silent tick has something honest to stand on.
     if let Some(bytes) = board {
         LAST_GOOD_VRAM_CEILING.store(bytes, Ordering::Relaxed);
-        LAST_GOOD_VRAM_CEILING_AT_MS.store(epoch_ms(), Ordering::Relaxed);
+        LAST_GOOD_VRAM_CEILING_AT_MS.store(EpochMs::now().millis(), Ordering::Relaxed);
     }
 
     let last_at = LAST_GOOD_VRAM_CEILING_AT_MS.load(Ordering::Relaxed);
@@ -267,7 +251,7 @@ pub(super) fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, 
         last_good: (last_at > 0).then(|| {
             (
                 LAST_GOOD_VRAM_CEILING.load(Ordering::Relaxed),
-                epoch_ms().saturating_sub(last_at),
+                EpochMs::now().millis().saturating_sub(last_at),
             )
         }),
         // The device prior is a VRAM fact. The Ram row is never cold — its ceiling is

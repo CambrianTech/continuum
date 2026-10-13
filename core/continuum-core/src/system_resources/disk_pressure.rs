@@ -730,10 +730,7 @@ impl DiskPressureMonitor {
 
             // Build the snapshot. Timestamp via SystemTime (not a Date.now
             // equivalent) so the value is real even in resume / replay contexts.
-            let now_ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
+            let now_ms = crate::time::EpochMs::now().millis();
             let snapshot = DiskPressureSnapshot {
                 level,
                 pressure,

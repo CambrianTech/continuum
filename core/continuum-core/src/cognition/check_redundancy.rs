@@ -46,13 +46,13 @@
 //! drift surface). The current TS file uses the legacy template; this
 //! Rust version is byte-for-byte the same modulo a `format!` call.
 
+use crate::time::EpochMs;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest};
 use crate::cognition::should_respond::{AIDecisionContext, GatingConversationMessage};
 use crate::modules::ai_provider::{generate_text, global_registry};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
 /// Maximum number of recent conversation messages included in the
@@ -163,7 +163,7 @@ pub async fn evaluate_redundancy(
         .map_err(RedundancyEvaluateError::Generation)?;
 
     let parsed = parse_redundancy_response(&response.text)?;
-    Ok(decision_from_parsed(parsed, model, now_ms()))
+    Ok(decision_from_parsed(parsed, model, EpochMs::now().millis()))
 }
 
 fn build_redundancy_generation_request(
@@ -358,20 +358,10 @@ fn snippet(s: &str) -> String {
     }
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cognition::should_respond::{
-        AIDecisionContext, GatingConversationMessage, GatingMessageContent, GatingRagContext,
-        GatingRagMetadata, GatingTriggerMessage,
-    };
+    use crate::cognition::should_respond::{AIDecisionContext, GatingConversationMessage, GatingMessageContent, GatingRagContext, GatingRagMetadata, GatingTriggerMessage};
 
     // ─── Fixtures ─────────────────────────────────────────────────────
 

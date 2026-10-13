@@ -13,8 +13,8 @@
 //! generation OVER a handle + grid routing of `open` are the next slices; the
 //! handle is the seam they hang on.
 
+use crate::time::EpochMs;
 use std::sync::{Arc, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -41,13 +41,6 @@ pub struct InferenceSession {
     pub opened_at_ms: u64,
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 /// Process-global registry of live inference sessions — the ONE place a handle's
 /// liveness is tracked (so `find` is authoritative and `close` is a real release).
 pub struct InferenceSessionRegistry {
@@ -70,7 +63,7 @@ impl InferenceSessionRegistry {
         let session = Arc::new(InferenceSession {
             id: Uuid::new_v4(),
             model,
-            opened_at_ms: now_ms(),
+            opened_at_ms: EpochMs::now().millis(),
         });
         self.sessions.insert(session.id, session.clone());
         session

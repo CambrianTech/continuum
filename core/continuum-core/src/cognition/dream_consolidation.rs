@@ -28,7 +28,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use thiserror::Error;
@@ -39,10 +38,7 @@ use crate::ai::types::{ChatMessage, TextGenerationRequest};
 use crate::persona::admission_state::AdmissionState;
 use crate::persona::engram::{AdmissionDecision, Engram, EngramKind, EngramOrigin, TrustState};
 use crate::persona::training_producer::reviewed::boundaries::ReviewBoundaryStore;
-use crate::runtime::brain_region::{
-    BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile,
-    PressureSignalKind, RegionContext, RegionId, TickOutcome,
-};
+use crate::runtime::brain_region::{BrainRegion, CadenceHint, ComputeClass, MemoryClass, Orientation, PressureProfile, PressureSignalKind, RegionContext, RegionId, TickOutcome};
 
 /// One durable fact distilled from a cluster of episodic engrams.
 ///
@@ -968,7 +964,7 @@ impl DreamConsolidationRegion {
         // rehearsed knowledge (high access_count) stays strong.
         let decay = crate::persona::decay_tick::apply_decay_sweep(
             reflector.admission.recall_metadata(),
-            now_ms(),
+            crate::time::EpochMs::now().millis(),
         );
         if decay.engrams_decayed > 0 {
             crate::probe!(
@@ -1111,7 +1107,7 @@ impl DreamConsolidationRegion {
                     crate::inference::measured_hold::subscribe()
                         .borrow()
                         .is_some(),
-                    crate::persona::trace::now_ms(),
+                    crate::time::EpochMs::now().millis(),
                 ) {
                     crate::probe!(
                         class = "dream.awaiting_boredom",
@@ -1225,7 +1221,7 @@ impl DreamConsolidationRegion {
         // — the lane stays free for reactive responding + real work rather than
         // a back-to-back review storm (see REVIEW_ONLY_COOLDOWN_MS). The first
         // pass (no prior timestamp) is always allowed.
-        let now = now_ms();
+        let now = crate::time::EpochMs::now().millis();
         if let Some(&last) = self.last_review_ms.lock().unwrap().get(&persona_id) {
             if now.saturating_sub(last) < REVIEW_ONLY_COOLDOWN_MS {
                 return None;
@@ -1301,7 +1297,7 @@ impl DreamConsolidationRegion {
         permit: &mut Option<DreamPermit>,
     ) -> Option<TickOutcome> {
         // Rest gate — trickle, never storm (a pass launches a training job).
-        let now = now_ms();
+        let now = crate::time::EpochMs::now().millis();
         let last = self
             .last_consolidated_ms
             .lock()
@@ -1512,7 +1508,7 @@ async fn dream_pass(
             };
             let rotating = reflector.admission.semantic_beliefs_oldest_excluding(
                 &already,
-                now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
+                crate::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
                 ROTATING_REVIEW_PER_PASS,
             );
             let mut seen = reviewed.lock().unwrap();
@@ -1633,7 +1629,7 @@ async fn dream_pass(
         .unwrap_or_default();
     let backlog = reflector.admission.semantic_beliefs_oldest_excluding(
         &already,
-        crate::persona::trace::now_ms().saturating_sub(REVIEW_MIN_AGE_MS),
+        crate::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
         REVIEW_ONLY_BATCH,
     );
     if !backlog.is_empty() {
@@ -1690,7 +1686,7 @@ fn apply_supersessions(reflector: &PersonaReflector, persona_id: Uuid, supersede
     if superseded.is_empty() {
         return;
     }
-    let now = crate::persona::trace::now_ms();
+    let now = crate::time::EpochMs::now().millis();
     for id in superseded {
         reflector
             .admission
@@ -1960,7 +1956,7 @@ fn semantic_engram(fact: &DistilledFact) -> Engram {
             parent_engram_id: fact.source_ids.first().copied().unwrap_or_else(Uuid::nil),
         },
         recall_keys: fact.tags.clone(),
-        admitted_at_ms: now_ms(),
+        admitted_at_ms: crate::time::EpochMs::now().millis(),
         trust_state_at_admission: TrustState::SelfTrust,
         admission_trace_id: None,
     }
@@ -2005,15 +2001,6 @@ impl PersonaReflectionSource for crate::cognition::persona_workspace::PersonaWor
                 model,
             })
     }
-}
-
-/// Wall-clock epoch ms for stamping an admitted fact. `SystemTime` is fine in
-/// the core (the `Date.now` ban is workflow-script-only).
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

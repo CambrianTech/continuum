@@ -127,10 +127,7 @@ pub(super) fn snapshot_from_outcome(
                 // the honest answer is available — take it. Inventing a plausible
                 // number is the worse half of swallowing an error: it doesn't just
                 // hide the failure, it feeds fiction to every downstream reader.
-                ready_verified_at_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .ok(),
+                ready_verified_at_ms: crate::time::EpochMs::read().ok().map(crate::time::EpochMs::millis),
                 active_model: Some(desired.to_string()),
                 ready: true,
                 base_url: serving_v1_url(),

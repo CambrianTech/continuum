@@ -16,6 +16,7 @@
 //! unconditionally because its series genuinely changes every sample; this
 //! one compares and skips.
 
+use crate::time::EpochMs;
 use std::time::Duration;
 
 use continuum_positron::bench::{BenchRoundCardRow, BenchRoundRow, BenchRunRow, BenchViewState};
@@ -88,7 +89,7 @@ fn live_exam_row() -> Option<BenchRunRow> {
         .borrow()
         .clone()
         .filter(|s| s.run_id.as_deref() == Some(run_id.as_str()));
-    let now = crate::persona::trace::now_ms();
+    let now = EpochMs::now().millis();
     Some(match snap {
         Some(s) => BenchRunRow {
             round_id: None,
@@ -227,7 +228,7 @@ pub fn spawn_bench_emitter(
             crate::cognition::bench_round::enrich_rounds(
                 &mut rounds,
                 &facts,
-                crate::persona::trace::now_ms(),
+                EpochMs::now().millis(),
             );
             // BOARD TRUTH on the rail (2026-09-03, seen live): the tracker said "NOT
             // STARTED / unassigned" for a round nine citizens held on the board. ONE

@@ -1,10 +1,10 @@
 //! The existing deliberation capture owner: borrowed request submission before
 //! inference, then a small terminal record. Playback reads never run cognition.
+use crate::time::EpochMs;
 use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
 use serde::Serialize;
 use std::path::Path;
 use std::sync::{Arc, LazyLock, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
 #[path = "capture_owner.rs"]
@@ -16,13 +16,6 @@ pub(crate) use store::{detail, page};
 pub use store::{CallHeader, CallStatus, PlaybackDetail, PlaybackPage};
 use store::{PayloadRef, Store};
 pub(crate) const FIXTURE_DIR: &str = ".continuum/fixtures/prompt-captures";
-
-pub(crate) fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or(0) // A pre-epoch clock has no representable unsigned timestamp; zero marks that boundary.
-}
 
 #[derive(Debug, Serialize)]
 pub struct PromptCall {
@@ -326,7 +319,8 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         call: &PromptCall,
         request: &TextGenerationRequest,
     ) -> Option<CaptureToken> {
-        let captured_at_ms = now_ms();
+        // A pre-1970 clock reads 0 here: an unsigned timestamp cannot go lower; zero marks that boundary.
+        let captured_at_ms = EpochMs::now().millis();
         let header = CallHeader {
             request_id: call.request_id.clone(),
             session_id: self.session_id,
@@ -368,7 +362,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
     ) -> Option<String> {
         let mut header = token.header.clone();
         header.status = status;
-        header.captured_at_ms = now_ms();
+        header.captured_at_ms = EpochMs::now().millis();
         let record = TerminalRecord {
             schema_version: 4,
             event: &header.status,
@@ -398,7 +392,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
         offered_tools: &[String],
         response: &TextGenerationResponse,
     ) {
-        let captured_at_ms = now_ms();
+        let captured_at_ms = EpochMs::now().millis();
         let record = LegacyRecord {
             schema_version: 3,
             captured_at_ms,

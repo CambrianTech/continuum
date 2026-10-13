@@ -34,7 +34,7 @@
 //! when that lands: the backend behind `contribute` gets smarter, the brain is
 //! unchanged.
 
-use crate::utils::age::humanize_age;
+use crate::time::EpochMs;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -175,16 +175,13 @@ fn focused_query(world_state: &str) -> &str {
 }
 
 /// Wall-clock seam — injectable so tests are deterministic. Returns ms since
-/// the unix epoch, matching the `now_ms()` convention used across cognition.
+/// the unix epoch, matching the `EpochMs::now().millis()` convention used across cognition.
 pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// The default wall clock (ms since unix epoch).
 fn wall_clock() -> Clock {
     Arc::new(|| {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+        EpochMs::now().millis()
     })
 }
 
@@ -816,7 +813,7 @@ const RECALL_MEMORY_FRAME: &str =
 /// the projection must carry it or a fact and a bystander's question render
 /// identically (the silver-harbor IDK — see the call site).
 fn provenance_prefix(engram: &Engram, persona_id: Uuid, now_ms: u64) -> String {
-    let age = humanize_age(now_ms.saturating_sub(engram.admitted_at_ms));
+    let age = EpochMs::from_millis(now_ms).since(EpochMs::from_millis(engram.admitted_at_ms)).ago();
     let who = match &engram.origin {
         EngramOrigin::Chat(r) => {
             if r.sender_id == persona_id {
@@ -1513,9 +1510,7 @@ mod tests {
 
     // ---- The mind in action: real hippocampus → workspace → informed decision ----
 
-    use super::super::workspace::{
-        Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace,
-    };
+    use super::super::workspace::{Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
 
     /// A deliberation faculty that conditions its reply on what recall surfaced.
     struct DeliberateOnRecall;

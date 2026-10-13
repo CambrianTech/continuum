@@ -434,12 +434,9 @@ impl CargoTargetPool {
     /// 356 GB of destroyed compilation looked exactly like 36 successful runs.
     fn note_eviction(&self) {
         use std::sync::atomic::Ordering::Relaxed;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            // A clock we cannot read must not manufacture a "fast gap" — 0 makes the
+        let now = // A clock we cannot read must not manufacture a "fast gap" — 0 makes the
             // first comparison look ancient, which is the quiet side.
-            .unwrap_or(0);
+            crate::time::EpochMs::now().millis();
         let previous = self.last_eviction_ms.swap(now, Relaxed);
         // First eviction of the run has no gap to measure, and a zero clock is not a
         // measurement either.

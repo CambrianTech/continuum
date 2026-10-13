@@ -42,6 +42,7 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
+use crate::time::EpochMs;
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_core::TranscriptEvent;
@@ -93,7 +94,7 @@ impl MindFeed {
         };
         // Turn budget 0: the awareness strip's context share is unread until the
         // loop's Wake consumer composes it, so it reports 0 rather than a guess.
-        let now = crate::persona::trace::now_ms();
+        let now = EpochMs::now().millis();
         let (mut region, _strip) = crate::persona::perception_region::PerceptionRegion::boot(
             airc_core::PeerId::from_uuid(persona),
             &dir,
@@ -1895,10 +1896,7 @@ mod tests {
         use super::super::perceptual_from_event;
         use crate::airc::realtime::AircRealtimeEnvelope;
         use crate::airc::realtime_wire::{body_for_envelope, headers_for_envelope};
-        use airc_core::{
-            Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptEvent,
-            TranscriptKind,
-        };
+        use airc_core::{Body, ClientId, EventId, Headers, MentionTarget, PeerId, RoomId, TranscriptEvent, TranscriptKind};
         use serde_json::json;
         use uuid::Uuid;
 

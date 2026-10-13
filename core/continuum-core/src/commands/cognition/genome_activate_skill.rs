@@ -49,10 +49,7 @@ crate::action_command! {
         } else {
             this.state.per_persona_budget_mb()
         };
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?
-            .as_millis() as u64;
+        let now_ms = crate::time::EpochMs::read().map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?.millis();
 
         let mut persona = this.state.get_or_create_persona(p.persona_id);
         persona.genome_engine.memory_budget_mb = memory_budget_mb;

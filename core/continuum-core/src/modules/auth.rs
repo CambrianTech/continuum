@@ -225,10 +225,7 @@ impl TokenSet {
         if self.expires_at == 0 {
             return false;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = crate::time::EpochMs::now().secs();
         now >= self.expires_at.saturating_sub(60)
     }
 }
@@ -769,10 +766,7 @@ fn build_auth_url(config: &OAuthClientConfig, code_challenge: &str, state: &str)
 
 fn parse_token_response(resp: &Value) -> TokenSet {
     let expires_at = resp["expires_in"].as_u64().map(|secs| {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = crate::time::EpochMs::now().secs();
         now + secs
     });
 
@@ -1007,10 +1001,7 @@ mod tests {
 
     #[test]
     fn test_token_expiry() {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now = crate::time::EpochMs::now().secs();
 
         let expired = TokenSet {
             access_token: "tok".into(),

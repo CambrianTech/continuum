@@ -90,8 +90,9 @@ pub enum TrainerHardware {
     /// Runs on any host — cloud HTTP trainers and accelerator-agnostic
     /// in-process trainers (Candle selects Metal/CUDA/CPU itself).
     Any,
-    /// Requires an Apple-Silicon Metal device (Apple's `mlx_lm`).
-    Metal,
+    /// Requires Apple Silicon (Apple's `mlx_lm`). Not merely Metal: an Intel Mac's
+    /// discrete GPU reports Metal too, and `mlx_lm` cannot run there.
+    AppleSilicon,
     /// Requires an NVIDIA CUDA device.
     Cuda,
     /// Requires a Vulkan device (AMD / non-CUDA GPUs).
@@ -107,7 +108,7 @@ impl TrainerHardware {
             // Apple Silicon, not merely Metal: an Intel Mac's discrete GPU reports Metal too, and
             // `mlx_lm` cannot run there (IntelMac 2026-10-12: Delia's training dispatch wedged on
             // "mlx python interpreter not found"). One classifier owns the distinction.
-            TrainerHardware::Metal => {
+            TrainerHardware::AppleSilicon => {
                 crate::governor::types::classify_silicon(host) == crate::governor::types::TargetSilicon::AppleM
             }
             TrainerHardware::Cuda => host.has_cuda,

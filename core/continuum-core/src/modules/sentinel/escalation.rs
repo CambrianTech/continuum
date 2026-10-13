@@ -51,6 +51,7 @@
 //!   one because the channel-tick rendezvous makes the branch
 //!   unnecessary.
 
+use crate::time::EpochMs;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -60,10 +61,7 @@ use uuid::Uuid;
 
 use crate::runtime::CommandExecutor;
 
-use super::types::{
-    default_escalation_rules, EscalationAction, EscalationCondition, EscalationRule,
-    SentinelEscalation,
-};
+use super::types::{default_escalation_rules, EscalationAction, EscalationCondition, EscalationRule, SentinelEscalation};
 
 // ─── Public event surface ────────────────────────────────────────────
 
@@ -425,7 +423,7 @@ async fn escalate_to_persona_inbox(
         description,
         priority: rule.priority.inbox_priority(),
         status: "pending",
-        timestamp: now_ms(),
+        timestamp: EpochMs::now().millis(),
         metadata: SentinelInboxTaskMetadata {
             sentinel_name: event.escalation.sentinel_name.clone(),
             sentinel_entity_id: event.escalation.entity_id.clone(),
@@ -531,13 +529,6 @@ fn build_inbox_description(event: &SentinelEscalationEvent) -> String {
         }
         SentinelTerminalStatus::Cancelled => format!("Sentinel \"{name}\" was cancelled"),
     }
-}
-
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
 }
 
 fn now_iso() -> String {

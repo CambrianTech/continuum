@@ -53,7 +53,7 @@ impl ServingDaemonModule {
             if let Some(slots) = server.slots_body().await {
                 crate::inference::prefill_knee::observe_slots(
                     &slots,
-                    crate::persona::trace::now_ms(),
+                    EpochMs::now().millis(),
                     crate::cognition::resource_admission::served_lane_count(),
                     engine,
                 );

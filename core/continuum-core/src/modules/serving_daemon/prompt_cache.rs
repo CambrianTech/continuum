@@ -102,7 +102,7 @@ pub(super) fn derived_prompt_cache_mib(
         .filter(|(id, _)| resident.contains(id))
         .map(|(_, d)| (d.last_seen_ms, d.prev_seen_ms))
         .collect();
-    let active = rotating_minds(&seen, crate::persona::trace::now_ms(), rotation_window_ms(&seen)).max(warm_floor);
+    let active = rotating_minds(&seen, EpochMs::now().millis(), rotation_window_ms(&seen)).max(warm_floor);
     let demands = with_measured_state(
         active_cache_states(&population, served_ctx, active),
         fp.map(|f| f.kv_per_token),

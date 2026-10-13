@@ -173,10 +173,7 @@ impl ActionCommand for PresenceDirectory {
         // WHO IS ONLINE NOW: the daemon's live heartbeat window, overlaid.
         // Best-effort — a boot window with no airc handle still serves the
         // durable existence list (dots grey, honestly).
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| CommandError::Internal(e.to_string()))?
-            .as_millis() as u64;
+        let now_ms = crate::time::EpochMs::read().map_err(|e| CommandError::Internal(e.to_string()))?.millis();
         let live_window_ms =
             crate::persona::room_roster_source::PRESENCE_WINDOW.as_millis() as u64;
         let airc = self

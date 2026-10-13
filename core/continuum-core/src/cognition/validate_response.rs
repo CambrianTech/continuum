@@ -33,12 +33,12 @@
 //! - No JSON parsing — model is asked for a single word, not JSON.
 //!   Different from check_redundancy.
 
+use crate::time::EpochMs;
 use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::ResponseFormat;
 use crate::ai::{ChatMessage, MessageContent, TextGenerationRequest, TextGenerationResponse};
 use crate::modules::ai_provider::global_registry;
 use serde::{Deserialize, Serialize};
-use std::time::{SystemTime, UNIX_EPOCH};
 use ts_rs::TS;
 
 const VALIDATE_PROVIDER: &str = "groq";
@@ -201,7 +201,7 @@ pub async fn evaluate_validate_response(
         confidence: VALIDATE_CONFIDENCE,
         reason: reason_for(decision).to_string(),
         model,
-        timestamp: now_ms(),
+        timestamp: EpochMs::now().millis(),
     })
 }
 
@@ -250,13 +250,6 @@ fn build_validate_generation_request(
         persona_id: None,
         turn_bound: None,
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

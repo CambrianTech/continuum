@@ -149,10 +149,7 @@ impl ActionCommand for GenomeRecall {
             crate::genome::signature::signature_store_path().map_err(CommandError::Invalid)?;
         let signatures = crate::genome::signature::SignatureStore::load_at(&sig_path)
             .map_err(CommandError::Invalid)?;
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0); // pre-epoch clock: fitness decay saturates rather than the command failing
+        let now_ms = crate::time::EpochMs::now().millis(); // pre-epoch clock: fitness decay saturates rather than the command failing
         let fitness = match crate::genome::fitness_ledger::GeneFitnessIndex::default_dir() {
             Some(dir) => crate::genome::fitness_ledger::GeneFitnessIndex::load(&dir, now_ms),
             None => Default::default(), // no HOME: empty index, every gene ranks neutral

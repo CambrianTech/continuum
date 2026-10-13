@@ -483,10 +483,7 @@ impl KvSlotPool {
             // later drop-in behind this same closure seam.
             eviction_priority: Arc::new(|view, lease: &Arc<KvSlotLease>| {
                 let tokens = lease.tail_tokens.load(Ordering::Relaxed).max(1);
-                let now_ms = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(view.last_access_at); // engine has no view of a just-inserted key: fall back to its own stamp
+                let now_ms = crate::time::EpochMs::read().map_or(view.last_access_at, crate::time::EpochMs::millis); // engine has no view of a just-inserted key: fall back to its own stamp
                 let stale_hours =
                     now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
                 let cost = (tokens >> stale_hours.min(20)) as i64;

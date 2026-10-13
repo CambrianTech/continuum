@@ -116,7 +116,7 @@ impl ServingDaemonModule {
         // credit would read a freshly relaunched engine as nobody's for up to a minute, which
         // is exactly when a relaunch is sized. `/props` is one local call per tick.
         self.refresh_engine_device_credit().await;
-        let now = crate::persona::trace::now_ms();
+        let now = EpochMs::now().millis();
         if !crate::inference::lane_footprint::sample_due(now) {
             return;
         }
