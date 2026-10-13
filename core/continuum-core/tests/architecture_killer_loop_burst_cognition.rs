@@ -76,13 +76,6 @@ use continuum_core::persona::types::{PersonaState, SenderType};
 use continuum_core::persona::{analyze_burst, BurstEvaluateResult, RateLimiterState, SleepState};
 use continuum_core::rag::RagEngine;
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavior> {
     Arc::new(ChatQueueItem {
         id: Uuid::new_v4(),
@@ -92,8 +85,8 @@ fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavi
         sender_name: sender.into(),
         sender_type: SenderType::Human,
         mentions: false,
-        timestamp: now_ms(),
-        enqueued_at: now_ms(),
+        timestamp: continuum_core::time::EpochMs::now().millis(),
+        enqueued_at: continuum_core::time::EpochMs::now().millis(),
         priority: 0.5,
         consolidated_context: Vec::new(),
         media: Vec::new(),
@@ -154,7 +147,7 @@ impl PersonaHarness {
             &self.sleep_state,
             &self.engine,
             &self.message_cache,
-            now_ms(),
+            continuum_core::time::EpochMs::now().millis(),
         )
     }
 

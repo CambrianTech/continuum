@@ -90,7 +90,16 @@ mod tests {
     // clock needs its own policy); never by raising a baseline.
     #[test]
     fn the_wall_clock_is_read_only_by_epoch_ms() {
-        let violations = scan(&[&WallClockReadOnlyByEpochMs]);
+        // The crate's integration tests too: four of them kept their own clocks after the
+        // library moved onto EpochMs, because the scan covered src/ only.
+        let tests_root = crate::crate_src_root().parent().expect("src has a parent").join("tests");
+        let mut violations = scan(&[&WallClockReadOnlyByEpochMs]);
+        for file in crate::collect_files(&tests_root) {
+            violations.extend(WallClockReadOnlyByEpochMs.check(&file).into_iter().map(|v| Violation {
+                file: format!("tests/{}", v.file),
+                ..v
+            }));
+        }
         assert!(
             violations.is_empty(),
             "{} wall-clock reads outside time::EpochMs:\n{}",
