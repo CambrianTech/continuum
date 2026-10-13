@@ -1391,6 +1391,10 @@ fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path::Path) {
         if !path.is_dir() || path == keep || live.contains(&path) {
             continue;
         }
+        if let Some(why) = unresolved_hands_keep_reason(&path) {
+            tracing::warn!(root = %path.display(), reason = %why, "an eval world kept for unresolved hands is not swept");
+            continue;
+        }
         match std::fs::remove_dir_all(&path) {
             Ok(()) => crate::probe!(
                 class = "eval.workspace.orphan_swept",
@@ -1413,30 +1417,161 @@ fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path::Path) {
 /// crash path Drop cannot cover (SIGKILL/SIGTERM) is owned by
 /// [`sweep_orphan_eval_roots`] at the next provision.
 ///
-/// One exception: a fork's hands that couldn't be confirmed ended may still have a process
-/// standing in the world. [`Self::retain`] then keeps it (and its live-roots entry, so the
-/// sweep spares it) instead of deleting a directory something may still run in; the next
-/// provision after a restart, which ends every such process, sweeps it (Astra on #5005).
-struct EphemeralEvalRoot {
+/// Once a fork's hands can act in it, the world is owned by an [`EvalWorld`], which keeps it
+/// until every set of hands is confirmed ended (Astra on #5005).
+pub(crate) struct EphemeralEvalRoot {
     path: std::path::PathBuf,
     retained: bool,
 }
 
 impl EphemeralEvalRoot {
-    fn new(path: std::path::PathBuf) -> Self {
+    pub(crate) fn new(path: std::path::PathBuf) -> Self {
         if let Ok(mut live) = live_eval_roots().lock() {
             live.insert(path.clone());
         }
         Self { path, retained: false }
     }
 
-    /// Keep this world past the run: a fork's hands in it weren't confirmed ended.
-    fn retain(mut self) {
+    /// Keep this world past the run: a fork's hands in it weren't confirmed ended. It stays
+    /// registered (this process's sweep spares it), and an [`UNRESOLVED_HANDS_MARKER`] records
+    /// which pids weren't confirmed gone, so a later process's sweep deletes it only once each
+    /// is positively absent. A restart alone proves nothing: a child needn't die with its parent.
+    fn retain_unresolved(mut self, pids: Option<Vec<u32>>) {
+        let marker = UnresolvedHands { pids };
+        let written = serde_json::to_string(&marker) // disk marker read by a later process's sweep — a true process boundary
+            .map_err(|e| e.to_string())
+            .and_then(|body| std::fs::write(self.path.join(UNRESOLVED_HANDS_MARKER), body).map_err(|e| e.to_string()));
+        if let Err(e) = written {
+            tracing::error!(root = %self.path.display(), error = %e, "an unresolved eval world's marker could not be written; only this process's registry keeps it from the sweep");
+        }
         tracing::error!(
             root = %self.path.display(),
-            "an eval world is KEPT: a fork's hands in it were not confirmed ended, so it is not deleted under them; the next provision after a restart sweeps it"
+            pids = ?marker.pids,
+            "an eval world is KEPT: a fork's hands in it were not confirmed ended, so it is not deleted under them"
         );
         self.retained = true;
+    }
+}
+
+/// Written into an eval world kept because a fork's hands in it weren't confirmed ended.
+pub(crate) const UNRESOLVED_HANDS_MARKER: &str = "unresolved-hands.json";
+
+/// What [`UNRESOLVED_HANDS_MARKER`] holds: the pids not confirmed gone, or `None` when the
+/// release couldn't report them (then nothing proves the world unused, and it is kept).
+#[derive(Debug, Serialize, Deserialize)]
+struct UnresolvedHands {
+    pids: Option<Vec<u32>>,
+}
+
+/// Why a world must NOT be swept, or `None` when nothing recorded says so: a kept world is
+/// swept only once every pid its marker names is positively absent.
+fn unresolved_hands_keep_reason(root: &std::path::Path) -> Option<String> {
+    let body = match std::fs::read_to_string(root.join(UNRESOLVED_HANDS_MARKER)) {
+        Ok(body) => body,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return Some(format!("its unresolved-hands marker can't be read: {e}")),
+    };
+    let marker: UnresolvedHands = match serde_json::from_str(&body) {
+        Ok(marker) => marker,
+        Err(e) => return Some(format!("its unresolved-hands marker isn't its own shape: {e}")),
+    };
+    let Some(pids) = marker.pids else {
+        return Some("its fork's release reported no pids, so nothing proves the world unused".into());
+    };
+    let present: Vec<u32> = pids
+        .into_iter()
+        .filter(|pid| !matches!(crate::inference::engine_residency::probe_process(*pid), crate::inference::engine_residency::ProcessProbe::Absent))
+        .collect();
+    (!present.is_empty()).then(|| format!("pids {present:?} are not confirmed gone"))
+}
+
+/// An eval run's disposable world together with every fork's hands that may act in it. Once
+/// hands are held the world is RETAINED by default: it is deleted only after each set of hands
+/// is confirmed closed. [`Self::finish`] does that in-band; a cancel or an early return drops
+/// the world first, and its drop hands the same close to an owned task that outlives the
+/// caller (Astra's re-review of #5005). With no hands held, nothing can act in the world, and
+/// it goes as an [`EphemeralEvalRoot`] always did.
+pub(crate) struct EvalWorld {
+    root: Option<EphemeralEvalRoot>,
+    /// Hands not yet confirmed closed. One leaves only after its close returned.
+    hands: Vec<crate::cognition::persona_workspace::ActingHands>,
+    /// Pids not confirmed gone so far, or `None` once a release couldn't report them.
+    unresolved: Option<Vec<u32>>,
+    any_unresolved: bool,
+    /// This world is already the owned cleanup: if it is dropped too (its runtime shutting
+    /// down), it keeps the world rather than spawning again.
+    owned_cleanup: bool,
+}
+
+impl EvalWorld {
+    pub(crate) fn new(root: Option<EphemeralEvalRoot>) -> Self {
+        Self { root, hands: Vec::new(), unresolved: Some(Vec::new()), any_unresolved: false, owned_cleanup: false }
+    }
+
+    /// Hold a fork's hands BEFORE they are rooted in this world.
+    pub(crate) fn hold(&mut self, hands: Option<crate::cognition::persona_workspace::ActingHands>) {
+        self.hands.extend(hands);
+    }
+
+    /// Close every set of hands, awaited, then delete the world, or keep it when any close
+    /// is unresolved. A close that fails is logged loudly; it never replaces the measurement.
+    pub(crate) async fn finish(mut self) {
+        while let Some(hands) = self.hands.last() {
+            let outcome = crate::cognition::persona_workspace::close_acting_context(hands).await;
+            // Popped only AFTER the close returned: a cancel mid-close leaves it held, for drop.
+            self.hands.pop();
+            if let Err(not_closed) = outcome {
+                tracing::error!(error = %not_closed, "cognition/eval could not cleanly end a fork's own hands; its world is kept");
+                self.any_unresolved = true;
+                self.unresolved = match (self.unresolved.take(), not_closed.unconfirmed) {
+                    (Some(mut known), Some(pids)) => {
+                        known.extend(pids);
+                        Some(known)
+                    }
+                    _ => None,
+                };
+            }
+        }
+        if self.any_unresolved {
+            if let Some(root) = self.root.take() {
+                root.retain_unresolved(self.unresolved.take());
+            }
+        }
+        // Otherwise `self` drops with no hands held: the root deletes itself.
+    }
+}
+
+impl Drop for EvalWorld {
+    fn drop(&mut self) {
+        if self.hands.is_empty() {
+            if self.any_unresolved {
+                if let Some(root) = self.root.take() {
+                    root.retain_unresolved(self.unresolved.take());
+                }
+            }
+            return;
+        }
+        let rest = EvalWorld {
+            root: self.root.take(),
+            hands: std::mem::take(&mut self.hands),
+            unresolved: self.unresolved.take(),
+            any_unresolved: self.any_unresolved,
+            owned_cleanup: true,
+        };
+        match tokio::runtime::Handle::try_current() {
+            Ok(rt) if !self.owned_cleanup => {
+                rt.spawn(rest.finish());
+            }
+            _ => {
+                // No runtime to close on, or the owned cleanup itself was dropped: keep the
+                // world, and say nothing proves it unused. Dropping `rest` with no hands held
+                // and an unresolved verdict retains its root.
+                let mut rest = rest;
+                rest.hands.clear();
+                rest.any_unresolved = true;
+                rest.unresolved = None;
+            }
+        }
     }
 }
 
@@ -2740,14 +2875,17 @@ impl CognitionEval {
         // The exact "silent no-root scores a false ZERO that would LIE about the
         // solver" this comment block always warned about, one variable to the left.
         // Every fork's own hands this eval rooted, closed (awaited) before it returns, while its
-        // exam directory still exists; their drop is only the abnormal-exit fallback.
-        let mut forked_hands: Vec<crate::cognition::persona_workspace::ActingHands> = Vec::new();
+        // exam directory still exists. A cancel or an early return hands the same close to an
+        // owned task (`EvalWorld`'s drop); the hands' own drop is only the last fallback.
+        // The world and every fork's hands that may act in it are owned together, and the
+        // hands are held BEFORE they are rooted, so no exit path can delete the world under them.
+        let mut world = EvalWorld::new(ephemeral_root);
         if let Some(root) = eval_workspace_root.as_deref() {
+            world.hold(crate::cognition::persona_workspace::ActingHands::of(&cycle));
             // A gym run IS the measurement — the grader reads the artifact, never her prose,
             // so an inert edit is unrecoverable here for the same reason as `benchmark/swe-solve`.
             crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[], true)
                 .await?;
-            forked_hands.extend(crate::cognition::persona_workspace::ActingHands::of(&cycle));
             crate::probe!(
                 class = "eval.hands_rooted",
                 root = %root,
@@ -2893,7 +3031,7 @@ impl CognitionEval {
                 _fleet_lease.as_ref().map(|_| true),
                 _eval_lane.as_ref().and_then(|lane| lane.measured_gene.as_ref()),
             );
-            close_forked_hands(&forked_hands, ephemeral_root).await;
+            world.finish().await;
             return Ok(result);
         }
 
@@ -2944,9 +3082,9 @@ impl CognitionEval {
             // The reviewer is a fork with ITS OWN hands (HER-HANDS): rooted where the writer's
             // are, or it would have no workspace at all (an acting context never gets hers).
             if let Some(root) = eval_workspace_root.as_deref() {
+                world.hold(crate::cognition::persona_workspace::ActingHands::of(&reviewer));
                 crate::cognition::persona_workspace::root_acting_workspace(&reviewer, root, &[], true)
                     .await?;
-                forked_hands.extend(crate::cognition::persona_workspace::ActingHands::of(&reviewer));
             }
             let reviewer_iso = reviewer.isolate_for_eval();
             let out = run_pass_team(
@@ -3107,25 +3245,8 @@ impl CognitionEval {
             _fleet_lease.as_ref().map(|_| true),
             None,
         );
-        close_forked_hands(&forked_hands, ephemeral_root).await;
+        world.finish().await;
         Ok(result)
-    }
-}
-
-/// End every fork's own hands an eval rooted, awaited, while the directory they stood in
-/// still exists, then let the run's disposable world go, or keep it if any close is unresolved. A close that fails or can't confirm a kill is logged loudly with its cause;
-/// it never replaces the measurement's own result.
-async fn close_forked_hands(hands: &[crate::cognition::persona_workspace::ActingHands], world: Option<EphemeralEvalRoot>) {
-    let mut all_closed = true;
-    for h in hands {
-        if let Err(e) = crate::cognition::persona_workspace::close_acting_context(h).await {
-            all_closed = false;
-            tracing::error!(error = %e, "cognition/eval could not cleanly end a fork's own hands; their drop will retry the release");
-        }
-    }
-    // The world goes only after every set of hands in it is confirmed ended.
-    if let (false, Some(world)) = (all_closed, world) {
-        world.retain();
     }
 }
 
@@ -5700,16 +5821,27 @@ mod tests {
         drop(holder); // Drop removes the live world AND its registry entry
         assert!(!live.is_dir(), "Drop still owns the in-process cleanup path");
 
-        // A world whose fork's hands weren't confirmed ended is kept, and the sweep spares it
-        // (Astra's review of #5005): never deleted under something that may still run in it.
-        let unresolved = parent.path().join("unresolved-run");
-        std::fs::create_dir_all(&unresolved).expect("mkdir unresolved");
-        EphemeralEvalRoot::new(unresolved.clone()).retain();
+        // A world whose fork's hands weren't confirmed ended is kept (Astra's re-review of
+        // #5005). A later process's sweep (simulated: the registry no longer holds it) deletes
+        // it only once every recorded pid is positively absent; a restart alone proves nothing.
+        let alive = parent.path().join("unresolved-alive");
+        let ended = parent.path().join("unresolved-ended");
+        std::fs::create_dir_all(&alive).expect("mkdir alive");
+        std::fs::create_dir_all(&ended).expect("mkdir ended");
+        let mut exited = std::process::Command::new("true").spawn().expect("spawn a child that exits");
+        let exited_pid = exited.id();
+        exited.wait().expect("reap it, so its pid is gone");
+        EphemeralEvalRoot::new(alive.clone()).retain_unresolved(Some(vec![std::process::id()]));
+        EphemeralEvalRoot::new(ended.clone()).retain_unresolved(Some(vec![exited_pid]));
         sweep_orphan_eval_roots(parent.path(), &keep);
-        assert!(unresolved.is_dir(), "a retained world survives its run and the sweep");
+        assert!(alive.is_dir() && ended.is_dir(), "this process's registry spares every kept world");
         if let Ok(mut live) = live_eval_roots().lock() {
-            live.remove(&unresolved); // test hygiene: the registry is process-global
+            live.remove(&alive);
+            live.remove(&ended);
         }
+        sweep_orphan_eval_roots(parent.path(), &keep);
+        assert!(alive.is_dir(), "a world whose recorded process is still present is never swept");
+        assert!(!ended.is_dir(), "a world whose every recorded process is gone is swept");
     }
 
     // what this catches: #310 — the /v1/models context_length contract for gateway-routed

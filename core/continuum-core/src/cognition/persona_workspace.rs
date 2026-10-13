@@ -1308,7 +1308,7 @@ pub(crate) async fn restore_acting_workspace(
     // An acting context (an eval's, a solve's or a replay's own hands) has no home to go back
     // to: it ENDS, awaited here, before its caller removes the directory it stood in.
     if hands.context.is_some() {
-        return close_acting_context(hands).await;
+        return close_acting_context(hands).await.map_err(Into::into);
     }
     // `ensure_`, not `path_`: `code/create-workspace` REFUSES a root that does not exist
     // (PathSecurity canonicalizes), and a persona who has never written anything has no
@@ -1324,6 +1324,32 @@ pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::code::hand
     note_acting_root_in(persona_id, Some(context), None);
 }
 
+/// Why an acting context is NOT closed: its handles and place are kept for a retry.
+#[derive(Debug)]
+pub(crate) struct ContextNotClosed {
+    pub message: String,
+    /// The pids not confirmed gone, or `None` when the release couldn't report them.
+    pub unconfirmed: Option<Vec<u32>>,
+}
+
+impl ContextNotClosed {
+    fn unknown(message: String) -> Self {
+        Self { message, unconfirmed: None }
+    }
+}
+
+impl std::fmt::Display for ContextNotClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<ContextNotClosed> for crate::sdk_codegen::CommandError {
+    fn from(not_closed: ContextNotClosed) -> Self {
+        crate::sdk_codegen::CommandError::Internal(not_closed.message)
+    }
+}
+
 /// End an acting context and confirm it: `code/release-hands` through these hands (so it
 /// ends THIS context and no other), awaited. Only a CONFIRMED release forgets where the
 /// context stood; a release that couldn't confirm every kill keeps both the handles and the
@@ -1331,7 +1357,7 @@ pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::code::hand
 /// the context stood in and a retry finds it (Astra's review of #5005). This is the normal
 /// teardown of an eval, a solve or a replay; the release sent when its hands drop is only
 /// the fallback for an abnormal exit.
-pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), crate::sdk_codegen::CommandError> {
+pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), ContextNotClosed> {
     let Some(context) = hands.context else {
         return Ok(()); // her live hands are never ended
     };
@@ -1355,31 +1381,31 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), crat
         .executor
         .execute_native_batch(std::slice::from_ref(&call), &ctx, 8000)
         .await
-        .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!("closing acting context {}: {e}", context.id())))?;
-    let result = out.results.first().ok_or_else(|| {
-        crate::sdk_codegen::CommandError::Internal(format!("closing acting context {}: no result", context.id()))
-    })?;
+        .map_err(|e| ContextNotClosed::unknown(format!("closing acting context {}: {e}", context.id())))?;
+    let result = out
+        .results
+        .first()
+        .ok_or_else(|| ContextNotClosed::unknown(format!("closing acting context {}: no result", context.id())))?;
     if result.is_error.is_some() {
-        return Err(crate::sdk_codegen::CommandError::Internal(format!(
-            "closing acting context {}: {}",
-            context.id(),
-            result.content
-        )));
+        return Err(ContextNotClosed::unknown(format!("closing acting context {}: {}", context.id(), result.content)));
     }
     let release: crate::modules::code_commands::ReleaseHandsResult = serde_json::from_str(&result.content).map_err(|e| {
-        crate::sdk_codegen::CommandError::Internal(format!(
+        ContextNotClosed::unknown(format!(
             "closing acting context {}: the release's result isn't its own shape ({e}), so nothing is confirmed: {}",
             context.id(),
             result.content
         ))
     })?;
     if !release.released {
-        return Err(crate::sdk_codegen::CommandError::Internal(format!(
-            "acting context {} is NOT closed: pids {:?} not confirmed gone ({}); its handles and place are kept for a retry",
-            context.id(),
-            release.unconfirmed,
-            release.errors.join("; ")
-        )));
+        return Err(ContextNotClosed {
+            message: format!(
+                "acting context {} is NOT closed: pids {:?} not confirmed gone ({}); its handles and place are kept for a retry",
+                context.id(),
+                release.unconfirmed,
+                release.errors.join("; ")
+            ),
+            unconfirmed: Some(release.unconfirmed),
+        });
     }
     note_acting_root_in(hands.persona_id, hands.context, None);
     hands.working_memory.set_scope(None);
@@ -4026,6 +4052,50 @@ mod tests {
             .await
             .expect("an unclosed fork is released, and its place forgotten, when its hands drop");
             note_acting_root_in(persona, None, None);
+        }
+
+        // what this catches (Astra's re-review of #5005): an eval cancelled while closing its
+        // forks' hands deleting the world they still run in, while their release was merely
+        // scheduled. After the cancel the world, the fork's engine and its place must all
+        // remain; once the owned cleanup confirms the kill, all three go.
+        #[tokio::test]
+        async fn a_cancelled_eval_keeps_its_world_until_its_forks_are_confirmed_ended() {
+            use futures::FutureExt;
+            let parent = tempfile::TempDir::new().expect("parent dir");
+            let world_dir = parent.path().join("run");
+            std::fs::create_dir_all(&world_dir).unwrap();
+            std::fs::write(world_dir.join("EXAM_ONLY_blueprints.py"), "# flask\n").unwrap();
+            let persona = Uuid::new_v4();
+            let (executor, state) = core_with_code();
+            let live_exec = CommandToolExecutor::for_persona(executor, persona);
+            let fork = hands_over(
+                crate::cognition::tool_executor::ToolExecutor::in_fresh_hands(&live_exec, persona).expect("a fork's own hands"),
+                persona,
+            );
+            let context = fork.context;
+            let mut world = crate::cognition::eval::EvalWorld::new(Some(crate::cognition::eval::EphemeralEvalRoot::new(world_dir.clone())));
+            world.hold(Some(fork.clone()));
+            root(&fork, &world_dir).await;
+            let (started, _) = call(&fork, "code/shell", serde_json::json!({"cmd": "sleep 600", "wait_ms": 100})).await;
+            assert!(started.contains("running") || started.contains("Running"), "the fork has a running operation: {started}");
+            drop(fork);
+
+            // Poll the close once (it starts the kill, then waits on the reap this
+            // single-threaded runtime can't have run yet), and cancel it there.
+            assert!(world.finish().now_or_never().is_none(), "the close can't confirm before the reap runs");
+            assert!(world_dir.is_dir(), "a cancelled close must not delete the world its fork still runs in");
+            assert_eq!(state.file_engines.len(), 1, "the fork's engine is kept until its kill is confirmed");
+            assert!(acting_root_in(persona, context).is_some(), "the fork's place is kept until its kill is confirmed");
+
+            // The owned cleanup outlives the cancel: it confirms the kill, then cleans up.
+            // 10 s is this test's bound on a SIGKILLed `sleep` being reaped, not a product timeout.
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while world_dir.exists() || !state.file_engines.is_empty() || acting_root_in(persona, context).is_some() {
+                    tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
+                }
+            })
+            .await
+            .expect("once the kill is confirmed, the world, the engine and the place all go");
         }
 
         // what this catches: a pure-cognition persona has no hands, so there is nothing to
