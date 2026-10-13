@@ -32,31 +32,15 @@ pub(crate) async fn bridge_review(event: &airc_core::TranscriptEvent, observer: 
         let runtime = registry.get(observer).ok_or_else(|| {
             crate::sdk_codegen::CommandError::Internal("review observer is not registered".into())
         })?;
-        let item = airc_work::decode_transcript_work_event(event)
-            .map_err(|e| crate::sdk_codegen::CommandError::Invalid(e.to_string()))?;
-        let airc_work::WorkEvent::WorkSubmissionReviewed(review) = item.event else {
+        let Some(verified) = verified_review(event, runtime.airc()).await? else {
             return Ok(None);
         };
-        if review.reviewer != event.peer_id {
-            return Err(crate::sdk_codegen::CommandError::Invalid(
-                "review author differs from signed sender".into(),
-            ));
-        }
-        let room = crate::modules::room_resolve::resolve_room(
-            runtime.airc(),
-            Some(&event.room_id.as_uuid().to_string()),
-        )
-        .await?;
-        let board = runtime
-            .airc()
-            .work_board_in(&room)
-            .await
-            .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))?;
-        if board.submission_review(review.review_id) != Some(&review) {
-            return Err(crate::sdk_codegen::CommandError::Invalid(
-                "review is not accepted in the room projection".into(),
-            ));
-        }
+        // The card's staged credit settles on the SAME verified review, never on an
+        // unchecked event (Astra, review of the credit design: any review-shaped event
+        // used to reach the card-wide settlement with no signer, projection or
+        // self-review check).
+        crate::persona::training_producer::settle_on_verified_review(&verified.review);
+        let VerifiedReview { review, room, board } = verified;
         let executor = EXECUTOR.cloned().ok_or_else(|| {
             crate::sdk_codegen::CommandError::Internal("credit executor is not ready".into())
         })?;
@@ -90,6 +74,102 @@ pub(crate) async fn bridge_review(event: &airc_core::TranscriptEvent, observer: 
             error = %error, "review evidence retained; an exact replay can retry the transfer")
         }
     }
+}
+
+/// A review event that passed every check a settlement may rely on.
+pub(crate) struct VerifiedReview {
+    pub review: airc_work::WorkSubmissionReview,
+    pub room: airc_lib::Room,
+    pub board: airc_work::WorkBoardProjection,
+}
+
+/// Why a review event may not settle anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReviewRefusal {
+    /// The review names an author other than the event's signed sender.
+    NotSignedByReviewer,
+    /// The room's projection does not hold this exact review.
+    NotAccepted,
+    /// The author reviewed her own submission, and the room's policy does not
+    /// admit that (card fa4aaaaa: the same rule `work/review` applies at publish).
+    SelfReviewNotAdmitted,
+}
+
+impl std::fmt::Display for ReviewRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            ReviewRefusal::NotSignedByReviewer => "review author differs from signed sender",
+            ReviewRefusal::NotAccepted => "review is not accepted in the room projection",
+            ReviewRefusal::SelfReviewNotAdmitted => "the room's review policy does not admit an author's own review",
+        })
+    }
+}
+
+/// THE check a review event passes before any credit settles on it. Pure, so the
+/// refusals are tested without a room: `signer` is the event's signed sender,
+/// `accepted` the projection's copy of this review (if it holds one), and
+/// `self_review_admitted` the room policy's answer for an author reviewing herself.
+pub(crate) fn check_review(
+    signer: crate::identity::PeerId,
+    review: &airc_work::WorkSubmissionReview,
+    accepted: Option<&airc_work::WorkSubmissionReview>,
+    publisher: Option<crate::identity::PeerId>,
+    self_review_admitted: bool,
+) -> Result<(), ReviewRefusal> {
+    if review.reviewer != signer {
+        return Err(ReviewRefusal::NotSignedByReviewer);
+    }
+    if accepted != Some(review) {
+        return Err(ReviewRefusal::NotAccepted);
+    }
+    if publisher == Some(review.reviewer) && !self_review_admitted {
+        return Err(ReviewRefusal::SelfReviewNotAdmitted);
+    }
+    Ok(())
+}
+
+/// Whether the room admits an author's review of her own submission: only where
+/// its policy says `self`; a room that declares no policy keeps today's behaviour.
+pub(crate) async fn self_review_admitted(airc: &airc_lib::Airc, room: &airc_lib::Room) -> bool {
+    crate::modules::work::review_gate::room_policy(airc, room)
+        .await
+        .is_none_or(|policy| policy.self_review)
+}
+
+/// The submission `review` judges, as the board holds it.
+pub(crate) fn reviewed_publisher(
+    board: &airc_work::WorkBoardProjection,
+    review: &airc_work::WorkSubmissionReview,
+) -> Option<crate::identity::PeerId> {
+    board
+        .card(review.card_id)?
+        .submissions
+        .iter()
+        .find(|s| s.submission_id == review.submission_id)
+        .map(|s| s.publisher)
+}
+
+/// Decode `event` as a review and run [`check_review`] against the room it was
+/// signed in. `Ok(None)` = not a review event; `Err` = a review that may not settle.
+pub(crate) async fn verified_review(
+    event: &airc_core::TranscriptEvent,
+    airc: &airc_lib::Airc,
+) -> Result<Option<VerifiedReview>, crate::sdk_codegen::CommandError> {
+    let item = airc_work::decode_transcript_work_event(event)
+        .map_err(|e| crate::sdk_codegen::CommandError::Invalid(e.to_string()))?;
+    let airc_work::WorkEvent::WorkSubmissionReviewed(review) = item.event else {
+        return Ok(None);
+    };
+    let room = crate::modules::room_resolve::resolve_room(airc, Some(&event.room_id.as_uuid().to_string())).await?;
+    let board = airc
+        .work_board_in(&room)
+        .await
+        .map_err(|e| crate::sdk_codegen::CommandError::Internal(e.to_string()))?;
+    let publisher = reviewed_publisher(&board, &review);
+    let admitted = publisher != Some(review.reviewer) || self_review_admitted(airc, &room).await;
+    check_review(event.peer_id, &review, board.submission_review(review.review_id), publisher, admitted)
+        .map_err(|refusal| crate::sdk_codegen::CommandError::Invalid(refusal.to_string()))?;
+    Ok(Some(VerifiedReview { review, room, board }))
 }
 
 /// Remote fan-out has ONE transfer owner: the submitted artifact's publisher.

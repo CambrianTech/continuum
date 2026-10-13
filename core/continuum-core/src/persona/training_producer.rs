@@ -2159,17 +2159,23 @@ async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: &str
     }
 }
 
-/// A review on a submission settles the card's staged credit: the room's judgment on
-/// real work, whoever the reviewer is (a peer, or the benchmark grader posting its
-/// verdict as a review since #4761). `Passed` settles as success, `Failed` as failure
-/// with the verdict kept; an `Unknown` outcome settles nothing, because a verdict that
-/// is not a verdict must never turn into credit. Spawned, like the instance path, so a
-/// room event never waits on a curriculum write. Pure classification is
-/// [`review_settlement`], tested.
-pub fn settle_on_review(event: &airc_core::TranscriptEvent) {
-    let Some((card, passed)) = review_settlement(event) else {
+/// A VERIFIED review on a submission settles the card's staged credit: the room's
+/// judgment on real work, whoever the reviewer is (a peer, or the benchmark grader
+/// posting its verdict as a review since #4761). Called only by
+/// `reviewed::bridge_review` after `verified_review`, never on a raw inbound event:
+/// any review-shaped event used to reach this with no signer, projection or
+/// self-review check. `Passed` settles as success, `Failed` as failure with the verdict
+/// kept; `Unknown` settles nothing. Each review settles once per node (every resident
+/// observer verifies the same event). Spawned so a room event never waits on a
+/// curriculum write. The outcome reduction is [`verdict_of`], tested.
+pub(crate) fn settle_on_verified_review(review: &airc_work::WorkSubmissionReview) {
+    let Some(passed) = verdict_of(&review.outcome) else {
         return;
     };
+    if !first_settlement(review.review_id.as_uuid()) {
+        return;
+    }
+    let card = review.card_id.as_uuid();
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
         crate::probe!(
             class = "training.credit.settle_deferred",
@@ -2187,7 +2193,7 @@ pub fn settle_on_review(event: &airc_core::TranscriptEvent) {
     handle.spawn(settle_card_credit(card, passed));
 }
 
-/// RECONCILE AT REGISTRATION. [`settle_on_review`] fires at the inbound seam of a LIVE
+/// RECONCILE AT REGISTRATION. [`settle_on_verified_review`] fires on a verified review in a LIVE
 /// core: a review that arrived while she was not resident (a deploy, a sleeping node, a
 /// review filed before #4765 existed) settled nothing at the time, and her staged credit
 /// on that card sat still with the verdict already on the board. Her registration asks
@@ -2232,18 +2238,18 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             }
         }
         let Some(board) = boards.get(&room_id) else { continue };
-        let Some(passed) = reconciled_verdict(
-            board
-                .submission_reviews_for_card(card.card_id)
-                .map(|r| (r.reviewed_at_ms, &r.outcome)),
-        ) else {
+        // Replay judges by the SAME rule as the live path: the projection holds only
+        // signed, accepted reviews, and an author's review of her own submission counts
+        // only where the room's policy admits it (`reviewed::check_review`).
+        let self_admitted = crate::persona::training_producer::reviewed::self_review_admitted(airc, &room).await;
+        let admitted: Vec<&airc_work::WorkSubmissionReview> = board
+            .submission_reviews_for_card(card.card_id)
+            .filter(|r| self_admitted || crate::persona::training_producer::reviewed::reviewed_publisher(board, r) != Some(r.reviewer))
+            .collect();
+        let Some(passed) = reconciled_verdict(admitted.iter().map(|r| (r.reviewed_at_ms, &r.outcome))) else {
             continue;
         };
-        let failed_earlier = failed_before_latest(
-            board
-                .submission_reviews_for_card(card.card_id)
-                .map(|r| (r.reviewed_at_ms, &r.outcome)),
-        );
+        let failed_earlier = failed_before_latest(admitted.iter().map(|r| (r.reviewed_at_ms, &r.outcome)));
         judged += 1;
         crate::probe!(
             class = "training.credit.reconcile_card",
@@ -2278,16 +2284,34 @@ pub(crate) fn reconciled_verdict<'a>(
         .map(|(_, passed)| passed)
 }
 
-/// `Some((card, passed))` when `event` is a review with a real outcome; `None` for every
-/// other event and for a review whose outcome is `Unknown`.
-pub(crate) fn review_settlement(event: &airc_core::TranscriptEvent) -> Option<(Uuid, bool)> {
-    use crate::airc::realtime_wire::{room_work_from_event, RoomWork};
-    use crate::persona::salience::ObservedVerdict;
-    match room_work_from_event(event) {
-        Ok(Some(RoomWork::Reviewed { card_id, outcome: ObservedVerdict::Passed, .. })) => Some((card_id, true)),
-        Ok(Some(RoomWork::Reviewed { card_id, outcome: ObservedVerdict::Failed, .. })) => Some((card_id, false)),
-        _ => None,
+/// `Some(passed)` for a review with a real outcome; `None` for `Unknown`, which is not
+/// a verdict and must never turn into credit.
+pub(crate) fn verdict_of(outcome: &airc_work::WorkReviewOutcome) -> Option<bool> {
+    match outcome {
+        airc_work::WorkReviewOutcome::Passed => Some(true),
+        airc_work::WorkReviewOutcome::Failed => Some(false),
+        airc_work::WorkReviewOutcome::Unknown => None,
     }
+}
+
+/// Every resident observer verifies the same review event; the card settles once per
+/// node. Settlement is idempotent anyway (a mark keeps its first value; a transfer
+/// reservation refuses an overlap), so this bounds work, not correctness.
+fn first_settlement(review_id: Uuid) -> bool {
+    use std::collections::VecDeque;
+    use std::sync::{Mutex, OnceLock};
+    const SEEN_CAP: usize = 256;
+    static SEEN: OnceLock<Mutex<VecDeque<Uuid>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(VecDeque::with_capacity(SEEN_CAP)));
+    let mut seen = seen.lock().unwrap_or_else(|p| p.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+    if seen.contains(&review_id) {
+        return false;
+    }
+    if seen.len() >= SEEN_CAP {
+        seen.pop_front();
+    }
+    seen.push_back(review_id);
+    true
 }
 
 /// Every card an INSTANCE names (a round's cards for it) settles when its verdict
@@ -2385,25 +2409,6 @@ pub(crate) mod tests {
             assert_eq!(reconciled_verdict([(3, &Failed), (1, &Passed)].into_iter()), Some(false));
         }
 
-        fn event_with(work: airc_work::WorkEvent) -> airc_core::TranscriptEvent {
-            let (headers, body) = airc_work::encode_work_event(&work).expect("a work event encodes");
-            airc_core::TranscriptEvent {
-                event_id: airc_core::EventId::new(),
-                room_id: airc_core::RoomId::from_uuid(Uuid::new_v4()),
-                peer_id: crate::identity::PeerId::from_uuid(Uuid::new_v4()),
-                client_id: airc_core::ClientId::new(),
-                kind: airc_core::TranscriptKind::System,
-                occurred_at_ms: 5_000,
-                lamport: 7,
-                target: airc_core::MentionTarget::All,
-                headers,
-                body: Some(body),
-                attachment: None,
-                receipt: None,
-                metadata: serde_json::Value::Null,
-            }
-        }
-
         fn media() -> airc_blobs::MediaRef {
             serde_json::from_value(serde_json::json!({"hash": "b".repeat(64), "size_bytes": 12})).unwrap()
         }
@@ -2426,14 +2431,34 @@ pub(crate) mod tests {
 
         #[test]
         fn passed_and_failed_settle_and_nothing_else_does() {
+            assert_eq!(verdict_of(&airc_work::WorkReviewOutcome::Passed), Some(true));
+            assert_eq!(verdict_of(&airc_work::WorkReviewOutcome::Failed), Some(false));
+            assert_eq!(verdict_of(&airc_work::WorkReviewOutcome::Unknown), None, "unknown is not a verdict");
+        }
+
+        // what this catches (Astra, review of the credit design): a review-shaped event
+        // settling a card's staged credit with no authority. Each refusal is the one the
+        // settlement now runs before anything is marked or credited: an author other
+        // than the signed sender, a review the room's projection does not hold, and an
+        // author's review of her own submission where the room does not admit it.
+        #[test]
+        fn a_review_settles_nothing_unless_signed_accepted_and_admitted() {
+            use crate::persona::training_producer::reviewed::{check_review, ReviewRefusal};
             let card = Uuid::new_v4();
-            assert_eq!(review_settlement(&event_with(review(card, airc_work::WorkReviewOutcome::Passed))), Some((card, true)));
-            assert_eq!(review_settlement(&event_with(review(card, airc_work::WorkReviewOutcome::Failed))), Some((card, false)));
-            let mut plain = event_with(review(card, airc_work::WorkReviewOutcome::Passed));
-            plain.headers = Default::default();
-            plain.body = Some(airc_core::Body::text("how is it going?"));
-            plain.kind = airc_core::TranscriptKind::Message;
-            assert_eq!(review_settlement(&plain), None, "a chat line is not a verdict");
+            let airc_work::WorkEvent::WorkSubmissionReviewed(r) = review(card, airc_work::WorkReviewOutcome::Failed) else {
+                unreachable!("review() builds a review") // JUSTIFIED: the fixture's own constructor
+            };
+            let reviewer = r.reviewer;
+            let stranger = crate::identity::PeerId::from_uuid(Uuid::new_v4());
+            let author = crate::identity::PeerId::from_uuid(Uuid::new_v4());
+            assert_eq!(check_review(reviewer, &r, Some(&r), Some(author), false), Ok(()));
+            assert_eq!(check_review(stranger, &r, Some(&r), Some(author), true), Err(ReviewRefusal::NotSignedByReviewer));
+            assert_eq!(check_review(reviewer, &r, None, Some(author), true), Err(ReviewRefusal::NotAccepted));
+            let mut other = r.clone();
+            other.outcome = airc_work::WorkReviewOutcome::Passed;
+            assert_eq!(check_review(reviewer, &r, Some(&other), Some(author), true), Err(ReviewRefusal::NotAccepted), "the projection's review must be this exact one");
+            assert_eq!(check_review(reviewer, &r, Some(&r), Some(reviewer), false), Err(ReviewRefusal::SelfReviewNotAdmitted));
+            assert_eq!(check_review(reviewer, &r, Some(&r), Some(reviewer), true), Ok(()), "a room that admits self-review counts it");
         }
     }
 
