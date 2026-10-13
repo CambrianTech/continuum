@@ -2030,8 +2030,9 @@ fn registration_from(board: &crate::genome::fine_tuning::TrainingJobBoard, dispa
     }
 }
 
-/// What `genome/training-trigger/resolve` settles an unconfirmed intent as.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What `genome/training-trigger/resolve` settles an unconfirmed intent as. Owned, not Copy:
+/// a retry of an unconfirmed outcome carries its evidence lines into the audit row.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DispatchResolution {
     /// No job was ever registered under it: retry from the same batch.
     NotDispatched,
