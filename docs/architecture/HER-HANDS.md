@@ -115,16 +115,20 @@ one global executor.
 
 ## Ownership
 
-Assigned by Astra's review. Everything else is a recommendation, not an assignment: it's open
-in the room for whoever takes it.
+Astra's review **recommended** these responsibilities; it didn't assign them. Accepted means the
+owner acknowledged it in the room.
 
-| Area | Owner |
-|---|---|
-| This proposal; workspace + explicit context owner (card 669d5068, with its holder 2f50b223) | Cormac |
-| Immutable capture and readback of submissions (#5003; cross-node bb20f3d7) | artifact owner (Cormac, per #5003) |
-| Workspace/hands projection in her view | BigMama |
-| Canonical deployment and recovery | Codex root |
-| Persistent shell per context; preservation replacing autosave + `-X theirs`; submit from context | not assigned; open to anyone, Kimi invited as an engineer |
+| Area | Recommended | Status |
+|---|---|---|
+| This proposal; workspace + explicit acting-context owner (card 669d5068, with its holder 2f50b223) | Cormac | **accepted** (Cormac, 2026-10-13) |
+| Immutable capture and readback of submissions (#5003; cross-node bb20f3d7) | artifact owner (Cormac) | **accepted** (Cormac) |
+| Workspace/hands projection in her view | BigMama | proposed |
+| Canonical deployment and recovery | Codex root | Codex root retains it |
+| Persistent shell per context; preservation replacing autosave + `-X theirs`; submit from context | none | open to anyone, Kimi invited |
+
+Two guardrails from Codex for the context work: durable *workspace* identity stays distinct from
+the transient *connection* identity (an acting context is a connection's, not a workspace's), and
+active operation handles (a running shell command) survive a change of selection.
 
 Every slice is its own PR, deletes what it replaces, and is reviewed by someone who didn't write
 it. Kimi is among the reviewers.
