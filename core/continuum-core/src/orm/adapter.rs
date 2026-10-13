@@ -106,6 +106,19 @@ pub trait StorageAdapter: Send + Sync {
         increment_version: bool,
     ) -> StorageResult<DataRecord>;
 
+    /// Update a record only while `expected.0` still holds `expected.1`: the one
+    /// compare-and-swap the ORM offers. `Ok(true)` = this write landed; `Ok(false)` =
+    /// the row is absent or the field has moved on, so the caller lost the race and
+    /// must re-read before deciding anything. A JSON null expects SQL NULL.
+    async fn update_if(
+        &self,
+        collection: &str,
+        id: &UUID,
+        expected: (&str, &Value),
+        data: Value,
+        increment_version: bool,
+    ) -> StorageResult<bool>;
+
     /// Delete a record
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool>;
 

@@ -365,6 +365,30 @@ mod tests {
         }
     }
 
+    /// What this catches: a compare-and-swap that is not one. The write lands only
+    /// while the field still holds the expected value; a stale expectation changes
+    /// nothing and says so, and an absent row is a lost race, never an error. A
+    /// recipe run's resume owner is claimed on exactly this (two resumers, one wins).
+    #[tokio::test]
+    async fn update_if_writes_only_while_the_field_holds_its_expected_value() {
+        let (adapter, _tmp) = super::fresh_adapter().await;
+        let store: OrmStore<TinyEntity> = OrmStore::new(adapter.clone()).await.expect("store");
+        let id = Uuid::new_v4();
+        store.save(id, &tiny(id, "first")).await.expect("save");
+        let swap = |expected: &'static str, next: &'static str, row: Uuid| {
+            let adapter = adapter.clone();
+            async move {
+                adapter
+                    .update_if(TinyEntity::COLLECTION, &row.to_string(), ("label", &serde_json::json!(expected)), serde_json::json!({ "label": next }), true)
+                    .await
+            }
+        };
+        assert_eq!(swap("first", "second", id).await.data, Some(true));
+        assert_eq!(swap("first", "third", id).await.data, Some(false), "a stale expectation loses");
+        assert_eq!(store.find_by_id(id).await.expect("read").expect("row").label, "second", "the losing write changed nothing");
+        assert_eq!(swap("first", "x", Uuid::new_v4()).await.data, Some(false), "an absent row is a lost race, not an error");
+    }
+
     // `fresh_adapter` was lifted to module scope above so cross-module
     // tests (`crate::identity::tests`, future siblings) can lease it.
     // In-mod tests below call it via `super::fresh_adapter()`.

@@ -480,6 +480,39 @@ fn do_update(
     increment_version: bool,
     types: Option<&HashMap<String, FieldType>>,
 ) -> StorageResult<DataRecord> {
+    match update_rows(conn, collection, id, &data, increment_version, None) {
+        Ok(rows) if rows > 0 => do_read(conn, collection, id, types),
+        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+        Err(e) => StorageResult::err(e),
+    }
+}
+
+/// `update` guarded by `expected`: `true` = the row held the expected value and this
+/// write landed, `false` = it did not (absent row or moved field).
+fn do_update_if(
+    conn: &Connection,
+    collection: &str,
+    id: &UUID,
+    expected: (&str, &Value),
+    data: Value,
+    increment_version: bool,
+) -> StorageResult<bool> {
+    match update_rows(conn, collection, id, &data, increment_version, Some(expected)) {
+        Ok(rows) => StorageResult::ok(rows > 0),
+        Err(e) => StorageResult::err(e),
+    }
+}
+
+/// The one UPDATE both `update` and `update_if` run: the rows it changed, with the
+/// schema-evolution retry. `guard` adds `AND <field> = ?` (`IS NULL` for a null).
+fn update_rows(
+    conn: &Connection,
+    collection: &str,
+    id: &UUID,
+    data: &Value,
+    increment_version: bool,
+    guard: Option<(&str, &Value)>,
+) -> Result<usize, String> {
     let table = naming::to_table_name(collection);
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -490,7 +523,7 @@ fn do_update(
         sets.push("version = version + 1".to_string());
     }
 
-    if let Value::Object(obj) = &data {
+    if let Value::Object(obj) = data {
         for (key, value) in obj {
             if METADATA_KEYS.contains(&key.as_str()) {
                 continue;
@@ -501,31 +534,32 @@ fn do_update(
     }
 
     values.push(Box::new(id.clone()));
+    let mut condition = "id = ?".to_string();
+    if let Some((field, expected)) = guard {
+        let column = naming::to_snake_case(field);
+        if expected.is_null() {
+            condition.push_str(&format!(" AND {column} IS NULL"));
+        } else {
+            condition.push_str(&format!(" AND {column} = ?"));
+            values.push(value_to_sql_boxed(expected));
+        }
+    }
 
-    let sql = format!("UPDATE {} SET {} WHERE id = ?", table, sets.join(", "));
+    let sql = format!("UPDATE {} SET {} WHERE {}", table, sets.join(", "), condition);
     let params_ref: Vec<&dyn rusqlite::ToSql> = values.iter().map(|b| b.as_ref()).collect();
 
     match conn.execute(&sql, params_ref.as_slice()) {
-        Ok(rows) if rows > 0 => do_read(conn, collection, id, types),
-        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+        Ok(rows) => Ok(rows),
         Err(e) => {
             let err_msg = e.to_string();
-            if err_msg.contains("has no column named") || err_msg.contains("no such column") {
-                let table = naming::to_table_name(collection);
-                if evolve_table_schema(conn, &table, &data) {
-                    match conn.execute(&sql, params_ref.as_slice()) {
-                        Ok(rows) if rows > 0 => return do_read(conn, collection, id, types),
-                        Ok(_) => return StorageResult::err(format!("Record not found: {}", id)),
-                        Err(e2) => {
-                            return StorageResult::err(format!(
-                                "Update failed after schema evolution: {}",
-                                e2
-                            ))
-                        }
-                    }
-                }
+            if (err_msg.contains("has no column named") || err_msg.contains("no such column"))
+                && evolve_table_schema(conn, &table, data)
+            {
+                return conn
+                    .execute(&sql, params_ref.as_slice())
+                    .map_err(|e2| format!("Update failed after schema evolution: {}", e2));
             }
-            StorageResult::err(format!("Update failed: {}", e))
+            Err(format!("Update failed: {}", e))
         }
     }
 }
@@ -1322,6 +1356,31 @@ impl StorageAdapter for SqliteAdapter {
             let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
             do_update(&conn, &collection, &id, data, increment_version, types.as_deref())
+        })
+        .await
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+    }
+
+    async fn update_if(
+        &self,
+        collection: &str,
+        id: &UUID,
+        expected: (&str, &Value),
+        data: Value,
+        increment_version: bool,
+    ) -> StorageResult<bool> {
+        let conn = match self.get_writer() {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(e),
+        };
+        let collection = collection.to_string();
+        let id = id.clone();
+        let (field, value) = (expected.0.to_string(), expected.1.clone());
+        let pressure = self.last_pressure_check.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap();
+            apply_memory_pressure(&conn, &pressure);
+            do_update_if(&conn, &collection, &id, (&field, &value), data, increment_version)
         })
         .await
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))

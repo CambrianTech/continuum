@@ -342,6 +342,30 @@ impl PostgresAdapter {
         data: Value,
         increment_version: bool,
     ) -> StorageResult<DataRecord> {
+        match self.update_rows_on(client, collection, id, &data, increment_version, None).await {
+            // read_on, NOT self.read: self.read checks out its OWN pooled
+            // connection, which inside a batch transaction is a DIFFERENT session
+            // that cannot see this statement's uncommitted row — a Create+Update of
+            // the same new row in one batch would read back "not found" — and on a
+            // one-connection pool it blocks for the 10s pool timeout first.
+            Ok(rows) if rows > 0 => self.read_on(client, collection, id).await,
+            Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+            Err(e) => StorageResult::err(e),
+        }
+    }
+
+    /// The one UPDATE both `update` and `update_if` run: the rows it changed, with
+    /// the schema-evolution retry. `guard` adds `AND <field> = $n` (`IS NULL` for a
+    /// null), coerced to the column's own type like every SET value.
+    async fn update_rows_on(
+        &self,
+        client: &impl deadpool_postgres::GenericClient,
+        collection: &str,
+        id: &UUID,
+        data: &Value,
+        increment_version: bool,
+        guard: Option<(&str, &Value)>,
+    ) -> Result<u64, String> {
         let bare_table = naming::to_table_name(collection);
         let table = self.table_ref(collection);
         let now: DateTime<Utc> = Utc::now();
@@ -357,7 +381,7 @@ impl PostgresAdapter {
             sets.push("version = version + 1".to_string());
         }
 
-        if let Value::Object(obj) = &data {
+        if let Value::Object(obj) = data {
             for (key, value) in obj {
                 if METADATA_KEYS.contains(&key.as_str()) {
                     continue;
@@ -372,24 +396,25 @@ impl PostgresAdapter {
 
         idx += 1;
         params.push(Box::new(id.clone()));
+        let mut condition = format!("id = ${}", idx);
+        if let Some((field, expected)) = guard {
+            let column = naming::to_snake_case(field);
+            if expected.is_null() {
+                condition.push_str(&format!(" AND {column} IS NULL"));
+            } else {
+                idx += 1;
+                let pg_type = col_types.get(&column).map(|s| s.as_str());
+                condition.push_str(&format!(" AND {column} = ${idx}"));
+                params.push(value_to_pg_typed(expected, pg_type));
+            }
+        }
 
-        let sql = format!(
-            "UPDATE {} SET {} WHERE id = ${}",
-            table,
-            sets.join(", "),
-            idx
-        );
+        let sql = format!("UPDATE {} SET {} WHERE {}", table, sets.join(", "), condition);
         let params_ref: Vec<&(dyn ToSql + Sync)> =
             params.iter().map(|b| &**b as &(dyn ToSql + Sync)).collect();
 
         match client.execute(&sql, &params_ref).await {
-            // read_on, NOT self.read: self.read checks out its OWN pooled
-            // connection, which inside a batch transaction is a DIFFERENT session
-            // that cannot see this statement's uncommitted row — a Create+Update of
-            // the same new row in one batch would read back "not found" — and on a
-            // one-connection pool it blocks for the 10s pool timeout first.
-            Ok(rows) if rows > 0 => self.read_on(client, collection, id).await,
-            Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
+            Ok(rows) => Ok(rows),
             Err(e) => {
                 // Schema evolution: auto-add missing columns and retry.
                 // Evict the ensured-columns cache first — it lied (claimed a
@@ -399,28 +424,25 @@ impl PostgresAdapter {
                 if err_msg.contains("does not exist") && err_msg.contains("column") {
                     self.ensured_columns_cache.write().await.remove(&bare_table);
                     if let Err(evolve_err) =
-                        ensure_table_exists_pg(client, &table, &bare_table, &self.schema, &data)
+                        ensure_table_exists_pg(client, &table, &bare_table, &self.schema, data)
                             .await
                     {
-                        return StorageResult::err(format!(
+                        return Err(format!(
                             "Update failed [{}]: {} (schema evolution also failed: {})",
                             bare_table, err_msg, evolve_err
                         ));
                     }
                     self.invalidate_column_cache(&bare_table).await;
-                    // Retry the update after adding columns
-                    match client.execute(&sql, &params_ref).await {
-                        // Same reason as the first read-back: stay on this client.
-                        Ok(rows) if rows > 0 => self.read_on(client, collection, id).await,
-                        Ok(_) => StorageResult::err(format!("Record not found: {}", id)),
-                        Err(e2) => StorageResult::err(format!(
+                    // Retry the update after adding columns, on this same client.
+                    client.execute(&sql, &params_ref).await.map_err(|e2| {
+                        format!(
                             "Update failed [{}] after schema evolution: {}",
                             bare_table,
                             format_pg_error(&e2)
-                        )),
-                    }
+                        )
+                    })
                 } else {
-                    StorageResult::err(format!("Update failed [{}]: {}", bare_table, err_msg))
+                    Err(format!("Update failed [{}]: {}", bare_table, err_msg))
                 }
             }
         }
@@ -1288,6 +1310,28 @@ impl StorageAdapter for PostgresAdapter {
         self.update_on(&client, collection, id, data, increment_version).await
     }
 
+    async fn update_if(
+        &self,
+        collection: &str,
+        id: &UUID,
+        expected: (&str, &Value),
+        data: Value,
+        increment_version: bool,
+    ) -> StorageResult<bool> {
+        let pool = match self.pool() {
+            Ok(p) => p,
+            Err(e) => return StorageResult::err(e),
+        };
+        let client = match pool.get().await {
+            Ok(c) => c,
+            Err(e) => return StorageResult::err(format!("Pool error: {}", e)),
+        };
+        match self.update_rows_on(&client, collection, id, &data, increment_version, Some(expected)).await {
+            Ok(rows) => StorageResult::ok(rows > 0),
+            Err(e) => StorageResult::err(e),
+        }
+    }
+
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
         let pool = match self.pool() {
             Ok(p) => p,
@@ -2003,6 +2047,24 @@ mod tests {
         assert!(updated.success);
         let data = updated.data.unwrap();
         assert_eq!(data.data["name"], "After");
+
+        // What this catches: update_if is a real compare-and-swap on Postgres too —
+        // the matching expectation writes, a stale one changes nothing, and an
+        // absent row is a lost race rather than an error.
+        let won = adapter
+            .update_if("update_test", &"upd-1".to_string(), ("name", &json!("After")), json!({"name": "Swapped"}), true)
+            .await;
+        assert_eq!(won.data, Some(true), "{:?}", won.error);
+        let stale = adapter
+            .update_if("update_test", &"upd-1".to_string(), ("name", &json!("After")), json!({"name": "Lost"}), true)
+            .await;
+        assert_eq!(stale.data, Some(false), "{:?}", stale.error);
+        let reread = adapter.read("update_test", &"upd-1".to_string()).await;
+        assert_eq!(reread.data.unwrap().data["name"], "Swapped", "the losing write changed nothing");
+        let absent = adapter
+            .update_if("update_test", &"no-such-row".to_string(), ("name", &json!("After")), json!({"name": "x"}), true)
+            .await;
+        assert_eq!(absent.data, Some(false), "{:?}", absent.error);
 
         // Delete
         let deleted = adapter.delete("update_test", &"upd-1".to_string()).await;
