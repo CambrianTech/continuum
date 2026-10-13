@@ -17,7 +17,8 @@ anchored on the first unpacked post's id). Verified facts, nothing more:
   `core/vendor/llama.cpp` submodule pointer**: no `wall_source.rs` change.
 - No `wall_source.rs` edit for this card has been recovered anywhere. Whether she wrote one, and
   where, is **unknown**. What is established is that the captured diff doesn't match the
-  described intent, and that until #5003 no reviewer could read submitted bytes at all.
+  described intent, and that until #5003 there was no supported way for a reviewer to retrieve a
+  submission's bytes.
 
 ## What acts on a citizen's hands today
 
@@ -50,8 +51,14 @@ Three separate concepts, each with one owner. Today they are one tangled cache.
    cards she holds or reviews, projects shared with her) is checked on access. It never decides
    where she is.
 
-Separate capability: **a persistent shell per context**, where `cd` sticks across calls and
-restarts, like a terminal. It's built on the context. It doesn't replace the context.
+Separate capability: **a persistent shell per context**, where `cd` sticks across calls, like a
+terminal. It's built on the context. It doesn't replace the context. What a restart preserves
+has to be stated honestly:
+- **Restored:** the context's workspace, its current directory, and its declared configuration (the
+  environment variables she set as config). A shell after a restart opens where she left it.
+- **Not restored:** live processes, and the in-memory state of a process environment (a running
+  server, a shell's ad-hoc exports). A restart ends them, and her view says which ones ended, so
+  she can start them again. Nothing pretends they survived.
 
 **Her work is preserved, locally, without any remote.** Autosave and the `-X theirs` sync are
 replaced *together*:
@@ -59,7 +66,10 @@ replaced *together*:
 - a shared-framework update never overwrites her files: a conflict is surfaced to her as a
   conflict;
 - nothing requires a push or a remote. Rule 10's transfer by git is an option when she moves
-  machines, not a dependency for keeping her work.
+  machines, not a dependency for keeping her work;
+- **a Continuum update never fetches into or merges into her projects**, not even
+  conflict-free. Her workspaces change only by her hand. If she wants a newer base, she pulls
+  it herself, as any engineer would.
 
 **Submit takes the workspace from her context** (or the path she names), shows exactly what it
 captured, and leaves the bytes immutable and readable by any reviewer (#5003 same-node;
@@ -105,7 +115,8 @@ one global executor.
 
 ## Ownership
 
-Assigned in Astra's review; anything unassigned is open in the room.
+Assigned by Astra's review. Everything else is a recommendation, not an assignment: it's open
+in the room for whoever takes it.
 
 | Area | Owner |
 |---|---|
@@ -113,7 +124,7 @@ Assigned in Astra's review; anything unassigned is open in the room.
 | Immutable capture and readback of submissions (#5003; cross-node bb20f3d7) | artifact owner (Cormac, per #5003) |
 | Workspace/hands projection in her view | BigMama |
 | Canonical deployment and recovery | Codex root |
-| Persistent shell per context; preservation replacing autosave + `-X theirs`; submit from context | open: proposed in the room, Kimi invited as an engineer |
+| Persistent shell per context; preservation replacing autosave + `-X theirs`; submit from context | not assigned; open to anyone, Kimi invited as an engineer |
 
 Every slice is its own PR, deletes what it replaces, and is reviewed by someone who didn't write
 it. Kimi is among the reviewers.
