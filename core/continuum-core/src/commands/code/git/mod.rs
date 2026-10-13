@@ -24,7 +24,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::modules::code::CodeState;
-use crate::modules::code_commands::{caller_id, ensure_engine};
+use crate::modules::code_commands::ensure_engine;
 use crate::sdk_codegen::{CommandError, Ctx, DynCommand};
 
 pub mod add;
@@ -47,11 +47,11 @@ use status::CodeGitStatus;
 /// Returns an OWNED [`PathBuf`] so the `DashMap` ref guard is dropped before the
 /// caller runs blocking git work — never a lock held across a shell-out.
 pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
-    let who = caller_id(ctx);
-    ensure_engine(state, &who).await?;
+    let key = crate::modules::code_commands::hands_key(ctx);
+    ensure_engine(state, &key).await?;
     let engine = state
         .file_engines
-        .get(&who)
+        .get(&key.map_key())
         .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
     Ok(engine.workspace_root())
 }

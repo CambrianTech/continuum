@@ -102,6 +102,20 @@ pub trait ToolExecutor: Send + Sync {
         None
     }
 
+    /// The acting context these hands are bound to; `None` is the caller's default (live)
+    /// context. See [`crate::code::hands`].
+    fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {
+        None
+    }
+
+    /// The same caller's hands in a FRESH acting context of their own: what an eval or a
+    /// fork of a citizen acts with, so it can never move her live hands. `None` when these
+    /// hands can't open a context (harnesses, mocks); the caller then runs without hands
+    /// rather than borrowing hers (docs/architecture/HER-HANDS.md).
+    fn in_fresh_hands(&self, _persona: uuid::Uuid) -> Option<std::sync::Arc<dyn ToolExecutor>> {
+        None
+    }
+
     /// Parse tool calls from a raw AI response string (XML-fallback path
     /// for models that don't emit native tool_use blocks). Returns
     /// extracted calls + cleaned-of-tool-blocks text + parse-time
