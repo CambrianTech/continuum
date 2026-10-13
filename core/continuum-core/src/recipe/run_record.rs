@@ -160,8 +160,9 @@ pub struct RecipeRunRecord {
     /// The steps as they were when the run began.
     #[entity(json)]
     pub pipeline: Vec<RecipeStep>,
+    /// The run's `$args`. `None` = it was given none (a SQL NULL, never a JSON null).
     #[entity(json)]
-    pub args: Value,
+    pub args: Option<Value>,
     #[entity(json)]
     pub seed: Map<String, Value>,
     #[entity(json)]
@@ -218,7 +219,7 @@ impl RecipeRunRecord {
             recipe_id: origin.recipe.map(|(id, _)| id),
             recipe_version: origin.recipe.map(|(_, version)| version),
             pipeline,
-            args,
+            args: (!args.is_null()).then_some(args),
             seed,
             caller,
             room_id: origin.room,

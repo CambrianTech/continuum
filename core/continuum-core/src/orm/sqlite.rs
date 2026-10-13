@@ -878,13 +878,22 @@ fn row_to_record(
     let mut version: Option<u32> = None;
 
     for (i, col) in columns.iter().enumerate() {
-        // Check if this column is likely a boolean (is_*, has_*, *_active, etc.)
-        let is_boolean_col = col.starts_with("is_")
-            || col.starts_with("has_")
-            || col.ends_with("_active")
-            || col.ends_with("_enabled")
-            || col.ends_with("_visible")
-            || col.ends_with("_deleted");
+        // A boolean is stored as INTEGER 0/1. DECODE IT BY THE DECLARED TYPE, the
+        // same rule the TEXT branch below follows: a `bool` field whose name the old
+        // prefix sniff did not know (`cancel_requested`, 2026-10-13) came back as `0`
+        // and the entity refused the row. The name sniff survives only for
+        // undeclared collections.
+        let is_boolean_col = match types.and_then(|t| t.get(col.as_str())) {
+            Some(declared) => matches!(declared, FieldType::Boolean),
+            None => {
+                col.starts_with("is_")
+                    || col.starts_with("has_")
+                    || col.ends_with("_active")
+                    || col.ends_with("_enabled")
+                    || col.ends_with("_visible")
+                    || col.ends_with("_deleted")
+            }
+        };
 
         let value: Value = match row.get_ref(i)? {
             rusqlite::types::ValueRef::Null => Value::Null,

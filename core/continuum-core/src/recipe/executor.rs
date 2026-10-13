@@ -213,7 +213,7 @@ impl PipelineExecutor {
     async fn walk(&self, run: &mut RecipeRunRecord) -> Result<(), String> {
         let name = run.purpose.clone();
         let pipeline = run.pipeline.clone();
-        let mut state = ExecutionState::seeded(run.args.clone(), run.seed.clone());
+        let mut state = ExecutionState::seeded(run.args.clone().unwrap_or(Value::Null), run.seed.clone()) // unwrap_or: a run given no args reads them as null, and a `$args.*` reference then fails loud by name;
         for (k, v) in run.bindings.clone() {
             state.bind(k, v);
         }

@@ -67,6 +67,10 @@ struct DeriveTestWidget {
     /// Boolean.
     is_active: bool,
 
+    /// Boolean whose name matches none of the old `is_`/`has_`/`_active` sniffs:
+    /// decoded back by its declared type, not by its name.
+    approved: bool,
+
     /// Uuid by type-name match.
     owner_id: Uuid,
 
@@ -105,6 +109,7 @@ fn fresh_widget(name: &str) -> DeriveTestWidget {
         weight: 1.25,
         delta: -7,
         is_active: true,
+        approved: true,
         owner_id: Uuid::new_v4(),
         tags: vec!["alpha".to_string(), "beta".to_string()],
         description: Some("optional present".to_string()),
@@ -344,6 +349,9 @@ async fn round_trip_through_orm_store() {
     assert_eq!(loaded.score, 42);
     assert_eq!(loaded.delta, -7);
     assert!(loaded.is_active);
+    // What this catches: a bool read back as 0/1 because its NAME was not on the
+    // sqlite reader's boolean list (cancel_requested in recipe_runs, 2026-10-13).
+    assert!(loaded.approved, "a declared bool round-trips whatever its name");
     assert_eq!(loaded.tags, vec!["alpha", "beta"]);
     assert_eq!(loaded.description.as_deref(), Some("optional present"));
     assert!(loaded.expires_at_ms.is_none());
