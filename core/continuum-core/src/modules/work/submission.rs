@@ -826,6 +826,15 @@ impl ActionCommand for WorkSubmit {
             "the submission as it goes to the board"
         );
         let artifact = artifact_ref.into_artifact()?;
+        if typed_in_full {
+            // A typed artifact is honoured only if its bytes are retained: a reference with
+            // nothing behind it published a submission no reviewer could read (card e1babb61).
+            crate::media::artifact::read_text_blob(&artifact).map_err(|why| {
+                CommandError::Invalid(format!(
+                    "the artifact you typed has no retained bytes ({why}); omit `artifact` and work/submit derives the patch from your checkout and keeps it"
+                ))
+            })?;
+        }
         let base_sha = airc_work::GitObjectId::new(base_sha_text)
             .map_err(|e| CommandError::Invalid(format!("base_sha: {e}")))?;
         // THE SAME PATCH, SUBMITTED AGAIN, is refused by name (Kimi, 2026-09-28: her
@@ -942,7 +951,7 @@ impl ActionCommand for WorkSubmit {
         }
         let grade_title = card.title.clone();
         let bench = crate::modules::benchmark_grade::graded_at_submit(&grade_title);
-        let grade_hash = candidate.artifact.hash.to_string();
+        let grade_patch = candidate.artifact.clone();
         let published = airc.submit_work_in(&room, airc_lib::SubmitWork {
             submission_id: candidate.submission_id, card_id, claim_id: candidate.claim_id,
             instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
@@ -955,7 +964,7 @@ impl ActionCommand for WorkSubmit {
             room.channel.as_uuid(),
             grade_title,
             published.instance.clone(),
-            grade_hash,
+            grade_patch,
         ));
         Ok(WorkSubmitResult {
             submission_id: published.submission_id.as_uuid(),
@@ -1323,6 +1332,11 @@ pub struct WorkSubmissionResult {
     pub credit_error: Option<String>,
     pub staged_evidence: Option<Vec<reviewed::StagedCreditEvidence>>,
     pub staged_evidence_error: Option<String>,
+    // The submitted patch itself, read from the retained blob and verified against the
+    // artifact's hash and size: what the reviewer reviews (card e1babb61). Absent with
+    // `patch_error` naming why when this node holds no such bytes.
+    pub patch: Option<String>,
+    pub patch_error: Option<String>,
 }
 
 #[async_trait]
@@ -1438,6 +1452,10 @@ impl ActionCommand for WorkSubmission {
             .filter(|r| r.card_id == submitted.card_id)
             .map(WorkReviewResult::from)
             .collect();
+        let (patch, patch_error) = match crate::media::artifact::read_text_blob(&submitted.artifact) {
+            Ok(text) => (Some(text), None),
+            Err(why) => (None, Some(why)),
+        };
         Ok(WorkSubmissionResult {
             submission: WorkSubmitResult {
                 submission_id: submission_uuid,
@@ -1460,6 +1478,8 @@ impl ActionCommand for WorkSubmission {
             credit_error,
             staged_evidence,
             staged_evidence_error,
+            patch,
+            patch_error,
         })
     }
 }

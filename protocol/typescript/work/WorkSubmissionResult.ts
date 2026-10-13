@@ -4,4 +4,4 @@ import type { StagedCreditEvidence } from "./StagedCreditEvidence";
 import type { WorkReviewResult } from "./WorkReviewResult";
 import type { WorkSubmitResult } from "./WorkSubmitResult";
 
-export type WorkSubmissionResult = { submission: WorkSubmitResult, claim_id: string, base_sha: string, instance: string, reviews: Array<WorkReviewResult>, credit: ReviewedCredit | null, credit_error: string | null, staged_evidence: Array<StagedCreditEvidence> | null, staged_evidence_error: string | null, };
+export type WorkSubmissionResult = { submission: WorkSubmitResult, claim_id: string, base_sha: string, instance: string, reviews: Array<WorkReviewResult>, credit: ReviewedCredit | null, credit_error: string | null, staged_evidence: Array<StagedCreditEvidence> | null, staged_evidence_error: string | null, patch: string | null, patch_error: string | null, };
