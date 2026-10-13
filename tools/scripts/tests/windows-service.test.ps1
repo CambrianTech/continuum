@@ -519,8 +519,37 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
         if (-not $refused -or (Test-Path -LiteralPath (Join-Path $scratch 'wrong slot'))) { throw 'Public engine copy ignored a changed idle-slot selection.' }
         Copy-CorePublishedEngine -RepoRoot $repo -ArtifactDirectory $artifact -InstallDirectory $engineCopy
         Get-CoreEngineReceipt -Directory $engineCopy | Out-Null
+        # What this catches: a deploy that ships the engine already installed needing an idle slot to
+        # stage a copy of it (5090, 2026-10-13: the core's pointers and the installer's receipts each
+        # claimed a different slot as the rollback, so every deploy refused). The same build identity
+        # keeps the registered slot; the copy is skipped without asking for a slot; a different revision
+        # or an installed engine with no receipt is not kept, and selection (with its guard) decides.
+        $registeredFixture = [pscustomobject]@{ engine = (Join-Path $engineCopy 'llama-server.exe') }
+        if ((Get-CoreKeptEngineSlot -ArtifactDirectory $artifact -Descriptor $registeredFixture) -ine (ConvertTo-CoreImagePath $engineCopy)) {
+            throw 'The same published engine did not keep the registered slot.'
+        }
+        function Get-ScheduledTask { 'registered' }
+        function Get-CoreRegisteredRelease { $registeredFixture }
+        function Select-CoreEngineSlot { throw 'A kept engine asked for an idle slot.' }
+        $engineImage = Join-Path $engineCopy 'llama-server.exe'
+        $before = (Get-Item -LiteralPath $engineImage).LastWriteTimeUtc
+        Copy-CorePublishedEngine -RepoRoot $repo -ArtifactDirectory $artifact -InstallDirectory $engineCopy
+        if ((Get-Item -LiteralPath $engineImage).LastWriteTimeUtc -ne $before) { throw 'A kept engine was copied over.' }
+        $otherArtifact = Join-Path $scratch 'other revision artifact'
+        New-Item -ItemType Directory -Path $otherArtifact | Out-Null
+        Microsoft.PowerShell.Management\Copy-Item -LiteralPath $engineFixture -Destination (Join-Path $otherArtifact 'engine') -Recurse
+        $otherReceipt = Join-Path $otherArtifact 'engine\engine-install.json'
+        $rewritten = Get-Content -LiteralPath $otherReceipt -Raw | ConvertFrom-Json
+        $rewritten.source_revision = 'b' * 40
+        [IO.File]::WriteAllText($otherReceipt, ($rewritten | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding $false))
+        if ($null -ne (Get-CoreKeptEngineSlot -ArtifactDirectory $otherArtifact -Descriptor $registeredFixture)) { throw 'A different engine revision was kept.' }
+        $legacy = Join-Path $scratch 'legacy engine slot'
+        Microsoft.PowerShell.Management\Copy-Item -LiteralPath $engineCopy -Destination $legacy -Recurse
+        Remove-Item -LiteralPath (Join-Path $legacy 'engine-install.json')
+        $legacyFixture = [pscustomobject]@{ engine = (Join-Path $legacy 'llama-server.exe') }
+        if ($null -ne (Get-CoreKeptEngineSlot -ArtifactDirectory $artifact -Descriptor $legacyFixture)) { throw 'An unreceipted engine was kept.' }
     }
-    Write-Output 'PASS: engine receipt pins application bytes, membership and copied-slot inputs'
+    Write-Output 'PASS: engine receipt pins application bytes, membership and copied-slot inputs; a matching published engine keeps the registered slot'
     # Receipt migration must use the existing source/slot owners even when the
     # source SHA and legacy stamp are already current. No compiler is invoked.
     & {

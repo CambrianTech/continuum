@@ -179,6 +179,19 @@ function Get-CoreReceiptedEngineSlots {
     @($engines | ForEach-Object { ConvertTo-CoreImagePath (Split-Path $_ -Parent) })
 }
 
+function Get-CoreKeptEngineSlot {
+    # The registered release's engine slot, when the artifact publishes the same engine
+    # (Test-CoreEngineMatchesPublication): the release keeps it and needs no idle slot.
+    # $null when the artifact publishes no engine, nothing is registered, or the engines differ.
+    param([Parameter(Mandatory = $true)][string]$ArtifactDirectory, $Descriptor)
+    if (-not $Descriptor -or -not $Descriptor.engine) { return $null }
+    $published = Join-Path (ConvertTo-CoreImagePath $ArtifactDirectory) 'engine'
+    if (-not (Test-Path -LiteralPath (Join-Path $published 'engine-install.json') -PathType Leaf)) { return $null }
+    $registered = ConvertTo-CoreImagePath (Split-Path ([string]$Descriptor.engine) -Parent)
+    if (Test-CoreEngineMatchesPublication -PublishedDirectory $published -InstalledDirectory $registered) { return $registered }
+    return $null
+}
+
 function Select-CoreEngineSlot {
     param([string]$InstallRoot = (Join-Path $env:USERPROFILE '.continuum'), $Descriptor, [string]$Cli, [switch]$SkipIfBusy)
     $root = ConvertTo-CoreImagePath (Join-Path (Get-ManagedPayloadRoot -HomeRoot $InstallRoot) 'bin')
@@ -471,7 +484,9 @@ function New-CoreServiceRelease {
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
     # The CLI this release installs is the one that knows the lane records' contract.
-    $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent } else { Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe') }
+    $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent }
+        elseif ($kept = Get-CoreKeptEngineSlot -ArtifactDirectory $ArtifactDirectory -Descriptor $descriptor) { $kept }
+        else { Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe') }
     Clear-CorePreparedSelectionForSlot -InstallRoot $InstallRoot -Slot $slot
     New-Item -ItemType Directory -Force -Path $slot | Out-Null
     # CI cores carry declared runtime DLLs beside the binaries. The native deploy

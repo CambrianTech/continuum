@@ -60,6 +60,24 @@ function Get-CoreEngineReceipt {
     return $receipt
 }
 
+function Test-CoreEngineMatchesPublication {
+    # A published engine with the same build identity as an installed one (llama.cpp revision,
+    # backend and contracts: the core's own engine identity, `commit:backend`) IS that engine. A
+    # deploy keeps the installed slot rather than staging a copy, which needs an idle slot the node
+    # may not have: on the 5090 (2026-10-13) the core's pointers and the installer's receipts each
+    # claimed a different slot as the rollback, so every deploy refused. Both receipts are verified
+    # against their files first; a damaged or half-published engine never counts as a match, and an
+    # installed engine with no receipt (a legacy install) is not one.
+    param([Parameter(Mandatory = $true)][string]$PublishedDirectory, [Parameter(Mandatory = $true)][string]$InstalledDirectory)
+    if (-not (Test-Path -LiteralPath (Join-Path $InstalledDirectory 'engine-install.json') -PathType Leaf)) { return $false }
+    $published = Get-CoreEngineReceipt -Directory $PublishedDirectory
+    $installed = Get-CoreEngineReceipt -Directory $InstalledDirectory
+    foreach ($field in @('source_revision', 'backend', 'build_contract', 'runtime_origin', 'platform_contract')) {
+        if ($published.$field -cne $installed.$field) { return $false }
+    }
+    return $true
+}
+
 function Save-CoreEngineReceipt {
     param([string]$Directory, [string]$SourceRevision, [string]$Backend)
     if ($SourceRevision -cnotmatch '^[0-9a-f]{40}$' -or $Backend -notin @('cpu', 'cuda')) { throw 'Invalid fresh engine build identity.' }
