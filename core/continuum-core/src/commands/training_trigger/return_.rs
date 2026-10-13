@@ -83,17 +83,7 @@ pub(crate) async fn return_job(
     }
     let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, job_id);
     refuse_trained_job(job_id, &dir)?;
-    let request = if dir.join("request.json").try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
-        read_job_request(&dir).map_err(CommandError::NotFound)?
-    } else {
-        let dispatch = job.trigger_dispatch_id.ok_or_else(|| CommandError::NotFound(format!(
-            "job {job_id} has neither request.json nor a recorded trigger dispatch; cannot recover its input"
-        )))?;
-        let key = crate::modules::training_trigger::BucketKey {
-            persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone(),
-        };
-        state.dispatched_request(&key, dispatch, job_id).await.map_err(CommandError::Invalid)?
-    };
+    let request = job_request(state, &job, &dir).await?;
     if let Some(root) = &request.local_artifact_dir {
         refuse_trained_job(job_id, &root.join(job_id.to_string()))?;
     }
@@ -107,6 +97,29 @@ pub(crate) async fn return_job(
         board.journal_returned(job_id, job_id, &serde_json::json!("genome/training-trigger/return"), 0); // not held by a Took: an operator returned it, named by the verb
     }
     Ok(outcome)
+}
+
+/// THE input of a job, as its registration proves it: its `request.json` when one stands in
+/// `dir`, else the durable dispatch that produced it (registration -> trigger dispatch ->
+/// `dispatched_request`), which keeps the exact job/dispatch/submission relationship and the
+/// native base. A canonical job the trigger dispatched may have no request file at all (Kimi's
+/// 55f2e6de on the 5090: only adapters/ and partition.json). Both returns read it here.
+async fn job_request(
+    state: &Arc<TrainingTriggerState>,
+    job: &crate::genome::fine_tuning::job_board::OrphanedJob,
+    dir: &std::path::Path,
+) -> Result<crate::genome::fine_tuning::types::TrainingJobRequest, CommandError> {
+    let job_id = job.local_id;
+    if dir.join("request.json").try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
+        return read_job_request(dir).map_err(CommandError::NotFound);
+    }
+    let dispatch = job.trigger_dispatch_id.ok_or_else(|| CommandError::NotFound(format!(
+        "job {job_id} has neither request.json nor a recorded trigger dispatch; cannot recover its input"
+    )))?;
+    let key = crate::modules::training_trigger::BucketKey {
+        persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone(),
+    };
+    state.dispatched_request(&key, dispatch, job_id).await.map_err(CommandError::Invalid)
 }
 
 /// What returning a trained job's parked remainder did.
@@ -139,51 +152,47 @@ struct RemainderReceipt {
 /// ([`return_job`]). The caller has established that `job` completed training: the sentinel
 /// claimed it Completed, or the ledger's terminal row says so.
 ///
-/// - The examples come from the job's own `request.json`, its native base and whole payloads,
-///   never the partition's measured rows.
-/// - The parked indices are checked against that request and the partition: in range, unique,
-///   ascending. An index the run skipped stays in `sent` and is parked too: it never trained, so
-///   it is returned.
-/// - The identity is the job plus its exact parked set ([`ReturnScope::Parked`]); a
-///   [`REMAINDER_RECEIPT`] written atomically after the bucket took it ends the job's remainder.
+/// - The examples are the job's own input as [`job_request`] proves it (its request.json, else
+///   its durable dispatch): native base, whole payloads, never the partition's measured rows.
+/// - The partition is read strictly: only a confirmed-absent file means nothing was parked; an
+///   unreadable or corrupt one is an error the next pass retries.
+/// - The partition must account for every request example ([`remainder_of`]); one that doesn't
+///   is refused before anything is appended.
+/// - The identity is the job plus its exact parked set ([`ReturnScope::Parked`]). A
+///   [`REMAINDER_RECEIPT`] written atomically after the bucket took it ends the job's remainder;
+///   a crash between the two replays by identity, never appends twice.
 pub(crate) async fn return_parked_remainder(
     state: &Arc<TrainingTriggerState>,
+    board: &TrainingJobBoard,
     root: &std::path::Path,
     job: &crate::genome::fine_tuning::job_board::CompletedJob,
 ) -> Result<Remainder, CommandError> {
     let id = job.local_id;
-    let primary = job_dir_under(root, &job.persona_name, &job.trait_kind, id);
-    // where its record lives: its own dir, or under the request's artifact dir (as `return_job`)
-    let dir = if read_partition(&primary).is_some() {
-        primary
-    } else {
-        match read_job_request(&primary).ok().and_then(|r| r.local_artifact_dir).map(|r| r.join(id.to_string())) {
-            Some(alt) if read_partition(&alt).is_some() => alt,
-            _ => return Ok(Remainder::Nothing), // no partition: nothing was parked
-        }
+    let dir = job_dir_under(root, &job.persona_name, &job.trait_kind, id);
+    let read = |dir: &std::path::Path| read_partition(dir).map_err(|e| CommandError::Internal(format!("job {id}: its partition is unreadable: {e}")));
+    let (dir, partition) = match read(&dir)? {
+        Some(partition) => (dir, partition),
+        // under the request's artifact dir, as `return_job` looks, when a request file names one
+        None => match read_job_request(&dir).ok().and_then(|r| r.local_artifact_dir).map(|r| r.join(id.to_string())) {
+            Some(alt) => match read(&alt)? {
+                Some(partition) => (alt, partition),
+                None => return Ok(Remainder::Nothing),
+            },
+            None => return Ok(Remainder::Nothing), // confirmed: no partition where its records live
+        },
     };
     if dir.join(REMAINDER_RECEIPT).try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
         return Ok(Remainder::AlreadyReturned);
     }
-    let partition = read_partition(&dir).ok_or_else(|| CommandError::Internal(format!("job {id}: its partition vanished while being read")))?;
     if partition.parked.is_empty() {
         return Ok(Remainder::Nothing);
     }
-    let mut request = read_job_request(&dir).map_err(CommandError::NotFound)?;
-    let examples = request.dataset.examples.len();
-    let out_of_range = |set: &[usize]| set.iter().copied().find(|&i| i >= examples);
-    if let Some(i) = out_of_range(&partition.parked).or_else(|| out_of_range(&partition.sent)) {
-        return Err(CommandError::Invalid(format!(
-            "job {id}: its partition names request index {i}, but its request holds {examples} examples; nothing is returned"
-        )));
-    }
-    if !partition.parked.windows(2).all(|pair| pair[0] < pair[1]) {
-        return Err(CommandError::Invalid(format!(
-            "job {id}: its parked indices {:?} are not unique and ascending; nothing is returned",
-            partition.parked
-        )));
-    }
-    let parked = partition.parked;
+    let registration = board
+        .registration(id)
+        .ok_or_else(|| CommandError::NotFound(format!("job {id} has no registration on this node's job ledger")))?;
+    let mut request = job_request(state, &registration, &dir).await?;
+    let parked = remainder_of(&partition, request.dataset.examples.len())
+        .map_err(|why| CommandError::Invalid(format!("job {id}: {why}; nothing is returned")))?;
     request.dataset.examples = parked.iter().map(|&i| request.dataset.examples[i].clone()).collect();
     let outcome = return_request(state, request, id, ReturnScope::Parked(&parked)).await?;
     if outcome.success {
@@ -195,6 +204,39 @@ pub(crate) async fn return_parked_remainder(
         })?;
     }
     Ok(Remainder::Submitted(outcome))
+}
+
+/// PURE: the request indices to return from `partition`, a job of `examples` examples, or why
+/// the record can't be trusted. Both lists strictly ascending and in range; together they cover
+/// every example. One in both was sent and then skipped by the run (the only way the two
+/// overlap, `with_run_skipped`): the measure must have kept it, so its row, when rows were
+/// recorded, says Kept. An example sent and not parked trained, and is never returned.
+fn remainder_of(partition: &crate::inference::planning::training_plan::Partition, examples: usize) -> Result<Vec<usize>, String> {
+    use crate::inference::planning::training_plan::ExampleFit;
+    for (name, set) in [("sent", &partition.sent), ("parked", &partition.parked)] {
+        if let Some(i) = set.iter().copied().find(|&i| i >= examples) {
+            return Err(format!("its partition's {name} names request index {i}, but its request holds {examples} examples"));
+        }
+        if !set.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err(format!("its partition's {name} indices {set:?} are not unique and ascending"));
+        }
+    }
+    let mut covered = vec![false; examples];
+    for &i in partition.sent.iter().chain(&partition.parked) {
+        covered[i] = true;
+    }
+    if let Some(missing) = covered.iter().position(|c| !c) {
+        return Err(format!("its partition accounts for no request index {missing}: neither sent nor parked"));
+    }
+    if !partition.rows.is_empty() {
+        for i in partition.parked.iter().filter(|i| partition.sent.contains(i)) {
+            let kept = partition.rows.iter().find(|r| r.index == *i).is_some_and(|r| r.fit == ExampleFit::Kept);
+            if !kept {
+                return Err(format!("request index {i} is both sent and parked, but its measure didn't keep it, so the run can't have skipped it"));
+            }
+        }
+    }
+    Ok(partition.parked.clone())
 }
 
 /// Write the receipt whole or not at all: to a sibling, then renamed over.
@@ -354,11 +396,11 @@ mod tests {
         let trained = Uuid::new_v4();
         let job = completed(trained, vec![0, 1, 2], vec![1, 3]);
         assert_eq!(board.take_completed(), vec![job.clone()], "the sentinel's Completed claim queues it for the trigger");
-        let first = return_parked_remainder(&trigger.state, &root, &job).await.expect("test: returned");
+        let first = return_parked_remainder(&trigger.state, &board, &root, &job).await.expect("test: returned");
         assert!(matches!(&first, Remainder::Submitted(o) if o.success), "{first:?}");
         assert_eq!(held(), vec!["p1".to_string(), "p3".to_string()], "only what it parked goes back, whole, never what it trained");
         assert!(job_dir_under(&root, "Kimi", "code/owner", trained).join(REMAINDER_RECEIPT).is_file(), "the receipt stands");
-        let again = return_parked_remainder(&trigger.state, &root, &job).await.expect("test: answered");
+        let again = return_parked_remainder(&trigger.state, &board, &root, &job).await.expect("test: answered");
         assert!(matches!(again, Remainder::AlreadyReturned), "{again:?}");
         assert_eq!(held().len(), 2, "returned once, never twice");
         let whole = return_job(&trigger.state, &board, &root, trained).await;
@@ -366,13 +408,24 @@ mod tests {
 
         // A partition naming an example its request doesn't hold is refused; nothing is added.
         let broken = completed(Uuid::new_v4(), vec![0], vec![1, 9]);
-        let refused = return_parked_remainder(&trigger.state, &root, &broken).await;
+        let refused = return_parked_remainder(&trigger.state, &board, &root, &broken).await;
         assert!(matches!(refused, Err(CommandError::Invalid(_))), "{refused:?}");
+        assert_eq!(held().len(), 2, "nothing was added");
+
+        // A partition that leaves an example unaccounted for (neither sent nor parked) is refused.
+        let gap = completed(Uuid::new_v4(), vec![0], vec![2, 3]);
+        let refused = return_parked_remainder(&trigger.state, &board, &root, &gap).await;
+        assert!(matches!(refused, Err(CommandError::Invalid(ref why)) if why.contains("index 1")), "{refused:?}");
+        // A corrupt partition is an error the next pass retries, never "nothing parked".
+        let torn = completed(Uuid::new_v4(), vec![0], vec![1, 2, 3]);
+        std::fs::write(job_dir_under(&root, "Kimi", "code/owner", torn.local_id).join("partition.json"), b"{ torn").expect("test: corrupt");
+        let refused = return_parked_remainder(&trigger.state, &board, &root, &torn).await;
+        assert!(matches!(refused, Err(CommandError::Internal(_))), "{refused:?}");
         assert_eq!(held().len(), 2, "nothing was added");
 
         // A job that parked nothing has no remainder.
         let whole_fit = completed(Uuid::new_v4(), vec![0, 1, 2, 3], vec![]);
-        assert!(matches!(return_parked_remainder(&trigger.state, &root, &whole_fit).await, Ok(Remainder::Nothing)));
+        assert!(matches!(return_parked_remainder(&trigger.state, &board, &root, &whole_fit).await, Ok(Remainder::Nothing)));
     }
 
     // what this catches (the 5090, 2026-10-05; and 2026-10-07, a return wearing its submission's id): ~500 of Kimi's examples stranded in the

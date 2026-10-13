@@ -373,7 +373,7 @@ impl TrainingTriggerState {
         };
         let mut retry = Vec::new();
         for job in completed {
-            match return_parked_remainder(self, &root, &job).await {
+            match return_parked_remainder(self, board, &root, &job).await {
                 Ok(Remainder::Nothing | Remainder::AlreadyReturned) => {}
                 Ok(Remainder::Submitted(outcome)) if outcome.success => crate::probe!(
                     class = "training.job.remainder_returned",

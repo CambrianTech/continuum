@@ -256,10 +256,17 @@ fn write_partition(job_dir: &Path, partition: &Partition) -> Result<(), String> 
     crate::fs_portable::replace::replace_file(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// What `job_dir` records about its partition, if anything. A job from before the record has
-/// none: every example it holds is returnable, as before.
-pub(crate) fn read_partition(job_dir: &Path) -> Option<Partition> {
-    serde_json::from_slice(&std::fs::read(job_dir.join(PARTITION_FILE)).ok()?).ok()
+/// What `job_dir` records about its partition. `Ok(None)` only when the file is confirmed absent
+/// (a job from before the record: every example it holds is returnable, as before). A file that
+/// can't be read or isn't a partition is an ERROR, never read as "nothing parked" (Astra on #5009).
+pub(crate) fn read_partition(job_dir: &Path) -> Result<Option<Partition>, String> {
+    let path = job_dir.join(PARTITION_FILE);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    serde_json::from_slice(&bytes).map(Some).map_err(|e| format!("{}: not a partition: {e}", path.display()))
 }
 
 /// Examples per `/train/measure` call: ONE, so a slow example can never fail a batch's wait.
@@ -2225,11 +2232,15 @@ fn finish_run(
         // the run is the authority on what trained: an example IT skipped is parked, never
         // counted as trained (same rule as the measure, so normally none)
         if !status.skipped_indices.is_empty() {
-            if let Some(partition) = read_partition(&spec.job_dir) {
-                let amended = with_run_skipped(partition, &status.skipped_indices);
-                if let Err(e) = write_partition(&spec.job_dir, &amended) {
-                    crate::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the run's skipped examples could not be parked; they remain in the job's request");
+            match read_partition(&spec.job_dir) {
+                Ok(Some(partition)) => {
+                    let amended = with_run_skipped(partition, &status.skipped_indices);
+                    if let Err(e) = write_partition(&spec.job_dir, &amended) {
+                        crate::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the run's skipped examples could not be parked; they remain in the job's request");
+                    }
                 }
+                Ok(None) => {}
+                Err(e) => crate::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the partition could not be read, so the run's skipped examples could not be parked; they remain in the job's request"),
             }
         }
         let adapted = effective_depth(status.layers_adapted, status.n_layer);
@@ -2541,9 +2552,11 @@ mod tests {
         assert_eq!(amended.parked, vec![1, 2, 3, 4], "the run's index 1 is request index 4; an index past what was sent is ignored");
         assert_eq!(with_run_skipped(amended.clone(), &[1]).parked, vec![1, 2, 3, 4], "parking twice is once");
         let dir = tempfile::tempdir().expect("test: dir");
-        assert_eq!(read_partition(dir.path()), None, "a job from before the record has none");
+        assert_eq!(read_partition(dir.path()), Ok(None), "a job from before the record has none");
         write_partition(dir.path(), &amended).expect("test: written");
-        assert_eq!(read_partition(dir.path()), Some(amended), "read back as written");
+        assert_eq!(read_partition(dir.path()), Ok(Some(amended)), "read back as written");
+        std::fs::write(dir.path().join(PARTITION_FILE), b"{ torn").expect("test: corrupt it");
+        assert!(read_partition(dir.path()).is_err(), "a corrupt partition is an error, never 'nothing parked'");
     }
 
     // what this catches (card d6dae498; the 5090, 2026-10-10 04:34Z): a plain-walk footprint
@@ -3046,7 +3059,7 @@ mod tests {
             assert!((3_072..6_144).contains(&window), "{case}: a window between the shortest and the longest whole example: {window}");
             let got: Vec<&str> = posted["examples"].as_array().expect("test: examples").iter().map(|e| e["prompt"].as_str().unwrap_or("")).collect();
             assert_eq!(got, vec!["p0", "p2"], "{case}: the 6,000-token example is parked, never sent cut");
-            let partition = read_partition(&jobs.path().join(h.local_id.to_string())).expect("test: partition");
+            let partition = read_partition(&jobs.path().join(h.local_id.to_string())).expect("test: readable").expect("test: partition");
             assert_eq!(partition.parked, vec![1], "{case}");
             server.abort();
         }
@@ -3140,7 +3153,7 @@ mod tests {
                 .collect();
             let h = t.create_job(r).await.expect("test: create");
             let end = wait_terminal(&t, &h).await;
-            let partition = read_partition(&jobs.path().join(h.local_id.to_string())).expect("test: partition recorded");
+            let partition = read_partition(&jobs.path().join(h.local_id.to_string())).expect("test: readable").expect("test: partition recorded");
             match sent {
                 Some(prompts) => {
                     let posted = seen.lock().unwrap().clone().expect("test: posted");
