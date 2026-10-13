@@ -294,7 +294,7 @@ pub(crate) async fn ask_the_act_question(
                     };
                     let work_hands = card_turn.as_ref().and_then(|t| t.hands.as_ref());
                     let card_root = work_hands.and_then(|h| h.root());
-                    let burst = burst.in_hands(work_hands.map(|h| h.context));
+                    let burst = burst.in_hands(card_turn.as_ref().and_then(|t| t.turn_hands()));
                     if let (Some(ws), Some(body)) = (card_root.as_ref(), cycle.acting()) {
                         // PINNED (not recorded): the FIFO window is three
                         // deep and by her third act this fact was gone —

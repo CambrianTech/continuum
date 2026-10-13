@@ -43,6 +43,17 @@ impl HandsContext {
     }
 }
 
+impl HandsContext {
+    /// The hands a turn on `card` acts with when the card's own claim hands could not be
+    /// bound (no checkout on this node, no claim id, a rooting failure): NEVER rooted, so every
+    /// code tool refuses by name while every other tool still works, and nothing meant for the
+    /// card lands in her home (Astra on #5026: a failed binding ran at home). Stable per card,
+    /// so its gate is one entry, not one per turn.
+    pub fn unbound(persona: Uuid, card: Uuid) -> Self {
+        Self::for_claim(persona, card, Uuid::nil())
+    }
+}
+
 /// Admission to one set of hands: whether they take new work, and how much is in flight.
 /// A turn is admitted ONCE, when it binds its hands, and holds its [`HandsLease`] until it
 /// ends; closing the hands (their claim ended) refuses new turns and waits the admitted
@@ -87,8 +98,11 @@ pub fn admit(key: &HandsKey) -> Result<HandsLease, String> {
     Ok(HandsLease { cell })
 }
 
-/// Close `key`'s hands to new turns and wait until every admitted one has ended. The
-/// caller then releases them (`close_acting_context`) and calls [`forget`].
+/// Close `key`'s hands to new work and wait until every admitted turn and call has ended.
+/// The caller then releases them (`close_acting_context`). A closed gate STAYS closed: a
+/// claim's context is never reused (a re-acquired card is a new claim), so a stale binding
+/// read before the close can never re-open the old hands (Astra on #5026). The tombstone is
+/// a key and a flag; they live as long as the process, one per claim worked.
 pub async fn close(key: &HandsKey) {
     let cell = GATES.entry(key.map_key()).or_default().clone();
     loop {
@@ -102,11 +116,6 @@ pub async fn close(key: &HandsKey) {
         }
         ended.await;
     }
-}
-
-/// Drop `key`'s gate once its hands are released: a claim's context is never reused.
-pub fn forget(key: &HandsKey) {
-    GATES.remove(&key.map_key());
 }
 
 /// The key of one set of hands: whose (the caller) and in which context.
@@ -153,9 +162,10 @@ mod tests {
         assert!(eval.map_key().starts_with(&caller), "a context's hands stay attributable to their caller");
     }
 
-    // what this catches (Codex root and Astra on fc9e9fd7): closing a claim's hands while a
-    // turn is admitted to them dropped its engine or shell under it. Closing refuses NEW
-    // turns at once and completes only after the admitted one ends.
+    // what this catches (Codex root and Astra on fc9e9fd7, #5026): closing a claim's hands
+    // while a turn is admitted to them dropped its engine or shell under it; and a stale
+    // admission (a call or turn that starts after the close) re-opened them. Closing refuses
+    // new work at once, completes only after the admitted turn ends, and stays closed.
     #[tokio::test]
     async fn closing_a_claims_hands_refuses_new_turns_and_waits_out_the_admitted_one() {
         let key = HandsKey::new(Uuid::new_v4().to_string(), Some(HandsContext::fresh()));
@@ -171,7 +181,6 @@ mod tests {
         assert!(!closing.is_finished(), "the close waits for the admitted turn");
         drop(admitted);
         tokio::time::timeout(std::time::Duration::from_secs(5), closing).await.expect("closes once the turn ends").expect("close task");
-        forget(&key);
-        assert!(admit(&key).is_ok(), "a forgotten key is a fresh gate (claims never reuse one)");
+        assert!(admit(&key).is_err(), "a closed claim's hands stay closed: a stale binding can't re-open them");
     }
 }

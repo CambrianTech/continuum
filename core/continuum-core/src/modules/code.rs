@@ -83,23 +83,46 @@ impl CodeState {
         self.file_engines.remove(who);
     }
 
-    /// Apply `f` to `who`'s shell for `handle` (a full execution id or a unique prefix). One
-    /// set of hands has one session for its whole life (hands are never re-rooted, card
-    /// fc9e9fd7), so every handle these hands were given is in it.
+    /// Apply `f` to the session holding `handle` (a full execution id or a unique prefix),
+    /// resolved ONCE across every set of `caller`'s own hands: her default ones and each acting
+    /// context's (`<caller>#<context>`). A handle from her card claim A stays reachable after
+    /// her focus moved to claim B (Astra on #5026); another caller's never is. A prefix that
+    /// matches executions in two of her sessions is refused as ambiguous (Codex on #4586).
     pub fn with_execution<T>(
         &self,
-        who: &str,
+        caller: &str,
         handle: &str,
         f: impl FnOnce(&ShellSession, &str) -> Result<T, String>,
     ) -> Result<T, ExecutionLookup> {
-        let shell = self.shell_sessions.get(who).ok_or(ExecutionLookup::NoSession)?;
-        let ids: Vec<uuid::Uuid> = shell
-            .execution_ids()
+        let hers = |key: &str| key == caller || key.strip_prefix(caller).is_some_and(|rest| rest.starts_with('#'));
+        // Collect (session key, execution ids) shard by shard, then act on ONE session: no
+        // guard is held across the scan.
+        let sessions: Vec<(String, Vec<String>)> = self
+            .shell_sessions
+            .iter()
+            .filter(|entry| hers(entry.key()))
+            .map(|entry| (entry.key().clone(), entry.value().execution_ids().map(str::to_string).collect()))
+            .collect();
+        if sessions.is_empty() {
+            return Err(ExecutionLookup::NoSession);
+        }
+        let ids: Vec<uuid::Uuid> = sessions
+            .iter()
+            .flat_map(|(_, ids)| ids.iter())
             .filter_map(|id| uuid::Uuid::parse_str(id).ok())
             .collect();
         let id = crate::id_resolve::resolve_handle(handle, &ids, "shell execution")
             .map_err(ExecutionLookup::Unresolved)?
             .to_string();
+        let holder = sessions
+            .iter()
+            .find(|(_, ids)| ids.iter().any(|e| *e == id))
+            .map(|(key, _)| key.clone())
+            .ok_or_else(|| ExecutionLookup::Unresolved(format!("shell execution {id} vanished")))?;
+        let shell = self
+            .shell_sessions
+            .get(&holder)
+            .ok_or_else(|| ExecutionLookup::Unresolved(format!("shell execution {id}'s hands were released")))?;
         f(&shell, &id).map_err(ExecutionLookup::Failed)
     }
 }
@@ -197,7 +220,7 @@ mod tests {
     // (hands are never re-rooted, card fc9e9fd7), so a running command is reachable by its
     // handle and a unique prefix of it, and never by another caller.
     #[tokio::test]
-    async fn a_running_command_stays_reachable_by_its_handle_in_its_own_hands() {
+    async fn a_running_command_stays_reachable_by_its_handle_in_any_of_her_hands() {
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
         let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
@@ -213,6 +236,16 @@ mod tests {
             matches!(state.with_execution("mara", &exec, running), Err(ExecutionLookup::NoSession)),
             "another caller never reaches her command"
         );
+        // A command in her claim A's hands, polled after her focus moved to claim B: still hers.
+        let (claim_a, claim_b) = (crate::code::hands::HandsContext::fresh(), crate::code::hands::HandsContext::fresh());
+        let in_a = format!("kimi#{}", claim_a.id());
+        let mut a_shell = ShellSession::new("sa", "kimi", root.path()).expect("session");
+        let a_exec = a_shell.execute("sleep 30", Some(60_000), &rt).expect("a command in claim A");
+        state.shell_sessions.insert(in_a, a_shell);
+        state.shell_sessions.insert(format!("kimi#{}", claim_b.id()), ShellSession::new("sb", "kimi", root.path()).expect("session"));
+        assert!(state.with_execution("kimi", &a_exec, running).is_ok(), "claim A's handle is reachable while she works claim B");
+        assert!(matches!(state.with_execution("kim", &a_exec, running), Err(ExecutionLookup::NoSession)), "a caller-id prefix is not her");
+        state.with_execution("kimi", &a_exec, |s, id| s.kill(id)).expect("clean up claim A's command");
         state.with_execution("kimi", &exec, |s, id| s.kill(id)).expect("clean up the test command");
     }
 

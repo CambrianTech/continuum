@@ -517,10 +517,11 @@ fn move_blocker_over(persona: Uuid, acting_root: Option<PathBuf>) -> Option<Stri
 static CHECKOUT_SYNC: std::sync::LazyLock<dashmap::DashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>> =
     std::sync::LazyLock::new(dashmap::DashMap::new);
 
-/// Drop `root`'s sync lock once the claim hands standing in it are released. A sync still
-/// holding its clone finishes under it; the next one, for a new claim, starts a fresh lock.
+/// Drop `root`'s sync lock once the claim hands standing in it are released, but ONLY when
+/// no sync holds it: a timed-out caller's blocking git keeps its clone, and removing the
+/// entry under it would let a new claim's sync run beside it (Astra on #5026).
 pub fn forget_checkout(root: &std::path::Path) {
-    CHECKOUT_SYNC.remove(root);
+    CHECKOUT_SYNC.remove_if(root, |_, lock| std::sync::Arc::strong_count(lock) == 1);
 }
 
 pub async fn sync_after_act_for(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
@@ -735,6 +736,21 @@ pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Astra on #5026): a claim's close dropping a checkout's sync lock while
+    // a timed-out caller's blocking git still runs under it, so a new claim's sync on the same
+    // checkout ran beside it. The lock leaves only when no sync holds it.
+    #[test]
+    fn a_checkout_lock_held_by_a_running_sync_is_never_dropped() {
+        let root = std::path::PathBuf::from(format!("/checkout-{}", Uuid::new_v4()));
+        let running = CHECKOUT_SYNC.entry(root.clone()).or_default().clone(); // the timed-out sync's clone
+        forget_checkout(&root);
+        let next = CHECKOUT_SYNC.entry(root.clone()).or_default().clone();
+        assert!(std::sync::Arc::ptr_eq(&running, &next), "a new claim's sync takes the SAME lock the running one holds");
+        drop((running, next));
+        forget_checkout(&root);
+        assert!(!CHECKOUT_SYNC.contains_key(&root), "once nothing holds it, the lock leaves with the claim");
+    }
 
     fn git(dir: &Path, args: &[&str]) -> String {
         run_git(dir, args).unwrap_or_else(|e| panic!("git {args:?} in {}: {e}", dir.display()))

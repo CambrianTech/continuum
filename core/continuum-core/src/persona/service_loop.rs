@@ -1490,7 +1490,7 @@ async fn serve_persona_loop_inner(
                         &cycle,
                         // The turn acts in the hands it was admitted to: her card claim's, or
                         // her default ones (card fc9e9fd7).
-                        workspace_burst.in_hands(held_card.hands.as_ref().map(|h| h.context)),
+                        workspace_burst.in_hands(held_card.turn_hands()),
                         LIVE_MAX_ACTS,
                         framing,
                         conversation,

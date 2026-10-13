@@ -1179,11 +1179,11 @@ pub(crate) async fn bind_card(
              root for this turn, and anything she writes lands there, NOT in the card"
         );
         // Her hands stay home, but she is still working THIS card — the credit rides out.
-        return HeldCardTurn::unrooted(credit);
+        return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
     };
     // A pure-cognition persona has no hands at all. Still her card.
     let Some(live) = ActingHands::of(cycle) else {
-        return HeldCardTurn::unrooted(credit);
+        return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
     };
     // THE CLAIM'S OWN HANDS (card fc9e9fd7): derived from the claim, the same for every turn
     // of it and new for any other claim, rooted once at the card's checkout and never moved.
@@ -1196,17 +1196,17 @@ pub(crate) async fn bind_card(
             card = %focus.card_id.as_uuid(),
             "the focus card carries no claim id, so no claim's hands can be bound; nothing acts on it this turn"
         );
-        return HeldCardTurn::unrooted(credit);
+        return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
     };
     let context = crate::code::hands::HandsContext::for_claim(peer_id, focus.card_id.as_uuid(), claim.as_uuid());
     let Some(hands) = live.in_context(context) else {
-        return HeldCardTurn::unrooted(credit);
+        return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
     };
     let lease = match crate::code::hands::admit(&hands.key()) {
         Ok(lease) => lease,
         Err(why) => {
             crate::probe!(class = "persona.work.hands_closing", peer = %peer_id, card = %focus.card_id.as_uuid(), why = %why, "the claim's hands are closing; nothing acts on the card this turn");
-            return HeldCardTurn::unrooted(credit);
+            return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
         }
     };
     // Rooted ONCE: a context's place is fixed for its life, so a later turn finds it there.
@@ -1214,7 +1214,7 @@ pub(crate) async fn bind_card(
         if let Err(e) = drive_create_workspace(&hands, &ws.to_string_lossy(), &[], "bind-card-hands", false).await {
             tracing::warn!(error = %e, "could not root the card claim's hands at its checkout");
             // Nothing may act on the card, but the turn is still card-linked: it stages.
-            return HeldCardTurn::unrooted(credit);
+            return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
         }
         note_acting_root_in(peer_id, Some(context), Some(ws.clone()));
         note_acting_card_in(peer_id, Some(context), focus.card_id.as_uuid());
@@ -1244,6 +1244,7 @@ pub(crate) async fn bind_card(
     HeldCardTurn {
         credit: Some(credit),
         hands: Some(CardHands { context, hands, _lease: lease }),
+        unbound: None,
     }
 }
 
@@ -1303,6 +1304,9 @@ pub(crate) struct HeldCardTurn {
     /// `None` means nothing may act on the card this turn; it says nothing about which
     /// card it is.
     pub(crate) hands: Option<CardHands>,
+    /// When the card is known but its hands could not be bound: the never-rooted context the
+    /// turn acts with instead, so its code tools refuse rather than act at home.
+    unbound: Option<crate::code::hands::HandsContext>,
 }
 
 /// A turn's admission to the hands of the card claim it works (card fc9e9fd7). The context
@@ -1352,7 +1356,6 @@ fn close_ended_claims(live: &ActingHands, held: &[crate::code::hands::HandsConte
             let root = acting_root_in(hands.persona_id, Some(context));
             match close_acting_context(&hands).await {
                 Ok(()) => {
-                    crate::code::hands::forget(&key);
                     if let Some(root) = root {
                         crate::persona::workspace_transfer::forget_checkout(&root);
                     }
@@ -1367,19 +1370,27 @@ fn close_ended_claims(live: &ActingHands, held: &[crate::code::hands::HandsConte
 }
 
 impl HeldCardTurn {
+    /// The hands this turn acts with: its card claim's, the card's never-rooted stand-in when
+    /// those could not be bound, or her default hands when she works no card.
+    pub(crate) fn turn_hands(&self) -> Option<crate::code::hands::HandsContext> {
+        self.hands.as_ref().map(|h| h.context).or(self.unbound)
+    }
+
     /// No card was selected: no citizen, unreadable claims, or nothing held.
     fn unheld() -> Self {
         Self {
             credit: None,
             hands: None,
+            unbound: None,
         }
     }
 
     /// The card is known and her hands did not reach it.
-    fn unrooted(credit: crate::persona::training_producer::CapturedCredit) -> Self {
+    fn unrooted(credit: crate::persona::training_producer::CapturedCredit, persona: Uuid, card: Uuid) -> Self {
         Self {
             credit: Some(credit),
             hands: None,
+            unbound: Some(crate::code::hands::HandsContext::unbound(persona, card)),
         }
     }
 }
@@ -3976,38 +3987,39 @@ mod tests {
             out.results[0].content.clone()
         }
 
-        // Regression: actual foreground hands and background dispatch both record
-        // work; a workspace switch before the task's first poll cannot move it.
+        // Regression: foreground and background work both record against the card the
+        // CALL's own hands are bound to (Astra on #5026), never her current focus: a turn
+        // moving her focus to another claim before the task's first poll cannot move it.
         #[tokio::test]
         async fn command_work_stays_with_its_card_across_background_dispatch() {
             use crate::persona::cognition_pulse::work_idle_ms;
             let home = tempfile::TempDir::new().unwrap();
             std::fs::write(home.path().join("work.txt"), "work").unwrap();
             let persona = Uuid::new_v4();
-            let hands = hands_for(persona);
+            let live = hands_for(persona);
+            let (card_a, card_b) = (Uuid::new_v4(), Uuid::new_v4());
+            let claim_a = crate::code::hands::HandsContext::for_claim(persona, card_a, Uuid::new_v4());
+            let hands = live.in_context(claim_a).expect("claim A's hands");
             drive_create_workspace(&hands, &home.path().to_string_lossy(), &[], "root", false)
                 .await
                 .unwrap();
-            note_acting_root_in(persona, None, Some(home.path().to_path_buf()));
-            let (foreground, background, next) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
-            note_acting_card_in(persona, None, foreground);
+            note_acting_root_in(persona, Some(claim_a), Some(home.path().to_path_buf()));
+            note_acting_card_in(persona, Some(claim_a), card_a);
             assert!(listing(&hands).await.contains("work.txt"));
-            assert!(
-                work_idle_ms(persona, Some(foreground), EpochMs::now().millis()).is_some()
-            );
+            assert!(work_idle_ms(persona, Some(card_a), EpochMs::now().millis()).is_some());
 
             let exec = hands.executor.command_executor().unwrap();
             let mut rx = exec.message_bus().unwrap().receiver();
-            note_acting_card_in(persona, None, background);
             let handle = exec.dispatch_background(
                 "code/list",
                 serde_json::json!({"path": "."}),
-                Some(CallerIdentity::local_persona(
-                    crate::identity::PeerId::from_uuid(persona),
-                )),
+                Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)).in_hands(claim_a)),
             );
-            // Current-thread test: the spawned task has not been polled yet.
-            note_acting_card_in(persona, None, next);
+            // Current-thread test: the spawned task has not been polled yet. Her focus moves on.
+            let claim_b = crate::code::hands::HandsContext::for_claim(persona, card_b, Uuid::new_v4());
+            note_acting_root_in(persona, Some(claim_b), Some(home.path().to_path_buf()));
+            note_acting_card_in(persona, Some(claim_b), card_b);
+            set_focus(persona, Some(claim_b));
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 loop {
                     let event = rx.recv().await.unwrap();
@@ -4022,9 +4034,11 @@ mod tests {
             .await
             .expect("background completion");
             let now = EpochMs::now().millis();
-            assert!(work_idle_ms(persona, Some(background), now).is_some());
-            assert_eq!(work_idle_ms(persona, Some(next), now), None);
-            note_acting_root_in(persona, None, None);
+            assert!(work_idle_ms(persona, Some(card_a), now).is_some(), "the work is claim A's");
+            assert_eq!(work_idle_ms(persona, Some(card_b), now), None, "never the focus it moved to");
+            set_focus(persona, None);
+            note_acting_root_in(persona, Some(claim_a), None);
+            note_acting_root_in(persona, Some(claim_b), None);
         }
 
         // what this catches (card fc9e9fd7; Kimi #11697, #312): one set of hands moved by

@@ -336,7 +336,7 @@ impl CommandExecutor {
         let command: CommandUri = command.into();
         let start = std::time::Instant::now();
         let work = caller.as_ref().and_then(|c| {
-            crate::persona::cognition_pulse::CommandWork::capture(c.peer_id.as_uuid())
+            crate::persona::cognition_pulse::CommandWork::capture(c)
         });
         let outcome = self.dispatch(&command, params, caller.as_ref(), work).await;
         self.emit_command_completed(
@@ -367,7 +367,7 @@ impl CommandExecutor {
         // Snapshot the acting card before spawning: the turn may change workspace
         // before this task gets its first poll. The guard activates after auth.
         let work = caller.as_ref().and_then(|c| {
-            crate::persona::cognition_pulse::CommandWork::capture(c.peer_id.as_uuid())
+            crate::persona::cognition_pulse::CommandWork::capture(c)
         });
         tokio::spawn(async move {
             let start = std::time::Instant::now();
