@@ -406,8 +406,10 @@ impl Faculty for RagSourceFaculty {
             .await;
 
         // Empty delivery → abstain (the source had nothing, or degraded to empty
-        // per the good-citizen doctrine). No empty bid clutters the workspace.
-        if delivery.items.is_empty() {
+        // per the good-citizen doctrine). No empty bid clutters the workspace. An
+        // empty PARTIAL delivery is different: nothing fit, but the source has more,
+        // so it still contributes its notice (card e049aa82) instead of vanishing.
+        if delivery.items.is_empty() && delivery.continuation.is_none() {
             let _ = self.note_absence(ws.room_id);
             return None;
         }
@@ -435,7 +437,10 @@ impl Faculty for RagSourceFaculty {
 
         let c = Contribution::context(self.faculty_id.clone(), content, self.salience, reasoning)
             .with_parts(units)
-            .with_expand_command(self.source.expand_command());
+            .with_expand_command(self.source.expand_command())
+            // A continuation means the SOURCE stopped short of its own list; the
+            // packer's notice must say so (card e049aa82: nothing resumes cursors).
+            .with_source_truncated(delivery.continuation.is_some());
         let c = if self.standing_grounding {
             c.standing_grounding()
         } else {

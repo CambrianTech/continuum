@@ -435,7 +435,10 @@ impl RagSource for WallSource {
     }
 
     fn expand_command(&self) -> Option<&'static str> {
-        Some("work/list")
+        // The verb that pages THIS wall: a room's pinned posts (`persona/wall/list`).
+        // It named `work/list`, the work board, so a cut wall sent her to the wrong
+        // surface (Codex root, review of #5016).
+        Some("persona/wall/list")
     }
 
     /// One wall post's title line. A pinned document's NAME is a complete

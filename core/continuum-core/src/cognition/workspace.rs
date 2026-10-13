@@ -395,6 +395,12 @@ pub struct Contribution {
     /// precisely so every source decides. `None` = nothing further to fetch, and
     /// the notice then says only how much was omitted.
     pub expand_command: Option<&'static str>,
+    /// The SOURCE stopped short of its own list at its budget (it minted a
+    /// continuation): units exist beyond `parts` that no packing here can show. The
+    /// notice then says so even when every delivered part fits, and gives no total,
+    /// because the source did not report one ("whole or handle": a cut the reader
+    /// cannot see is a silent clip, PERSONA-COGNITION-PIPELINE.md §3).
+    pub source_truncated: bool,
 }
 
 impl Contribution {
@@ -415,6 +421,7 @@ impl Contribution {
             // faculty that actually knows its content is a list.
             parts: vec![content.clone()],
             expand_command: None,
+            source_truncated: false,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -447,6 +454,12 @@ impl Contribution {
     }
 
     /// Name the verb that yields this content in full — see [`expand_command`](Self::expand_command).
+    /// Mark that the source withheld units beyond `parts` (see `source_truncated`).
+    pub fn with_source_truncated(mut self, truncated: bool) -> Self {
+        self.source_truncated = truncated;
+        self
+    }
+
     pub fn with_expand_command(mut self, cmd: Option<&'static str>) -> Self {
         self.expand_command = cmd;
         self
@@ -474,6 +487,7 @@ impl Contribution {
             // A verdict is one utterance — never a list, never divisible.
             parts: vec![content.clone()],
             expand_command: None,
+            source_truncated: false,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -505,6 +519,7 @@ impl Contribution {
             // A fault is one named cause — never a list, never divisible.
             parts: vec![error.clone()],
             expand_command: None,
+            source_truncated: false,
             content: error.clone(),
             salience: 1.0,
             reasoning: "deliberation inference failed".to_string(),

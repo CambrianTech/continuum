@@ -441,9 +441,12 @@ pub struct RagDelivery {
     pub items: Vec<RagItem>,
     /// Actual tokens consumed across all items.
     pub tokens_used: u32,
-    /// Some(cursor) → source has more available; allocator may
-    /// resume in a future turn. None → source delivered everything
-    /// it had OR doesn't support pagination.
+    /// Some(cursor) → the source has more than it delivered. The remainder
+    /// reaches the reader as a HANDLE: the workspace marks the block
+    /// `source_truncated` and its notice names the source's `expand_command`
+    /// (whole-or-handle). No production allocator resumes a cursor today
+    /// (card e049aa82). None → the source delivered everything it had, or
+    /// doesn't support pagination.
     pub continuation: Option<ContinuationCursor>,
     /// What resolution the source actually used. May differ from
     /// the requested resolution if the source's content can't fit
