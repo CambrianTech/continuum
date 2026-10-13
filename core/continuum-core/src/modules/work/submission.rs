@@ -1208,7 +1208,14 @@ impl ActionCommand for WorkReview {
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
         // than counted as nothing after the fact.
         if submission.publisher == airc.peer_id() {
-            if let Some(policy) = crate::modules::work::review_gate::room_policy(airc, &room).await {
+            use crate::modules::work::review_gate::PolicyRead;
+            if let PolicyRead::Unavailable(why) = crate::modules::work::review_gate::room_policy(airc, &room).await {
+                return Err(CommandError::Invalid(format!(
+                    "this room's review policy could not be read ({why}), so your own review of card \
+                     {card_id} cannot be admitted now: retry, or have a member other than you review it."
+                )));
+            }
+            if let PolicyRead::Declared(policy) = crate::modules::work::review_gate::room_policy(airc, &room).await {
                 if !policy.self_review {
                     return Err(CommandError::Invalid(format!(
                         "this room's review policy does not admit the author's own review                          (review.self is false): a member other than you reviews card {card_id}.                          A room can allow it: activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."

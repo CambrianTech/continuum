@@ -1627,14 +1627,6 @@ fn substrate_connection(executor: &Arc<CommandExecutor>) -> Connection<InProcess
 /// receipted: a store that cannot be read names itself; nothing here can fail the
 /// verdict that triggered it.
 pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
-    settle_card_credit_with_history(card_id, passed, false).await;
-}
-
-/// [`settle_card_credit`], told whether the board holds a FAILED review of this card
-/// before the verdict being settled. Only the catch-up pass knows that without having
-/// observed it; a live verdict passes `false` and relies on the rows its own core
-/// marked when the failure arrived.
-async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_earlier: bool) {
     let Some(executor) = EXECUTOR.cloned() else {
         return;
     };
@@ -1710,7 +1702,7 @@ async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_ear
         // trains only what was staged after it. The order is her own core's perception of
         // the failure, so no clock on the reviewer's node is compared with hers.
         let rows = if passed {
-            match pass_admits(&rows, failed_earlier) {
+            match pass_admits(&rows) {
                 PassAdmits::All => rows,
                 PassAdmits::AfterFailure => {
                     let (rejected, admitted): (Vec<StagedCredit>, Vec<StagedCredit>) =
@@ -1725,16 +1717,6 @@ async fn settle_card_credit_with_history(card_id: Uuid, passed: bool, failed_ear
                         "a passing verdict after a failure: the rows the failure rejected are not trained as passing; only the correction settles"
                     );
                     admitted
-                }
-                PassAdmits::Unordered => {
-                    crate::probe!(
-                        class = "training.credit.unordered_withheld",
-                        persona = %persona_name,
-                        card = %card_id,
-                        withheld = rows.len() as u64,
-                        "the board holds a failure before this pass that her core never observed, so no row can be placed after it; nothing trains"
-                    );
-                    Vec::new()
                 }
             }
         } else {
@@ -2054,19 +2036,12 @@ pub(crate) enum PassAdmits {
     All,
     /// Her core observed a failure: only the rows staged after it (unmarked) train.
     AfterFailure,
-    /// The board holds an earlier failure her core never observed, so no row can be
-    /// placed after it. Nothing trains: a pre-failure row labelled passing is the
-    /// expensive mistake, and exclusion never is.
-    Unordered,
 }
 
-/// PURE: what a pass admits, from the rows' marks and whether the board holds an
-/// earlier failure.
-pub(crate) fn pass_admits(rows: &[StagedCredit], failed_earlier: bool) -> PassAdmits {
+/// PURE: what a pass admits, from the rows' marks.
+pub(crate) fn pass_admits(rows: &[StagedCredit]) -> PassAdmits {
     if rows.iter().any(|r| r.rejected_at_ms.is_some()) {
         PassAdmits::AfterFailure
-    } else if failed_earlier {
-        PassAdmits::Unordered
     } else {
         PassAdmits::All
     }
@@ -2106,22 +2081,6 @@ async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, c
     }
 }
 
-/// PURE: whether the board holds a FAILED review earlier than the card's latest real
-/// verdict (catch-up's question: did she miss a failure before this pass?).
-pub(crate) fn failed_before_latest<'a>(
-    reviews: impl Iterator<Item = (u64, &'a airc_work::WorkReviewOutcome)>,
-) -> bool {
-    let real: Vec<(u64, bool)> = reviews
-        .filter_map(|(at, outcome)| match outcome {
-            airc_work::WorkReviewOutcome::Passed => Some((at, true)),
-            airc_work::WorkReviewOutcome::Failed => Some((at, false)),
-            airc_work::WorkReviewOutcome::Unknown => None,
-        })
-        .collect();
-    let Some(&(latest, _)) = real.iter().max_by_key(|(at, _)| *at) else { return false };
-    real.iter().any(|&(at, passed)| !passed && at < latest)
-}
-
 /// Once the destination holds a row's lived calls as examples, the row keeps its
 /// receipts (the provenance) and drops the second copy, so settled rows stay small.
 /// A failed clear is named; the next settle pass meets the accepted transfer and
@@ -2159,49 +2118,12 @@ async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: &str
     }
 }
 
-/// A VERIFIED review on a submission settles the card's staged credit: the room's
-/// judgment on real work, whoever the reviewer is (a peer, or the benchmark grader
-/// posting its verdict as a review since #4761). Called only by
-/// `reviewed::bridge_review` after `verified_review`, never on a raw inbound event:
-/// any review-shaped event used to reach this with no signer, projection or
-/// self-review check. `Passed` settles as success, `Failed` as failure with the verdict
-/// kept; `Unknown` settles nothing. Each review settles once per node (every resident
-/// observer verifies the same event). Spawned so a room event never waits on a
-/// curriculum write. The outcome reduction is [`verdict_of`], tested.
-pub(crate) fn settle_on_verified_review(review: &airc_work::WorkSubmissionReview) {
-    let Some(passed) = verdict_of(&review.outcome) else {
-        return;
-    };
-    if !first_settlement(review.review_id.as_uuid()) {
-        return;
-    }
-    let card = review.card_id.as_uuid();
-    let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        crate::probe!(
-            class = "training.credit.settle_deferred",
-            card = %card,
-            "a review arrived outside the runtime — its card's staged credit settles on the next verdict"
-        );
-        return;
-    };
-    crate::probe!(
-        class = "training.credit.settle_on_review",
-        card = %card,
-        passed,
-        "the room reviewed a submission — its staged learning credit settles"
-    );
-    handle.spawn(settle_card_credit(card, passed));
-}
-
-/// RECONCILE AT REGISTRATION. [`settle_on_verified_review`] fires on a verified review in a LIVE
-/// core: a review that arrived while she was not resident (a deploy, a sleeping node, a
-/// review filed before #4765 existed) settled nothing at the time, and her staged credit
-/// on that card sat still with the verdict already on the board. Her registration asks
-/// every board she is on what the room has already judged on her cards
-/// (`submission_reviews_for_card`, airc #1537) and settles what the live path missed.
-/// Idempotent: a revision already transferred returns on `settle_overlap`, never a
-/// second submission. Measured 2026-10-05: Kimi registered with 27 staged / 0 settled
-/// and a passed review on the board.
+/// RECONCILE AT REGISTRATION. A review that arrived while she was not resident (a deploy, a
+/// sleeping node) reached no live bridge, so her registration asks every board she is on what
+/// the room has already judged on her cards (`submission_reviews_for_card`, airc #1537) and
+/// sends each through the SAME exact path the live bridge and `work/review` use, with the same
+/// self-review rule: the immutable submission binding and its transfer reservations, never a
+/// card-wide settle (Codex root, #5017). Idempotent: a transferred binding returns Accepted.
 pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
     let owned = match crate::persona::airc_runtime::scoped_board_owned_by(airc).await {
         Ok(owned) => owned,
@@ -2210,20 +2132,31 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
                 class = "training.credit.reconcile_unreadable",
                 persona = %persona_name,
                 error = %error,
-                "her boards could not be walked at registration — reviews already on them settle on the next live verdict"
+                "her boards could not be walked at registration: reviews already on them reach the exact path on the next live delivery"
             );
             return;
         }
     };
-    let mut boards: std::collections::BTreeMap<Uuid, airc_work::WorkBoardProjection> = std::collections::BTreeMap::new();
-    let (mut cards, mut judged) = (0u64, 0u64);
+    let observer = airc.peer_id().as_uuid();
+    let conn = match reviewed::credit_connection(observer) {
+        Ok(conn) => conn,
+        Err(error) => {
+            crate::probe!(class = "training.credit.reconcile_unreadable", persona = %persona_name, error = %error,
+                "no credit connection at registration: reviews already on her boards wait for the next live delivery");
+            return;
+        }
+    };
+    let mut boards: std::collections::BTreeMap<Uuid, (airc_work::WorkBoardProjection, reviewed::SelfReview)> =
+        std::collections::BTreeMap::new();
+    let (mut cards, mut reviews, mut deferred) = (0u64, 0u64, 0u64);
     for (room, card) in owned {
         cards += 1;
         let room_id = room.channel.as_uuid();
         if !boards.contains_key(&room_id) {
             match airc.work_board_in(&room).await {
                 Ok(board) => {
-                    boards.insert(room_id, board);
+                    let admission = reviewed::self_review(airc, &room).await;
+                    boards.insert(room_id, (board, admission));
                 }
                 Err(error) => {
                     crate::probe!(
@@ -2231,80 +2164,39 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
                         persona = %persona_name,
                         room = %room_id,
                         error = %error,
-                        "one board could not be projected at registration — its reviews settle on the next live verdict"
+                        "one board could not be projected at registration: its reviews wait for the next live delivery"
                     );
                     continue;
                 }
             }
         }
-        let Some(board) = boards.get(&room_id) else { continue };
-        // Replay judges by the SAME rule as the live path: the projection holds only
-        // signed, accepted reviews, and an author's review of her own submission counts
-        // only where the room's policy admits it (`reviewed::check_review`).
-        let self_admitted = crate::persona::training_producer::reviewed::self_review_admitted(airc, &room).await;
-        let admitted: Vec<&airc_work::WorkSubmissionReview> = board
-            .submission_reviews_for_card(card.card_id)
-            .filter(|r| self_admitted || crate::persona::training_producer::reviewed::reviewed_publisher(board, r) != Some(r.reviewer))
-            .collect();
-        let Some(passed) = reconciled_verdict(admitted.iter().map(|r| (r.reviewed_at_ms, &r.outcome))) else {
-            continue;
-        };
-        let failed_earlier = failed_before_latest(admitted.iter().map(|r| (r.reviewed_at_ms, &r.outcome)));
-        judged += 1;
-        crate::probe!(
-            class = "training.credit.reconcile_card",
-            persona = %persona_name,
-            card = %card.card_id.as_uuid(),
-            passed,
-            "the board already judged this card of hers — its staged credit settles now"
-        );
-        settle_card_credit_with_history(card.card_id.as_uuid(), passed, failed_earlier).await;
+        let Some((board, admission)) = boards.get(&room_id) else { continue };
+        let ids: Vec<airc_work::WorkReviewId> =
+            board.submission_reviews_for_card(card.card_id).map(|r| r.review_id).collect();
+        for review_id in ids {
+            reviews += 1;
+            if let Err(error) =
+                reviewed::consume_observed_review(&conn, persona_name, observer, room_id, board, review_id, admission).await
+            {
+                deferred += 1;
+                crate::probe!(
+                    class = "training.credit.review_deferred",
+                    persona = %persona_name,
+                    review = %review_id.as_uuid(),
+                    error = %error,
+                    "a review already on her board was not settled at registration: its exact replay retries"
+                );
+            }
+        }
     }
     crate::probe!(
         class = "training.credit.reconciled",
         persona = %persona_name,
         cards,
-        judged,
-        "registration asked her boards what the room already judged; those cards settled"
+        reviews,
+        deferred,
+        "registration sent every review already on her boards through the exact path"
     );
-}
-
-/// The verdict the board holds on a card: the LATEST review with a real outcome. An
-/// `Unknown` review is not a verdict and never hides an earlier real one.
-pub(crate) fn reconciled_verdict<'a>(
-    reviews: impl Iterator<Item = (u64, &'a airc_work::WorkReviewOutcome)>,
-) -> Option<bool> {
-    reviews
-        .filter_map(|(at, outcome)| match outcome {
-            airc_work::WorkReviewOutcome::Passed => Some((at, true)),
-            airc_work::WorkReviewOutcome::Failed => Some((at, false)),
-            airc_work::WorkReviewOutcome::Unknown => None,
-        })
-        .max_by_key(|(at, _)| *at)
-        .map(|(_, passed)| passed)
-}
-
-/// `Some(passed)` for a review with a real outcome; `None` for `Unknown`, which is not
-/// a verdict and must never turn into credit.
-pub(crate) fn verdict_of(outcome: &airc_work::WorkReviewOutcome) -> Option<bool> {
-    match outcome {
-        airc_work::WorkReviewOutcome::Passed => Some(true),
-        airc_work::WorkReviewOutcome::Failed => Some(false),
-        airc_work::WorkReviewOutcome::Unknown => None,
-    }
-}
-
-/// Every resident observer verifies the same review event; the card settles once per
-/// node. Settlement is idempotent anyway (a mark keeps its first value; a transfer
-/// reservation refuses an overlap), so this bounds work, not correctness. The ring is
-/// the existing `SeenIds`, not another hand-rolled copy.
-fn first_settlement(review_id: Uuid) -> bool {
-    use std::sync::{Mutex, OnceLock};
-    static SEEN: OnceLock<Mutex<crate::persona::wake_backlog::SeenIds>> = OnceLock::new();
-    SEEN.get_or_init(|| Mutex::new(crate::persona::wake_backlog::SeenIds::new(256)))
-        .lock()
-        .unwrap_or_else(|p| p.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
-        .note(review_id)
 }
 
 /// Every card an INSTANCE names (a round's cards for it) settles when its verdict
@@ -2365,42 +2257,20 @@ pub(crate) mod tests {
         };
         let before = row(10, Some(50));
         let fix = row(60, None);
-        assert_eq!(pass_admits(&[before.clone(), fix.clone()], false), PassAdmits::AfterFailure);
+        assert_eq!(pass_admits(&[before.clone(), fix.clone()]), PassAdmits::AfterFailure);
         let (rejected, admitted): (Vec<_>, Vec<_>) =
             [before, fix.clone()].into_iter().partition(|r| r.rejected_at_ms.is_some());
         assert_eq!((rejected.len(), admitted.len()), (1, 1));
         assert_eq!(admitted[0].id, fix.id, "only the turn staged after the failure trains");
-        assert_eq!(pass_admits(&[row(10, None), row(60, None)], true), PassAdmits::Unordered, "a failure she never observed: nothing can be placed after it");
-        assert_eq!(pass_admits(&[row(10, None)], false), PassAdmits::All, "never failed: every row is the passing work");
+        assert_eq!(pass_admits(&[row(10, None)]), PassAdmits::All, "never failed: every row is the passing work");
 
-        use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
-        assert!(failed_before_latest([(1, &Failed), (2, &Passed)].into_iter()));
-        assert!(!failed_before_latest([(1, &Passed)].into_iter()));
-        assert!(!failed_before_latest([(2, &Failed), (1, &Passed)].into_iter()), "the latest is the failure itself: no pass to settle");
-        assert!(failed_before_latest([(1, &Failed), (2, &Unknown), (3, &Failed), (4, &Passed)].into_iter()), "a second failure is still a failure before the pass");
     }
 
-    // what this catches (genome lane, 2026-10-05): the room's review on a submission is
-    // what settles a card's staged credit, passed or failed, whoever reviewed it; an
-    // Unknown outcome and any non-review event settle nothing. Before this, settlement
-    // fired only from a benchmark instance's verdict, so a project card could never settle.
+    // A review reaches the exact path only signed and accepted; its settlement is the
+    // exact path's (tests with real rows: `a_permitted_self_review_transfers_her_exact_row_once`
+    // and `reviewed_credit_replays_exact_authority_and_recovers_after_replacement`).
     mod a_review_settles_the_cards_credit {
         use super::*;
-
-        // what this catches (airc #1537, 2026-10-05: Kimi registered with 27 staged / 0
-        // settled and a passed review already on her board): the reconcile reads the
-        // LATEST real verdict on a card; an Unknown review, however late, is not a
-        // verdict and does not hide the real one; no real review settles nothing.
-        #[test]
-        fn the_reconcile_reads_the_latest_real_verdict_and_ignores_unknown() {
-            use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
-            assert_eq!(reconciled_verdict(std::iter::empty()), None);
-            assert_eq!(reconciled_verdict([(5, &Unknown)].into_iter()), None, "unknown is not a verdict");
-            assert_eq!(reconciled_verdict([(1, &Failed), (2, &Passed)].into_iter()), Some(true), "the latest real verdict");
-            assert_eq!(reconciled_verdict([(2, &Passed), (1, &Failed)].into_iter()), Some(true), "order of arrival does not matter");
-            assert_eq!(reconciled_verdict([(1, &Passed), (9, &Unknown)].into_iter()), Some(true), "a late unknown hides nothing");
-            assert_eq!(reconciled_verdict([(3, &Failed), (1, &Passed)].into_iter()), Some(false));
-        }
 
         fn media() -> airc_blobs::MediaRef {
             serde_json::from_value(serde_json::json!({"hash": "b".repeat(64), "size_bytes": 12})).unwrap()
@@ -2422,20 +2292,12 @@ pub(crate) mod tests {
             })
         }
 
-        #[test]
-        fn passed_and_failed_settle_and_nothing_else_does() {
-            assert_eq!(verdict_of(&airc_work::WorkReviewOutcome::Passed), Some(true));
-            assert_eq!(verdict_of(&airc_work::WorkReviewOutcome::Failed), Some(false));
-            assert_eq!(verdict_of(&airc_work::WorkReviewOutcome::Unknown), None, "unknown is not a verdict");
-        }
-
         // what this catches (Astra, review of the credit design): a review-shaped event
-        // settling a card's staged credit with no authority. Each refusal is the one the
-        // settlement now runs before anything is marked or credited: an author other
-        // than the signed sender, a review the room's projection does not hold, and an
-        // author's review of her own submission where the room does not admit it.
+        // reaching the exact path with no authority: an author other than the signed
+        // sender, or a review the room's projection does not hold. Self-review admission
+        // is the exact path's single rule (`SelfReview`), tested with real rows below.
         #[test]
-        fn a_review_settles_nothing_unless_signed_accepted_and_admitted() {
+        fn a_review_reaches_the_exact_path_only_signed_and_accepted() {
             use crate::persona::training_producer::reviewed::{check_review, ReviewRefusal};
             let card = Uuid::new_v4();
             let airc_work::WorkEvent::WorkSubmissionReviewed(r) = review(card, airc_work::WorkReviewOutcome::Failed) else {
@@ -2443,15 +2305,12 @@ pub(crate) mod tests {
             };
             let reviewer = r.reviewer;
             let stranger = crate::identity::PeerId::from_uuid(Uuid::new_v4());
-            let author = crate::identity::PeerId::from_uuid(Uuid::new_v4());
-            assert_eq!(check_review(reviewer, &r, Some(&r), Some(author), false), Ok(()));
-            assert_eq!(check_review(stranger, &r, Some(&r), Some(author), true), Err(ReviewRefusal::NotSignedByReviewer));
-            assert_eq!(check_review(reviewer, &r, None, Some(author), true), Err(ReviewRefusal::NotAccepted));
+            assert_eq!(check_review(reviewer, &r, Some(&r)), Ok(()));
+            assert_eq!(check_review(stranger, &r, Some(&r)), Err(ReviewRefusal::NotSignedByReviewer));
+            assert_eq!(check_review(reviewer, &r, None), Err(ReviewRefusal::NotAccepted));
             let mut other = r.clone();
             other.outcome = airc_work::WorkReviewOutcome::Passed;
-            assert_eq!(check_review(reviewer, &r, Some(&other), Some(author), true), Err(ReviewRefusal::NotAccepted), "the projection's review must be this exact one");
-            assert_eq!(check_review(reviewer, &r, Some(&r), Some(reviewer), false), Err(ReviewRefusal::SelfReviewNotAdmitted));
-            assert_eq!(check_review(reviewer, &r, Some(&r), Some(reviewer), true), Ok(()), "a room that admits self-review counts it");
+            assert_eq!(check_review(reviewer, &r, Some(&other)), Err(ReviewRefusal::NotAccepted), "the projection's review must be this exact one");
         }
     }
 
@@ -4010,84 +3869,45 @@ pub(crate) mod tests {
         );
     }
 
-    // what this catches: 6c36c24d — only an accepted independent exact-artifact
-    // review may transfer a bound snapshot; lost ACK/replacement/reopen cannot
-    // relabel the evidence or submit it under a fresh destination identity.
-    #[tokio::test]
-    async fn reviewed_credit_replays_exact_authority_and_recovers_after_replacement() {
-        use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
-        use reviewed::{ReviewedCreditState as State, SubmissionSelection};
-        let home = tempfile::tempdir().unwrap();
-        let _home = HomeGuard::set(home.path()).await;
-        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
-            .unwrap();
-        let executor = data_runtime();
-        let persona = Uuid::new_v4();
-        use crate::cognition::dream_consolidation::tests::{
-            episodic,
-            region::{drain, region_over_with_store, seeded_admission},
-        };
-        use crate::runtime::brain_region::{BrainRegion, RegionContext};
-        let admission = seeded_admission(
-            &(0..3)
-                .map(|n| {
-                    episodic(
-                        Uuid::new_v4(),
-                        &format!("ordinary reviewed work {n}"),
-                        &["reviewed-project"],
-                    )
-                })
-                .collect::<Vec<_>>(),
-        );
-        let owner = airc_core::PeerId::from_uuid(persona);
-        let reviewer = airc_core::PeerId::new();
-        let card_id = airc_work::WorkCardId::new();
-        let room = Uuid::new_v4();
-        let name = "reviewed-project-work";
-        let store =
-            reviewed::boundaries::ReviewBoundaryStore::new(executor.clone(), name.into(), persona);
-        let dream = region_over_with_store(persona, admission.clone(), Some(store.clone()));
-        let receipts = vec![served_receipt("reviewed-request", "actual-model")];
-        let (mut capture, selected) = stage_settlement_fixture(
-            executor.clone(),
-            persona,
-            name,
-            card_id.as_uuid(),
-            receipts.clone(),
-        )
-        .await;
-        let selection = SubmissionSelection {
-            submission_id: Uuid::new_v4(),
-            room_id: room,
-            card_id: card_id.as_uuid(),
-            claim_id: selected.claim_id.unwrap(),
-            staged_revision_id: selected.id,
-            instance: "ordinary-project-work".into(),
-            base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
-            artifact: serde_json::from_value(json!({"hash":"b".repeat(64),"size_bytes":12}))
-                .unwrap(),
-        };
-        let data = conn_as(executor.clone(), persona);
-        reviewed::bind_submission(&data, name, persona, selection.clone())
-            .await
-            .unwrap();
-        let repo = airc_work::RepoId::new("acme/ordinary-project").unwrap();
-        let create = |card_id, reviews| {
-            WorkEvent::CardCreated(airc_work::CardCreated {
+    /// The exact-review scenario: her staged row bound to one submission on one card, a
+    /// reviewer, and the room's work events up to the review. Shared by every exact-path
+    /// test, so each states only its own case (CLAUDE.md: one fixture per concern).
+    struct ExactReview {
+        _home: (HomeGuard, tempfile::TempDir),
+        executor: Arc<CommandExecutor>,
+        persona: Uuid,
+        name: &'static str,
+        owner: airc_core::PeerId,
+        reviewer: airc_core::PeerId,
+        card_id: airc_work::WorkCardId,
+        room: Uuid,
+        receipts: Vec<crate::cognition::provenance::GenerationReceipt>,
+        selected: StagedCredit,
+        selection: reviewed::SubmissionSelection,
+        data: Connection<InProcessTransport>,
+        repo: airc_work::RepoId,
+        pass: airc_work::WorkSubmissionReview,
+        prefix: Vec<(airc_work::WorkEvent, airc_core::PeerId)>,
+    }
+
+    impl ExactReview {
+        fn create(&self, card_id: airc_work::WorkCardId, reviews: Option<airc_work::WorkCardId>) -> airc_work::WorkEvent {
+            airc_work::WorkEvent::CardCreated(airc_work::CardCreated {
                 card_id,
-                repo: repo.clone(),
+                repo: self.repo.clone(),
                 title: "ordinary work with reviewed deliverable".into(),
                 body: None,
                 priority: airc_work::Priority::P1,
                 lane_id: None,
-                created_by: owner,
+                created_by: self.owner,
                 created_at_ms: 1,
                 reviews,
                 origin: None,
             })
-        };
-        let claim = |card_id, claim_id, holder| {
-            WorkEvent::CardClaimed(airc_work::WorkCardClaimed {
+        }
+
+        fn claim(card_id: airc_work::WorkCardId, claim_id: airc_work::ClaimId, holder: airc_core::PeerId) -> airc_work::WorkEvent {
+            airc_work::WorkEvent::CardClaimed(airc_work::WorkCardClaimed {
                 selected_at_ms: None,
                 origin: airc_work::ClaimOrigin::Unknown,
                 card_id,
@@ -4096,7 +3916,63 @@ pub(crate) mod tests {
                 ttl_ms: 1000,
                 claimed_at_ms: 2,
             })
+        }
+
+        /// The room's board after the scenario's events plus `tail`, through the existing
+        /// codec and replay boundary, including the authoritative transcript peer.
+        fn project(&self, tail: Vec<(airc_work::WorkEvent, airc_core::PeerId)>) -> airc_work::WorkBoardProjection {
+            airc_work::project_transcript_work_events(
+                self.prefix.iter().cloned().chain(tail).enumerate().map(|(n, (event, peer_id))| {
+                    let (headers, body) = airc_work::encode_work_event(&event).unwrap();
+                    airc_core::TranscriptEvent {
+                        event_id: airc_core::EventId::new(),
+                        room_id: airc_core::RoomId::from_uuid(self.room),
+                        peer_id,
+                        client_id: airc_core::ClientId::new(),
+                        kind: airc_core::TranscriptKind::System,
+                        occurred_at_ms: event.occurred_at_ms(),
+                        lamport: n as u64 + 1,
+                        target: airc_core::MentionTarget::All,
+                        headers,
+                        body: Some(body),
+                        attachment: None,
+                        receipt: None,
+                        metadata: serde_json::Value::Null,
+                    }
+                }),
+            )
+            .unwrap()
+        }
+    }
+
+    async fn exact_review() -> (ExactReview, TurnCreditCapture) {
+        use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
+        let home = tempfile::tempdir().unwrap();
+        let guard = HomeGuard::set(home.path()).await;
+        crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
+            .unwrap();
+        let executor = data_runtime();
+        let persona = Uuid::new_v4();
+        let owner = airc_core::PeerId::from_uuid(persona);
+        let reviewer = airc_core::PeerId::new();
+        let card_id = airc_work::WorkCardId::new();
+        let room = Uuid::new_v4();
+        let name = "reviewed-project-work";
+        let receipts = vec![served_receipt("reviewed-request", "actual-model")];
+        let (capture, selected) =
+            stage_settlement_fixture(executor.clone(), persona, name, card_id.as_uuid(), receipts.clone()).await;
+        let selection = reviewed::SubmissionSelection {
+            submission_id: Uuid::new_v4(),
+            room_id: room,
+            card_id: card_id.as_uuid(),
+            claim_id: selected.claim_id.unwrap(),
+            staged_revision_id: selected.id,
+            instance: "ordinary-project-work".into(),
+            base_sha: airc_work::GitObjectId::new("a".repeat(40)).unwrap(),
+            artifact: serde_json::from_value(json!({"hash":"b".repeat(64),"size_bytes":12})).unwrap(),
         };
+        let data = conn_as(executor.clone(), persona);
+        reviewed::bind_submission(&data, name, persona, selection.clone()).await.unwrap();
         let submitted = airc_work::WorkSubmission {
             submission_id: airc_work::SubmissionId::from_uuid(selection.submission_id),
             card_id,
@@ -4122,42 +3998,137 @@ pub(crate) mod tests {
             evidence_text: None,
             reviewed_at_ms: 4,
         };
-        let prefix = [
-            (create(card_id, None), owner),
-            (claim(card_id, submitted.claim_id, owner), owner),
-            (WorkEvent::WorkSubmitted(submitted.clone()), owner),
-            (create(review_card, Some(card_id)), reviewer),
-            (claim(review_card, review_claim, reviewer), reviewer),
-        ];
-        // Existing codec/replay boundary, including authoritative transcript peer.
-        let project = |tail: Vec<(WorkEvent, airc_core::PeerId)>| {
-            airc_work::project_transcript_work_events(
-                prefix
-                    .iter()
-                    .cloned()
-                    .chain(tail)
-                    .enumerate()
-                    .map(|(n, (event, peer_id))| {
-                        let (headers, body) = airc_work::encode_work_event(&event).unwrap();
-                        airc_core::TranscriptEvent {
-                            event_id: airc_core::EventId::new(),
-                            room_id: airc_core::RoomId::from_uuid(room),
-                            peer_id,
-                            client_id: airc_core::ClientId::new(),
-                            kind: airc_core::TranscriptKind::System,
-                            occurred_at_ms: event.occurred_at_ms(),
-                            lamport: n as u64 + 1,
-                            target: airc_core::MentionTarget::All,
-                            headers,
-                            body: Some(body),
-                            attachment: None,
-                            receipt: None,
-                            metadata: serde_json::Value::Null,
-                        }
-                    }),
-            )
-            .unwrap()
+        let mut fx = ExactReview {
+            _home: (guard, home),
+            executor,
+            persona,
+            name,
+            owner,
+            reviewer,
+            card_id,
+            room,
+            receipts,
+            selected,
+            selection,
+            data,
+            repo: airc_work::RepoId::new("acme/ordinary-project").unwrap(),
+            pass,
+            prefix: Vec::new(),
         };
+        fx.prefix = vec![
+            (fx.create(card_id, None), owner),
+            (ExactReview::claim(card_id, submitted.claim_id, owner), owner),
+            (WorkEvent::WorkSubmitted(submitted), owner),
+            (fx.create(review_card, Some(card_id)), reviewer),
+            (ExactReview::claim(review_card, review_claim, reviewer), reviewer),
+        ];
+        (fx, capture)
+    }
+
+    // what this catches (Codex root, #5017 review): where the room's policy declares
+    // `self: true`, her own review of her own submission transfers HER exact bound row,
+    // under her review's id, once; an exact replay does not dispatch again.
+    #[tokio::test]
+    async fn a_permitted_self_review_transfers_her_exact_row_once() {
+        use airc_work::{WorkEvent, WorkSubmissionReview};
+        use reviewed::ReviewedCreditState as State;
+        let (fx, _capture) = exact_review().await;
+        let (executor, persona, name, owner, card_id, room) = (fx.executor.clone(), fx.persona, fx.name, fx.owner, fx.card_id, fx.room);
+        let (selected, pass) = (fx.selected.clone(), fx.pass.clone());
+        let create = |card, reviews| fx.create(card, reviews);
+        let claim = ExactReview::claim;
+        let project = |tail| fx.project(tail);
+        let self_card = airc_work::WorkCardId::new();
+        let self_claim = airc_work::ClaimId::new();
+        let own = WorkSubmissionReview {
+            review_card_id: self_card,
+            review_claim_id: self_claim,
+            reviewer: owner,
+            ..pass.clone()
+        };
+        let board = project(vec![
+            (create(self_card, Some(card_id)), owner),
+            (claim(self_card, self_claim, owner), owner),
+            (WorkEvent::WorkSubmissionReviewed(own.clone()), owner),
+        ]);
+        let submit = continuum_client::mock::MockTransport::new();
+        script_settlement_reply(
+            &submit,
+            &selected,
+            Some(json!({"success":true,"acceptance":{"submissionId":selected.id,"replayed":false}})),
+        );
+        let conn = settlement_connection(executor.clone(), persona, submit, None);
+        let result = reviewed::consume_review_with_boundary(
+            &conn,
+            name,
+            persona,
+            room,
+            &board,
+            own.review_id,
+            &reviewed::SelfReview::Admitted,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.state, State::Accepted, "an admitted self-review settles her row");
+        assert_eq!(result.decision_review_id, Some(own.review_id.as_uuid()));
+        let never_submit = continuum_client::mock::MockTransport::new();
+        never_submit.respond_to("genome/training-trigger/submit", |_| {
+            panic!("an accepted binding must not dispatch again")
+        });
+        let replay = settlement_connection(executor.clone(), persona, never_submit, None);
+        assert_eq!(
+            reviewed::consume_review_with_boundary(
+                &replay,
+                name,
+                persona,
+                room,
+                &board,
+                own.review_id,
+                &reviewed::SelfReview::Admitted,
+                None,
+            )
+            .await
+            .unwrap()
+            .state,
+            State::Accepted
+        );
+    }
+
+    // what this catches: 6c36c24d — only an accepted independent exact-artifact
+    // review may transfer a bound snapshot; lost ACK/replacement/reopen cannot
+    // relabel the evidence or submit it under a fresh destination identity.
+    #[tokio::test]
+    async fn reviewed_credit_replays_exact_authority_and_recovers_after_replacement() {
+        use airc_work::{WorkEvent, WorkReviewOutcome, WorkSubmissionReview};
+        use reviewed::ReviewedCreditState as State;
+        use crate::cognition::dream_consolidation::tests::{
+            episodic,
+            region::{drain, region_over_with_store, seeded_admission},
+        };
+        use crate::runtime::brain_region::{BrainRegion, RegionContext};
+        let (fx, mut capture) = exact_review().await;
+        let (executor, persona, name, owner, reviewer, card_id, room) =
+            (fx.executor.clone(), fx.persona, fx.name, fx.owner, fx.reviewer, fx.card_id, fx.room);
+        let (receipts, selected, selection, pass) = (fx.receipts.clone(), fx.selected.clone(), fx.selection.clone(), fx.pass.clone());
+        let data = &fx.data;
+        let admission = seeded_admission(
+            &(0..3)
+                .map(|n| {
+                    episodic(
+                        Uuid::new_v4(),
+                        &format!("ordinary reviewed work {n}"),
+                        &["reviewed-project"],
+                    )
+                })
+                .collect::<Vec<_>>(),
+        );
+        let store =
+            reviewed::boundaries::ReviewBoundaryStore::new(executor.clone(), name.into(), persona);
+        let dream = region_over_with_store(persona, admission.clone(), Some(store.clone()));
+        let create = |card, reviews| fx.create(card, reviews);
+        let claim = ExactReview::claim;
+        let project = |tail| fx.project(tail);
         let never_submit = continuum_client::mock::MockTransport::new();
         never_submit.respond_to("genome/training-trigger/submit", |_| {
             panic!("unaccepted/failed/unknown review must not submit")
@@ -4176,6 +4147,7 @@ pub(crate) mod tests {
                 room,
                 &board,
                 pass.review_id,
+                &reviewed::SelfReview::NotAdmitted,
                 Some(&dream),
             )
             .await
@@ -4210,6 +4182,7 @@ pub(crate) mod tests {
                 room,
                 &self_board,
                 pass.review_id,
+                &reviewed::SelfReview::NotAdmitted,
                 Some(&dream)
             )
             .await
@@ -4217,6 +4190,25 @@ pub(crate) mod tests {
             .state,
             State::IndependentReviewRequired,
             "signed self-review remains visible without positive learning credit"
+        );
+        // what this catches (Codex root, #5017 review): an unreadable room policy read as
+        // admission. It settles nothing and records nothing, so a later replay decides it.
+        assert_eq!(
+            reviewed::consume_review_with_boundary(
+                &refused_conn,
+                name,
+                persona,
+                room,
+                &self_board,
+                pass.review_id,
+                &reviewed::SelfReview::Unknown("wall unreachable".into()),
+                Some(&dream)
+            )
+            .await
+            .unwrap()
+            .state,
+            State::PolicyUnavailable,
+            "an unreadable policy neither admits nor refuses her own review"
         );
         let spoofed = project(vec![(
             WorkEvent::WorkSubmissionReviewed(pass.clone()),
@@ -4229,6 +4221,7 @@ pub(crate) mod tests {
             room,
             &spoofed,
             pass.review_id,
+            &reviewed::SelfReview::NotAdmitted,
             Some(&dream)
         )
         .await
@@ -4252,6 +4245,7 @@ pub(crate) mod tests {
             room,
             &board,
             pass.review_id,
+            &reviewed::SelfReview::NotAdmitted,
             Some(&dream)
         )
         .await
@@ -4264,6 +4258,7 @@ pub(crate) mod tests {
             Uuid::new_v4(),
             &board,
             pass.review_id,
+            &reviewed::SelfReview::NotAdmitted,
             Some(&dream)
         )
         .await
@@ -4298,11 +4293,12 @@ pub(crate) mod tests {
             room,
             &board,
             pass.review_id,
+            &reviewed::SelfReview::NotAdmitted,
             Some(&dream)
         )
         .await
         .is_err());
-        let pending = reviewed::credit_status(&data, name, selection.submission_id)
+        let pending = reviewed::credit_status(data, name, selection.submission_id)
             .await
             .unwrap();
         assert_eq!(pending.state, State::AwaitingAcceptance);
@@ -4319,7 +4315,7 @@ pub(crate) mod tests {
                 .await
         );
         assert!(
-            reviewed::read_one::<_, StagedCredit>(&data, name, &selected.id.to_string())
+            reviewed::read_one::<_, StagedCredit>(data, name, &selected.id.to_string())
                 .await
                 .unwrap()
                 .is_none()
@@ -4343,6 +4339,7 @@ pub(crate) mod tests {
                 room,
                 &board,
                 competing.review_id,
+                &reviewed::SelfReview::NotAdmitted,
                 Some(&dream)
             )
             .await
@@ -4365,6 +4362,7 @@ pub(crate) mod tests {
             room,
             &board,
             pass.review_id,
+            &reviewed::SelfReview::NotAdmitted,
             Some(&dream),
         )
         .await
@@ -4392,6 +4390,7 @@ pub(crate) mod tests {
                 room,
                 &board,
                 pass.review_id,
+                &reviewed::SelfReview::NotAdmitted,
                 Some(&dream)
             )
             .await
@@ -4409,6 +4408,7 @@ pub(crate) mod tests {
                 room,
                 &board,
                 competing.review_id,
+                &reviewed::SelfReview::NotAdmitted,
                 Some(&dream)
             )
             .await
@@ -4434,7 +4434,7 @@ pub(crate) mod tests {
         // A malformed earlier acceptance cannot permanently hide later valid IDs.
         // Keep it in the same real ORM store; recovery never regrades or deletes it.
         let mut malformed = reviewed::read_one::<_, reviewed::CreditReviewAcceptance>(
-            &data,
+            data,
             name,
             &selection.submission_id.to_string(),
         )
@@ -4478,7 +4478,7 @@ pub(crate) mod tests {
             1
         );
         let completed = reviewed::read_one::<_, reviewed::boundaries::ProcessedReviewBoundary>(
-            &data,
+            data,
             name,
             &selection.submission_id.to_string(),
         )
@@ -4502,6 +4502,7 @@ pub(crate) mod tests {
             room,
             &board,
             competing.review_id,
+            &reviewed::SelfReview::NotAdmitted,
             Some(&restarted),
         )
         .await
@@ -4517,6 +4518,7 @@ pub(crate) mod tests {
             room,
             &board,
             pass.review_id,
+            &reviewed::SelfReview::NotAdmitted,
             Some(&restarted),
         )
         .await
@@ -4526,7 +4528,7 @@ pub(crate) mod tests {
             "durable completion suppresses exact replay after another restart"
         );
         assert_eq!(
-            stored_credit_rows(&data, name).await.len(),
+            stored_credit_rows(data, name).await.len(),
             1,
             "newer staging remains intact"
         );
