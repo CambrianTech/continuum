@@ -2175,18 +2175,21 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             board.submission_reviews_for_card(card.card_id).map(|r| r.review_id).collect();
         for review_id in ids {
             reviews += 1;
-            if let Err(error) =
-                reviewed::consume_observed_review(&conn, persona_name, observer, room_id, board, review_id, admission).await
-            {
-                deferred += 1;
-                crate::probe!(
-                    class = "training.credit.review_deferred",
-                    persona = %persona_name,
-                    review = %review_id.as_uuid(),
-                    error = %error,
-                    "a review already on her board was not settled at registration: its exact replay retries"
-                );
-            }
+            let why = match reviewed::consume_observed_review(&conn, persona_name, observer, room_id, board, review_id, admission).await {
+                Ok(Some(credit)) if credit.state == reviewed::ReviewedCreditState::PolicyUnavailable => {
+                    "the room's review policy could not be read".to_string()
+                }
+                Ok(_) => continue,
+                Err(error) => error.to_string(),
+            };
+            deferred += 1;
+            crate::probe!(
+                class = "training.credit.review_deferred",
+                persona = %persona_name,
+                review = %review_id.as_uuid(),
+                why = %why,
+                "a review already on her board was not settled at registration: her next registration (each core start) replays it"
+            );
         }
     }
     crate::probe!(

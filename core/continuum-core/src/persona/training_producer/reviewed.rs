@@ -114,7 +114,8 @@ pub(crate) fn check_review(
 /// Whether an author's review of her OWN submission may earn credit in a room. Only where
 /// the room declares `self: true`. A room that declares no policy keeps the exact path's
 /// rule (an independent review is required); a policy that cannot be read is `Unknown`,
-/// which settles nothing now and is retried, never admitted (Codex root, #5017 review).
+/// which settles nothing now and is never admitted. Its retry owner is her registration
+/// replay (`reconcile_reviews`, each core start), not an assumed next delivery.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelfReview {
     Admitted,
@@ -398,7 +399,7 @@ pub enum ReviewedCreditState {
     UnknownReview,
     IndependentReviewRequired,
     /// Her own review, in a room whose review policy could not be read: nothing settles
-    /// now and nothing is recorded, so the next replay decides it.
+    /// now and nothing is recorded; her next registration replay decides it.
     PolicyUnavailable,
     IneligibleEvidence,
     AnotherReviewSelected,
@@ -663,7 +664,8 @@ async fn consume_review_credit<T: Transport>(
         airc_work::WorkReviewOutcome::Failed => ReviewedCreditState::FailedReview,
         airc_work::WorkReviewOutcome::Unknown => ReviewedCreditState::UnknownReview,
         // Her own review earns credit only where the room admits it (`SelfReview`); an
-        // unreadable policy is `PolicyUnavailable`, nothing persisted, retried next replay.
+        // unreadable policy is `PolicyUnavailable`, nothing persisted, replayed at her next
+        // registration.
         airc_work::WorkReviewOutcome::Passed if review.reviewer == submitted.publisher => match self_review {
             SelfReview::Admitted => ReviewedCreditState::AwaitingAcceptance,
             SelfReview::NotAdmitted => ReviewedCreditState::IndependentReviewRequired,
