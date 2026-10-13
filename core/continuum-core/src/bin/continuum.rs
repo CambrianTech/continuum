@@ -2548,7 +2548,9 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         }.await;
         if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await); }
     }
-    if let Err(failed) = stop_with_authority(true, options.operator_present).await {
+    // The core re-checks live work at its drain: work that started during the warm
+    // build is refused unless the operator passed --force.
+    if let Err(failed) = stop_with_authority(true, options.operator_present, options.force).await {
         #[cfg(windows)]
         if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await); }
         return Err(failed);
@@ -6757,10 +6759,12 @@ async fn stop(options: StopOptions) -> Result<(), String> {
 /// that first"). The standalone `stop` verb keeps FULL teardown — an operator
 /// who says stop means everything.
 async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
+    // `stop` and launchd re-registration consent to live work, as before the core
+    // owned that check: "an operator who says stop means everything".
     // Unattended callers — the deploy consumer above all — NEVER escalate:
     // a consent prompt needs a human at the machine, and one raised from the supervisor
     // would hang the consumer on a dialog nobody can see until the consent times out.
-    stop_with_authority(keep_lanes, false).await
+    stop_with_authority(keep_lanes, false, true).await
 }
 
 /// Discover receipt-acknowledged exit without beginning shutdown.
@@ -6780,13 +6784,13 @@ async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continuum_core::co
     Ok((pids == [target.pid as i32]).then_some(target))
 }
 
-async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget) -> Result<GracefulStop, String> {
-    use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
+async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget, over_live_work: bool) -> Result<GracefulStop, String> {
+    use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownDrainParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
     say_turns_may_settle();
     let drain = tokio::time::timeout(GRACEFUL_STOP_BUDGET,
-        cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
+        cmds.execute_value("system/shutdown-drain", serde_json::to_value(ShutdownDrainParams { target: target.clone(), over_live_work }).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
         .await.map_err(|_| "bound shutdown is still running; no exit acknowledgment sent".to_string())?
         .map_err(|e| format!("bound shutdown failed; no exit acknowledgment sent: {e}"))?;
     let result: ShutdownResult = serde_json::from_value(drain) // Decode the completed save receipt returned over lifecycle IPC.
@@ -6818,7 +6822,7 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
 }
 
 /// `stop_with`, plus whether the operator can answer a required consent prompt.
-async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result<GracefulStop, String> {
+async fn stop_with_authority(keep_lanes: bool, operator_present: bool, over_live_work: bool) -> Result<GracefulStop, String> {
     // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
     // module's `save_state` — so before it, the core gets the chance to stop itself and
     // report what reached disk. The kill still runs afterwards either way: a core that
@@ -6839,7 +6843,7 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     };
     let self_exited = target.as_ref().map(|target| target.pid as i32);
     let graceful = if let Some(target) = target {
-        commit_graceful_shutdown(target).await?
+        commit_graceful_shutdown(target, over_live_work).await?
     } else {
         let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority)?;
         // BORROW THE PRIVILEGE BEFORE ANYTHING IS DRAINED, not after. `operator_present` is

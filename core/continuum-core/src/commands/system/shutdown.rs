@@ -41,6 +41,88 @@ fn shutdown_target() -> &'static ShutdownTarget {
     })
 }
 
+/// Work in THIS core that a shutdown would kill. The core is the one owner of the
+/// answer: it runs these, so the CLI no longer re-derives them from markers and
+/// process command lines (card 12047f8e, group C).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+#[ts(export, export_to = "../../../protocol/typescript/system/LiveWork.ts")]
+pub enum LiveWork {
+    /// A detached `benchmark/swe-solve`: a task inside the core, killed with no partial result.
+    Benchmark { run: String, instance: String },
+    /// A `cognition/eval` run whose world names this core as its owner.
+    Eval { run: String },
+    /// A native training job (`forge/train`), journaled killed-by-reboot if stopped.
+    Training { job: String },
+}
+
+impl std::fmt::Display for LiveWork {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LiveWork::Benchmark { run, instance } => write!(f, "benchmark run {run} on {instance}"),
+            LiveWork::Eval { run } => write!(f, "eval run {run}"),
+            LiveWork::Training { job } => write!(f, "training job {job}"),
+        }
+    }
+}
+
+/// The live work in this process, read from the core's own state.
+pub fn live_work() -> Vec<LiveWork> {
+    let mut live: Vec<LiveWork> = crate::cognition::swe_bench::in_flight_solve_runs()
+        .into_iter()
+        .map(|(run, instance)| LiveWork::Benchmark { run, instance })
+        .collect();
+    let me = std::process::id();
+    live.extend(
+        crate::cognition::eval::in_flight_eval_runs()
+            .into_iter()
+            .filter(|(_, owner)| *owner == me)
+            .map(|(run, _)| LiveWork::Eval { run }),
+    );
+    let training = crate::forge::mlx_job::current_train_status();
+    if training.is_training_running {
+        live.push(LiveWork::Training { job: training.job_id });
+    }
+    live
+}
+
+/// The shutdown target plus what stopping it would kill. Flattened, so a CLI that
+/// reads only the target keeps working.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/system/ShutdownBinding.ts")]
+pub struct ShutdownBinding {
+    #[serde(flatten)]
+    pub target: ShutdownTarget,
+    #[serde(rename = "liveWork")]
+    pub live_work: Vec<LiveWork>,
+}
+
+/// Drain the bound process. `overLiveWork` is the operator's consent to kill live
+/// work (`reboot --force`, `stop`); absent, as from a CLI that predates it, it is
+/// no consent.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/system/ShutdownDrainParams.ts")]
+pub struct ShutdownDrainParams {
+    #[serde(flatten)]
+    pub target: ShutdownTarget,
+    #[serde(default, rename = "overLiveWork")]
+    pub over_live_work: bool,
+}
+
+/// A drain that would kill live work refuses by name unless the caller consented.
+fn refuse_over_live_work(live: &[LiveWork], over_live_work: bool) -> Result<(), crate::sdk_codegen::CommandError> {
+    if over_live_work || live.is_empty() {
+        return Ok(());
+    }
+    let named = live.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ");
+    Err(crate::sdk_codegen::CommandError::Invalid(format!(
+        "live work would die in this shutdown: {named}. Nothing was drained. Stop it cleanly \
+         first (`continuum benchmark/round-stop --run_id <id>` cancels a solve at its next \
+         task boundary and keeps every streamed grade), wait for it, or consent to losing it \
+         (`continuum reboot --force`)."
+    )))
+}
+
 fn validate_target(target: &ShutdownTarget, current: &ShutdownTarget) -> Result<(), crate::sdk_codegen::CommandError> {
     if target != current {
         return Err(crate::sdk_codegen::CommandError::Invalid(
@@ -81,12 +163,12 @@ crate::action_command! {
     name: "system/shutdown-target",
     access: Privileged,
     params: SystemQuery,
-    output: ShutdownTarget,
+    output: ShutdownBinding,
     run(_this, _ctx, _p) => {
         if crate::runtime::signal_runtime().is_none() {
             return Err(crate::sdk_codegen::CommandError::Internal("runtime is not installed; shutdown handoff unavailable".into()));
         }
-        Ok(shutdown_target().clone())
+        Ok(ShutdownBinding { target: shutdown_target().clone(), live_work: live_work() })
     }
 }
 
@@ -95,10 +177,13 @@ crate::action_command! {
     pub struct SystemShutdownDrain;
     name: "system/shutdown-drain",
     access: Privileged,
-    params: ShutdownTarget,
+    params: ShutdownDrainParams,
     output: ShutdownResult,
     run(_this, ctx, p) => {
-        validate_target(&p, shutdown_target())?;
+        validate_target(&p.target, shutdown_target())?;
+        // Checked here, at the one-way step, not only at the target: work can start
+        // between the two (a reboot's warm build runs in between).
+        refuse_over_live_work(&live_work(), p.over_live_work)?;
         <SystemShutdown as crate::sdk_codegen::ActionCommand>::run(&SystemShutdown, ctx, SystemQuery {}).await
     }
 }
@@ -250,11 +335,12 @@ mod tests {
         if std::env::var_os(CHILD).as_deref() == Some(std::ffi::OsStr::new("1")) {
             crate::runtime::install_signal_shutdown(std::sync::Arc::new(crate::runtime::Runtime::new()));
             let ctx = Ctx::default();
-            let target = SystemShutdownTarget.run(&ctx, SystemQuery {}).await.unwrap();
+            let target = SystemShutdownTarget.run(&ctx, SystemQuery {}).await.unwrap().target;
             let stale = ShutdownTarget { pid: target.pid, instance: "old instance".into() };
-            assert!(SystemShutdownDrain.run(&ctx, stale).await.is_err());
+            let drain = |target: ShutdownTarget| ShutdownDrainParams { target, over_live_work: false };
+            assert!(SystemShutdownDrain.run(&ctx, drain(stale)).await.is_err());
             assert!(crate::runtime::shutdown_receipt().is_none());
-            let result = SystemShutdownDrain.run(&ctx, target.clone()).await.unwrap();
+            let result = SystemShutdownDrain.run(&ctx, drain(target.clone())).await.unwrap();
             let params = ShutdownCommitParams { target, receipt_sha256: shutdown_receipt_digest(&result.receipt).unwrap() };
             use std::io::Write;
             println!("received-completed-shutdown-receipt");
@@ -271,6 +357,36 @@ mod tests {
             .await.expect("shutdown test child must exit within its deadline").unwrap();
         assert!(output.status.success(), "child failed: {}", String::from_utf8_lossy(&output.stderr));
         assert!(String::from_utf8_lossy(&output.stdout).contains("received-completed-shutdown-receipt"));
+    }
+
+    // what this catches: a shutdown that kills a live solve, eval or training run without
+    // consent, and a wire change that breaks the CLI on the other side of a version skew:
+    // a reboot's NEW CLI drains the OLD core, and an old CLI may drain a new one.
+    #[test]
+    fn live_work_refuses_a_drain_without_consent_across_versions() {
+        let live = vec![
+            LiveWork::Benchmark { run: "r1".into(), instance: "django__django-1".into() },
+            LiveWork::Training { job: "j9".into() },
+        ];
+        let crate::sdk_codegen::CommandError::Invalid(msg) = refuse_over_live_work(&live, false).unwrap_err() else {
+            panic!("live work is a domain precondition, not an internal failure");
+        };
+        assert!(msg.contains("benchmark run r1 on django__django-1") && msg.contains("training job j9"), "{msg}");
+        assert!(msg.contains("Nothing was drained"), "{msg}");
+        assert!(refuse_over_live_work(&live, true).is_ok(), "consent drains");
+        assert!(refuse_over_live_work(&[], false).is_ok(), "nothing live drains");
+
+        let target = ShutdownTarget { pid: 7, instance: "i".into() };
+        // An old CLI reads the new binding as the bare target it knew.
+        let binding = serde_json::to_value(ShutdownBinding { target: target.clone(), live_work: live }).unwrap();
+        assert_eq!(serde_json::from_value::<ShutdownTarget>(binding.clone()).unwrap(), target);
+        assert_eq!(binding["liveWork"][1], serde_json::json!({ "kind": "training", "job": "j9" }));
+        // An old CLI's bare target is a drain with no consent.
+        let old = serde_json::from_value::<ShutdownDrainParams>(serde_json::to_value(&target).unwrap()).unwrap();
+        assert!(!old.over_live_work);
+        // A new CLI's params are still a target to an old core.
+        let new = ShutdownDrainParams { target: target.clone(), over_live_work: true };
+        assert_eq!(serde_json::from_value::<ShutdownTarget>(serde_json::to_value(new).unwrap()).unwrap(), target);
     }
 
     // what this catches: a core with no runtime answering "stopped cleanly". The caller
