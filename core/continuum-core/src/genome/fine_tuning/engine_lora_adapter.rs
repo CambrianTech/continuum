@@ -289,8 +289,6 @@ fn post_wait_for(render_per_example: Duration, sent: usize, floor: Duration) -> 
     render_per_example.mul_f64(sent as f64 * 2.0).max(floor)
 }
 
-/// What a lost POST /train turns out to have been, from the engine's status afterwards.
-#[derive(Debug, PartialEq)]
 /// What starting a run in the engine came to.
 enum Begin {
     /// accepted (or re-attached): the watch loop takes it
@@ -303,6 +301,8 @@ enum Begin {
     Unproven(InPlaceEnd),
 }
 
+/// What a lost POST /train turns out to have been, from the engine's status afterwards.
+#[derive(Debug, PartialEq)]
 enum LostPost {
     /// the engine has this job's run, in any state but cancelled (an error included): the watch
     /// loop takes it, and handles its end as it would any other

@@ -1043,11 +1043,6 @@ mod tests {
         );
     }
 
-    // what this catches: the base "decide under the authority's tick" pattern
-    // (MEMORY-AUTHORITY-DAEMON). A registered `on_tick` observer runs EVERY reconcile
-    // tick with the authoritative fresh board and can read the live VRAM available — the
-    // seam that lets serving/eval compute their memory decision in the ONE authority
-    // instead of sampling memory on their own hot path. Regresses dropping the fan-out.
     // what this catches: card 26df. A board built under the lock and published after
     // it is released can be overwritten by an older one: the tick captured its board,
     // ran its observers (which acquire), and published the captured copy LAST, wiping
@@ -1086,6 +1081,11 @@ mod tests {
         );
     }
 
+    // what this catches: the base "decide under the authority's tick" pattern
+    // (MEMORY-AUTHORITY-DAEMON). A registered `on_tick` observer runs EVERY reconcile
+    // tick with the authoritative fresh board and can read the live VRAM available — the
+    // seam that lets serving/eval compute their memory decision in the ONE authority
+    // instead of sampling memory on their own hot path. Regresses dropping the fan-out.
     #[tokio::test]
     async fn on_tick_runs_observers_with_the_live_board() {
         let src = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 10_000));
