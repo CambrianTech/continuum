@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use super::DeviceCapacity;
 use crate::governor::types::HardwareClass;
-use crate::modules::serving_daemon::{host_budget_from, HostBudgetInputs};
+use crate::modules::serving_daemon::{host_budget::host_budget_from, host_budget::HostBudgetInputs};
 
 /// Minimum free space for a drive to qualify as a usable COLD/frozen tier. Below this
 /// a second drive is too small to hold model artifacts / MoE expert sets, so it does

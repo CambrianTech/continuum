@@ -383,7 +383,7 @@ impl ActionCommand for AgentSolve {
                 // exactly the demand the hold exists for; a real pressure emergency still
                 // preempts (the hold only suppresses the optional grow, never a shrink).
                 let _steady =
-                    crate::modules::serving_daemon::ServingSteadyHold::acquire(run_id.clone());
+                    crate::modules::serving_daemon::host_budget::ServingSteadyHold::acquire(run_id.clone());
                 // N CHANCES: attempts loop. Each attempt is a full solve; a non-resolved
                 // auto-grade re-enters the SAME workspace with the verdict appended to the
                 // task (named failing tests — the teachable half of the grade). The loop

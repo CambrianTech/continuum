@@ -142,7 +142,7 @@ fn exam_fit_window(base: &crate::model_registry::Model) -> Option<u32> {
         return None;
     }
     let budget = crate::resources::ResourceDaemon::global()
-        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+        .map(|d| crate::modules::serving_daemon::vram::governed_host_budget(&d).usable_bytes)
         .filter(|b| *b > 0)?;
     let kv_budget = budget
         .checked_sub(fp.weights_bytes)?
@@ -3612,7 +3612,7 @@ async fn acquire_exam_serving_context() -> crate::cognition::exam_serving::ExamS
     // consumer + external pressure), the same source `plan_serving` sizes against — never a
     // raw GPU probe. No authority (ungoverned host) or a zero budget ⇒ fall back.
     let Some(capacity) = crate::resources::ResourceDaemon::global()
-        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+        .map(|d| crate::modules::serving_daemon::vram::governed_host_budget(&d).usable_bytes)
         .filter(|c| *c > 0)
     else {
         return ExamServingContext::ludicrous_fallback().await;

@@ -132,7 +132,7 @@ fn kv_safe_context(model: &crate::model_registry::Model) -> u32 {
         return trained;
     }
     let Some(budget) = crate::resources::ResourceDaemon::global()
-        .map(|d| crate::modules::serving_daemon::governed_host_budget(&d).usable_bytes)
+        .map(|d| crate::modules::serving_daemon::vram::governed_host_budget(&d).usable_bytes)
         .filter(|b| *b > 0)
     else {
         return trained;

@@ -254,7 +254,7 @@ pub struct ServingConsumer {
     /// for backends with nothing to measure, where the catalog estimate stands in.
     measures_physically: bool,
     /// The row those bytes live in — `Vram` for a GPU-placed lane, `Ram` for a
-    /// CPU-placed one (`serving_daemon::serving_pool_kind`). Handed in, never resolved
+    /// CPU-placed one (`serving_daemon::host_budget::serving_pool_kind`). Handed in, never resolved
     /// here: the consumer reports and yields on the SAME row the plan budgets from, or
     /// the replace-myself credit lands on a row nobody reads and the plan flees its own
     /// residency (card 7c72c0f0).
