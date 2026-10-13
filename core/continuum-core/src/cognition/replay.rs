@@ -397,6 +397,16 @@ impl ActionCommand for CognitionReplay {
                     "persona {persona_uuid} has no live WorkspaceCycle — spawn her before replaying her cognition"
                 ))
             })?;
+        // The replay's hands are ITS OWN (HER-HANDS), rooted where her live hands stand, so it
+        // acts on the same files a live turn would while its engine and shell stay apart from
+        // hers. Writes still land in her real workspace, as they always did here: whether a
+        // replay should act on a copy instead is an open question for the HER-HANDS review.
+        let live_root = match persona_workspace::acting_root_of(persona_uuid) {
+            Some(root) => root,
+            None => crate::modules::code_commands::ensure_citizen_layer(&persona_uuid.to_string())?,
+        };
+        persona_workspace::root_acting_workspace(&cycle, &live_root.to_string_lossy(), &[], false).await?;
+        let replay_hands = persona_workspace::ActingHands::of(&cycle);
         let isolation = cycle.isolate_for_eval();
 
         let only = p.faculty.as_deref().map(FacultyId::from_kebab);
@@ -474,6 +484,12 @@ impl ActionCommand for CognitionReplay {
             })
             .collect();
 
+        // The replay's own hands end here, awaited; their drop is only the abnormal-exit fallback.
+        if let Some(hands) = &replay_hands {
+            if let Err(e) = persona_workspace::close_acting_context(hands).await {
+                tracing::error!(error = %e, "cognition/replay could not cleanly end its own hands; their drop will retry the release");
+            }
+        }
         Ok(CognitionReplayResult {
             persona_id: persona_uuid.to_string().into(),
             source: burst.source,

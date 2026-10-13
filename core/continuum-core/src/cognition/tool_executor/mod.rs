@@ -110,8 +110,8 @@ pub trait ToolExecutor: Send + Sync {
 
     /// The same caller's hands in a FRESH acting context of their own: what an eval or a
     /// fork of a citizen acts with, so it can never move her live hands. `None` when these
-    /// hands can't open a context (harnesses, mocks); the caller then runs without hands
-    /// rather than borrowing hers (docs/architecture/HER-HANDS.md).
+    /// hands can't open a context (the default: an executor must opt in). The fork then runs
+    /// without hands; it never borrows hers (docs/architecture/HER-HANDS.md).
     fn in_fresh_hands(&self, _persona: uuid::Uuid) -> Option<std::sync::Arc<dyn ToolExecutor>> {
         None
     }

@@ -502,6 +502,16 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
+    // An acting context's workspace is what it was rooted at (`create-workspace` through its
+    // own hands); it never falls back to her home layer, which would put a fork's edits on
+    // her desk. Fail closed and say so (Astra's review of #5005).
+    if key.context.is_some() {
+        return Err(CommandError::Invalid(
+            "these hands belong to an acting context (an eval or a fork) that has no workspace \
+             yet: it must be rooted with code/create-workspace before code tools run in it"
+                .into(),
+        ));
+    }
     let root = if local {
         match card_root_of(caller).await {
             Some(root) => root,
@@ -544,27 +554,38 @@ fn is_local_who(who: &str) -> bool {
             .unwrap_or(false) // unwrap_or: not a uuid = not a self-peer
 }
 
+/// Where THESE hands stand, for a command that runs outside the engine (`code/run`): the
+/// root this caller's acting context was rooted at (a held card's checkout on a work turn,
+/// an exam directory for an eval), from the one acting-root record her shell and file hands
+/// are rooted through. A context that was never rooted gets `None` (its snippet runs in
+/// scratch), never the live checkout (Astra's review of #5005). The caller's default context
+/// keeps the local identity's held-card lookup.
+pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let key = hands_key(ctx);
+    if let Ok(persona) = uuid::Uuid::parse_str(&key.caller) {
+        if let Some(root) = crate::cognition::persona_workspace::acting_root_in(persona, key.context) {
+            return Some(root);
+        }
+    }
+    if key.context.is_some() {
+        return None;
+    }
+    card_root_of(&key.caller).await
+}
+
+/// The prepared instance environment's python for the root these hands stand at
+/// ([`held_root_for`]), if it has one: the interpreter `code/run` runs a snippet with (card
+/// 533c2d78). `None` = no root, or no prepared env, and the caller falls back to the PATH
+/// interpreter, named.
+pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
+    let root = held_root_for(ctx).await?;
+    crate::persona::instance_env_fact::instance_python(&root)
+}
+
 /// The held-card checkout a local identity's hands stand in — BOARD-TRUE, read from her
 /// live claims on every provisioning (the same read a persona's held-work turn makes),
 /// never a note taken at claim time: a note dies with the process while the claim lives
 /// on the board (2026-09-12: the hands fell back to cwd after the first reboot).
-/// The prepared instance environment's python for the caller's HELD checkout, if
-/// both exist — the interpreter `code/run` runs a snippet with (card 533c2d78). The
-/// same root the caller's hands are rooted at (`card_root_of`) and the same env the
-/// [env] fact names (`instance_python`); `None` = no held card, no checkout, or no
-/// prepared env, and the caller falls back to the PATH interpreter, named.
-/// The caller's HELD checkout root — where her hands stand — for a snippet to run in.
-pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
-    let who = caller_id(ctx);
-    card_root_of(&who).await
-}
-
-pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
-    let who = caller_id(ctx);
-    let root = card_root_of(&who).await?;
-    crate::persona::instance_env_fact::instance_python(&root)
-}
-
 async fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
     use crate::persona::active_work_source::AircWorkReader as _;
     let peer = uuid::Uuid::parse_str(who).ok()?;
@@ -1801,13 +1822,16 @@ pub struct CodeReleaseHands {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
 pub struct CodeReleaseHandsParams {}
 
-/// What `code/release-hands` ended.
+/// What `code/release-hands` ended, and what it could confirm.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 pub struct ReleaseHandsResult {
     /// The acting context that ended.
     pub context: String,
-    /// Executions still running in it that were killed.
-    pub killed: usize,
+    /// Pids of executions that were still running and were killed.
+    pub killed: Vec<u32>,
+    /// Of those, the pids still present or unreadable when checked: not confirmed gone.
+    /// Reported by name, never assumed dead.
+    pub unconfirmed: Vec<u32>,
 }
 
 #[async_trait]
@@ -1833,14 +1857,43 @@ impl ActionCommand for CodeReleaseHands {
             ));
         };
         let killed = self.state.release(&key.map_key());
+        // CONFIRM each kill: wait for the execution's own task to see its child exit
+        // (`process_ended`, set after the reap), at the cadence the task notices a kill
+        // (`KILL_POLL`). SIGKILL can't be ignored, so a direct child's reap always comes; no
+        // timeout is guessed. Then ask the kernel, with positive evidence only, whether
+        // each pid is gone; what isn't confirmed is reported by name.
+        let mut pids = Vec::new();
+        for state in &killed {
+            loop {
+                let (ended, pid) = match state.lock() {
+                    Ok(s) => (s.process_ended, s.pid),
+                    Err(p) => (p.get_ref().process_ended, p.get_ref().pid), // poisoned: read the last state
+                };
+                if ended {
+                    pids.extend(pid);
+                    break;
+                }
+                tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
+            }
+        }
+        let probed = pids.clone();
+        let unconfirmed = tokio::task::spawn_blocking(move || {
+            probed
+                .into_iter()
+                .filter(|pid| !matches!(crate::inference::engine_residency::probe_process(*pid), crate::inference::engine_residency::ProcessProbe::Absent))
+                .collect::<Vec<u32>>()
+        })
+        .await
+        .map_err(|e| CommandError::Internal(format!("release-hands: confirming the kills failed to run: {e}")))?;
         crate::probe!(
             class = "code.hands.released",
             caller = key.caller.as_str(),
             context = %context.id(),
-            killed = killed as u64,
-            "an acting context ended; its engine and shells are gone"
+            killed = pids.len() as u64,
+            unconfirmed = unconfirmed.len() as u64,
+            "an acting context ended; its engine and shells are gone, every kill waited out and confirmed or named"
         );
-        Ok(ReleaseHandsResult { context: context.id().to_string(), killed })
+        Ok(ReleaseHandsResult { context: context.id().to_string(), killed: pids, unconfirmed })
     }
 }
 

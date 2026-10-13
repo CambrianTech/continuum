@@ -99,9 +99,10 @@ impl ActChain {
 /// the one definition of "which board holds a card" (`modules::work::room_holding_card`,
 /// any activity, project or benchmark); else the room the turn was woken in. The wake room
 /// is a fallback for acts with no subject yet (a help call before she has chosen a task),
-/// never an override of one.
-async fn act_activity_room(persona_id: Uuid, wake_room: Uuid) -> Uuid {
-    let Some(card) = crate::cognition::persona_workspace::acting_card_of(persona_id) else {
+/// never an override of one. It's the card of THESE hands (`context`): an eval's or a fork's
+/// acts never inherit her live card's room (Astra's review of #5005).
+async fn act_activity_room(persona_id: Uuid, context: Option<crate::code::hands::HandsContext>, wake_room: Uuid) -> Uuid {
+    let Some(card) = crate::cognition::persona_workspace::acting_card_in(persona_id, context) else {
         return wake_room;
     };
     let Some(runtime) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
@@ -139,7 +140,11 @@ pub async fn apply_act(
     // (no thought line, no receipt; sink 6). Her tools still act on the world; telling the
     // room about it is hers to do, by publishing.
     let private = crate::persona::mind_room::is_private_room(body.persona_id, wake_room);
-    let room_id = if private { wake_room } else { act_activity_room(body.persona_id, wake_room).await };
+    let room_id = if private {
+        wake_room
+    } else {
+        act_activity_room(body.persona_id, body.executor.hands_context(), wake_room).await
+    };
     if room_id != wake_room {
         crate::probe!(
             class = "act.activity.resolved",
@@ -187,7 +192,7 @@ pub async fn apply_act(
     // expose it; harnesses don't → everything runs synchronously). No long-running calls —
     // the overwhelmingly common case — means `fg_calls == calls` and this is inert.
     // Her checkout before the batch: `wrote` is what the batch DID to it, by any verb.
-    let acting_root = crate::cognition::persona_workspace::acting_root_of(body.persona_id);
+    let acting_root = crate::cognition::persona_workspace::acting_root_in(body.persona_id, body.executor.hands_context());
     let disk_before = super::disk_change::fingerprint_at(acting_root.clone()).await;
     let mut bg_notes: Vec<String> = Vec::new();
     // The long-running calls that were dispatched (not run synchronously) — retained so a

@@ -86,11 +86,13 @@ pub struct CommandToolExecutor {
 struct ContextRelease {
     core: Arc<CommandExecutor>,
     identity: CallerIdentity,
+    persona: Uuid,
+    context: crate::code::hands::HandsContext,
 }
 
 impl Drop for ContextRelease {
     fn drop(&mut self) {
-        let (core, identity) = (self.core.clone(), self.identity.clone());
+        let (core, identity, persona, context) = (self.core.clone(), self.identity.clone(), self.persona, self.context);
         // Off the dropping thread: a release dispatches a command. With no runtime (a test
         // tearing down outside one) there is nothing live to release into.
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
@@ -101,6 +103,7 @@ impl Drop for ContextRelease {
                 {
                     tracing::warn!(error = %e, "an acting context's hands could not be released; its engine and shells stay until the core restarts");
                 }
+                crate::cognition::persona_workspace::forget_acting_context(persona, context);
             });
         }
     }
@@ -146,7 +149,7 @@ impl CommandToolExecutor {
             Some(context) => identity.in_hands(context),
             None => identity,
         };
-        let release = hands.map(|_| Arc::new(ContextRelease { core: core.clone(), identity: identity.clone() }));
+        let release = hands.map(|context| Arc::new(ContextRelease { core: core.clone(), identity: identity.clone(), persona, context }));
         let transport = InProcessTransport::new(executor, Some(identity));
         Self {
             conn: Connection::new(transport),

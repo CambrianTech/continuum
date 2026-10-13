@@ -55,11 +55,15 @@ impl CodeState {
     }
 
     /// End one set of hands: an acting context that is over (an eval or a fork finished).
-    /// Drops its file engine, and kills every execution its current and parked shells still
-    /// run before dropping them: a context that ended leaves no orphaned children and no
-    /// entries behind (everything it opened has a drain). Never called for a caller's
+    /// Kills every execution its current and parked shells were still RUNNING, drops its
+    /// shells and its file engine, and returns those executions so the caller can confirm
+    /// each one ended (everything a context opened has a drain). Never called for a caller's
     /// default (live) hands; `code/release-hands` refuses that.
-    pub fn release(&self, who: &str) -> usize {
+    ///
+    /// Scope, stated: a kill ends the execution's DIRECT child. The shell isn't spawned in its
+    /// own process group, so a compound command's grandchildren can outlive it; that is a
+    /// shell-wide gap (code/shell-kill has it too), carded separately.
+    pub fn release(&self, who: &str) -> Vec<std::sync::Arc<std::sync::Mutex<crate::code::shell_session::ExecutionState>>> {
         let mut shells: Vec<ShellSession> = Vec::new();
         if let Some((_, current)) = self.shell_sessions.remove(who) {
             shells.push(current);
@@ -67,13 +71,17 @@ impl CodeState {
         if let Some((_, parked)) = self.parked_shells.remove(who) {
             shells.extend(parked);
         }
-        let mut killed = 0;
+        let mut killed = Vec::new();
         for shell in &shells {
             let ids: Vec<String> = shell.execution_ids().map(str::to_string).collect();
             for id in ids {
-                // A finished execution has nothing to kill; only a running one counts.
-                if shell.kill(&id).is_ok() {
-                    killed += 1;
+                let Ok(state) = shell.get_execution_state(&id) else { continue };
+                let running = matches!(
+                    state.lock(),
+                    Ok(s) if s.status == crate::code::shell_types::ShellExecutionStatus::Running
+                ); // a finished or poisoned record has nothing of ours running
+                if running && shell.kill(&id).is_ok() {
+                    killed.push(state);
                 }
             }
         }

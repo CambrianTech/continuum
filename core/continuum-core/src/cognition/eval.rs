@@ -2719,11 +2719,15 @@ impl CognitionEval {
         // roman_to_int was textbook-correct in home, the clone empty, 0/3 graded).
         // The exact "silent no-root scores a false ZERO that would LIE about the
         // solver" this comment block always warned about, one variable to the left.
+        // Every fork's own hands this eval rooted, closed (awaited) before it returns, while its
+        // exam directory still exists; their drop is only the abnormal-exit fallback.
+        let mut forked_hands: Vec<crate::cognition::persona_workspace::ActingHands> = Vec::new();
         if let Some(root) = eval_workspace_root.as_deref() {
             // A gym run IS the measurement — the grader reads the artifact, never her prose,
             // so an inert edit is unrecoverable here for the same reason as `benchmark/swe-solve`.
             crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[], true)
                 .await?;
+            forked_hands.extend(crate::cognition::persona_workspace::ActingHands::of(&cycle));
             crate::probe!(
                 class = "eval.hands_rooted",
                 root = %root,
@@ -2869,6 +2873,7 @@ impl CognitionEval {
                 _fleet_lease.as_ref().map(|_| true),
                 _eval_lane.as_ref().and_then(|lane| lane.measured_gene.as_ref()),
             );
+            close_forked_hands(&forked_hands).await;
             return Ok(result);
         }
 
@@ -2916,6 +2921,13 @@ impl CognitionEval {
                 .ok_or_else(|| CommandError::NotFound(format!(
                     "no workspace template for persona {persona_uuid} — cannot fork a reviewer teammate"
                 )))?;
+            // The reviewer is a fork with ITS OWN hands (HER-HANDS): rooted where the writer's
+            // are, or it would have no workspace at all (an acting context never gets hers).
+            if let Some(root) = eval_workspace_root.as_deref() {
+                crate::cognition::persona_workspace::root_acting_workspace(&reviewer, root, &[], true)
+                    .await?;
+                forked_hands.extend(crate::cognition::persona_workspace::ActingHands::of(&reviewer));
+            }
             let reviewer_iso = reviewer.isolate_for_eval();
             let out = run_pass_team(
                 &cycle,
@@ -3075,7 +3087,19 @@ impl CognitionEval {
             _fleet_lease.as_ref().map(|_| true),
             None,
         );
+        close_forked_hands(&forked_hands).await;
         Ok(result)
+    }
+}
+
+/// End every fork's own hands an eval rooted, awaited, while the directory they stood in
+/// still exists. A close that fails or can't confirm a kill is logged loudly with its cause;
+/// it never replaces the measurement's own result.
+async fn close_forked_hands(hands: &[crate::cognition::persona_workspace::ActingHands]) {
+    for h in hands {
+        if let Err(e) = crate::cognition::persona_workspace::close_acting_context(h).await {
+            tracing::error!(error = %e, "cognition/eval could not cleanly end a fork's own hands; their drop will retry the release");
+        }
     }
 }
 

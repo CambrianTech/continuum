@@ -71,6 +71,10 @@ pub struct ExecutionState {
     /// perception without her remembering to poll. False for in-window
     /// completions (the caller already holds the result).
     pub handed_back: bool,
+    /// True once this execution's task has seen its direct child exit (waited on, or killed
+    /// and reaped), or the child never started. A kill is CONFIRMED by this, not by the
+    /// `Killed` status, which is set before the child dies (`code/release-hands`).
+    pub process_ended: bool,
     /// Cursor: index of next stdout line to return on poll/watch.
     stdout_cursor: usize,
     /// Cursor: index of next stderr line to return on poll/watch.
@@ -367,6 +371,7 @@ impl ShellSession {
             started_at: now_ms,
             finished_at: None,
             handed_back: false,
+            process_ended: false,
             stdout_cursor: 0,
             stderr_cursor: 0,
             output_notify: notify,
@@ -920,6 +925,7 @@ async fn run_shell_command(
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("Failed to spawn bash: {e}"));
                 s.finished_at = Some(crate::time::EpochMs::now().millis());
+                s.process_ended = true; // nothing started, so nothing is left running
                 s.output_notify.notify_one();
             }
             return;
@@ -1040,6 +1046,11 @@ async fn run_shell_command(
         }
     };
 
+    // The direct child has exited: `wait` returned, or `kill` (SIGKILL, then wait) reaped it.
+    if let Ok(mut s) = state.lock() {
+        s.process_ended = true;
+    }
+
     // Wait for output readers to drain
     let _ = stdout_task.await;
     let _ = stderr_task.await;
@@ -1110,6 +1121,10 @@ async fn run_shell_command(
     }
 }
 
+/// How often an execution's task looks for a kill request. The cadence a kill is noticed at,
+/// and so the cadence `code/release-hands` checks a killed execution has ended at.
+pub(crate) const KILL_POLL: Duration = Duration::from_millis(100);
+
 /// Poll the kill flag on the execution state. Returns when kill is requested.
 async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
     loop {
@@ -1120,7 +1135,7 @@ async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
                 }
             }
         }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(KILL_POLL).await;
     }
 }
 

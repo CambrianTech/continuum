@@ -258,11 +258,25 @@ impl GroundingSource {
 /// A fork of a citizen (an eval or a solve) acts with ITS OWN hands: the same persona,
 /// gated the same way, in a fresh acting context (`ToolExecutor::in_fresh_hands`). Before
 /// this a fork cloned her live executor, so its root moved her live tools and its restore
-/// moved them home (docs/architecture/HER-HANDS.md). A harness executor that can't open a
-/// context has no live hands to collide with, so it's kept as is.
+/// moved them home (docs/architecture/HER-HANDS.md).
+///
+/// Fails closed: hands that can't open a context of their own are never borrowed. The fork
+/// then runs without hands (and without the grounding that describes them), and says so.
 fn give_fork_its_own_hands(cfg: &mut PersonaBrainConfig, persona_id: Uuid) {
-    if let Some(own) = cfg.tool_executor.as_ref().and_then(|t| t.in_fresh_hands(persona_id)) {
-        cfg.tool_executor = Some(own);
+    let Some(live) = cfg.tool_executor.as_ref() else {
+        return;
+    };
+    match live.in_fresh_hands(persona_id) {
+        Some(own) => cfg.tool_executor = Some(own),
+        None => {
+            cfg.tool_executor = None;
+            cfg.grounding_sources.retain(|g| !g.requires_hands);
+            crate::probe!(
+                class = "workspace.fork_without_hands",
+                persona = %persona_id,
+                "these hands can't open a context of their own, so the fork runs without hands rather than borrowing hers"
+            );
+        }
     }
 }
 
@@ -853,7 +867,7 @@ pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
 }
 
 /// Where one set of her hands stands: her live ones (`None`) or a context's.
-fn acting_root_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) -> Option<std::path::PathBuf> {
+pub(crate) fn acting_root_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) -> Option<std::path::PathBuf> {
     ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -871,7 +885,7 @@ pub fn acting_card_of(persona_id: uuid::Uuid) -> Option<uuid::Uuid> {
 }
 
 /// The card one set of her hands is rooted at: her live ones (`None`) or a context's.
-fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) -> Option<uuid::Uuid> {
+pub(crate) fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) -> Option<uuid::Uuid> {
     ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1291,12 +1305,87 @@ pub(crate) async fn restore_acting_workspace(
     if let (Some(root), Some(card)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
         crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card).await;
     }
+    // An acting context (an eval's, a solve's or a replay's own hands) has no home to go back
+    // to: it ENDS, awaited here, before its caller removes the directory it stood in.
+    if hands.context.is_some() {
+        return close_acting_context(hands).await;
+    }
     // `ensure_`, not `path_`: `code/create-workspace` REFUSES a root that does not exist
     // (PathSecurity canonicalizes), and a persona who has never written anything has no
     // layer on disk yet. Provisioning here is not a new side effect — it is exactly what
     // `ensure_engine` would do on her very next file op; an existing layer is reused.
     let home = crate::modules::code_commands::ensure_citizen_layer(&hands.persona_id.to_string())?;
     restore_acting_workspace_at(hands, &home.to_string_lossy()).await
+}
+
+/// Forget where an acting context stood: what a context's release on drop (the abnormal-exit
+/// fallback) does after releasing its engine and shells, so no bookkeeping outlives it.
+pub(crate) fn forget_acting_context(persona_id: Uuid, context: crate::code::hands::HandsContext) {
+    note_acting_root_in(persona_id, Some(context), None);
+}
+
+/// End an acting context and confirm it: `code/release-hands` through these hands (so it
+/// ends THIS context and no other), awaited, then its acting-root record removed. This is the
+/// normal teardown of an eval, a solve or a replay; the release sent when its hands drop is
+/// only the fallback for an abnormal exit. A kill it couldn't confirm is returned as an
+/// error naming the pids, for the caller to log loudly (Astra's review of #5005).
+pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), crate::sdk_codegen::CommandError> {
+    let Some(context) = hands.context else {
+        return Ok(()); // her live hands are never ended
+    };
+    // Forget the place first: if the release fails, the record must not claim a context
+    // still stands somewhere.
+    note_acting_root_in(hands.persona_id, hands.context, None);
+    let ctx = crate::cognition::tool_executor::ToolExecutionContext {
+        persona_id: hands.persona_id,
+        persona_name: hands.persona_name.clone(),
+        session_id: Uuid::new_v4(),
+        context_id: Uuid::new_v4(),
+        caller_context: serde_json::Value::Null,
+        persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
+            auto_load_media: false,
+            supported_media_types: vec![],
+        },
+    };
+    let call = crate::ai::types::ToolCall {
+        id: "close-acting-context".to_string(),
+        name: "code/release-hands".to_string(),
+        input: serde_json::json!({}),
+    };
+    let out = hands
+        .executor
+        .execute_native_batch(std::slice::from_ref(&call), &ctx, 8000)
+        .await
+        .map_err(|e| crate::sdk_codegen::CommandError::Internal(format!("closing acting context {}: {e}", context.id())))?;
+    let result = out.results.first().ok_or_else(|| {
+        crate::sdk_codegen::CommandError::Internal(format!("closing acting context {}: no result", context.id()))
+    })?;
+    if result.is_error.is_some() {
+        return Err(crate::sdk_codegen::CommandError::Internal(format!(
+            "closing acting context {}: {}",
+            context.id(),
+            result.content
+        )));
+    }
+    let unconfirmed = serde_json::from_str::<serde_json::Value>(&result.content)
+        .ok()
+        .and_then(|v| v.get("unconfirmed").and_then(serde_json::Value::as_array).map(|pids| !pids.is_empty()))
+        .unwrap_or(false); // unwrap_or: a result that isn't the release's own shape names no unconfirmed pids
+    if unconfirmed {
+        return Err(crate::sdk_codegen::CommandError::Internal(format!(
+            "acting context {} ended, but some killed processes were not confirmed gone: {}",
+            context.id(),
+            result.content
+        )));
+    }
+    hands.working_memory.set_scope(None);
+    crate::probe!(
+        class = "workspace.context_closed",
+        persona = %hands.persona_name,
+        context = %context.id(),
+        "an acting context ended: its engine and shells released, its place forgotten"
+    );
+    Ok(())
 }
 
 /// [`restore_acting_workspace`] with the home root supplied — the seam the isolation test
@@ -3687,8 +3776,11 @@ mod tests {
                 tokio::runtime::Handle::current(),
             ));
             registry.register(Arc::new(CodeModule::new(state.clone())));
+            // The PRODUCTION authorization policy, not an AllowAll fixture: the fixture hid
+            // code/release-hands being refused for a local persona (Astra's review of #5005).
             let executor = Arc::new(
                 CommandExecutor::new(registry)
+                    .with_policy(Arc::new(crate::routing::GridTrustAuthPolicy::new()))
                     .with_message_bus(Arc::new(crate::runtime::MessageBus::new())),
             );
             (executor, state)
@@ -3826,12 +3918,39 @@ mod tests {
             );
         }
 
-        // what this catches: an eval or a solve moving the LIVING persona's hands. A fork used
-        // to clone her live executor, so its create-workspace re-rooted her (#312) and its
-        // restore moved her home, and a default tool-bearing eval left her live hands at a
-        // deleted clone. A fork's own hands (`in_fresh_hands`) stand somewhere else at the same
-        // time, her live hands don't move, and when the fork's hands drop, its context's
-        // entries are released without touching hers (docs/architecture/HER-HANDS.md).
+        /// One tool call through these hands: its content, and whether it was an error.
+        async fn call(hands: &ActingHands, name: &str, input: serde_json::Value) -> (String, bool) {
+            let ctx = crate::cognition::tool_executor::ToolExecutionContext {
+                persona_id: hands.persona_id,
+                persona_name: hands.persona_name.clone(),
+                session_id: Uuid::new_v4(),
+                context_id: Uuid::new_v4(),
+                caller_context: serde_json::Value::Null,
+                persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
+                    auto_load_media: false,
+                    supported_media_types: vec![],
+                },
+            };
+            let call = crate::ai::types::ToolCall { id: name.to_string(), name: name.to_string(), input };
+            let out = hands.executor.execute_native_batch(std::slice::from_ref(&call), &ctx, 8000).await.expect("the call runs");
+            (out.results[0].content.clone(), out.results[0].is_error.is_some())
+        }
+
+        /// Root a set of hands the way `root_acting_workspace` does: the workspace, then its
+        /// place in the acting-root record.
+        async fn root(hands: &ActingHands, dir: &std::path::Path) {
+            drive_create_workspace(hands, &dir.to_string_lossy(), &[], "root", false).await.expect("roots");
+            note_acting_root_in(hands.persona_id, hands.context, Some(dir.to_path_buf()));
+        }
+
+        // what this catches: an eval, a solve or a replay moving or borrowing the LIVING
+        // persona's hands (#312, and Astra's review of #5005). A fork used to clone her live
+        // executor, so its rooting moved her live tools, its restore moved them home, and a
+        // default eval left her live hands at a deleted clone. Under the PRODUCTION policy, a
+        // fork's own hands stand in an exam while hers stand at home, at the same time:
+        // listing, Python execution and her live acting place all stay hers; a context never
+        // rooted gets no workspace (never her desk); a running operation is killed and
+        // confirmed by the awaited close; and an unclosed fork is still released on drop.
         #[tokio::test]
         async fn a_forks_own_hands_never_move_her_live_hands_and_end_with_the_fork() {
             let exam = tempfile::TempDir::new().expect("exam dir");
@@ -3842,36 +3961,67 @@ mod tests {
             let (executor, state) = core_with_code();
             let live_exec = CommandToolExecutor::for_persona(executor, persona);
             let live = hands_over(Arc::new(live_exec.clone()), persona);
-            drive_create_workspace(&live, &home.path().to_string_lossy(), &[], "live", false)
-                .await
-                .expect("her live hands stand at home");
+            root(&live, home.path()).await;
+            let live_card = Uuid::new_v4();
+            note_acting_card_in(persona, None, live_card);
 
             let fork_exec = crate::cognition::tool_executor::ToolExecutor::in_fresh_hands(&live_exec, persona)
                 .expect("a live persona's hands can open a fork's own");
             let fork = hands_over(fork_exec, persona);
             assert!(fork.context.is_some() && live.context.is_none(), "the fork's hands are a context of their own");
-            drive_create_workspace(&fork, &exam.path().to_string_lossy(), &[], "fork", false)
-                .await
-                .expect("the fork's hands stand in the exam");
 
-            let (seen_live, seen_fork) = (listing(&live).await, listing(&fork).await);
+            // Fail closed: an acting context that was never rooted has no workspace, never hers.
+            let (unrooted, refused) = call(&fork, "code/list", serde_json::json!({"path": "."})).await;
+            assert!(refused, "an unrooted context must be refused, not handed her desk: {unrooted}");
+
+            root(&fork, exam.path()).await;
+            let (seen_live, _) = call(&live, "code/list", serde_json::json!({"path": "."})).await;
+            let (seen_fork, _) = call(&fork, "code/list", serde_json::json!({"path": "."})).await;
             assert!(
                 seen_live.contains("HER_OWN_notes.md") && !seen_live.contains("EXAM_ONLY_blueprints.py"),
                 "rooting the fork moved HER live hands into the exam (#312): {seen_live}"
             );
             assert!(seen_fork.contains("EXAM_ONLY_blueprints.py"), "the fork's hands must stand in the exam: {seen_fork}");
-            assert_eq!(state.file_engines.len(), 2, "two sets of hands, one engine each");
 
-            drop(fork);
+            // Python runs where THESE hands stand: the fork's in the exam, hers at home.
+            let listdir = serde_json::json!({"lang": "python", "code": "import os; print(sorted(os.listdir('.')))"});
+            let (py_fork, _) = call(&fork, "code/run", listdir.clone()).await;
+            let (py_live, _) = call(&live, "code/run", listdir).await;
+            assert!(py_fork.contains("EXAM_ONLY_blueprints.py") && !py_fork.contains("HER_OWN_notes.md"), "the fork's Python must run in the exam: {py_fork}");
+            assert!(py_live.contains("HER_OWN_notes.md") && !py_live.contains("EXAM_ONLY_blueprints.py"), "her Python must run at home: {py_live}");
+
+            // Provenance: the fork's rooting is its own; her live place and card are unchanged.
+            assert_eq!(acting_root_of(persona), Some(home.path().to_path_buf()), "her live place is still home");
+            assert_eq!(acting_card_of(persona), Some(live_card), "her receipts still belong to her live card");
+            assert_eq!(acting_card_in(persona, fork.context), None, "the fork never inherits her card");
+
+            // A running operation in the fork is ended by the awaited close, under the
+            // production policy, and confirmed.
+            let (started, _) = call(&fork, "code/shell", serde_json::json!({"cmd": "sleep 600", "wait_ms": 100})).await;
+            assert!(started.contains("running") || started.contains("Running"), "the fork has a running operation: {started}");
+            close_acting_context(&fork).await.expect("the fork's context closes, with its kill confirmed");
+            assert_eq!(state.file_engines.len(), 1, "only her live engine remains");
+            assert_eq!(acting_root_in(persona, fork.context), None, "the fork's place is forgotten");
+            let (after, _) = call(&live, "code/list", serde_json::json!({"path": "."})).await;
+            assert!(after.contains("HER_OWN_notes.md"), "ending the fork leaves her hands as they were: {after}");
+
+            // An unclosed fork (an abnormal exit) is still released when its hands drop.
+            let dropped = hands_over(
+                crate::cognition::tool_executor::ToolExecutor::in_fresh_hands(&live_exec, persona).expect("another fork"),
+                persona,
+            );
+            root(&dropped, exam.path()).await;
+            assert_eq!(state.file_engines.len(), 2);
+            let dropped_context = dropped.context;
+            drop(dropped);
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while state.file_engines.len() != 1 {
+                while state.file_engines.len() != 1 || acting_root_in(persona, dropped_context).is_some() {
                     tokio::task::yield_now().await;
                 }
             })
             .await
-            .expect("the fork's context is released when its hands drop");
-            let after = listing(&live).await;
-            assert!(after.contains("HER_OWN_notes.md"), "releasing the fork's hands must leave hers as they were: {after}");
+            .expect("an unclosed fork is released, and its place forgotten, when its hands drop");
+            note_acting_root_in(persona, None, None);
         }
 
         // what this catches: a pure-cognition persona has no hands, so there is nothing to
