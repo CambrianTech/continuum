@@ -278,9 +278,9 @@ impl Observation {
 
     /// The RECALL-channel rendering: the COLLAPSED reference the Episodic engram
     /// re-injects on later turns (#166 — a separate channel from recency). The
-    /// body is `render_act_for_recall`, unchanged.
+    /// Summary text may collapse; saved-result custody must remain recoverable.
     pub fn render_recall(&self, intent: &str) -> String {
-        render_act_for_recall(
+        let mut recall = render_act_for_recall(
             &self.call.name,
             &self.call.input,
             intent,
@@ -295,7 +295,13 @@ impl Observation {
                 self.output.verdict
             },
             &self.body_text(),
-        )
+        );
+        if let Some(handle) = self.output.result.custody.handle() {
+            recall.push_str(&format!(
+                "Saved result: `tool/output` {{\"outputId\":\"{handle}\"}}\n\n"
+            ));
+        }
+        recall
     }
 }
 
@@ -523,6 +529,29 @@ mod tests {
                 o.output.result.content, stderr,
                 "the payload is untouched; only the outcome marker changed"
             );
+        }
+
+        /// A collapsed success, failure or pointer must retain typed custody,
+        /// even when the output reference is beyond the summary's text budget.
+        #[test]
+        fn recall_preserves_saved_output_reference_after_collapsing_text() {
+            use crate::ai::types::ResultCustody;
+            let handle = "8472d4bd946023ac";
+            let content = format!("header\n{}END_OF_SAVED_RESULT", "source line\n".repeat(100));
+            for verdict in [ToolVerdict::Succeeded, ToolVerdict::Failed, ToolVerdict::Running] {
+                let mut o = obs(ActVerdict::Declared(verdict), None, &content);
+                assert!(!o.render_recall("").contains("Saved result:"));
+                for custody in [
+                    ResultCustody::Whole { handle: handle.into() },
+                    ResultCustody::Pointer { handle: handle.into() },
+                ] {
+                    o.output.result.custody = custody;
+                    let recall = o.render_recall("");
+                    assert!(!recall.contains("END_OF_SAVED_RESULT"));
+                    assert!(recall.contains(&format!("`tool/output` {{\"outputId\":\"{handle}\"}}")));
+                    assert_eq!(o.output.result.content, content);
+                }
+            }
         }
     }
 }
