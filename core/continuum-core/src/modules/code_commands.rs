@@ -2064,6 +2064,7 @@ crate::register_command!(CodeDelete);
 crate::register_command!(CodeDiff);
 crate::register_command!(CodeUndo);
 crate::register_command!(CodeHistory);
+crate::register_command!(CodeReleaseHands);
 crate::register_command!(CodeCreateWorkspace);
 
 // Opt-in outcome projection: ONLY these two commands pay the `DeserializeOwned`
