@@ -393,7 +393,7 @@ pub(crate) async fn grade_submission(
     let Some((bench, dataset)) = submission_oracle_dataset(&card_title) else {
         return;
     };
-    let patch = match read_patch(&patch_hash) {
+    let patch = match crate::media::artifact::read_text_blob(&patch_hash, None) {
         Ok(p) => p,
         Err(why) => {
             crate::probe!(
@@ -439,14 +439,6 @@ pub(crate) async fn grade_submission(
             "grading the hand-in failed before a verdict"
         ),
     }
-}
-
-fn read_patch(hash: &str) -> Result<String, String> {
-    use airc_blobs::ContentAddressedStore;
-    let store = crate::media::artifact::store()?;
-    let hash = airc_blobs::ContentHash::from_hex(hash).ok_or_else(|| format!("not a content hash: {hash}"))?;
-    let bytes = store.get(&hash).map_err(|e| e.to_string())?;
-    String::from_utf8(bytes).map_err(|e| format!("patch is not UTF-8: {e}"))
 }
 
 /// Resolve one gym task by id and normalize it with the SAME `require_hands_for_code`

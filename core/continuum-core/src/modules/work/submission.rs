@@ -794,6 +794,15 @@ impl ActionCommand for WorkSubmit {
                 "artifact.hash was a placeholder (zeros / a manual blank) — deriving the real one from her checkout"
             );
         }
+        if let Some(a) = p.artifact.as_ref().filter(|_| typed_in_full) {
+            // A typed artifact is honoured only if its bytes are retained: a reference with
+            // nothing behind it published a submission no reviewer could read (card e1babb61).
+            crate::media::artifact::read_text_blob(&a.hash, Some(a.size_bytes)).map_err(|why| {
+                CommandError::Invalid(format!(
+                    "the artifact you typed has no retained bytes ({why}); omit `artifact` and work/submit derives the patch from your checkout and keeps it"
+                ))
+            })?;
+        }
         let (instance, base_sha_text, artifact_ref) = if typed_in_full {
             (
                 p.instance.clone().unwrap_or_default(), // unwrap_or: guarded by typed_in_full
@@ -1323,6 +1332,11 @@ pub struct WorkSubmissionResult {
     pub credit_error: Option<String>,
     pub staged_evidence: Option<Vec<reviewed::StagedCreditEvidence>>,
     pub staged_evidence_error: Option<String>,
+    // The submitted patch itself, read from the retained blob and verified against the
+    // artifact's hash and size: what the reviewer reviews (card e1babb61). Absent with
+    // `patch_error` naming why when this node holds no such bytes.
+    pub patch: Option<String>,
+    pub patch_error: Option<String>,
 }
 
 #[async_trait]
@@ -1438,6 +1452,11 @@ impl ActionCommand for WorkSubmission {
             .filter(|r| r.card_id == submitted.card_id)
             .map(WorkReviewResult::from)
             .collect();
+        let artifact: WorkArtifactReference = (&submitted.artifact).into();
+        let (patch, patch_error) = match crate::media::artifact::read_text_blob(&artifact.hash, Some(artifact.size_bytes)) {
+            Ok(text) => (Some(text), None),
+            Err(why) => (None, Some(why)),
+        };
         Ok(WorkSubmissionResult {
             submission: WorkSubmitResult {
                 submission_id: submission_uuid,
@@ -1460,6 +1479,8 @@ impl ActionCommand for WorkSubmission {
             credit_error,
             staged_evidence,
             staged_evidence_error,
+            patch,
+            patch_error,
         })
     }
 }

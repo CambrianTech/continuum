@@ -30,6 +30,25 @@ pub fn store() -> Result<FsStore, String> {
     FsStore::new(store_path()).map_err(|e| e.to_string())
 }
 
+/// A retained text blob (a submitted patch) by its content hash, verified: the bytes must hash
+/// to `hash` and, when the caller knows it, be `size_bytes` long. The one reader of a patch by
+/// hash. A reviewer reads the bytes the submitter published, or a named reason why not (card
+/// e1babb61: a submitted 343 B patch whose bytes no reviewer could reach).
+pub(crate) fn read_text_blob(hash: &str, size_bytes: Option<u64>) -> Result<String, String> {
+    use airc_blobs::ContentAddressedStore;
+    use sha2::Digest;
+    let key = airc_blobs::ContentHash::from_hex(hash).ok_or_else(|| format!("not a content hash: {hash}"))?;
+    let bytes = store()?.get(&key).map_err(|e| format!("no bytes for {hash} in {}: {e}", store_path().display()))?;
+    if let Some(want) = size_bytes.filter(|want| *want != bytes.len() as u64) {
+        return Err(format!("{hash}: {} bytes stored, the reference says {want}", bytes.len()));
+    }
+    let got = format!("{:x}", sha2::Sha256::digest(&bytes));
+    if got != hash {
+        return Err(format!("{hash}: the stored bytes hash to {got}"));
+    }
+    String::from_utf8(bytes).map_err(|e| format!("{hash} is not UTF-8 text: {e}"))
+}
+
 pub(crate) fn store_path() -> std::path::PathBuf {
     crate::modules::persona_instance_manager::resolve_continuum_root()
         .join("media")
@@ -224,4 +243,26 @@ pub(crate) fn retain_capture_with(
         serde_json::to_value(&artifact).map_err(|e| e.to_string())?, // boundary: durable reference replaces pixels in the tool-result transcript wire.
     );
     Ok(Some(artifact))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: card e1babb61. A reviewer must read exactly the bytes a submitter
+    // retained, by the hash the submission published, and a reference that doesn't match the
+    // store (another size, or no bytes at all) must say so, never hand back something else.
+    #[test]
+    fn a_retained_patch_reads_back_by_its_hash_and_a_mismatch_is_named() {
+        use airc_blobs::ContentAddressedStore;
+        let home = tempfile::tempdir().expect("test: home");
+        crate::test_env::with_test_home(home.path(), || {
+            let patch = "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n";
+            let hash = store().expect("test: store").put(patch.as_bytes()).expect("test: put").to_hex();
+            assert_eq!(read_text_blob(&hash, Some(patch.len() as u64)).as_deref(), Ok(patch), "the retained bytes, verified");
+            assert!(read_text_blob(&hash, Some(patch.len() as u64 + 1)).is_err(), "a size the store doesn't hold is named");
+            let absent = "0".repeat(63) + "1";
+            assert!(read_text_blob(&absent, None).is_err(), "no bytes behind a hash is named, not empty text");
+        });
+    }
 }
