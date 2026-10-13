@@ -63,7 +63,9 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(op)
+    // The shared owner of blocking work: the git operation keeps its command's admission
+    // until it returns, even if the command's waiter is cancelled.
+    crate::code::hands::spawn_blocking(op)
         .await
         .map_err(|e| CommandError::Internal(format!("git task panicked: {e}")))
 }

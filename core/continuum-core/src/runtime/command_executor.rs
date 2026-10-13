@@ -414,8 +414,10 @@ impl CommandExecutor {
         // what starts after it and waits out what is admitted (card fc9e9fd7; Astra on #5026:
         // admission at the operation's lifetime boundary, never in helpers). The release itself
         // is the one operation not admitted: it closes the hands to every other.
-        let _admitted = match caller.filter(|c| !c.releases_hands).and_then(|c| c.hands) {
-            Some(context) => Some(crate::code::hands::admit(context).map_err(DispatchFailure::not_committed)?),
+        let admitted = match caller.filter(|c| !c.releases_hands).and_then(|c| c.hands) {
+            Some(context) => Some(std::sync::Arc::new(
+                crate::code::hands::admit(context).map_err(DispatchFailure::not_committed)?,
+            )),
             None => None,
         };
         let work = caller.and_then(crate::persona::cognition_pulse::CommandWork::capture);
@@ -434,7 +436,7 @@ impl CommandExecutor {
             route_kind = decision.kind().as_str(),
             verdict = verdict.kind(),
         );
-        async move {
+        let command = async move {
             // Slice P "every URI has a gate" — auth runs BEFORE the
             // transport match. Forbidden / Deferred short-circuit
             // with typed errors carrying the reason; only Allowed
@@ -478,8 +480,10 @@ impl CommandExecutor {
             }
             outcome
         }
-        .instrument(span)
-        .await
+        .instrument(span);
+        // The command runs as the task's admitted work: blocking work it starts inherits the
+        // admission and keeps it past a cancelled waiter (`code::hands::spawn_blocking`).
+        crate::code::hands::admitted(admitted, command).await
     }
 
     /// The dispatch chain itself. Extracted so `execute` can wrap it

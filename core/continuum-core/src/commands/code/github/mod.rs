@@ -200,7 +200,7 @@ fn gh_command(root: &Path, args: &[String]) -> tokio::process::Command {
 /// binary, spawn failure), it returns None = unknown; a check that cannot decide defers to the
 /// real command instead of inventing a new failure mode. Callers layer their own interpretation.
 pub(crate) async fn git_output(root: PathBuf, args: Vec<String>) -> Option<std::process::Output> {
-    tokio::task::spawn_blocking(move || {
+    crate::code::hands::spawn_blocking(move || {
         std::process::Command::new("git")
             .args(&args)
             .current_dir(&root)

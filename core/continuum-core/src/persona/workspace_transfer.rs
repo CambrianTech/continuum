@@ -531,7 +531,7 @@ pub async fn sync_after_act_for(persona: Uuid, persona_name: &str, root: PathBuf
     let actor_name = persona_name.to_string();
     let outcome = match tokio::time::timeout(
         SYNC_BOUND,
-        tokio::task::spawn_blocking(move || {
+        crate::code::hands::spawn_blocking(move || {
             // ONE sync per checkout at a time, held INSIDE the blocking task: two turns of one
             // card claim can end together (card fc9e9fd7), and a timed-out caller leaves its
             // git work running, so the lock must live with the work, not with the await.

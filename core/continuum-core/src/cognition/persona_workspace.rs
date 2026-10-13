@@ -1240,7 +1240,7 @@ pub(crate) async fn bind_card(
     }
     HeldCardTurn {
         credit: Some(credit),
-        hands: Some(CardHands { context, hands, _lease: lease }),
+        hands: Some(CardHands { context, hands, lease: std::sync::Arc::new(lease) }),
         unbound: None,
     }
 }
@@ -1313,7 +1313,7 @@ pub(crate) struct HeldCardTurn {
 pub(crate) struct CardHands {
     pub(crate) context: crate::code::hands::HandsContext,
     hands: ActingHands,
-    _lease: crate::code::hands::HandsLease,
+    lease: std::sync::Arc<crate::code::hands::HandsLease>,
 }
 
 impl CardHands {
@@ -1329,7 +1329,13 @@ impl CardHands {
 pub(crate) async fn end_card_turn(card: &CardHands) {
     let hands = &card.hands;
     if let (Some(root), Some(card_id)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
-        crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card_id).await;
+        // Under the turn's own admission: a sync that outlives its timeout keeps it until the
+        // git work returns, so a release can't remove the checkout under it (Astra on #5026).
+        crate::code::hands::admitted(
+            Some(std::sync::Arc::clone(&card.lease)),
+            crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card_id),
+        )
+        .await;
     }
 }
 
@@ -1461,7 +1467,10 @@ pub(crate) async fn end_acting_context(
     // on it (`move_blocker`). Bounded, probed, never the turn's failure. A root with no
     // card (an eval sandbox rooted directly) carries nothing: nothing to push.
     if let (Some(root), Some(card)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
-        crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card).await;
+        // Admitted to the context it syncs: the close below waits for the git work itself,
+        // even when the sync's own timeout already returned (Astra on #5026).
+        let admission = hands.context.and_then(|c| crate::code::hands::admit(c).ok()).map(std::sync::Arc::new);
+        crate::code::hands::admitted(admission, crate::persona::workspace_transfer::sync_after_act_for(hands.persona_id, &hands.persona_name, root, card)).await;
     }
     if hands.context.is_none() {
         return Err(crate::sdk_codegen::CommandError::Internal(

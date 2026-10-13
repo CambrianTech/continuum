@@ -130,6 +130,36 @@ pub fn admit(context: HandsContext) -> Result<HandsLease, String> {
     Ok(HandsLease { cell })
 }
 
+tokio::task_local! {
+    /// The admission of the command running on this task: set by the dispatcher for the
+    /// command's whole life, read by [`spawn_blocking`] so work the command hands to a blocking
+    /// thread keeps it.
+    static ADMITTED: Option<std::sync::Arc<HandsLease>>;
+}
+
+/// Run `work` (one dispatched command) holding `admission` as the task's current one.
+pub async fn admitted<F: std::future::Future>(admission: Option<std::sync::Arc<HandsLease>>, work: F) -> F::Output {
+    ADMITTED.scope(admission, work).await
+}
+
+/// THE shared owner of blocking work started by a dispatched command: the work keeps the
+/// command's admission until IT returns, not until the command's future does. A dispatch
+/// that is cancelled or times out drops its future, but a blocking thread can't be cancelled
+/// (a git operation runs to its end), and a release that finished under it would remove the
+/// workspace the operation is still writing (Astra on #5026). Every blocking spawn in a hands
+/// command goes through here; none is special-cased per tool.
+pub fn spawn_blocking<F, R>(work: F) -> tokio::task::JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let held = ADMITTED.try_with(|a| a.clone()).ok().flatten();
+    tokio::task::spawn_blocking(move || {
+        let _held = held;
+        work()
+    })
+}
+
 /// Close `context`'s hands to new work and wait until every admitted command and turn has
 /// ended: the first step of releasing them (`code/release-hands`). A closed gate STAYS
 /// closed: a context is never reused (a re-acquired card is a new claim), so a stale binding
@@ -208,6 +238,30 @@ mod tests {
         assert_ne!(eval.map_key(), live.map_key(), "an eval is not her live hands");
         assert_ne!(eval.map_key(), solve.map_key(), "two contexts are two sets of hands");
         assert!(eval.map_key().starts_with(&caller), "a context's hands stay attributable to their caller");
+    }
+
+    // what this catches (Astra on #5026): a dispatch cancelled while its blocking worker still
+    // runs. The waiter's future drops its admission, but the worker (a git operation) can't be
+    // cancelled, so a release that finished then would remove the workspace under it. Blocking
+    // work keeps the admission until IT returns: the release waits for the worker, not the waiter.
+    #[tokio::test]
+    async fn a_release_waits_for_a_blocking_worker_whose_waiter_was_cancelled() {
+        let key = HandsContext::fresh();
+        let (finish, finished) = std::sync::mpsc::channel::<()>();
+        let worker = admitted(Some(std::sync::Arc::new(admit(key).expect("open hands"))), async move {
+            spawn_blocking(move || {
+                let _ = finished.recv(); // the operation runs until told to end
+            })
+        })
+        .await; // the dispatched command's scope has ended: its waiter is gone
+        let closing = tokio::spawn(async move { close(key).await });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        assert!(!closing.is_finished(), "the release waits for the running worker, not its cancelled waiter");
+        finish.send(()).expect("the worker is still running");
+        worker.await.expect("the worker ends");
+        tokio::time::timeout(std::time::Duration::from_secs(5), closing).await.expect("the release completes once the worker returns").expect("close task");
     }
 
     // what this catches (Codex root and Astra on fc9e9fd7, #5026): closing a claim's hands
