@@ -1361,41 +1361,16 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), Cont
     let Some(context) = hands.context else {
         return Ok(()); // her live hands are never ended
     };
-    let ctx = crate::cognition::tool_executor::ToolExecutionContext {
-        persona_id: hands.persona_id,
-        persona_name: hands.persona_name.clone(),
-        session_id: Uuid::new_v4(),
-        context_id: Uuid::new_v4(),
-        caller_context: serde_json::Value::Null,
-        persona_config: crate::cognition::tool_executor::PersonaMediaConfigLite {
-            auto_load_media: false,
-            supported_media_types: vec![],
-        },
+    let release = match hands.executor.release_own_context().await {
+        Some(Ok(release)) => release,
+        Some(Err(e)) => return Err(ContextNotClosed::unknown(format!("closing acting context {}: {e}", context.id()))),
+        None => {
+            return Err(ContextNotClosed::unknown(format!(
+                "closing acting context {}: these hands carry a context but cannot release it",
+                context.id()
+            )))
+        }
     };
-    let call = crate::ai::types::ToolCall {
-        id: "close-acting-context".to_string(),
-        name: "code/release-hands".to_string(),
-        input: serde_json::json!({}),
-    };
-    let out = hands
-        .executor
-        .execute_native_batch(std::slice::from_ref(&call), &ctx, 8000)
-        .await
-        .map_err(|e| ContextNotClosed::unknown(format!("closing acting context {}: {e}", context.id())))?;
-    let result = out
-        .results
-        .first()
-        .ok_or_else(|| ContextNotClosed::unknown(format!("closing acting context {}: no result", context.id())))?;
-    if result.is_error.is_some() {
-        return Err(ContextNotClosed::unknown(format!("closing acting context {}: {}", context.id(), result.content)));
-    }
-    let release: crate::modules::code_commands::ReleaseHandsResult = serde_json::from_str(&result.content).map_err(|e| {
-        ContextNotClosed::unknown(format!(
-            "closing acting context {}: the release's result isn't its own shape ({e}), so nothing is confirmed: {}",
-            context.id(),
-            result.content
-        ))
-    })?;
     if !release.released {
         return Err(ContextNotClosed {
             message: format!(

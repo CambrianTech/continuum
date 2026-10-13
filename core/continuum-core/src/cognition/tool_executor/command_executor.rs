@@ -99,14 +99,7 @@ impl Drop for ContextRelease {
             rt.spawn(async move {
                 // Forget the place only on a CONFIRMED release: an unresolved one keeps the
                 // handles and the record together, so neither claims the other is gone.
-                let outcome = core
-                    .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity))
-                    .await
-                    .and_then(|r| match r {
-                        crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)
-                            .map_err(|e| format!("the release's result isn't its own shape: {e}")),
-                        _ => Err("the release answered in a shape other than its own JSON".to_string()),
-                    });
+                let outcome = release_hands_as(&core, identity).await;
                 match outcome {
                     Ok(release) if release.released => crate::cognition::persona_workspace::forget_acting_context(persona, context),
                     Ok(release) => tracing::warn!(
@@ -119,6 +112,21 @@ impl Drop for ContextRelease {
                 }
             });
         }
+    }
+}
+
+/// THE release of an acting context, as that context's own caller: `code/release-hands`
+/// dispatched with the context's identity, its typed result returned WHOLE. It is a command
+/// result, not model context, so it never goes through the model-facing tool path and its
+/// size budget (my 8000-char clip in #5005, card 9f883920). The normal close
+/// (`close_acting_context`) and the drop fallback both use it.
+pub(crate) async fn release_hands_as(
+    core: &CommandExecutor,
+    identity: CallerIdentity,
+) -> Result<crate::modules::code_commands::ReleaseHandsResult, String> {
+    match core.execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity)).await? {
+        crate::runtime::CommandResult::Json(v) => serde_json::from_value(v).map_err(|e| format!("the release's result isn't its own shape: {e}")), // command-dispatch boundary: execute_with_caller answers with the command's JSON cell
+        _ => Err("the release answered in a shape other than its own JSON".to_string()),
     }
 }
 
@@ -467,6 +475,11 @@ pub(crate) fn manual_blanks_in(input: &Value) -> Vec<String> {
 impl ToolExecutor for CommandToolExecutor {
     fn command_executor(&self) -> Option<Arc<CommandExecutor>> {
         self.core_executor()
+    }
+
+    async fn release_own_context(&self) -> Option<Result<crate::modules::code_commands::ReleaseHandsResult, String>> {
+        let release = self._release.as_ref()?;
+        Some(release_hands_as(&release.core, release.identity.clone()).await)
     }
 
     fn hands_context(&self) -> Option<crate::code::hands::HandsContext> {
