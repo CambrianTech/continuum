@@ -1049,10 +1049,12 @@ mod tests {
     /// (`list_fingerprint`), and resuming into a churned list is refused: dropping one
     /// continuation costs a re-read from the top — bounded, self-healing, never skips.
     ///
-    /// Fixture note, same lesson as the cross-room test above: the removal must change
-    /// what the offset points at. Index 0 sits before every `next >= 1`, and even at
-    /// `next == 0` re-storing a different first peer changes who position zero is — so
-    /// dropping names[0] exercises the guard for any offset this fixture can mint.
+    /// Fixture note, same lesson as the cross-room test above: for a positional resume
+    /// to skip someone, the removal must sit at or before the offset. The list is
+    /// name-ordered (units sorts by display_name), so the peer dropped here — Anwen —
+    /// sits at index 1, ahead of this fixture's offset (k=2 under an 8-token budget):
+    /// pre-fix the same index resumed past Aoife and she was never delivered; now it
+    /// must refuse.
     #[tokio::test]
     async fn a_continuation_is_refused_when_the_roster_churns_before_its_offset() {
         let rooms = roster_registry(&["Anwen", "Asha", "Anon", "Aoife"]);
@@ -1113,10 +1115,16 @@ mod tests {
             .expect("an unchanged list must still resume");
         let joined: String = resumed.items.iter().map(|i| i.content.clone()).collect::<Vec<_>>().join("\n");
 
-        for name in &names[k..] {
+        // `units` renders name-ordered — it sorts by display_name so the prompt's line
+        // order stays stable for KV reuse — so the expectation must come from THAT
+        // order, not fixture insertion order (which put Anon after this offset and
+        // failed CI; the resumed tail was correctly Aoife, Asha).
+        let mut ordered = names.to_vec();
+        ordered.sort_unstable();
+        for name in &ordered[k..] {
             assert!(joined.contains(name), "a peer at or after the offset must resume: {joined}");
         }
-        for name in &names[..k] {
+        for name in &ordered[..k] {
             assert!(!joined.contains(name), "a peer before the offset must not re-appear: {joined}");
         }
     }
