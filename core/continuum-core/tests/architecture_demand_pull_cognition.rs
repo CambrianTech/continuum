@@ -70,15 +70,8 @@ use continuum_core::persona::channel_view::CoherentInput;
 use continuum_core::persona::persona_identity::PersonaIdentity;
 use continuum_core::persona::types::{PersonaState, SenderType};
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
 fn make_chat(room: Uuid, sender: &str, content: &str) -> Arc<dyn QueueItemBehavior> {
-    make_chat_at(room, sender, content, now_ms())
+    make_chat_at(room, sender, content, continuum_core::time::EpochMs::now().millis())
 }
 
 fn make_chat_at(
@@ -201,7 +194,7 @@ fn service_cycle_multi_window_yields_one_input_with_remainder_deferred() {
     // so insertion-order-stable) is one of the 150; whatever its
     // timestamp is, drain_batch pulls a burst of items within
     // ±DEFAULT_BURST_WINDOW_MS of it.
-    let now = now_ms();
+    let now = continuum_core::time::EpochMs::now().millis();
     let w = DEFAULT_BURST_WINDOW_MS;
     for i in 0..50 {
         registry
@@ -435,8 +428,8 @@ async fn embedding_computed_once_across_concurrent_personas() {
         sender_name: "Joel".into(),
         sender_type: SenderType::Human,
         mentions: false,
-        timestamp: now_ms(),
-        enqueued_at: now_ms(),
+        timestamp: continuum_core::time::EpochMs::now().millis(),
+        enqueued_at: continuum_core::time::EpochMs::now().millis(),
         priority: 0.5,
         consolidated_context: Vec::new(),
         media: Vec::new(),

@@ -16,7 +16,6 @@
 //! can't sell compute). Both are asserted.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use airc_core::PeerId;
 use airc_test_fixtures::TwoAircLoopback;
@@ -64,13 +63,6 @@ impl ServiceModule for EchoModule {
     fn as_any(&self) -> &dyn std::any::Any {
         self
     }
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
 }
 
 #[tokio::test]
@@ -122,11 +114,11 @@ async fn owner_signed_grant_lets_grantee_run_a_tier_denied_command() {
     // + the owner's mesh + the owner's signature, all from the owner handle).
     let grant_b64 = issue_grant(
         owner,
-        now_ms(),
+        continuum_core::time::EpochMs::now().millis(),
         IssueGrantParams {
             grantee: PeerId(grantee_id),
             capabilities: vec!["compute/echo".to_string()],
-            expires_at_ms: Some(now_ms() + 3_600_000),
+            expires_at_ms: Some(continuum_core::time::EpochMs::now().millis() + 3_600_000),
             epoch: 1,
         },
     )
