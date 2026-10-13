@@ -34,6 +34,12 @@ pub struct CodeState {
     /// execution handles pollable (Kimi, 2026-09-29: code/shell-poll failing on every
     /// handle from an earlier turn).
     parked_shells: Arc<DashMap<String, Vec<ShellSession>>>,
+    /// One lock per set of hands, held while their root is MOVED (engine and shell together)
+    /// or a command is STARTED in it, never across an await. Two turns moving the same hands
+    /// used to interleave the engine insert and the shell re-root, leaving her code/* tools
+    /// in the card while her shell stood at home (card 2d58192d, Kimi #11697). Taken before
+    /// any map guard, so it nests outside every DashMap shard and never inside one.
+    hands_locks: Arc<DashMap<String, Arc<std::sync::Mutex<()>>>>,
 }
 
 /// How many set-aside sessions one caller keeps. Her roots per turn are few (home, the
@@ -51,7 +57,60 @@ impl CodeState {
             shell_sessions,
             rt_handle,
             parked_shells: Arc::new(DashMap::new()),
+            hands_locks: Arc::new(DashMap::new()),
         }
+    }
+
+    fn hands_lock(&self, who: &str) -> Arc<std::sync::Mutex<()>> {
+        self.hands_locks.entry(who.to_string()).or_default().clone()
+    }
+
+    /// Move `who`'s hands to `root`: her file engine (replaced by `engine`, or dropped for the
+    /// next call to provision when `None`) and her shell TOGETHER, under the hands lock, so
+    /// two movers serialize instead of interleaving (card 2d58192d).
+    pub fn move_hands(&self, who: &str, engine: Option<FileEngine>, root: &std::path::Path) {
+        let lock = self.hands_lock(who);
+        let _held = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes the move
+        match engine {
+            Some(engine) => {
+                self.file_engines.insert(who.to_string(), engine);
+            }
+            None => {
+                self.file_engines.remove(who);
+            }
+        }
+        self.re_root_shell(who, root);
+    }
+
+    /// Run `f` on the shell standing where `who`'s FILE ENGINE stands. The engine is the one
+    /// owner of the root; the shell follows it here, on every call, so however the two came
+    /// to disagree, the next command runs where her code/* tools act (card 2d58192d). Under
+    /// the hands lock: a session at another root is set aside (a running command in it keeps
+    /// going and stays pollable), one is opened with `open` when none stands at the root, and
+    /// `f` acts on THAT session, never one re-fetched after a later move. Nothing here awaits.
+    pub fn with_current_shell<R>(
+        &self,
+        who: &str,
+        open: impl FnOnce(&std::path::Path) -> Result<ShellSession, String>,
+        f: impl FnOnce(&mut ShellSession) -> Result<R, String>,
+    ) -> Result<R, String> {
+        let lock = self.hands_lock(who);
+        let _held = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes the start
+        let root = self
+            .file_engines
+            .get(who)
+            .map(|e| e.workspace_root())
+            .ok_or_else(|| "these hands have no workspace (no file engine)".to_string())?;
+        self.re_root_shell(who, &root);
+        if !self.shell_sessions.contains_key(who) {
+            let shell = open(&root)?;
+            self.shell_sessions.insert(who.to_string(), shell);
+        }
+        let mut shell = self
+            .shell_sessions
+            .get_mut(who)
+            .ok_or_else(|| "the shell vanished under the hands lock".to_string())?;
+        f(&mut shell)
     }
 
     /// Begin ending one set of hands: an acting context that is over (an eval or a fork
@@ -98,9 +157,14 @@ impl CodeState {
     /// Finish ending one set of hands, once every execution `begin_release` returned is
     /// confirmed gone: drop its file engine, its shell and its parked shells.
     pub fn finish_release(&self, who: &str) {
-        self.shell_sessions.remove(who);
-        self.parked_shells.remove(who);
-        self.file_engines.remove(who);
+        {
+            let lock = self.hands_lock(who);
+            let _held = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes the release
+            self.shell_sessions.remove(who);
+            self.parked_shells.remove(who);
+            self.file_engines.remove(who);
+        }
+        self.hands_locks.remove(who);
     }
 
     /// Move `who`'s shell to `new_root`. A no-op at the same root. Otherwise: first take back
@@ -361,6 +425,48 @@ mod tests {
         assert!(state.begin_release(who).is_empty(), "once reaped, nothing is left to wait out");
         state.finish_release(who);
         assert!(!state.shell_sessions.contains_key(who), "a confirmed release drops the context's shell");
+    }
+
+    // what this catches (card 2d58192d, Kimi #11697): her file engine and her shell standing in
+    // different roots. Two turns moving one set of hands interleaved the engine insert and the
+    // shell re-root, and an existing session was reused without comparing roots, so code/* acted
+    // in the card while code/shell ran at home. Here the interleave is simulated (the engine
+    // moved, the shell did not) with a command RUNNING in the old root: the next start runs where
+    // the engine stands, the running command keeps going and stays pollable, and move_hands
+    // takes engine and shell together.
+    #[tokio::test]
+    async fn a_command_starts_where_her_engine_stands_whatever_moved_the_shell() {
+        let rt = tokio::runtime::Handle::current();
+        let (home, card) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
+        let engine_at = |root: &std::path::Path| FileEngine::new("kimi", crate::code::PathSecurity::new(root).expect("a root"));
+        let open = |root: &std::path::Path| ShellSession::new(&uuid::Uuid::new_v4().to_string(), "kimi", root).map_err(|e| e.to_string());
+        let canon = |p: &std::path::Path| std::fs::canonicalize(p).expect("a real dir");
+
+        state.move_hands("kimi", Some(engine_at(home.path())), home.path());
+        let long = state
+            .with_current_shell("kimi", open, |s| s.execute("sleep 30", Some(60_000), &rt))
+            .expect("a command starts at home");
+
+        // the interleave: the engine moved to the card and the shell did not
+        state.file_engines.insert("kimi".into(), engine_at(card.path()));
+        let root = state
+            .with_current_shell("kimi", open, |s| Ok(s.workspace_root().to_path_buf()))
+            .expect("the next start");
+        assert_eq!(canon(&root), canon(card.path()), "the next command runs where her code/* tools act");
+        let earlier = state
+            .with_execution("kimi", &long, |s, id| s.get_execution_state(id))
+            .expect("the earlier command stays pollable");
+        assert_eq!(
+            earlier.lock().unwrap().status,
+            crate::code::shell_types::ShellExecutionStatus::Running,
+            "and keeps running in its own root"
+        );
+
+        state.move_hands("kimi", Some(engine_at(home.path())), home.path());
+        let shell_root = state.shell_sessions.get("kimi").map(|s| canon(s.workspace_root())).expect("a session");
+        assert_eq!(shell_root, canon(home.path()), "move_hands moves the shell with the engine");
+        state.with_execution("kimi", &long, |s, id| s.kill(id)).expect("clean up the test command");
     }
 
     fn module() -> CodeModule {

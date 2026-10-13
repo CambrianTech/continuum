@@ -480,13 +480,13 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
             .lock()
             .unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned marker still compares — the hands must move, never panic
         if last.get(who).cloned().flatten() != card_root {
-            state.file_engines.remove(&who.to_string());
-            // Set aside, never drop: the same handle-keeping move as create-workspace.
+            // Set aside, never drop: the same handle-keeping move as create-workspace, and
+            // the engine and shell move together (card 2d58192d).
             let new_root = card_root
                 .clone()
                 .or_else(|| std::env::current_dir().ok())
                 .unwrap_or_default(); // unwrap_or_default: an unreadable cwd parks the old session and opens fresh
-            state.re_root_shell(who, &new_root);
+            state.move_hands(who, None, &new_root);
             crate::probe!(
                 class = "code.hands.rerooted",
                 who = who,
@@ -601,42 +601,43 @@ static LAST_CARD_ROOT: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, Option<std::path::PathBuf>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
-/// Lazily ensure shell execution state exists for `who`, rooted at the
-/// caller's ENGINE root — the one workspace authority per caller (the operator's
-/// cwd, a peer's citizen layer, or whatever `create-workspace` pinned). Never a
-/// second independent cwd fallthrough: before this, a peer's shell rooted at the
-/// core's cwd even when her file engine didn't, which is how narrated shell
-/// commands landed in the shared checkout. Idempotent; one execution registry per
-/// caller retains handles and configured cwd/env. Each command starts a fresh
-/// shell process: shell `cd`, assignments, exports and options do not flow back
-/// into this registry or into later calls.
-async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<(), CommandError> {
+/// Act on the caller's shell, rooted at her ENGINE root — the one workspace authority per
+/// caller (the operator's cwd, a peer's citizen layer, or whatever `create-workspace`
+/// pinned). Never a second independent cwd: before this, a peer's shell rooted at the core's
+/// cwd even when her file engine didn't, which is how narrated shell commands landed in the
+/// shared checkout. The engine is provisioned first (it may await the board for her held
+/// card); then, under the hands lock and with no await, the shell is brought to the engine's
+/// root and `f` runs on that very session (card 2d58192d: a check-then-fetch let a concurrent
+/// re-root slip between them). One execution registry per caller retains handles and
+/// configured cwd/env; each command starts a fresh shell process, so shell `cd`, assignments,
+/// exports and options do not flow back into it or into later calls.
+async fn with_shell<R>(
+    state: &CodeState,
+    ctx: &Ctx,
+    f: impl FnOnce(&mut ShellSession) -> Result<R, String>,
+) -> Result<R, CommandError> {
     let key = hands_key(ctx);
     let map_key = key.map_key();
-    let who = map_key.as_str();
-    // The ENGINE decides the root and evicts a shell whose root moved (a held card
-    // claimed after the shell was opened) — so it runs first; a shell that survives
-    // it is current. Checking the shell first let a pre-claim `code/shell` pin the
-    // hands at the core's cwd for the session's whole life (2026-09-12, live).
+    // The ENGINE decides the root (and moves the hands when a held card changed), so it runs
+    // first. Checking the shell first let a pre-claim `code/shell` pin the hands at the core's
+    // cwd for the session's whole life (2026-09-12, live).
     ensure_engine(state, &key).await?;
-    if state.shell_sessions.contains_key(who) {
-        return Ok(());
-    }
-    let root = state
-        .file_engines
-        .get(&who.to_string())
-        .map(|e| e.workspace_root())
-        .ok_or_else(|| CommandError::Internal("engine vanished after provisioning".into()))?;
-    let session_id = uuid::Uuid::new_v4().to_string();
-    let mut shell = ShellSession::new(&session_id, &key.caller, &root)
-        .map_err(|e| CommandError::Internal(format!("shell init failed: {e}")))?;
-    // A citizen's shell is confined to her roots (card d598c806); the operator's is the
-    // operator's. Decided by the SAME trust the gate saw, never by a params field.
-    if let Some(confinement) = confinement_of(ctx, &root) {
-        shell.confine(confinement);
-    }
-    state.shell_sessions.entry(who.to_string()).or_insert(shell);
-    Ok(())
+    state
+        .with_current_shell(
+            &map_key,
+            |root| {
+                let mut shell = ShellSession::new(&uuid::Uuid::new_v4().to_string(), &key.caller, root)
+                    .map_err(|e| format!("shell init failed: {e}"))?;
+                // A citizen's shell is confined to her roots (card d598c806); the operator's is
+                // the operator's. Decided by the SAME trust the gate saw, never by a params field.
+                if let Some(confinement) = confinement_of(ctx, root) {
+                    shell.confine(confinement);
+                }
+                Ok(shell)
+            },
+            f,
+        )
+        .map_err(CommandError::Internal)
 }
 
 /// The confinement this caller's children and reads are held to: `None` for the
@@ -1498,23 +1499,15 @@ impl ActionCommand for CodeShell {
         ctx: &Ctx,
         p: CodeShellParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
-        let who = hands_key(ctx).map_key();
-        ensure_shell(&self.state, ctx).await?;
-
-        // Start the command while briefly holding the shell entry, then DROP the
-        // DashMap ref before awaiting — never hold a lock across `.await` (the
-        // bounded wait below blocks the turn, not the shard). [[concurrency-style-guide]]
-        let state_arc = {
-            let mut shell = self.state.shell_sessions.get_mut(&who).ok_or_else(|| {
-                CommandError::Internal("shell vanished after provisioning".into())
-            })?;
-            let exec_id = shell
-                .execute(&p.cmd, p.timeout_ms, &self.state.rt_handle)
-                .map_err(CommandError::Internal)?;
-            shell
-                .get_execution_state(&exec_id)
-                .map_err(CommandError::Internal)?
-        };
+        // Start the command on the session standing at her engine's root, chosen and started
+        // under the hands lock, then hold only the execution's own state across the await
+        // (the bounded wait below blocks the turn, not the shard). [[concurrency-style-guide]]
+        let rt = self.state.rt_handle.clone();
+        let state_arc = with_shell(&self.state, ctx, |shell| {
+            let exec_id = shell.execute(&p.cmd, p.timeout_ms, &rt)?;
+            shell.get_execution_state(&exec_id)
+        })
+        .await?;
 
         // BOUNDED inline wait: return the moment it completes, or hand back the
         // handle when the window elapses — never block past wait_ms. No DashMap
@@ -2023,21 +2016,20 @@ impl ActionCommand for CodeCreateWorkspace {
         } else {
             crate::code::file_engine::WritePolicy::Warn
         };
-        self.state.file_engines.insert(
-            who.clone(),
-            FileEngine::new(&key.caller, security).with_write_policy(policy),
+        // An explicit create-workspace OVERRIDES any engine `ensure_engine` lazily provisioned,
+        // and moves the caller's shell to the new root in the SAME locked step, so a concurrent
+        // mover can't leave the two in different roots (card 2d58192d). The old session is SET
+        // ASIDE, not dropped: a work turn roots at the card and restores home every turn, and
+        // dropping lost every execution handle she had been given (Kimi, 2026-09-29).
+        self.state.move_hands(
+            &who,
+            Some(FileEngine::new(&key.caller, security).with_write_policy(policy)),
+            root,
         );
-        // Move the caller's shell to the NEW root. `ensure_shell` early-returns when a session
-        // exists, so without this a re-root moved her FILE engine and left her SHELL in the old
-        // directory. The old session is SET ASIDE, not dropped: a work turn roots at the card
-        // and restores home every turn, and dropping lost every execution handle she had been
-        // given (Kimi, 2026-09-29).
-        self.state
-            .re_root_shell(&who, std::path::Path::new(&p.workspace_root));
         if !p.path_prepend.is_empty() {
-            ensure_shell(&self.state, ctx).await?;
-            if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
-                let prepend = p.path_prepend.join(":");
+            let prepend = p.path_prepend.join(":");
+            let workspace = p.workspace_root.clone();
+            with_shell(&self.state, ctx, |shell| {
                 // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
                 // reconstructed PATH. The shell runs as the user's LOGIN shell
                 // (shell_session.rs), which already carries the user's full toolchain and
@@ -2054,16 +2046,18 @@ impl ActionCommand for CodeCreateWorkspace {
                 // ways: with PYTHONPATH at her workspace the issue repro fails
                 // pre-fix and passes post-fix through her exact edit semantics.
                 // PYTHONPATH precedes the venv's .pth entries, so her tree wins.
-                shell.set_env("PYTHONPATH".to_string(), p.workspace_root.clone());
-                crate::probe!(
-                    class = "code.workspace.path_prepend",
-                    caller = who.as_str(),
-                    prepend = prepend.as_str(),
-                    pythonpath = p.workspace_root.as_str(),
-                    "granted the caller's shell an era PATH prefix + PYTHONPATH at her \
-                     workspace so her edits are what her interpreter imports"
-                );
-            }
+                shell.set_env("PYTHONPATH".to_string(), workspace.clone());
+                Ok(())
+            })
+            .await?;
+            crate::probe!(
+                class = "code.workspace.path_prepend",
+                caller = who.as_str(),
+                prepend = prepend.as_str(),
+                pythonpath = workspace.as_str(),
+                "granted the caller's shell an era PATH prefix + PYTHONPATH at her \
+                 workspace so her edits are what her interpreter imports"
+            );
         }
         Ok(CreateWorkspaceResult {
             created: true,
