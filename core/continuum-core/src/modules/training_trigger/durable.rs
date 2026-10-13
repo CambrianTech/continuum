@@ -2319,14 +2319,21 @@ mod tests {
         assert!(!jd.join("request.json").exists(), "the canonical layout has no request file");
         let completed = CompletedJob { local_id: job, persona_name: "test-p".into(), trait_kind: "code".into() };
 
-        // The crash: the bucket durably accepts the remainder, and the core dies before its receipt.
-        let mut remainder = old.state.dispatched_request(&key, dispatch, job).await.unwrap();
-        remainder.dataset.examples = parked.iter().map(|&i| remainder.dataset.examples[i].clone()).collect();
-        assert!(return_request(&old.state, remainder, job, ReturnScope::Parked(&parked)).await.unwrap().success);
-        assert!(!jd.join(REMAINDER_RECEIPT).exists());
+        // The dispatching core is gone; the one that boots next holds only what the durable store
+        // says is pending (the dispatched batch is not). It durably accepts the remainder, and dies
+        // before writing the receipt.
         old.shutdown().await.unwrap();
         drop(executor);
         drop(old);
+        let (crashed, crashed_executor) = build_runtime(adapter.clone(), false).await;
+        let mut remainder = crashed.state.dispatched_request(&key, dispatch, job).await.unwrap();
+        remainder.dataset.examples = parked.iter().map(|&i| remainder.dataset.examples[i].clone()).collect();
+        let accepted = return_request(&crashed.state, remainder, job, ReturnScope::Parked(&parked)).await.unwrap();
+        assert!(accepted.success, "the remainder is durably accepted before the crash: {accepted:?}");
+        assert!(!jd.join(REMAINDER_RECEIPT).exists());
+        crashed.shutdown().await.unwrap();
+        drop(crashed_executor);
+        drop(crashed);
 
         let (next, _executor) = build_runtime(adapter, false).await;
         let replayed = return_parked_remainder(&next.state, &board, artifacts.path(), &completed).await.unwrap();
