@@ -5,4 +5,4 @@
  * answer: it runs these, so the CLI no longer re-derives them from markers and
  * process command lines (card 12047f8e, group C).
  */
-export type LiveWork = { "kind": "benchmark", run: string, instance: string, } | { "kind": "eval", run: string, } | { "kind": "training", job: string, };
+export type LiveWork = { "kind": "benchmark", run: string, instance: string, } | { "kind": "eval", run: string, };

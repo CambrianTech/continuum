@@ -52,8 +52,6 @@ pub enum LiveWork {
     Benchmark { run: String, instance: String },
     /// A `cognition/eval` run whose world names this core as its owner.
     Eval { run: String },
-    /// A native training job (`forge/train`), journaled killed-by-reboot if stopped.
-    Training { job: String },
 }
 
 impl std::fmt::Display for LiveWork {
@@ -61,12 +59,17 @@ impl std::fmt::Display for LiveWork {
         match self {
             LiveWork::Benchmark { run, instance } => write!(f, "benchmark run {run} on {instance}"),
             LiveWork::Eval { run } => write!(f, "eval run {run}"),
-            LiveWork::Training { job } => write!(f, "training job {job}"),
         }
     }
 }
 
 /// The live work in this process, read from the core's own state.
+///
+/// Training is not listed. Engine-mode training runs inside the engine lane, which a
+/// reboot keeps (`keep_lanes`), and the job board reattaches to it. On the 5090, 119
+/// engine-local jobs since 2026-10-06 all reached a terminal claim and none was
+/// journaled killed-by-reboot. `forge/train`'s Python `mlx_lm` path is the CLI's
+/// remaining guard until card 878f100f decides its fate.
 pub fn live_work() -> Vec<LiveWork> {
     let mut live: Vec<LiveWork> = crate::cognition::swe_bench::in_flight_solve_runs()
         .into_iter()
@@ -79,10 +82,6 @@ pub fn live_work() -> Vec<LiveWork> {
             .filter(|(_, owner)| *owner == me)
             .map(|(run, _)| LiveWork::Eval { run }),
     );
-    let training = crate::forge::mlx_job::current_train_status();
-    if training.is_training_running {
-        live.push(LiveWork::Training { job: training.job_id });
-    }
     live
 }
 
@@ -359,19 +358,19 @@ mod tests {
         assert!(String::from_utf8_lossy(&output.stdout).contains("received-completed-shutdown-receipt"));
     }
 
-    // what this catches: a shutdown that kills a live solve, eval or training run without
+    // what this catches: a shutdown that kills a live solve or eval run without
     // consent, and a wire change that breaks the CLI on the other side of a version skew:
     // a reboot's NEW CLI drains the OLD core, and an old CLI may drain a new one.
     #[test]
     fn live_work_refuses_a_drain_without_consent_across_versions() {
         let live = vec![
             LiveWork::Benchmark { run: "r1".into(), instance: "django__django-1".into() },
-            LiveWork::Training { job: "j9".into() },
+            LiveWork::Eval { run: "e9".into() },
         ];
         let crate::sdk_codegen::CommandError::Invalid(msg) = refuse_over_live_work(&live, false).unwrap_err() else {
             panic!("live work is a domain precondition, not an internal failure");
         };
-        assert!(msg.contains("benchmark run r1 on django__django-1") && msg.contains("training job j9"), "{msg}");
+        assert!(msg.contains("benchmark run r1 on django__django-1") && msg.contains("eval run e9"), "{msg}");
         assert!(msg.contains("Nothing was drained"), "{msg}");
         assert!(refuse_over_live_work(&live, true).is_ok(), "consent drains");
         assert!(refuse_over_live_work(&[], false).is_ok(), "nothing live drains");
@@ -380,7 +379,7 @@ mod tests {
         // An old CLI reads the new binding as the bare target it knew.
         let binding = serde_json::to_value(ShutdownBinding { target: target.clone(), live_work: live }).unwrap();
         assert_eq!(serde_json::from_value::<ShutdownTarget>(binding.clone()).unwrap(), target);
-        assert_eq!(binding["liveWork"][1], serde_json::json!({ "kind": "training", "job": "j9" }));
+        assert_eq!(binding["liveWork"][1], serde_json::json!({ "kind": "eval", "run": "e9" }));
         // An old CLI's bare target is a drain with no consent.
         let old = serde_json::from_value::<ShutdownDrainParams>(serde_json::to_value(&target).unwrap()).unwrap();
         assert!(!old.over_live_work);
