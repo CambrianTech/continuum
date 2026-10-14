@@ -1603,17 +1603,19 @@ impl WorkingMemory {
         }
     }
 
-    pub fn record_settlement(&self, answer_head: &str) {
+    pub fn record_settlement(&self, answer_head: &str, room: Option<Uuid>) {
         // Deferred ring hygiene: the settle just closed, the next prompt
         // re-prefills regardless — collapse over-cap results NOW, never mid-settle.
         self.collapse_results_over_cap();
         let a = answer_head.trim();
         let scope = self.scope.lock().clone();
         let mut e = self.entries.lock();
-        // Settling one root ends only that root's authored decision. The
-        // existing unscoped settlement marker keeps its historical semantics.
+        // End only the authored decision for this activity and exact root. An
+        // unknown room cannot establish that boundary. The existing unscoped
+        // settlement marker keeps its historical semantics.
         e.retain(|entry| {
-            entry.scope != scope || !matches!(entry.kind, WmKind::ActionStatement { .. })
+            entry.scope != scope
+                || !matches!(entry.kind, WmKind::ActionStatement { room: authored_room } if Some(authored_room) == room)
         });
         e.push_back(WmEntry {
             kind: WmKind::Settlement,
@@ -1933,17 +1935,22 @@ mod rebuilt_marker {
         let wm = WorkingMemory::new(16);
         wm.record_fact("prior fact");
         wm.record_action_statement("unrooted decision", room);
+        wm.record_settlement("another room finished", Some(Uuid::new_v4()));
+        wm.record_settlement("unknown room finished", None);
+        assert_eq!(wm.action_statement(room).as_deref(), Some("unrooted decision"));
         wm.set_scope(Some("task-a".into()));
         assert_eq!(wm.action_statement(room), None, "a newly inferred root cannot inherit unscoped authorship");
         wm.record_action_statement("task-a decision", room);
+        wm.record_settlement("another room in task-a finished", Some(Uuid::new_v4()));
+        assert_eq!(wm.action_statement(room).as_deref(), Some("task-a decision"));
         wm.record_receipt("read the declaration");
         wm.set_scope(Some("task-b".into()));
         wm.record_action_statement("task-b decision", room);
-        wm.record_settlement("task-b finished");
+        wm.record_settlement("task-b finished", Some(room));
         assert_eq!(wm.action_statement(room), None);
         wm.set_scope(None);
         assert_eq!(wm.action_statement(room).as_deref(), Some("unrooted decision"));
-        wm.record_settlement("conversation finished");
+        wm.record_settlement("conversation finished", Some(room));
         wm.set_scope(Some("task-a".into()));
         assert_eq!(wm.action_statement(room).as_deref(), Some("task-a decision"), "other roots and unscoped settlement cannot close task-a");
 
@@ -1960,7 +1967,7 @@ mod rebuilt_marker {
         restored.set_scope(Some("task-a".into()));
         assert_eq!(restored.action_statement(room).as_deref(), Some("task-a decision"));
         assert_eq!(restored.recent_entries().iter().map(|e| (&e.kind, &e.text)).collect::<Vec<_>>(), before.iter().map(|e| (&e.kind, &e.text)).collect::<Vec<_>>(), "authored entries retain their ring position");
-        restored.record_settlement("task-a finished");
+        restored.record_settlement("task-a finished", Some(room));
         assert_eq!(restored.action_statement(room), None);
         let settled = WorkingMemory::new(16);
         settled.restore(restored.snapshot());
@@ -2136,7 +2143,7 @@ mod tests {
         for _ in 0..4 {
             record_saved(&wm, &"s".repeat(cap / 2));
         }
-        wm.record_settlement("done");
+        wm.record_settlement("done", None);
         assert!(
             wm.recent_results_messages().join("\n").contains(&format!("{handle} — collapsed")),
             "it collapsed to a pointer"
@@ -2186,7 +2193,7 @@ mod tests {
         assert!(!wm.entries.lock().iter().any(|e| e.acts.iter().any(|a| a.call.id == children[0])), "its entry rolled out");
         assert!(children.iter().all(|c| live(c)), "the receipt still holds its children");
 
-        wm.record_settlement("done");
+        wm.record_settlement("done", None);
         assert!(wm.recent_results_messages().join("\n").contains(&format!("{receipt} — collapsed")), "collapsed to a pointer");
         assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
 
@@ -2334,7 +2341,7 @@ mod tests {
         for _ in 0..4 {
             record_saved(&wm, &"s".repeat(cap / 2));
         }
-        wm.record_settlement("done");
+        wm.record_settlement("done", None);
         let whole = |m: &WorkingMemory| m.recent_results_messages().iter().any(|r| r.ends_with(&unsaved));
         assert!(whole(&wm), "kept whole through settlement");
         assert!(
@@ -2382,7 +2389,7 @@ mod tests {
         );
         // …and SETTLEMENT collapses over-cap results to pointers, restoring the bound. The
         // results that stay are WHOLE (never a tail); the rest are one-line pointers.
-        wm.record_settlement("done");
+        wm.record_settlement("done", None);
         let messages = wm.recent_results_messages();
         let kept: Vec<&String> = messages.iter().filter(|m| m.starts_with("[result ")).collect();
         assert!(!kept.is_empty(), "the newest results stay");
@@ -2403,9 +2410,9 @@ mod tests {
         );
         let head_after_collapse = wm.recent_results_messages().get(1).cloned();
         record_saved(&wm, "[action] code/read(a.rs) fine");
-        wm.record_settlement("one");
+        wm.record_settlement("one", None);
         record_saved(&wm, "[action] code/read(b.rs) fine");
-        wm.record_settlement("two");
+        wm.record_settlement("two", None);
         assert_eq!(
             wm.recent_results_messages().get(1).cloned(),
             head_after_collapse,
@@ -2470,10 +2477,10 @@ mod tests {
         assert!(super::super::deliberation_budget::near_identical_substantial(passed, failed));
         let wm = Arc::new(WorkingMemory::new(8));
         wm.set_served_window(32_768);
-        wm.record_settlement(passed);
+        wm.record_settlement(passed, None);
         wm.record_receipt("code/read found the regression");
-        wm.record_settlement(failed);
-        wm.record_settlement(passed);
+        wm.record_settlement(failed, None);
+        wm.record_settlement(passed, None);
         let entries = wm.recent_entries();
         assert_eq!(
             entries.iter().map(|entry| &entry.kind).collect::<Vec<_>>(),
@@ -2549,7 +2556,7 @@ mod tests {
         wm.record("thinking about the tokenizer");
         wm.record_receipt("I ran code/list({\"path\":\".\"}) Result: 4 files");
         wm.record_fact("[unfulfilled] I said I would run commands, but no tool ran");
-        wm.record_settlement("shared the plan");
+        wm.record_settlement("shared the plan", None);
         wm.note_action_fingerprint("code/list|{\"path\":\".\"}");
         // A dispatched compile still Running at snapshot time — only its LABEL
         // survives, not evidence about later completion or side effects.
@@ -2765,7 +2772,7 @@ mod tests {
         typed.set_scope(Some("another-workspace".into()));
         assert!(typed.active_action_observations(seq).is_empty());
         typed.set_scope(None);
-        typed.record_settlement("observed");
+        typed.record_settlement("observed", None);
         assert!(typed.active_action_observations(seq).is_empty());
         typed.record_receipt_typed(&[obs], "new result", None, crate::ai::types::ResultCustody::Unsaved);
         assert!(typed.active_action_observations(seq).is_empty());
@@ -2867,7 +2874,7 @@ mod tests {
         for _ in 0..4 {
             record_saved(&restored, &"x".repeat(restored.budget().recent_results_chars()));
         }
-        restored.record_settlement("reported");
+        restored.record_settlement("reported", None);
         assert!(restored.recent_results_messages().join("\n").contains(
             &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
         ));
@@ -2901,7 +2908,7 @@ mod tests {
             );
         };
         assert_whole_or_handle(&memory);
-        memory.record_settlement("work remains on this card");
+        memory.record_settlement("work remains on this card", None);
         assert_whole_or_handle(&memory);
         let restarted = WorkingMemory::new(8);
         restarted.set_served_window(16_384);
@@ -3184,7 +3191,7 @@ mod tests {
         );
 
         // The persona SETTLES → the full result drops out; the trail head remains.
-        wm.record_settlement("the workspace has a wordstats crate");
+        wm.record_settlement("the workspace has a wordstats crate", None);
         assert!(
             wm.active_action_full().is_none(),
             "a settled result is no longer active"
@@ -3326,7 +3333,7 @@ mod tests {
     fn record_settlement_marks_a_boundary_in_the_buffer() {
         let wm = WorkingMemory::new(4);
         wm.record_receipt("I ran commands/list({}) -> 100 commands");
-        wm.record_settlement("there are 100 commands");
+        wm.record_settlement("there are 100 commands", None);
         let recent = wm.recent();
         assert_eq!(recent.len(), 2);
         assert!(
@@ -3338,7 +3345,7 @@ mod tests {
             "carries the answer head as proprioception"
         );
         // A blank answer still marks the boundary (bare prefix, no fabricated text).
-        wm.record_settlement("   ");
+        wm.record_settlement("   ", None);
         let recent = wm.recent();
         assert_eq!(recent.last().unwrap(), WM_SETTLEMENT_PREFIX);
     }

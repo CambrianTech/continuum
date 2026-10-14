@@ -1241,7 +1241,7 @@ pub async fn settle_step(
                     .chars()
                     .take(body.working_memory.budget().trail_head_chars())
                     .collect();
-                body.working_memory.record_settlement(&head);
+                body.working_memory.record_settlement(&head, Some(ws.activity_room_id));
                 // Unfulfilled-promise backstop (#122): a Speak that NARRATES action
                 // (first-person intent + fence) which nothing lifted/executed —
                 // reaching this arm means no format recognized it — leaves her

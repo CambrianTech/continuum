@@ -8356,7 +8356,7 @@ mod tests {
                 .iter()
                 .all(|m| !matches!(&m.content, MessageContent::Parts(_))));
             wm.set_scope(None);
-            wm.record_settlement("observed");
+            wm.record_settlement("observed", None);
             assert!(faculty
                 .active_visual_feedback(&binding)
                 .await
@@ -11172,7 +11172,7 @@ mod tests {
             memory.set_scope(Some("task-b".into()));
             assert!(faculty.messages_unfitted(&ws, None).action_statement.is_none(), "another task cannot inherit it");
             memory.set_scope(Some("task-a".into()));
-            memory.record_settlement("finished");
+            memory.record_settlement("finished", Some(room));
             assert!(faculty.messages_unfitted(&ws, None).action_statement.is_none(), "settlement ends this decision");
         }
 
