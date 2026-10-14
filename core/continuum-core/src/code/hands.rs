@@ -97,6 +97,10 @@ struct Gate {
     in_flight: usize,
     /// What admitted work started and couldn't confirm ended (Codex root on #5026).
     lingering: Lingering,
+    /// What that work's callers held for it ([`crate::inference::lane_process::holding`], a
+    /// checkout's sync lock): kept while anything lingers, released when a re-check finds
+    /// nothing left (Codex reviewer on #5037).
+    kept: Vec<crate::inference::lane_process::Kept>,
 }
 
 /// What admitted work started and couldn't confirm ended when it ended it (a `gh` and its
@@ -155,6 +159,14 @@ impl HandsLease {
         let mut g = self.cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
         g.lingering.unknown.push(why);
     }
+
+    /// Keep what an unconfirmed end's caller held for it ([`crate::inference::lane_process::holding`])
+    /// with what lingers, so an exclusion over a tree nobody confirmed ended stays held until a
+    /// re-check finds nothing left ([`retain_processes`]), never only until the end's task returns.
+    pub fn keep_held(&self, kept: &[crate::inference::lane_process::Kept]) {
+        let mut g = self.cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
+        g.kept.extend(kept.iter().cloned());
+    }
 }
 
 /// Admit work to `context`'s hands, or refuse by name when they are closing.
@@ -210,11 +222,15 @@ pub async fn close(context: HandsContext) -> Lingering {
 }
 
 /// After a release re-checked `context`'s lingering processes: keep only the ones still
-/// present, so a retried release re-checks exactly those. Unknown trees stay as they are.
+/// present, so a retried release re-checks exactly those. Unknown trees stay as they are. When
+/// nothing lingers any more, what callers held for that work is released.
 pub fn retain_processes(context: HandsContext, still: Vec<crate::inference::lane_process::ProcessIdentity>) {
     if let Some(cell) = GATES.get(&context) {
         let mut g = cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
         g.lingering.processes = still;
+        if g.lingering.is_empty() {
+            g.kept.clear();
+        }
     }
 }
 

@@ -483,13 +483,45 @@ pub(crate) fn deadline() -> Option<tokio::time::Instant> {
 /// that shells to git — `persona::workspace_transfer` carries a card's branch between
 /// nodes through it — rather than each seam re-deriving the hygiene below.
 pub(crate) async fn run_git(workspace_root: &Path, args: &[&str]) -> Result<String, String> {
-    run_git_input(workspace_root, args, &[], None).await
+    Ok(run_git_input(workspace_root, args, &[], None).await?)
 }
 
 /// [`run_git`] with extra environment for this one invocation (e.g. `GIT_AUTHOR_*` so a
 /// citizen's act commit is authored by her). Same hygiene; the env is applied last.
 pub(crate) async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
-    run_git_input(workspace_root, args, env, None).await
+    Ok(run_git_input(workspace_root, args, env, None).await?)
+}
+
+/// How a git that gave no answer ended, for a caller whose next step depends on whether it had
+/// an effect (a push: did the remote take it?).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GitEnd {
+    /// It never ran: it couldn't be spawned, or its deadline had passed. It had no effect.
+    NeverRan,
+    /// It exited non-zero: git's own verdict that it didn't do what was asked.
+    Refused,
+    /// Its effect is unknown: its deadline ended it mid-run, or it exited 0 but its input or
+    /// output wasn't whole, or its output couldn't be read (Codex reviewer on #5037).
+    Unknown,
+}
+
+/// A git that gave no answer: how it ended, and the one rendering of why.
+#[derive(Debug)]
+pub(crate) struct GitError {
+    pub(crate) end: GitEnd,
+    message: String,
+}
+
+impl std::fmt::Display for GitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl From<GitError> for String {
+    fn from(error: GitError) -> Self {
+        error.message
+    }
 }
 
 /// The ONE git runner: [`run_git`] with optional stdin `input` (a patch for `git apply`). Owned
@@ -497,13 +529,13 @@ pub(crate) async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: 
 /// An exit that isn't success is an `Err` with git's stderr; so is an output that wasn't read
 /// whole or an input that wasn't delivered; a deadline that ended it says its effect is UNKNOWN
 /// (a push may have landed), never that nothing happened.
-pub(crate) async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, String> {
+pub(crate) async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, GitError> {
     use crate::inference::lane_process::{run_owned_with_input, Answer, Why};
     let bound = match deadline() {
         Some(at) => {
             let left = at.saturating_duration_since(tokio::time::Instant::now());
             if left.is_zero() {
-                return Err(format!("git {} {NOT_STARTED}", args.join(" ")));
+                return Err(GitError { end: GitEnd::NeverRan, message: format!("git {} {NOT_STARTED}", args.join(" ")) });
             }
             Some(left)
         }
@@ -546,15 +578,20 @@ pub(crate) async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(
         .envs(env.iter().copied());
     let out = run_owned_with_input(cmd, input, bound, "git", std::sync::Arc::default())
         .await
-        .map_err(|e| format!("Failed to run git: {e}"))?;
+        .map_err(|e| GitError { end: GitEnd::NeverRan, message: format!("Failed to run git: {e}") })?;
     // the shared projection (lane_process::OwnedOutput::answer): a non-zero exit is git's own
     // failure, with its stderr, and any delivery note beside it; a deadline that ended it says
     // its effect is unknown
     if let Answer::Not(unanswered) = out.answer() {
-        let at_deadline = if matches!(unanswered.why, Why::TimedOut { .. }) { format!(" {INTERRUPTED}") } else { String::new() };
-        return Err(format!("git {}{at_deadline}: {unanswered}", args.join(" ")));
+        let (end, at_deadline) = match unanswered.why {
+            Why::Exited(_) => (GitEnd::Refused, String::new()),
+            Why::NotWhole => (GitEnd::Unknown, String::new()),
+            Why::TimedOut { .. } => (GitEnd::Unknown, format!(" {INTERRUPTED}")),
+        };
+        return Err(GitError { end, message: format!("git {}{at_deadline}: {unanswered}", args.join(" ")) });
     }
-    String::from_utf8(out.stdout.bytes).map_err(|e| format!("Invalid UTF-8 in git output: {}", e))
+    // it exited 0 with everything read whole, but what it said isn't text: what it did is unknown
+    String::from_utf8(out.stdout.bytes).map_err(|e| GitError { end: GitEnd::Unknown, message: format!("git {}: invalid UTF-8 in its output: {e}", args.join(" ")) })
 }
 
 #[cfg(test)]
@@ -1027,6 +1064,7 @@ mod tests {
 
         // a pipe holds 64 KiB; 1 MiB to a git that never reads stdin can't be delivered whole
         let err = run_git_input(dir.path(), &["--version"], &[], Some(vec![b'x'; 1 << 20])).await.unwrap_err();
-        assert!(err.contains("--version"), "input the git never took is an error naming it, never its output: {err}");
+        assert_eq!(err.end, GitEnd::Unknown, "it exited 0 without taking its input: what it did is unknown");
+        assert!(err.to_string().contains("--version"), "input the git never took is an error naming it, never its output: {err}");
     }
 }

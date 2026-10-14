@@ -154,9 +154,10 @@ pub enum PushOutcome {
     NotPushable { reason: &'static str },
     /// The sync did not finish inside [`SYNC_BOUND`]; the turn went on without it.
     TimedOut,
-    /// The deadline ended the PUSH itself: whether the remote took it is UNKNOWN. Never
-    /// read as pushed or as not pushed; the next sync reconciles with the remote before it
-    /// pushes again (Codex root on bfa87dd5).
+    /// Whether the remote took the push is UNKNOWN: the deadline ended it mid-run, or it exited
+    /// 0 with output that wasn't whole or readable. Never read as pushed or as not pushed; the
+    /// next sync reconciles with the remote before it pushes again (Codex root on bfa87dd5,
+    /// Codex reviewer on #5037).
     PushInterrupted { branch: String, error: String },
 }
 
@@ -477,16 +478,20 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
     // returns nothing here) leaves the remote unknown, and only a push that completed says what
     // the remote holds (Codex reviewer on #5037)
     REMOTE_UNKNOWN.insert(root.to_path_buf());
-    let pushed = run_git(root, &["push", "-u", "origin", &branch]).await;
-    if let Err(error) = &pushed {
-        if crate::code::git_bridge::interrupted(error) {
-            return PushOutcome::PushInterrupted { branch, error: error.clone() };
-        }
-    }
-    REMOTE_UNKNOWN.remove(root);
+    let pushed = crate::code::git_bridge::run_git_input(root, &["push", "-u", "origin", &branch], &[], None).await;
+    // only a conclusive end settles what the remote holds: a push that answered, one git refused,
+    // or one that never ran. A push cut off, or one whose output wasn't whole or readable, may
+    // have landed, so the remote stays unknown (Codex reviewer on #5037)
     match pushed {
-        Ok(_) => PushOutcome::Ok { branch, sha, committed, pushed: true },
-        Err(error) => push_failure(branch, error),
+        Err(error) if error.end == crate::code::git_bridge::GitEnd::Unknown => PushOutcome::PushInterrupted { branch, error: error.into() },
+        Ok(_) => {
+            REMOTE_UNKNOWN.remove(root);
+            PushOutcome::Ok { branch, sha, committed, pushed: true }
+        }
+        Err(error) => {
+            REMOTE_UNKNOWN.remove(root);
+            push_failure(branch, error.into())
+        }
     }
 }
 
@@ -1266,16 +1271,26 @@ mod tests {
         syncing.abort();
         assert!(syncing.await.expect_err("cancelled").is_cancelled(), "the sync was cancelled mid-push");
 
+        // No barrier can hold the tree's end at a phase, so this checks the ORDER, which holds at
+        // any timing (Codex reviewer on #5037 at 54060ccb2): the lock is seen free only after the
+        // hook is gone. Liveness is read AFTER the lock is seen free, so a hook that was alive
+        // then is still alive when read, never the reverse.
         let lock = CHECKOUT_SYNC.get(&m.a).map(|entry| entry.clone()).expect("the checkout's lock");
-        assert!(lock.try_lock().is_err(), "the cancelled sync's git is still being ended: the checkout stays held");
-        let freed = tokio::time::timeout(std::time::Duration::from_secs(10), lock.clone().lock_owned())
-            .await
-            .expect("the checkout is free once the git's tree has ended");
-        drop(freed);
         let pid = std::fs::read_to_string(&hook_pid).unwrap().trim().to_string();
-        let ps = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid]).output().expect("ps");
-        let stat = String::from_utf8_lossy(&ps.stdout).trim().to_string();
-        assert!(stat.is_empty() || stat.starts_with('Z'), "the push's hook ended with the git's tree before the lock was free: {stat}");
+        let hook_alive = || {
+            let ps = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid]).output().expect("ps");
+            let stat = String::from_utf8_lossy(&ps.stdout).trim().to_string();
+            !stat.is_empty() && !stat.starts_with('Z') // a zombie has exited: gone
+        };
+        let looked = tokio::time::Instant::now();
+        loop {
+            if lock.try_lock().map(drop).is_ok() {
+                assert!(!hook_alive(), "the checkout was free while the cancelled push's git still ran");
+                break;
+            }
+            assert!(looked.elapsed() < std::time::Duration::from_secs(10), "the checkout is free once the git's tree has ended");
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
 
         assert!(REMOTE_UNKNOWN.contains(&m.a), "a cancelled push leaves the remote unknown");
         std::fs::remove_file(&hook).unwrap();

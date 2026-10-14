@@ -348,6 +348,7 @@ impl OwnedChild {
         if let Some(lease) = &self.held {
             lease.keep_unknown(why);
         }
+        keep_with_lingering(self.held.as_ref(), &self.kept, self.label);
     }
 
     /// Hand the child to its end: a spawned task, so the caller's cancellation can't cut it
@@ -387,8 +388,33 @@ async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc
     if let Some(lease) = &held {
         lease.keep_unconfirmed(&end);
     }
-    drop(kept); // what its caller held for it is released only now that the tree's end is done
+    if !end.confirmed() {
+        keep_with_lingering(held.as_ref(), &kept, label);
+    }
+    drop(kept); // confirmed: what its caller held for it is released now that the tree has ended
     end
+}
+
+/// What a child's caller held for it ([`holding`]) goes where what it left unconfirmed goes: onto
+/// its admission's lingering record, released only when a re-check finds nothing left (Codex
+/// reviewer on #5037). With no admission nothing can confirm that end later, so it is never
+/// released: an exclusion over a tree nobody confirmed ended stays held (fail closed).
+fn keep_with_lingering(held: Option<&std::sync::Arc<crate::code::hands::HandsLease>>, kept: &[Kept], label: &'static str) {
+    if kept.is_empty() {
+        return;
+    }
+    match held {
+        Some(lease) => lease.keep_held(kept),
+        None => {
+            crate::probe!(
+                class = "process.kept_unconfirmed",
+                process = label,
+                kept = kept.len(),
+                "an owned process's end is unconfirmed and no admission can re-check it; what its caller held for it stays held"
+            );
+            kept.iter().cloned().for_each(std::mem::forget);
+        }
+    }
 }
 
 /// What an owned run left: each stream as read, and how the process ended.
@@ -1114,7 +1140,10 @@ mod tests {
 
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c").arg("echo before; sleep 600 & wait");
-        let timed = run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default()).await.expect("ran");
+        let exclusion: Kept = std::sync::Arc::new(());
+        let exclusion_held = std::sync::Arc::downgrade(&exclusion);
+        let timed = holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())).await.expect("ran");
+        assert!(exclusion_held.upgrade().is_none(), "a confirmed end releases what its caller held for it (Codex reviewer on #5037)");
         assert!(matches!(timed.ended, Ended::TimedOut { ref unconfirmed } if unconfirmed.is_empty()), "a timeout ends the tree and confirms it: {timed:?}");
         assert_eq!(String::from_utf8_lossy(&timed.stdout.bytes), "before\n", "and what it wrote before the bound is kept");
         assert!(matches!(timed.stdout.end, CaptureEnd::Cut(_)), "a timed-out read is cut, never complete: {timed:?}");
@@ -1135,8 +1164,12 @@ mod tests {
         let mut cmd = tokio::process::Command::new("sh");
         // the shell exits at once; its background sleep inherited stdout and stderr
         cmd.arg("-c").arg(format!("echo out; sleep 600 & echo $! > {}", holder_pid.display()));
+        // what the caller held for the run (a checkout's sync lock) stays held while the holder
+        // lingers unconfirmed, never only until the end's task returns (Codex reviewer on #5037)
+        let exclusion: Kept = std::sync::Arc::new(());
+        let exclusion_held = std::sync::Arc::downgrade(&exclusion);
         let started = std::time::Instant::now();
-        let out = crate::code::hands::admitted(Some(lease), run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default()))
+        let out = crate::code::hands::admitted(Some(lease), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
             .await
             .expect("ran");
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "the bound covers the pipes, not only the exit");
@@ -1145,6 +1178,7 @@ mod tests {
         assert!(matches!(out.stdout.end, CaptureEnd::Cut(ref why) if why.contains("held it past the bound")), "the read is cut by the holder: {out:?}");
         let lingering = crate::code::hands::close(context).await;
         assert_eq!(lingering.unknown.len(), 1, "the holder is held by name on the hands, never claimed ended: {lingering:?}");
+        assert!(exclusion_held.upgrade().is_some(), "and what its caller held for it stays held with it");
         if let Some(pid) = std::fs::read_to_string(&holder_pid).ok().and_then(|t| t.trim().parse::<u32>().ok()) {
             kill9(pid); // the test's own cleanup of the holder it made
         }
