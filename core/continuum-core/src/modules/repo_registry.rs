@@ -77,6 +77,20 @@ pub async fn own_checkout() -> Result<PathBuf, String> {
              the clone once to record it"
         )
     })?;
+    // the repository git resolves AT the path must be rooted there: a path with an invalid or
+    // empty `.git` under a valid parent must never pass on the parent's identity (Codex reviewer
+    // on #5041)
+    let toplevel = crate::code::git_bridge::run_git(&path, &["rev-parse", "--show-toplevel"])
+        .await
+        .map_err(|e| format!("the recorded checkout {} of {repo} is not a repository: {e}", path.display()))?;
+    let same = |a: &Path, b: &Path| a.canonicalize().ok().is_some_and(|a| b.canonicalize().ok().is_some_and(|b| a == b));
+    if !same(Path::new(toplevel.trim()), &path) {
+        return Err(format!(
+            "the recorded checkout {} of {repo} is not a repository root (git resolves {}): re-record from the clone",
+            path.display(),
+            toplevel.trim()
+        ));
+    }
     let origin = crate::code::git_bridge::run_git(&path, &["remote", "get-url", "origin"])
         .await
         .map_err(|e| format!("the recorded checkout {} of {repo} has no readable origin: {e}", path.display()))?;
@@ -156,6 +170,17 @@ mod tests {
         git(&["remote", "add", "origin", "https://github.com/SomeOrg/other-repo.git"]);
         let err = own_checkout().await.expect_err("another repository is not our checkout");
         assert!(err.contains("SomeOrg/other-repo") && err.contains("re-record"), "{err}");
+
+        // what this catches (Codex reviewer on #5041 at 2e4152cc): a recorded path holding an
+        // EMPTY `.git`, nested under a valid parent with our origin. path_for accepts it, and git
+        // used to resolve the parent from it (its ceiling was the root itself, not the root's
+        // parent), so the origin check passed for the parent while the child was returned.
+        git(&["remote", "set-url", "origin", "https://github.com/CambrianTech/continuum.git"]);
+        let nested = impostor.path().join("child");
+        std::fs::create_dir_all(nested.join(".git")).expect("an empty .git");
+        record("CambrianTech/continuum", &nested);
+        let err = own_checkout().await.expect_err("a nested non-repository is not our checkout");
+        assert!(err.contains("not a repository"), "{err}");
 
         let recorded = record_own_checkout_for_test();
         assert_eq!(own_checkout().await.expect("recorded"), recorded);

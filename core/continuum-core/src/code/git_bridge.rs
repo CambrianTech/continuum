@@ -559,16 +559,19 @@ pub(crate) async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(
         // ran them. Stripping these makes run_git context-clean — git
         // discovers from current_dir(workspace_root) only, no parent
         // contamination.
-        // GIT_CEILING_DIRECTORIES caps any residual upward discovery
-        // at workspace_root (defense in depth — env_remove handles the
-        // documented vars; ceiling handles anything new git might add
-        // in future versions).
+        // GIT_CEILING_DIRECTORIES caps upward discovery AT workspace_root:
+        // the ceiling is its PARENT, because git never chdirs up INTO a
+        // ceiling but does check the ceiling's children. A ceiling of the
+        // root itself let a root with an invalid or empty `.git` discover
+        // the repository above it (measured on macOS and Windows git,
+        // Codex reviewer on #5041). A root with no parent ("/") has
+        // nothing above it.
         .env_remove("GIT_DIR")
         .env_remove("GIT_WORK_TREE")
         .env_remove("GIT_COMMON_DIR")
         .env_remove("GIT_INDEX_FILE")
         .env_remove("GIT_PREFIX")
-        .env("GIT_CEILING_DIRECTORIES", workspace_root)
+        .env("GIT_CEILING_DIRECTORIES", workspace_root.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(workspace_root))
         // A headless core has no terminal: a fetch or push that would ask for
         // credentials must FAIL (a named outcome) rather than hang the turn on a prompt
         // nobody will answer.
@@ -957,6 +960,22 @@ mod tests {
         let dir = setup_git_repo().await;
         let log = git_log(dir.path(), 5).await.unwrap();
         assert!(log.contains("Initial"));
+    }
+
+    // what this catches (Codex reviewer on #5041): the runner's discovery ceiling was the root
+    // ITSELF, and git never chdirs up INTO a ceiling but does check its children, so a root with
+    // an empty `.git` resolved the repository ABOVE it, and its identity and origin with it.
+    // Measured on macOS and Windows git: the ceiling must be the root's parent.
+    #[tokio::test]
+    async fn a_root_never_discovers_the_repository_above_it() {
+        let parent = setup_git_repo().await;
+        let child = parent.path().join("child");
+        fs::create_dir_all(child.join(".git")).unwrap(); // an empty, invalid .git
+        let err = run_git(&child, &["rev-parse", "--show-toplevel"]).await.expect_err("the child is not a repository");
+        assert!(err.contains("not a git repository"), "never the parent's toplevel: {err}");
+        let plain = parent.path().join("plain");
+        fs::create_dir_all(&plain).unwrap(); // no .git at all
+        assert!(run_git(&plain, &["rev-parse", "--show-toplevel"]).await.is_err(), "a plain subdirectory is not its parent's repository");
     }
 
     #[tokio::test]
