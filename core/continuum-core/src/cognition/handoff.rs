@@ -118,7 +118,10 @@ fn with_seed<R>(persona: Uuid, f: impl FnOnce(&mut Seed) -> R) -> R {
 /// card wins. `room` when the caller knows the card's run room.
 pub fn note_held(persona: Uuid, room: Option<Uuid>, card: &airc_lib::WorkCard, now_ms: u64) {
     with_seed(persona, |s| {
-        if room.is_some() {
+        let changed_claim = s.card.as_ref().is_none_or(|previous| {
+            previous.card_id != card.card_id || previous.claim_id != card.claim_id
+        });
+        if room.is_some() || changed_claim {
             s.room = room;
         }
         s.card = Some(card.clone());
@@ -131,19 +134,24 @@ pub fn note_ledger(persona: Uuid, ledger: &CardLedger) {
     with_seed(persona, |s| s.ledger = Some(ledger.clone()));
 }
 
+/// The focus owner released the card hands; retained notes keep their own identity.
+pub(crate) fn note_unbound(persona: Uuid) {
+    with_seed(persona, |s| {
+        s.room = None;
+        s.card = None;
+        s.rooted_at_ms = None;
+    });
+}
+
 /// The seam renewal's board walk: everything the board says she OWNS, whole. Partitioned
 /// here through the SAME held predicate the renewal uses (`held_of_owned`: lease live, not
-/// claimable, not settled) — one definition of "held". A walk that finds no held work card
-/// CLEARS the card: the walk is the freshest truth, and a card she released, that merged, or
-/// whose lease lapsed must not ride into the next life as "you were working X" (Cormac on
+/// claimable, not settled) — one definition of "held". A walk that no longer finds the
+/// bound claim CLEARS it: a card she released, that merged, or whose lease lapsed
+/// must not ride into the next life as "you were working X" (Cormac on
 /// #4407). Her cards in Review and the review cards she holds are obligations.
 pub fn note_owned(persona: Uuid, owned: &[(airc_lib::Room, airc_lib::WorkCard)], now_ms: u64) {
     use airc_work::model::CardState;
     let held = crate::persona::airc_runtime::held_of_owned(owned.to_vec(), now_ms);
-    let held_work = held
-        .iter()
-        .find(|(_, card)| card.reviews.is_none())
-        .map(|(room, card)| (room.channel.as_uuid(), card.clone()));
     let mut obligations: Vec<airc_lib::WorkCard> = owned
         .iter()
         .filter(|(_, card)| matches!(card.state, CardState::Review))
@@ -159,6 +167,17 @@ pub fn note_owned(persona: Uuid, owned: &[(airc_lib::Room, airc_lib::WorkCard)],
     let mut seen = std::collections::HashSet::new();
     obligations.retain(|card| seen.insert(card.card_id));
     with_seed(persona, |s| {
+        // The board refreshes ownership; it does not root hands. Preserve the exact
+        // bound claim or clear it, never pair another held card with this checkout.
+        let held_work = s
+            .card
+            .as_ref()
+            .and_then(|bound| {
+                held.iter().find(|(_, card)| {
+                    card.card_id == bound.card_id && card.claim_id == bound.claim_id
+                })
+            })
+            .map(|(room, card)| (room.channel.as_uuid(), card.clone()));
         match held_work {
             Some((room, card)) => {
                 s.room = Some(room);
@@ -298,7 +317,9 @@ fn git_bounded(
     let label = format!("git {}", args.join(" "));
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     if remaining.is_zero() {
-        return Err(format!("{label}: the seam's staged budget was spent by earlier residents"));
+        return Err(format!(
+            "{label}: the seam's staged budget was spent by earlier residents"
+        ));
     }
     let mut child = std::process::Command::new("git")
         .arg("--no-optional-locks")
@@ -426,22 +447,40 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
                              checkpoint, up to one interval stale"
             .to_string(),
     };
-    let mut out = format!("[handoff] written {age} on build {}: {torn}.", short(&h.build_sha));
+    let mut out = format!(
+        "[handoff] written {age} on build {}: {torn}.",
+        short(&h.build_sha)
+    );
     match &h.card {
         Some(card) => {
-            let id8: String = card.card_id.as_uuid().simple().to_string().chars().take(8).collect();
-            let claim = match (card.claim_id, card.claim_expires_at_ms) {
-                (Some(c), Some(exp)) => format!(
+            let id8: String = card
+                .card_id
+                .as_uuid()
+                .simple()
+                .to_string()
+                .chars()
+                .take(8)
+                .collect();
+            let claim =
+                match (card.claim_id, card.claim_expires_at_ms) {
+                    (Some(c), Some(exp)) => {
+                        format!(
                     "claim {} whose lease {} — holding is UNVERIFIED until the board answers",
                     c.as_uuid().simple().to_string().chars().take(8).collect::<String>(),
                     lease_phrase(exp, now_ms)
-                ),
-                (Some(c), None) => format!(
-                    "claim {} with no lease edge recorded",
-                    c.as_uuid().simple().to_string().chars().take(8).collect::<String>()
-                ),
-                _ => "no claim recorded on the card".to_string(),
-            };
+                )
+                    }
+                    (Some(c), None) => format!(
+                        "claim {} with no lease edge recorded",
+                        c.as_uuid()
+                            .simple()
+                            .to_string()
+                            .chars()
+                            .take(8)
+                            .collect::<String>()
+                    ),
+                    _ => "no claim recorded on the card".to_string(),
+                };
             out.push_str(&format!(
                 "\n  You were working card {id8} ({}) in state {:?}; {claim}.",
                 card.title.trim(),
@@ -483,7 +522,16 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
         Some(l) => {
             let next = l.next_test.trim();
             out.push_str(&format!(
-                "\n  Your ledger (written {}): next test was \"{}\"{}.",
+                "\n  Your ledger for card {}{} (written {}): next test was \"{}\"{}.",
+                l.card_id,
+                if h.card
+                    .as_ref()
+                    .is_some_and(|card| card.card_id.as_uuid() == l.card_id)
+                {
+                    ""
+                } else {
+                    " (not the bound card)"
+                },
                 ago_phrase(l.at_ms, now_ms),
                 if next.is_empty() { "(none)" } else { next },
                 if h.acts_after_ledger {
@@ -498,7 +546,14 @@ pub fn render_on_wake(h: &Handoff, current_build: &str, now_ms: u64) -> String {
     if !h.obligations.is_empty() {
         out.push_str("\n  Open obligations at the seam:");
         for card in h.obligations.iter().take(6) {
-            let id8: String = card.card_id.as_uuid().simple().to_string().chars().take(8).collect();
+            let id8: String = card
+                .card_id
+                .as_uuid()
+                .simple()
+                .to_string()
+                .chars()
+                .take(8)
+                .collect();
             let who = if card.reviews.is_some() {
                 "you owe a review on"
             } else {
@@ -562,15 +617,37 @@ mod tests {
     fn the_seam_composes_whole_structs_from_what_the_turn_stamped() {
         let me = Uuid::from_u128(101);
         assert!(compose(me, TornBy::Stop, None, None, 5_000).is_none());
-        note_held(me, None, &card(airc_work::model::CardState::InProgress, false), 2_500);
+        note_held(
+            me,
+            None,
+            &card(airc_work::model::CardState::InProgress, false),
+            2_500,
+        );
         note_ledger(me, &ledger(3_000));
         let fresh = compose(me, TornBy::Stop, None, None, 5_000).expect("held work hands off");
-        assert_eq!(fresh.card.as_ref().map(|c| c.claim_expires_at_ms), Some(Some(2_000)));
-        assert_eq!(fresh.ledger.as_ref().map(|l| l.next_test.as_str()), Some("run the failing test"));
-        assert!(!fresh.acts_after_ledger, "the note at 3000 was written after the rooting at 2500");
-        note_held(me, None, &card(airc_work::model::CardState::InProgress, false), 4_000);
+        assert_eq!(
+            fresh.card.as_ref().map(|c| c.claim_expires_at_ms),
+            Some(Some(2_000))
+        );
+        assert_eq!(
+            fresh.ledger.as_ref().map(|l| l.next_test.as_str()),
+            Some("run the failing test")
+        );
+        assert!(
+            !fresh.acts_after_ledger,
+            "the note at 3000 was written after the rooting at 2500"
+        );
+        note_held(
+            me,
+            None,
+            &card(airc_work::model::CardState::InProgress, false),
+            4_000,
+        );
         let stale = compose(me, TornBy::Stop, None, None, 5_000).expect("held");
-        assert!(stale.acts_after_ledger, "a work turn rooted at 4000 postdates the note at 3000");
+        assert!(
+            stale.acts_after_ledger,
+            "a work turn rooted at 4000 postdates the note at 3000"
+        );
     }
 
     // what this catches: the seam walk partitions whole cards — a live-held work card is
@@ -593,15 +670,85 @@ mod tests {
         let mut review_held = card(airc_work::model::CardState::Claimed, true);
         review_held.card_id = airc_lib::WorkCardId::from_uuid(Uuid::from_u128(73));
         let owned = vec![
-            (room.clone(), in_progress),
             (room.clone(), in_review),
             (room.clone(), review_held),
+            (room.clone(), in_progress.clone()),
         ];
+        note_held(me, None, &in_progress, 1_400);
         note_owned(me, &owned, 1_500);
         let h = compose(me, TornBy::Periodic, None, None, 9_000).expect("held");
         assert_eq!(h.room, Some(Uuid::from_u128(55)));
-        assert_eq!(h.card.map(|c| c.state), Some(airc_work::model::CardState::InProgress));
+        assert_eq!(
+            h.card.map(|c| c.state),
+            Some(airc_work::model::CardState::InProgress)
+        );
         assert_eq!(h.obligations.len(), 2);
+    }
+
+    // what this catches (81097858): an older held card/ledger replacing the card whose
+    // checkout was bound, and a renewed claim masquerading as the previous hands.
+    #[tokio::test]
+    async fn renewal_refreshes_bound_claim_without_selecting_another_task() {
+        let me = Uuid::from_u128(110);
+        let room = airc_lib::Room {
+            version: 1,
+            name: "r".into(),
+            wire: std::path::PathBuf::new(),
+            channel: airc_core::RoomId::from_uuid(Uuid::from_u128(56)),
+            joined_at_ms: 0,
+        };
+        let older = card(airc_work::model::CardState::Review, false);
+        let mut current = card(airc_work::model::CardState::InProgress, false);
+        current.card_id = airc_lib::WorkCardId::from_uuid(Uuid::from_u128(74));
+        note_ledger(me, &ledger(1_000));
+        note_held(me, None, &current, 1_200);
+        current.claim_expires_at_ms = Some(3_000);
+        let mut owned = vec![(room.clone(), older), (room, current.clone())];
+        note_owned(me, &owned, 1_500);
+        let root = std::path::Path::new("current-checkout");
+        let h = compose(me, TornBy::Periodic, Some(root), None, 1_600).expect("bound");
+        assert_eq!(h.card, Some(current.clone()));
+        assert_eq!(
+            h.ledger,
+            Some(ledger(1_000)),
+            "retain the note with its own identity"
+        );
+        assert!(render_on_wake(&h, "abc", 1_600).contains("(not the bound card)"));
+        owned[1].1.claim_id = Some(airc_work::ClaimId::from_uuid(Uuid::from_u128(100)));
+        note_owned(me, &owned, 1_700);
+        let h = compose(me, TornBy::Periodic, Some(root), None, 1_800).expect("staged");
+        assert!(
+            h.card.is_none(),
+            "a different claim has not bound these hands"
+        );
+        assert!(
+            h.staged.is_some(),
+            "retain the checkout evidence without inventing a task"
+        );
+        note_held(me, None, &current, 1_850);
+        let cycle = crate::cognition::workspace::WorkspaceCycle::new(
+            vec![],
+            std::sync::Arc::new(crate::cognition::workspace::SalienceArbiter),
+            4,
+        );
+        let mut unavailable = current.clone();
+        unavailable.card_id = airc_lib::WorkCardId::new();
+        let turn = crate::cognition::persona_workspace::bind_card(&cycle, me, &unavailable).await;
+        assert!(
+            turn.hands.is_none(),
+            "no checkout/hands can be bound by this fixture"
+        );
+        assert_eq!(
+            compose(me, TornBy::Periodic, Some(root), None, 1_875)
+                .expect("bound")
+                .card,
+            Some(current)
+        );
+        note_unbound(me);
+        assert!(compose(me, TornBy::Periodic, None, None, 1_900)
+            .expect("ledger retained")
+            .card
+            .is_none());
     }
 
     // what this catches (Cormac on #4407): a card she no longer holds must not ride into the
@@ -610,8 +757,16 @@ mod tests {
     #[test]
     fn a_walk_with_no_hold_clears_the_card_she_once_rooted_at() {
         let me = Uuid::from_u128(104);
-        note_held(me, None, &card(airc_work::model::CardState::InProgress, false), 1_000);
-        assert!(compose(me, TornBy::Stop, None, None, 2_000).expect("held").card.is_some());
+        note_held(
+            me,
+            None,
+            &card(airc_work::model::CardState::InProgress, false),
+            1_000,
+        );
+        assert!(compose(me, TornBy::Stop, None, None, 2_000)
+            .expect("held")
+            .card
+            .is_some());
         note_owned(me, &[], 2_000);
         note_ledger(me, &ledger(1_500));
         let h = compose(me, TornBy::Stop, None, None, 3_000).expect("a ledger still hands off");
@@ -637,8 +792,14 @@ mod tests {
             progress_ms: 0,
         };
         continuum_cli_lifecycle::deploy_claim::write(&root, &dead).expect("claim written");
-        assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Stop);
-        assert_eq!(torn_by_for(SaveReason::Periodic, Some(&root), now_ms), TornBy::Periodic);
+        assert_eq!(
+            torn_by_for(SaveReason::Seam, Some(&root), now_ms),
+            TornBy::Stop
+        );
+        assert_eq!(
+            torn_by_for(SaveReason::Periodic, Some(&root), now_ms),
+            TornBy::Periodic
+        );
         let live = DeployClaim {
             pid: std::process::id() as i32,
             started_ms: now_ms - 1_000,
@@ -647,7 +808,10 @@ mod tests {
             progress_ms: 0,
         };
         continuum_cli_lifecycle::deploy_claim::write(&root, &live).expect("claim written");
-        assert_eq!(torn_by_for(SaveReason::Seam, Some(&root), now_ms), TornBy::Deploy(live));
+        assert_eq!(
+            torn_by_for(SaveReason::Seam, Some(&root), now_ms),
+            TornBy::Deploy(live)
+        );
         assert_eq!(torn_by_for(SaveReason::Seam, None, now_ms), TornBy::Stop);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -658,7 +822,12 @@ mod tests {
     #[test]
     fn the_wake_line_names_the_claim_and_its_lease_edge_and_calls_holding_unverified() {
         let me = Uuid::from_u128(105);
-        note_held(me, None, &card(airc_work::model::CardState::InProgress, false), 1_000);
+        note_held(
+            me,
+            None,
+            &card(airc_work::model::CardState::InProgress, false),
+            1_000,
+        );
         let h = compose(me, TornBy::Stop, None, None, 2_000).expect("held");
         let held = h.card.as_ref().expect("the whole card rides in the record");
         assert_eq!(held.claim_id.map(|c| c.as_uuid()), Some(Uuid::from_u128(9)));
@@ -666,19 +835,31 @@ mod tests {
         let line = render_on_wake(&h, "abc", 2_000);
         assert!(line.contains("claim 00000000"), "{line}");
         // The lease edge reads as time relative to now, never raw Unix ms (card 5d447195).
-        assert!(line.contains("lapsed under a minute ago (at 1970-01-01 00:00Z)"), "{line}");
+        assert!(
+            line.contains("lapsed under a minute ago (at 1970-01-01 00:00Z)"),
+            "{line}"
+        );
         assert!(!line.contains("Unix ms"), "{line}");
         // Pinned lines outlive their moment (Cormac on #4583): each carries its clock anchor.
         assert_eq!(
             super::lease_phrase(2_000 + 5 * 60_000, 2_000),
             "has ~5 min left (until 1970-01-01 00:05Z)"
         );
-        assert_eq!(super::ago_phrase(0, 3 * 60 * 60_000), "~3 h ago (at 1970-01-01 00:00Z)");
-        assert!(line.contains("holding is UNVERIFIED until the board answers"), "{line}");
+        assert_eq!(
+            super::ago_phrase(0, 3 * 60 * 60_000),
+            "~3 h ago (at 1970-01-01 00:00Z)"
+        );
+        assert!(
+            line.contains("holding is UNVERIFIED until the board answers"),
+            "{line}"
+        );
         // Regression f428279d: Kimi woke with the oldest candidate called "latest".
         // AIRC orders by accepted transcript events, not publisher clocks. Exercise the
         // same selector used by review consumers with the newer event's clock behind.
-        assert!(!line.contains("Latest submission on it"), "an empty card invents no candidate");
+        assert!(
+            !line.contains("Latest submission on it"),
+            "an empty card invents no candidate"
+        );
         let mut h = h;
         let held = h.card.as_mut().expect("held card");
         let newer = airc_work::WorkSubmission {
@@ -700,8 +881,17 @@ mod tests {
         older.submitted_at_ms = 1_500;
         held.submissions = vec![newer.clone(), older.clone()];
         let line = render_on_wake(&h, "abc", 2_000);
-        assert!(line.contains(&format!("Latest submission on it: {},", newer.submission_id)), "{line}");
-        assert!(!line.contains(&older.submission_id.to_string()), "the obsolete candidate must not be named latest: {line}");
+        assert!(
+            line.contains(&format!(
+                "Latest submission on it: {},",
+                newer.submission_id
+            )),
+            "{line}"
+        );
+        assert!(
+            !line.contains(&older.submission_id.to_string()),
+            "the obsolete candidate must not be named latest: {line}"
+        );
     }
 
     // what this catches (Kimi's #3 and #5): a deploy that did not land is SAID, a landed one
@@ -729,7 +919,10 @@ mod tests {
         let landed = render_on_wake(&h, "abcdef123", 60_000 + 5 * 60_000);
         assert!(landed.contains("LANDED"), "{landed}");
         assert!(landed.contains("~5 min ago"), "{landed}");
-        assert!(landed.ends_with("the board moved while you were dark."), "{landed}");
+        assert!(
+            landed.ends_with("the board moved while you were dark."),
+            "{landed}"
+        );
         let missed = render_on_wake(&h, "fffff0000", 60_000);
         assert!(missed.contains("did NOT land"), "{missed}");
         assert!(missed.contains("running fffff0000"), "{missed}");

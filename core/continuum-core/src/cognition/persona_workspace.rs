@@ -897,6 +897,9 @@ fn set_focus(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsCo
     if moved {
         crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
     }
+    if context.is_none() {
+        crate::cognition::handoff::note_unbound(persona_id);
+    }
 }
 
 /// Where the hands she is focused on stand (what she perceives and what her receipts are
@@ -1117,9 +1120,6 @@ async fn bind_held_card(
     let Some(focus) = crate::persona::work_focus::focus_workspace_card(held.iter()) else {
         return HeldCardTurn::unheld();
     };
-    // Stamped for the seam as the turn roots: the handoff record carries this card WHOLE
-    // (claim id, lease edge, submissions) without a board walk at stop time (card 49b5e806).
-    crate::cognition::handoff::note_held(peer_id, None, focus, EpochMs::now().millis());
     bind_card(cycle, peer_id, focus).await
 }
 
@@ -1217,6 +1217,8 @@ pub(crate) async fn bind_card(
         note_acting_card_in(peer_id, Some(context), focus.card_id.as_uuid());
     }
     set_focus(peer_id, Some(context));
+    // Both room and work turns stamp only after binding succeeds (81097858).
+    crate::cognition::handoff::note_held(peer_id, None, focus, EpochMs::now().millis());
     if let Some(body) = cycle.acting() {
         body.working_memory.set_scope(Some(ws.to_string_lossy().to_string()));
         // SAY WHERE SHE NOW STANDS when it is not where she was last told (card 822c4253):
