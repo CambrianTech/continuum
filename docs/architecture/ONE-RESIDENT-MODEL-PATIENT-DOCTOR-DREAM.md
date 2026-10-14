@@ -267,6 +267,26 @@ Each step lands with its gate measured on the fleet, with a build SHA and a time
 | P5 | **The core drives the step and the Python trainers are deleted.** The core's dream stage (§9.2) sends her served turns to the engine's step on her own slot; no `genome/job-create`, no window parameter, no dataset file. Deleted in the same change: `cuda_train.py`, the MLX trainer path, `convert_lora_to_gguf.py` and their Rust launchers (card 878f100f). | wingoes (deletion), Fable (core step); Cormac | the M5 and the 5090 learn with no Python on the machine; a turn served during a step is answered by her stable set (§2.1) |
 | P6 | **The acceptance test.** A reviewed correction, trained in place, is applied on unseen related tasks, retained after a normal restart, with unrelated skill intact, against the same base, tools and context without the gene. | Fable, Kimi (the learner); Joel decides | the receipt, both outliers |
 
+**The rule every step is checked against (Joel, 2026-10-13): training = inference + extra layers that switch on and off.** One graph builder. Off, the graph is the serving graph, bit for bit, and reuses serving's cached graph. On, the forward nodes are unchanged and the extras are appended: the trainable top layer (an adapter, the same on/off layer serving already composes), a loss over the labelled rows, the backward with its taps, and the optimizer write. Today the forward changes when training is on, and each difference is removed in P1:
+
+| Where (fork, read 2026-10-13) | Serving | Training today | Fix |
+|---|---|---|---|
+| `llama-graph.cpp:2617-2623` K/V cast | F32 K/V cast to F16 before flash attention | kept F32 (my 2026-10-11 choice, to hold cosine 1.0000 against an F32 reference) | serving's cast; gate on learning, not on cosine to F32 |
+| `llama-graph.cpp:2414` `uses_flash_attn` | flash attention | explicit attention for ALiBi, soft-cap, sinks, MLA | a flash-attention backward for those, or the family is named as not training |
+| `llama-graph.cpp:3694` `rs_keep` | n_rs_seq + 1 recurrent groups | 1 | the backward reads group 0; the graph keeps serving's groups |
+| `llama-context-opt.cpp:203-220` `decode_span` | — | toggles `cparams.training` per span, so one window builds two kinds of graph | one graph kind; the label mask switches the extras |
+
+**Precision: as low as makes it work, per piece, gated on learning** (held-out loss falls; the P6 acceptance test), never on cosine to an F32 reference.
+
+| Piece | Today | Target to measure |
+|---|---|---|
+| base weights | Q4_K (backward through quantized `out_prod`) | serving's quant, already |
+| K/V cache the step reads | serving's type; the step's own chunk F32 | serving's type throughout (q8_0, q4_0) |
+| activations kept for backward | F32 | F16/BF16, then lower |
+| gradients in flight, K/V and state accumulators | F32 (host accumulators F32, `ggml-opt.cpp:668-674`) | BF16, then 8-bit |
+| trainable layer A/B | F32, asserted (`llama-context-opt.cpp:101`) | BF16 |
+| optimizer moments m, v | F32, two per parameter (`ggml-opt.cpp:677-678`) | 8-bit |
+
 Known gaps, carded with owners rather than hidden: mamba-family bases cannot train (no `SSM_SCAN` backward in ggml); `llama-kv-cache-dsv4.cpp` carries a fifth rollback implementation outside `rs_keep`; per-sequence adapter lists in one decode batch (SGMV-style) are needed before many personas on one base share throughput.
 
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
