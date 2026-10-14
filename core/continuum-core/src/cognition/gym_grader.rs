@@ -391,6 +391,7 @@ mod tests {
     // the #[test] path (rejected) are pinned so the two can never be confused again.
     #[tokio::test]
     async fn hashtest_wrapped_test_is_rejected_not_false_passed() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         // WRONG sum_evens + a #[test]-wrapped test: must FAIL loud (format error), never pass.
         let (ok, msg) = test_grade(
             "```rust\nfn sum_evens(nums: &[i32]) -> i32 { 0 }\n```",
@@ -426,6 +427,7 @@ mod tests {
     // the objective verifier that lets "failure summons the smarts" hold.
     #[tokio::test]
     async fn code_verifier_passes_correct_draft_fails_wrong_one() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         use crate::cognition::resolution::Verifier;
         let v = CodeVerifier::new("rust", "assert_eq!(add(2, 3), 5);");
 
@@ -505,6 +507,7 @@ mod tests {
     // → PASS with "tests passed". Drives the real rustc grader end-to-end.
     #[tokio::test]
     async fn passing_test_grades_pass() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a + b }\n```";
         let (ok, grade) = test_grade(answer, "rust", "assert_eq!(add(2, 3), 5);").await;
         assert!(ok, "grade was: {grade}");
@@ -515,6 +518,7 @@ mod tests {
     // FAIL, and the panic message (not a vibe) is surfaced as the grade.
     #[tokio::test]
     async fn failing_test_grades_fail_with_panic() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a - b }\n```";
         let (ok, grade) = test_grade(answer, "rust", "assert_eq!(add(2, 3), 5);").await;
         assert!(!ok);
@@ -528,6 +532,7 @@ mod tests {
     // surfaced, so the persona can read what broke rather than guessing.
     #[tokio::test]
     async fn non_compiling_code_grades_fail_with_compile_error() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a + }\n```";
         let (ok, grade) = test_grade(answer, "rust", "let _ = add(2, 3);").await;
         assert!(!ok);
@@ -541,6 +546,7 @@ mod tests {
     // ACTING persona measurable at all (a spoken-text grade is blind to code she filed).
     #[tokio::test]
     async fn artifact_grade_reads_the_file_passes_correct_cleans_up_and_fails_loud() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let rel = format!("cu-gym-artifact-{}.rs", uuid::Uuid::new_v4());
         std::fs::write(&rel, "pub fn dbl(x: i32) -> i32 { x * 2 }\n").unwrap();
         let (ok, grade) = test_grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await;
@@ -581,6 +587,7 @@ mod tests {
     // multiple times` — Asha's answer carried a demo main).
     #[tokio::test]
     async fn candidate_with_its_own_main_still_grades_against_the_test() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let answer = "```rust\n\
             fn is_prime(n: u64) -> bool {\n\
             \x20   if n <= 1 { return false; }\n\
