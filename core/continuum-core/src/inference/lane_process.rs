@@ -251,6 +251,8 @@ async fn read_stream(pipe: Option<impl tokio::io::AsyncRead + Unpin>, into: std:
 struct OwnedChild {
     child: Option<tokio::process::Child>,
     readers: Vec<tokio::task::JoinHandle<()>>,
+    /// Writes the run's input to the child's stdin and closes it, beside the wait.
+    writer: Option<tokio::task::JoinHandle<()>>,
     capture: std::sync::Arc<RunCapture>,
     held: Option<std::sync::Arc<crate::code::hands::HandsLease>>,
     label: &'static str,
@@ -290,6 +292,9 @@ impl OwnedChild {
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
+        if let Some(writer) = self.writer.take() {
+            writer.abort(); // a child that never read its input doesn't keep a writer alive
+        }
         // its waiter is gone mid-run (cancel, panic): the end still runs, holding its admission;
         // the readers stop and what they read stays on the shared capture
         let reading = self.readers.iter().any(|r| !r.is_finished());
@@ -374,16 +379,43 @@ pub enum Ended {
 /// - a dropped waiter ends it the same way, and what it read stays on `capture`, the
 ///   operation's.
 pub async fn run_owned(
+    cmd: tokio::process::Command,
+    bound: Option<std::time::Duration>,
+    label: &'static str,
+    capture: std::sync::Arc<RunCapture>,
+) -> std::io::Result<OwnedOutput> {
+    run_owned_with_input(cmd, None, bound, label, capture).await
+}
+
+/// [`run_owned`] with `input` written to the child's stdin, which is then closed: an authored
+/// command's params, a patch for `git apply`. The write runs BESIDE the wait, so a child that
+/// never reads its stdin can't wedge the run past its bound; the writer is owned and stopped
+/// with the run.
+pub async fn run_owned_with_input(
     mut cmd: tokio::process::Command,
+    input: Option<Vec<u8>>,
     bound: Option<std::time::Duration>,
     label: &'static str,
     capture: std::sync::Arc<RunCapture>,
 ) -> std::io::Result<OwnedOutput> {
     cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    if input.is_some() {
+        cmd.stdin(std::process::Stdio::piped());
+    }
     let deadline = bound.map(|b| tokio::time::Instant::now() + b);
     let mut child = cmd.spawn()?;
     let (out_pipe, err_pipe) = (child.stdout.take(), child.stderr.take());
+    let writer = match (input, child.stdin.take()) {
+        (Some(bytes), Some(mut stdin)) => Some(tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            // a child that exits without reading closes the pipe; the write then ends, unread
+            let _ = stdin.write_all(&bytes).await;
+            let _ = stdin.shutdown().await;
+        })),
+        _ => None,
+    };
     let mut owned = OwnedChild {
+        writer,
         readers: vec![
             tokio::spawn(read_stream(out_pipe, capture.clone(), |c| &c.stdout)),
             tokio::spawn(read_stream(err_pipe, capture.clone(), |c| &c.stderr)),
@@ -984,6 +1016,32 @@ mod tests {
         if let Some(pid) = read_pid(&holder_pid) {
             kill9(pid); // the test's own cleanup of the holder it made
         }
+    }
+
+    // what this catches (card 679ae815): an authored command's params and a patch for
+    // `git apply` go to the child's stdin, and the old runner awaited that write BEFORE the
+    // wait, so a program that never read its stdin (with input past the pipe's buffer) wedged
+    // the call past its own bound. The input is delivered whole to a child that reads it, and
+    // a child that never reads it still ends at the bound.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn input_reaches_a_reading_child_and_a_child_that_never_reads_it_still_ends_at_the_bound() {
+        let mut cat = tokio::process::Command::new("cat");
+        cat.stdin(std::process::Stdio::piped());
+        let echoed = run_owned_with_input(cat, Some(b"params on stdin".to_vec()), Some(std::time::Duration::from_secs(10)), "test", std::sync::Arc::default())
+            .await
+            .expect("ran");
+        assert_eq!(echoed.stdout.bytes, b"params on stdin", "the input reached the child whole: {echoed:?}");
+
+        let mut deaf = tokio::process::Command::new("sleep");
+        deaf.arg("600");
+        let big = vec![b'x'; 4 << 20]; // far past any pipe buffer: a write that waited for a reader would never finish
+        let started = std::time::Instant::now();
+        let ended = run_owned_with_input(deaf, Some(big), Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())
+            .await
+            .expect("ran");
+        assert!(matches!(ended.ended, Ended::TimedOut { .. }), "{ended:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "the unread input didn't hold the run past its bound");
     }
 
     // what this catches (Codex root on #5030 at 1105c9286): a read error was swallowed and the

@@ -704,20 +704,26 @@ async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::proces
     if ASKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    let probe = tokio::time::timeout(Duration::from_secs(10), command.arg("--help").output()).await;
+    command.arg("--help");
+    // owned (lane_process::run_owned): a help probe that hangs is ended with anything it started
+    let probe = crate::inference::lane_process::run_owned(command, Some(Duration::from_secs(10)), "engine-help-probe", std::sync::Arc::default()).await;
     let (outcome, support, error) = match probe {
-        Ok(Ok(out)) => {
-            let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-            text.push('\n');
-            text.push_str(&String::from_utf8_lossy(&out.stderr));
-            let _ = ENGINE_TRAIN_DIR.set(engine_help_lists_train_dir(&text));
-            match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
-                Some(v) => ("answered", Some(v), String::new()),
-                None => ("did_not_enumerate", None, String::new()),
+        Err(e) => ("probe_failed", None, e.to_string()),
+        Ok(out) => match (&out.ended, out.capture_note()) {
+            (crate::inference::lane_process::Ended::TimedOut { .. }, _) => ("probe_timeout", None, "no answer in 10 s".to_string()),
+            // help text that wasn't read whole can't say which values it lists
+            (_, Some(note)) => ("probe_failed", None, note),
+            (crate::inference::lane_process::Ended::Exited(_), None) => {
+                let mut text = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
+                text.push('\n');
+                text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));
+                let _ = ENGINE_TRAIN_DIR.set(engine_help_lists_train_dir(&text));
+                match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
+                    Some(v) => ("answered", Some(v), String::new()),
+                    None => ("did_not_enumerate", None, String::new()),
+                }
             }
-        }
-        Ok(Err(e)) => ("probe_failed", None, e.to_string()),
-        Err(_) => ("probe_timeout", None, "no answer in 10 s".to_string()),
+        },
     };
     if let Some(v) = support {
         crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);

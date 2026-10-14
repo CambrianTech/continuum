@@ -4982,31 +4982,33 @@ async fn prebuilt_checkout_sha(
         use std::os::windows::process::CommandExt;
         cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
     }
-    let mut cmd = tokio::process::Command::from(cmd);
-    cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
-        .await
-        .map_err(|_| {
-            format!(
-                "prebuilt checkout HEAD lookup timed out in {}",
-                cwd.display()
-            )
-        })?
-        .map_err(|e| {
-            format!(
-                "cannot read prebuilt checkout HEAD in {}: {e}",
-                cwd.display()
-            )
-        })?;
-    if !output.status.success() {
+    // owned (lane_process::run_owned): a hung git is ended with anything it started
+    let output = continuum_core::inference::lane_process::run_owned(
+        tokio::process::Command::from(cmd),
+        Some(Duration::from_secs(30)),
+        "prebuilt-head-lookup",
+        std::sync::Arc::default(),
+    )
+    .await
+    .map_err(|e| format!("cannot read prebuilt checkout HEAD in {}: {e}", cwd.display()))?;
+    let status = match output.ended {
+        continuum_core::inference::lane_process::Ended::Exited(status) => status,
+        continuum_core::inference::lane_process::Ended::TimedOut { .. } => {
+            return Err(format!("prebuilt checkout HEAD lookup timed out in {}", cwd.display()))
+        }
+    };
+    if let Some(note) = output.capture_note() {
+        return Err(format!("cannot verify prebuilt checkout HEAD in {}: {note}", cwd.display()));
+    }
+    if !status.success() {
         return Err(format!(
             "cannot verify prebuilt checkout HEAD in {}: git exited {}: {}",
             cwd.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim(),
+            status,
+            String::from_utf8_lossy(&output.stderr.bytes).trim(),
         ));
     }
-    let head = String::from_utf8(output.stdout)
+    let head = String::from_utf8(output.stdout.bytes)
         .map_err(|e| format!("prebuilt checkout HEAD is not UTF-8: {e}"))?;
     let head = head.trim();
     if head.is_empty() {
