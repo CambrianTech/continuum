@@ -379,10 +379,86 @@ pub struct OwnedOutput {
     pub ended: Ended,
 }
 
+/// A run's answer, read ONE way by every consumer whose result is its stdout (an authored
+/// command, a git): see [`OwnedOutput::answer`].
+#[derive(Debug)]
+pub enum Answer<'a> {
+    /// It exited 0 with its input delivered and its output read whole: `stdout` is the answer.
+    Whole(&'a Captured),
+    /// Not an answer, carried with everything the run left (Codex root on #5038): render it
+    /// with `Display`, which says why, the note, and both streams as read.
+    Not(Unanswered<'a>),
+}
+
+/// Why a run is not an answer.
+#[derive(Debug)]
+pub enum Why<'a> {
+    /// It exited non-zero: ITS failure, outranking any delivery note.
+    Exited(std::process::ExitStatus),
+    /// It exited 0, but its input wasn't delivered or its output isn't whole.
+    NotWhole,
+    /// It outlived its bound and was ended with what it started; these pids are not confirmed gone.
+    TimedOut { unconfirmed: &'a [u32] },
+}
+
+/// A run that is not an answer, with every dimension it left: why, what of its input or
+/// output wasn't whole (`note`, beside the why and never in its place), and both streams.
+#[derive(Debug)]
+pub struct Unanswered<'a> {
+    pub why: Why<'a>,
+    pub note: Option<String>,
+    pub stdout: &'a Captured,
+    pub stderr: &'a Captured,
+}
+
+impl std::fmt::Display for Unanswered<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.why {
+            // a signal has no exit code: say the status itself
+            Why::Exited(status) => match status.code() {
+                Some(code) => write!(f, "exit {code}")?,
+                None => write!(f, "{status}")?,
+            },
+            Why::NotWhole => write!(f, "exited 0, but it is not an answer")?,
+            Why::TimedOut { unconfirmed } if unconfirmed.is_empty() => write!(f, "timed out")?,
+            Why::TimedOut { unconfirmed } => write!(f, "timed out; not confirmed gone: {unconfirmed:?}")?,
+        }
+        if let Some(note) = &self.note {
+            write!(f, " ({note})")?;
+        }
+        // both streams whole as read: what to show is the budgeter's call, never a fixed cut
+        // (Joel, 2026-10-11)
+        for (name, read) in [("stderr", self.stderr), ("stdout", self.stdout)] {
+            let text = String::from_utf8_lossy(&read.bytes);
+            if !text.trim().is_empty() {
+                write!(f, "\n{name}:\n{}", text.trim_end())?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl OwnedOutput {
-    /// Why its input wasn't delivered whole, when it wasn't: a consumer whose result depends
-    /// on its input (an authored command's params, a patch) rejects the result then.
-    pub fn input_note(&self) -> Option<String> {
+    /// The run's answer. A non-zero exit is the child's own verdict and outranks a delivery
+    /// note: a child may legitimately exit before reading its input, and whether the write lands
+    /// first is a race (canary run 38541241843, Codex root on #5035). A zero exit is an answer
+    /// only when its input was delivered whole and its output read whole. Every other shape keeps
+    /// its note and both streams, a timeout included.
+    pub fn answer(&self) -> Answer<'_> {
+        let notes: Vec<String> = [self.input_note(), self.capture_note()].into_iter().flatten().collect();
+        let note = (!notes.is_empty()).then(|| notes.join("; "));
+        let why = match self.ended {
+            Ended::TimedOut { ref unconfirmed } => Why::TimedOut { unconfirmed },
+            Ended::Exited(status) if !status.success() => Why::Exited(status),
+            Ended::Exited(_) if note.is_some() => Why::NotWhole,
+            Ended::Exited(_) => return Answer::Whole(&self.stdout),
+        };
+        Answer::Not(Unanswered { why, note, stdout: &self.stdout, stderr: &self.stderr })
+    }
+
+    /// Why its input wasn't delivered whole, when it wasn't: read through [`Self::answer`], where
+    /// it decides a zero exit and sits beside a non-zero one.
+    fn input_note(&self) -> Option<String> {
         match self.input.as_ref()? {
             CaptureEnd::Complete => None,
             CaptureEnd::Failed(why) => Some(format!("its input was not delivered ({why})")),
@@ -1104,6 +1180,11 @@ mod tests {
         assert!(matches!(ended.ended, Ended::TimedOut { .. }), "{ended:?}");
         assert!(started.elapsed() < std::time::Duration::from_secs(10), "the unread input didn't hold the run past its bound");
         assert!(matches!(ended.input, Some(CaptureEnd::Cut(_))), "and its input reads as cut, never delivered: {:?}", ended.input);
+        assert!(
+            matches!(ended.answer(), Answer::Not(Unanswered { why: Why::TimedOut { .. }, note: Some(ref note), .. }) if note.contains("input")),
+            "a timeout keeps its notes too (Codex root on #5038): {:?}",
+            ended.answer()
+        );
         assert_eq!(echoed.input, Some(CaptureEnd::Complete), "a child that took it all: delivered");
 
         // Codex root on #5035 at 549dce142: a child that closes its stdin without taking the
@@ -1117,7 +1198,26 @@ mod tests {
         assert!(matches!(closed.ended, Ended::Exited(status) if status.success()), "it exited 0: {closed:?}");
         assert_eq!(String::from_utf8_lossy(&closed.stdout.bytes).trim(), "{}", "with valid JSON");
         assert!(matches!(closed.input, Some(CaptureEnd::Failed(_))), "but its input was not delivered: {:?}", closed.input);
-        assert!(closed.input_note().is_some(), "and a required-input consumer is told so");
+        assert!(matches!(closed.answer(), Answer::Not(Unanswered { why: Why::NotWhole, note: Some(ref note), ref stdout, .. }) if note.contains("input") && stdout.bytes == b"{}\n"), "and it is not an answer: {:?}", closed.answer());
+
+        // canary run 38541241843 (Codex root on #5035): a child that exits non-zero BEFORE reading
+        // its input lost its own verdict to the broken-pipe note whenever the write landed first.
+        // Past the pipe's buffer the write can only end by the exit, so this is that race, always.
+        let mut refuses = tokio::process::Command::new("sh");
+        refuses.arg("-c").arg("echo boom >&2; exit 3");
+        let failed = run_owned_with_input(refuses, Some(vec![b'x'; 4 << 20]), Some(std::time::Duration::from_secs(10)), "test", std::sync::Arc::default())
+            .await
+            .expect("ran");
+        match failed.answer() {
+            Answer::Not(un) => {
+                assert!(matches!(un.why, Why::Exited(status) if status.code() == Some(3)), "its own exit status is kept: {un:?}");
+                assert_eq!(String::from_utf8_lossy(&un.stderr.bytes).trim(), "boom", "and its own stderr");
+                assert!(un.note.as_deref().is_some_and(|n| n.contains("input")), "the undelivered input is said beside it, never in place of it");
+                let said = un.to_string();
+                assert!(said.starts_with("exit 3 (") && said.contains("input") && said.ends_with("stderr:\nboom"), "and all of it is said: {said}");
+            }
+            other => panic!("a non-zero exit is the child's own failure: {other:?}"),
+        }
 
         // A cancelled run: the input's end is on the operation's capture, never left open.
         let capture = std::sync::Arc::new(RunCapture::default());
