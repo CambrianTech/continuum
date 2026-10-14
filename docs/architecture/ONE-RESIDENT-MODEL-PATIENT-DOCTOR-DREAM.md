@@ -291,7 +291,7 @@ Each step lands with its gate measured on the fleet, with a build SHA and a time
 | trainable layer A/B | F32, asserted (`llama-context-opt.cpp:101`) | BF16 |
 | optimizer moments m, v | F32, two per parameter (`ggml-opt.cpp:677-678`) | 8-bit |
 
-Known gaps, carded with owners rather than hidden: mamba-family bases cannot train (no `SSM_SCAN` backward in ggml); `llama-kv-cache-dsv4.cpp` carries a fifth rollback implementation outside `rs_keep`; per-sequence adapter lists in one decode batch (SGMV-style) are needed before many personas on one base share throughput.
+Known gaps, carded with owners rather than hidden: Ornith-1.5-35B and every MoE base cannot train (no `MUL_MAT_ID` backward in `ggml_compute_backward`, so no gradient crosses an expert layer; Fable takes CPU + Metal, CUDA proposed to BigMama); mamba-family bases cannot train (no `SSM_SCAN` backward in ggml); `llama-kv-cache-dsv4.cpp` carries a fifth rollback implementation outside `rs_keep`; per-sequence adapter lists in one decode batch (SGMV-style) are needed before many personas on one base share throughput.
 
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
 
