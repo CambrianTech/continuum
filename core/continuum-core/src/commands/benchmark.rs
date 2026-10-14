@@ -2115,15 +2115,11 @@ impl ActionCommand for BenchmarkDispatch {
             Some(r) => r,
             None => match repo_hint {
                 Some(hint) => Some(hint),
-                // Process cwd: the core is launched from the checkout root by
-                // start-server.sh, and cognition/eval + gym resolve their roots the same
-                // way. The git runner caps discovery at that directory, so it must BE the
-                // root. That is a real cwd dependency of the #195 class, not a pretence
-                // otherwise: if the core is ever launched from elsewhere this returns None
-                // and the caller is asked for `repo` — a loud fallback, never a wrong board
-                // key.
-                None => match std::env::current_dir() {
-                    Ok(cwd) => crate::code::git_bridge::origin_repo_slug(&cwd).await,
+                // Our recorded checkout's origin, never the process cwd: a launchd core
+                // runs in its data dir (card 2a2cd6f1). No recorded checkout returns None
+                // and the caller is asked for `repo`, never a wrong board key.
+                None => match crate::modules::repo_registry::own_checkout().await {
+                    Ok(checkout) => crate::code::git_bridge::origin_repo_slug(&checkout).await,
                     Err(_) => None,
                 },
             }

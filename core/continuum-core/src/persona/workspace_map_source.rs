@@ -99,7 +99,7 @@ impl WorkspaceLayout {
 }
 
 /// Abstract reader over the workspace layout. Production rides on the same
-/// [`FileEngine`](crate::code::FileEngine) the code tools use ([`CwdWorkspaceLayoutReader`]); tests stub
+/// [`FileEngine`](crate::code::FileEngine) the code tools use ([`OwnCheckoutWorkspaceLayoutReader`]); tests stub
 /// it without touching the filesystem. Mirrors the `AircDoctrineReader` rail.
 #[async_trait::async_trait]
 pub trait WorkspaceLayoutReader: Send + Sync {
@@ -109,17 +109,19 @@ pub trait WorkspaceLayoutReader: Send + Sync {
 }
 
 /// Reads the layout from the SAME machinery the persona's hands resolve against:
-/// a [`FileEngine`](crate::code::FileEngine) rooted at the process cwd (exactly what `ensure_engine`
-/// roots at), top-level entries via `list_dir`. This is what guarantees the map
+/// a [`FileEngine`](crate::code::FileEngine) rooted at our recorded checkout (exactly what
+/// `ensure_engine` roots the local operator at, `repo_registry::own_checkout`; never the
+/// process cwd, card 2a2cd6f1), top-level entries via `list_dir`. This is what guarantees the map
 /// can never drift from what `code/glob` / `code/list` actually see.
 #[derive(Default)]
-pub struct CwdWorkspaceLayoutReader(LayoutReader);
+pub struct OwnCheckoutWorkspaceLayoutReader(LayoutReader);
 
 #[async_trait::async_trait]
-impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
+impl WorkspaceLayoutReader for OwnCheckoutWorkspaceLayoutReader {
     async fn layout(&self) -> Result<WorkspaceLayout, String> {
-        let root =
-            std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?;
+        let root = crate::modules::repo_registry::own_checkout()
+            .await
+            .map_err(|e| format!("workspace root unavailable: {e}"))?;
         self.0.read_layout(root).await
     }
 }
@@ -297,7 +299,7 @@ impl WorkspaceMapSource {
 
     /// Construct with the production cwd-rooted reader (operator scope / tests).
     pub fn from_cwd(persona_id: uuid::Uuid) -> Self {
-        Self::new(persona_id, Arc::new(CwdWorkspaceLayoutReader::default()))
+        Self::new(persona_id, Arc::new(OwnCheckoutWorkspaceLayoutReader::default()))
     }
 
     /// Construct rooted at the persona's own citizen layer — the live persona
@@ -737,15 +739,21 @@ mod tests {
         }
     }
 
-    // what this catches: the production cwd reader actually reads the real
-    // process workspace and returns a non-empty, sorted directory list — the
+    // what this catches: the production reader reads our RECORDED checkout (never the
+    // process cwd, card 2a2cd6f1) and returns a non-empty, sorted directory list — the
     // same machinery the code tools resolve against (drift-proofing).
     #[tokio::test]
-    async fn cwd_reader_reads_real_workspace() {
-        let layout = CwdWorkspaceLayoutReader::default()
+    async fn own_checkout_reader_reads_real_workspace() {
+        // its own home, under the env lock: the reader resolves the recorded checkout, and
+        // recording it must never touch the developer's real ~/.continuum
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        let checkout = crate::modules::repo_registry::record_own_checkout_for_test();
+        let layout = OwnCheckoutWorkspaceLayoutReader::default()
             .layout()
             .await
-            .expect("cwd layout must read");
+            .expect("own checkout layout must read");
+        assert_eq!(layout.root, checkout, "the map roots at the recorded checkout, never the cwd");
         assert!(
             !layout.top_level_dirs.is_empty(),
             "a real checkout has top-level directories"
@@ -942,6 +950,7 @@ mod tests {
         // `~/.continuum/citizens/`.
         let home = tempfile::tempdir().expect("tempdir");
         let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        crate::modules::repo_registry::record_own_checkout_for_test(); // the shared base the layer clones from
         let layout = reader.layout().await.expect("reader provisions the layer");
         let cwd = std::env::current_dir().expect("cwd");
         assert_ne!(

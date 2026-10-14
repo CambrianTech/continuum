@@ -56,6 +56,55 @@ pub fn path_for(repo: &str) -> Option<PathBuf> {
     None
 }
 
+/// The checkout of the repository this core is built from, as this node recorded it: the
+/// shared base a citizen layer clones and refreshes from, and the operator's own root. Its
+/// repository is Cargo's declared `repository`, never a hardcoded name; its path is the one
+/// the CLI recorded from inside the clone. NEVER the process cwd: a launchd-installed core
+/// runs in its data dir (`WorkingDirectory` = ~/.continuum), which is not a checkout, and
+/// reading it there left every citizen layer unrefreshed, 735 commits behind canary on
+/// IntelMac (card 2a2cd6f1).
+///
+/// The recorded path is verified, not trusted: its `origin` must name the declared repository
+/// (read through the owned git runner). A path replaced by another clone, or a repointed origin,
+/// is refused by name, because the operator writes there and a citizen layer's refresh merges
+/// from it with unrelated histories allowed (Codex reviewer on #5041).
+pub async fn own_checkout() -> Result<PathBuf, String> {
+    let repo = repo_id_from_remote(env!("CARGO_PKG_REPOSITORY"))
+        .ok_or("continuum-core's Cargo.toml declares no repository")?;
+    let path = path_for(&repo).ok_or_else(|| {
+        format!(
+            "this node has no recorded checkout of {repo}: run any `continuum` verb from inside \
+             the clone once to record it"
+        )
+    })?;
+    // the repository git resolves AT the path must be rooted there: a path with an invalid or
+    // empty `.git` under a valid parent must never pass on the parent's identity (Codex reviewer
+    // on #5041)
+    let toplevel = crate::code::git_bridge::run_git(&path, &["rev-parse", "--show-toplevel"])
+        .await
+        .map_err(|e| format!("the recorded checkout {} of {repo} is not a repository: {e}", path.display()))?;
+    let same = |a: &Path, b: &Path| a.canonicalize().ok().is_some_and(|a| b.canonicalize().ok().is_some_and(|b| a == b));
+    if !same(Path::new(toplevel.trim()), &path) {
+        return Err(format!(
+            "the recorded checkout {} of {repo} is not a repository root (git resolves {}): re-record from the clone",
+            path.display(),
+            toplevel.trim()
+        ));
+    }
+    let origin = crate::code::git_bridge::run_git(&path, &["remote", "get-url", "origin"])
+        .await
+        .map_err(|e| format!("the recorded checkout {} of {repo} has no readable origin: {e}", path.display()))?;
+    match repo_id_from_remote(origin.trim()) {
+        Some(found) if found.eq_ignore_ascii_case(&repo) => Ok(path),
+        found => Err(format!(
+            "the recorded checkout {} is {}, not {repo}: run any `continuum` verb from inside {repo}'s \
+             clone to re-record it",
+            path.display(),
+            found.as_deref().unwrap_or("an unidentifiable repository")
+        )),
+    }
+}
+
 /// The clone root from `git rev-parse --path-format=absolute --git-common-dir`:
 /// `<clone>/.git` → `<clone>`, from the main clone AND from a linked worktree.
 pub fn clone_root_from_common_dir(common_dir: &str) -> Option<PathBuf> {
@@ -73,9 +122,69 @@ pub fn repo_id_from_remote(url: &str) -> Option<String> {
     }
 }
 
+/// Record the clone this test binary was built from as this node's own checkout, in the
+/// CURRENT home's registry (callers hold `test_env::HomeGuard`): the fixture for code that
+/// resolves `own_checkout`. The clone root comes from git's common dir, so a linked worktree
+/// records its clone, as the CLI does.
+#[cfg(test)]
+pub(crate) fn record_own_checkout_for_test() -> PathBuf {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("git runs in the test environment");
+    let root = clone_root_from_common_dir(&String::from_utf8_lossy(&out.stdout)).expect("the test tree is inside a clone");
+    let repo = repo_id_from_remote(env!("CARGO_PKG_REPOSITORY")).expect("continuum-core declares its repository");
+    record(&repo, &root);
+    root
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 2a2cd6f1): "our checkout" read from the process cwd, which a
+    // launchd-installed core sets to its data dir. Every citizen layer on IntelMac stopped
+    // refreshing, 735 commits behind canary. `own_checkout` reads only the recorded clone of
+    // the repo Cargo declares: with none recorded it fails by name even though this test's
+    // cwd IS inside a checkout, and once recorded it returns that clone.
+    #[tokio::test]
+    async fn own_checkout_is_the_recorded_clone_never_the_cwd() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        let err = own_checkout().await.expect_err("nothing recorded under this home");
+        assert!(err.contains("CambrianTech/continuum") && err.contains("no recorded checkout"), "{err}");
+
+        // what this catches (Codex reviewer on #5041): a valid clone of ANOTHER repository at
+        // the recorded path (replaced, or its origin repointed) was trusted. The operator would
+        // write there and a layer refresh would merge it with unrelated histories allowed.
+        let impostor = tempfile::tempdir().expect("impostor");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git").args(args).current_dir(impostor.path()).status().expect("git").success();
+            assert!(ok, "git {args:?}");
+        };
+        git(&["init", "-q"]);
+        record("CambrianTech/continuum", impostor.path());
+        let err = own_checkout().await.expect_err("a clone with no origin is not our checkout");
+        assert!(err.contains("no readable origin"), "{err}");
+        git(&["remote", "add", "origin", "https://github.com/SomeOrg/other-repo.git"]);
+        let err = own_checkout().await.expect_err("another repository is not our checkout");
+        assert!(err.contains("SomeOrg/other-repo") && err.contains("re-record"), "{err}");
+
+        // what this catches (Codex reviewer on #5041 at 2e4152cc): a recorded path holding an
+        // EMPTY `.git`, nested under a valid parent with our origin. path_for accepts it, and git
+        // used to resolve the parent from it (its ceiling was the root itself, not the root's
+        // parent), so the origin check passed for the parent while the child was returned.
+        git(&["remote", "set-url", "origin", "https://github.com/CambrianTech/continuum.git"]);
+        let nested = impostor.path().join("child");
+        std::fs::create_dir_all(nested.join(".git")).expect("an empty .git");
+        record("CambrianTech/continuum", &nested);
+        let err = own_checkout().await.expect_err("a nested non-repository is not our checkout");
+        assert!(err.contains("not a repository"), "{err}");
+
+        let recorded = record_own_checkout_for_test();
+        assert_eq!(own_checkout().await.expect("recorded"), recorded);
+    }
 
     // what this catches: the repo id drifting from the card's `owner/name` key for
     // either remote shape — a mismatch here and no citizen ever stages a repo card.
