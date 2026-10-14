@@ -874,14 +874,18 @@ fn value_to_sql_boxed(value: &Value) -> Box<dyn rusqlite::ToSql> {
 }
 
 /// A declared number stored as text (a column TEXT affinity made, see
-/// `evolve_table_schema`): an integer exactly as written (i64, else u64), else a finite
-/// float, else `None`. No precision is lost and no text is guessed into a number.
+/// `evolve_table_schema`). Integer-shaped text (an optional `-`, then digits) is an integer
+/// EXACTLY as written (i64, else u64) or `None`: one past u64::MAX is not rounded to a float
+/// (Codex root, review of this fix). Other text is a finite float, else `None`. No precision
+/// is lost and no text is guessed into a number.
 fn declared_number(s: &str) -> Option<Value> {
-    if let Ok(n) = s.parse::<i64>() {
-        return Some(json!(n));
-    }
-    if let Ok(n) = s.parse::<u64>() {
-        return Some(json!(n));
+    let digits = s.strip_prefix('-').unwrap_or(s);
+    if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+        return s
+            .parse::<i64>()
+            .map(|n| json!(n))
+            .or_else(|_| s.parse::<u64>().map(|n| json!(n)))
+            .ok();
     }
     s.parse::<f64>()
         .ok()

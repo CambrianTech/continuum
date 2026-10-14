@@ -165,10 +165,6 @@ struct TypeInferenceProbe {
     holder: crate::identity::PeerId,
 }
 
-/// Child entity exercising `#[entity(foreign_key(...))]` — references
-/// DeriveTestWidget by widget_id, cascade-deletes on parent removal.
-/// The widget_id column becomes a FOREIGN KEY in CREATE TABLE; the
-/// adapter enforces referential integrity.
 /// One collection, three shapes over time: the shape a table was CREATED with, the shape
 /// that later gains an optional `u64` (the column arrives by schema evolution on its first
 /// write), and a writer that put text in it. The 5090's `staged_credit.rejected_at_ms`.
@@ -201,6 +197,32 @@ struct EvolvingText {
     rejected_at_ms: Option<String>,
 }
 
+/// The 5090's actual shape: a table whose number columns were made TEXT by an earlier
+/// writer, then read by an entity that declares them numbers.
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "derive_test_legacy_text_numbers")]
+struct LegacyTextWriter {
+    #[serde(flatten)]
+    base: BaseEntity,
+    marked_at_ms: Option<String>,
+    ratio: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "derive_test_legacy_text_numbers")]
+struct LegacyNumberReader {
+    #[serde(flatten)]
+    base: BaseEntity,
+    marked_at_ms: Option<u64>,
+    ratio: Option<f64>,
+}
+
+/// Child entity exercising `#[entity(foreign_key(...))]` — references
+/// DeriveTestWidget by widget_id, cascade-deletes on parent removal.
+/// The widget_id column becomes a FOREIGN KEY in CREATE TABLE; the
+/// adapter enforces referential integrity.
 #[derive(Debug, Clone, Serialize, Deserialize, Entity)]
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "derive_test_widget_notes")]
@@ -665,5 +687,39 @@ async fn an_evolved_optional_number_round_trips_exactly_and_bad_text_fails() {
     let bad_id = Uuid::parse_str(&bad.base.id).unwrap();
     text.save(bad_id, &bad).await.expect("text writer save");
     let v2 = OrmStore::<EvolvingV2>::new(adapter).await.expect("v2 declares its types again");
-    assert!(v2.find_by_id(bad_id).await.is_err(), "a declared number holding text fails; it is never a string");
+    let err = v2.find_by_id(bad_id).await.expect_err("a declared number holding text fails");
+    // The decoder's own refusal, not serde's: without the declared decode, serde refuses
+    // the string too, and this assertion must not pass on that.
+    assert!(format!("{err:?}").contains("declared number holding"), "{err:?}");
+}
+
+// what this catches (Codex root, review of the fix above): the repair of rows ALREADY
+// stored as text, which a newly evolved NUMERIC column does not exercise. A text writer
+// makes the columns TEXT, as on the 5090; a reader declaring them numbers then gets an
+// integer above 2^53 and u64::MAX back exactly, a genuine fraction back as a float, and an
+// integer one past u64::MAX as the decoder's refusal, never a rounded float.
+#[tokio::test]
+async fn numbers_stored_as_text_in_a_legacy_column_decode_exactly_or_fail() {
+    let (adapter, _tmp) = fresh_adapter().await;
+    let writer = OrmStore::<LegacyTextWriter>::new(adapter.clone()).await.expect("text columns");
+    let write = |marked: &str, ratio: Option<&str>| LegacyTextWriter {
+        base: BaseEntity::for_new_record(),
+        marked_at_ms: Some(marked.to_string()),
+        ratio: ratio.map(str::to_string),
+    };
+    let past_2_53 = write("9007199254740993", Some("12.5"));
+    let max = write(&u64::MAX.to_string(), None);
+    let over = write("18446744073709551616", None);
+    let ids: Vec<Uuid> = [&past_2_53, &max, &over].iter().map(|r| Uuid::parse_str(&r.base.id).unwrap()).collect();
+    for (id, row) in ids.iter().zip([&past_2_53, &max, &over]) {
+        writer.save(*id, row).await.expect("legacy text write");
+    }
+    let reader = OrmStore::<LegacyNumberReader>::new(adapter).await.expect("numbers declared over text");
+    let first = reader.find_by_id(ids[0]).await.expect("decodes").expect("present");
+    assert_eq!(first.marked_at_ms, Some(9_007_199_254_740_993), "above 2^53, exact");
+    assert_eq!(first.ratio, Some(12.5), "a genuine fraction is a float");
+    let second = reader.find_by_id(ids[1]).await.expect("decodes").expect("present");
+    assert_eq!(second.marked_at_ms, Some(u64::MAX), "the u64 boundary, exact");
+    let err = reader.find_by_id(ids[2]).await.expect_err("one past u64::MAX is not a u64");
+    assert!(format!("{err:?}").contains("declared number holding"), "refused by the decoder, not rounded: {err:?}");
 }
