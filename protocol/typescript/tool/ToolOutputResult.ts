@@ -10,24 +10,33 @@ export type ToolOutputResult = {
  */
 outputId: string, 
 /**
- * Total lines in the full spilled output.
+ * Total lines in the full spilled output; null for an exact byte page.
  */
-totalLines: number, 
+totalLines: number | null, 
 /**
  * Total bytes in the full spilled output.
  */
 totalBytes: number, 
 /**
  * When grepping: how many lines matched `pattern` across the WHOLE file
- * (pre-cap), so you know if there were more hits than shown. `0` otherwise.
+ * (pre-cap), so you know if there were more hits than shown. Zero for a line
+ * range/tail, null for a byte page (no regex scan was performed).
  */
-totalMatches: number, 
+totalMatches: number | null, 
 /**
  * The rendered, line-numbered slice (grep windows / explicit range / tail).
  */
 content: string, 
 /**
- * `true` if the rendered slice itself hit the budget and was cut — narrow
+ * `true` if selected lines or matches remain beyond this page — narrow
  * the pattern or shrink the range to see the rest.
  */
-truncated: boolean, };
+truncated: boolean, 
+/**
+ * utf8 for text; base64 for a byte extent that is not independently valid UTF-8.
+ */
+encoding: string, byteStart: number | null, byteEnd: number | null, 
+/**
+ * Next unread byte in exact mode, or first omitted source byte in line mode.
+ */
+nextByteOffset: number | null, };
