@@ -401,7 +401,7 @@ fn write_in(
 /// bounded buffer; never duplicate a flood-sized result just to deduplicate it.
 fn existing_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
     use std::io::BufRead;
-    let file = match fs::File::open(path) {
+    let file = match fs::OpenOptions::new().read(true).write(true).open(path) {
         Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
@@ -436,6 +436,7 @@ fn existing_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
     if offset != expected.len() {
         return Err(mismatch());
     }
+    crate::fs_portable::sync_publication(reader.get_ref(), path)?;
     Ok(true)
 }
 fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid, pin: &LivePin) -> Fitted {
@@ -1178,6 +1179,26 @@ mod tests {
         drop(pin);
         let _ = evict_unless_live(&published);
         assert!(!published.exists());
+    }
+
+    // Regression for #5036: a failed publisher leaves visible bytes, not a
+    // durability receipt. Actual spill reuse must independently complete the fence.
+    #[test]
+    fn visible_publication_requires_a_successful_reuse_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona = Uuid::new_v4();
+        let body = "retained output\n";
+        let handle = handle_of(body);
+        let pin = LivePin::new();
+        pin.hold(&handle);
+        let path = persona_dir(dir.path(), persona).join(format!("{handle}.log"));
+        crate::fs_portable::tests::with_failed_publication_fence(|| {
+            assert!(write_in(dir.path(), persona, &handle, body).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), body);
+            // The object is already visible; byte equality must not bypass the fence.
+            assert!(write_in(dir.path(), persona, &handle, body).is_err());
+        });
+        assert_eq!(write_in(dir.path(), persona, &handle, body).unwrap(), path);
     }
 
     #[cfg(feature = "stress-tests")]

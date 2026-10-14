@@ -72,28 +72,43 @@ pub fn durable_rename(from: &std::path::Path, to: &std::path::Path) -> io::Resul
 }
 
 /// Publish a synced staging file at an immutable address, refusing to replace
-/// an existing object. The caller retains ownership of staging on failure.
+/// an existing object. On failure the caller cleans any remaining staging file;
+/// a visible destination may exist without a completed durability fence.
 pub fn durable_publish_new(from: &std::path::Path, to: &std::path::Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         // link is an atomic create-if-absent on the same filesystem; rename
         // would overwrite an existing content address in a publisher race.
         std::fs::hard_link(from, to)?;
-        let parent = to.parent().ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "publication target has no parent",
-            )
-        })?;
-        File::open(parent)?.sync_all()?;
-        // The published name is durable now. Removing staging is cleanup owned
-        // by the caller, so a cleanup failure cannot invalidate that receipt.
-        Ok(())
     }
     #[cfg(windows)]
     {
-        move_write_through(from, to, false)
+        move_write_through(from, to, false)?;
     }
+    let published = std::fs::OpenOptions::new().read(true).write(true).open(to)?;
+    sync_publication(&published, to)
+}
+
+/// Complete a publication fence for this opened immutable object. A visible
+/// name alone is not a durable receipt: a competing publisher can have linked
+/// it but not yet fenced its directory, or failed while doing so.
+/// `file` must be writable for Windows FlushFileBuffers (File::sync_all).
+pub fn sync_publication(file: &File, path: &std::path::Path) -> io::Result<()> {
+    #[cfg(test)]
+    if tests::FAIL_PUBLICATION_FENCE.with(|fail| fail.get()) {
+        return Err(io::Error::other("injected publication fence failure"));
+    }
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "publication target has no parent")
+        })?;
+        File::open(parent)?.sync_all()?;
+    }
+    #[cfg(windows)]
+    let _ = path; // FlushFileBuffers flushes this file's buffered information.
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -134,9 +149,25 @@ fn move_write_through(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Write;
+
+    thread_local! {
+        pub(crate) static FAIL_PUBLICATION_FENCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(crate) fn with_failed_publication_fence(f: impl FnOnce()) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FAIL_PUBLICATION_FENCE.with(|fail| fail.set(false));
+            }
+        }
+        FAIL_PUBLICATION_FENCE.with(|fail| fail.set(true));
+        let _reset = Reset;
+        f();
+    }
 
     // what this catches: pread semantics on the CURRENT platform — exact
     // fill at an offset, UnexpectedEof (not a partial fill) past the end.
