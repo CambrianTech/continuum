@@ -402,3 +402,17 @@ measure cold/dirty/cached workspace-map milliseconds per turn after supported
 candidate deployment, before closing the card. Process-call reduction is a source
 property (four to two for a validated receipt on dirty refresh), not a measured
 latency improvement.
+
+### Attention admission (60c4f8bb)
+
+The existing conversation pump queues typed attention envelopes, not arbitrary
+transport frames. One classifier uses the existing room/work decoders for live
+input and durable catch-up. Known telemetry, protocol and presence frames remain
+with their existing owners; speech/media and work facts retain the raw event and
+once-decoded perception together. Decode faults retain their named diagnostics.
+The consumer still owns the asynchronous work bridge and retains the envelope
+across cancellation; self-authored work must reach that bridge before self-filtering.
+An exhausted cooperative scan slice is not an empty inbox. It yields to the runtime
+and continues under the existing caller deadline, without a new timer or larger cap.
+The real-pump regression covers more than one page of non-chat envelopes before
+speech, work-fact survival, decode faults, duplicates and lag through the same setup.
