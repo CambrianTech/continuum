@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use super::{run_gh, workspace_root_for};
+use crate::code::git_bridge::run_git;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
 
@@ -98,7 +99,7 @@ async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&s
 
     let head = match head_param {
         Some(h) => h.to_string(),
-        None => super::git_quiet(root.to_path_buf(), vec!["rev-parse".into(), "--abbrev-ref".into(), "HEAD".into()])
+        None => git_line(root, &["rev-parse", "--abbrev-ref", "HEAD"])
             .await
             .ok_or_else(|| CommandError::Invalid(
                 "code/github/pr-create: cannot determine the current branch — is this a git repo with commits?".into()))?,
@@ -111,12 +112,12 @@ async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&s
     // Ahead of base? Resolve the base ref locally; unknown → defer to gh's own error.
     let base_ref = match base {
         Some(b) => Some(format!("origin/{b}")),
-        None => super::git_quiet(root.to_path_buf(), vec!["symbolic-ref".into(), "refs/remotes/origin/HEAD".into()])
+        None => git_line(root, &["symbolic-ref", "refs/remotes/origin/HEAD"])
             .await
             .filter(|s| s.starts_with("refs/remotes/origin/")), // e.g. refs/remotes/origin/main
     };
     if let Some(base_ref) = base_ref {
-        match super::git_quiet(root.to_path_buf(), vec!["rev-list".into(), "--count".into(), format!("{base_ref}..{head}")])
+        match git_line(root, &["rev-list", "--count", &format!("{base_ref}..{head}")])
             .await
             .as_deref()
             .and_then(|s| s.parse::<u32>().ok())
@@ -130,10 +131,10 @@ async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&s
     // Pushed? Resolve the SELECTED head's local tip — not checkout HEAD: a caller on main
     // can open a PR from an already-pushed `feature`, and comparing origin/feature to
     // main's tip would invent a "run push" refusal for a branch that needs none.
-    let head_sha = super::git_quiet(root.to_path_buf(), vec!["rev-parse".into(), "--verify".into(), format!("refs/heads/{head}")])
+    let head_sha = git_line(root, &["rev-parse", "--verify", &format!("refs/heads/{head}")])
         .await;
     // Fast path: the remote-tracking ref matches the local tip exactly (no network).
-    let tracking = super::git_quiet(root.to_path_buf(), vec!["rev-parse".into(), "--verify".into(), format!("refs/remotes/origin/{head}")])
+    let tracking = git_line(root, &["rev-parse", "--verify", &format!("refs/remotes/origin/{head}")])
         .await;
     if let (Some(t), Some(h)) = (&tracking, &head_sha) {
         if t == h {
@@ -156,6 +157,12 @@ async fn branch_preflight(root: &Path, base: Option<&str>, head_param: Option<&s
     }
 }
 
+/// One git answer as a trimmed line, or None when git can't give it (not a repo, no such
+/// ref, no git at all): the preflight's "unknown → defer to gh" reading of [`run_git`].
+async fn git_line(root: &Path, args: &[&str]) -> Option<String> {
+    run_git(root, args).await.ok().map(|out| out.trim().to_string())
+}
+
 /// The three ways origin can answer "what is your tip for `head`?" and why the split is
 /// load-bearing: only `Absent` licenses a preflight refusal. Anything else that isn't
 /// `Found` is undecidable — network blip, auth prompt, remote gone — and inventing
@@ -168,25 +175,15 @@ enum RemoteHead {
 }
 
 /// Ask origin for `head`'s tip in one lightweight round-trip, layered on the shared
-/// [`super::git_output`] executor so execution/error policy has a single owner. The query is
+/// [`run_git`] runner so execution/error policy has a single owner. The query is
 /// the EXACT ref (`refs/heads/{head}`) and only that exact ref name licenses `Found`: ls-remote
 /// patterns match tails, so a bare head would let `topic/feature` answer for an absent
 /// `feature`, misdirecting (or masking) the refusal. rc 0 + empty = absent; non-zero or
 /// unparseable = undecidable → defer to `gh`. Missing git → Unknown.
 async fn remote_head_tip(root: &Path, head: &str) -> RemoteHead {
     let expected = format!("refs/heads/{head}");
-    let out = match super::git_output(
-        root.to_path_buf(),
-        vec!["ls-remote".into(), "--heads".into(), "origin".into(), expected.clone()],
-    )
-    .await
-    {
-        Some(o) => o,
-        None => return RemoteHead::Unknown, // no git on this host → defer to `gh`
-    };
-    match out.status.code() {
-        Some(0) => {
-            let text = String::from_utf8_lossy(&out.stdout);
+    match run_git(root, &["ls-remote", "--heads", "origin", &expected]).await {
+        Ok(text) => {
             if text.trim().is_empty() {
                 return RemoteHead::Absent; // rc 0 + empty output — origin says "no such ref" (measured on this host, git 2.54)
             }
@@ -199,7 +196,7 @@ async fn remote_head_tip(root: &Path, head: &str) -> RemoteHead {
                 RemoteHead::Unknown // origin answered, but not for the exact ref asked — undecidable here
             }
         }
-        _ => RemoteHead::Unknown, // transport/auth/other → cannot decide; defer to gh
+        Err(_) => RemoteHead::Unknown, // no git, transport/auth/other → cannot decide; defer to gh
     }
 }
 

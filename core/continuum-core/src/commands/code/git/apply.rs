@@ -13,7 +13,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{blocking_git, workspace_root_for};
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -71,8 +71,8 @@ crate::action_command! {
         let root = workspace_root_for(&this.state, ctx).await?;
         let written = root.clone();
         let check = p.check;
-        let message = blocking_git(move || git_bridge::git_apply(&root, &p.patch, check))
-            .await?
+        let message = git_bridge::git_apply(&root, &p.patch, check)
+            .await
             .map_err(|e| CommandError::Invalid(format!(
                 "patch did not apply cleanly: {e}. Regenerate it against the current \
                  file state (ask the author for a fresh code/git/diff), or apply with \
@@ -95,27 +95,27 @@ mod tests {
     // change, `git_diff` produces the patch, a SECOND repo (same base) applies it
     // via `git_apply` and lands the identical content; a stale/garbage patch is
     // REJECTED loudly, not half-applied. // regression for the consolidation rail
-    #[test]
-    fn peer_patch_round_trips_between_two_workspaces() {
+    #[tokio::test]
+    async fn peer_patch_round_trips_between_two_workspaces() {
         let base = std::env::temp_dir().join(format!("git-apply-{}", uuid::Uuid::new_v4()));
         let a = base.join("author");
         let b = base.join("receiver");
         for d in [&a, &b] {
             std::fs::create_dir_all(d).unwrap();
             std::fs::write(d.join("life.rs"), "fn main() {}\n").unwrap();
-            git_bridge::git_init_if_needed(d).expect("init");
+            git_bridge::git_init_if_needed(d).await.expect("init");
         }
         // Author edits + stages; diff of the staged change is the shared patch.
         std::fs::write(a.join("life.rs"), "fn main() { println!(\"glider\"); }\n").unwrap();
-        let patch = git_bridge::git_diff(&a, false).expect("diff");
+        let patch = git_bridge::git_diff(&a, false).await.expect("diff");
         assert!(
             patch.contains("glider"),
             "patch carries the change: {patch}"
         );
 
         // Receiver checks, then applies.
-        git_bridge::git_apply(&b, &patch, true).expect("check passes");
-        git_bridge::git_apply(&b, &patch, false).expect("apply");
+        git_bridge::git_apply(&b, &patch, true).await.expect("check passes");
+        git_bridge::git_apply(&b, &patch, false).await.expect("apply");
         let got = std::fs::read_to_string(b.join("life.rs")).unwrap();
         assert!(
             got.contains("glider"),
@@ -123,7 +123,7 @@ mod tests {
         );
 
         // Garbage is rejected loudly, files untouched.
-        let err = git_bridge::git_apply(&b, "not a patch", false).unwrap_err();
+        let err = git_bridge::git_apply(&b, "not a patch", false).await.unwrap_err();
         assert!(!err.is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }

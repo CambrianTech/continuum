@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{blocking_git, workspace_root_for};
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -49,9 +49,7 @@ crate::action_command! {
         }
         let root = workspace_root_for(&this.state, ctx).await?;
         let written = root.clone();
-        let hash = blocking_git(move || git_bridge::git_commit(&root, &p.message))
-            .await?
-            .map_err(CommandError::Internal)?;
+        let hash = git_bridge::git_commit(&root, &p.message).await.map_err(CommandError::Internal)?;
         // HEAD moved: announce it from the write, not from a later poll (card f860e59c).
         crate::code::workspace_events::note_written(&written);
         Ok(GitCommitResult { hash })

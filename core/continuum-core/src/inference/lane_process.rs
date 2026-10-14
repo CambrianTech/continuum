@@ -285,7 +285,29 @@ struct OwnedChild {
     pipes: Vec<PipeTask>,
     capture: std::sync::Arc<RunCapture>,
     held: Option<std::sync::Arc<crate::code::hands::HandsLease>>,
+    /// What its caller holds for it ([`holding`]), kept until its tree has ended.
+    kept: Vec<Kept>,
     label: &'static str,
+}
+
+/// A value an owned child keeps until its tree has ended (see [`holding`]).
+pub type Kept = std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+tokio::task_local! {
+    /// What every owned child started on this task keeps until its tree has ended.
+    static HOLDING: Vec<Kept>;
+}
+
+/// Run `work` with every owned child it starts keeping `value` until that child's tree has
+/// ended, not merely until `work`'s future does. A cancel drops the future at once while the
+/// tree's end runs after it ([`OwnedChild`]'s drop), so an exclusion held only by the future
+/// (a checkout's sync lock) would admit the next holder beside a git still being ended
+/// (Codex reviewer on #5037). Nested scopes add to what the outer ones hold. It needs an
+/// admission ([`crate::code::hands::admitted`]): what an unconfirmed end keeps goes onto it.
+pub async fn holding<F: std::future::Future>(value: Kept, work: F) -> F::Output {
+    let mut all = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: outside any scope nothing else is held
+    all.push(value);
+    HOLDING.scope(all, work).await
 }
 
 impl OwnedChild {
@@ -327,6 +349,7 @@ impl OwnedChild {
         if let Some(lease) = &self.held {
             lease.keep_unknown(why);
         }
+        keep_with_lingering(self.held.as_ref(), &self.kept);
     }
 
     /// Hand the child to its end: a spawned task, so the caller's cancellation can't cut it
@@ -334,7 +357,7 @@ impl OwnedChild {
     fn end(&mut self) -> Option<tokio::task::JoinHandle<TreeEnd>> {
         let child = self.child.take()?;
         let runtime = tokio::runtime::Handle::try_current().ok()?;
-        Some(runtime.spawn(end_owned(child, self.held.clone(), self.label)))
+        Some(runtime.spawn(end_owned(child, self.held.clone(), self.kept.clone(), self.label)))
     }
 }
 
@@ -351,7 +374,7 @@ impl Drop for OwnedChild {
 /// End an owned child and its tree ([`end_tree`]) while holding the admission it was started
 /// under. What can't be confirmed ended is kept ON the admission before it drops, so the
 /// release that waits it out re-checks those processes and holds the hands for the rest.
-async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>, label: &'static str) -> TreeEnd {
+async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>, kept: Vec<Kept>, label: &'static str) -> TreeEnd {
     let end = end_tree(&mut child).await;
     if !end.confirmed() {
         crate::probe!(
@@ -366,7 +389,21 @@ async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc
     if let Some(lease) = &held {
         lease.keep_unconfirmed(&end);
     }
+    if !end.confirmed() {
+        keep_with_lingering(held.as_ref(), &kept);
+    }
+    drop(kept); // confirmed: what its caller held for it is released now that the tree has ended
     end
+}
+
+/// What a child's caller held for it ([`holding`]) goes where what it left unconfirmed goes: onto
+/// its admission's lingering record, released only when a re-check finds nothing left (Codex
+/// reviewer on #5037). `kept` is non-empty only under an admission: [`run_owned_with_input`]
+/// refuses `holding` without one before anything starts.
+fn keep_with_lingering(held: Option<&std::sync::Arc<crate::code::hands::HandsLease>>, kept: &[Kept]) {
+    if let Some(lease) = held {
+        lease.keep_held(kept);
+    }
 }
 
 /// What an owned run left: each stream as read, and how the process ended.
@@ -528,6 +565,14 @@ pub async fn run_owned_with_input(
         cmd.stdin(std::process::Stdio::piped());
     }
     let deadline = bound.map(|b| tokio::time::Instant::now() + b);
+    let kept = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: started outside any `holding` scope, it keeps nothing extra
+    let held = crate::code::hands::current();
+    if !kept.is_empty() && held.is_none() {
+        // what a caller holds for a child is released when the child's end is confirmed, or by
+        // the admission's re-check when it isn't; with no admission nothing could release it
+        // after an unconfirmed end, so it is refused before anything starts (Codex reviewer on #5037)
+        return Err(std::io::Error::other(format!("{label}: `holding` needs an admission to keep what it holds past an unconfirmed end; none is current")));
+    }
     let mut child = cmd.spawn()?;
     let (out_pipe, err_pipe) = (child.stdout.take(), child.stderr.take());
     let writer = match (input, child.stdin.take()) {
@@ -563,7 +608,8 @@ pub async fn run_owned_with_input(
         pipes,
         child: Some(child),
         capture: capture.clone(),
-        held: crate::code::hands::current(),
+        held,
+        kept,
         label,
     };
     let Some(child) = owned.child.as_mut() else {
@@ -1065,7 +1111,24 @@ mod tests {
         let capture = std::sync::Arc::new(RunCapture::default());
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c").arg(&script);
-        let run = crate::code::hands::admitted(Some(lease), run_owned(cmd, None, "test", capture.clone()));
+        // the strict order (Codex reviewer on #5037): what the caller held for the run (a
+        // checkout's sync lock) is released only after the tree's end, so at the instant it
+        // drops, the grandchild is already gone. The witness reads that AT its release.
+        struct Witness {
+            grandchild: std::path::PathBuf,
+            gone_at_release: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
+        }
+        impl Drop for Witness {
+            fn drop(&mut self) {
+                let pid = std::fs::read_to_string(&self.grandchild).unwrap_or_default(); // unwrap_or_default: no pid file reads as no process, which the assertion below names
+                let ps = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid.trim()]).output();
+                let stat = ps.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default(); // unwrap_or_default: no ps output reads as gone
+                *self.gone_at_release.lock().unwrap() = Some(!pid.trim().is_empty() && (stat.is_empty() || stat.starts_with('Z'))); // a zombie has exited
+            }
+        }
+        let gone_at_release = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let witness: Kept = std::sync::Arc::new(Witness { grandchild: grandchild_pid.clone(), gone_at_release: gone_at_release.clone() });
+        let run = crate::code::hands::admitted(Some(lease), holding(witness, run_owned(cmd, None, "test", capture.clone())));
         let tree = tokio::select! {
             out = run => panic!("the run ended on its own: {out:?}"),
             tree = async {
@@ -1084,6 +1147,7 @@ mod tests {
             .await
             .expect("the release completes once the tree is ended, not before and not never");
         assert!(lingering.is_empty(), "nothing is left unconfirmed: {lingering:?}");
+        assert_eq!(*gone_at_release.lock().unwrap(), Some(true), "what the caller held was released only once the grandchild was gone");
         // a killed descendant may wait for init to reap it; a zombie has exited, so it counts as gone
         assert!(still_present(&tree).is_empty(), "what the child started is gone when the release completes");
         let kept = capture.stdout.snapshot();
@@ -1091,7 +1155,13 @@ mod tests {
 
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c").arg("echo before; sleep 600 & wait");
-        let timed = run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default()).await.expect("ran");
+        let exclusion: Kept = std::sync::Arc::new(());
+        let exclusion_held = std::sync::Arc::downgrade(&exclusion);
+        let admission = std::sync::Arc::new(crate::code::hands::admit(crate::code::hands::HandsContext::fresh()).expect("open hands"));
+        let timed = crate::code::hands::admitted(Some(admission), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
+            .await
+            .expect("ran");
+        assert!(exclusion_held.upgrade().is_none(), "a confirmed end releases what its caller held for it (Codex reviewer on #5037)");
         assert!(matches!(timed.ended, Ended::TimedOut { ref unconfirmed } if unconfirmed.is_empty()), "a timeout ends the tree and confirms it: {timed:?}");
         assert_eq!(String::from_utf8_lossy(&timed.stdout.bytes), "before\n", "and what it wrote before the bound is kept");
         assert!(matches!(timed.stdout.end, CaptureEnd::Cut(_)), "a timed-out read is cut, never complete: {timed:?}");
@@ -1112,8 +1182,12 @@ mod tests {
         let mut cmd = tokio::process::Command::new("sh");
         // the shell exits at once; its background sleep inherited stdout and stderr
         cmd.arg("-c").arg(format!("echo out; sleep 600 & echo $! > {}", holder_pid.display()));
+        // what the caller held for the run (a checkout's sync lock) stays held while the holder
+        // lingers unconfirmed, never only until the end's task returns (Codex reviewer on #5037)
+        let exclusion: Kept = std::sync::Arc::new(());
+        let exclusion_held = std::sync::Arc::downgrade(&exclusion);
         let started = std::time::Instant::now();
-        let out = crate::code::hands::admitted(Some(lease), run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default()))
+        let out = crate::code::hands::admitted(Some(lease), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
             .await
             .expect("ran");
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "the bound covers the pipes, not only the exit");
@@ -1122,6 +1196,7 @@ mod tests {
         assert!(matches!(out.stdout.end, CaptureEnd::Cut(ref why) if why.contains("held it past the bound")), "the read is cut by the holder: {out:?}");
         let lingering = crate::code::hands::close(context).await;
         assert_eq!(lingering.unknown.len(), 1, "the holder is held by name on the hands, never claimed ended: {lingering:?}");
+        assert!(exclusion_held.upgrade().is_some(), "and what its caller held for it stays held with it");
         if let Some(pid) = std::fs::read_to_string(&holder_pid).ok().and_then(|t| t.trim().parse::<u32>().ok()) {
             kill9(pid); // the test's own cleanup of the holder it made
         }

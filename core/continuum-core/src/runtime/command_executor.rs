@@ -481,8 +481,8 @@ impl CommandExecutor {
             outcome
         }
         .instrument(span);
-        // The command runs as the task's admitted work: blocking work it starts inherits the
-        // admission and keeps it past a cancelled waiter (`code::hands::spawn_blocking`).
+        // The command runs as the task's admitted work: a child process it starts keeps the
+        // admission until the child's tree has ended (`lane_process::run_owned`).
         crate::code::hands::admitted(admitted, command).await
     }
 

@@ -454,13 +454,6 @@ impl PlacementSwitch {
         self.remote_adapter().map(|r| r.is_cold()).unwrap_or(false) // JUSTIFIED unwrap_or: no remote lane = nothing to be cold
     }
 
-    /// Does a checkout her hands acted in hold work `origin` does not (card 73eefbbb)?
-    /// The workspace side of a seat change: a move between machines waits on her last
-    /// push landing, so the node she lands on can fetch what she was doing.
-    pub fn has_unpushed_work(&self) -> bool {
-        crate::persona::workspace_transfer::persona_has_unpushed_work(self.persona_id)
-    }
-
     /// Bind a remote lane on `peer` serving `model` and move there (stage B). Persists
     /// the move as her override so a reboot keeps it. Fails loudly without a wire.
     pub fn go_remote(&self, peer: Uuid, model: &str, now_ms: u64) -> Result<(), String> {

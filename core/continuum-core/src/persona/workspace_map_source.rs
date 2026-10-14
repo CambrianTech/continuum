@@ -95,10 +95,11 @@ impl WorkspaceLayout {
 /// Abstract reader over the workspace layout. Production rides on the same
 /// [`FileEngine`] the code tools use ([`CwdWorkspaceLayoutReader`]); tests stub
 /// it without touching the filesystem. Mirrors the `AircDoctrineReader` rail.
+#[async_trait::async_trait]
 pub trait WorkspaceLayoutReader: Send + Sync {
     /// The current workspace root and its top-level directories, or an error
     /// string if the layout cannot be read (degrades to no block, never panics).
-    fn layout(&self) -> Result<WorkspaceLayout, String>;
+    async fn layout(&self) -> Result<WorkspaceLayout, String>;
 }
 
 /// Reads the layout from the SAME machinery the persona's hands resolve against:
@@ -107,8 +108,9 @@ pub trait WorkspaceLayoutReader: Send + Sync {
 /// can never drift from what `code/glob` / `code/list` actually see.
 pub struct CwdWorkspaceLayoutReader;
 
+#[async_trait::async_trait]
 impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
-    fn layout(&self) -> Result<WorkspaceLayout, String> {
+    async fn layout(&self) -> Result<WorkspaceLayout, String> {
         let root =
             std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?;
         let security =
@@ -223,8 +225,9 @@ pub struct CitizenLayerWorkspaceLayoutReader {
     peer: String,
 }
 
+#[async_trait::async_trait]
 impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
-    fn layout(&self) -> Result<WorkspaceLayout, String> {
+    async fn layout(&self) -> Result<WorkspaceLayout, String> {
         // PROVISION-AND-TELL (#49, glass-boxed 2026-08-02): the old fallback
         // showed the SHARED cwd's layout when the layer wasn't provisioned yet
         // — so a fresh persona PERCEIVED directories (conway_game_of_life…)
@@ -246,6 +249,7 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
         let root = match acting {
             Some(r) => r,
             None => crate::modules::code_commands::ensure_citizen_layer(&self.peer)
+                .await
                 .map_err(|e| format!("citizen layer unavailable: {e}"))?,
         };
         crate::probe!(
@@ -298,8 +302,9 @@ impl FixedRootWorkspaceLayoutReader {
     }
 }
 
+#[async_trait::async_trait]
 impl WorkspaceLayoutReader for FixedRootWorkspaceLayoutReader {
-    fn layout(&self) -> Result<WorkspaceLayout, String> {
+    async fn layout(&self) -> Result<WorkspaceLayout, String> {
         let security = PathSecurity::new(&self.root)
             .map_err(|e| format!("workspace security init failed for pinned root: {e}"))?;
         let engine = FileEngine::new(SOURCE_ID, security);
@@ -423,7 +428,7 @@ impl RagSource for WorkspaceMapSource {
             return empty(ResolutionPreference::Placeholder);
         }
 
-        let layout = match self.reader.layout() {
+        let layout = match self.reader.layout().await {
             Ok(layout) => layout,
             Err(err) => {
                 tracing::warn!(
@@ -570,8 +575,9 @@ mod tests {
         }
     }
 
-    impl WorkspaceLayoutReader for StubReader {
-        fn layout(&self) -> Result<WorkspaceLayout, String> {
+    #[async_trait::async_trait]
+impl WorkspaceLayoutReader for StubReader {
+        async fn layout(&self) -> Result<WorkspaceLayout, String> {
             self.layout.clone()
         }
     }
@@ -717,10 +723,11 @@ mod tests {
     // what this catches: the production cwd reader actually reads the real
     // process workspace and returns a non-empty, sorted directory list — the
     // same machinery the code tools resolve against (drift-proofing).
-    #[test]
-    fn cwd_reader_reads_real_workspace() {
+    #[tokio::test]
+    async fn cwd_reader_reads_real_workspace() {
         let layout = CwdWorkspaceLayoutReader
             .layout()
+            .await
             .expect("cwd layout must read");
         assert!(
             !layout.top_level_dirs.is_empty(),
@@ -735,11 +742,11 @@ mod tests {
     // MAP at the pinned dir — an EMPTY pinned dir renders write-first grounding, so a
     // from-scratch build task's map matches its clean hands instead of describing the
     // repo (#206). Regression for the map-follows-hands link.
-    #[test]
-    fn fixed_root_empty_dir_grounds_write_first() {
+    #[tokio::test]
+    async fn fixed_root_empty_dir_grounds_write_first() {
         let dir = tempfile::tempdir().expect("tempdir");
         let reader = FixedRootWorkspaceLayoutReader::new(dir.path());
-        let layout = reader.layout().expect("empty dir layout reads");
+        let layout = reader.layout().await.expect("empty dir layout reads");
         assert!(
             layout.top_level_dirs.is_empty(),
             "a fresh temp dir has no subdirs"
@@ -755,13 +762,14 @@ mod tests {
     // what this catches: a NON-empty pinned root (a SWE-bench repo clone) lists its
     // real dirs — the map follows the pinned hands, correct for the existing
     // workspace_root caller too, not just the clean-build case.
-    #[test]
-    fn fixed_root_with_dirs_lists_them() {
+    #[tokio::test]
+    async fn fixed_root_with_dirs_lists_them() {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir(dir.path().join("src")).unwrap();
         std::fs::create_dir(dir.path().join("tests")).unwrap();
         let layout = FixedRootWorkspaceLayoutReader::new(dir.path())
             .layout()
+            .await
             .expect("layout reads");
         assert_eq!(
             layout.top_level_dirs,
@@ -784,8 +792,8 @@ mod tests {
     // truthful either way, never empty, never a panic. Here the peer has no layer
     // (random id under a temp home), so the fallback path must yield the real cwd
     // layout rather than erroring.
-    #[test]
-    fn citizen_layer_reader_provisions_and_tells_the_real_root() {
+    #[tokio::test]
+    async fn citizen_layer_reader_provisions_and_tells_the_real_root() {
         // what this catches (#49, the mixed-truth window): the map must NEVER
         // describe the shared cwd while the tools act in the peer's layer. The
         // reader now PROVISIONS the layer (same ensure the hands use) and
@@ -805,9 +813,8 @@ mod tests {
         // clone land in a dir this test keeps alive, and never in the developer's real
         // `~/.continuum/citizens/`.
         let home = tempfile::tempdir().expect("tempdir");
-        let layout = crate::test_env::with_test_home(home.path(), || {
-            reader.layout().expect("reader provisions the layer")
-        });
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        let layout = reader.layout().await.expect("reader provisions the layer");
         let cwd = std::env::current_dir().expect("cwd");
         assert_ne!(
             layout.root, cwd,

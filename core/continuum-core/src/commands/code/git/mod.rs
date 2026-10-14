@@ -15,10 +15,9 @@
 //!
 //! Identity is the AUTHENTICATED caller (`ctx.caller.peer_id`), never a `persona_id`
 //! param — the legacy arms read the id from the body, an identity-axis violation any
-//! caller could spoof. Each git shell-out runs in `spawn_blocking` with the workspace
-//! root resolved and the `DashMap` guard dropped FIRST, so a blocking `git` invocation
-//! never holds a shard lock across I/O — 14–50 personas run git concurrently without
-//! contending on anything but their own per-caller engine.
+//! caller could spoof. Each git runs as an owned child (`git_bridge::run_git`) awaited
+//! with the workspace root resolved and the `DashMap` guard dropped FIRST, so a git never
+//! holds a shard lock across I/O, and a cancelled command ends its git and what it started.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,7 +44,7 @@ use status::CodeGitStatus;
 
 /// Resolve the caller's workspace root, provisioning the engine on first use.
 /// Returns an OWNED [`PathBuf`] so the `DashMap` ref guard is dropped before the
-/// caller runs blocking git work — never a lock held across a shell-out.
+/// caller awaits its git — never a lock held across a shell-out.
 pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
     let key = crate::modules::code_commands::hands_of(ctx);
     ensure_engine(state, &key).await?;
@@ -54,20 +53,6 @@ pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<P
         .get(&key.map_key())
         .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
     Ok(engine.workspace_root())
-}
-
-/// Run a blocking git operation off the runtime worker, mapping a join panic to a
-/// typed error. `op` produces the git_bridge call against the resolved root.
-pub(crate) async fn blocking_git<T, F>(op: F) -> Result<T, CommandError>
-where
-    F: FnOnce() -> T + Send + 'static,
-    T: Send + 'static,
-{
-    // The shared owner of blocking work: the git operation keeps its command's admission
-    // until it returns, even if the command's waiter is cancelled.
-    crate::code::hands::spawn_blocking(op)
-        .await
-        .map_err(|e| CommandError::Internal(format!("git task panicked: {e}")))
 }
 
 /// The dep-holding git command objects [`CodeModule`](crate::modules::code::CodeModule)
