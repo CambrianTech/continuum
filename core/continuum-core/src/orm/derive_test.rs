@@ -22,9 +22,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::orm::adapter::{AdapterConfig, StorageAdapter};
 use crate::orm::entity::{BaseEntity, OrmEntity};
-use crate::orm::sqlite::SqliteAdapter;
 use crate::orm::types::{CascadeRule, FieldType};
 use crate::orm::Entity;
 use crate::orm::OrmStore;
@@ -167,6 +165,60 @@ struct TypeInferenceProbe {
     holder: crate::identity::PeerId,
 }
 
+/// One collection, three shapes over time: the shape a table was CREATED with, the shape
+/// that later gains an optional `u64` (the column arrives by schema evolution on its first
+/// write), and a writer that put text in it. The 5090's `staged_credit.rejected_at_ms`.
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "derive_test_evolving")]
+struct EvolvingV1 {
+    #[serde(flatten)]
+    base: BaseEntity,
+    name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "derive_test_evolving")]
+struct EvolvingV2 {
+    #[serde(flatten)]
+    base: BaseEntity,
+    name: String,
+    rejected_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "derive_test_evolving")]
+struct EvolvingText {
+    #[serde(flatten)]
+    base: BaseEntity,
+    name: String,
+    rejected_at_ms: Option<String>,
+}
+
+/// The 5090's actual shape: a table whose number columns were made TEXT by an earlier
+/// writer, then read by an entity that declares them numbers.
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "derive_test_legacy_text_numbers")]
+struct LegacyTextWriter {
+    #[serde(flatten)]
+    base: BaseEntity,
+    marked_at_ms: Option<String>,
+    ratio: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Entity)]
+#[serde(rename_all = "camelCase")]
+#[entity(collection = "derive_test_legacy_text_numbers")]
+struct LegacyNumberReader {
+    #[serde(flatten)]
+    base: BaseEntity,
+    marked_at_ms: Option<u64>,
+    ratio: Option<f64>,
+}
+
 /// Child entity exercising `#[entity(foreign_key(...))]` — references
 /// DeriveTestWidget by widget_id, cascade-deletes on parent removal.
 /// The widget_id column becomes a FOREIGN KEY in CREATE TABLE; the
@@ -186,18 +238,7 @@ struct DeriveTestWidgetNote {
     note: String,
 }
 
-async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
-    let mut adapter = SqliteAdapter::new();
-    let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("derive-test.sqlite");
-    let mut config = AdapterConfig::default();
-    config.connection_string = path.to_string_lossy().into_owned();
-    adapter
-        .initialize(config)
-        .await
-        .expect("adapter initialize");
-    (Arc::new(adapter), tmp)
-}
+use crate::orm::store::fresh_adapter;
 
 /// What this catches: derive emits the collection name from the
 /// struct-level `#[entity(collection = "...")]` attribute.
@@ -615,4 +656,70 @@ fn type_inference_probe_registers_cleanly() {
         .resolve("type_inference_probe")
         .expect("type_inference_probe resolves");
     assert_eq!(resolved.collection, "type_inference_probe");
+}
+
+// what this catches (Codex root, the 5090 on build 6199, 2026-10-13): schema evolution
+// typed a new column by the VALUE first written. An optional u64 whose first write was
+// null became a TEXT column, SQLite's TEXT affinity stored every later integer as text,
+// and the reader handed that text back as a string: `invalid type: string
+// "1791893847734", expected u64` on Kimi's staged evidence. The column is now typed by
+// the declared field, the integer reads back exactly, and text that is not a number is a
+// decode error, never a string.
+#[tokio::test]
+async fn an_evolved_optional_number_round_trips_exactly_and_bad_text_fails() {
+    let (adapter, _tmp) = fresh_adapter().await;
+    let v1 = OrmStore::<EvolvingV1>::new(adapter.clone()).await.expect("v1 creates the table");
+    let first = EvolvingV1 { base: BaseEntity::for_new_record(), name: "before".into() };
+    v1.save(Uuid::parse_str(&first.base.id).unwrap(), &first).await.expect("v1 save");
+
+    let v2 = OrmStore::<EvolvingV2>::new(adapter.clone()).await.expect("v2 over the same table");
+    let unset = EvolvingV2 { base: BaseEntity::for_new_record(), name: "unset".into(), rejected_at_ms: None };
+    v2.save(Uuid::parse_str(&unset.base.id).unwrap(), &unset).await.expect("the first write evolves the column");
+    let at: u64 = 1_791_893_847_734;
+    let marked = EvolvingV2 { base: BaseEntity::for_new_record(), name: "marked".into(), rejected_at_ms: Some(at) };
+    let marked_id = Uuid::parse_str(&marked.base.id).unwrap();
+    v2.save(marked_id, &marked).await.expect("v2 save with the mark");
+    let loaded = v2.find_by_id(marked_id).await.expect("decodes").expect("present");
+    assert_eq!(loaded.rejected_at_ms, Some(at), "the integer reads back exactly");
+
+    let text = OrmStore::<EvolvingText>::new(adapter.clone()).await.expect("a text writer");
+    let bad = EvolvingText { base: BaseEntity::for_new_record(), name: "bad".into(), rejected_at_ms: Some("not-a-number".into()) };
+    let bad_id = Uuid::parse_str(&bad.base.id).unwrap();
+    text.save(bad_id, &bad).await.expect("text writer save");
+    let v2 = OrmStore::<EvolvingV2>::new(adapter).await.expect("v2 declares its types again");
+    let err = v2.find_by_id(bad_id).await.expect_err("a declared number holding text fails");
+    // The decoder's own refusal, not serde's: without the declared decode, serde refuses
+    // the string too, and this assertion must not pass on that.
+    assert!(format!("{err:?}").contains("declared number holding"), "{err:?}");
+}
+
+// what this catches (Codex root, review of the fix above): the repair of rows ALREADY
+// stored as text, which a newly evolved NUMERIC column does not exercise. A text writer
+// makes the columns TEXT, as on the 5090; a reader declaring them numbers then gets an
+// integer above 2^53 and u64::MAX back exactly, a genuine fraction back as a float, and an
+// integer one past u64::MAX as the decoder's refusal, never a rounded float.
+#[tokio::test]
+async fn numbers_stored_as_text_in_a_legacy_column_decode_exactly_or_fail() {
+    let (adapter, _tmp) = fresh_adapter().await;
+    let writer = OrmStore::<LegacyTextWriter>::new(adapter.clone()).await.expect("text columns");
+    let write = |marked: &str, ratio: Option<&str>| LegacyTextWriter {
+        base: BaseEntity::for_new_record(),
+        marked_at_ms: Some(marked.to_string()),
+        ratio: ratio.map(str::to_string),
+    };
+    let past_2_53 = write("9007199254740993", Some("12.5"));
+    let max = write(&u64::MAX.to_string(), None);
+    let over = write("18446744073709551616", None);
+    let ids: Vec<Uuid> = [&past_2_53, &max, &over].iter().map(|r| Uuid::parse_str(&r.base.id).unwrap()).collect();
+    for (id, row) in ids.iter().zip([&past_2_53, &max, &over]) {
+        writer.save(*id, row).await.expect("legacy text write");
+    }
+    let reader = OrmStore::<LegacyNumberReader>::new(adapter).await.expect("numbers declared over text");
+    let first = reader.find_by_id(ids[0]).await.expect("decodes").expect("present");
+    assert_eq!(first.marked_at_ms, Some(9_007_199_254_740_993), "above 2^53, exact");
+    assert_eq!(first.ratio, Some(12.5), "a genuine fraction is a float");
+    let second = reader.find_by_id(ids[1]).await.expect("decodes").expect("present");
+    assert_eq!(second.marked_at_ms, Some(u64::MAX), "the u64 boundary, exact");
+    let err = reader.find_by_id(ids[2]).await.expect_err("one past u64::MAX is not a u64");
+    assert!(format!("{err:?}").contains("declared number holding"), "refused by the decoder, not rounded: {err:?}");
 }
