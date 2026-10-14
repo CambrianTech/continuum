@@ -538,6 +538,7 @@ mod tests {
         let timed = OwnedOutput {
             stdout: read(CaptureEnd::Cut("the bound elapsed".into())),
             stderr: read(CaptureEnd::Failed("the pipe broke".into())),
+            input: None,
             ended: Ended::TimedOut { unconfirmed: vec![] },
         };
         let note = with_run_notes(String::new(), &timed, 5, "");
@@ -550,6 +551,7 @@ mod tests {
         let held = OwnedOutput {
             stdout: read(CaptureEnd::Cut("a process it started held its output past the bound".into())),
             stderr: read(CaptureEnd::Complete),
+            input: None,
             ended: Ended::Exited(std::process::ExitStatus::from_raw(0)),
         };
         assert!(with_run_notes(String::new(), &held, 5, "").contains("stdout was cut: a process it started held"), "an exit's cut is named");
