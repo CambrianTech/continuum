@@ -45,18 +45,13 @@ impl LayoutReader {
             .map(|e| e.name)
             .collect();
         top_level_dirs.sort();
-        // A workspace need not be a Git checkout. Detect repository markers without
-        // spawning Git; an unreadable or broken marker is not treated as absence.
-        let repository_present = root.ancestors().try_fold(false, |found, parent| {
-            if found {
-                return Ok(true);
-            }
-            match std::fs::symlink_metadata(parent.join(".git")) {
-                Ok(_) => Ok(true),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-                Err(error) => Err(format!("repository marker unavailable: {error}")),
-            }
-        });
+        // Match git_bridge's workspace-root discovery ceiling: a parent checkout
+        // is not this workspace's repository. Broken markers are not absence.
+        let repository_present = match std::fs::symlink_metadata(root.join(".git")) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(format!("repository marker unavailable: {error}")),
+        };
         if matches!(repository_present, Ok(false)) {
             return Ok(WorkspaceLayout {
                 root,

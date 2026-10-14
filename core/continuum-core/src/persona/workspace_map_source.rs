@@ -796,6 +796,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("repo");
         let root = dir.path();
         run_git(root, &["init"]).await.expect("init");
+        let nested = root.join("plain-workspace");
+        std::fs::create_dir(&nested).expect("nested plain workspace");
+        let nested_layout = FixedRootWorkspaceLayoutReader::new(&nested)
+            .layout()
+            .await
+            .expect("nested layout");
+        assert!(
+            nested_layout.repository.is_none(),
+            "the owned Git runner cannot inherit the parent checkout across its discovery ceiling"
+        );
         run_git(
             root,
             &[
