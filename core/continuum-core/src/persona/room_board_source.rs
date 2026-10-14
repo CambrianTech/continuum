@@ -328,7 +328,7 @@ impl RoomBoardSource {
         let owner = held.render();
         format!(
             "card {id8} [{state}] \"{title}\" ({prio:?}, {owner})",
-            state = held.state_tag(card),
+            state = held.state_tag(),
             title = card.title,
             prio = card.priority,
         )
@@ -1333,7 +1333,12 @@ mod tests {
             CardState::Claimed,
             Some(airc_core::PeerId::from_uuid(me)),
         );
-        let reader = Arc::new(StubReader::new(snapshot(vec![stale_mine, live_mine])));
+        let closed_mine = lapse(card(
+            "finished work",
+            CardState::Closed,
+            Some(airc_core::PeerId::from_uuid(me)),
+        ));
+        let reader = Arc::new(StubReader::new(snapshot(vec![stale_mine, live_mine, closed_mine])));
         let source = RoomBoardSource::new(me, reader);
         let delivery = source
             .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
@@ -1360,6 +1365,15 @@ mod tests {
             all.contains("claim lapsed (was YOURS) — claimable"),
             "the lapsed card renders its lapse honestly: {all}"
         );
+        let closed = all
+            .lines()
+            .find(|line| line.contains("finished work"))
+            .expect("closed card remains visible");
+        assert!(
+            closed.contains("[Closed]") && closed.contains("claim lapsed (was YOURS)"),
+            "{closed}"
+        );
+        assert!(!closed.contains("claimable") && !closed.contains("resume it"), "{closed}");
     }
 
     // what this catches: a board too large for the budget truncates to the

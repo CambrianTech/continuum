@@ -3072,7 +3072,7 @@ impl ActionCommand for WorkList {
                         // unnamed peer" otherwise (its handle in owner_id), `YOU` when hers.
                         owner: holder.owner.map(|_| holder.display.clone()),
                         owner_id: holder.owner.filter(|_| !holder.is_self).map(|o| o.as_uuid()),
-                        claimable: holder.claimable(c.state),
+                        claimable: holder.claimable(),
                         lease: holder.lease_word().map(str::to_string),
                         priority: priority_str(c.priority).to_string(),
                         age_hours: now_ms.saturating_sub(c.created_at_ms) / 3_600_000,
@@ -3558,7 +3558,7 @@ impl WorkGet {
             room_id: room.channel,
             room: room.name.clone(),
             is_self: holder.is_self,
-            claimable: holder.claimable(card.state),
+            claimable: holder.claimable(),
             lease: holder.lease_word().map(str::to_string),
             observed_at_ms: now_ms,
             claim_expires_at_ms: card.claim_expires_at_ms,
