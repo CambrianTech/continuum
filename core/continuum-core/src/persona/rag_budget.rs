@@ -458,6 +458,13 @@ pub struct RagDelivery {
 // SOURCE TRAIT
 //=============================================================================
 
+/// Which room a source describes when task and conversation are distinct.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RagRoomScope {
+    Conversation,
+    Activity,
+}
+
 /// A RAG content source. Implementations hold state via interior
 /// mutability (DashMap, Mutex, atomics) — `deliver` takes `&self`.
 ///
@@ -474,6 +481,11 @@ pub struct RagDelivery {
 ///   one tool description, no pagination
 #[async_trait]
 pub trait RagSource: Send + Sync {
+    /// Conversation sources retain wake attribution; task-board adapters opt in.
+    fn room_scope(&self) -> RagRoomScope {
+        RagRoomScope::Conversation
+    }
+
     fn source_id(&self) -> &'static str;
 
     /// The verb that yields THIS source's content in full, for when the prompt

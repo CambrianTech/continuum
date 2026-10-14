@@ -94,13 +94,17 @@ mod tests {
     /// A `ToolExecutor` that records the `context_id` it was handed and returns a
     /// canned per-call result — so a test can assert BOTH that the act was scoped
     /// to the right room and that the observation correlates call→result.
+    #[derive(Clone)]
     struct RecordingExecutor {
-        seen_context: Mutex<Option<Uuid>>,
+        seen_context: Arc<Mutex<Option<Uuid>>>,
         result_content: String,
     }
 
     #[async_trait]
     impl ToolExecutor for RecordingExecutor {
+        fn in_hands(&self, _persona: Uuid, _context: crate::code::hands::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
+            Some(Arc::new(self.clone()))
+        }
         async fn execute_native_batch(
             &self,
             calls: &[ToolCall],
@@ -327,7 +331,7 @@ mod tests {
     #[tokio::test]
     async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok\n".into(),
         });
         let adm = admission();
@@ -385,7 +389,7 @@ mod tests {
     #[tokio::test]
     async fn a_chain_rooted_in_its_trigger_links_the_first_act_to_what_caused_the_turn() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok\n".into(),
         });
         let adm = admission();
@@ -419,7 +423,7 @@ mod tests {
     #[tokio::test]
     async fn an_unrooted_chain_leaves_its_first_act_honestly_unlinked() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok\n".into(),
         });
         let adm = admission();
@@ -477,10 +481,178 @@ mod tests {
     // observation correlates each call to its result in first person, and the
     // outcome becomes a recallable engram. Regresses the multi-room steer + the
     // result-as-memory choice (ACTING-ORGANISM §3.3).
+    // Regression17d3e6ff: real card lookup must resolve admitted hands before
+    // board grounding, ledger rendering and execution, without moving the wake.
+    #[tokio::test]
+    async fn bound_card_activity_is_shared_by_perception_and_execution() {
+        use crate::cognition::{
+            llm_deliberation_faculty::LlmDeliberationFaculty,
+            rag_source_faculty::{RagSourceFaculty, SaliencePolicy},
+        };
+        use crate::persona::{
+            airc_runtime::PersonaAircRuntime, airc_runtime_registry::PersonaAircRuntimeRegistry,
+            room_board_source::RoomBoardSource,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        let airc = Arc::new(
+            airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .unwrap(),
+        );
+        let task = airc.join("bound-activity-task").await.unwrap();
+        let card = airc
+            .create_work_card(airc_lib::CreateWorkCard::new(
+                airc_lib::RepoId::new("fixture/activity").unwrap(),
+                "implement subject change",
+                airc_lib::Priority::P2,
+            ))
+            .await
+            .unwrap();
+        let claim = airc
+            .claim_work_card(airc_lib::ClaimWorkCard {
+                card_id: card,
+                ttl_ms: 600_000,
+            })
+            .await
+            .unwrap();
+        let wake = airc.join("bound-activity-wake").await.unwrap();
+        let persona = airc.peer_id().as_uuid();
+        PersonaAircRuntimeRegistry::set_global(PersonaAircRuntimeRegistry::new());
+        let registry = PersonaAircRuntimeRegistry::try_global().unwrap();
+        let runtime = registry.register(PersonaAircRuntime::from_attached(
+            persona,
+            "Ivar",
+            home.path().to_path_buf(),
+            airc.clone(),
+            wake.channel,
+            crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
+        ));
+        let hands =
+            crate::code::hands::HandsContext::for_claim(persona, card.as_uuid(), claim.as_uuid());
+        let checkout = airc_lib::work_worktree::worktree_path_for(card).unwrap();
+        assert!(checkout.starts_with(home.path()));
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Arc::new(Mutex::new(None)),
+            result_content: "read subject file".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(8));
+        let (board_source, _dirty) = crate::persona::cached_source::CachedRagSource::new(Arc::new(
+            RoomBoardSource::new(persona, runtime).for_room(wake.channel.as_uuid()),
+        ));
+        let board = RagSourceFaculty::new(persona, board_source, SaliencePolicy::StandingFraming);
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(board),
+                Arc::new(WorkingMemoryFaculty::new(wm.clone())),
+                Arc::new(ActThenSpeak::new()),
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(Arc::new(ActingBody {
+            persona_id: persona,
+            persona_name: "Ivar".into(),
+            executor: exec.clone(),
+            admission: admission(),
+            working_memory: wm.clone(),
+        }));
+        let board_state = airc.work_board_in(&task).await.unwrap();
+        let focus = board_state.card(card).unwrap();
+        let binding = crate::cognition::persona_workspace::bind_card(&cycle, persona, focus).await;
+        assert_eq!(binding.hands.as_ref().map(|h| h.context), Some(hands));
+        let burst = crate::cognition::workspace::Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(wake.channel.as_uuid()).unwrap(),
+            "work on my held card".into(),
+        )
+        .in_hands(Some(hands));
+        let _ = settle_step(
+            &cycle,
+            burst.clone(),
+            true,
+            TurnFraming::default(),
+            Situation::default(),
+            &ActChain::new(),
+        )
+        .await;
+        assert_eq!(
+            *exec.seen_context.lock().unwrap(),
+            Some(task.channel.as_uuid()),
+            "tools execute in the card activity"
+        );
+        let ws = cycle.run(burst).await;
+        assert_eq!(ws.room_id, wake.channel.as_uuid());
+        assert_eq!(ws.activity_room_id, task.channel.as_uuid());
+        assert!(
+            ws.broadcast
+                .iter()
+                .any(|c| c.content.contains("implement subject change")),
+            "the task board reaches perception"
+        );
+        let prompt = LlmDeliberationFaculty::new(
+            persona,
+            "Ivar",
+            "You are Ivar.",
+            Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new()),
+        )
+        .with_working_memory(wm)
+        .prompt_view(&ws);
+        let ledger = prompt
+            .messages
+            .iter()
+            .map(|m| m.content_text())
+            .find(|m| m.starts_with("[steps taken this session]"))
+            .unwrap();
+        assert!(ledger.contains("code/run"), "{ledger}");
+        assert!(!ledger.contains("no acts in this room"), "{ledger}");
+        assert_eq!(airc.current_room().await.unwrap().channel, wake.channel);
+        let private = crate::persona::mind_room::mind_room_id(persona);
+        let private_ws = cycle
+            .run(
+                crate::cognition::workspace::Burst::raw_in(
+                    crate::identity::ActivityRoom::from_uuid(private).unwrap(),
+                    "private thought".into(),
+                )
+                .in_hands(Some(hands)),
+            )
+            .await;
+        assert_eq!(
+            private_ws.activity_room_id, private,
+            "private thoughts never adopt public task scope"
+        );
+        // An eval's fresh hands and a roomless fixture never borrow the focused claim.
+        let fork = crate::code::hands::HandsContext::fresh();
+        assert_eq!(
+            crate::cognition::persona_workspace::activity_room_for(persona, Some(fork), Uuid::nil())
+                .await,
+            Uuid::nil(),
+        );
+        let unbound_ws = cycle
+            .run(crate::cognition::workspace::Burst::from("synthetic exam").in_hands(Some(fork)))
+            .await;
+        assert_eq!(unbound_ws.activity_room_id, unbound_ws.room_id);
+        assert!(!unbound_ws
+            .broadcast
+            .iter()
+            .any(|c| c.content.contains("implement subject change")));
+        assert_eq!(
+            crate::cognition::persona_workspace::activity_room_for(
+                persona,
+                None,
+                wake.channel.as_uuid()
+            )
+            .await,
+            wake.channel.as_uuid(),
+            "default hands do not inherit the focused claim's card",
+        );
+        registry.remove(persona);
+    }
+
     #[tokio::test]
     async fn apply_act_scopes_to_the_room_and_observes_the_result() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "4\n".into(),
         });
         let adm = admission();
@@ -730,7 +902,7 @@ mod tests {
     #[tokio::test]
     async fn drive_to_settle_acts_then_settles_on_speak() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "4".into(),
         });
         let adm = admission();
@@ -774,7 +946,7 @@ mod tests {
         let speaker = CountingSpeaker::new();
         let wm = Arc::new(WorkingMemory::new(8));
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "src/".into(),
         });
         let cycle = WorkspaceCycle::new(
@@ -821,7 +993,7 @@ mod tests {
         let speaker = CountingSpeaker::new();
         let wm = Arc::new(WorkingMemory::new(8));
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let cycle = WorkspaceCycle::new(
@@ -895,7 +1067,7 @@ mod tests {
     #[tokio::test]
     async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "file contents...".into(),
         });
         let adm = admission();
@@ -931,7 +1103,7 @@ mod tests {
         // Ambient control: same never-writing faculty, deliverable is the utterance —
         // discovery is not gated and the full budget is hers.
         let exec2 = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "file contents...".into(),
         });
         let cycle2 = WorkspaceCycle::new(
@@ -959,7 +1131,7 @@ mod tests {
     #[tokio::test]
     async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "file contents...".into(),
         });
         let adm = admission();
@@ -1001,7 +1173,7 @@ mod tests {
 
         // Control: an ordinary (speech-deliverable) turn records no stopwatch.
         let exec2 = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "file contents...".into(),
         });
         let body2 = body(exec2, admission());
@@ -1030,7 +1202,7 @@ mod tests {
     #[tokio::test]
     async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "...".into(),
         });
         let adm = admission();
@@ -1108,7 +1280,7 @@ mod tests {
     #[tokio::test]
     async fn settle_step_defers_the_act_without_executing_when_may_act_is_false() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "...".into(),
         });
         let adm = admission();
@@ -2078,7 +2250,7 @@ mod tests {
     #[tokio::test]
     async fn spoken_narrated_action_records_unfulfilled_promise() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let promise = "I'll run this script to check:\n```python\nprint(2+2)\n```\nOutput soon!";
@@ -2146,7 +2318,7 @@ mod tests {
             )
         };
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let wm = Arc::new(WorkingMemory::new(4));
@@ -2190,7 +2362,7 @@ mod tests {
 
         // With an outstanding promise in memory → [unverified].
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let wm = Arc::new(WorkingMemory::new(4));
@@ -2223,7 +2395,7 @@ mod tests {
 
         // Clean memory, same fenced content → legitimate drafting, no line.
         let exec2 = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let wm2 = Arc::new(WorkingMemory::new(4));

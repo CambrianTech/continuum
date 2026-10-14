@@ -389,17 +389,13 @@ impl Faculty for RagSourceFaculty {
     // seam.
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         let now = (self.clock)();
-        // Thread the turn's CONTEXT (the WHERE axis — `Workspace::room_id`, the
-        // tick's contextId) into the delivery context, so room-scoped sources
-        // ground THE TURN'S room, never wherever they happened to be bound at
-        // build time. This is what keeps room A's kanban/roster/doctrine out of
-        // a turn in room B — and out of a synthetic context like the eval fork's
-        // nil room (the exam-bleed bug: stale board imperatives injected into a
-        // coding exam derailed agentically-trained models; glass-boxed live,
-        // Hermes-8B OURS 38% < RAW 52%). A nil room is deliberately threaded as
-        // Some(nil): it IS a context — one that is no room — so every room-bound
-        // source honestly mismatches and abstains. [[identity-context-session-three-axes]]
-        let ctx = RagContext::for_persona_in_room(self.persona_id, now, ws.room_id);
+        // Sources declare what they describe: task board versus wake conversation.
+        // Select before delivery so existing source caches see the same selected room.
+        let room = match self.source.room_scope() {
+            crate::persona::rag_budget::RagRoomScope::Conversation => ws.room_id,
+            crate::persona::rag_budget::RagRoomScope::Activity => ws.activity_room_id,
+        };
+        let ctx = RagContext::for_persona_in_room(self.persona_id, now, room);
         let delivery = self
             .source
             .deliver(&ctx, self.budget, ResolutionPreference::Raw)
@@ -410,10 +406,10 @@ impl Faculty for RagSourceFaculty {
         // empty PARTIAL delivery is different: nothing fit, but the source has more,
         // so it still contributes its notice (card e049aa82) instead of vanishing.
         if delivery.items.is_empty() && delivery.continuation.is_none() {
-            let _ = self.note_absence(ws.room_id);
+            let _ = self.note_absence(room);
             return None;
         }
-        let _ = self.note_presence(ws.room_id);
+        let _ = self.note_presence(room);
 
         // One context block per source: concatenate the delivered atomic units.
         // The deliberation faculty renders this under a `[<source_id>]` header.
@@ -480,6 +476,7 @@ mod tests {
         id: &'static str,
         items: Vec<RagItem>,
         seen_persona: Mutex<Option<Uuid>>,
+        seen_room: Mutex<Option<Uuid>>,
     }
 
     impl StubSource {
@@ -496,6 +493,7 @@ mod tests {
                 id,
                 items,
                 seen_persona: Mutex::new(None),
+                seen_room: Mutex::new(None),
             }
         }
     }
@@ -522,6 +520,7 @@ mod tests {
             resolution: ResolutionPreference,
         ) -> RagDelivery {
             *self.seen_persona.lock().unwrap() = Some(ctx.persona_id);
+            *self.seen_room.lock().unwrap() = ctx.airc_room.map(|room| room.as_uuid());
             let tokens_used = self.items.iter().map(|i| i.tokens).sum();
             RagDelivery {
                 source_id: self.id.to_string(),
@@ -931,7 +930,10 @@ mod tests {
         let source = Arc::new(StubSource::new("room-doctrine", &["coordination room"]));
         let probe = source.clone();
         let faculty = RagSourceFaculty::new(persona(), source, SaliencePolicy::Retrieved);
-        let _ = faculty.contribute(&Workspace::new("burst")).await;
+        let mut ws = Workspace::new("burst");
+        ws.activity_room_id = Uuid::new_v4();
+        let _ = faculty.contribute(&ws).await;
+        assert_eq!(*probe.seen_room.lock().unwrap(), Some(ws.room_id), "conversation grounding retains wake scope");
         assert_eq!(
             *probe.seen_persona.lock().unwrap(),
             Some(persona()),
