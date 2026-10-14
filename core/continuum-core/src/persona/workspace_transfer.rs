@@ -1245,12 +1245,12 @@ mod tests {
     // of the checkout's lock with its future while its git's tree was ended after it, so the next
     // sync could run beside that git; and only a DEADLINE marked the remote unknown, so a
     // cancelled push left the next sync trusting a stale tracking ref. Phase by phase: the push is
-    // under way (its hook recorded itself), the sync is cancelled, the lock is still held while
-    // the git's tree is being ended and free once it has, the remote is unknown, and the next
-    // sync reads it before publishing.
+    // under way (its hook recorded itself), the sync is cancelled, the checkout comes free with
+    // the git's tree confirmed ended, the remote is unknown, and the next sync reads it before
+    // publishing.
     #[cfg(unix)]
     #[tokio::test]
-    async fn a_sync_cancelled_mid_push_holds_the_checkout_until_its_git_has_ended_and_leaves_the_remote_unknown() {
+    async fn a_sync_cancelled_mid_push_frees_the_checkout_once_its_git_has_ended_and_leaves_the_remote_unknown() {
         use std::os::unix::fs::PermissionsExt;
         let m = two_machines().await;
         let hook_pid = m.tmp.path().join("hook.pid");
@@ -1260,9 +1260,12 @@ mod tests {
         std::fs::write(m.a.join("src.txt"), "edit from A\n").unwrap();
         let card = Uuid::new_v4();
         let root = m.a.clone();
+        // under an admission, as the turn path's sync always is (sync_after_act_for)
+        let context = crate::code::hands::HandsContext::fresh();
+        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
         let syncing = tokio::spawn(async move {
             let unbounded_here = tokio::time::Instant::now() + std::time::Duration::from_secs(600); // a cancel ends it, not this
-            sync_by(unbounded_here, &root, sync(&root, card, "node-a")).await
+            crate::code::hands::admitted(Some(lease), sync_by(unbounded_here, &root, sync(&root, card, "node-a"))).await
         });
         while !hook_pid.exists() {
             assert!(!syncing.is_finished(), "the sync ended before its push reached the remote");
@@ -1271,26 +1274,16 @@ mod tests {
         syncing.abort();
         assert!(syncing.await.expect_err("cancelled").is_cancelled(), "the sync was cancelled mid-push");
 
-        // No barrier can hold the tree's end at a phase, so this checks the ORDER, which holds at
-        // any timing (Codex reviewer on #5037 at 54060ccb2): the lock is seen free only after the
-        // hook is gone. Liveness is read AFTER the lock is seen free, so a hook that was alive
-        // then is still alive when read, never the reverse.
+        // that the lock is released only AFTER the git's tree has ended is lane_process's strict
+        // order test (a witness reads the grandchild at the instant its holder drops); here, the
+        // cancelled sync's checkout comes free, and a release confirms nothing was left behind
         let lock = CHECKOUT_SYNC.get(&m.a).map(|entry| entry.clone()).expect("the checkout's lock");
-        let pid = std::fs::read_to_string(&hook_pid).unwrap().trim().to_string();
-        let hook_alive = || {
-            let ps = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid]).output().expect("ps");
-            let stat = String::from_utf8_lossy(&ps.stdout).trim().to_string();
-            !stat.is_empty() && !stat.starts_with('Z') // a zombie has exited: gone
-        };
-        let looked = tokio::time::Instant::now();
-        loop {
-            if lock.try_lock().map(drop).is_ok() {
-                assert!(!hook_alive(), "the checkout was free while the cancelled push's git still ran");
-                break;
-            }
-            assert!(looked.elapsed() < std::time::Duration::from_secs(10), "the checkout is free once the git's tree has ended");
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-        }
+        let freed = tokio::time::timeout(std::time::Duration::from_secs(10), lock.clone().lock_owned())
+            .await
+            .expect("the checkout is free once the cancelled git's tree has ended");
+        drop(freed);
+        let lingering = crate::code::hands::close(context).await;
+        assert!(lingering.is_empty(), "the cancelled push's tree was confirmed ended: {lingering:?}");
 
         assert!(REMOTE_UNKNOWN.contains(&m.a), "a cancelled push leaves the remote unknown");
         std::fs::remove_file(&hook).unwrap();

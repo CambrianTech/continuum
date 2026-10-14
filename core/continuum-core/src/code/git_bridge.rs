@@ -496,12 +496,12 @@ pub(crate) async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: 
 /// an effect (a push: did the remote take it?).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GitEnd {
-    /// It never ran: it couldn't be spawned, or its deadline had passed. It had no effect.
+    /// It never ran: its deadline had passed before it started. It had no effect.
     NeverRan,
     /// It exited non-zero: git's own verdict that it didn't do what was asked.
     Refused,
-    /// Its effect is unknown: its deadline ended it mid-run, or it exited 0 but its input or
-    /// output wasn't whole, or its output couldn't be read (Codex reviewer on #5037).
+    /// Its effect is unknown: its deadline ended it mid-run, it exited 0 but its input or
+    /// output wasn't whole or readable, or the runner failed around it (Codex reviewer on #5037).
     Unknown,
 }
 
@@ -578,7 +578,9 @@ pub(crate) async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(
         .envs(env.iter().copied());
     let out = run_owned_with_input(cmd, input, bound, "git", std::sync::Arc::default())
         .await
-        .map_err(|e| GitError { end: GitEnd::NeverRan, message: format!("Failed to run git: {e}") })?;
+        // the runner's errors aren't all before the spawn (a failed wait, an end that couldn't
+        // run): what the git did is unknown, never "it never ran" (Codex reviewer on #5037)
+        .map_err(|e| GitError { end: GitEnd::Unknown, message: format!("Failed to run git: {e}") })?;
     // the shared projection (lane_process::OwnedOutput::answer): a non-zero exit is git's own
     // failure, with its stderr, and any delivery note beside it; a deadline that ended it says
     // its effect is unknown

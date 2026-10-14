@@ -302,7 +302,8 @@ tokio::task_local! {
 /// ended, not merely until `work`'s future does. A cancel drops the future at once while the
 /// tree's end runs after it ([`OwnedChild`]'s drop), so an exclusion held only by the future
 /// (a checkout's sync lock) would admit the next holder beside a git still being ended
-/// (Codex reviewer on #5037). Nested scopes add to what the outer ones hold.
+/// (Codex reviewer on #5037). Nested scopes add to what the outer ones hold. It needs an
+/// admission ([`crate::code::hands::admitted`]): what an unconfirmed end keeps goes onto it.
 pub async fn holding<F: std::future::Future>(value: Kept, work: F) -> F::Output {
     let mut all = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: outside any scope nothing else is held
     all.push(value);
@@ -348,7 +349,7 @@ impl OwnedChild {
         if let Some(lease) = &self.held {
             lease.keep_unknown(why);
         }
-        keep_with_lingering(self.held.as_ref(), &self.kept, self.label);
+        keep_with_lingering(self.held.as_ref(), &self.kept);
     }
 
     /// Hand the child to its end: a spawned task, so the caller's cancellation can't cut it
@@ -389,7 +390,7 @@ async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc
         lease.keep_unconfirmed(&end);
     }
     if !end.confirmed() {
-        keep_with_lingering(held.as_ref(), &kept, label);
+        keep_with_lingering(held.as_ref(), &kept);
     }
     drop(kept); // confirmed: what its caller held for it is released now that the tree has ended
     end
@@ -397,23 +398,11 @@ async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc
 
 /// What a child's caller held for it ([`holding`]) goes where what it left unconfirmed goes: onto
 /// its admission's lingering record, released only when a re-check finds nothing left (Codex
-/// reviewer on #5037). With no admission nothing can confirm that end later, so it is never
-/// released: an exclusion over a tree nobody confirmed ended stays held (fail closed).
-fn keep_with_lingering(held: Option<&std::sync::Arc<crate::code::hands::HandsLease>>, kept: &[Kept], label: &'static str) {
-    if kept.is_empty() {
-        return;
-    }
-    match held {
-        Some(lease) => lease.keep_held(kept),
-        None => {
-            crate::probe!(
-                class = "process.kept_unconfirmed",
-                process = label,
-                kept = kept.len(),
-                "an owned process's end is unconfirmed and no admission can re-check it; what its caller held for it stays held"
-            );
-            kept.iter().cloned().for_each(std::mem::forget);
-        }
+/// reviewer on #5037). `kept` is non-empty only under an admission: [`run_owned_with_input`]
+/// refuses `holding` without one before anything starts.
+fn keep_with_lingering(held: Option<&std::sync::Arc<crate::code::hands::HandsLease>>, kept: &[Kept]) {
+    if let Some(lease) = held {
+        lease.keep_held(kept);
     }
 }
 
@@ -576,6 +565,14 @@ pub async fn run_owned_with_input(
         cmd.stdin(std::process::Stdio::piped());
     }
     let deadline = bound.map(|b| tokio::time::Instant::now() + b);
+    let kept = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: started outside any `holding` scope, it keeps nothing extra
+    let held = crate::code::hands::current();
+    if !kept.is_empty() && held.is_none() {
+        // what a caller holds for a child is released when the child's end is confirmed, or by
+        // the admission's re-check when it isn't; with no admission nothing could release it
+        // after an unconfirmed end, so it is refused before anything starts (Codex reviewer on #5037)
+        return Err(std::io::Error::other(format!("{label}: `holding` needs an admission to keep what it holds past an unconfirmed end; none is current")));
+    }
     let mut child = cmd.spawn()?;
     let (out_pipe, err_pipe) = (child.stdout.take(), child.stderr.take());
     let writer = match (input, child.stdin.take()) {
@@ -611,8 +608,8 @@ pub async fn run_owned_with_input(
         pipes,
         child: Some(child),
         capture: capture.clone(),
-        held: crate::code::hands::current(),
-        kept: HOLDING.try_with(Vec::clone).unwrap_or_default(), // unwrap_or_default: started outside any `holding` scope, it keeps nothing extra
+        held,
+        kept,
         label,
     };
     let Some(child) = owned.child.as_mut() else {
@@ -1114,7 +1111,24 @@ mod tests {
         let capture = std::sync::Arc::new(RunCapture::default());
         let mut cmd = tokio::process::Command::new("sh");
         cmd.arg("-c").arg(&script);
-        let run = crate::code::hands::admitted(Some(lease), run_owned(cmd, None, "test", capture.clone()));
+        // the strict order (Codex reviewer on #5037): what the caller held for the run (a
+        // checkout's sync lock) is released only after the tree's end, so at the instant it
+        // drops, the grandchild is already gone. The witness reads that AT its release.
+        struct Witness {
+            grandchild: std::path::PathBuf,
+            gone_at_release: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
+        }
+        impl Drop for Witness {
+            fn drop(&mut self) {
+                let pid = std::fs::read_to_string(&self.grandchild).unwrap_or_default(); // unwrap_or_default: no pid file reads as no process, which the assertion below names
+                let ps = std::process::Command::new("ps").args(["-o", "stat=", "-p", pid.trim()]).output();
+                let stat = ps.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).unwrap_or_default(); // unwrap_or_default: no ps output reads as gone
+                *self.gone_at_release.lock().unwrap() = Some(!pid.trim().is_empty() && (stat.is_empty() || stat.starts_with('Z'))); // a zombie has exited
+            }
+        }
+        let gone_at_release = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let witness: Kept = std::sync::Arc::new(Witness { grandchild: grandchild_pid.clone(), gone_at_release: gone_at_release.clone() });
+        let run = crate::code::hands::admitted(Some(lease), holding(witness, run_owned(cmd, None, "test", capture.clone())));
         let tree = tokio::select! {
             out = run => panic!("the run ended on its own: {out:?}"),
             tree = async {
@@ -1133,6 +1147,7 @@ mod tests {
             .await
             .expect("the release completes once the tree is ended, not before and not never");
         assert!(lingering.is_empty(), "nothing is left unconfirmed: {lingering:?}");
+        assert_eq!(*gone_at_release.lock().unwrap(), Some(true), "what the caller held was released only once the grandchild was gone");
         // a killed descendant may wait for init to reap it; a zombie has exited, so it counts as gone
         assert!(still_present(&tree).is_empty(), "what the child started is gone when the release completes");
         let kept = capture.stdout.snapshot();
@@ -1142,7 +1157,10 @@ mod tests {
         cmd.arg("-c").arg("echo before; sleep 600 & wait");
         let exclusion: Kept = std::sync::Arc::new(());
         let exclusion_held = std::sync::Arc::downgrade(&exclusion);
-        let timed = holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())).await.expect("ran");
+        let admission = std::sync::Arc::new(crate::code::hands::admit(crate::code::hands::HandsContext::fresh()).expect("open hands"));
+        let timed = crate::code::hands::admitted(Some(admission), holding(exclusion, run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test", std::sync::Arc::default())))
+            .await
+            .expect("ran");
         assert!(exclusion_held.upgrade().is_none(), "a confirmed end releases what its caller held for it (Codex reviewer on #5037)");
         assert!(matches!(timed.ended, Ended::TimedOut { ref unconfirmed } if unconfirmed.is_empty()), "a timeout ends the tree and confirms it: {timed:?}");
         assert_eq!(String::from_utf8_lossy(&timed.stdout.bytes), "before\n", "and what it wrote before the bound is kept");
