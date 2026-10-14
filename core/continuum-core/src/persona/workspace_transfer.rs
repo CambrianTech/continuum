@@ -479,19 +479,23 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
     // the remote holds (Codex reviewer on #5037)
     REMOTE_UNKNOWN.insert(root.to_path_buf());
     let pushed = crate::code::git_bridge::run_git_input(root, &["push", "-u", "origin", &branch], &[], None).await;
-    // only a conclusive end settles what the remote holds: a push that answered, one git refused,
-    // or one that never ran. A push cut off, or one whose output wasn't whole or readable, may
-    // have landed, so the remote stays unknown (Codex reviewer on #5037)
+    // only a push that answered, or one that never ran, settles what the remote holds. One git
+    // refused may still have landed (the remote can take the ref and the connection fail before
+    // git hears so), and one cut off or unreadable may too: the remote stays unknown, and the
+    // next sync's one fetch reads it (Codex reviewer on #5037)
     match pushed {
-        Err(error) if error.end == crate::code::git_bridge::GitEnd::Unknown => PushOutcome::PushInterrupted { branch, error: error.into() },
         Ok(_) => {
             REMOTE_UNKNOWN.remove(root);
             PushOutcome::Ok { branch, sha, committed, pushed: true }
         }
-        Err(error) => {
-            REMOTE_UNKNOWN.remove(root);
-            push_failure(branch, error.into())
-        }
+        Err(error) => match error.end {
+            crate::code::git_bridge::GitEnd::Unknown => PushOutcome::PushInterrupted { branch, error: error.into() },
+            crate::code::git_bridge::GitEnd::NeverRan => {
+                REMOTE_UNKNOWN.remove(root);
+                push_failure(branch, error.into())
+            }
+            crate::code::git_bridge::GitEnd::Refused => push_failure(branch, error.into()),
+        },
     }
 }
 
@@ -955,6 +959,8 @@ mod tests {
         let out = sync(&m.a, card, "node-a").await;
         assert!(matches!(out, PushOutcome::Unreachable { .. }), "{out:?}");
         assert_eq!(out.label(), "unreachable");
+        // a push git refused doesn't prove the remote unchanged (Codex reviewer on #5037)
+        assert!(REMOTE_UNKNOWN.contains(&m.a), "the remote stays unknown after a refused push");
         assert_eq!(git(&m.a, &["status", "--porcelain"]).await.trim(), "", "the WIP commit landed locally");
         assert!(has_unpushed_work(&m.a).await, "a local-only commit is unpushed work");
         note_acted_root(persona, m.a.clone());
@@ -968,6 +974,7 @@ mod tests {
         std::fs::rename(&gone, &m.origin).unwrap();
         let out = sync(&m.a, card, "node-a").await;
         assert!(matches!(out, PushOutcome::Ok { committed: false, pushed: true, .. }), "{out:?}");
+        assert!(!REMOTE_UNKNOWN.contains(&m.a), "the next sync read the remote, and its push settled it");
         assert!(move_blocker_over(persona, None).await.is_none(), "the push landed: free to move");
         // A vanished root is pruned, not a permanent blocker.
         note_acted_root(persona, m.tmp.path().join("never-existed"));

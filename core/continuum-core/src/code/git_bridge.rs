@@ -498,7 +498,8 @@ pub(crate) async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: 
 pub(crate) enum GitEnd {
     /// It never ran: its deadline had passed before it started. It had no effect.
     NeverRan,
-    /// It exited non-zero: git's own verdict that it didn't do what was asked.
+    /// It exited non-zero: git's own verdict that it failed. For a push that doesn't prove the
+    /// remote is unchanged (it can take the ref and the connection fail before git hears so).
     Refused,
     /// Its effect is unknown: its deadline ended it mid-run, it exited 0 but its input or
     /// output wasn't whole or readable, or the runner failed around it (Codex reviewer on #5037).
