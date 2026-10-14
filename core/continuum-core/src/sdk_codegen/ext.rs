@@ -23,7 +23,7 @@
 //! connection) is declared in the schema as the next tier and refused until built.
 
 use super::{AccessLevel, CommandDescriptor, DynCommand, TypeRef, WireShape};
-use crate::inference::lane_process::Answer;
+use crate::inference::lane_process::{Answer, Why};
 use crate::runtime::CommandResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -270,50 +270,32 @@ impl ProcessCommand {
         let elapsed_ms = started.elapsed().as_millis() as u64;
         let stdout = match out.answer() {
             Answer::Whole(stdout) => stdout,
-            // its params didn't all reach it, or what it wrote wasn't read whole: whatever it
-            // answered, it didn't answer THIS call
-            Answer::NotWhole(note) => return Err(format!("{}: exited 0, but {note}", self.name)),
-            Answer::Failed { status, stderr, note } => {
-                crate::probe!(
-                    class = "ext.command.failed",
-                    command = %self.name,
-                    code = status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
-                    elapsed_ms,
-                    "authored command exited non-zero"
-                );
-                // its own failure first, whole: what to show is the budgeter's call, never a fixed
-                // cut (Joel, 2026-10-11); a delivery note goes beside it, never in its place
-                let mut why = format!(
-                    "{}: exit {} — {}",
-                    self.name,
-                    status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
-                    String::from_utf8_lossy(&stderr.bytes).trim()
-                );
-                if let Some(note) = note {
-                    why.push_str(&format!(" ({note})"));
-                }
-                return Err(why);
-            }
-            Answer::TimedOut { unconfirmed } => {
-                crate::probe!(
-                    class = "ext.command.timed_out",
-                    command = %self.name,
-                    timeout_ms = self.manifest.timeout_ms,
-                    unconfirmed = ?unconfirmed,
-                    "authored command exceeded its declared bound; it was ended, and any pid listed is not confirmed gone"
-                );
-                // what it wrote before the bound is kept in the error, and teardown is named,
-                // never claimed complete (Codex root on #5035)
-                let mut why = format!("{}: timed out after {} ms", self.name, self.manifest.timeout_ms);
-                if !unconfirmed.is_empty() {
-                    why.push_str(&format!("; not confirmed gone: {unconfirmed:?}"));
-                }
-                for (name, read) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
-                    if !read.bytes.is_empty() {
-                        why.push_str(&format!("\n{name} before the bound:\n{}", String::from_utf8_lossy(&read.bytes).trim_end()));
+            Answer::Not(unanswered) => {
+                match &unanswered.why {
+                    Why::TimedOut { unconfirmed } => {
+                        crate::probe!(
+                            class = "ext.command.timed_out",
+                            command = %self.name,
+                            timeout_ms = self.manifest.timeout_ms,
+                            unconfirmed = ?unconfirmed,
+                            "authored command exceeded its declared bound; it was ended, and any pid listed is not confirmed gone"
+                        );
                     }
+                    Why::Exited(status) => {
+                        crate::probe!(
+                            class = "ext.command.failed",
+                            command = %self.name,
+                            code = status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
+                            elapsed_ms,
+                            "authored command exited non-zero"
+                        );
+                    }
+                    // its params didn't all reach it, or what it wrote wasn't read whole: whatever
+                    // it answered, it didn't answer THIS call
+                    Why::NotWhole => {}
                 }
-                return Err(why);
+                // why, the note beside it, and both streams as read: every dimension the run left
+                return Err(format!("{} (bound {} ms): {unanswered}", self.name, self.manifest.timeout_ms));
             }
         };
         let stdout = String::from_utf8_lossy(&stdout.bytes);
@@ -464,7 +446,7 @@ mod tests {
         m.timeout_ms = 200;
         let hang = ProcessCommand::new(m, PathBuf::new());
         let err = hang.run_process(Value::Null).await.expect_err("bounded");
-        assert!(err.contains("timed out after 200 ms"), "{err}");
+        assert!(err.contains("(bound 200 ms): timed out"), "{err}");
     }
 
     // what this catches: the manifest file has a PUBLISHED schema, like the recipe —
