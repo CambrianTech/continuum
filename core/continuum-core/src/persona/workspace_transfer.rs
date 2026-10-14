@@ -473,12 +473,19 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
     if !unpublished {
         return PushOutcome::Ok { branch, sha, committed, pushed: false };
     }
-    match run_git(root, &["push", "-u", "origin", &branch]).await {
-        Ok(_) => PushOutcome::Ok { branch, sha, committed, pushed: true },
-        Err(error) if crate::code::git_bridge::interrupted(&error) => {
-            REMOTE_UNKNOWN.insert(root.to_path_buf());
-            PushOutcome::PushInterrupted { branch, error }
+    // unknown from BEFORE the push: a push cut off by its deadline or by a cancel (which
+    // returns nothing here) leaves the remote unknown, and only a push that completed says what
+    // the remote holds (Codex reviewer on #5037)
+    REMOTE_UNKNOWN.insert(root.to_path_buf());
+    let pushed = run_git(root, &["push", "-u", "origin", &branch]).await;
+    if let Err(error) = &pushed {
+        if crate::code::git_bridge::interrupted(error) {
+            return PushOutcome::PushInterrupted { branch, error: error.clone() };
         }
+    }
+    REMOTE_UNKNOWN.remove(root);
+    match pushed {
+        Ok(_) => PushOutcome::Ok { branch, sha, committed, pushed: true },
         Err(error) => push_failure(branch, error),
     }
 }
@@ -571,7 +578,7 @@ pub async fn sync_after_act_for(lease: std::sync::Arc<crate::code::hands::HandsL
 async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
     let node = crate::capacity::gossip::this_process_origin().to_string();
     let started = std::time::Instant::now();
-    let outcome = sync_by(tokio::time::Instant::now() + SYNC_BOUND, &root, card, &node, Some((persona, persona_name))).await;
+    let outcome = sync_by(tokio::time::Instant::now() + SYNC_BOUND, &root, sync_after_act(&root, card, &node, Some((persona, persona_name)))).await;
     // Recorded whenever this checkout could hold work a move would strand — INCLUDING a
     // local-path origin, which is exactly the case that must pin her. Only a checkout
     // with no branch of hers is forgotten.
@@ -603,17 +610,20 @@ async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: U
     outcome
 }
 
-/// [`sync_after_act`] by ONE absolute `deadline`: waiting for the checkout's lock spends it
-/// too, and every git in it gets only what is left (Codex root on bfa87dd5).
-async fn sync_by(deadline: tokio::time::Instant, root: &Path, card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> PushOutcome {
+/// `sync` (a [`sync_after_act`] of `root`) by ONE absolute `deadline`: waiting for the
+/// checkout's lock spends it too, and every git in it gets only what is left (Codex root on
+/// bfa87dd5).
+async fn sync_by(deadline: tokio::time::Instant, root: &Path, sync: impl std::future::Future<Output = PushOutcome>) -> PushOutcome {
     let lock = CHECKOUT_SYNC.entry(root.to_path_buf()).or_default().clone();
     let outcome = crate::code::git_bridge::within(deadline, async {
         // ONE sync per checkout at a time: two turns of one card claim can end together (card
-        // fc9e9fd7). The guard is held across the git awaits and dropped with them.
-        let Ok(_one_at_a_time) = tokio::time::timeout_at(deadline, lock.lock()).await else {
+        // fc9e9fd7). Every git the sync starts keeps the lock until ITS tree has ended, so a
+        // cancelled sync can't let the next one in beside a git still being ended (Codex
+        // reviewer on #5037).
+        let Ok(one_at_a_time) = tokio::time::timeout_at(deadline, lock.lock_owned()).await else {
             return PushOutcome::TimedOut;
         };
-        sync_after_act(root, card, node, actor).await
+        crate::inference::lane_process::holding(std::sync::Arc::new(one_at_a_time), sync).await
     })
     .await;
     // past the deadline, a step's failure was the deadline's (a git it ended or never ran), so
@@ -1191,7 +1201,7 @@ mod tests {
         let lock = CHECKOUT_SYNC.entry(m.a.clone()).or_default().clone();
         let held = lock.lock().await; // another turn's sync of the same checkout
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(200);
-        let out = sync_by(deadline, &m.a, Uuid::new_v4(), "node-a", None).await;
+        let out = sync_by(deadline, &m.a, sync(&m.a, Uuid::new_v4(), "node-a")).await;
         assert!(matches!(out, PushOutcome::TimedOut), "the wait spent the deadline: {out:?}");
         assert_eq!(git(&m.a, &["status", "--porcelain"]).await.trim(), "?? src.txt", "no git ran: her edit is uncommitted");
         drop(held);
@@ -1224,5 +1234,58 @@ mod tests {
             "the next sync read the remote, found the branch absent, and published it: {next:?}"
         );
         assert!(!REMOTE_UNKNOWN.contains(&m.a), "the read settled it");
+    }
+
+    // what this catches (Codex reviewer on #5037 at 992b027ac): a sync cancelled mid-push let go
+    // of the checkout's lock with its future while its git's tree was ended after it, so the next
+    // sync could run beside that git; and only a DEADLINE marked the remote unknown, so a
+    // cancelled push left the next sync trusting a stale tracking ref. Phase by phase: the push is
+    // under way (its hook recorded itself), the sync is cancelled, the lock is still held while
+    // the git's tree is being ended and free once it has, the remote is unknown, and the next
+    // sync reads it before publishing.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_sync_cancelled_mid_push_holds_the_checkout_until_its_git_has_ended_and_leaves_the_remote_unknown() {
+        use std::os::unix::fs::PermissionsExt;
+        let m = two_machines().await;
+        let hook_pid = m.tmp.path().join("hook.pid");
+        let hook = m.origin.join("hooks").join("pre-receive");
+        std::fs::write(&hook, format!("#!/bin/sh\necho $$ > {}\nexec sleep 600\n", hook_pid.display())).unwrap(); // the remote holds the push
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::write(m.a.join("src.txt"), "edit from A\n").unwrap();
+        let card = Uuid::new_v4();
+        let root = m.a.clone();
+        let syncing = tokio::spawn(async move {
+            let unbounded_here = tokio::time::Instant::now() + std::time::Duration::from_secs(600); // a cancel ends it, not this
+            sync_by(unbounded_here, &root, sync(&root, card, "node-a")).await
+        });
+        while !hook_pid.exists() {
+            assert!(!syncing.is_finished(), "the sync ended before its push reached the remote");
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        syncing.abort();
+        assert!(syncing.await.expect_err("cancelled").is_cancelled(), "the sync was cancelled mid-push");
+
+        let lock = CHECKOUT_SYNC.get(&m.a).map(|entry| entry.clone()).expect("the checkout's lock");
+        assert!(lock.try_lock().is_err(), "the cancelled sync's git is still being ended: the checkout stays held");
+        let freed = tokio::time::timeout(std::time::Duration::from_secs(10), lock.clone().lock_owned())
+            .await
+            .expect("the checkout is free once the git's tree has ended");
+        drop(freed);
+        let pid = std::fs::read_to_string(&hook_pid).unwrap().trim().to_string();
+        let ps = std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid]).output().expect("ps");
+        let stat = String::from_utf8_lossy(&ps.stdout).trim().to_string();
+        assert!(stat.is_empty() || stat.starts_with('Z'), "the push's hook ended with the git's tree before the lock was free: {stat}");
+
+        assert!(REMOTE_UNKNOWN.contains(&m.a), "a cancelled push leaves the remote unknown");
+        std::fs::remove_file(&hook).unwrap();
+        let next = sync(&m.a, card, "node-a").await;
+        assert!(
+            matches!(next, PushOutcome::Ok { committed: false, pushed: true, .. }),
+            "the next sync read the remote, found the branch absent, and published it: {next:?}"
+        );
+        assert!(!REMOTE_UNKNOWN.contains(&m.a), "the read settled it");
+        drop(lock);
+        forget_checkout(&m.a);
     }
 }

@@ -285,7 +285,28 @@ struct OwnedChild {
     pipes: Vec<PipeTask>,
     capture: std::sync::Arc<RunCapture>,
     held: Option<std::sync::Arc<crate::code::hands::HandsLease>>,
+    /// What its caller holds for it ([`holding`]), kept until its tree has ended.
+    kept: Vec<Kept>,
     label: &'static str,
+}
+
+/// A value an owned child keeps until its tree has ended (see [`holding`]).
+pub type Kept = std::sync::Arc<dyn std::any::Any + Send + Sync>;
+
+tokio::task_local! {
+    /// What every owned child started on this task keeps until its tree has ended.
+    static HOLDING: Vec<Kept>;
+}
+
+/// Run `work` with every owned child it starts keeping `value` until that child's tree has
+/// ended, not merely until `work`'s future does. A cancel drops the future at once while the
+/// tree's end runs after it ([`OwnedChild`]'s drop), so an exclusion held only by the future
+/// (a checkout's sync lock) would admit the next holder beside a git still being ended
+/// (Codex reviewer on #5037). Nested scopes add to what the outer ones hold.
+pub async fn holding<F: std::future::Future>(value: Kept, work: F) -> F::Output {
+    let mut all = HOLDING.try_with(Vec::clone).unwrap_or_default(); // unwrap_or_default: outside any scope nothing else is held
+    all.push(value);
+    HOLDING.scope(all, work).await
 }
 
 impl OwnedChild {
@@ -334,7 +355,7 @@ impl OwnedChild {
     fn end(&mut self) -> Option<tokio::task::JoinHandle<TreeEnd>> {
         let child = self.child.take()?;
         let runtime = tokio::runtime::Handle::try_current().ok()?;
-        Some(runtime.spawn(end_owned(child, self.held.clone(), self.label)))
+        Some(runtime.spawn(end_owned(child, self.held.clone(), self.kept.clone(), self.label)))
     }
 }
 
@@ -351,7 +372,7 @@ impl Drop for OwnedChild {
 /// End an owned child and its tree ([`end_tree`]) while holding the admission it was started
 /// under. What can't be confirmed ended is kept ON the admission before it drops, so the
 /// release that waits it out re-checks those processes and holds the hands for the rest.
-async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>, label: &'static str) -> TreeEnd {
+async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>, kept: Vec<Kept>, label: &'static str) -> TreeEnd {
     let end = end_tree(&mut child).await;
     if !end.confirmed() {
         crate::probe!(
@@ -366,6 +387,7 @@ async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc
     if let Some(lease) = &held {
         lease.keep_unconfirmed(&end);
     }
+    drop(kept); // what its caller held for it is released only now that the tree's end is done
     end
 }
 
@@ -564,6 +586,7 @@ pub async fn run_owned_with_input(
         child: Some(child),
         capture: capture.clone(),
         held: crate::code::hands::current(),
+        kept: HOLDING.try_with(Vec::clone).unwrap_or_default(), // unwrap_or_default: started outside any `holding` scope, it keeps nothing extra
         label,
     };
     let Some(child) = owned.child.as_mut() else {
