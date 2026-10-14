@@ -1369,7 +1369,7 @@ mod tests {
         ));
         tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
         let last = conversation.next_message_inner(false, false).await.unwrap().unwrap();
-        assert_eq!(last.text, "last event in one admission page");
+        assert_eq!(last.text, "directed input after more than one decode-fault page");
 
         // what this catches (5090, 2026-10-04): the one feed runs beside the private
         // subscription until that retires, so one event can arrive on both. The pump
