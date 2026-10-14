@@ -46,6 +46,7 @@ use crate::code::types::{
     DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
     SearchResult, TreeResult, WriteResult,
 };
+use crate::code::git_bridge::{run_git, run_git_with_env};
 use crate::code::hands::HandsKey;
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
@@ -167,7 +168,7 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
         .join("workspace"))
 }
 
-pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+pub(crate) async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
     // The shared base is the core's cwd — OUR checkout. Resolve it ONCE here, then
     // hand the provisioning body a concrete base so it is a pure function of
     // (peer, base). That seam is why the citizen-layer test can inject a fake base
@@ -177,7 +178,7 @@ pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, Com
     // writes to `/protocol/...` and panicked the whole suite). #191.
     let base = std::env::current_dir()
         .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
-    ensure_citizen_layer_from_base(peer, &base)
+    ensure_citizen_layer_from_base(peer, &base).await
 }
 
 /// Provision (or refresh) a peer's citizen layer, cloning from `base` — the shared
@@ -185,13 +186,13 @@ pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, Com
 /// argument (production passes the core's cwd; tests pass a scoped temp dir) rather
 /// than an implicit read of the process-global cwd. See the note above on why that
 /// matters for the parallel test suite.
-fn ensure_citizen_layer_from_base(
+async fn ensure_citizen_layer_from_base(
     peer: &str,
     base: &std::path::Path,
 ) -> Result<std::path::PathBuf, CommandError> {
     let layer = citizen_layer_path(peer)?;
     if layer.is_dir() {
-        share_layer_objects_with_base(&layer, base);
+        share_layer_objects_with_base(&layer, base).await;
         // Self-heal the stale-clone bug ([[citizen-workspaces-are-stale-one-time-
         // clones]]): the layer was a ONE-TIME CoW snapshot that never refreshed, so
         // personas drifted stale (one froze before the workers/→core/ restructure).
@@ -200,7 +201,7 @@ fn ensure_citizen_layer_from_base(
         // autocommits + merges, shared wins framework conflicts). Non-fatal: a sync
         // that fails logs LOUD but still returns the usable (if stale) workspace
         // rather than denying the persona her hands.
-        match crate::code::git_bridge::git_sync_from_shared(&layer, base) {
+        match crate::code::git_bridge::git_sync_from_shared(&layer, base).await {
             Ok(report) if report.synced => {
                 write_workspace_sync_note(&layer, &report.summary);
                 // The merge (and the note) rewrote her layer: announce it from the write
@@ -243,41 +244,33 @@ fn ensure_citizen_layer_from_base(
     // core/continuum-core) means the same repository, and `git clone` wants the root.
     // A base outside any repository is a loud error — a citizen layer without a
     // repository is not a workspace.
-    let toplevel = std::process::Command::new("git")
-        .current_dir(base)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|e| CommandError::Internal(format!("citizen layer: git rev-parse spawn failed: {e}")))?;
-    if !toplevel.status.success() {
-        return Err(CommandError::Internal(format!(
-            "citizen layer: base {} is not inside a git repository ({}) — a layer is a shared \
-             clone of the checkout and cannot be provisioned from a bare directory",
-            base.display(),
-            String::from_utf8_lossy(&toplevel.stderr).trim()
-        )));
-    }
-    let repo_root = std::path::PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
-    protect_shared_objects(&repo_root);
-    let out = std::process::Command::new("git")
-        .args(["clone", "--shared", "--quiet"])
-        .arg(&repo_root)
-        .arg(&layer)
-        .output()
-        .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
-    if !out.status.success() {
+    // This one call lifts the runner's discovery ceiling by name: finding the root from
+    // inside the tree IS the upward discovery.
+    let toplevel = run_git_with_env(base, &["rev-parse", "--show-toplevel"], &[("GIT_CEILING_DIRECTORIES", "")])
+        .await
+        .map_err(|e| {
+            CommandError::Internal(format!(
+                "citizen layer: base {} is not inside a git repository ({e}) — a layer is a shared \
+                 clone of the checkout and cannot be provisioned from a bare directory",
+                base.display()
+            ))
+        })?;
+    let repo_root = std::path::PathBuf::from(toplevel.trim());
+    protect_shared_objects(&repo_root).await;
+    let (source, target) = (repo_root.to_string_lossy(), layer.to_string_lossy());
+    if let Err(e) = run_git(&repo_root, &["clone", "--shared", "--quiet", &source, &target]).await {
         // Never leave a half-materialized layer for the next call to mistake
         // for a real one.
         let _ = std::fs::remove_dir_all(&layer);
         return Err(CommandError::Internal(format!(
-            "citizen layer shared clone failed for peer {peer} (base {}): {}",
-            base.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
+            "citizen layer shared clone failed for peer {peer} (base {}): {e}",
+            base.display()
         )));
     }
     // The vendored inference engine rides along as a submodule; reference the base's
     // copy so its objects are shared too. Bounded and named: a layer without the vendor
     // tree still gives her hands (the core serves inference, not her checkout).
-    let vendor = init_vendor_submodule(&layer, &repo_root);
+    let vendor = init_vendor_submodule(&layer, &repo_root).await;
     crate::probe!(
         class = "workspace.layer.provision",
         peer = %peer,
@@ -293,45 +286,24 @@ fn ensure_citizen_layer_from_base(
 }
 
 /// `git submodule update --init --reference <base>/<path>` for the vendored engine,
-/// bounded to ten minutes. Returns the named outcome for the probe: `shared`,
-/// `absent` (the base has no vendor tree — a test base), `failed: <why>`.
-fn init_vendor_submodule(layer: &std::path::Path, base: &std::path::Path) -> String {
+/// within its ten-minute bound (carried from the poll loop this replaced, unmeasured —
+/// card c1bdc29b measures the git bounds). The git and what it starts end at the bound.
+/// Returns the named outcome for the probe: `shared`, `absent` (the base has no vendor
+/// tree — a test base), `failed: <why>`.
+async fn init_vendor_submodule(layer: &std::path::Path, base: &std::path::Path) -> String {
     const VENDOR: &str = "core/vendor/llama.cpp";
+    const BOUND: Duration = Duration::from_secs(600);
     let reference = base.join(VENDOR);
     if !reference.join(".git").exists() && !reference.join("HEAD").exists() {
         return "absent".to_string();
     }
-    let mut child = match std::process::Command::new("git")
-        .current_dir(layer)
-        .args(["submodule", "update", "--init", "--quiet", "--reference"])
-        .arg(&reference)
-        .arg(VENDOR)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) => return format!("failed: spawn {e}"),
-    };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return "shared".to_string(),
-            Ok(Some(status)) => {
-                let mut err = String::new();
-                if let Some(mut e) = child.stderr.take() {
-                    use std::io::Read as _;
-                    let _ = e.read_to_string(&mut err);
-                }
-                return format!("failed: {status} {}", err.trim());
-            }
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                return "failed: timed out after 600 s".to_string();
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
-            Err(e) => return format!("failed: wait {e}"),
-        }
+    let reference = reference.to_string_lossy();
+    let args = ["submodule", "update", "--init", "--quiet", "--reference", &reference, VENDOR];
+    let deadline = tokio::time::Instant::now() + BOUND;
+    match crate::code::git_bridge::within(deadline, run_git(layer, &args)).await {
+        Ok(_) => "shared".to_string(),
+        Err(why) if crate::code::git_bridge::out_of_time(&why) => format!("failed: timed out after {} s: {why}", BOUND.as_secs()),
+        Err(why) => format!("failed: {why}"),
     }
 }
 
@@ -342,22 +314,14 @@ fn init_vendor_submodule(layer: &std::path::Path, base: &std::path::Path) -> Str
 /// `extensions.preciousObjects = true` makes gc/prune in the base refuse to drop
 /// objects. Idempotent; a failure to set it is loud and the provisioning stops,
 /// because a layer over an unprotected base is a repo-corruption timer, not a workspace.
-fn protect_shared_objects(base: &std::path::Path) {
-    let already = std::process::Command::new("git")
-        .current_dir(base)
-        .args(["config", "--get", "extensions.preciousObjects"])
-        .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
-        .unwrap_or(false); // unwrap_or: a failed read means "not known to be set" — we set it below and check that
+async fn protect_shared_objects(base: &std::path::Path) {
+    let already = run_git(base, &["config", "--get", "extensions.preciousObjects"])
+        .await
+        .is_ok_and(|v| v.trim() == "true"); // a failed read means "not known to be set" — we set it below and check that
     if already {
         return;
     }
-    let set = std::process::Command::new("git")
-        .current_dir(base)
-        .args(["config", "extensions.preciousObjects", "true"])
-        .status()
-        .map(|st| st.success())
-        .unwrap_or(false); // unwrap_or: a spawn failure is a failure to set; named below
+    let set = run_git(base, &["config", "extensions.preciousObjects", "true"]).await.is_ok();
     crate::probe!(
         class = "workspace.layer.base_protected",
         base = %base.display(),
@@ -376,7 +340,7 @@ fn protect_shared_objects(base: &std::path::Path) {
 /// the base: write `alternates`, repack keeping only objects the base lacks, and drop
 /// the worktree metadata the copy inherited from the base. Idempotent (a layer that
 /// already names the base's objects is left alone); every outcome named in a probe.
-fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path) {
+async fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path) {
     let objects = layer.join(".git").join("objects");
     let alternates = objects.join("info").join("alternates");
     let base_objects = base.join(".git").join("objects");
@@ -384,22 +348,15 @@ fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path
         return;
     }
     let want = format!("{}\n", base_objects.display());
-    protect_shared_objects(base);
+    protect_shared_objects(base).await;
     if std::fs::read_to_string(&alternates).map(|s| s == want).unwrap_or(false) { // unwrap_or: no/unreadable alternates = not yet shared; the migration below writes it
         return;
     }
     let started = std::time::Instant::now();
-    let outcome = (|| -> Result<String, String> {
+    let outcome = async {
         std::fs::create_dir_all(objects.join("info")).map_err(|e| e.to_string())?;
         std::fs::write(&alternates, &want).map_err(|e| e.to_string())?;
-        let out = std::process::Command::new("git")
-            .current_dir(layer)
-            .args(["repack", "-a", "-d", "-l", "-q"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-        }
+        run_git(layer, &["repack", "-a", "-d", "-l", "-q"]).await?;
         // Worktree entries the copy inherited point at the BASE's trees, never hers.
         let mut dropped = 0usize;
         if let Ok(entries) = std::fs::read_dir(layer.join(".git").join("worktrees")) {
@@ -411,8 +368,9 @@ fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path
                 }
             }
         }
-        Ok(format!("shared; foreign worktree entries dropped: {dropped}"))
-    })();
+        Ok::<_, String>(format!("shared; foreign worktree entries dropped: {dropped}"))
+    }
+    .await;
     match outcome {
         Ok(summary) => crate::probe!(
             class = "workspace.layer.objects_shared",
@@ -487,7 +445,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
         None if local => std::env::current_dir()
             .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?,
         None => {
-            let citizen_root = ensure_citizen_layer(caller)?;
+            let citizen_root = ensure_citizen_layer(caller).await?;
             // Every citizen workspace is git-backed from birth
             // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
             // exists; otherwise init + root commit, so diff→share→apply works the
@@ -496,6 +454,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
             // consolidation path, and the team asked for one. Loud on failure — a
             // workspace that silently can't version work is a quiet defect.
             let initialized = crate::code::git_bridge::git_init_if_needed(&citizen_root)
+                .await
                 .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
             if initialized {
                 // init + root commit gave the workspace a HEAD — card f860e59c.
@@ -2826,8 +2785,8 @@ mod tests {
     // CoW clone under <CONTINUUM_HOME>/citizens/peers/<peer>/workspace, seeded
     // from the base, durable across calls; the anonymous local operator keeps
     // cwd. regression for commit 3ad97cc2e (the manifest-clobber repair).
-    #[test]
-    fn identified_peer_roots_at_citizen_layer_never_shared_cwd() {
+    #[tokio::test]
+    async fn identified_peer_roots_at_citizen_layer_never_shared_cwd() {
         // Scoped homes so the test never touches the real ~/.continuum. A tiny
         // base dir keeps the CoW clone instant.
         //
@@ -2861,11 +2820,11 @@ mod tests {
         let home = tempfile::tempdir().expect("home");
         // Under the one crate-wide home lock (#4082): this unlocked CONTINUUM_HOME write
         // raced every other test that resolves the citizen layer.
-        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = "test-peer-1234";
-        let layer = ensure_citizen_layer_from_base(peer, base.path()).expect("layer provisions");
+        let layer = ensure_citizen_layer_from_base(peer, base.path()).await.expect("layer provisions");
         assert!(
             layer.starts_with(home.path()),
             "layer lives under CONTINUUM_HOME: {layer:?}"
@@ -2907,7 +2866,7 @@ mod tests {
             "the shared base is untouched by layer writes"
         );
         // Idempotent: second call reuses the existing layer (her diff survives).
-        let again = ensure_citizen_layer_from_base(peer, base.path()).expect("layer reused");
+        let again = ensure_citizen_layer_from_base(peer, base.path()).await.expect("layer reused");
         assert_eq!(again, layer);
         assert_eq!(
             std::fs::read_to_string(again.join("Cargo.toml")).unwrap(),

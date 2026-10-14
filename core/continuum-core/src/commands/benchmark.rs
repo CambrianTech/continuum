@@ -2113,20 +2113,21 @@ impl ActionCommand for BenchmarkDispatch {
         // fresh clone, the same way `resolve_dispatch_roster` refuses to bake in names.
         let repo_key = match p.repo.clone() {
             Some(r) => r,
-            None => repo_hint
-                .or_else(|| {
-                    // Process cwd, because `git` walks UP to find `.git` — any directory
-                    // inside the checkout answers. The core is launched from the repo by
-                    // start-server.sh, and cognition/eval + gym resolve their roots the
-                    // same way. That is a real cwd dependency of the #195 class, not a
-                    // pretence otherwise: if the core is ever launched from elsewhere this
-                    // returns None and the caller is asked for `repo` — a loud fallback,
-                    // never a wrong board key.
-                    std::env::current_dir()
-                        .ok()
-                        .and_then(|cwd| crate::code::git_bridge::origin_repo_slug(&cwd))
-                })
-                .ok_or_else(|| {
+            None => match repo_hint {
+                Some(hint) => Some(hint),
+                // Process cwd: the core is launched from the checkout root by
+                // start-server.sh, and cognition/eval + gym resolve their roots the same
+                // way. The git runner caps discovery at that directory, so it must BE the
+                // root. That is a real cwd dependency of the #195 class, not a pretence
+                // otherwise: if the core is ever launched from elsewhere this returns None
+                // and the caller is asked for `repo` — a loud fallback, never a wrong board
+                // key.
+                None => match std::env::current_dir() {
+                    Ok(cwd) => crate::code::git_bridge::origin_repo_slug(&cwd).await,
+                    Err(_) => None,
+                },
+            }
+            .ok_or_else(|| {
                     CommandError::Invalid(
                         "no `repo` was given, the room you dispatched from has no cards to \
                          infer one from, and this checkout has no `origin` remote to derive \

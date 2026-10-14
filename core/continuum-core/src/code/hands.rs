@@ -172,8 +172,8 @@ pub fn admit(context: HandsContext) -> Result<HandsLease, String> {
 
 tokio::task_local! {
     /// The admission of the command running on this task: set by the dispatcher for the
-    /// command's whole life, read by [`spawn_blocking`] so work the command hands to a blocking
-    /// thread keeps it.
+    /// command's whole life, read by the owner of a child process the command starts, which
+    /// keeps it until the child's tree has ended.
     static ADMITTED: Option<std::sync::Arc<HandsLease>>;
 }
 
@@ -182,63 +182,10 @@ pub async fn admitted<F: std::future::Future>(admission: Option<std::sync::Arc<H
     ADMITTED.scope(admission, work).await
 }
 
-std::thread_local! {
-    /// The admission of the blocking work running on this thread ([`spawn_blocking`] sets it for
-    /// the work's life), so work it starts in turn (a nested blocking spawn, a child process)
-    /// keeps the same admission: a task-local doesn't reach a blocking thread.
-    static BLOCKING_ADMITTED: std::cell::RefCell<Option<std::sync::Arc<HandsLease>>> = const { std::cell::RefCell::new(None) };
-}
-
-/// The admission of the command running here, on its task or in blocking work it started, for
-/// an owner of work that can outlive the command's future (a blocking thread, a child process)
-/// to keep until that work ends.
+/// The admission of the command running on this task, for an owner of work that can outlive
+/// the command's future (a child process) to keep until that work ends.
 pub fn current() -> Option<std::sync::Arc<HandsLease>> {
-    ADMITTED
-        .try_with(|a| a.clone())
-        .ok()
-        .flatten()
-        .or_else(|| BLOCKING_ADMITTED.with(|a| a.borrow().clone()))
-}
-
-/// THE shared owner of blocking work started by a dispatched command: the work keeps the
-/// command's admission until IT returns, not until the command's future does. A dispatch
-/// that is cancelled or times out drops its future, but a blocking thread can't be cancelled
-/// (a git operation runs to its end), and a release that finished under it would remove the
-/// workspace the operation is still writing (Astra on #5026). Every blocking spawn in a hands
-/// command goes through here; none is special-cased per tool.
-pub fn spawn_blocking<F, R>(work: F) -> tokio::task::JoinHandle<R>
-where
-    F: FnOnce() -> R + Send + 'static,
-    R: Send + 'static,
-{
-    let held = current();
-    tokio::task::spawn_blocking(move || {
-        // held for the work's life and visible to what it starts; restored by a guard (even when
-        // the work panics) before the thread is pooled, so no later work on it inherits it
-        let _current = BlockingAdmission::enter(held);
-        work()
-    })
-}
-
-/// The admission current on a blocking thread for one piece of work: set on entry, and the one
-/// it replaced put back on drop, so a panicking `work()` can't leave it on the pooled thread
-/// (Codex root on #5026).
-struct BlockingAdmission {
-    previous: Option<std::sync::Arc<HandsLease>>,
-}
-
-impl BlockingAdmission {
-    fn enter(admission: Option<std::sync::Arc<HandsLease>>) -> Self {
-        Self { previous: BLOCKING_ADMITTED.with(|a| a.replace(admission)) }
-    }
-}
-
-impl Drop for BlockingAdmission {
-    fn drop(&mut self) {
-        let previous = self.previous.take();
-        // try_with: during thread teardown the slot may already be gone, and then there is nothing to restore
-        let _ = BLOCKING_ADMITTED.try_with(|a| *a.borrow_mut() = previous);
-    }
+    ADMITTED.try_with(|a| a.clone()).ok().flatten()
 }
 
 /// Close `context`'s hands to new work and wait until every admitted command and turn has
@@ -331,55 +278,6 @@ mod tests {
         assert!(eval.map_key().starts_with(&caller), "a context's hands stay attributable to their caller");
     }
 
-    // what this catches (Codex root on #5026): work a blocking worker starts in turn lost the
-    // command's admission, because a task-local doesn't reach a blocking thread, so a nested
-    // worker (or a process it spawns) ran unleased. Blocking work sees its admission, and a
-    // nested worker keeps it: the release waits for the nested one too.
-    #[tokio::test]
-    async fn a_nested_blocking_worker_keeps_the_admission_of_the_work_that_started_it() {
-        let context = HandsContext::fresh();
-        let lease = std::sync::Arc::new(admit(context).expect("open hands"));
-        let (go, wait) = std::sync::mpsc::channel::<()>();
-        let (seen_tx, seen_rx) = tokio::sync::oneshot::channel::<bool>();
-        let outer = admitted(Some(lease), async move {
-            spawn_blocking(move || {
-                let seen = current().is_some();
-                let _nested = spawn_blocking(move || {
-                    let _ = wait.recv(); // a nested worker still running after its starter returned
-                });
-                let _ = seen_tx.send(seen);
-            })
-        })
-        .await;
-        assert!(seen_rx.await.expect("the worker ran"), "blocking work sees the command's admission");
-        outer.await.expect("the starting worker returned");
-        assert!(
-            tokio::time::timeout(std::time::Duration::from_millis(200), close(context)).await.is_err(),
-            "the release waits for the nested worker, not the one that started it"
-        );
-        go.send(()).expect("release the nested worker");
-        tokio::time::timeout(std::time::Duration::from_secs(10), close(context))
-            .await
-            .expect("the release completes once the nested worker returns");
-    }
-
-    // what this catches (Codex root on #5026 at f014371be): a blocking worker that panicked left
-    // its command's admission on the pooled thread (the restore ran after work()), so the next
-    // work on that thread ran under it and the release never completed. One blocking thread, so
-    // the second worker runs where the first panicked.
-    #[test]
-    fn a_panicking_blocking_worker_leaves_no_admission_on_its_pooled_thread() {
-        let runtime = tokio::runtime::Builder::new_current_thread().max_blocking_threads(1).enable_all().build().expect("a runtime");
-        runtime.block_on(async {
-            let context = HandsContext::fresh();
-            let lease = std::sync::Arc::new(admit(context).expect("open hands"));
-            let worker = admitted(Some(lease), async { spawn_blocking(|| panic!("the work panics")) }).await;
-            assert!(worker.await.is_err(), "the work panicked");
-            assert!(!spawn_blocking(|| current().is_some()).await.expect("the next work ran"), "the pooled thread carries no admission");
-            tokio::time::timeout(std::time::Duration::from_secs(10), close(context)).await.expect("the panicked work's admission was released");
-        });
-    }
-
     // what this catches (Codex root on #5026 at f014371be and 9986ab232): an owned process's
     // end that wasn't confirmed reached the release as nothing, so the release confirmed what
     // nothing had checked: a tree no walk read, and an unproven reap even with no survivors and
@@ -402,30 +300,6 @@ mod tests {
             let lingering = close(context).await;
             assert_eq!((lingering.processes.len(), lingering.unknown.len()), (processes, unknown), "{case}: {lingering:?}");
         }
-    }
-
-    // what this catches (Astra on #5026): a dispatch cancelled while its blocking worker still
-    // runs. The waiter's future drops its admission, but the worker (a git operation) can't be
-    // cancelled, so a release that finished then would remove the workspace under it. Blocking
-    // work keeps the admission until IT returns: the release waits for the worker, not the waiter.
-    #[tokio::test]
-    async fn a_release_waits_for_a_blocking_worker_whose_waiter_was_cancelled() {
-        let key = HandsContext::fresh();
-        let (finish, finished) = std::sync::mpsc::channel::<()>();
-        let worker = admitted(Some(std::sync::Arc::new(admit(key).expect("open hands"))), async move {
-            spawn_blocking(move || {
-                let _ = finished.recv(); // the operation runs until told to end
-            })
-        })
-        .await; // the dispatched command's scope has ended: its waiter is gone
-        let closing = tokio::spawn(async move { close(key).await });
-        for _ in 0..8 {
-            tokio::task::yield_now().await;
-        }
-        assert!(!closing.is_finished(), "the release waits for the running worker, not its cancelled waiter");
-        finish.send(()).expect("the worker is still running");
-        worker.await.expect("the worker ends");
-        tokio::time::timeout(std::time::Duration::from_secs(5), closing).await.expect("the release completes once the worker returns").expect("close task");
     }
 
     // what this catches (Codex root and Astra on fc9e9fd7, #5026): closing a claim's hands
