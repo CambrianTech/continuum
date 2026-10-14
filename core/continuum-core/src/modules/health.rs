@@ -57,17 +57,6 @@ pub struct PingResult {
     /// number orders SOURCE, sha names it, built-at dates the BINARY — catching
     /// a rebuild of old source after a fix landed, which number+sha both miss).
     pub built_at: String,
-    /// Affirmative teardown capability (#3940): the verbs this running core actually
-    /// answers, read from its own command registry at ping time. A client decides
-    /// "can I ask this core to stop itself?" by checking THIS field — and ONLY this
-    /// field. Absence is the safe answer: a core compiled before this field existed
-    /// cannot include it in its response, so `None` means "cannot attest a final
-    /// checkpoint", which is exactly what a pre-rail core is. The list is built from
-    /// the live registry rather than hardcoded, so a build that registers no
-    /// shutdown verb advertises none — the signal cannot drift from the truth.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub commands: Option<Vec<String>>,
 }
 
 /// `ping` — the canonical self-routing command. As an [`ActionCommand`] it gets
