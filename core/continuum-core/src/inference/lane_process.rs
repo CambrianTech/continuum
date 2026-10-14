@@ -1159,10 +1159,12 @@ mod tests {
     async fn a_process_that_holds_an_exited_childs_stdin_is_fenced_at_the_bound_and_on_a_cancel() {
         let dir = tempfile::tempdir().unwrap();
         let read_pid = |path: &std::path::Path| std::fs::read_to_string(path).ok().and_then(|t| t.trim().parse::<u32>().ok());
-        // the shell exits at once; its background sleep keeps stdin (explicitly) and nothing else
+        // the shell exits at once; its background sleep keeps the stdin pipe and nothing else.
+        // Through fd 3: a POSIX shell gives an async command /dev/null as stdin unless it has an
+        // explicit redirection, and dash (CI's sh) applied that over `<&0` (a broken pipe on CI)
         let holder = |pidfile: &std::path::Path| {
             let mut cmd = tokio::process::Command::new("sh");
-            cmd.arg("-c").arg(format!("sleep 600 <&0 >/dev/null 2>&1 & echo $! > {}", pidfile.display()));
+            cmd.arg("-c").arg(format!("exec 3<&0; sleep 600 <&3 3<&- >/dev/null 2>&1 & echo $! > {}", pidfile.display()));
             cmd
         };
         let input = || Some(vec![b'x'; 4 << 20]); // past the pipe's buffer: the write waits on the holder
