@@ -167,7 +167,19 @@ impl Default for SqliteAdapter {
 
 // ─── Synchronous Database Operations ─────────────────────────────────────────
 
-/// Infer SQLite column type from a JSON value.
+/// The SQL column type a declared field gets: THE mapping, for table creation and for
+/// column evolution alike. NUMERIC affinity preserves the storage class (an inserted
+/// integer reads back as integer, a float as float); REAL coerced every value to REAL and
+/// broke integer deserialization.
+fn sql_column_type(field_type: &FieldType) -> &'static str {
+    match field_type {
+        FieldType::String | FieldType::Date | FieldType::Json | FieldType::Uuid => "TEXT",
+        FieldType::Number => "NUMERIC",
+        FieldType::Boolean => "INTEGER",
+    }
+}
+
+/// Infer SQLite column type from a JSON value: only for a collection that declared no types.
 fn infer_sqlite_type(value: &Value) -> &'static str {
     match value {
         Value::Bool(_) => "INTEGER",
@@ -222,7 +234,13 @@ fn ensure_table_exists(conn: &Connection, table: &str, data: &Value) -> Result<(
 /// Schema evolution: add missing columns to an existing table.
 /// Called when INSERT/UPDATE fails with "has no column named X".
 /// Returns true if columns were added (caller should retry).
-fn evolve_table_schema(conn: &Connection, table: &str, data: &Value) -> bool {
+/// `types` are the collection's declared fields (camelCase, like `data`'s keys). A column is
+/// typed by its declared field; the written value's shape is consulted only for an
+/// undeclared field. Typing by the value made an optional `u64` whose first write was null a
+/// TEXT column, and SQLite's TEXT affinity then stored every later integer as text
+/// (`staged_credit.rejected_at_ms` on the 5090: 58 rows of text, a codec error at read,
+/// Codex root on build 6199, 2026-10-13).
+fn evolve_table_schema(conn: &Connection, table: &str, data: &Value, types: Option<&HashMap<String, FieldType>>) -> bool {
     // Get existing columns
     let existing: Vec<String> = match conn.prepare(&format!("PRAGMA table_info({})", table)) {
         Ok(mut stmt) => stmt
@@ -240,7 +258,10 @@ fn evolve_table_schema(conn: &Connection, table: &str, data: &Value) -> bool {
             }
             let col_name = naming::to_snake_case(key);
             if !existing.iter().any(|c| c == &col_name) {
-                let col_type = infer_sqlite_type(value);
+                let col_type = match types.and_then(|t| t.get(key.as_str())) {
+                    Some(declared) => sql_column_type(declared),
+                    None => infer_sqlite_type(value),
+                };
                 let alter = format!("ALTER TABLE {} ADD COLUMN {} {}", table, col_name, col_type);
                 match conn.execute(&alter, []) {
                     Ok(_) => {
@@ -274,7 +295,7 @@ fn projection_dummy(select: &Option<Vec<String>>) -> Option<Value> {
     Some(Value::Object(dummy))
 }
 
-fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord> {
+fn do_create(conn: &Connection, record: DataRecord, types: Option<&HashMap<String, FieldType>>) -> StorageResult<DataRecord> {
     let table = naming::to_table_name(&record.collection);
     let now = chrono::Utc::now().to_rfc3339();
 
@@ -332,7 +353,7 @@ fn do_create(conn: &Connection, record: DataRecord) -> StorageResult<DataRecord>
             let err_msg = e.to_string();
             if err_msg.contains("has no column named") || err_msg.contains("no such column") {
                 // Schema evolution: add missing columns and retry
-                if evolve_table_schema(conn, &table, &record.data) {
+                if evolve_table_schema(conn, &table, &record.data, types) {
                     match conn.execute(&sql, params.as_slice()) {
                         Ok(_) => {
                             return StorageResult::ok(DataRecord {
@@ -512,7 +533,7 @@ fn do_update(
             let err_msg = e.to_string();
             if err_msg.contains("has no column named") || err_msg.contains("no such column") {
                 let table = naming::to_table_name(collection);
-                if evolve_table_schema(conn, &table, &data) {
+                if evolve_table_schema(conn, &table, &data, types) {
                     match conn.execute(&sql, params_ref.as_slice()) {
                         Ok(rows) if rows > 0 => return do_read(conn, collection, id, types),
                         Ok(_) => return StorageResult::err(format!("Record not found: {}", id)),
@@ -562,7 +583,8 @@ fn do_batch_one(
                 data,
                 metadata: RecordMetadata::default(),
             };
-            let r = do_create(conn, record);
+            let types = declared.get(&record.collection).map(|t| t.as_ref());
+            let r = do_create(conn, record, types);
             if r.success {
                 Ok(json!({"success": true}))
             } else {
@@ -687,20 +709,7 @@ fn do_ensure_schema(conn: &Connection, schema: CollectionSchema) -> StorageResul
         if super::entity::is_base_entity_column(&col_name) {
             continue;
         }
-        let col_type = match field.field_type {
-            super::types::FieldType::String => "TEXT",
-            // NUMERIC affinity preserves the storage class — an
-            // inserted integer reads back as integer, a float as
-            // float. REAL affinity (the prior choice) coerced every
-            // value to REAL, which broke i32/i64 deserialization for
-            // any entity using integer Number columns. SQLite NUMERIC
-            // is the "best of both" affinity for Number.
-            super::types::FieldType::Number => "NUMERIC",
-            super::types::FieldType::Boolean => "INTEGER",
-            super::types::FieldType::Date => "TEXT",
-            super::types::FieldType::Json => "TEXT",
-            super::types::FieldType::Uuid => "TEXT",
-        };
+        let col_type = sql_column_type(&field.field_type);
 
         let mut col_def = format!("{} {}", col_name, col_type);
         if !field.nullable {
@@ -864,6 +873,23 @@ fn value_to_sql_boxed(value: &Value) -> Box<dyn rusqlite::ToSql> {
     }
 }
 
+/// A declared number stored as text (a column TEXT affinity made, see
+/// `evolve_table_schema`): an integer exactly as written (i64, else u64), else a finite
+/// float, else `None`. No precision is lost and no text is guessed into a number.
+fn declared_number(s: &str) -> Option<Value> {
+    if let Ok(n) = s.parse::<i64>() {
+        return Some(json!(n));
+    }
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(json!(n));
+    }
+    s.parse::<f64>()
+        .ok()
+        .filter(|f| f.is_finite())
+        .and_then(serde_json::Number::from_f64)
+        .map(Value::Number)
+}
+
 fn row_to_record(
     row: &rusqlite::Row,
     collection: &str,
@@ -926,7 +952,25 @@ fn row_to_record(
                 match declared {
                     Some(FieldType::String | FieldType::Uuid | FieldType::Date) => json!(s),
                     Some(FieldType::Json) => serde_json::from_str(s).unwrap_or_else(|_| json!(s)), // unwrap_or_else: a declared-JSON column holding non-JSON text is handed back as that text, never dropped
-                    Some(FieldType::Number | FieldType::Boolean) | None => {
+                    Some(FieldType::Number) => declared_number(s).ok_or_else(|| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            i,
+                            rusqlite::types::Type::Text,
+                            format!("column {col} is a declared number holding {s:?}").into(),
+                        )
+                    })?,
+                    Some(FieldType::Boolean) => match s {
+                        "1" | "true" => json!(true),
+                        "0" | "false" => json!(false),
+                        _ => {
+                            return Err(rusqlite::Error::FromSqlConversionFailure(
+                                i,
+                                rusqlite::types::Type::Text,
+                                format!("column {col} is a declared boolean holding {s:?}").into(),
+                            ))
+                        }
+                    },
+                    None => {
                         if (s.starts_with('{') && s.ends_with('}'))
                             || (s.starts_with('[') && s.ends_with(']'))
                         {
@@ -1196,10 +1240,11 @@ impl StorageAdapter for SqliteAdapter {
                 Err(e) => return StorageResult::err(e),
             };
             let table = naming::to_table_name(&query.collection);
+            let types = self.declared_types(&query.collection);
             let ensure_result = tokio::task::spawn_blocking(move || {
                 let conn = writer.lock().unwrap();
                 ensure_table_exists(&conn, &table, &dummy)?;
-                evolve_table_schema(&conn, &table, &dummy);
+                evolve_table_schema(&conn, &table, &dummy, types.as_deref());
                 Ok::<(), String>(())
             })
             .await
@@ -1294,10 +1339,11 @@ impl StorageAdapter for SqliteAdapter {
             Err(e) => return StorageResult::err(e),
         };
         let pressure = self.last_pressure_check.clone();
+        let types = self.declared_types(&record.collection);
         tokio::task::spawn_blocking(move || {
             let conn = conn.lock().unwrap();
             apply_memory_pressure(&conn, &pressure);
-            do_create(&conn, record)
+            do_create(&conn, record, types.as_deref())
         })
         .await
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
