@@ -498,7 +498,7 @@ pub(crate) async fn run_git_with_env(workspace_root: &Path, args: &[&str], env: 
 /// whole or an input that wasn't delivered; a deadline that ended it says its effect is UNKNOWN
 /// (a push may have landed), never that nothing happened.
 pub(crate) async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(&str, &str)], input: Option<Vec<u8>>) -> Result<String, String> {
-    use crate::inference::lane_process::{run_owned_with_input, Ended};
+    use crate::inference::lane_process::{run_owned_with_input, Answer, Why};
     let bound = match deadline() {
         Some(at) => {
             let left = at.saturating_duration_since(tokio::time::Instant::now());
@@ -547,27 +547,14 @@ pub(crate) async fn run_git_input(workspace_root: &Path, args: &[&str], env: &[(
     let out = run_owned_with_input(cmd, input, bound, "git", std::sync::Arc::default())
         .await
         .map_err(|e| format!("Failed to run git: {e}"))?;
-    let status = match out.ended {
-        Ended::Exited(status) => status,
-        Ended::TimedOut { ref unconfirmed } => {
-            let mut why = format!("git {} {INTERRUPTED}", args.join(" "));
-            if !unconfirmed.is_empty() {
-                why.push_str(&format!(" (not confirmed gone: {unconfirmed:?})"));
-            }
-            return Err(why);
-        }
-    };
-    if let Some(note) = out.input_note() {
-        return Err(format!("git {}: {note}", args.join(" ")));
+    // the shared projection (lane_process::OwnedOutput::answer): a non-zero exit is git's own
+    // failure, with its stderr, and any delivery note beside it; a deadline that ended it says
+    // its effect is unknown
+    if let Answer::Not(unanswered) = out.answer() {
+        let at_deadline = if matches!(unanswered.why, Why::TimedOut { .. }) { format!(" {INTERRUPTED}") } else { String::new() };
+        return Err(format!("git {}{at_deadline}: {unanswered}", args.join(" ")));
     }
-    if let Some(note) = out.capture_note() {
-        return Err(format!("git {}: its output is not whole: {note}", args.join(" ")));
-    }
-    if status.success() {
-        String::from_utf8(out.stdout.bytes).map_err(|e| format!("Invalid UTF-8 in git output: {}", e))
-    } else {
-        Err(format!("git {} failed: {}", args.join(" "), String::from_utf8_lossy(&out.stderr.bytes).trim()))
-    }
+    String::from_utf8(out.stdout.bytes).map_err(|e| format!("Invalid UTF-8 in git output: {}", e))
 }
 
 #[cfg(test)]

@@ -415,7 +415,7 @@ fn is_missing_remote_ref(err: &str) -> bool {
 // ── seam 1: the act-end sync ────────────────────────────────────────────────────────
 
 /// Ensure a work-in-progress commit of whatever the act left in `root` and push the
-/// current branch to `origin`. Synchronous git; the async, bounded, probed form the
+/// current branch to `origin`, each git owned and within any deadline its caller set; the bounded, probed form the
 /// turn path calls is [`sync_after_act_for`]. `node` is stamped into the WIP commit's
 /// subject so the receiving node can say where the work came from.
 pub async fn sync_after_act(root: &Path, card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> PushOutcome {
