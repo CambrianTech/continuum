@@ -3008,6 +3008,40 @@ async fn request_graceful_stop() -> GracefulStop {
     }
 }
 
+/// Turn an error answer to `system/shutdown` into a stop outcome — always `LegacyCore`.
+///
+/// The verdict must not depend on what the core said (#3940). Until the core reports its
+/// teardown capability as a typed field, reachability plus an error is all this binary can
+/// see, and the safe read of that is: the running core predates the rail. A reachable core
+/// that answered with an error cannot attest a final checkpoint, so it fails closed as
+/// `LegacyCore` — which refuses reboot before any kill (`ensure_teardown_supported`).
+/// Recognized unknown-verb phrasings only pick a sharper message; they can no longer change
+/// the verdict. `NoAnswer` keeps its meaning for paths where no core ever answered (pre-check
+/// failures and timeouts); an error from a core that DID answer can no longer masquerade as one.
+fn classify_shutdown_error(rendered: &str) -> GracefulStop {
+    let m = rendered.to_lowercase();
+    // Recognition now only picks the message — never the verdict, both arms are LegacyCore.
+    // Only phrasings that specifically mean "this name is not in the command registry" earn
+    // the pre-rail label; the old list's weak markers ("not found", bare "unsupported") could
+    // mislabel an internal error like `checkpoint not found` as a core from before the rail.
+    let predates_rail = m.contains("unknown command") || m.contains("no handler");
+    if predates_rail {
+        GracefulStop::LegacyCore(format!(
+            "the running core has no system/shutdown verb ({rendered}) — it predates this \
+             rail, so its modules were never going to save and this stop cannot be called durable"
+        ))
+    } else {
+        // Fail closed (#3940): the old code fell through here to NoAnswer for any phrasing that
+        // matched no marker string — and NoAnswer passes the reboot guard, so an un-attested core
+        // could be killed mid-upgrade. Any error from a reachable core is now LegacyCore, with its
+        // own text preserved so the operator can diagnose what it actually said.
+        GracefulStop::LegacyCore(format!(
+            "the running core answered system/shutdown with an error and cannot attest a final \
+             checkpoint ({rendered}); failing closed as if legacy"
+        ))
+    }
+}
+
 async fn stop() -> Result<(), String> {
     // The operator verb answers with its EXIT CODE. `stop` returning 0 has meant only
     // "the process is gone"; it now means "the process is gone AND every module's state
@@ -3427,6 +3461,53 @@ mod tests {
         ] {
             assert!(outcome.ensure_teardown_supported(true).is_ok());
         }
+    }
+
+    // Regression for #3940: the verdict used to be decided by parsing the rendered error
+    // string, and a phrasing that matched none of the known legacy markers fell through to
+    // NoAnswer — which passes the reboot guard (ensure_teardown_supported refuses only
+    // LegacyCore). Every error from a reachable core must now fail closed as LegacyCore;
+    // recognized phrasings may sharpen the message, never the verdict.
+    #[test]
+    fn shutdown_errors_fail_closed_to_legacy_core() {
+        use super::classify_shutdown_error;
+        use super::GracefulStop;
+        for rendered in [
+            "unknown command: system/shutdown",
+            "no handler registered for 'system/shutdown'",
+            // These used to slip through as NoAnswer and pass the reboot guard.
+            "the core refused the request",
+            "checkpoint not found",
+            "save_state panicked in module X",
+            "",
+        ] {
+            match classify_shutdown_error(rendered) {
+                GracefulStop::LegacyCore(reason) => assert!(
+                    reason.contains(rendered),
+                    "reason must carry the rendered error: {rendered:?}"
+                ),
+                _ => panic!("{rendered:?} must fail closed to LegacyCore"),
+            }
+        }
+    }
+
+    // Recognition only picks the message now: an internal error like `checkpoint not found`
+    // must still fail closed, but must not be labelled as a core from before the rail.
+    #[test]
+    fn pre_rail_label_is_reserved_for_unknown_verb_phrasings() {
+        use super::classify_shutdown_error;
+        use super::GracefulStop;
+        let legacy = match classify_shutdown_error("unknown command: system/shutdown") {
+            GracefulStop::LegacyCore(reason) => reason,
+            _ => panic!("unknown-verb phrasing must be LegacyCore"),
+        };
+        assert!(legacy.contains("no system/shutdown verb"));
+        assert!(legacy.contains("predates this rail"));
+        let internal = match classify_shutdown_error("checkpoint not found") {
+            GracefulStop::LegacyCore(reason) => reason,
+            _ => panic!("internal error must fail closed to LegacyCore"),
+        };
+        assert!(!internal.contains("no system/shutdown verb"));
     }
 
     // What this catches (card 9f160b78): missing/truncated process evidence and
