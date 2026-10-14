@@ -133,8 +133,12 @@ pub(crate) struct CommandWork {
 }
 
 impl CommandWork {
-    pub(crate) fn capture(persona: Uuid) -> Option<Self> {
-        let card = crate::cognition::persona_workspace::acting_card_of(persona)?;
+    /// The card THIS call works: the one its own hands are bound to (a card claim's), never
+    /// her current focus, which a later turn may have moved (Astra on #5026). A call in her
+    /// default hands works no card.
+    pub(crate) fn capture(caller: &crate::routing::CallerIdentity) -> Option<Self> {
+        let persona = caller.peer_id.as_uuid();
+        let card = crate::cognition::persona_workspace::acting_card_in(persona, Some(caller.hands?))?;
         Some(Self {
             key: (persona, card),
             active: false,

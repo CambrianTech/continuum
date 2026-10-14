@@ -122,10 +122,21 @@ pub async fn apply_act(
     intent: &str,
     room_id: Uuid,
     chain: &ActChain,
+    hands: Option<crate::code::hands::HandsContext>,
 ) -> ActOutcome {
     // no hands → cannot act (and tools were never offered)
     let Some(body) = cycle.acting() else {
         return ActOutcome::NoHands;
+    };
+    // THE TURN'S OWN HANDS, bound at its admission (`Burst::hands`): the card claim it works,
+    // or her default hands. Every act of the turn runs in these and nothing here moves any
+    // hands (card fc9e9fd7). Hands that can't act in the context run nothing: never hers.
+    let executor = match hands {
+        None => body.executor.clone(),
+        Some(context) => match body.executor.in_hands(body.persona_id, context) {
+            Some(executor) => executor,
+            None => return ActOutcome::NoHands,
+        },
     };
     // ONE decision per act: the activity it is IN is its SUBJECT's, never the room whose
     // event happened to wake the turn (docs/architecture/EVENT-MIND.md, "the activity rides
@@ -143,7 +154,7 @@ pub async fn apply_act(
     let room_id = if private {
         wake_room
     } else {
-        act_activity_room(body.persona_id, body.executor.hands_context(), wake_room).await
+        act_activity_room(body.persona_id, executor.hands_context(), wake_room).await
     };
     if room_id != wake_room {
         crate::probe!(
@@ -192,14 +203,14 @@ pub async fn apply_act(
     // expose it; harnesses don't → everything runs synchronously). No long-running calls —
     // the overwhelmingly common case — means `fg_calls == calls` and this is inert.
     // Her checkout before the batch: `wrote` is what the batch DID to it, by any verb.
-    let acting_root = crate::cognition::persona_workspace::acting_root_in(body.persona_id, body.executor.hands_context());
+    let acting_root = crate::cognition::persona_workspace::acting_root_in(body.persona_id, executor.hands_context());
     let disk_before = super::disk_change::fingerprint_at(acting_root.clone()).await;
     let mut bg_notes: Vec<String> = Vec::new();
     // The long-running calls that were dispatched (not run synchronously) — retained so a
     // pure-background batch (no foreground calls) can still emit a typed act, keeping
     // `produced_an_act()` true exactly as the old `Some(bg_notes)` return did.
     let mut dispatched_calls: Vec<ToolCall> = Vec::new();
-    let fg_calls: Vec<ToolCall> = match body.executor.command_executor() {
+    let fg_calls: Vec<ToolCall> = match executor.command_executor() {
         Some(exec) => {
             let mut fg = Vec::with_capacity(calls.len());
             for call in calls {
@@ -208,9 +219,17 @@ pub async fn apply_act(
                     let handle = exec.dispatch_background(
                         cmd.clone(),
                         call.input.clone(),
-                        Some(crate::routing::CallerIdentity::local_persona(
-                            crate::identity::PeerId::from_uuid(body.persona_id),
-                        )),
+                        // In THESE hands: a long-running command a card turn dispatches runs in
+                        // the card's workspace, never her default one (card fc9e9fd7).
+                        Some({
+                            let identity = crate::routing::CallerIdentity::local_persona(
+                                crate::identity::PeerId::from_uuid(body.persona_id),
+                            );
+                            match executor.hands_context() {
+                                Some(context) => identity.in_hands(context),
+                                None => identity,
+                            }
+                        }),
                     );
                     dispatched_calls.push(call.clone());
                     body.working_memory.record_dispatch_event(
@@ -260,7 +279,7 @@ pub async fn apply_act(
     let pin = crate::cognition::tool_executor::spill::LivePin::new();
     let batch_result = tokio::time::timeout(
         TOOL_BATCH_CEILING,
-        body.executor
+        executor
             .execute_native_batch_pinned(&fg_calls, &ctx, budget.latest_action_chars(), &pin),
     )
     .await

@@ -47,7 +47,7 @@ use status::CodeGitStatus;
 /// Returns an OWNED [`PathBuf`] so the `DashMap` ref guard is dropped before the
 /// caller runs blocking git work — never a lock held across a shell-out.
 pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
-    let key = crate::modules::code_commands::hands_key(ctx);
+    let key = crate::modules::code_commands::hands_of(ctx);
     ensure_engine(state, &key).await?;
     let engine = state
         .file_engines
@@ -63,7 +63,9 @@ where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
 {
-    tokio::task::spawn_blocking(op)
+    // The shared owner of blocking work: the git operation keeps its command's admission
+    // until it returns, even if the command's waiter is cancelled.
+    crate::code::hands::spawn_blocking(op)
         .await
         .map_err(|e| CommandError::Internal(format!("git task panicked: {e}")))
 }

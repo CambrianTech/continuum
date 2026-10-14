@@ -196,12 +196,23 @@ pub struct CallerIdentity {
     /// ([`Self::in_hands`]), never from params: a caller can't name another context's
     /// hands. `None` is the caller's default context. See [`crate::code::hands`].
     pub hands: Option<crate::code::hands::HandsContext>,
+    /// This call RELEASES `hands` rather than acting in them: the one operation the dispatcher
+    /// does not admit to them, because it closes them to every other (card fc9e9fd7, Astra on
+    /// #5026). Set only by the kernel's release path ([`Self::releasing_hands`]), never from
+    /// params.
+    pub releases_hands: bool,
 }
 
 impl CallerIdentity {
     /// This identity, acting in `context`: same caller, same trust, its own hands.
     pub fn in_hands(mut self, context: crate::code::hands::HandsContext) -> Self {
         self.hands = Some(context);
+        self
+    }
+
+    /// This identity, releasing the hands it is bound to (`code/release-hands`).
+    pub fn releasing_hands(mut self) -> Self {
+        self.releases_hands = true;
         self
     }
 
@@ -214,6 +225,7 @@ impl CallerIdentity {
             source: CallerSource::Airc,
             granted_capabilities: Vec::new(),
             hands: None,
+            releases_hands: false,
         }
     }
 
@@ -226,6 +238,7 @@ impl CallerIdentity {
             source: CallerSource::Local,
             granted_capabilities: Vec::new(),
             hands: None,
+            releases_hands: false,
         }
     }
 
@@ -240,6 +253,7 @@ impl CallerIdentity {
             source: CallerSource::LocalPersona,
             granted_capabilities: Vec::new(),
             hands: None,
+            releases_hands: false,
         }
     }
 
@@ -252,6 +266,7 @@ impl CallerIdentity {
             source: CallerSource::Tcp,
             granted_capabilities: Vec::new(),
             hands: None,
+            releases_hands: false,
         }
     }
 
@@ -266,6 +281,7 @@ impl CallerIdentity {
             source: CallerSource::Ws,
             granted_capabilities: Vec::new(),
             hands: None,
+            releases_hands: false,
         }
     }
 
@@ -295,6 +311,7 @@ impl CallerIdentity {
             source: CallerSource::PositronObserver { observer_id },
             granted_capabilities: Vec::new(),
             hands: None,
+            releases_hands: false,
         }
     }
 

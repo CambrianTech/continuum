@@ -729,6 +729,12 @@ pub struct Burst {
     /// to: threading the cause as a separate parameter through every driver would let
     /// the two drift, and provenance belongs on the thing whose provenance it is.
     pub cause: Cause,
+    /// WHICH of her hands this turn acts with: the acting context of the card claim it
+    /// works, or `None` for her default hands. Bound once, at the turn's admission, by
+    /// whoever admitted it; every act of the turn runs in these hands and no turn moves
+    /// another's (card fc9e9fd7). It lives here for the reason `room` and `cause` do: a
+    /// parameter beside the burst could drift from the turn it belongs to.
+    pub hands: Option<crate::code::hands::HandsContext>,
 }
 
 /// Why a turn is happening — the thing it is a RESPONSE to, and the root of its
@@ -842,7 +848,14 @@ impl Burst {
             now_ms,
             cause,
             room_updates: Arc::default(),
+            hands: None,
         }
+    }
+
+    /// This turn acts with the hands of `context` (the card claim it works).
+    pub fn in_hands(mut self, context: Option<crate::code::hands::HandsContext>) -> Self {
+        self.hands = context;
+        self
     }
 
     /// A raw-string burst IN a named activity — the production path for a
@@ -856,6 +869,7 @@ impl Burst {
             now_ms: None,
             cause: Cause::Synthetic,
             room_updates: Arc::default(),
+            hands: None,
         }
     }
 }
@@ -876,6 +890,7 @@ impl From<String> for Burst {
             // construction. Honest, never invented.
             cause: Cause::Synthetic,
             room_updates: Arc::default(),
+            hands: None,
         }
     }
 }

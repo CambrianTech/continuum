@@ -9,9 +9,9 @@
 //! node, that node cut the branch from ITS clone's HEAD and her edits stayed behind on
 //! the old machine. Three seams, plain git, no bundles, no new transport:
 //!
-//! 1. [`sync_after_act`] — at the end of every turn her hands were rooted at a card
-//!    (`persona_workspace::restore_acting_workspace`, the one restore every acting path
-//!    goes through): a work-in-progress commit of whatever the act left, then
+//! 1. [`sync_after_act`] — at the end of every turn bound to a card claim's hands
+//!    (`persona_workspace::end_card_turn`, or `end_acting_context` for a fork that a card
+//!    rooted): a work-in-progress commit of whatever the act left, then
 //!    `git push -u origin <branch>`. The commit is made with plumbing
 //!    (`write-tree` / `commit-tree` / `update-ref`) so an autosave can never run the
 //!    repo's hooks — hooks belong to the reviewed commit she makes with `code/git/commit`.
@@ -509,17 +509,43 @@ fn move_blocker_over(persona: Uuid, acting_root: Option<PathBuf>) -> Option<Stri
     None
 }
 
+/// The per-checkout lock [`sync_after_act_for`] holds around its git work: one entry per
+/// checkout with open claim hands, dropped when those hands close ([`forget_checkout`]).
+static CHECKOUT_SYNC: std::sync::LazyLock<dashmap::DashMap<PathBuf, std::sync::Arc<std::sync::Mutex<()>>>> =
+    std::sync::LazyLock::new(dashmap::DashMap::new);
+
+/// Drop `root`'s sync lock once the claim hands standing in it are released, but ONLY when
+/// no sync holds it: a timed-out caller's blocking git keeps its clone, and removing the
+/// entry under it would let a new claim's sync run beside it (Astra on #5026).
+pub fn forget_checkout(root: &std::path::Path) {
+    CHECKOUT_SYNC.remove_if(root, |_, lock| std::sync::Arc::strong_count(lock) == 1);
+}
+
 /// The turn-path form of [`sync_after_act`]: off the async thread, bounded by
 /// [`SYNC_BOUND`], probed as `workspace.push`, and recorded so a later move can ask.
-/// Never fails the turn — every shape is an outcome.
-pub async fn sync_after_act_for(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
+/// Never fails the turn — every shape is an outcome. It runs ONLY under an admission to the
+/// hands that acted (`lease`, a parameter, so an unleased sync can't be written): its git work
+/// keeps that admission until it returns, even past its own timeout, so a release never
+/// removes the checkout under it (Astra and Codex root on #5026).
+pub async fn sync_after_act_for(lease: std::sync::Arc<crate::code::hands::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
+    crate::code::hands::admitted(Some(lease), sync_admitted(persona, persona_name, root, card)).await
+}
+
+async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
     let node = crate::capacity::gossip::this_process_origin().to_string();
     let started = std::time::Instant::now();
     let root_for_git = root.clone();
     let actor_name = persona_name.to_string();
     let outcome = match tokio::time::timeout(
         SYNC_BOUND,
-        tokio::task::spawn_blocking(move || sync_after_act(&root_for_git, card, &node, Some((persona, actor_name.as_str())))),
+        crate::code::hands::spawn_blocking(move || {
+            // ONE sync per checkout at a time, held INSIDE the blocking task: two turns of one
+            // card claim can end together (card fc9e9fd7), and a timed-out caller leaves its
+            // git work running, so the lock must live with the work, not with the await.
+            let lock = CHECKOUT_SYNC.entry(root_for_git.clone()).or_default().clone();
+            let _one_at_a_time = lock.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned lock still serializes the next sync
+            sync_after_act(&root_for_git, card, &node, Some((persona, actor_name.as_str())))
+        }),
     )
     .await
     {
@@ -717,6 +743,21 @@ pub async fn arrive_for(root: PathBuf, branch: String, card: Uuid) -> ArrivalOut
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Astra on #5026): a claim's close dropping a checkout's sync lock while
+    // a timed-out caller's blocking git still runs under it, so a new claim's sync on the same
+    // checkout ran beside it. The lock leaves only when no sync holds it.
+    #[test]
+    fn a_checkout_lock_held_by_a_running_sync_is_never_dropped() {
+        let root = std::path::PathBuf::from(format!("/checkout-{}", Uuid::new_v4()));
+        let running = CHECKOUT_SYNC.entry(root.clone()).or_default().clone(); // the timed-out sync's clone
+        forget_checkout(&root);
+        let next = CHECKOUT_SYNC.entry(root.clone()).or_default().clone();
+        assert!(std::sync::Arc::ptr_eq(&running, &next), "a new claim's sync takes the SAME lock the running one holds");
+        drop((running, next));
+        forget_checkout(&root);
+        assert!(!CHECKOUT_SYNC.contains_key(&root), "once nothing holds it, the lock leaves with the claim");
+    }
 
     fn git(dir: &Path, args: &[&str]) -> String {
         run_git(dir, args).unwrap_or_else(|e| panic!("git {args:?} in {}: {e}", dir.display()))

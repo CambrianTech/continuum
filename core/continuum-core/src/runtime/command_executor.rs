@@ -335,10 +335,7 @@ impl CommandExecutor {
     ) -> Result<CommandResult, DispatchFailure> {
         let command: CommandUri = command.into();
         let start = std::time::Instant::now();
-        let work = caller.as_ref().and_then(|c| {
-            crate::persona::cognition_pulse::CommandWork::capture(c.peer_id.as_uuid())
-        });
-        let outcome = self.dispatch(&command, params, caller.as_ref(), work).await;
+        let outcome = self.dispatch(&command, params, caller.as_ref()).await;
         self.emit_command_completed(
             command.path(),
             &outcome,
@@ -364,14 +361,11 @@ impl CommandExecutor {
         let handle = uuid::Uuid::new_v4();
         let command: CommandUri = command.into();
         let this = std::sync::Arc::clone(self);
-        // Snapshot the acting card before spawning: the turn may change workspace
-        // before this task gets its first poll. The guard activates after auth.
-        let work = caller.as_ref().and_then(|c| {
-            crate::persona::cognition_pulse::CommandWork::capture(c.peer_id.as_uuid())
-        });
         tokio::spawn(async move {
             let start = std::time::Instant::now();
-            let outcome = this.dispatch(&command, params, caller.as_ref(), work).await;
+            // The caller's hands are bound and admitted inside dispatch, for this task's whole
+            // life: a release that began before its first poll refuses it by name.
+            let outcome = this.dispatch(&command, params, caller.as_ref()).await;
             this.emit_command_completed(
                 command.path(),
                 &outcome,
@@ -414,8 +408,19 @@ impl CommandExecutor {
         command: &CommandUri,
         params: Value,
         caller: Option<&crate::routing::CallerIdentity>,
-        work: Option<crate::persona::cognition_pulse::CommandWork>,
     ) -> Result<CommandResult, DispatchFailure> {
+        // A caller bound to a context (a card claim's turn, an eval, a fork) is ADMITTED to its
+        // hands for this command's whole life, foreground or background: a release refuses
+        // what starts after it and waits out what is admitted (card fc9e9fd7; Astra on #5026:
+        // admission at the operation's lifetime boundary, never in helpers). The release itself
+        // is the one operation not admitted: it closes the hands to every other.
+        let admitted = match caller.filter(|c| !c.releases_hands).and_then(|c| c.hands) {
+            Some(context) => Some(std::sync::Arc::new(
+                crate::code::hands::admit(context).map_err(DispatchFailure::not_committed)?,
+            )),
+            None => None,
+        };
+        let work = caller.and_then(crate::persona::cognition_pulse::CommandWork::capture);
         let decision = route(command);
         // Local in-process dispatches pass `None` — substrate's own
         // code calling itself, implicitly trusted by the default
@@ -431,7 +436,7 @@ impl CommandExecutor {
             route_kind = decision.kind().as_str(),
             verdict = verdict.kind(),
         );
-        async move {
+        let command = async move {
             // Slice P "every URI has a gate" — auth runs BEFORE the
             // transport match. Forbidden / Deferred short-circuit
             // with typed errors carrying the reason; only Allowed
@@ -475,8 +480,10 @@ impl CommandExecutor {
             }
             outcome
         }
-        .instrument(span)
-        .await
+        .instrument(span);
+        // The command runs as the task's admitted work: blocking work it starts inherits the
+        // admission and keeps it past a cancelled waiter (`code::hands::spawn_blocking`).
+        crate::code::hands::admitted(admitted, command).await
     }
 
     /// The dispatch chain itself. Extracted so `execute` can wrap it

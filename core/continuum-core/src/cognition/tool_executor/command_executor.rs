@@ -100,7 +100,7 @@ impl Drop for ContextRelease {
                 // Forget the place only on a CONFIRMED release: an unresolved one keeps the
                 // handles and the record together, so neither claims the other is gone.
                 let outcome = core
-                    .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity))
+                    .execute_with_caller("code/release-hands", serde_json::json!({}), Some(identity.releasing_hands()))
                     .await
                     .and_then(|r| match r {
                         crate::runtime::CommandResult::Json(v) => serde_json::from_value::<crate::modules::code_commands::ReleaseHandsResult>(v)
@@ -173,6 +173,19 @@ impl CommandToolExecutor {
     }
 
     /// The core executor behind these hands, if any (a live persona's; not a harness's).
+    /// Act in an EXISTING context this executor does not own: no release on drop. The
+    /// context's owner (a card claim's lifetime) releases it (card fc9e9fd7).
+    pub fn for_persona_bound(executor: Arc<CommandExecutor>, persona: Uuid, context: crate::code::hands::HandsContext) -> Self {
+        let identity = CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)).in_hands(context);
+        let transport = InProcessTransport::new(executor.clone(), Some(identity));
+        Self {
+            conn: Connection::new(transport),
+            core: Some(executor),
+            hands: Some(context),
+            _release: None,
+        }
+    }
+
     pub fn core_executor(&self) -> Option<Arc<CommandExecutor>> {
         self.core.clone()
     }
@@ -476,6 +489,11 @@ impl ToolExecutor for CommandToolExecutor {
     fn in_fresh_hands(&self, persona: Uuid) -> Option<Arc<dyn ToolExecutor>> {
         let core = self.core.clone()?;
         Some(Arc::new(Self::for_persona_in(core, persona, Some(crate::code::hands::HandsContext::fresh()))))
+    }
+
+    fn in_hands(&self, persona: Uuid, context: crate::code::hands::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
+        let core = self.core.clone()?;
+        Some(Arc::new(Self::for_persona_bound(core, persona, context)))
     }
 
     async fn execute_native_batch(
