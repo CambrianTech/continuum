@@ -67,6 +67,10 @@ pub(crate) enum GhRunError {
     Failed { args: String, code: Option<i32>, stderr: String },
     #[error("`gh {args}` did not finish within {secs} s and was ended with everything it started; not confirmed gone: {unconfirmed:?}")]
     TimedOut { args: String, secs: u64, unconfirmed: Vec<u32> },
+    /// `gh` exited, but its output wasn't read whole: a process it started held the pipes past
+    /// the bound (and may still be writing what it was writing), or the read failed.
+    #[error("`gh {args}` exited (exit {code:?}) but its output is not whole: {note}")]
+    Incomplete { args: String, code: Option<i32>, note: String },
 }
 
 impl From<GhRunError> for CommandError {
@@ -75,103 +79,23 @@ impl From<GhRunError> for CommandError {
     }
 }
 
-async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
-    use tokio::io::AsyncReadExt;
-    let mut buf = Vec::new();
-    if let Some(mut pipe) = pipe {
-        let _ = pipe.read_to_end(&mut buf).await;
-    }
-    buf
-}
-
-/// A `gh` process a command owns until it and everything it started have ended (Astra on
-/// #5026). Ending it is ONE path, [`end_owned`], for a timeout and for a dropped waiter alike.
-struct OwnedGh {
-    child: Option<tokio::process::Child>,
-    held: Option<std::sync::Arc<crate::code::hands::HandsLease>>,
-}
-
-impl OwnedGh {
-    /// Hand the process to its end: a spawned task, so the caller's cancellation can't cut it
-    /// short. `None` once it exited and was reaped, or with no runtime to run the end on.
-    fn end(&mut self) -> Option<tokio::task::JoinHandle<crate::inference::lane_process::TreeEnd>> {
-        let child = self.child.take()?;
-        let runtime = tokio::runtime::Handle::try_current().ok()?;
-        Some(runtime.spawn(end_owned(child, self.held.take())))
-    }
-}
-
-impl Drop for OwnedGh {
-    fn drop(&mut self) {
-        let _ = self.end(); // the command's waiter is gone: the end still runs, holding its admission
-    }
-}
-
-/// End `gh` and its tree (`lane_process::end_tree`: descendants deepest first, then `gh`, then
-/// its reap) while holding the command's admission. What can't be confirmed gone is kept ON
-/// the admission before it drops, so the release that waits it out re-checks those processes
-/// and keeps the hands while any is present (Codex root on #5026).
-async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>) -> crate::inference::lane_process::TreeEnd {
-    let end = crate::inference::lane_process::end_tree(&mut child).await;
-    if !end.confirmed() {
-        crate::probe!(
-            class = "code.github.unconfirmed_end",
-            survivors = ?end.survivors.iter().map(|who| who.pid).collect::<Vec<_>>(),
-            reaped = ?end.reaped,
-            unwalked = ?end.unwalked,
-            "a gh process was ended but not everything is confirmed ended; its hands' release re-checks or holds"
-        );
-    }
-    if let Some(lease) = &held {
-        lease.keep_unconfirmed(&end);
-    }
-    end
-}
-
-/// Run one `gh` invocation in `root` as an owned process, with an optional bound: the ONE
-/// execution both [`run_gh`] and [`run_gh_within`] use. A `gh` that outlives `bound` is ended
-/// with everything it started (`gh repo clone` runs `git` as a descendant), and the timeout
-/// names what isn't confirmed gone, never claiming the tree exited.
+/// Run one `gh` invocation in `root` as an owned process ([`lane_process::run_owned`]), with an
+/// optional bound: the ONE execution both [`run_gh`] and [`run_gh_within`] use. A `gh` that
+/// outlives `bound` is ended with everything it started (`gh repo clone` runs `git` as a
+/// descendant), and the timeout names what isn't confirmed gone.
+///
+/// [`lane_process::run_owned`]: crate::inference::lane_process::run_owned
 async fn run_gh_owned(root: &Path, args: &[String], bound: Option<std::time::Duration>) -> Result<String, GhRunError> {
-    let mut cmd = gh_command(root, args);
-    // stays in the core's process group, so a stop ends it; its end reaches what it started by
-    // the process table's parent links (end_tree), not by a group of its own
-    let child = cmd.spawn().map_err(|e| GhRunError::Spawn(e.to_string()))?;
-    let mut owned = OwnedGh { child: Some(child), held: crate::code::hands::current() };
-    let Some(child) = owned.child.as_mut() else {
-        return Err(GhRunError::Spawn("the spawned gh vanished before it was owned".into()));
-    };
-    let stdout = tokio::spawn(read_all(child.stdout.take()));
-    let stderr = tokio::spawn(read_all(child.stderr.take()));
+    use crate::inference::lane_process::{run_owned, Ended};
     let joined = args.join(" ");
-    let waited = match bound {
-        Some(bound) => tokio::time::timeout(bound, child.wait()).await,
-        None => Ok(child.wait().await),
-    };
-    match waited {
-        Ok(Ok(status)) => {
-            owned.child = None; // exited and reaped by wait()
-            let out = stdout.await.unwrap_or_default(); // unwrap_or_default: a reader task that panicked reads as empty output
-            let err = stderr.await.unwrap_or_default(); // unwrap_or_default: as above
-            if status.success() {
-                Ok(String::from_utf8_lossy(&out).trim().to_string())
-            } else {
-                Err(GhRunError::Failed { args: joined, code: status.code(), stderr: String::from_utf8_lossy(&err).trim().to_string() })
-            }
-        }
-        Ok(Err(e)) => Err(GhRunError::Spawn(e.to_string())),
-        Err(_elapsed) => {
-            let gh_pid = child.id();
-            let unconfirmed = match owned.end() {
-                // gh itself counts as unconfirmed when its reap or its tree couldn't be confirmed
-                Some(end) => match end.await {
-                    Ok(end) => end.survivors.iter().map(|who| who.pid).chain(end.unknown().next().and(gh_pid)).collect(),
-                    Err(join) => return Err(GhRunError::Spawn(format!("ending the timed-out gh failed to run: {join}"))),
-                },
-                None => Vec::new(),
-            };
-            Err(GhRunError::TimedOut { args: joined, secs: bound.map_or(0, |b| b.as_secs()), unconfirmed })
-        }
+    let out = run_owned(gh_command(root, args), bound, "gh", std::sync::Arc::default()).await.map_err(|e| GhRunError::Spawn(e.to_string()))?;
+    match out.ended {
+        Ended::Exited(status) => match out.capture_note() {
+            Some(note) => Err(GhRunError::Incomplete { args: joined, code: status.code(), note }),
+            None if status.success() => Ok(String::from_utf8_lossy(&out.stdout.bytes).trim().to_string()),
+            None => Err(GhRunError::Failed { args: joined, code: status.code(), stderr: String::from_utf8_lossy(&out.stderr.bytes).trim().to_string() }),
+        },
+        Ended::TimedOut { unconfirmed } => Err(GhRunError::TimedOut { args: joined, secs: bound.map_or(0, |b| b.as_secs()), unconfirmed }),
     }
 }
 
@@ -197,11 +121,7 @@ pub(crate) async fn run_gh(root: PathBuf, args: Vec<String>) -> Result<String, C
 /// module's client). Output is piped and stdin closed; callers add only what they need.
 fn gh_command(root: &Path, args: &[String]) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new("gh");
-    cmd.args(args)
-        .current_dir(root)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.args(args).current_dir(root).stdin(std::process::Stdio::null());
     cmd
 }
 
@@ -249,46 +169,6 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
 #[cfg(test)]
 mod tests {
     use crate::sdk_codegen::ActionCommand;
-
-    // what this catches (Astra and Codex root on #5026): a `gh` whose command waiter was
-    // cancelled kept running, and so did the `git` it started, while a release removed the
-    // workspace under them. The owner, dropped mid-run, ends the process AND what it started,
-    // and keeps the command's admission until that end is done: the release completes only
-    // after, and finds nothing unconfirmed.
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn a_dropped_gh_owner_ends_its_tree_and_holds_the_admission_until_it_has() {
-        let dir = tempfile::tempdir().unwrap();
-        let grandchild = dir.path().join("grandchild.pid");
-        let context = crate::code::hands::HandsContext::fresh();
-        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
-        let child = tokio::process::Command::new("sh")
-            .arg("-c")
-            .arg(format!("sleep 600 & echo $! > {}; wait", grandchild.display()))
-            .spawn()
-            .expect("a long process with a descendant");
-        let pid = child.id().expect("a live pid");
-        let mut started = None;
-        for _ in 0..200 {
-            if let Some(gc) = std::fs::read_to_string(&grandchild).ok().and_then(|t| t.trim().parse::<u32>().ok()) {
-                started = Some(gc);
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
-        let gc = started.expect("the descendant started");
-        let tree = crate::inference::lane_process::descendants(pid);
-        assert!(tree.iter().any(|who| who.pid == gc), "the descendant is in gh's tree: {tree:?}");
-        drop(super::OwnedGh { child: Some(child), held: Some(lease) }); // the command's waiter is gone
-        let unconfirmed = tokio::time::timeout(std::time::Duration::from_secs(10), crate::code::hands::close(context))
-            .await
-            .expect("the release completes once the tree is ended, not before and not never");
-        assert!(unconfirmed.is_empty(), "nothing is left unconfirmed: {unconfirmed:?}");
-        let alive = std::process::Command::new("kill").args(["-0", &pid.to_string()]).status().expect("kill -0");
-        assert!(!alive.success(), "gh (pid {pid}) is reaped when the release completes");
-        // a killed descendant may wait for init to reap it; a zombie has exited, so it counts as gone
-        assert!(crate::inference::lane_process::still_present(&tree).is_empty(), "what gh started is gone when the release completes");
-    }
 
     // what this catches: the wire names mirror the file paths (the routing keys), and
     // NONE is pushed into every turn's native offer — a tool-call model treats an offered

@@ -151,7 +151,7 @@ fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
 /// the failure is diagnosable — and so a teacher can read the REAL error and fix.
 ///
 /// SAFETY: compiles and runs model-generated code in a temp dir, each step under
-/// its garbage-ceiling timeout with `kill_on_drop` so a runaway is reaped, never orphaned. That is
+/// its garbage-ceiling timeout, owned so a runaway and what it started are ended, never orphaned. That is
 /// the pragmatic floor for an OWNER's local dev machine (what coding agents do); it
 /// is NOT a sandbox. Before public/untrusted tasks, this MUST run in a real sandbox
 /// (container/seccomp). Slice 1 = prove the grading mechanism; sandbox is a P1 req.
@@ -299,13 +299,12 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
         .arg("-o")
         .arg(&bin)
         .arg(&src);
-    let compiled = run_capped(&mut rustc, "compile", COMPILE_TIMEOUT_SECS).await?;
+    let compiled = run_capped(rustc, "compile", COMPILE_TIMEOUT_SECS).await?;
     if !compiled.status.success() {
         return Err(format!("compile error: {}", trunc_stderr(&compiled.stderr)));
     }
 
-    let mut run = tokio::process::Command::new(&bin);
-    let ran = run_capped(&mut run, "run", RUN_TIMEOUT_SECS).await?;
+    let ran = run_capped(tokio::process::Command::new(&bin), "run", RUN_TIMEOUT_SECS).await?;
     if ran.status.success() {
         Ok(())
     } else {
@@ -313,18 +312,21 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
     }
 }
 
-/// Run one grader subprocess under the grade timeout with `kill_on_drop(true)` — a
-/// step that overruns is SIGKILLed on drop, never orphaned to init burning a core.
-async fn run_capped(
-    cmd: &mut tokio::process::Command,
-    label: &str,
-    timeout_secs: u64,
-) -> Result<std::process::Output, String> {
-    cmd.kill_on_drop(true);
-    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await {
-        Ok(Ok(out)) => Ok(out),
-        Ok(Err(e)) => Err(format!("{label} spawn failed: {e}")),
-        Err(_) => Err(format!("{label} timeout ({timeout_secs}s)")),
+/// Run one grader subprocess under the grade timeout, OWNED (`lane_process::run_owned`): a
+/// step that overruns, or whose grade is dropped, is ended with everything it started (model
+/// code can spawn), never orphaned to init burning a core.
+async fn run_capped(cmd: tokio::process::Command, label: &str, timeout_secs: u64) -> Result<std::process::Output, String> {
+    use crate::inference::lane_process::{run_owned, Ended};
+    let out = run_owned(cmd, Some(std::time::Duration::from_secs(timeout_secs)), "gym-grader", std::sync::Arc::default())
+        .await
+        .map_err(|e| format!("{label} spawn failed: {e}"))?;
+    if let (Ended::Exited(_), Some(note)) = (&out.ended, out.capture_note()) {
+        return Err(format!("{label} exited but {note}"));
+    }
+    match out.ended {
+        Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout.bytes, stderr: out.stderr.bytes }),
+        Ended::TimedOut { unconfirmed } if unconfirmed.is_empty() => Err(format!("{label} timeout ({timeout_secs}s)")),
+        Ended::TimedOut { unconfirmed } => Err(format!("{label} timeout ({timeout_secs}s); not confirmed gone: {unconfirmed:?}")),
     }
 }
 

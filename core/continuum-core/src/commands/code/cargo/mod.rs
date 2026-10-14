@@ -93,10 +93,11 @@ fn shared_target_dir() -> Option<String> {
 
 /// Run `cargo <args>` in `root` under a wall-clock timeout, capturing output.
 ///
-/// `kill_on_drop(true)` is load-bearing: when the timeout fires, the output()
-/// future is dropped and tokio SIGKILLs the child — without it a runaway build
-/// orphans to init and burns a core. A timeout is reported as `timed_out: true`,
-/// NOT an error: a hung build IS information the mind should observe and react to.
+/// The build is OWNED (`lane_process::run_owned`): at the timeout, or when this command is
+/// dropped, cargo and the rustc/build scripts it started are ended, never orphaned to init
+/// burning a core, and it holds the hands' admission until they have. A timeout is reported
+/// as `timed_out: true` with what cargo wrote first, NOT an error: a hung build IS information
+/// the mind should observe and react to.
 pub(crate) async fn run_cargo(
     root: &Path,
     args: &[String],
@@ -109,31 +110,33 @@ pub(crate) async fn run_cargo(
     // A citizen's cargo is confined like her shell (card d598c806): the toolchain and
     // the shared target cache are in her roots, the operator's files are not.
     let mut cmd = crate::code::confinement::command_for(confinement, who, Path::new("cargo"), &args);
-    cmd.current_dir(root)
-        .env("CARGO_TERM_COLOR", "never")
-        .kill_on_drop(true);
+    cmd.current_dir(root).env("CARGO_TERM_COLOR", "never");
     if let Some(target) = shared_target_dir() {
         cmd.env("CARGO_TARGET_DIR", target);
     }
-    match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(out)) => Ok(CargoRun {
-            exit_code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            timed_out: false,
-            duration_ms: started.elapsed().as_millis() as u64,
-        }),
-        Ok(Err(e)) => Err(CommandError::Internal(format!(
-            "code/cargo: failed to spawn cargo (is it on PATH?): {e}"
-        ))),
-        Err(_) => Ok(CargoRun {
-            exit_code: None,
-            stdout: String::new(),
-            stderr: String::new(),
-            timed_out: true,
-            duration_ms: started.elapsed().as_millis() as u64,
-        }),
+    let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "cargo", std::sync::Arc::default())
+        .await
+        .map_err(|e| CommandError::Internal(format!("code/cargo: failed to run cargo (is it on PATH?): {e}")))?;
+    let mut stderr = String::from_utf8_lossy(&out.stderr.bytes).into_owned();
+    if let Some(note) = out.capture_note() {
+        stderr.push_str(&format!("\n[{note}]"));
     }
+    let (exit_code, timed_out) = match out.ended {
+        crate::inference::lane_process::Ended::Exited(status) => (status.code(), false),
+        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
+            if !unconfirmed.is_empty() {
+                stderr.push_str(&format!("\n[cargo was ended at the timeout; not confirmed gone: {unconfirmed:?}]"));
+            }
+            (None, true)
+        }
+    };
+    Ok(CargoRun {
+        exit_code,
+        stdout: String::from_utf8_lossy(&out.stdout.bytes).into_owned(),
+        stderr,
+        timed_out,
+        duration_ms: started.elapsed().as_millis() as u64,
+    })
 }
 
 /// Parse cargo's `--message-format=json` stdout into the error/warning diagnostics a

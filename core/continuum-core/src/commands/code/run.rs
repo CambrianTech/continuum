@@ -211,76 +211,74 @@ impl ActionCommand for CodeRun {
     }
 }
 
-/// What a bounded child run produced — including everything it wrote BEFORE a
-/// timeout killed it. `tokio::process::Child::wait_with_output` under
-/// `tokio::time::timeout` discards the pipes on expiry, so a killed `find` sweep
-/// came back as bare "timedOut" (QA from Joaquin, 2026-09-13, card ba846f38: the
-/// longest dead-air windows of her session gave her nothing to act on). The
-/// pipes are drained concurrently with the wait; on expiry the child is killed
-/// and the drained bytes are returned with the verdict.
-pub(crate) struct BoundedOutput {
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    /// `None` when the timeout killed the child.
-    pub status: Option<std::process::ExitStatus>,
-}
-
-pub(crate) async fn run_bounded(
-    mut child: tokio::process::Child,
-    timeout: std::time::Duration,
-) -> std::io::Result<BoundedOutput> {
-    use tokio::io::AsyncReadExt as _;
-    let mut out_pipe = child.stdout.take();
-    let mut err_pipe = child.stderr.take();
-    let drain_out = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        if let Some(p) = out_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf).await;
+/// `stderr` with everything the run's own output can't say about itself, on EVERY path (Codex
+/// root on #5030 at 6c7bd0d82): a timeout and what it couldn't confirm gone, and how each stream
+/// was read. A timeout's output is what was READ before the kill, never claimed as everything
+/// it produced; a read that failed, or one a process it started held past the bound, is named
+/// beside the verdict, never hidden behind it.
+fn with_run_notes(mut stderr: String, out: &crate::inference::lane_process::OwnedOutput, secs: u64, hint: &str) -> String {
+    use crate::inference::lane_process::{CaptureEnd, Ended};
+    let mut note = |line: String| {
+        if !stderr.is_empty() && !stderr.ends_with('\n') {
+            stderr.push('\n');
         }
-        buf
-    });
-    let drain_err = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        if let Some(p) = err_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf).await;
-        }
-        buf
-    });
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(status) => Some(status?),
-        Err(_) => {
-            // Expired: kill, then let the drains reach EOF so the partial output is whole.
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            None
-        }
+        stderr.push_str(&line);
     };
-    let stdout = drain_out.await.unwrap_or_default();
-    let stderr = drain_err.await.unwrap_or_default();
-    Ok(BoundedOutput {
-        stdout,
-        stderr,
-        status,
-    })
+    let timed_out = matches!(out.ended, Ended::TimedOut { .. });
+    if let Ended::TimedOut { unconfirmed } = &out.ended {
+        note(format!("[killed: exceeded the {secs}s run timeout{hint} — the output above is what was read before the kill]"));
+        if !unconfirmed.is_empty() {
+            note(format!("[not confirmed gone: {unconfirmed:?}]"));
+        }
+    }
+    for (name, read) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
+        match &read.end {
+            CaptureEnd::Complete => {}
+            CaptureEnd::Cut(_) if timed_out => {} // the kill's own cut, said above
+            CaptureEnd::Cut(why) => note(format!("[{name} was cut: {why}]")),
+            CaptureEnd::Failed(why) => note(format!("[{name} could not be read whole: {why}]")),
+        }
+    }
+    stderr
 }
 
-/// The timeout verdict, appended AFTER whatever the child managed to write.
-fn timeout_note(partial_stderr: &str, secs: u64, hint: &str) -> String {
-    let mut s = partial_stderr.to_string();
-    if !s.is_empty() && !s.ends_with('\n') {
-        s.push('\n');
+/// THE one projection of an owned run into `code/run`'s result, for every arm (python, a
+/// rustc failure or timeout, the compiled binary), so no arm can drop what was read (Codex root
+/// on #5030: the rustc timeout returned an empty stdout it had captured). A Windows process
+/// writes CRLF to a pipe; the rows she reads back are lines, so every result carries one shape
+/// on every host (BigMama's note on #4427).
+fn result_of(out: &crate::inference::lane_process::OwnedOutput, interpreter: &str, duration_ms: u64, secs: u64, hint: &str) -> CodeRunResult {
+    use crate::inference::lane_process::Ended;
+    let text = |read: &crate::inference::lane_process::Captured| String::from_utf8_lossy(&read.bytes).replace("\r\n", "\n");
+    let (exit_code, exited_clean, timed_out) = match &out.ended {
+        Ended::Exited(status) => (status.code(), status.success(), false),
+        Ended::TimedOut { .. } => (None, false, true),
+    };
+    CodeRunResult {
+        exit_code,
+        ok: exited_clean && read_whole(out),
+        stdout: text(&out.stdout),
+        stderr: with_run_notes(text(&out.stderr), out, secs, hint),
+        duration_ms,
+        timed_out,
+        interpreter: interpreter.to_string(),
     }
-    s.push_str(&format!("[killed: exceeded the {secs}s run timeout{hint} — the output above is everything it produced before the kill]"));
-    s
+}
+
+/// Whether both streams were read to their end: a run whose output isn't whole is not `ok`,
+/// whatever its exit status (its result can't be read as complete).
+fn read_whole(out: &crate::inference::lane_process::OwnedOutput) -> bool {
+    use crate::inference::lane_process::CaptureEnd;
+    out.stdout.end == CaptureEnd::Complete && out.stderr.end == CaptureEnd::Complete
 }
 
 /// Compile the given complete Rust program with `rustc`, then run the produced
-/// binary — each step under `timeout` with `kill_on_drop(true)`. Returns the ground
+/// binary — each step under `timeout`, owned (`lane_process::run_owned`). Returns the ground
 /// truth of what happened: a COMPILE error is reported as the run result (ok=false,
 /// rustc's stderr), not hidden — the persona reads the compiler's errors and
 /// self-corrects exactly as she would a runtime panic. `Err` is reserved for a
 /// failure to spawn the toolchain at all (e.g. `rustc` absent).
-/// Run a complete Python program under the same wall-clock + kill_on_drop
+/// Run a complete Python program under the same wall-clock + ownership
 /// contract as the Rust path. Same ground-truth shape: a traceback is the run
 /// result (ok=false), never hidden; `Err` is reserved for a missing
 /// interpreter. The caller supplies the managed environment or resolved system Python.
@@ -320,51 +318,13 @@ async fn run_python(
     let mut cmd = hands.command(interpreter, &[src.clone().into()]);
     crate::code::shell_session::strip_secret_env(&mut cmd);
     crate::code::shell_session::utf8_text_env(&mut cmd);
-    cmd.current_dir(cwd.unwrap_or(dir))
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let child = cmd.spawn().map_err(|e| {
-        CommandError::Internal(format!("code/run: {interpreter_label} spawn failed: {e}"))
-    })?;
+    cmd.current_dir(cwd.unwrap_or(dir));
     let started = std::time::Instant::now();
-    let out = run_bounded(child, timeout)
+    let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "code-run", std::sync::Arc::default())
         .await
-        .map_err(|e| CommandError::Internal(format!("code/run: python wait failed: {e}")))?;
-    let duration_ms = started.elapsed().as_millis() as u64;
-    // A Windows Python writes CRLF to a pipe; the rows she reads back are lines, not
-    // line endings, so the result carries one shape on every host (BigMama's note on
-    // #4427: her stdout rows carried a trailing `\r`).
-    let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
-    let stderr = String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
-    match out.status {
-        // Same honest shape as the Rust path: a timeout is a RESULT (she reads it
-        // and adjusts), never a hidden kill — and it carries the partial output.
-        None => Ok(CodeRunResult {
-            ok: false,
-            stdout,
-            stderr: timeout_note(
-                &stderr,
-                timeout.as_secs(),
-                &format!(
-                    " (raise timeout_secs up to {MAX_TIMEOUT_SECS}s, or use code/shell for long-running work)"
-                ),
-            ),
-            exit_code: None,
-            duration_ms,
-            timed_out: true,
-            interpreter: interpreter_label.clone(),
-        }),
-        Some(status) => Ok(CodeRunResult {
-            ok: status.success(),
-            stdout,
-            stderr,
-            exit_code: status.code(),
-            duration_ms,
-            timed_out: false,
-            interpreter: interpreter_label.clone(),
-        }),
-    }
+        .map_err(|e| CommandError::Internal(format!("code/run: {interpreter_label} spawn failed: {e}")))?;
+    let hint = format!(" (raise timeout_secs up to {MAX_TIMEOUT_SECS}s, or use code/shell for long-running work)");
+    Ok(result_of(&out, &interpreter_label, started.elapsed().as_millis() as u64, timeout.as_secs(), &hint))
 }
 
 /// Whose hands a snippet runs with: the caller's confinement (a citizen's) or none (the
@@ -406,92 +366,37 @@ async fn compile_and_run_rust(
 
     let started = std::time::Instant::now();
 
-    // 1. Compile. kill_on_drop bounds a runaway rustc; a non-success exit is a RESULT
-    //    (the persona must SEE the compiler errors), only a spawn failure is an error.
+    // 1. Compile, owned (lane_process::run_owned) so a runaway rustc is ended; a non-success
+    //    exit is a RESULT (the persona must SEE the compiler errors), only a spawn failure is
+    //    an error.
     let mut rustc = hands.command(
         std::path::Path::new("rustc"),
         &["--edition".into(), "2021".into(), "-o".into(), bin.clone().into(), src.clone().into()],
     );
     crate::code::shell_session::strip_secret_env(&mut rustc);
-    rustc.kill_on_drop(true);
-    match tokio::time::timeout(timeout, rustc.output()).await {
-        Ok(Ok(out)) if out.status.success() => {} // compiled — fall through to run
-        Ok(Ok(out)) => {
-            return Ok(CodeRunResult {
-                exit_code: out.status.code(),
-                ok: false,
-                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-                duration_ms: started.elapsed().as_millis() as u64,
-                timed_out: false,
-                interpreter: "rustc".to_string(),
-            })
-        }
-        Ok(Err(e)) => {
-            return Err(CommandError::Internal(format!(
-                "code/run: failed to spawn rustc (is it on PATH?): {e}"
-            )))
-        }
-        Err(_) => {
-            return Ok(CodeRunResult {
-                exit_code: None,
-                ok: false,
-                stdout: String::new(),
-                stderr: format!(
-                    "rustc killed by safety timeout after {}s",
-                    timeout.as_secs()
-                ),
-                duration_ms: started.elapsed().as_millis() as u64,
-                timed_out: true,
-                interpreter: "rustc".to_string(),
-            })
-        }
+    let compiled = crate::inference::lane_process::run_owned(rustc, Some(timeout), "rustc", std::sync::Arc::default())
+        .await
+        .map_err(|e| CommandError::Internal(format!("code/run: failed to run rustc (is it on PATH?): {e}")))?;
+    match &compiled.ended {
+        // compiled, and rustc's output read whole — fall through to run. A successful exit whose
+        // output a process it started still held (a linker) doesn't vouch for the binary yet.
+        crate::inference::lane_process::Ended::Exited(status) if status.success() && read_whole(&compiled) => {}
+        // a failed compile, a timed-out one, or a successful exit whose output isn't whole: the
+        // result is rustc's, with everything it wrote
+        _ => return Ok(result_of(&compiled, "rustc", started.elapsed().as_millis() as u64, timeout.as_secs(), " (rustc)")),
     }
 
-    // 2. Run the compiled binary. kill_on_drop is load-bearing: when the safety
-    //    timeout fires, tokio::time::timeout drops the output() future. Without it the
-    //    child is NOT killed — it orphans to init and burns a core forever (observed:
-    //    6h+ runaway at 100% CPU). Dropping the Child with kill_on_drop sends SIGKILL.
+    // 2. Run the compiled binary, owned (lane_process::run_owned): at the safety timeout,
+    //    or when this command is dropped, it and everything it started are ended, never
+    //    orphaned to init burning a core (observed: 6h+ runaway at 100% CPU).
     let mut child = hands.command(&bin, &[]);
     crate::code::shell_session::strip_secret_env(&mut child);
-    child
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let child = child.spawn().map_err(|e| {
-        CommandError::Internal(format!("code/run: failed to spawn compiled binary: {e}"))
-    })?;
-    let out = run_bounded(child, timeout)
+    let out = crate::inference::lane_process::run_owned(child, Some(timeout), "code-run", std::sync::Arc::default())
         .await
-        .map_err(|e| CommandError::Internal(format!("code/run: binary wait failed: {e}")))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    match out.status {
-        // Ran to completion (clean, or a nonzero exit / panic on stderr).
-        Some(status) => {
-            let code = status.code();
-            Ok(CodeRunResult {
-                exit_code: code,
-                ok: code == Some(0),
-                stdout,
-                stderr,
-                duration_ms: started.elapsed().as_millis() as u64,
-                timed_out: false,
-                interpreter: "rustc".to_string(),
-            })
-        }
-        // Safety timeout fired — a RESULT, not an error: a hung run IS information
-        // the mind should observe and react to, and so is everything it printed first.
-        None => Ok(CodeRunResult {
-            exit_code: None,
-            ok: false,
-            stdout,
-            stderr: timeout_note(&stderr, timeout.as_secs(), ""),
-            duration_ms: started.elapsed().as_millis() as u64,
-            timed_out: true,
-            interpreter: "rustc".to_string(),
-        }),
-    }
+        .map_err(|e| CommandError::Internal(format!("code/run: failed to run the compiled binary: {e}")))?;
+    // ran to completion (clean, or a nonzero exit / panic on stderr), or the safety timeout fired:
+    // a RESULT either way, with everything it printed
+    Ok(result_of(&out, "rustc", started.elapsed().as_millis() as u64, timeout.as_secs(), ""))
 }
 /// `code/run` reports its own truth in `CodeRunResult.ok` — "whether exit_code ==
 /// Some(0)". Projecting it means a compile failure reads as a FAILURE in the
@@ -618,9 +523,42 @@ mod tests {
         );
     }
 
+    // what this catches (Codex root on #5030 at 6c7bd0d82 and 96d6d27db): code/run told her a
+    // timed-out run's output was "everything it produced" when its read had failed; a run whose
+    // output a process it started held past the bound read as whole and ok; and the rustc
+    // timeout arm returned an empty stdout it had captured. Every arm projects through one
+    // result_of: how each stream was read is named, what was read is kept, and an output that
+    // isn't whole is never ok.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_capture_status_and_what_it_read_survive_every_path_and_an_unwhole_run_is_never_ok() {
+        use crate::inference::lane_process::{CaptureEnd, Captured, Ended, OwnedOutput};
+        use std::os::unix::process::ExitStatusExt;
+        let read = |end: CaptureEnd| Captured { bytes: b"partial".to_vec(), end };
+        let timed = OwnedOutput {
+            stdout: read(CaptureEnd::Cut("the bound elapsed".into())),
+            stderr: read(CaptureEnd::Failed("the pipe broke".into())),
+            ended: Ended::TimedOut { unconfirmed: vec![] },
+        };
+        let note = with_run_notes(String::new(), &timed, 5, "");
+        assert!(note.contains("what was read before the kill") && !note.contains("everything it produced"), "{note}");
+        assert!(note.contains("stderr could not be read whole: the pipe broke"), "a failed read is named on the timeout path too: {note}");
+        assert!(!note.contains("stdout was cut"), "the kill's own cut is said once: {note}");
+        // every arm projects through result_of: a timed-out run keeps the stdout it captured
+        let projected = result_of(&timed, "rustc", 1, 5, " (rustc)");
+        assert_eq!((projected.stdout.as_str(), projected.timed_out, projected.ok, projected.exit_code), ("partial", true, false, None), "the captured stdout survives the timeout arm");
+        let held = OwnedOutput {
+            stdout: read(CaptureEnd::Cut("a process it started held its output past the bound".into())),
+            stderr: read(CaptureEnd::Complete),
+            ended: Ended::Exited(std::process::ExitStatus::from_raw(0)),
+        };
+        assert!(with_run_notes(String::new(), &held, 5, "").contains("stdout was cut: a process it started held"), "an exit's cut is named");
+        assert!(!read_whole(&held), "and a run whose output isn't whole is never ok");
+    }
+
     // what this catches: the safety timeout ACTUALLY kills the child process — not
     // just reports timed_out. Regression for the orphan leak: tokio::time::timeout
-    // only drops the output() future; without kill_on_drop the child survives, orphans
+    // only drops the output() future; without an owner ending it the child survives, orphans
     // to init, and burns a core forever (observed: 6h+ runaway at 100% CPU). The old
     // version of this test asserted only the return value, which was already true WITH
     // the leak — so it never caught the bug. This version records the child PID and
