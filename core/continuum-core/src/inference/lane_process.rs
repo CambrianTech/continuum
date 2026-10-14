@@ -33,7 +33,7 @@ pub fn kill9(pid: u32) {
 /// There is no SIGKILL; `/F /T` is the nearest equivalent. Best-effort.
 #[cfg(windows)]
 pub fn kill9(pid: u32) {
-    let _ = std::process::Command::new("taskkill")
+    let _ = airc_core::process::background("taskkill")
         .args(["/F", "/T", "/PID", &pid.to_string()])
         .output();
 }
@@ -573,6 +573,10 @@ pub async fn run_owned_with_input(
         // after an unconfirmed end, so it is refused before anything starts (Codex reviewer on #5037)
         return Err(std::io::Error::other(format!("{label}: `holding` needs an admission to keep what it holds past an unconfirmed end; none is current")));
     }
+    // This owner captures output: it is a background run, not an interactive
+    // terminal. Reuse the substrate's platform policy after admission validation;
+    // custody, cancellation and child-tree teardown remain with this owner.
+    airc_core::process::configure_background(cmd.as_std_mut());
     let mut child = cmd.spawn()?;
     let (out_pipe, err_pipe) = (child.stdout.take(), child.stderr.take());
     let writer = match (input, child.stdin.take()) {
@@ -699,7 +703,7 @@ pub fn command_name(pid: u32) -> Option<String> {
 /// showed the pid plainly). [[silently-unwired-capability]]
 #[cfg(windows)]
 pub fn command_name(pid: u32) -> Option<String> {
-    let out = std::process::Command::new("tasklist")
+    let out = airc_core::process::background("tasklist")
         .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
         .output()
         .ok()?;
@@ -760,7 +764,7 @@ pub fn pid_listening_on_port(port: u16) -> Option<u32> {
 /// holder it was simply unable to look up.
 #[cfg(windows)]
 pub fn pid_listening_on_port(port: u16) -> Option<u32> {
-    let out = std::process::Command::new("netstat")
+    let out = airc_core::process::background("netstat")
         .args(["-ano", "-p", "TCP"])
         .output()
         .ok()?;
@@ -1092,6 +1096,33 @@ pub fn launch_kv_in(argv: &[String]) -> LaunchKv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (e92f227c): captured background commands allocating or
+    // inheriting a console. The observation is made by the actual native child.
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "native observer invoked by owned_background_child_has_no_console"]
+    fn background_console_observer() {
+        // SAFETY: this API only observes the calling process's console handle.
+        assert!(unsafe { windows_sys::Win32::System::Console::GetConsoleWindow() }.is_null());
+        println!("background-console-observer-ok");
+        eprintln!("background-console-stderr-ok");
+    }
+
+    // what this catches (e92f227c): every raw caller inherits windowless policy
+    // at the shared spawn boundary, while exit and both captured streams survive.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn owned_background_child_has_no_console() {
+        let mut command = tokio::process::Command::new(std::env::current_exe().expect("test binary"));
+        command.args(["--exact", "inference::lane_process::tests::background_console_observer", "--ignored", "--nocapture"]);
+        let output = run_owned(command, None, "console-observer", std::sync::Arc::default()).await.expect("owned native child");
+        assert!(matches!(&output.ended, Ended::Exited(status) if status.success()), "native child must exit successfully: {:?}", output.ended);
+        assert!(String::from_utf8_lossy(&output.stdout.bytes).contains("background-console-observer-ok"));
+        assert!(String::from_utf8_lossy(&output.stderr.bytes).contains("background-console-stderr-ok"));
+        assert!(output.input_note().is_none());
+        assert!(output.capture_note().is_none());
+    }
 
     // what this catches (Astra and Codex root on #5026 and #5030, card de211a71): a child whose
     // waiter was cancelled (a dropped command, a rebooting core) kept running, and so did what

@@ -4977,11 +4977,6 @@ async fn prebuilt_checkout_sha(
     if let Some(git_dir) = git_dir {
         cmd.env("GIT_DIR", git_dir);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
     // owned (lane_process::run_owned): a hung git is ended with anything it started
     let output = continuum_core::inference::lane_process::run_owned(
         tokio::process::Command::from(cmd),
