@@ -54,25 +54,6 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    services:
-      postgres:
-        # The Docker-official image from ECR Public, not Docker Hub: hosted runners share one
-        # anonymous Docker Hub quota per IP, and on 2026-10-09 every Rust lane across the
-        # repo's PRs died in 16 s at "Initialize containers" with `toomanyrequests` (#4882,
-        # #4883, #4884), twice each on re-run. ECR Public mirrors docker/library with no
-        # anonymous pull limit. Same image, same tag.
-        image: ${{ needs.changes.outputs.rust != 'false' && 'public.ecr.aws/docker/library/postgres:17-alpine' || '' }}
-        env:
-          POSTGRES_DB: continuum_test
-          POSTGRES_USER: continuum
-          POSTGRES_PASSWORD: continuum
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     env:
       DATABASE_URL: postgres://continuum:continuum@localhost:5432/continuum_test
     steps:
@@ -183,6 +164,20 @@ jobs:
           fi
 
       # These tests share a database schema; run serially and reject zero matches.
+      # The runner image's own PostgreSQL, started where the only Postgres tests run: no image
+      # pull. The service container pulled postgres:17-alpine from ECR Public on every lane,
+      # about 20 s per job (02:34:33-02:34:53Z, run 38501706412), and ECR Public's anonymous
+      # quota is not unlimited: "toomanyrequests: Data limit exceeded" failed cargo test before
+      # any build in runs 38439777300, 38471521888 and 38485397956 (card de864f39).
+      - name: Start the runner's PostgreSQL
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          psql --version
+          sudo systemctl start postgresql.service
+          sudo -u postgres psql -v ON_ERROR_STOP=1 -c "CREATE ROLE continuum WITH LOGIN SUPERUSER PASSWORD 'continuum';"
+          sudo -u postgres createdb -O continuum continuum_test
+          pg_isready -h localhost -p 5432
+
       - name: cargo test -p continuum-core --lib (Postgres, --ignored)
         if: needs.changes.outputs.rust != 'false'
         run: |

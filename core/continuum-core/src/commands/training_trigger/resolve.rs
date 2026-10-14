@@ -124,8 +124,11 @@ crate::action_command! {
     params: ResolveParams,
     output: ResolveOutcome,
     run(this, ctx, p) => {
-        let resolved_by = ctx.caller.as_ref().map(|caller| caller.peer_id.as_uuid());
-        resolve(&this.state, p, resolved_by).await
+        // who decided, through the one resolver for who is acting: a CLI decision names the
+        // operator (or the agent self-peer), never NULL; one it can't name is refused (Codex
+        // root on Sahar's 2b4e7272, whose receipt recorded NULL)
+        let resolved_by = crate::persona::operator_peer::acting_now(ctx, "genome/training-trigger/resolve")?.peer;
+        resolve(&this.state, p, Some(resolved_by)).await
     }
 }
 

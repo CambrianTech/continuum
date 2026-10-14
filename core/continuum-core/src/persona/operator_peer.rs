@@ -323,6 +323,14 @@ pub fn acting(
     Ok(Acting { peer: rt.airc().peer_id().as_uuid(), kind: ActorKind::Human, runtime: Some(rt) })
 }
 
+/// [`acting`] against the live runtime registry: who is acting in `ctx`, for a verb that
+/// answers it (identity/whoami) or RECORDS a decision under it (training-trigger
+/// resolve/retire: a CLI decision names its decider instead of recording NULL).
+pub fn acting_now(ctx: &crate::sdk_codegen::Ctx, family: &str) -> Result<Acting, crate::sdk_codegen::CommandError> {
+    let registry = crate::persona::PersonaAircRuntimeRegistry::try_global().unwrap_or_default(); // unwrap_or_default: no registry yet = no personas to name; the self-peers still resolve
+    acting(&registry, ctx, family)
+}
+
 /// The identity a verb's SUB-DISPATCHES act as — what a recipe's birth pipeline threads
 /// into every step so `work/create` in step 3 is the same peer that joined the room in
 /// step 0. A signed caller passes through unchanged (its trust is its own); an agent or

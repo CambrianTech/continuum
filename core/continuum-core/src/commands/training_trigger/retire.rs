@@ -133,8 +133,9 @@ crate::action_command! {
     params: RetireParams,
     output: RetireOutcome,
     run(this, ctx, p) => {
-        let retired_by = ctx.caller.as_ref().map(|caller| caller.peer_id.as_uuid());
-        retire(&this.state, p, retired_by).await
+        // who decided, through the one resolver for who is acting (see resolve)
+        let retired_by = crate::persona::operator_peer::acting_now(ctx, "genome/training-trigger/retire")?.peer;
+        retire(&this.state, p, Some(retired_by)).await
     }
 }
 
@@ -202,6 +203,35 @@ mod tests {
             .expect("test: submission id")
     }
 
+    /// Retire as a signed local caller: a decision is attributed to whoever is acting
+    /// (`operator_peer::acting_now`), and this test runtime has no operator self-peer online.
+    async fn retire_as_operator(executor: &crate::runtime::CommandExecutor, params: serde_json::Value) -> Result<serde_json::Value, String> {
+        let operator = crate::routing::CallerIdentity::local(crate::identity::PeerId::new());
+        executor.execute_with_caller("genome/training-trigger/retire", params, Some(operator)).await?.to_json_value()
+    }
+
+    // what this catches (Codex root on Sahar's 2b4e7272, whose RetryDecision recorded
+    // resolvedBy NULL): a decision recorded with no decider. A retire nobody can be named for
+    // (no signed caller, and no operator self-peer online to act as) is refused and withdraws
+    // nothing; it is never journaled unattributed.
+    #[tokio::test]
+    async fn a_retire_nobody_can_be_named_for_is_refused_and_withdraws_nothing() {
+        let (trigger, executor, _dir) = build_runtime_trigger_only().await;
+        let persona = Uuid::new_v4();
+        let card = Uuid::new_v4();
+        submit(&executor, persona, vec![on_card(card, "only")]).await;
+        let refused = executor
+            .execute_json("genome/training-trigger/retire", json!({ "cardId": card, "reason": "unattributed" }))
+            .await;
+        // a refused command surfaces as an error or as an unsuccessful result; either way it names why
+        let (failed, text) = match &refused {
+            Ok(json) => (json["success"] == false, json.to_string()),
+            Err(e) => (true, e.clone()),
+        };
+        assert!(failed && text.contains("operator self-peer"), "an unnameable decider is refused by name: {refused:?}");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(1), "and nothing is withdrawn");
+    }
+
     // what this catches (card 04a5e867, the 5090 on 2026-10-10): a card's turns settled
     // as passing under a review the room overturned; the verb must withdraw exactly that
     // card's pending rows, leave the other card's row in the bucket, journal the receipt,
@@ -218,13 +248,12 @@ mod tests {
         let kept = submit(&executor, persona, vec![on_card(other, "other-1")]).await;
         assert_eq!(trigger.state.bucket_example_count(persona, "code/owner", "synthetic"), Some(4));
 
-        let json = executor
-            .execute_json(
-                "genome/training-trigger/retire",
-                json!({ "cardId": overturned, "reason": "review 5769a6c3 failed these turns; the passing review bound to the later fix" }),
-            )
-            .await
-            .expect("test: retire");
+        let json = retire_as_operator(
+            &executor,
+            json!({ "cardId": overturned, "reason": "review 5769a6c3 failed these turns; the passing review bound to the later fix" }),
+        )
+        .await
+        .expect("test: retire");
         assert_eq!(json["success"], true, "got: {json}");
         assert_eq!(json["examplesRetired"], 3, "got: {json}");
         assert_eq!(json["retirementIds"].as_array().map(Vec::len), Some(1), "one bucket, one receipt: {json}");
@@ -246,13 +275,12 @@ mod tests {
         );
 
         // A second call for the same card changes nothing and says so.
-        let again = executor
-            .execute_json(
-                "genome/training-trigger/retire",
-                json!({ "cardId": overturned, "reason": "rerun" }),
-            )
-            .await
-            .expect("test: rerun");
+        let again = retire_as_operator(
+            &executor,
+            json!({ "cardId": overturned, "reason": "rerun" }),
+        )
+        .await
+        .expect("test: rerun");
         assert_eq!(again["success"], true, "got: {again}");
         assert_eq!(again["examplesRetired"], 0, "got: {again}");
         assert_eq!(again["retired"].as_array().map(Vec::len), Some(0), "got: {again}");
@@ -300,13 +328,12 @@ mod tests {
         assert_eq!(trigger.state.bucket_example_count(persona, "test-trait", "synthetic"), None);
 
         let unknown = Uuid::new_v4();
-        let json = executor
-            .execute_json(
-                "genome/training-trigger/retire",
-                json!({ "submissionIds": [dispatched, unknown], "reason": "too late" }),
-            )
-            .await
-            .expect("test: retire");
+        let json = retire_as_operator(
+            &executor,
+            json!({ "submissionIds": [dispatched, unknown], "reason": "too late" }),
+        )
+        .await
+        .expect("test: retire");
         assert_eq!(json["success"], true, "got: {json}");
         assert_eq!(json["examplesRetired"], 0, "got: {json}");
         let refused = json["refused"].as_array().expect("test: refused");
