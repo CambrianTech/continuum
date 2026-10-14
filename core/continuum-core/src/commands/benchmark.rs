@@ -2118,7 +2118,7 @@ impl ActionCommand for BenchmarkDispatch {
                 // Our recorded checkout's origin, never the process cwd: a launchd core
                 // runs in its data dir (card 2a2cd6f1). No recorded checkout returns None
                 // and the caller is asked for `repo`, never a wrong board key.
-                None => match crate::modules::repo_registry::own_checkout() {
+                None => match crate::modules::repo_registry::own_checkout().await {
                     Ok(checkout) => crate::code::git_bridge::origin_repo_slug(&checkout).await,
                     Err(_) => None,
                 },

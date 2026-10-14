@@ -175,6 +175,7 @@ pub(crate) async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBu
     // (peer, base): the seam that lets the citizen-layer test inject a fake base without
     // touching process-global state (#191).
     let base = crate::modules::repo_registry::own_checkout()
+        .await
         .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
     ensure_citizen_layer_from_base(peer, &base).await
 }
@@ -442,6 +443,7 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
         }
         // the local operator acts in OUR checkout, as recorded (never the cwd, card 2a2cd6f1)
         None if local => crate::modules::repo_registry::own_checkout()
+            .await
             .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?,
         None => {
             let citizen_root = ensure_citizen_layer(caller).await?;

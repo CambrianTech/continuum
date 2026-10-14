@@ -120,6 +120,7 @@ pub struct OwnCheckoutWorkspaceLayoutReader(LayoutReader);
 impl WorkspaceLayoutReader for OwnCheckoutWorkspaceLayoutReader {
     async fn layout(&self) -> Result<WorkspaceLayout, String> {
         let root = crate::modules::repo_registry::own_checkout()
+            .await
             .map_err(|e| format!("workspace root unavailable: {e}"))?;
         self.0.read_layout(root).await
     }
