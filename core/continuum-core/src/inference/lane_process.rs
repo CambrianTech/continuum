@@ -431,7 +431,8 @@ pub async fn run_owned(
                 .await
                 .map_err(|join| std::io::Error::other(format!("ending the timed-out process failed to run: {join}")))?;
             // the child itself counts as unconfirmed when its reap or its tree couldn't be confirmed
-            Ended::TimedOut { unconfirmed: end.survivors.iter().map(|who| who.pid).chain(end.unknown().next().and(pid)).collect() }
+            let unconfirmed: Vec<u32> = end.survivors.iter().map(|who| who.pid).chain(end.unknown().next().and(pid)).collect();
+            Ended::TimedOut { unconfirmed }
         }
     };
     drop(owned); // the lifecycle is over: the admission is released here, not before
