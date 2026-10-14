@@ -35,6 +35,7 @@ on:
       - 'tools/scripts/lib/**'
       - 'tools/scripts/shared/cargo-features.sh'
       - '.github/workflows/core-binaries.yml'
+      - 'tools/scripts/tests/publish-core-package.test.sh'
   push:
     branches: [canary]
     # Every build input (continuum-cli-lifecycle prebuilt_artifact::BUILD_INPUTS, pinned by
@@ -402,38 +403,72 @@ jobs:
           ls -la "$RUNNER_TEMP/$name".*
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
+      # The package also leaves the build as an artifact, so the publish-check job can
+      # republish it WITHOUT recompiling. Run 38588068431 (715874db2): the macos-x86_64 leg
+      # built fine, then "error connecting to api.github.com" x2 failed its publish after
+      # 78 minutes, and the only recovery was a full rebuild. Uploaded on PRs too, so a PR that
+      # changes the package proves this step (measured 8 s per macOS leg on run 38613217742).
+      - name: Hand the package to publish-check
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ steps.package.outputs.name }}
+          path: |
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.tar.gz
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.tar.gz.sha256
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.json
+          if-no-files-found: error
+          # long enough to rerun a failed publish-check the same day; the release is the durable copy
+          retention-days: 1
+
+      # Each leg still publishes itself the moment it is built: no leg waits on the slowest
+      # (Windows). A failure here does not fail the leg, because publish-check below verifies
+      # every built leg actually reached the release, republishes any that didn't from its
+      # artifact, and fails the run if one still hasn't.
       - name: Publish
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          tag="canary-${GITHUB_SHA:0:12}"
-          # Both legs race to create the release; the loser finds it and uploads into it.
-          gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
-                 --title "canary ${GITHUB_SHA:0:12}" \
-                 --notes "Canary core binaries for ${GITHUB_SHA}. No LTO; for the development grid, not for users. Built by .github/workflows/core-binaries.yml." \
-            || gh release view "$tag" >/dev/null
-          name="${{ steps.package.outputs.name }}"
-          # The manifest is what a consumer reads as "published", so it goes up LAST, in its own
-          # call, only after the archive it names is complete. One call uploading all three let the
-          # small .json land minutes before the large tarball: the 5090 read the 8fe8e5fd4 Windows
-          # manifest at 07:09:54Z and its fetch 404'd at 07:10:02Z (BigMama, 2026-10-07). For the
-          # tip's own core a refused fetch reads as "compile here": an hour of local build over
-          # seconds of upload order.
-          # A rerun replaces an archive a previous run already published: withdraw that run's
-          # manifest FIRST, or a consumer reads it while the tarball is being re-uploaded and
-          # fetches a half-replaced archive (Cormac on #4855). Absent on a first run.
-          gh release delete-asset "$tag" "$name.json" --yes 2>/dev/null || true
-          gh release upload "$tag" --clobber \
-            "$RUNNER_TEMP/$name.tar.gz" "$RUNNER_TEMP/$name.tar.gz.sha256"
-          gh release upload "$tag" --clobber "$RUNNER_TEMP/$name.json"
+          NAME: ${{ steps.package.outputs.name }}
+          DIR: ${{ runner.temp }}
+        run: bash "$GITHUB_WORKSPACE/tools/scripts/lib/publish-core-package.sh" publish "$DIR" "$NAME"
+
+  # The publish/republish owner's failure paths, proven with a fake gh on every run (PRs too):
+  # a clean dispatch can't exercise them (Codex helper on #5043).
+  publish-script-test:
+    name: publish script failure paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/scripts
+      - run: bash tools/scripts/tests/publish-core-package.test.sh
+
+  publish-check:
+    name: verify every built leg is published
+    needs: build
+    # !cancelled(): a leg that fails to BUILD must not stop the others from being checked and
+    # published (715874db2 still shipped arm64). Only legs that were built have an artifact.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/scripts/lib
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: core-*
+          path: dist
+          merge-multiple: true
+      - name: Republish any built leg not on the release as built
+        run: bash tools/scripts/lib/publish-core-package.sh check dist
 
   prune:
     name: prune old canary releases
-    needs: build
+    needs: publish-check
     if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     env:
