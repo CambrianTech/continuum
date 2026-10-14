@@ -402,38 +402,73 @@ jobs:
           ls -la "$RUNNER_TEMP/$name".*
           echo "name=$name" >> "$GITHUB_OUTPUT"
 
+      # The package leaves the build as an artifact; publishing is its own job. A transient
+      # GitHub API error in the publish (run 38588068431, 715874db2: "error connecting to
+      # api.github.com" x2 after a good 78-minute Intel build) then reruns the publish in
+      # seconds with `gh run rerun --failed`, never the hour-long compile. Uploaded on PRs too,
+      # so a PR that changes the package proves this step before merge.
+      - name: Hand the package to the publish job
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-${{ steps.package.outputs.name }}
+          path: |
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.tar.gz
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.tar.gz.sha256
+            ${{ runner.temp }}/${{ steps.package.outputs.name }}.json
+          if-no-files-found: error
+          # long enough to rerun a failed publish the same day; the release is the durable copy
+          retention-days: 1
+
+  publish:
+    name: publish canary release
+    needs: build
+    # !cancelled(): a leg that fails to BUILD must not stop the others from publishing (the
+    # Intel-only failure of 715874db2 still shipped arm64). Only what was built is downloaded.
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: core-*
+          path: dist
+          merge-multiple: true
+
       - name: Publish
-        if: github.event_name != 'pull_request'
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           tag="canary-${GITHUB_SHA:0:12}"
-          # Both legs race to create the release; the loser finds it and uploads into it.
-          gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --prerelease --target "$GITHUB_SHA" \
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$tag" -R "$GITHUB_REPOSITORY" --prerelease --target "$GITHUB_SHA" \
                  --title "canary ${GITHUB_SHA:0:12}" \
-                 --notes "Canary core binaries for ${GITHUB_SHA}. No LTO; for the development grid, not for users. Built by .github/workflows/core-binaries.yml." \
-            || gh release view "$tag" >/dev/null
-          name="${{ steps.package.outputs.name }}"
-          # The manifest is what a consumer reads as "published", so it goes up LAST, in its own
-          # call, only after the archive it names is complete. One call uploading all three let the
-          # small .json land minutes before the large tarball: the 5090 read the 8fe8e5fd4 Windows
-          # manifest at 07:09:54Z and its fetch 404'd at 07:10:02Z (BigMama, 2026-10-07). For the
-          # tip's own core a refused fetch reads as "compile here": an hour of local build over
-          # seconds of upload order.
-          # A rerun replaces an archive a previous run already published: withdraw that run's
-          # manifest FIRST, or a consumer reads it while the tarball is being re-uploaded and
-          # fetches a half-replaced archive (Cormac on #4855). Absent on a first run.
-          gh release delete-asset "$tag" "$name.json" --yes 2>/dev/null || true
-          gh release upload "$tag" --clobber \
-            "$RUNNER_TEMP/$name.tar.gz" "$RUNNER_TEMP/$name.tar.gz.sha256"
-          gh release upload "$tag" --clobber "$RUNNER_TEMP/$name.json"
+                 --notes "Canary core binaries for ${GITHUB_SHA}. No LTO; for the development grid, not for users. Built by .github/workflows/core-binaries.yml."
+          shopt -s nullglob
+          manifests=(dist/*.json)
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "::error::no leg produced a package to publish"
+            exit 1
+          fi
+          for manifest in "${manifests[@]}"; do
+            name="$(basename "$manifest" .json)"
+            # The manifest is what a consumer reads as "published", so it goes up LAST, in its
+            # own call, only after the archive it names is complete. One call uploading all
+            # three let the small .json land minutes before the large tarball: the 5090 read the
+            # 8fe8e5fd4 Windows manifest at 07:09:54Z and its fetch 404'd at 07:10:02Z (BigMama,
+            # 2026-10-07).
+            # A rerun replaces an archive a previous run already published: withdraw that
+            # run's manifest FIRST, or a consumer reads it while the tarball is re-uploaded and
+            # fetches a half-replaced archive (Cormac on #4855). Absent on a first run.
+            gh release delete-asset "$tag" "$name.json" -R "$GITHUB_REPOSITORY" --yes 2>/dev/null || true
+            gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber \
+              "dist/$name.tar.gz" "dist/$name.tar.gz.sha256"
+            gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber "$manifest"
+          done
 
   prune:
     name: prune old canary releases
-    needs: build
+    needs: publish
     if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     env:
