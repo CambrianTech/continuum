@@ -276,6 +276,8 @@ Each step lands with its gate measured on the fleet, with a build SHA and a time
 | `llama-graph.cpp:3694` `rs_keep` | n_rs_seq + 1 recurrent groups | 1 | the backward reads group 0; the graph keeps serving's groups |
 | `llama-context-opt.cpp:203-220` `decode_span` | — | toggles `cparams.training` per span, so one window builds two kinds of graph | one graph kind; the label mask switches the extras |
 
+**The window is her working window, for work and for learning (Joel, 2026-10-13: "context must be large enough for her to do work or train").** A learning turn is her real turn at the served per-slot window (the 5090 lane today: 67,584), whole, since the labelled rows ride the batch that serves it. When memory runs short, the order is: lower precision (below), smaller chunks, recompute, fewer trainable layers. The window is never cut to fit training, and a serving window too small for her work is a defect, not a setting. Every P1-P6 gate is measured at the served window, never at a toy one.
+
 **Precision: as low as makes it work, per piece, gated on learning** (held-out loss falls; the P6 acceptance test), never on cosine to an F32 reference.
 
 | Piece | Today | Target to measure |
