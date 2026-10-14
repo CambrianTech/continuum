@@ -131,7 +131,7 @@ pub(crate) fn hands_of(ctx: &Ctx) -> HandsKey {
 }
 
 /// Resolve (and provision on first use) the citizen LAYER for an identified peer
-/// caller: a copy-on-write clone of the shared base (the core's cwd — the repo)
+/// caller: a copy-on-write clone of the shared base (our recorded checkout, `repo_registry::own_checkout`)
 /// under `<continuum home>/citizens/peers/<peer>/workspace`.
 ///
 /// Joel 2026-07-10: "each persona is only the diff from the shared." On APFS
@@ -169,22 +169,20 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
 }
 
 pub(crate) async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
-    // The shared base is the core's cwd — OUR checkout. Resolve it ONCE here, then
-    // hand the provisioning body a concrete base so it is a pure function of
-    // (peer, base). That seam is why the citizen-layer test can inject a fake base
-    // WITHOUT mutating the process-global cwd: a test that chdir'd raced every
-    // parallel ts-rs `export_bindings_*` write (each resolves its relative
-    // `export_to` against the same process cwd, so a mid-run chdir sent those
-    // writes to `/protocol/...` and panicked the whole suite). #191.
-    let base = std::env::current_dir()
+    // The shared base is OUR checkout, as this node recorded it (never the cwd: a
+    // launchd core runs in its data dir, card 2a2cd6f1). Resolved ONCE here, then handed
+    // to the provisioning body as a concrete base so it is a pure function of
+    // (peer, base): the seam that lets the citizen-layer test inject a fake base without
+    // touching process-global state (#191).
+    let base = crate::modules::repo_registry::own_checkout()
         .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
     ensure_citizen_layer_from_base(peer, &base).await
 }
 
 /// Provision (or refresh) a peer's citizen layer, cloning from `base` — the shared
 /// checkout. Split out from [`ensure_citizen_layer`] so the base is an explicit
-/// argument (production passes the core's cwd; tests pass a scoped temp dir) rather
-/// than an implicit read of the process-global cwd. See the note above on why that
+/// argument (production passes our recorded checkout; tests pass a scoped temp dir)
+/// rather than an implicit read of process-global state. See the note above on why that
 /// matters for the parallel test suite.
 async fn ensure_citizen_layer_from_base(
     peer: &str,
@@ -239,8 +237,8 @@ async fn ensure_citizen_layer_from_base(
     // the base through `.git/objects/info/alternates`, so the layer's marginal disk is
     // her working tree plus her own commits. `git_sync_from_shared` (fetch + merge) is
     // unchanged — it never depended on the copy.
-    // The clone source is the base's repository ROOT: production hands the core's cwd
-    // (the checkout root), but a caller standing inside the tree (a test in
+    // The clone source is the base's repository ROOT: production hands our recorded
+    // checkout (its root), but a caller standing inside the tree (a test in
     // core/continuum-core) means the same repository, and `git clone` wants the root.
     // A base outside any repository is a loud error — a citizen layer without a
     // repository is not a workspace.
@@ -413,7 +411,7 @@ fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) {
 }
 
 /// Lazily ensure a workspace [`FileEngine`] exists for `who`. The local operator
-/// (no peer identity) roots at the core's cwd — their own checkout. An
+/// (no peer identity) roots at our recorded checkout (`repo_registry::own_checkout`). An
 /// IDENTIFIED peer (persona or remote agent) roots at their citizen LAYER (see
 /// [`ensure_citizen_layer`]): writes land in their own copy-on-write clone, and
 /// the shared checkout is never writable through a peer's hands. Idempotent and
@@ -442,7 +440,8 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
                     .into(),
             ))
         }
-        None if local => std::env::current_dir()
+        // the local operator acts in OUR checkout, as recorded (never the cwd, card 2a2cd6f1)
+        None if local => crate::modules::repo_registry::own_checkout()
             .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?,
         None => {
             let citizen_root = ensure_citizen_layer(caller).await?;

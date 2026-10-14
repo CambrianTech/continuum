@@ -56,6 +56,24 @@ pub fn path_for(repo: &str) -> Option<PathBuf> {
     None
 }
 
+/// The checkout of the repository this core is built from, as this node recorded it: the
+/// shared base a citizen layer clones and refreshes from, and the operator's own root. Its
+/// repository is Cargo's declared `repository`, never a hardcoded name; its path is the one
+/// the CLI recorded from inside the clone. NEVER the process cwd: a launchd-installed core
+/// runs in its data dir (`WorkingDirectory` = ~/.continuum), which is not a checkout, and
+/// reading it there left every citizen layer unrefreshed, 735 commits behind canary on
+/// IntelMac (card 2a2cd6f1).
+pub fn own_checkout() -> Result<PathBuf, String> {
+    let repo = repo_id_from_remote(env!("CARGO_PKG_REPOSITORY"))
+        .ok_or("continuum-core's Cargo.toml declares no repository")?;
+    path_for(&repo).ok_or_else(|| {
+        format!(
+            "this node has no recorded checkout of {repo}: run any `continuum` verb from inside \
+             the clone once to record it"
+        )
+    })
+}
+
 /// The clone root from `git rev-parse --path-format=absolute --git-common-dir`:
 /// `<clone>/.git` → `<clone>`, from the main clone AND from a linked worktree.
 pub fn clone_root_from_common_dir(common_dir: &str) -> Option<PathBuf> {
@@ -73,9 +91,41 @@ pub fn repo_id_from_remote(url: &str) -> Option<String> {
     }
 }
 
+/// Record the clone this test binary was built from as this node's own checkout, in the
+/// CURRENT home's registry (callers hold `test_env::HomeGuard`): the fixture for code that
+/// resolves `own_checkout`. The clone root comes from git's common dir, so a linked worktree
+/// records its clone, as the CLI does.
+#[cfg(test)]
+pub(crate) fn record_own_checkout_for_test() -> PathBuf {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("git runs in the test environment");
+    let root = clone_root_from_common_dir(&String::from_utf8_lossy(&out.stdout)).expect("the test tree is inside a clone");
+    let repo = repo_id_from_remote(env!("CARGO_PKG_REPOSITORY")).expect("continuum-core declares its repository");
+    record(&repo, &root);
+    root
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (card 2a2cd6f1): "our checkout" read from the process cwd, which a
+    // launchd-installed core sets to its data dir. Every citizen layer on IntelMac stopped
+    // refreshing, 735 commits behind canary. `own_checkout` reads only the recorded clone of
+    // the repo Cargo declares: with none recorded it fails by name even though this test's
+    // cwd IS inside a checkout, and once recorded it returns that clone.
+    #[tokio::test]
+    async fn own_checkout_is_the_recorded_clone_never_the_cwd() {
+        let home = tempfile::tempdir().expect("home");
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        let err = own_checkout().expect_err("nothing recorded under this home");
+        assert!(err.contains("CambrianTech/continuum") && err.contains("no recorded checkout"), "{err}");
+        let recorded = record_own_checkout_for_test();
+        assert_eq!(own_checkout().expect("recorded"), recorded);
+    }
 
     // what this catches: the repo id drifting from the card's `owner/name` key for
     // either remote shape — a mismatch here and no citizen ever stages a repo card.
