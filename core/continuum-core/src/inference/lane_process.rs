@@ -38,57 +38,6 @@ pub fn kill9(pid: u32) {
         .output();
 }
 
-/// What the platform said about a tree kill, reported as said, never upgraded to "exited".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TreeKill {
-    Delivered,
-    Refused,
-    NoPid,
-}
-
-impl std::fmt::Display for TreeKill {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            TreeKill::Delivered => "delivered",
-            TreeKill::Refused => "refused by the platform",
-            TreeKill::NoPid => "impossible (no pid)",
-        })
-    }
-}
-
-/// Make `cmd`'s child lead its own process group, so [`kill_tree`] reaches every process it
-/// starts after the child itself is gone (a grader's test-runner workers). Unix only; Windows'
-/// `taskkill /T` walks the tree from the live parent and needs no group. Only the grading
-/// subprocess still ends this way; an owned child is ended by [`end_tree`] and stays in the
-/// core's group, so a stop ends it too.
-pub fn lead_own_group(cmd: &mut tokio::process::Command) {
-    #[cfg(unix)]
-    std::os::unix::process::CommandExt::process_group(cmd.as_std_mut(), 0);
-    #[cfg(not(unix))]
-    let _ = cmd;
-}
-
-/// Kill `pid` and every descendant, while `pid` is still alive so the walk can find them:
-/// Unix, the process group it leads (spawned with [`lead_own_group`]); Windows, `taskkill /F
-/// /T`. THE one tree kill; the outcome is kept, never assumed. A child that put itself in a
-/// new session (`setsid`) has left the group and is not reached; nothing claims it was.
-pub fn kill_tree(pid: u32) -> TreeKill {
-    #[cfg(unix)]
-    {
-        // SAFETY: killpg only sends a signal to the group `pid` leads; no memory is touched
-        let rc = unsafe { libc::killpg(pid as libc::pid_t, libc::SIGKILL) };
-        if rc == 0 { TreeKill::Delivered } else { TreeKill::Refused }
-    }
-    #[cfg(windows)]
-    {
-        let ok = std::process::Command::new("taskkill")
-            .args(["/F", "/T", "/PID", &pid.to_string()])
-            .output()
-            .is_ok_and(|o| o.status.success());
-        if ok { TreeKill::Delivered } else { TreeKill::Refused }
-    }
-}
-
 /// One process as the process table saw it: its pid and start time. An act on it later is
 /// refused if the pid now names another process (pid reuse never kills a stranger).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,6 +168,130 @@ pub async fn end_tree(child: &mut tokio::process::Child) -> TreeEnd {
     // a re-check that didn't run confirms nothing: every candidate stays unconfirmed
     let survivors = tokio::task::spawn_blocking(move || still_present(&check)).await.unwrap_or(candidates);
     TreeEnd { reaped, survivors, unwalked }
+}
+
+async fn read_all(pipe: Option<impl tokio::io::AsyncRead + Unpin>) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut buf).await;
+    }
+    buf
+}
+
+/// A child the core waits on, owned until it and everything it started have ended (Astra on
+/// #5026). Ending it is ONE path, [`end_owned`], for a timeout and for a dropped waiter (a
+/// cancelled command, a rebooting core) alike. It keeps the admission of the work that started
+/// it (`code::hands::current`), so a release never completes under it.
+struct OwnedChild {
+    child: Option<tokio::process::Child>,
+    held: Option<std::sync::Arc<crate::code::hands::HandsLease>>,
+    label: &'static str,
+}
+
+impl OwnedChild {
+    /// Hand the process to its end: a spawned task, so the caller's cancellation can't cut it
+    /// short. `None` once it exited and was reaped, or with no runtime to run the end on.
+    fn end(&mut self) -> Option<tokio::task::JoinHandle<TreeEnd>> {
+        let child = self.child.take()?;
+        let runtime = tokio::runtime::Handle::try_current().ok()?;
+        Some(runtime.spawn(end_owned(child, self.held.take(), self.label)))
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        let _ = self.end(); // its waiter is gone: the end still runs, holding its admission
+    }
+}
+
+/// End an owned child and its tree ([`end_tree`]) while holding the admission it was started
+/// under. What can't be confirmed ended is kept ON the admission before it drops, so the
+/// release that waits it out re-checks those processes and holds the hands for the rest.
+async fn end_owned(mut child: tokio::process::Child, held: Option<std::sync::Arc<crate::code::hands::HandsLease>>, label: &'static str) -> TreeEnd {
+    let end = end_tree(&mut child).await;
+    if !end.confirmed() {
+        crate::probe!(
+            class = "process.unconfirmed_end",
+            process = label,
+            survivors = ?end.survivors.iter().map(|who| who.pid).collect::<Vec<_>>(),
+            reaped = ?end.reaped,
+            unwalked = ?end.unwalked,
+            "an owned process was ended but not everything is confirmed ended; its hands' release re-checks or holds"
+        );
+    }
+    if let Some(lease) = &held {
+        lease.keep_unconfirmed(&end);
+    }
+    end
+}
+
+/// What an owned run left: everything it wrote, and how it ended.
+#[derive(Debug)]
+pub struct OwnedOutput {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub ended: Ended,
+}
+
+/// How an owned run ended.
+#[derive(Debug)]
+pub enum Ended {
+    /// It exited and was reaped.
+    Exited(std::process::ExitStatus),
+    /// It outlived its bound and was ended with everything it started. The output is what it
+    /// wrote before (QA from Joaquin, card ba846f38: a killed sweep must still show its work).
+    /// These pids are NOT confirmed gone (the child itself among them when its own end is
+    /// unproven); while any is, its output is not awaited, since a survivor can hold the pipe
+    /// open forever.
+    TimedOut { unconfirmed: Vec<u32> },
+}
+
+/// THE one way the core runs a child it waits on (`gh`, `cargo`, a snippet, a grader's test
+/// run, an external agent): spawned in the core's process group (so a stop ends it too), its
+/// output drained alongside the wait, waited on up to `bound`, and OWNED throughout: a timeout
+/// or a dropped waiter ends it with its whole tree through [`end_tree`], and never claims the
+/// tree exited. `label` names it in the probe.
+pub async fn run_owned(mut cmd: tokio::process::Command, bound: Option<std::time::Duration>, label: &'static str) -> std::io::Result<OwnedOutput> {
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    let child = cmd.spawn()?;
+    let mut owned = OwnedChild { child: Some(child), held: crate::code::hands::current(), label };
+    let Some(child) = owned.child.as_mut() else {
+        return Err(std::io::Error::other("the spawned process vanished before it was owned"));
+    };
+    let stdout = tokio::spawn(read_all(child.stdout.take()));
+    let stderr = tokio::spawn(read_all(child.stderr.take()));
+    let waited = match bound {
+        Some(bound) => tokio::time::timeout(bound, child.wait()).await,
+        None => Ok(child.wait().await),
+    };
+    let ended = match waited {
+        Ok(status) => {
+            let status = status?; // a wait that failed leaves the child to the owner's end
+            owned.child = None; // exited and reaped by wait()
+            Ended::Exited(status)
+        }
+        Err(_elapsed) => {
+            let pid = child.id();
+            let end = owned
+                .end()
+                .ok_or_else(|| std::io::Error::other("no runtime to end the timed-out process on"))? // never inside the core's async code
+                .await
+                .map_err(|join| std::io::Error::other(format!("ending the timed-out process failed to run: {join}")))?;
+            // the child itself counts as unconfirmed when its reap or its tree couldn't be confirmed
+            let unconfirmed: Vec<u32> = end.survivors.iter().map(|who| who.pid).chain(end.unknown().next().and(pid)).collect();
+            if !unconfirmed.is_empty() {
+                stdout.abort();
+                stderr.abort();
+            }
+            Ended::TimedOut { unconfirmed }
+        }
+    };
+    Ok(OwnedOutput {
+        stdout: stdout.await.unwrap_or_default(), // unwrap_or_default: an aborted or panicked reader reads as empty output
+        stderr: stderr.await.unwrap_or_default(), // unwrap_or_default: as above
+        ended,
+    })
 }
 
 /// Kill each of `survivors` again while its pid still names it, and return the ones still
@@ -655,6 +728,51 @@ pub fn launch_kv_in(argv: &[String]) -> LaunchKv {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (Astra and Codex root on #5026, card de211a71): a child whose waiter was
+    // cancelled (a dropped command, a rebooting core) kept running, and so did what it started,
+    // while a release removed the workspace under them; and a grader that outlived its ceiling
+    // had only its group killed after the fact. An owned run ends the child AND its tree on
+    // either path, and keeps the admission until that end is done.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_owned_run_ends_its_tree_when_dropped_or_timed_out_and_holds_the_admission_until_it_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell_pid, grandchild_pid) = (dir.path().join("sh.pid"), dir.path().join("gc.pid"));
+        let script = format!("echo $$ > {}; sleep 600 & echo $! > {}; wait", shell_pid.display(), grandchild_pid.display());
+        let read_pid = |path: &std::path::Path| std::fs::read_to_string(path).ok().and_then(|t| t.trim().parse::<u32>().ok());
+        let context = crate::code::hands::HandsContext::fresh();
+        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(&script);
+        let run = crate::code::hands::admitted(Some(lease), run_owned(cmd, None, "test"));
+        let tree = tokio::select! {
+            out = run => panic!("the run ended on its own: {out:?}"),
+            tree = async {
+                loop {
+                    if let (Some(sh), Some(gc)) = (read_pid(&shell_pid), read_pid(&grandchild_pid)) {
+                        let tree = descendants(sh);
+                        if tree.iter().any(|who| who.pid == gc) {
+                            break tree;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            } => tree, // the run's future is dropped here: its waiter is gone
+        };
+        let lingering = tokio::time::timeout(std::time::Duration::from_secs(10), crate::code::hands::close(context))
+            .await
+            .expect("the release completes once the tree is ended, not before and not never");
+        assert!(lingering.is_empty(), "nothing is left unconfirmed: {lingering:?}");
+        // a killed descendant may wait for init to reap it; a zombie has exited, so it counts as gone
+        assert!(still_present(&tree).is_empty(), "what the child started is gone when the release completes");
+
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg("echo before; sleep 600 & wait");
+        let timed = run_owned(cmd, Some(std::time::Duration::from_millis(500)), "test").await.expect("ran");
+        assert!(matches!(timed.ended, Ended::TimedOut { ref unconfirmed } if unconfirmed.is_empty()), "a timeout ends the tree and confirms it: {timed:?}");
+        assert_eq!(String::from_utf8_lossy(&timed.stdout), "before\n", "and what it wrote before the bound is kept");
+    }
 
     // what this catches: the Windows port-owner lookup returning None for a port
     // that IS held. Regression for the 2026-09-05 wedge on BigMama — `lsof` does

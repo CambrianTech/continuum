@@ -1024,8 +1024,8 @@ pub(crate) async fn run(
 }
 
 /// `run` with extra environment variables — the seam era C-extension builds need
-/// (see `ERA_CFLAGS`). Everything else (process group, ceiling, kill semantics)
-/// is identical; `run` delegates here so there is exactly one subprocess path.
+/// (see `ERA_CFLAGS`). Everything else (ownership, ceiling, how it ends) is
+/// identical; `run` delegates here so there is exactly one subprocess path.
 pub(crate) async fn run_env(
     program: &str,
     args: &[&str],
@@ -1040,43 +1040,30 @@ pub(crate) async fn run_env(
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    // #381: the child leads its own PROCESS GROUP so a kill reaches the whole
-    // tree — pytest spawns grandchildren (sympy's own runner, plugins) that
-    // survive a parent-only kill and orphan to launchd. kill_on_drop covers
-    // the drop path (a core reboot cancels this future mid-await); the
-    // explicit tree kill below covers the grandchildren the drop-kill misses.
-    crate::inference::lane_process::lead_own_group(&mut cmd);
-    cmd.kill_on_drop(true);
-    cmd.stdout(std::process::Stdio::piped());
-    cmd.stderr(std::process::Stdio::piped());
-    let child = cmd
-        .spawn()
+    // #381: pytest spawns grandchildren (sympy's own runner, plugins) that survived a
+    // parent-only kill and orphaned to launchd. The run is OWNED (lane_process::run_owned):
+    // past the ceiling, or when this future is dropped (a core reboot cancels it mid-await),
+    // the child and everything it started are ended deepest first, and what isn't confirmed
+    // gone is named. It stays in the core's process group, so a stop ends it too.
+    let out = crate::inference::lane_process::run_owned(cmd, Some(SUBPROCESS_CEILING), "grader")
+        .await
         .map_err(|e| format!("could not run `{program}`: {e}"))?;
-    let child_pid = child.id();
-    match tokio::time::timeout(SUBPROCESS_CEILING, child.wait_with_output()).await {
-        Ok(out) => out.map_err(|e| format!("could not run `{program}`: {e}")),
-        Err(_elapsed) => {
-            // The timed-out future was just dropped, killing the DIRECT child;
-            // now kill its group (pgid == child pid, it was made group leader
-            // at spawn) so grandchildren die with it. On Windows the tree walk
-            // needs the live parent, so it reports what it could reach.
-            let tree_kill = child_pid.map_or(
-                crate::inference::lane_process::TreeKill::NoPid,
-                crate::inference::lane_process::kill_tree,
-            );
+    match out.ended {
+        crate::inference::lane_process::Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout, stderr: out.stderr }),
+        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
             crate::probe!(
                 class = "benchmark.subprocess.ceiling",
                 program = %program,
                 ceiling_s = SUBPROCESS_CEILING.as_secs(),
-                tree_kill = %tree_kill,
-                "grader subprocess exceeded the ceiling — whole process group killed \
+                unconfirmed = ?unconfirmed,
+                "grader subprocess exceeded the ceiling — it and everything it started were ended \
                  (a hung test run is an environment fault, never a verdict)"
             );
             Err(format!(
-                "`{program}` exceeded the {}s subprocess ceiling and was killed \
-                 (whole process group) — a hung run is an environment fault, \
-                 never a verdict (task #381)",
-                SUBPROCESS_CEILING.as_secs()
+                "`{program}` exceeded the {}s subprocess ceiling and was ended with everything it \
+                 started{} — a hung run is an environment fault, never a verdict (task #381)",
+                SUBPROCESS_CEILING.as_secs(),
+                if unconfirmed.is_empty() { String::new() } else { format!(" (not confirmed gone: {unconfirmed:?})") }
             ))
         }
     }

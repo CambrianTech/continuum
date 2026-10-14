@@ -211,76 +211,28 @@ impl ActionCommand for CodeRun {
     }
 }
 
-/// What a bounded child run produced — including everything it wrote BEFORE a
-/// timeout killed it. `tokio::process::Child::wait_with_output` under
-/// `tokio::time::timeout` discards the pipes on expiry, so a killed `find` sweep
-/// came back as bare "timedOut" (QA from Joaquin, 2026-09-13, card ba846f38: the
-/// longest dead-air windows of her session gave her nothing to act on). The
-/// pipes are drained concurrently with the wait; on expiry the child is killed
-/// and the drained bytes are returned with the verdict.
-pub(crate) struct BoundedOutput {
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    /// `None` when the timeout killed the child.
-    pub status: Option<std::process::ExitStatus>,
-}
-
-pub(crate) async fn run_bounded(
-    mut child: tokio::process::Child,
-    timeout: std::time::Duration,
-) -> std::io::Result<BoundedOutput> {
-    use tokio::io::AsyncReadExt as _;
-    let mut out_pipe = child.stdout.take();
-    let mut err_pipe = child.stderr.take();
-    let drain_out = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        if let Some(p) = out_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf).await;
-        }
-        buf
-    });
-    let drain_err = tokio::spawn(async move {
-        let mut buf = Vec::new();
-        if let Some(p) = err_pipe.as_mut() {
-            let _ = p.read_to_end(&mut buf).await;
-        }
-        buf
-    });
-    let status = match tokio::time::timeout(timeout, child.wait()).await {
-        Ok(status) => Some(status?),
-        Err(_) => {
-            // Expired: kill, then let the drains reach EOF so the partial output is whole.
-            let _ = child.start_kill();
-            let _ = child.wait().await;
-            None
-        }
-    };
-    let stdout = drain_out.await.unwrap_or_default();
-    let stderr = drain_err.await.unwrap_or_default();
-    Ok(BoundedOutput {
-        stdout,
-        stderr,
-        status,
-    })
-}
-
-/// The timeout verdict, appended AFTER whatever the child managed to write.
-fn timeout_note(partial_stderr: &str, secs: u64, hint: &str) -> String {
+/// The timeout verdict, appended AFTER whatever the child managed to write (QA from Joaquin,
+/// card ba846f38: a killed sweep must still show its work). `unconfirmed` names what the end
+/// couldn't confirm gone; while any is, its output wasn't awaited.
+fn timeout_note(partial_stderr: &str, secs: u64, hint: &str, unconfirmed: &[u32]) -> String {
     let mut s = partial_stderr.to_string();
     if !s.is_empty() && !s.ends_with('\n') {
         s.push('\n');
     }
     s.push_str(&format!("[killed: exceeded the {secs}s run timeout{hint} — the output above is everything it produced before the kill]"));
+    if !unconfirmed.is_empty() {
+        s.push_str(&format!("\n[not confirmed gone: {unconfirmed:?}]"));
+    }
     s
 }
 
 /// Compile the given complete Rust program with `rustc`, then run the produced
-/// binary — each step under `timeout` with `kill_on_drop(true)`. Returns the ground
+/// binary — each step under `timeout`, owned (`lane_process::run_owned`). Returns the ground
 /// truth of what happened: a COMPILE error is reported as the run result (ok=false,
 /// rustc's stderr), not hidden — the persona reads the compiler's errors and
 /// self-corrects exactly as she would a runtime panic. `Err` is reserved for a
 /// failure to spawn the toolchain at all (e.g. `rustc` absent).
-/// Run a complete Python program under the same wall-clock + kill_on_drop
+/// Run a complete Python program under the same wall-clock + ownership
 /// contract as the Rust path. Same ground-truth shape: a traceback is the run
 /// result (ok=false), never hidden; `Err` is reserved for a missing
 /// interpreter. The caller supplies the managed environment or resolved system Python.
@@ -320,27 +272,21 @@ async fn run_python(
     let mut cmd = hands.command(interpreter, &[src.clone().into()]);
     crate::code::shell_session::strip_secret_env(&mut cmd);
     crate::code::shell_session::utf8_text_env(&mut cmd);
-    cmd.current_dir(cwd.unwrap_or(dir))
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let child = cmd.spawn().map_err(|e| {
-        CommandError::Internal(format!("code/run: {interpreter_label} spawn failed: {e}"))
-    })?;
+    cmd.current_dir(cwd.unwrap_or(dir));
     let started = std::time::Instant::now();
-    let out = run_bounded(child, timeout)
+    let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "code-run")
         .await
-        .map_err(|e| CommandError::Internal(format!("code/run: python wait failed: {e}")))?;
+        .map_err(|e| CommandError::Internal(format!("code/run: {interpreter_label} failed to run: {e}")))?;
     let duration_ms = started.elapsed().as_millis() as u64;
     // A Windows Python writes CRLF to a pipe; the rows she reads back are lines, not
     // line endings, so the result carries one shape on every host (BigMama's note on
     // #4427: her stdout rows carried a trailing `\r`).
     let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
     let stderr = String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
-    match out.status {
+    match out.ended {
         // Same honest shape as the Rust path: a timeout is a RESULT (she reads it
         // and adjusts), never a hidden kill — and it carries the partial output.
-        None => Ok(CodeRunResult {
+        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => Ok(CodeRunResult {
             ok: false,
             stdout,
             stderr: timeout_note(
@@ -349,13 +295,14 @@ async fn run_python(
                 &format!(
                     " (raise timeout_secs up to {MAX_TIMEOUT_SECS}s, or use code/shell for long-running work)"
                 ),
+                &unconfirmed,
             ),
             exit_code: None,
             duration_ms,
             timed_out: true,
             interpreter: interpreter_label.clone(),
         }),
-        Some(status) => Ok(CodeRunResult {
+        crate::inference::lane_process::Ended::Exited(status) => Ok(CodeRunResult {
             ok: status.success(),
             stdout,
             stderr,
@@ -406,41 +353,36 @@ async fn compile_and_run_rust(
 
     let started = std::time::Instant::now();
 
-    // 1. Compile. kill_on_drop bounds a runaway rustc; a non-success exit is a RESULT
-    //    (the persona must SEE the compiler errors), only a spawn failure is an error.
+    // 1. Compile, owned (lane_process::run_owned) so a runaway rustc is ended; a non-success
+    //    exit is a RESULT (the persona must SEE the compiler errors), only a spawn failure is
+    //    an error.
     let mut rustc = hands.command(
         std::path::Path::new("rustc"),
         &["--edition".into(), "2021".into(), "-o".into(), bin.clone().into(), src.clone().into()],
     );
     crate::code::shell_session::strip_secret_env(&mut rustc);
-    rustc.kill_on_drop(true);
-    match tokio::time::timeout(timeout, rustc.output()).await {
-        Ok(Ok(out)) if out.status.success() => {} // compiled — fall through to run
-        Ok(Ok(out)) => {
+    let compiled = crate::inference::lane_process::run_owned(rustc, Some(timeout), "rustc")
+        .await
+        .map_err(|e| CommandError::Internal(format!("code/run: failed to run rustc (is it on PATH?): {e}")))?;
+    match compiled.ended {
+        crate::inference::lane_process::Ended::Exited(status) if status.success() => {} // compiled — fall through to run
+        crate::inference::lane_process::Ended::Exited(status) => {
             return Ok(CodeRunResult {
-                exit_code: out.status.code(),
+                exit_code: status.code(),
                 ok: false,
-                stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+                stdout: String::from_utf8_lossy(&compiled.stdout).into_owned(),
+                stderr: String::from_utf8_lossy(&compiled.stderr).into_owned(),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: false,
                 interpreter: "rustc".to_string(),
             })
         }
-        Ok(Err(e)) => {
-            return Err(CommandError::Internal(format!(
-                "code/run: failed to spawn rustc (is it on PATH?): {e}"
-            )))
-        }
-        Err(_) => {
+        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
             return Ok(CodeRunResult {
                 exit_code: None,
                 ok: false,
                 stdout: String::new(),
-                stderr: format!(
-                    "rustc killed by safety timeout after {}s",
-                    timeout.as_secs()
-                ),
+                stderr: timeout_note(&String::from_utf8_lossy(&compiled.stderr), timeout.as_secs(), " (rustc)", &unconfirmed),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: true,
                 interpreter: "rustc".to_string(),
@@ -448,27 +390,19 @@ async fn compile_and_run_rust(
         }
     }
 
-    // 2. Run the compiled binary. kill_on_drop is load-bearing: when the safety
-    //    timeout fires, tokio::time::timeout drops the output() future. Without it the
-    //    child is NOT killed — it orphans to init and burns a core forever (observed:
-    //    6h+ runaway at 100% CPU). Dropping the Child with kill_on_drop sends SIGKILL.
+    // 2. Run the compiled binary, owned (lane_process::run_owned): at the safety timeout,
+    //    or when this command is dropped, it and everything it started are ended, never
+    //    orphaned to init burning a core (observed: 6h+ runaway at 100% CPU).
     let mut child = hands.command(&bin, &[]);
     crate::code::shell_session::strip_secret_env(&mut child);
-    child
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .kill_on_drop(true);
-    let child = child.spawn().map_err(|e| {
-        CommandError::Internal(format!("code/run: failed to spawn compiled binary: {e}"))
-    })?;
-    let out = run_bounded(child, timeout)
+    let out = crate::inference::lane_process::run_owned(child, Some(timeout), "code-run")
         .await
-        .map_err(|e| CommandError::Internal(format!("code/run: binary wait failed: {e}")))?;
+        .map_err(|e| CommandError::Internal(format!("code/run: failed to run the compiled binary: {e}")))?;
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
-    match out.status {
+    match out.ended {
         // Ran to completion (clean, or a nonzero exit / panic on stderr).
-        Some(status) => {
+        crate::inference::lane_process::Ended::Exited(status) => {
             let code = status.code();
             Ok(CodeRunResult {
                 exit_code: code,
@@ -482,11 +416,11 @@ async fn compile_and_run_rust(
         }
         // Safety timeout fired — a RESULT, not an error: a hung run IS information
         // the mind should observe and react to, and so is everything it printed first.
-        None => Ok(CodeRunResult {
+        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => Ok(CodeRunResult {
             exit_code: None,
             ok: false,
             stdout,
-            stderr: timeout_note(&stderr, timeout.as_secs(), ""),
+            stderr: timeout_note(&stderr, timeout.as_secs(), "", &unconfirmed),
             duration_ms: started.elapsed().as_millis() as u64,
             timed_out: true,
             interpreter: "rustc".to_string(),
@@ -620,7 +554,7 @@ mod tests {
 
     // what this catches: the safety timeout ACTUALLY kills the child process — not
     // just reports timed_out. Regression for the orphan leak: tokio::time::timeout
-    // only drops the output() future; without kill_on_drop the child survives, orphans
+    // only drops the output() future; without an owner ending it the child survives, orphans
     // to init, and burns a core forever (observed: 6h+ runaway at 100% CPU). The old
     // version of this test asserted only the return value, which was already true WITH
     // the leak — so it never caught the bug. This version records the child PID and
