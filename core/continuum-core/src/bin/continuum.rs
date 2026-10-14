@@ -2997,41 +2997,9 @@ async fn request_graceful_stop() -> GracefulStop {
             }
         }
         Ok(Err(e)) => {
-            // A reachable core that ANSWERS `system/shutdown` with an error has not saved.
-            // The question this branch used to try to answer was "does this error mean the
-            // verb does not exist (legacy) or that the capability refused (fault)" — and it
-            // answered by PARSING THE RENDERED ERROR STRING, matching four phrasings the
-            // current transport happens to use. A core built from an older commit phrases
-            // its "no such command" differently, so any unmatched phrasing fell through to
-            // `NoAnswer` — which passes the reboot gate below and is then force-killed with
-            // its volatile state: exactly the loss the gate exists to prevent, reached by a
-            // wording difference. That is fail-open on a string match; it must not be.
-            //
-            // So the verdict no longer depends on what the core said: any error from a
-            // reachable core means "this stop cannot be called durable", and the message
-            // carries the core's own words for the operator to read. The one distinction
-            // that is still knowable — whether the phrasing reads like an unknown-verb
-            // answer or something else — survives purely as a LABEL on the same verdict,
-            // so the first-upgrade story stays readable without ever changing behaviour:
-            let looks_unknown_verb = {
-                let m = format!("{e}").to_lowercase();
-                m.contains("unknown command") || m.contains("no handler") || m.contains("not found") || m.contains("unsupported")
-            };
-            if looks_unknown_verb {
-                GracefulStop::LegacyCore(format!(
-                    "the running core has no system/shutdown verb ({e}) — it predates this                      rail, so its modules were never going to save and this stop cannot be                      called durable"
-                ))
-            } else {
-                // Fail CLOSED: a reachable core that answered the request with an error we
-                // do not recognise as a clean save is treated like a legacy one — it may
-                // lack the verb, or have refused for reasons we cannot parse either way.
-                // Refusing to kill (on reboot) loses nothing; killing loses whatever the
-                // core had not saved since its last write. The words go in the message so
-                // the operator still sees what the core actually said.
-                GracefulStop::LegacyCore(format!(
-                    "the running core answered system/shutdown with an error ({e}) — whether it                      lacks the verb or refused it cannot be told from here, and either way this stop                      cannot be called durable"
-                ))
-            }
+            // The verdict must not depend on what the core said — see
+            // `classify_shutdown_error`: any error from a reachable core fails closed.
+            classify_shutdown_error(&format!("{e}"))
         }
         Err(_) => GracefulStop::NoAnswer(format!(
             "no answer within {}s",
