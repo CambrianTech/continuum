@@ -60,41 +60,114 @@ pub fn durable_rename(from: &std::path::Path, to: &std::path::Path) -> io::Resul
     #[cfg(unix)]
     {
         std::fs::rename(from, to)?;
-        let parent = to
-            .parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "rename target has no parent"))?;
+        let parent = to.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "rename target has no parent")
+        })?;
         File::open(parent)?.sync_all()
     }
     #[cfg(windows)]
     {
-        use std::os::windows::ffi::OsStrExt;
-        use windows_sys::Win32::Storage::FileSystem::{
-            MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-        };
-        let wide = |p: &std::path::Path| -> Vec<u16> {
-            p.as_os_str().encode_wide().chain(std::iter::once(0)).collect()
-        };
-        let (from_w, to_w) = (wide(from), wide(to));
-        // SAFETY: both buffers are NUL-terminated UTF-16 that outlive the call; the
-        // flags are the documented constants; no pointer escapes the call.
-        let ok = unsafe {
-            MoveFileExW(
-                from_w.as_ptr(),
-                to_w.as_ptr(),
-                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-            )
-        };
-        if ok == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
+        move_write_through(from, to, true)
     }
 }
 
+/// Publish a synced staging file at an immutable address, refusing to replace
+/// an existing object. On failure the caller cleans any remaining staging file;
+/// a visible destination may exist without a completed durability fence.
+pub fn durable_publish_new(from: &std::path::Path, to: &std::path::Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        // link is an atomic create-if-absent on the same filesystem; rename
+        // would overwrite an existing content address in a publisher race.
+        std::fs::hard_link(from, to)?;
+    }
+    #[cfg(windows)]
+    {
+        move_write_through(from, to, false)?;
+    }
+    let published = std::fs::OpenOptions::new().read(true).write(true).open(to)?;
+    sync_publication(&published, to)
+}
+
+/// Complete a publication fence for this opened immutable object. A visible
+/// name alone is not a durable receipt: a competing publisher can have linked
+/// it but not yet fenced its directory, or failed while doing so.
+/// `file` must be writable for Windows FlushFileBuffers (File::sync_all).
+pub fn sync_publication(file: &File, path: &std::path::Path) -> io::Result<()> {
+    #[cfg(test)]
+    if tests::FAIL_PUBLICATION_FENCE.with(|fail| fail.get()) {
+        return Err(io::Error::other("injected publication fence failure"));
+    }
+    file.sync_all()?;
+    #[cfg(unix)]
+    {
+        let parent = path.parent().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "publication target has no parent")
+        })?;
+        File::open(parent)?.sync_all()?;
+    }
+    #[cfg(windows)]
+    let _ = path; // FlushFileBuffers flushes this file's buffered information.
+    Ok(())
+}
+
+#[cfg(windows)]
+fn move_write_through(
+    from: &std::path::Path,
+    to: &std::path::Path,
+    replace: bool,
+) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+    let wide = |p: &std::path::Path| -> Vec<u16> {
+        p.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    };
+    let (from_w, to_w) = (wide(from), wide(to));
+    // SAFETY: both buffers are NUL-terminated UTF-16 that outlive the call; the
+    // flags are the documented constants; no pointer escapes the call.
+    let ok = unsafe {
+        MoveFileExW(
+            from_w.as_ptr(),
+            to_w.as_ptr(),
+            MOVEFILE_WRITE_THROUGH
+                | if replace {
+                    MOVEFILE_REPLACE_EXISTING
+                } else {
+                    0
+                },
+        )
+    };
+    if ok == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Write;
+
+    thread_local! {
+        pub(crate) static FAIL_PUBLICATION_FENCE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    pub(crate) fn with_failed_publication_fence(f: impl FnOnce()) {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                FAIL_PUBLICATION_FENCE.with(|fail| fail.set(false));
+            }
+        }
+        FAIL_PUBLICATION_FENCE.with(|fail| fail.set(true));
+        let _reset = Reset;
+        f();
+    }
 
     // what this catches: pread semantics on the CURRENT platform — exact
     // fill at an offset, UnexpectedEof (not a partial fill) past the end.
@@ -138,5 +211,21 @@ mod tests {
         std::fs::write(&from, b"first").unwrap();
         durable_rename(&from, &fresh).unwrap();
         assert_eq!(std::fs::read(&fresh).unwrap(), b"first");
+
+        // Immutable publication must refuse an occupied address, including
+        // while a reader holds it open; the original bytes remain untouched.
+        let reader = File::open(&fresh).unwrap();
+        std::fs::write(&from, b"different").unwrap();
+        assert_eq!(
+            durable_publish_new(&from, &fresh).unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        let mut original = [0; 5];
+        read_exact_at(&reader, &mut original, 0).unwrap();
+        assert_eq!(&original, b"first");
+        let published = dir.path().join("immutable.log");
+        durable_publish_new(&from, &published).unwrap();
+        assert_eq!(std::fs::read(&published).unwrap(), b"different");
+        let _ = std::fs::remove_file(&from);
     }
 }

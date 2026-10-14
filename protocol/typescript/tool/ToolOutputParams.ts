@@ -38,4 +38,14 @@ endLine?: number,
 /**
  * Cap on the number of grep match windows returned (default 50).
  */
-maxMatches?: number, };
+maxMatches?: number, 
+/**
+ * Absolute byte position for exact, non-consuming retrieval. Mutually exclusive
+ * with line/regex queries. Follow nextByteOffset to recover the remaining bytes.
+ */
+byteOffset?: number, 
+/**
+ * Requested byte count; a page fits the live render allowance. No bytes are
+ * discarded when this request spans multiple pages: nextByteOffset continues it.
+ */
+byteLength?: number, };
