@@ -292,7 +292,7 @@ async fn run_python(
     let started = std::time::Instant::now();
     let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "code-run", std::sync::Arc::default())
         .await
-        .map_err(|e| CommandError::Internal(format!("code/run: {interpreter_label} failed to run: {e}")))?;
+        .map_err(|e| CommandError::Internal(format!("code/run: {interpreter_label} spawn failed: {e}")))?;
     let duration_ms = started.elapsed().as_millis() as u64;
     // A Windows Python writes CRLF to a pipe; the rows she reads back are lines, not
     // line endings, so the result carries one shape on every host (BigMama's note on
