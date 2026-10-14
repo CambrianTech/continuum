@@ -363,3 +363,28 @@ A future result cache must prove validity and return the actual correlated resul
 FileEngine change IDs invalidate tracked edits; their absence cannot prove that
 shell, Git or external writes did not occur. Missing freshness or missing content
 must never become an AlreadySatisfied outcome.
+
+### Workspace binding evidence (card 81097858, implementation boundary)
+
+The successful `persona_workspace::bind_card` seam owns which card's claim the
+hands actually reached. Both held-work and room turns must stamp the handoff there.
+A seam board refresh may update that exact card/claim or invalidate it; it must
+never select another held card and describe it beside the old staged checkout.
+A retained ledger remains attributed to its own card, including when it is not
+for the bound card. This reuses handoff storage and the existing claim binding;
+there is no new task registry, selection policy, or background worker.
+
+Repository evidence comes from AIRC's shared allocation owner. Core passes the
+card repository to `WorktreeSpec`; an implicit start point uses the same configured
+integration branch as CLI allocation. AIRC records the resolved start ref and
+creation commit together under private Git refs. The workspace map reads that
+immutable receipt through the owned async Git bridge and AIRC's shared decoder.
+All three root readers use the same layout/evidence read. Actual HEAD, branch and
+shallow observations remain distinct from allocation intent. Legacy allocation
+receipts remain unknown; current HEAD is never backfilled as intended base.
+The existing workspace invalidation events refresh this projection after actions.
+
+The regression contracts are a stale review ledger beside a different bound
+claim, failed binding preserving the prior claim, and a shallow main checkout
+whose recorded allocation names a different integration branch. The ledger keeps
+its own card identity even after the binding ends.

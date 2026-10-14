@@ -172,10 +172,12 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         },
     };
     let spec_card = card.card_id;
+    let spec_repo = card.repo.clone();
     let clone_for_spawn = clone.clone();
     let branch_for_spawn = branch.clone();
     let outcome = tokio::task::spawn_blocking(move || {
         airc_lib::work_worktree::ensure_worktree(&airc_lib::work_worktree::WorktreeSpec {
+            repo: &spec_repo,
             card_id: spec_card,
             clone_path: &clone_for_spawn,
             branch: &branch_for_spawn,

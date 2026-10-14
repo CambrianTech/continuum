@@ -75,6 +75,138 @@ pub struct WorkspaceLayout {
     /// Distinct from `top_level_dirs.len()` on purpose: a workspace holding only
     /// `main.rs` has zero directories and is emphatically not empty.
     pub top_level_entries: usize,
+    /// Observed checkout and recorded allocation are different facts. Neither is
+    /// inferred from the other; failures remain visible in the grounding.
+    pub repository: Option<RepositoryEvidence>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RepositoryEvidence {
+    pub checkout: Result<CheckoutObservation, String>,
+    pub allocation: Result<Option<airc_lib::work_worktree::AllocationEvidence>, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CheckoutObservation {
+    pub head: String,
+    pub branch: String,
+    pub shallow: bool,
+}
+
+async fn read_layout(root: PathBuf) -> Result<WorkspaceLayout, String> {
+    let security =
+        PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
+    let engine = FileEngine::new(SOURCE_ID, security);
+    // Hidden entries are real workspace contents (#336); every root adapter shares this read.
+    let listing = engine
+        .list_dir(".", true)
+        .map_err(|e| format!("workspace list failed: {e}"))?;
+    let top_level_entries = listing.entries.len();
+    let mut top_level_dirs: Vec<String> = listing
+        .entries
+        .into_iter()
+        .filter(|e| e.kind == FsEntryKind::Directory)
+        .map(|e| e.name)
+        .collect();
+    top_level_dirs.sort();
+    let checkout = match crate::code::git_bridge::run_git(
+        &root,
+        &[
+            "rev-parse",
+            "--is-shallow-repository",
+            "HEAD",
+            "--symbolic-full-name",
+            "HEAD",
+        ],
+    )
+    .await
+    {
+        Ok(output) => parse_checkout(&output),
+        Err(error) => Err(error),
+    };
+    let allocation = read_allocation(&root).await;
+    Ok(WorkspaceLayout {
+        root,
+        top_level_dirs,
+        top_level_entries,
+        repository: Some(RepositoryEvidence {
+            checkout,
+            allocation,
+        }),
+    })
+}
+
+async fn read_allocation(
+    root: &std::path::Path,
+) -> Result<Option<airc_lib::work_worktree::AllocationEvidence>, String> {
+    use crate::code::git_bridge::run_git;
+    use airc_lib::work_worktree::{decode_allocation_evidence, ALLOCATION_REF, CREATION_BASE_REF};
+    // Empty successful enumeration means legacy/no receipt. A failed Git read is
+    // unavailable, never absence. The immutable blob pins the remainder of this read.
+    let oid = run_git(
+        root,
+        &["for-each-ref", "--format=%(objectname)", ALLOCATION_REF],
+    )
+    .await?;
+    let oid = oid.trim();
+    if oid.is_empty() {
+        return Ok(None);
+    }
+    let bytes = run_git(root, &["cat-file", "blob", oid]).await?;
+    let creation = run_git(root, &["rev-parse", "--verify", CREATION_BASE_REF]).await?;
+    decode_allocation_evidence(bytes.as_bytes(), creation.trim()).map(Some)
+}
+
+fn parse_checkout(output: &str) -> Result<CheckoutObservation, String> {
+    let mut lines = output.lines();
+    let shallow = match lines.next() {
+        Some("true") => true,
+        Some("false") => false,
+        _ => return Err("git did not report whether the checkout is shallow".into()),
+    };
+    let head = lines
+        .next()
+        .filter(|line| !line.is_empty())
+        .ok_or("git did not report HEAD")?
+        .to_string();
+    let branch = lines
+        .next()
+        .filter(|line| !line.is_empty())
+        .ok_or("git did not report the symbolic HEAD or detached HEAD")?
+        .to_string();
+    if lines.next().is_some() {
+        return Err("git returned unexpected checkout evidence".into());
+    }
+    Ok(CheckoutObservation {
+        head,
+        branch,
+        shallow,
+    })
+}
+
+fn render_repository(evidence: &RepositoryEvidence) -> String {
+    let mut body = match &evidence.allocation {
+        Ok(Some(a)) => format!(
+            "Recorded allocation: repo {}; requested branch {}; integration base {}; start ref {}; creation commit {}.\n",
+            a.repo, a.requested_branch, a.integration_base.as_deref().unwrap_or("unrecorded"), // absent policy is explicitly unknown, not inferred from HEAD
+            a.start_ref, a.creation_sha,
+        ),
+        Ok(None) => "Allocation evidence is unavailable for this checkout; its current HEAD does not establish its intended integration base.\n".into(),
+        Err(error) => format!("Allocation evidence could not be read: {error}\n"),
+    };
+    match &evidence.checkout {
+        Ok(git) => {
+            body.push_str(&format!(
+                "Observed checkout: HEAD {}; branch {}; shallow {}.",
+                git.head, git.branch, git.shallow
+            ));
+            if git.shallow {
+                body.push_str(" Missing ancestry in a shallow checkout does not prove a change is absent; source content and available history are distinct evidence.");
+            }
+        }
+        Err(error) => body.push_str(&format!("Checkout observation unavailable: {error}")),
+    }
+    body
 }
 
 impl WorkspaceLayout {
@@ -113,30 +245,7 @@ impl WorkspaceLayoutReader for CwdWorkspaceLayoutReader {
     async fn layout(&self) -> Result<WorkspaceLayout, String> {
         let root =
             std::env::current_dir().map_err(|e| format!("workspace root unavailable: {e}"))?;
-        let security =
-            PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
-        // Identity here is the reader, not a persona — this engine only LISTS the
-        // root; the persona's own per-caller engine handles reads/edits.
-        let engine = FileEngine::new(SOURCE_ID, security);
-        // `true` = INCLUDE HIDDEN. A dot-directory is a real part of the layout, and
-        // excluding it made this source assert an EMPTY workspace over one that held
-        // `.gymtool/solution.rs` — the exact file the persona had been sent to fix (#336).
-        let listing = engine
-            .list_dir(".", true)
-            .map_err(|e| format!("workspace list failed: {e}"))?;
-        let top_level_entries = listing.entries.len();
-        let mut top_level_dirs: Vec<String> = listing
-            .entries
-            .into_iter()
-            .filter(|e| e.kind == FsEntryKind::Directory)
-            .map(|e| e.name)
-            .collect();
-        top_level_dirs.sort();
-        Ok(WorkspaceLayout {
-            root,
-            top_level_dirs,
-            top_level_entries,
-        })
+        read_layout(root).await
     }
 }
 
@@ -202,8 +311,14 @@ fn render_ports(leases: &[crate::modules::ports::PortLease]) -> Option<String> {
     if leases.is_empty() {
         return None;
     }
-    let listed: Vec<String> = leases.iter().map(|l| format!("{} -> {}", l.service, l.port)).collect();
-    Some(format!("Your leased service ports (ports/lease, ports/list): {}", listed.join(", ")))
+    let listed: Vec<String> = leases
+        .iter()
+        .map(|l| format!("{} -> {}", l.service, l.port))
+        .collect();
+    Some(format!(
+        "Your leased service ports (ports/lease, ports/list): {}",
+        listed.join(", ")
+    ))
 }
 
 /// Reads the layout from the persona's OWN citizen layer — the copy-on-write
@@ -259,28 +374,7 @@ impl WorkspaceLayoutReader for CitizenLayerWorkspaceLayoutReader {
             acting = acting_root_present,
             "the workspace map rendered from this root (acting = her hands are at a card's checkout)"
         );
-        let security =
-            PathSecurity::new(&root).map_err(|e| format!("workspace security init failed: {e}"))?;
-        let engine = FileEngine::new(SOURCE_ID, security);
-        // `true` = INCLUDE HIDDEN. A dot-directory is a real part of the layout, and
-        // excluding it made this source assert an EMPTY workspace over one that held
-        // `.gymtool/solution.rs` — the exact file the persona had been sent to fix (#336).
-        let listing = engine
-            .list_dir(".", true)
-            .map_err(|e| format!("workspace list failed: {e}"))?;
-        let top_level_entries = listing.entries.len();
-        let mut top_level_dirs: Vec<String> = listing
-            .entries
-            .into_iter()
-            .filter(|e| e.kind == FsEntryKind::Directory)
-            .map(|e| e.name)
-            .collect();
-        top_level_dirs.sort();
-        Ok(WorkspaceLayout {
-            root,
-            top_level_dirs,
-            top_level_entries,
-        })
+        read_layout(root).await
     }
 }
 
@@ -305,28 +399,7 @@ impl FixedRootWorkspaceLayoutReader {
 #[async_trait::async_trait]
 impl WorkspaceLayoutReader for FixedRootWorkspaceLayoutReader {
     async fn layout(&self) -> Result<WorkspaceLayout, String> {
-        let security = PathSecurity::new(&self.root)
-            .map_err(|e| format!("workspace security init failed for pinned root: {e}"))?;
-        let engine = FileEngine::new(SOURCE_ID, security);
-        // `true` = INCLUDE HIDDEN, same reason as the cwd reader (#336). This is the
-        // reader the CITIZEN layer actually uses, so it is the one that was lying to
-        // personas in the gym.
-        let listing = engine
-            .list_dir(".", true)
-            .map_err(|e| format!("pinned-root workspace list failed: {e}"))?;
-        let top_level_entries = listing.entries.len();
-        let mut top_level_dirs: Vec<String> = listing
-            .entries
-            .into_iter()
-            .filter(|e| e.kind == FsEntryKind::Directory)
-            .map(|e| e.name)
-            .collect();
-        top_level_dirs.sort();
-        Ok(WorkspaceLayout {
-            root: self.root.clone(),
-            top_level_dirs,
-            top_level_entries,
-        })
+        read_layout(self.root.clone()).await
     }
 }
 
@@ -440,8 +513,17 @@ impl RagSource for WorkspaceMapSource {
             }
         };
 
-        let mut body = render_layout(&layout);
-        let ports = crate::modules::ports::held_by(crate::identity::PeerId::from_uuid(self.persona_id));
+        let mut body = layout
+            .repository
+            .as_ref()
+            .map(render_repository)
+            .unwrap_or_default(); // fixture readers may omit repository evidence
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str(&render_layout(&layout));
+        let ports =
+            crate::modules::ports::held_by(crate::identity::PeerId::from_uuid(self.persona_id));
         if let Some(line) = render_ports(&ports) {
             body.push('\n');
             body.push_str(&line);
@@ -503,11 +585,58 @@ mod tests {
     fn layout(dirs: &[&str]) -> WorkspaceLayout {
         WorkspaceLayout {
             root: PathBuf::from("/repo"),
+            repository: None,
             top_level_dirs: dirs.iter().map(|s| s.to_string()).collect(),
             // Default fixture: entries == dirs. The tests that care about the
             // difference (files-only, hidden-only) build the struct themselves.
             top_level_entries: dirs.len(),
         }
+    }
+
+    // what this catches (81097858): a shallow checkout on main being presented as
+    // the allocated integration base, or absent legacy evidence being guessed.
+    #[tokio::test]
+    async fn checkout_observation_does_not_replace_allocation_intent() {
+        let mut world = layout(&["core"]);
+        world.repository = Some(RepositoryEvidence {
+            checkout: parse_checkout(&format!("true\n{}\nrefs/heads/main\n", "b".repeat(40))),
+            allocation: Ok(Some(airc_lib::work_worktree::AllocationEvidence {
+                repo: airc_work::RepoId::new("acme/project").expect("repo"),
+                requested_branch: "task/implementation".into(),
+                integration_base: Some("integration".into()),
+                start_ref: "refs/remotes/origin/integration".into(),
+                creation_sha: "a".repeat(40),
+            })),
+        });
+        let source = WorkspaceMapSource::new(
+            persona(),
+            Arc::new(StubReader {
+                layout: Ok(world.clone()),
+            }),
+        );
+        let delivery = source
+            .deliver(&ctx(), 2048, ResolutionPreference::Raw)
+            .await;
+        let body = &delivery.items[0].content;
+        for fact in [
+            "repo acme/project",
+            "requested branch task/implementation",
+            "integration base integration",
+            "branch refs/heads/main",
+            "shallow true",
+            "does not prove a change is absent",
+        ] {
+            assert!(body.contains(fact), "missing {fact}: {body}");
+        }
+        let evidence = world.repository.as_mut().expect("repository fixture");
+        evidence.allocation = Ok(None);
+        assert!(render_repository(evidence).contains("current HEAD does not establish"));
+        evidence.allocation = Err("unreadable allocation".into());
+        assert!(render_repository(evidence).contains("could not be read: unreadable allocation"));
+        assert!(
+            parse_checkout("true\n").is_err(),
+            "partial observations are not complete facts"
+        );
     }
 
     // what this catches: the source telling a persona her workspace is EMPTY when it
@@ -523,6 +652,7 @@ mod tests {
         // Only a dot-directory: zero non-hidden dirs, but emphatically not empty.
         let hidden_only = WorkspaceLayout {
             root: PathBuf::from("/repo"),
+            repository: None,
             top_level_dirs: vec![".gymtool".into()],
             top_level_entries: 1,
         };
@@ -541,6 +671,7 @@ mod tests {
         // dirs-only gate got wrong.
         let files_only = WorkspaceLayout {
             root: PathBuf::from("/repo"),
+            repository: None,
             top_level_dirs: vec![],
             top_level_entries: 3,
         };
@@ -551,6 +682,7 @@ mod tests {
         // a real finding (#206) and must survive this fix.
         let truly_empty = WorkspaceLayout {
             root: PathBuf::from("/repo"),
+            repository: None,
             top_level_dirs: vec![],
             top_level_entries: 0,
         };
@@ -576,7 +708,7 @@ mod tests {
     }
 
     #[async_trait::async_trait]
-impl WorkspaceLayoutReader for StubReader {
+    impl WorkspaceLayoutReader for StubReader {
         async fn layout(&self) -> Result<WorkspaceLayout, String> {
             self.layout.clone()
         }
@@ -699,8 +831,12 @@ impl WorkspaceLayoutReader for StubReader {
             released_at_ms: None,
         };
         assert_eq!(render_ports(&[]), None);
-        let line = render_ports(&[lease("cw-db", 31_001), lease("cw-web", 31_000)]).expect("a line");
-        assert!(line.contains("cw-db -> 31001") && line.contains("cw-web -> 31000"), "{line}");
+        let line =
+            render_ports(&[lease("cw-db", 31_001), lease("cw-web", 31_000)]).expect("a line");
+        assert!(
+            line.contains("cw-db -> 31001") && line.contains("cw-web -> 31000"),
+            "{line}"
+        );
         assert!(!line.contains('\n'), "one line");
     }
 
