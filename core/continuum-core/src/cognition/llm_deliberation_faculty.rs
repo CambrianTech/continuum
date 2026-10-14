@@ -3361,6 +3361,14 @@ impl LlmDeliberationFaculty {
         // silently dropped, which is the discarding this whole split exists to avoid.
         messages.extend(demoted_result);
         messages.extend(demoted_updates);
+        let action_statement = self
+            .working_memory
+            .as_ref()
+            .and_then(|memory| memory.action_statement(ws.activity_room_id))
+            .map(|text| ChatMessage::text("assistant", text));
+        if let Some(statement) = &action_statement {
+            field(&mut input, statement.content_text().as_bytes());
+        }
         PromptMessages {
             input_identity: input.finalize().into(),
             history: messages,
@@ -3368,6 +3376,7 @@ impl LlmDeliberationFaculty {
             grounding_at,
             stimulus,
             latest_result,
+            action_statement,
             room_updates,
             ledger: ledger.into_iter().next().map(|text| ChatMessage::text("user", text)),
         }
@@ -3782,8 +3791,10 @@ impl LlmDeliberationFaculty {
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
             prompt.history.extend(prompt.ledger);
+            prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.latest_result);
         } else {
+            prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.ledger);
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
@@ -3912,6 +3923,8 @@ struct PromptMessages {
     grounding_at: usize,
     stimulus: Option<ChatMessage>,
     latest_result: Option<ChatMessage>,
+    /// Public action text retains assistant provenance and required-input pricing.
+    action_statement: Option<ChatMessage>,
     room_updates: Vec<ChatMessage>,
     /// The steps ledger, which changes on every act: it rides after the room updates and
     /// before the pinned result, so nothing stable sits behind it (card 5b09111e).
@@ -4115,6 +4128,7 @@ impl PromptMessages {
             .iter()
             .chain(self.room_updates.iter())
             .chain(self.ledger.iter())
+            .chain(self.action_statement.iter())
             .chain(self.latest_result.iter())
             .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
             .sum::<usize>()
@@ -5257,6 +5271,9 @@ impl LlmDeliberationFaculty {
                     return Some(v);
                 }
                 if !calls.is_empty() {
+                    if let Some(memory) = &self.working_memory {
+                        memory.record_action_statement(&resp.text, ws.activity_room_id);
+                    }
                     return Some(self.act_verdict(calls, &resp));
                 }
             }
@@ -8339,7 +8356,7 @@ mod tests {
                 .iter()
                 .all(|m| !matches!(&m.content, MessageContent::Parts(_))));
             wm.set_scope(None);
-            wm.record_settlement("observed");
+            wm.record_settlement("observed", None);
             assert!(faculty
                 .active_visual_feedback(&binding)
                 .await
@@ -8916,7 +8933,7 @@ mod tests {
                 grounding_at: 0,
                 history,
                 stimulus: Some(stimulus.clone()),
-                latest_result: None,
+                latest_result: None, action_statement: None,
                 room_updates: Vec::new(), ledger: None,
             };
             let required = prompt(Vec::new()).required_tokens();
@@ -8977,7 +8994,7 @@ mod tests {
                             grounding_at: 0,
                             history: msgs[..n].to_vec(),
                             stimulus: None,
-                            latest_result: None,
+                            latest_result: None, action_statement: None,
                             room_updates: Vec::new(), ledger: None,
                         },
                         budget,
@@ -9027,7 +9044,7 @@ mod tests {
                         grounding_at: 0,
                         history: clustered,
                         stimulus: None,
-                        latest_result: None,
+                        latest_result: None, action_statement: None,
                         room_updates: Vec::new(), ledger: None,
                     },
                     budget,
@@ -9056,7 +9073,7 @@ mod tests {
                     ChatMessage::text("user", "current situation ".repeat(20)),
                 ],
                 stimulus: None,
-                latest_result: None,
+                latest_result: None, action_statement: None,
                 room_updates: Vec::new(), ledger: None,
             };
             let ambient_cost =
@@ -9082,7 +9099,7 @@ mod tests {
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
                 stimulus: Some(ChatMessage::text("user", "the ask")),
-                latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")),
+                latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")), action_statement: None,
                 room_updates: vec![ChatMessage::text("user", "[Room message received during this turn] hi")],
                 ledger: Some(ChatMessage::text("user", "[steps taken this session]\n[action #1832] code/read")),
             };
@@ -9112,7 +9129,7 @@ mod tests {
             let expected = LlmDeliberationFaculty::messages_cost(&history);
             let prompt = PromptMessages {
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
-                history, stimulus: None, latest_result: None, room_updates: Vec::new(), ledger: None,
+                history, stimulus: None, latest_result: None, action_statement: None, room_updates: Vec::new(), ledger: None,
             };
             assert!(prompt.recent_move_evidence().tokens >= expected,
                 "a new follow-up cannot make the preceding action and result disposable");
@@ -9130,7 +9147,7 @@ mod tests {
                     ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
                     ChatMessage::text("user", "Full result of code/write: file written successfully."),
                 ],
-                stimulus: None, latest_result: None, room_updates: Vec::new(), ledger: None,
+                stimulus: None, latest_result: None, action_statement: None, room_updates: Vec::new(), ledger: None,
             };
             let insufficient = prompt.recent_move_evidence().tokens - 1;
             assert!(faculty.fit_messages(prompt, insufficient).is_err(),
@@ -9178,7 +9195,7 @@ mod tests {
                 grounding_at: 0,
                 history: history.clone(),
                 stimulus: None,
-                latest_result: None,
+                latest_result: None, action_statement: None,
                 room_updates: Vec::new(), ledger: None,
             };
 
@@ -9261,7 +9278,7 @@ mod tests {
                 grounding_at: 0,
                 history,
                 stimulus: None,
-                latest_result: None,
+                latest_result: None, action_statement: None,
                 room_updates: Vec::new(), ledger: None,
             };
 
@@ -11096,12 +11113,16 @@ mod tests {
         #[tokio::test]
         async fn tool_use_response_becomes_an_act_verdict() {
             let persona = Uuid::new_v4();
+            let room = Uuid::new_v4();
+            let public = "I will remove the cursor, preserve truncation, then verify the callers.";
+            let memory = Arc::new(crate::cognition::working_memory::WorkingMemory::new(16));
+            memory.set_scope(Some("task-a".into()));
             let call = ToolCall {
                 id: "t1".to_string(),
                 name: "code/read".to_string(),
                 input: json!({ "path": "deploy.md" }),
             };
-            let mut resp = make_response(FinishReason::ToolUse, "", Some(vec![call.clone()]));
+            let mut resp = make_response(FinishReason::ToolUse, public, Some(vec![call.clone()]));
             resp.reasoning = Some("I should check deploy.md to answer.".to_string());
             let adapter = Arc::new(ScriptedAdapter::new(vec![resp]));
 
@@ -11112,9 +11133,11 @@ mod tests {
             let faculty =
                 LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
                     .with_tools(vec![read_tool()])
+                    .with_working_memory(memory.clone())
                     .with_context_window(32_768);
 
-            let ws = Workspace::new("teammate asks: did the deploy fix land?");
+            let mut ws = Workspace::new("teammate asks: did the deploy fix land?");
+            ws.activity_room_id = room;
             let c = faculty.contribute(&ws).await.expect("verdict");
 
             match c.decision {
@@ -11128,6 +11151,29 @@ mod tests {
             }
             // SINGLE SHOT — the faculty never re-generated (no in-faculty loop).
             assert_eq!(adapter.call_count(), 1, "one generation, one verdict");
+            memory.record_receipt("code/read returned the cursor declaration and its callers");
+            // No optional WM bid: seven competing faculties evicted it in the live
+            // receipt. Authored action continuity must survive that same boundary.
+            assert!(ws.broadcast.is_empty());
+            let prompt = faculty.messages_unfitted(&ws, None);
+            let required = prompt.required_tokens();
+            let fitted = faculty
+                .fit_messages(prompt, required)
+                .expect("required continuity fits");
+            assert!(fitted.messages.iter().any(|message| {
+                message.role == "assistant" && message.content_text() == public
+            }));
+            assert!(fitted.messages.iter().any(|message| {
+                message.content_text().contains("cursor declaration and its callers")
+            }));
+            ws.activity_room_id = Uuid::new_v4();
+            assert!(faculty.messages_unfitted(&ws, None).action_statement.is_none(), "another room cannot inherit it");
+            ws.activity_room_id = room;
+            memory.set_scope(Some("task-b".into()));
+            assert!(faculty.messages_unfitted(&ws, None).action_statement.is_none(), "another task cannot inherit it");
+            memory.set_scope(Some("task-a".into()));
+            memory.record_settlement("finished", Some(room));
+            assert!(faculty.messages_unfitted(&ws, None).action_statement.is_none(), "settlement ends this decision");
         }
 
         // what this catches: paging a gene into the shared genome handle flows into the

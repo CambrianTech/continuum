@@ -325,6 +325,8 @@ pub struct WorkingMemory {
 pub enum WmKind {
     /// Chain-of-thought the persona produced (`record`).
     Thought,
+    /// Public text authored alongside native tool calls, scoped to their activity.
+    ActionStatement { room: Uuid },
     /// A REAL tool execution + its result head — the only kind that renders
     /// the `[action #N]` receipt stamp.
     Receipt { n: u64 },
@@ -361,6 +363,11 @@ pub enum ClaimGone {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VolatileSnapshot {
     pub entries: Vec<WmEntry>,
+    /// Authored entries and their original ring positions. Kept outside legacy
+    /// `entries` so rollback readers retain prior memory without decoding a new
+    /// enum variant or rendering public prose as private thought.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_statements: Vec<(usize, WmEntry)>,
     pub last_action: Option<(u64, String)>,
     pub action_fps: Vec<String>,
     pub next_action_seq: u64,
@@ -530,6 +537,46 @@ pub struct WmEntry {
 }
 
 impl WorkingMemory {
+    /// Preserve the public decision separately from private reasoning and tool output.
+    /// It uses the existing bounded, checkpointed entry stream and acting-root scope.
+    pub fn record_action_statement(&self, text: &str, room: Uuid) {
+        if text.trim().is_empty() || room.is_nil() {
+            return;
+        }
+        let scope = self.scope.lock().clone();
+        let mut entries = self.entries.lock();
+        entries.push_back(WmEntry {
+            kind: WmKind::ActionStatement { room },
+            text: text.to_owned(),
+            acts: Vec::new(),
+            scope,
+        });
+        while entries.len() > self.capacity {
+            entries.pop_front();
+        }
+    }
+
+    /// The latest authored decision in this exact activity/root, until settlement.
+    /// The prompt owner prices the whole statement with required action feedback;
+    /// attention's optional working-memory bid cannot silently remove it.
+    pub fn action_statement(&self, room: Uuid) -> Option<String> {
+        if room.is_nil() {
+            return None;
+        }
+        let scope = self.scope.lock().clone();
+        self.entries
+            .lock()
+            .iter()
+            .rev()
+            .filter(|entry| entry.scope == scope)
+            .find_map(|entry| match entry.kind {
+                WmKind::ActionStatement { room: authored_room } if authored_room == room => {
+                    Some(entry.text.clone())
+                }
+                _ => None,
+            })
+    }
+
     pub fn new(capacity: usize) -> Self {
         static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
         Self {
@@ -936,8 +983,22 @@ impl WorkingMemory {
                 archive.iter().map(|(r, _)| *r).collect(),
             )
         };
+        let (entries, action_statements) = {
+            let ring = self.entries.lock();
+            let mut entries = Vec::new();
+            let mut authored = Vec::new();
+            for (index, entry) in ring.iter().enumerate() {
+                if matches!(entry.kind, WmKind::ActionStatement { .. }) {
+                    authored.push((index, entry.clone()));
+                } else {
+                    entries.push(entry.clone());
+                }
+            }
+            (entries, authored)
+        };
         VolatileSnapshot {
-            entries: self.entries.lock().iter().cloned().collect(),
+            entries,
+            action_statements,
             last_action: self.last_action.lock().clone(),
             action_fps: self.action_fps.lock().iter().cloned().collect(),
             receipt_heads,
@@ -970,7 +1031,14 @@ impl WorkingMemory {
     /// labels it recorded as pending. It does not establish when an interruption
     /// happened, whether those operations completed, or what side effects they
     /// produced. The persona decides what to do with that uncertainty.
-    pub fn restore(&self, snap: VolatileSnapshot) {
+    pub fn restore(&self, mut snap: VolatileSnapshot) {
+        // Reconstitute the same ring before applying its existing capacity and
+        // notice filtering. Older readers ignore the additive authored field.
+        for (index, entry) in snap.action_statements {
+            if matches!(entry.kind, WmKind::ActionStatement { .. }) {
+                snap.entries.insert(index.min(snap.entries.len()), entry);
+            }
+        }
         {
             let mut e = self.entries.lock();
             e.clear();
@@ -1535,12 +1603,20 @@ impl WorkingMemory {
         }
     }
 
-    pub fn record_settlement(&self, answer_head: &str) {
+    pub fn record_settlement(&self, answer_head: &str, room: Option<Uuid>) {
         // Deferred ring hygiene: the settle just closed, the next prompt
         // re-prefills regardless — collapse over-cap results NOW, never mid-settle.
         self.collapse_results_over_cap();
         let a = answer_head.trim();
+        let scope = self.scope.lock().clone();
         let mut e = self.entries.lock();
+        // End only the authored decision for this activity and exact root. An
+        // unknown room cannot establish that boundary. The existing unscoped
+        // settlement marker keeps its historical semantics.
+        e.retain(|entry| {
+            entry.scope != scope
+                || !matches!(entry.kind, WmKind::ActionStatement { room: authored_room } if Some(authored_room) == room)
+        });
         e.push_back(WmEntry {
             kind: WmKind::Settlement,
             text: if a.is_empty() {
@@ -1634,6 +1710,9 @@ impl Faculty for WorkingMemoryFaculty {
     // reasoning into phase 1 so the deliberator conditions on it in phase 2.
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         let mut entries = self.memory.recent_entries();
+        // Public action statements use their room-scoped assistant projection,
+        // never the optional interior-thought bid.
+        entries.retain(|entry| !matches!(entry.kind, WmKind::ActionStatement { .. }));
         let dispatched = self.memory.dispatched_snapshot();
         if entries.is_empty() && dispatched.is_empty() {
             return None;
@@ -1831,6 +1910,71 @@ impl Faculty for WorkingMemoryFaculty {
 mod rebuilt_marker {
     use super::*;
 
+    #[test]
+    fn authored_continuity_survives_checkpoint_without_breaking_rollback_or_root_boundaries() {
+        // This is the pre-authored-entry wire vocabulary. Unknown enum variants
+        // fail serde decoding; unknown snapshot fields are ignored on rollback.
+        #[derive(serde::Deserialize)]
+        enum LegacyKind {
+            Thought,
+            Receipt { n: u64 },
+            Fact,
+            Settlement,
+        }
+        #[derive(serde::Deserialize)]
+        struct LegacyEntry {
+            kind: LegacyKind,
+            text: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct LegacySnapshot {
+            entries: Vec<LegacyEntry>,
+        }
+
+        let room = Uuid::new_v4();
+        let wm = WorkingMemory::new(16);
+        wm.record_fact("prior fact");
+        wm.record_action_statement("unrooted decision", room);
+        wm.record_settlement("another room finished", Some(Uuid::new_v4()));
+        wm.record_settlement("unknown room finished", None);
+        assert_eq!(wm.action_statement(room).as_deref(), Some("unrooted decision"));
+        wm.set_scope(Some("task-a".into()));
+        assert_eq!(wm.action_statement(room), None, "a newly inferred root cannot inherit unscoped authorship");
+        wm.record_action_statement("task-a decision", room);
+        wm.record_settlement("another room in task-a finished", Some(Uuid::new_v4()));
+        assert_eq!(wm.action_statement(room).as_deref(), Some("task-a decision"));
+        wm.record_receipt("read the declaration");
+        wm.set_scope(Some("task-b".into()));
+        wm.record_action_statement("task-b decision", room);
+        wm.record_settlement("task-b finished", Some(room));
+        assert_eq!(wm.action_statement(room), None);
+        wm.set_scope(None);
+        assert_eq!(wm.action_statement(room).as_deref(), Some("unrooted decision"));
+        wm.record_settlement("conversation finished", Some(room));
+        wm.set_scope(Some("task-a".into()));
+        assert_eq!(wm.action_statement(room).as_deref(), Some("task-a decision"), "other roots and unscoped settlement cannot close task-a");
+
+        let before = wm.recent_entries();
+        let json = serde_json::to_vec(&wm.snapshot()).expect("checkpoint wire");
+        let legacy: LegacySnapshot = serde_json::from_slice(&json).expect("rollback reader keeps prior entries");
+        assert!(legacy.entries.iter().any(|e| matches!(e.kind, LegacyKind::Fact) && e.text == "prior fact"));
+        assert!(legacy.entries.iter().any(|e| matches!(e.kind, LegacyKind::Receipt { n: 1 })));
+        assert!(legacy.entries.iter().all(|e| !e.text.contains("decision")), "older renderers cannot relabel authored text as private thought");
+
+        let restored = WorkingMemory::new(16);
+        restored.restore(serde_json::from_slice(&json).expect("current reader"));
+        assert_eq!(restored.action_statement(room), None, "restore does not guess the current root");
+        restored.set_scope(Some("task-a".into()));
+        assert_eq!(restored.action_statement(room).as_deref(), Some("task-a decision"));
+        assert_eq!(restored.recent_entries().iter().map(|e| (&e.kind, &e.text)).collect::<Vec<_>>(), before.iter().map(|e| (&e.kind, &e.text)).collect::<Vec<_>>(), "authored entries retain their ring position");
+        restored.record_settlement("task-a finished", Some(room));
+        assert_eq!(restored.action_statement(room), None);
+        let settled = WorkingMemory::new(16);
+        settled.restore(restored.snapshot());
+        settled.set_scope(Some("task-a".into()));
+        assert_eq!(settled.action_statement(room), None, "settled authorship cannot resurrect on restore");
+    }
+
     fn snap_from(wm: &WorkingMemory, build: &str) -> VolatileSnapshot {
         let mut s = wm.snapshot();
         s.build_sha = build.to_string();
@@ -1999,7 +2143,7 @@ mod tests {
         for _ in 0..4 {
             record_saved(&wm, &"s".repeat(cap / 2));
         }
-        wm.record_settlement("done");
+        wm.record_settlement("done", None);
         assert!(
             wm.recent_results_messages().join("\n").contains(&format!("{handle} — collapsed")),
             "it collapsed to a pointer"
@@ -2049,7 +2193,7 @@ mod tests {
         assert!(!wm.entries.lock().iter().any(|e| e.acts.iter().any(|a| a.call.id == children[0])), "its entry rolled out");
         assert!(children.iter().all(|c| live(c)), "the receipt still holds its children");
 
-        wm.record_settlement("done");
+        wm.record_settlement("done", None);
         assert!(wm.recent_results_messages().join("\n").contains(&format!("{receipt} — collapsed")), "collapsed to a pointer");
         assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
 
@@ -2197,7 +2341,7 @@ mod tests {
         for _ in 0..4 {
             record_saved(&wm, &"s".repeat(cap / 2));
         }
-        wm.record_settlement("done");
+        wm.record_settlement("done", None);
         let whole = |m: &WorkingMemory| m.recent_results_messages().iter().any(|r| r.ends_with(&unsaved));
         assert!(whole(&wm), "kept whole through settlement");
         assert!(
@@ -2245,7 +2389,7 @@ mod tests {
         );
         // …and SETTLEMENT collapses over-cap results to pointers, restoring the bound. The
         // results that stay are WHOLE (never a tail); the rest are one-line pointers.
-        wm.record_settlement("done");
+        wm.record_settlement("done", None);
         let messages = wm.recent_results_messages();
         let kept: Vec<&String> = messages.iter().filter(|m| m.starts_with("[result ")).collect();
         assert!(!kept.is_empty(), "the newest results stay");
@@ -2266,9 +2410,9 @@ mod tests {
         );
         let head_after_collapse = wm.recent_results_messages().get(1).cloned();
         record_saved(&wm, "[action] code/read(a.rs) fine");
-        wm.record_settlement("one");
+        wm.record_settlement("one", None);
         record_saved(&wm, "[action] code/read(b.rs) fine");
-        wm.record_settlement("two");
+        wm.record_settlement("two", None);
         assert_eq!(
             wm.recent_results_messages().get(1).cloned(),
             head_after_collapse,
@@ -2333,10 +2477,10 @@ mod tests {
         assert!(super::super::deliberation_budget::near_identical_substantial(passed, failed));
         let wm = Arc::new(WorkingMemory::new(8));
         wm.set_served_window(32_768);
-        wm.record_settlement(passed);
+        wm.record_settlement(passed, None);
         wm.record_receipt("code/read found the regression");
-        wm.record_settlement(failed);
-        wm.record_settlement(passed);
+        wm.record_settlement(failed, None);
+        wm.record_settlement(passed, None);
         let entries = wm.recent_entries();
         assert_eq!(
             entries.iter().map(|entry| &entry.kind).collect::<Vec<_>>(),
@@ -2412,7 +2556,7 @@ mod tests {
         wm.record("thinking about the tokenizer");
         wm.record_receipt("I ran code/list({\"path\":\".\"}) Result: 4 files");
         wm.record_fact("[unfulfilled] I said I would run commands, but no tool ran");
-        wm.record_settlement("shared the plan");
+        wm.record_settlement("shared the plan", None);
         wm.note_action_fingerprint("code/list|{\"path\":\".\"}");
         // A dispatched compile still Running at snapshot time — only its LABEL
         // survives, not evidence about later completion or side effects.
@@ -2518,6 +2662,7 @@ mod tests {
         let quiet = WorkingMemory::new(8);
         quiet.restore(VolatileSnapshot {
             entries: Vec::new(),
+            action_statements: Vec::new(),
             last_action: None,
             action_fps: Vec::new(),
             next_action_seq: 1,
@@ -2627,7 +2772,7 @@ mod tests {
         typed.set_scope(Some("another-workspace".into()));
         assert!(typed.active_action_observations(seq).is_empty());
         typed.set_scope(None);
-        typed.record_settlement("observed");
+        typed.record_settlement("observed", None);
         assert!(typed.active_action_observations(seq).is_empty());
         typed.record_receipt_typed(&[obs], "new result", None, crate::ai::types::ResultCustody::Unsaved);
         assert!(typed.active_action_observations(seq).is_empty());
@@ -2729,7 +2874,7 @@ mod tests {
         for _ in 0..4 {
             record_saved(&restored, &"x".repeat(restored.budget().recent_results_chars()));
         }
-        restored.record_settlement("reported");
+        restored.record_settlement("reported", None);
         assert!(restored.recent_results_messages().join("\n").contains(
             &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
         ));
@@ -2763,7 +2908,7 @@ mod tests {
             );
         };
         assert_whole_or_handle(&memory);
-        memory.record_settlement("work remains on this card");
+        memory.record_settlement("work remains on this card", None);
         assert_whole_or_handle(&memory);
         let restarted = WorkingMemory::new(8);
         restarted.set_served_window(16_384);
@@ -3046,7 +3191,7 @@ mod tests {
         );
 
         // The persona SETTLES → the full result drops out; the trail head remains.
-        wm.record_settlement("the workspace has a wordstats crate");
+        wm.record_settlement("the workspace has a wordstats crate", None);
         assert!(
             wm.active_action_full().is_none(),
             "a settled result is no longer active"
@@ -3188,7 +3333,7 @@ mod tests {
     fn record_settlement_marks_a_boundary_in_the_buffer() {
         let wm = WorkingMemory::new(4);
         wm.record_receipt("I ran commands/list({}) -> 100 commands");
-        wm.record_settlement("there are 100 commands");
+        wm.record_settlement("there are 100 commands", None);
         let recent = wm.recent();
         assert_eq!(recent.len(), 2);
         assert!(
@@ -3200,7 +3345,7 @@ mod tests {
             "carries the answer head as proprioception"
         );
         // A blank answer still marks the boundary (bare prefix, no fabricated text).
-        wm.record_settlement("   ");
+        wm.record_settlement("   ", None);
         let recent = wm.recent();
         assert_eq!(recent.last().unwrap(), WM_SETTLEMENT_PREFIX);
     }

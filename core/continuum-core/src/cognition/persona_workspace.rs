@@ -2510,7 +2510,7 @@ mod tests {
             for _ in 0..4 {
                 memory.record_receipt_typed(&[], &"s".repeat(cap / 2), None, saved("5000000000000002"));
             }
-            memory.record_settlement("done");
+            memory.record_settlement("done", None);
             let persisted = PersistedVolatile {
                 wm: memory.snapshot(),
                 own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),

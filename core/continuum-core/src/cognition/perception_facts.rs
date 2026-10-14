@@ -572,6 +572,7 @@ mod tests {
         let pre_archive = Arc::new(WorkingMemory::new(2));
         pre_archive.restore(crate::cognition::working_memory::VolatileSnapshot {
             entries: Vec::new(),
+            action_statements: Vec::new(),
             last_action: None,
             action_fps: Vec::new(),
             next_action_seq: 4, // 3 acts happened in the old life
