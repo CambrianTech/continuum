@@ -917,6 +917,9 @@ async fn run_shell_command(
         cmd.env(k, v);
     }
 
+    // Captured shell sessions are noninteractive; share the platform launch policy.
+    airc_core::process::configure_background(cmd.as_std_mut());
+
     // Spawn the child process
     let mut child = match cmd.spawn() {
         Ok(c) => c,
