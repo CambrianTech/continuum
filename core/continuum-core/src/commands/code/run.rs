@@ -211,6 +211,22 @@ impl ActionCommand for CodeRun {
     }
 }
 
+/// `stderr` with the note of why the run's output isn't whole, when it isn't (a read that
+/// failed, or a process it started holding the pipes past the bound): beside the verdict, never
+/// in place of it. A timeout's own cut is the timeout note's to say.
+fn with_capture_note(mut stderr: String, out: &crate::inference::lane_process::OwnedOutput) -> String {
+    if matches!(out.ended, crate::inference::lane_process::Ended::TimedOut { .. }) {
+        return stderr;
+    }
+    if let Some(note) = out.capture_note() {
+        if !stderr.is_empty() && !stderr.ends_with('\n') {
+            stderr.push('\n');
+        }
+        stderr.push_str(&format!("[{note}]"));
+    }
+    stderr
+}
+
 /// The timeout verdict, appended AFTER whatever the child managed to write (QA from Joaquin,
 /// card ba846f38: a killed sweep must still show its work). `unconfirmed` names what the end
 /// couldn't confirm gone; while any is, its output wasn't awaited.
@@ -274,15 +290,15 @@ async fn run_python(
     crate::code::shell_session::utf8_text_env(&mut cmd);
     cmd.current_dir(cwd.unwrap_or(dir));
     let started = std::time::Instant::now();
-    let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "code-run")
+    let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "code-run", std::sync::Arc::default())
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: {interpreter_label} failed to run: {e}")))?;
     let duration_ms = started.elapsed().as_millis() as u64;
     // A Windows Python writes CRLF to a pipe; the rows she reads back are lines, not
     // line endings, so the result carries one shape on every host (BigMama's note on
     // #4427: her stdout rows carried a trailing `\r`).
-    let stdout = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
-    let stderr = String::from_utf8_lossy(&out.stderr).replace("\r\n", "\n");
+    let stdout = String::from_utf8_lossy(&out.stdout.bytes).replace("\r\n", "\n");
+    let stderr = with_capture_note(String::from_utf8_lossy(&out.stderr.bytes).replace("\r\n", "\n"), &out);
     match out.ended {
         // Same honest shape as the Rust path: a timeout is a RESULT (she reads it
         // and adjusts), never a hidden kill — and it carries the partial output.
@@ -361,17 +377,17 @@ async fn compile_and_run_rust(
         &["--edition".into(), "2021".into(), "-o".into(), bin.clone().into(), src.clone().into()],
     );
     crate::code::shell_session::strip_secret_env(&mut rustc);
-    let compiled = crate::inference::lane_process::run_owned(rustc, Some(timeout), "rustc")
+    let compiled = crate::inference::lane_process::run_owned(rustc, Some(timeout), "rustc", std::sync::Arc::default())
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: failed to run rustc (is it on PATH?): {e}")))?;
-    match compiled.ended {
+    match &compiled.ended {
         crate::inference::lane_process::Ended::Exited(status) if status.success() => {} // compiled — fall through to run
         crate::inference::lane_process::Ended::Exited(status) => {
             return Ok(CodeRunResult {
                 exit_code: status.code(),
                 ok: false,
-                stdout: String::from_utf8_lossy(&compiled.stdout).into_owned(),
-                stderr: String::from_utf8_lossy(&compiled.stderr).into_owned(),
+                stdout: String::from_utf8_lossy(&compiled.stdout.bytes).into_owned(),
+                stderr: with_capture_note(String::from_utf8_lossy(&compiled.stderr.bytes).into_owned(), &compiled),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: false,
                 interpreter: "rustc".to_string(),
@@ -382,7 +398,7 @@ async fn compile_and_run_rust(
                 exit_code: None,
                 ok: false,
                 stdout: String::new(),
-                stderr: timeout_note(&String::from_utf8_lossy(&compiled.stderr), timeout.as_secs(), " (rustc)", &unconfirmed),
+                stderr: timeout_note(&String::from_utf8_lossy(&compiled.stderr.bytes), timeout.as_secs(), " (rustc)", &unconfirmed),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: true,
                 interpreter: "rustc".to_string(),
@@ -395,11 +411,11 @@ async fn compile_and_run_rust(
     //    orphaned to init burning a core (observed: 6h+ runaway at 100% CPU).
     let mut child = hands.command(&bin, &[]);
     crate::code::shell_session::strip_secret_env(&mut child);
-    let out = crate::inference::lane_process::run_owned(child, Some(timeout), "code-run")
+    let out = crate::inference::lane_process::run_owned(child, Some(timeout), "code-run", std::sync::Arc::default())
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: failed to run the compiled binary: {e}")))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let stdout = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
+    let stderr = with_capture_note(String::from_utf8_lossy(&out.stderr.bytes).into_owned(), &out);
     match out.ended {
         // Ran to completion (clean, or a nonzero exit / panic on stderr).
         crate::inference::lane_process::Ended::Exited(status) => {

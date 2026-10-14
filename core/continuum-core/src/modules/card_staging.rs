@@ -301,7 +301,8 @@ impl CloneError {
     fn leaves_a_partial_that_may_still_be_written(&self) -> bool {
         use crate::commands::code::github::GhRunError;
         match self {
-            CloneError::Gh(GhRunError::TimedOut { .. }) => true,
+            // an output held past the bound is a process gh started still running: maybe `git`
+            CloneError::Gh(GhRunError::TimedOut { .. } | GhRunError::Incomplete { .. }) => true,
             CloneError::Gh(GhRunError::Spawn(_) | GhRunError::Failed { .. }) => false,
             CloneError::NotOwnerSlashName { .. } | CloneError::Io { .. } => false,
         }

@@ -67,6 +67,10 @@ pub(crate) enum GhRunError {
     Failed { args: String, code: Option<i32>, stderr: String },
     #[error("`gh {args}` did not finish within {secs} s and was ended with everything it started; not confirmed gone: {unconfirmed:?}")]
     TimedOut { args: String, secs: u64, unconfirmed: Vec<u32> },
+    /// `gh` exited, but its output wasn't read whole: a process it started held the pipes past
+    /// the bound (and may still be writing what it was writing), or the read failed.
+    #[error("`gh {args}` exited (exit {code:?}) but its output is not whole: {note}")]
+    Incomplete { args: String, code: Option<i32>, note: String },
 }
 
 impl From<GhRunError> for CommandError {
@@ -84,10 +88,13 @@ impl From<GhRunError> for CommandError {
 async fn run_gh_owned(root: &Path, args: &[String], bound: Option<std::time::Duration>) -> Result<String, GhRunError> {
     use crate::inference::lane_process::{run_owned, Ended};
     let joined = args.join(" ");
-    let out = run_owned(gh_command(root, args), bound, "gh").await.map_err(|e| GhRunError::Spawn(e.to_string()))?;
+    let out = run_owned(gh_command(root, args), bound, "gh", std::sync::Arc::default()).await.map_err(|e| GhRunError::Spawn(e.to_string()))?;
     match out.ended {
-        Ended::Exited(status) if status.success() => Ok(String::from_utf8_lossy(&out.stdout).trim().to_string()),
-        Ended::Exited(status) => Err(GhRunError::Failed { args: joined, code: status.code(), stderr: String::from_utf8_lossy(&out.stderr).trim().to_string() }),
+        Ended::Exited(status) => match out.capture_note() {
+            Some(note) => Err(GhRunError::Incomplete { args: joined, code: status.code(), note }),
+            None if status.success() => Ok(String::from_utf8_lossy(&out.stdout.bytes).trim().to_string()),
+            None => Err(GhRunError::Failed { args: joined, code: status.code(), stderr: String::from_utf8_lossy(&out.stderr.bytes).trim().to_string() }),
+        },
         Ended::TimedOut { unconfirmed } => Err(GhRunError::TimedOut { args: joined, secs: bound.map_or(0, |b| b.as_secs()), unconfirmed }),
     }
 }

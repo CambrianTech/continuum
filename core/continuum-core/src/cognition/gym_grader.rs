@@ -317,11 +317,14 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
 /// code can spawn), never orphaned to init burning a core.
 async fn run_capped(cmd: tokio::process::Command, label: &str, timeout_secs: u64) -> Result<std::process::Output, String> {
     use crate::inference::lane_process::{run_owned, Ended};
-    let out = run_owned(cmd, Some(std::time::Duration::from_secs(timeout_secs)), "gym-grader")
+    let out = run_owned(cmd, Some(std::time::Duration::from_secs(timeout_secs)), "gym-grader", std::sync::Arc::default())
         .await
         .map_err(|e| format!("{label} spawn failed: {e}"))?;
+    if let (Ended::Exited(_), Some(note)) = (&out.ended, out.capture_note()) {
+        return Err(format!("{label} exited but {note}"));
+    }
     match out.ended {
-        Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout, stderr: out.stderr }),
+        Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout.bytes, stderr: out.stderr.bytes }),
         Ended::TimedOut { unconfirmed } if unconfirmed.is_empty() => Err(format!("{label} timeout ({timeout_secs}s)")),
         Ended::TimedOut { unconfirmed } => Err(format!("{label} timeout ({timeout_secs}s); not confirmed gone: {unconfirmed:?}")),
     }

@@ -268,21 +268,24 @@ impl CompetitorAgent for HermesArm {
         let started = Instant::now();
         // owned (lane_process::run_owned): a hung arm and the tools it started are ended at
         // the bound, or when this solve is dropped
-        let output = crate::inference::lane_process::run_owned(cmd, Some(SOLVE_TIMEOUT), "hermes")
+        let output = crate::inference::lane_process::run_owned(cmd, Some(SOLVE_TIMEOUT), "hermes", std::sync::Arc::default())
             .await
             .map_err(|e| format!("hermes: spawn/exec failed: {e}"))?;
+        if let Some(note) = output.capture_note() {
+            return Err(format!("hermes: its answer is not whole: {note}"));
+        }
         if let crate::inference::lane_process::Ended::TimedOut { unconfirmed } = &output.ended {
             return Err(format!(
                 "hermes: no answer within {}s (agent loop hung; ended, not confirmed gone: {unconfirmed:?})",
                 SOLVE_TIMEOUT.as_secs()
             ));
         }
-        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let answer = String::from_utf8_lossy(&output.stdout.bytes).trim().to_string();
         if answer.is_empty() {
             // Fail LOUD with the harness's own stderr — an empty answer is a real
             // failure to surface (e.g. the <64K-context startup rejection), never a
             // silent skip ([[fallbacks-are-illegal-fail-loud]]).
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = String::from_utf8_lossy(&output.stderr.bytes);
             let tail: String = stderr.lines().rev().take(3).collect::<Vec<_>>().join(" | ");
             return Err(format!("hermes: empty answer (stderr: {tail})"));
         }

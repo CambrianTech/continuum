@@ -1045,11 +1045,15 @@ pub(crate) async fn run_env(
     // past the ceiling, or when this future is dropped (a core reboot cancels it mid-await),
     // the child and everything it started are ended deepest first, and what isn't confirmed
     // gone is named. It stays in the core's process group, so a stop ends it too.
-    let out = crate::inference::lane_process::run_owned(cmd, Some(SUBPROCESS_CEILING), "grader")
+    let out = crate::inference::lane_process::run_owned(cmd, Some(SUBPROCESS_CEILING), "grader", std::sync::Arc::default())
         .await
         .map_err(|e| format!("could not run `{program}`: {e}"))?;
+    if let (crate::inference::lane_process::Ended::Exited(_), Some(note)) = (&out.ended, out.capture_note()) {
+        // a test run whose output isn't whole can't be graded on it: an environment fault, never a verdict
+        return Err(format!("`{program}` exited but {note} — an environment fault, never a verdict"));
+    }
     match out.ended {
-        crate::inference::lane_process::Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout, stderr: out.stderr }),
+        crate::inference::lane_process::Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout.bytes, stderr: out.stderr.bytes }),
         crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
             crate::probe!(
                 class = "benchmark.subprocess.ceiling",

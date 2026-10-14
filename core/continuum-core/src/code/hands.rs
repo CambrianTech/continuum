@@ -147,6 +147,14 @@ impl HandsLease {
         g.lingering.processes.extend(end.survivors.iter().copied());
         g.lingering.unknown.extend(end.unknown());
     }
+
+    /// Record an uncertainty no re-check can settle (a process that held an owned child's
+    /// output past its bound, holders unidentified), BEFORE the lease drops: the release holds
+    /// the hands and names it (Codex root on #5030).
+    pub fn keep_unknown(&self, why: String) {
+        let mut g = self.cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still records
+        g.lingering.unknown.push(why);
+    }
 }
 
 /// Admit work to `context`'s hands, or refuse by name when they are closing.

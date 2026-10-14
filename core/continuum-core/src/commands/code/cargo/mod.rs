@@ -114,10 +114,13 @@ pub(crate) async fn run_cargo(
     if let Some(target) = shared_target_dir() {
         cmd.env("CARGO_TARGET_DIR", target);
     }
-    let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "cargo")
+    let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "cargo", std::sync::Arc::default())
         .await
         .map_err(|e| CommandError::Internal(format!("code/cargo: failed to run cargo (is it on PATH?): {e}")))?;
-    let mut stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let mut stderr = String::from_utf8_lossy(&out.stderr.bytes).into_owned();
+    if let Some(note) = out.capture_note() {
+        stderr.push_str(&format!("\n[{note}]"));
+    }
     let (exit_code, timed_out) = match out.ended {
         crate::inference::lane_process::Ended::Exited(status) => (status.code(), false),
         crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
@@ -129,7 +132,7 @@ pub(crate) async fn run_cargo(
     };
     Ok(CargoRun {
         exit_code,
-        stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+        stdout: String::from_utf8_lossy(&out.stdout.bytes).into_owned(),
         stderr,
         timed_out,
         duration_ms: started.elapsed().as_millis() as u64,
