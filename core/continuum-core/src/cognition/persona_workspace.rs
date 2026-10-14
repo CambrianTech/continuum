@@ -1123,6 +1123,34 @@ async fn bind_held_card(
     bind_card(cycle, peer_id, focus).await
 }
 
+/// The activity this step perceives and acts IN: the board room of the card her hands are rooted on, by
+/// the one definition of "which board holds a card" (`modules::work::room_holding_card`,
+/// any activity, project or benchmark); else the room the turn was woken in. The wake room
+/// is a fallback for acts with no subject yet (a help call before she has chosen a task),
+/// never an override of one. It's the card of THESE hands (`context`): an eval's or a fork's
+/// acts never inherit her live card's room (Astra's review of #5005).
+pub(crate) async fn activity_room_for(
+    persona_id: Uuid,
+    context: Option<crate::code::hands::HandsContext>,
+    wake_room: Uuid,
+) -> Uuid {
+    if crate::persona::mind_room::is_private_room(persona_id, wake_room) {
+        return wake_room;
+    }
+    let Some(card) = acting_card_in(persona_id, context) else {
+        return wake_room;
+    };
+    let Some(runtime) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
+        .and_then(|registry| registry.get(persona_id))
+    else {
+        return wake_room;
+    };
+    match crate::modules::work::room_holding_card(runtime.airc(), airc_lib::WorkCardId::from_uuid(card)).await {
+        Some(room) => room.channel.as_uuid(),
+        None => wake_room,
+    }
+}
+
 /// Bind a turn to the hands of `card`'s claim (card fc9e9fd7): THE one binding both the
 /// room turn ([`root_at_held_card`]) and the held-work turn use. Resolves the card's
 /// checkout through the one owner of where a card's work lives

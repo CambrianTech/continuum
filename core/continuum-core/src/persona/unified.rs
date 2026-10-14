@@ -561,6 +561,10 @@ impl ArcRagSource {
 
 #[async_trait::async_trait]
 impl RagSource for ArcRagSource {
+    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+        self.0.room_scope()
+    }
+
     fn source_id(&self) -> &'static str {
         self.0.source_id()
     }

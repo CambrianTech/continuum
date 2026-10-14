@@ -835,7 +835,7 @@ impl LlmDeliberationFaculty {
             crate::probe!(
                 class = "delib.surface.room_affordances_unmatched",
                 persona = %self.persona_name,
-                room = %ws.room_id,
+                room = %ws.activity_room_id,
                 declared = ws.room_affordances.len(),
                 "the room's recipe declares affordances and none names a native verb — \
                  the rule binds nothing here; offering the pre-S1 surface instead"
@@ -3171,7 +3171,7 @@ impl LlmDeliberationFaculty {
             own_speech: &spoken,
             room_speech: &room_speech,
             working_memory: self.working_memory.as_ref(),
-            room_id: Some(ws.room_id),
+            room_id: Some(ws.activity_room_id),
             persona_id: Some(self.persona_id),
         };
         let (ledger, facts): (Vec<String>, Vec<String>) = super::perception_facts::render_facts(

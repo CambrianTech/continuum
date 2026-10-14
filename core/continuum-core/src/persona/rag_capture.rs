@@ -272,6 +272,10 @@ impl<S: RagSource> RecordingRagSource<S> {
 
 #[async_trait]
 impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
+    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+        self.inner.room_scope()
+    }
+
     fn source_id(&self) -> &'static str {
         self.inner.source_id()
     }

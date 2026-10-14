@@ -120,6 +120,10 @@ impl CachedRagSource {
 
 #[async_trait]
 impl RagSource for CachedRagSource {
+    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+        self.inner.room_scope()
+    }
+
     fn source_id(&self) -> &'static str {
         self.inner.source_id()
     }

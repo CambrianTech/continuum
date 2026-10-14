@@ -1061,18 +1061,20 @@ pub struct Workspace {
     /// projection; this is the source of truth for WHO said what. A raw-string
     /// burst collapses to a single opaque turn (rendered identically to today).
     pub turns: Vec<BurstTurn>,
-    /// The CONTEXT this tick reasons within — the room/conversation the turn is
+    /// The wake/speech CONTEXT — the room/conversation the turn is
     /// for (the third ID tier, contextId; see
     /// docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A). Faculties
-    /// scope their actions to it: the deliberation faculty stamps tool calls with
-    /// this room so a persona's hands act in the SAME room the turn is about, not
-    /// a phantom `nil` room. `Uuid::nil()` only in faculty-isolation tests that
+    /// retain this provenance; task grounding and actions use `activity_room_id`.
+    /// A wake in another room does not move the card's work there. `Uuid::nil()` only in faculty-isolation tests that
     /// don't run in a room. NEVER a session id — context is durable, session is
     /// ephemeral and never load-bearing for where an action lands.
     /// Guaranteed non-nil in production: the only live constructor is
     /// [`from_burst`](Self::from_burst) and a [`Burst`] carries a witnessed
     /// [`ActivityRoom`](crate::identity::ActivityRoom) (#425).
     pub room_id: Uuid,
+    /// Subject activity resolved from this step's admitted hands. Grounding and acts
+    /// share this scope; room_id remains wake/speech provenance.
+    pub activity_room_id: Uuid,
     /// Why this turn is happening — carried from [`Burst::cause`] so downstream
     /// receipts (prompt capture, dataset fork-guard #427) can tell a LIVED turn
     /// ("stimulus"/"ambient") from an eval-fork/fixture tick ("synthetic")
@@ -1181,6 +1183,7 @@ impl Workspace {
             turns: burst.turns,
             room_updates: burst.room_updates,
             room_id: burst.room.as_uuid(),
+            activity_room_id: burst.room.as_uuid(),
             cause: burst.cause,
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
@@ -2341,7 +2344,13 @@ impl WorkspaceCycle {
         // ROOM from the burst itself. Framing carries prompt and scheduling facts;
         // it never touches the conversation turns.
         // S1: what the ROOM's recipe lets her do, read before the burst is consumed.
-        let room_affordances = self.room_affordances_for(burst.room.as_uuid());
+        let activity_room_id = match self.acting() {
+            Some(body) => super::persona_workspace::activity_room_for(
+                body.persona_id, burst.hands, burst.room.as_uuid(),
+            ).await,
+            None => burst.room.as_uuid(),
+        };
+        let room_affordances = self.room_affordances_for(activity_room_id);
         let mut ws = Workspace::from_burst(burst)
             .with_cycle(cycle)
             .with_attention(framing.attention)
@@ -2352,6 +2361,16 @@ impl WorkspaceCycle {
             // #169: hand this turn the live streaming sink if the caller set one
             // (service_loop, just before a streamed Speak); `None` otherwise.
             .with_token_sink(self.current_token_sink());
+
+        ws.activity_room_id = activity_room_id;
+        if activity_room_id != ws.room_id {
+            crate::probe!(
+                class = "act.activity.resolved",
+                activity = %activity_room_id,
+                wake_room = %ws.room_id,
+                "perception and acts share the subject activity; wake remains provenance"
+            );
+        }
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
         let perception: Vec<&Arc<dyn Faculty>> = self

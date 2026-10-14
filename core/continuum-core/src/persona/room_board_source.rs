@@ -374,6 +374,10 @@ fn held_card_line(card: &airc_work::WorkCard, checkout: Option<&std::path::Path>
 
 #[async_trait]
 impl RagSource for RoomBoardSource {
+    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+        super::rag_budget::RagRoomScope::Activity
+    }
+
     fn source_id(&self) -> &'static str {
         SOURCE_ID
     }

@@ -95,27 +95,6 @@ impl ActChain {
     }
 }
 
-/// The activity an act happens IN: the board room of the card her hands are rooted on, by
-/// the one definition of "which board holds a card" (`modules::work::room_holding_card`,
-/// any activity, project or benchmark); else the room the turn was woken in. The wake room
-/// is a fallback for acts with no subject yet (a help call before she has chosen a task),
-/// never an override of one. It's the card of THESE hands (`context`): an eval's or a fork's
-/// acts never inherit her live card's room (Astra's review of #5005).
-async fn act_activity_room(persona_id: Uuid, context: Option<crate::code::hands::HandsContext>, wake_room: Uuid) -> Uuid {
-    let Some(card) = crate::cognition::persona_workspace::acting_card_in(persona_id, context) else {
-        return wake_room;
-    };
-    let Some(runtime) = crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
-        .and_then(|registry| registry.get(persona_id))
-    else {
-        return wake_room;
-    };
-    match crate::modules::work::room_holding_card(runtime.airc(), airc_lib::WorkCardId::from_uuid(card)).await {
-        Some(room) => room.channel.as_uuid(),
-        None => wake_room,
-    }
-}
-
 pub async fn apply_act(
     cycle: &WorkspaceCycle,
     calls: &[ToolCall],
@@ -138,33 +117,9 @@ pub async fn apply_act(
             None => return ActOutcome::NoHands,
         },
     };
-    // ONE decision per act: the activity it is IN is its SUBJECT's, never the room whose
-    // event happened to wake the turn (docs/architecture/EVENT-MIND.md, "the activity rides
-    // on the event"). Everything below (the tools' context, the act update, her working-
-    // memory stamp, the receipt) reads this one value. It used to be two: the stamp took the
-    // wake room and the receipt took `bench_round::room_for_card`, which knows benchmark
-    // rounds only, so Kimi's Career Wrangler work was stamped and radiated into the org
-    // room `cb2e21a1` all day (2026-10-04, "[result #9327; room cb2e21a1; ...]").
-    let wake_room = room_id;
-    // A turn in her mind room stays in her mind room (PRIVACY-OF-THOUGHT.md §4): its acts
-    // are never re-homed to a card's public activity, and nothing about them is published
-    // (no thought line, no receipt; sink 6). Her tools still act on the world; telling the
-    // room about it is hers to do, by publishing.
-    let private = crate::persona::mind_room::is_private_room(body.persona_id, wake_room);
-    let room_id = if private {
-        wake_room
-    } else {
-        act_activity_room(body.persona_id, executor.hands_context(), wake_room).await
-    };
-    if room_id != wake_room {
-        crate::probe!(
-            class = "act.activity.resolved",
-            actor = %body.persona_id,
-            activity = %room_id,
-            wake_room = %wake_room,
-            "the act lands in its subject's activity; the wake room is provenance only"
-        );
-    }
+    // Perception and execution share the activity resolved by the bound-turn owner.
+    // Private turns retain their mind room at that boundary.
+    let private = crate::persona::mind_room::is_private_room(body.persona_id, room_id);
 
     // Call history is not a cache-validity proof. Reads can change, failures can
     // recover, and earlier results may no longer fit the prompt. Execute through
