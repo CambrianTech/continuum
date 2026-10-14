@@ -35,7 +35,7 @@ on:
       - 'tools/scripts/lib/**'
       - 'tools/scripts/shared/cargo-features.sh'
       - '.github/workflows/core-binaries.yml'
-      - '.github/scripts/publish-core-package.sh'
+      - 'tools/scripts/tests/publish-core-package.test.sh'
   push:
     branches: [canary]
     # Every build input (continuum-cli-lifecycle prebuilt_artifact::BUILD_INPUTS, pinned by
@@ -432,7 +432,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NAME: ${{ steps.package.outputs.name }}
           DIR: ${{ runner.temp }}
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/publish-core-package.sh" "$DIR" "$NAME"
+        run: bash "$GITHUB_WORKSPACE/tools/scripts/lib/publish-core-package.sh" publish "$DIR" "$NAME"
+
+  # The publish/republish owner's failure paths, proven with a fake gh on every run (PRs too):
+  # a clean dispatch can't exercise them (Codex helper on #5043).
+  publish-script-test:
+    name: publish script failure paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: tools/scripts
+      - run: bash tools/scripts/tests/publish-core-package.test.sh
 
   publish-check:
     name: verify every built leg is published
@@ -446,41 +457,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          sparse-checkout: .github/scripts
+          sparse-checkout: tools/scripts/lib
       - uses: actions/download-artifact@v4
         with:
           pattern: core-*
           path: dist
           merge-multiple: true
-      - name: Republish any built leg missing from the release
-        shell: bash
-        run: |
-          set -uo pipefail
-          tag="canary-${GITHUB_SHA:0:12}"
-          shopt -s nullglob
-          manifests=(dist/*.json)
-          if [ "${#manifests[@]}" -eq 0 ]; then
-            echo "::error::no leg produced a package"
-            exit 1
-          fi
-          missing=()
-          for manifest in "${manifests[@]}"; do
-            name="$(basename "$manifest" .json)"
-            # the manifest goes up LAST, so its presence means that leg's publish completed
-            if gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name' 2>/dev/null | grep -qx "$name.json"; then
-              echo "$name: published"
-              continue
-            fi
-            echo "$name: missing from $tag; republishing from its artifact"
-            # one leg's failure must not stop the next leg (Codex root on #5043)
-            if ! bash .github/scripts/publish-core-package.sh dist "$name"; then
-              missing+=("$name")
-            fi
-          done
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::still unpublished: ${missing[*]} (rerun this job: gh run rerun --failed)"
-            exit 1
-          fi
+      - name: Republish any built leg not on the release as built
+        run: bash tools/scripts/lib/publish-core-package.sh check dist
 
   prune:
     name: prune old canary releases
