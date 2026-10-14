@@ -228,6 +228,16 @@ pub struct RunCapture {
     /// discards what the pipe already holds and exits is indistinguishable from one that read
     /// everything, when the input fit the pipe's buffer.
     pub input: StreamCapture,
+    /// Set once the child itself has exited and been reaped: from then on its tree can't be
+    /// walked, and a pipe still open is held by something it started.
+    exited: std::sync::atomic::AtomicBool,
+}
+
+impl RunCapture {
+    /// Whether the child itself has exited and been reaped.
+    pub fn exited(&self) -> bool {
+        self.exited.load(std::sync::atomic::Ordering::Acquire)
+    }
 }
 
 /// Read `pipe` into `into` until EOF or a read error, appending as it goes so a cut keeps the
@@ -253,51 +263,70 @@ async fn read_stream(pipe: Option<impl tokio::io::AsyncRead + Unpin>, into: std:
 /// ONE path for a timeout and a dropped waiter (a cancelled command, a rebooting core) alike. It
 /// keeps the admission of the work that started it (`code::hands::current`), so a release never
 /// completes under it, and what it can't confirm is kept on that admission.
+/// One pipe task a run owns: a reader of its stdout or stderr, or the writer of its stdin.
+/// Every one has the SAME lifecycle (Codex root on #5035: the ownership defect repeated across
+/// stream directions because the lifecycle was copied per direction): it records its own end on
+/// its stream, it is awaited in place, a JoinError is a failed stream, and an unfinished one is
+/// stopped and cut, never detached.
+struct PipeTask {
+    task: tokio::task::JoinHandle<()>,
+    stream: fn(&RunCapture) -> &StreamCapture,
+    /// What a holder of this pipe holds, in the words a fence names it with.
+    name: &'static str,
+}
+
+/// A child the core waits on, owned until its whole lifecycle has ended: the child and the tree
+/// it started, AND its pipes (Astra on #5026, Codex root on #5030 and #5035). Ending it is ONE
+/// path for a timeout and a dropped waiter (a cancelled command, a rebooting core) alike. It
+/// keeps the admission of the work that started it (`code::hands::current`), so a release never
+/// completes under it, and what it can't confirm is kept on that admission.
 struct OwnedChild {
     child: Option<tokio::process::Child>,
-    readers: Vec<tokio::task::JoinHandle<()>>,
-    /// Writes the run's input to the child's stdin and closes it, beside the wait; its outcome
-    /// is recorded on `capture.input`.
-    writer: Option<tokio::task::JoinHandle<()>>,
+    pipes: Vec<PipeTask>,
     capture: std::sync::Arc<RunCapture>,
     held: Option<std::sync::Arc<crate::code::hands::HandsLease>>,
     label: &'static str,
 }
 
 impl OwnedChild {
-    /// Stop reading, keeping the prefix: each stream not already finished is marked cut.
-    fn cut_readers(&mut self, why: &str) {
-        for reader in self.readers.drain(..) {
-            reader.abort();
-        }
-        self.capture.stdout.finish(CaptureEnd::Cut(why.to_string()));
-        self.capture.stderr.finish(CaptureEnd::Cut(why.to_string()));
-    }
-
-    /// Await every reader to its end, IN PLACE: they stay owned here, so a cancel or panic
-    /// mid-drain finds them in `readers` and [`Drop`] stops them (Codex root on #5030). A reader
-    /// that panicked or was aborted reads as a failed capture, never as whole.
-    async fn drain_readers(&mut self) {
-        let streams: [fn(&RunCapture) -> &StreamCapture; 2] = [|c| &c.stdout, |c| &c.stderr];
-        for (reader, stream) in self.readers.iter_mut().zip(streams) {
-            if let Err(join) = reader.await {
-                stream(&self.capture).finish(CaptureEnd::Failed(format!("its reader did not finish: {join}")));
+    /// Await every pipe to its end, IN PLACE: they stay owned here, so a cancel or panic
+    /// mid-await finds them in `pipes` and [`Drop`] stops them. A pipe task that panicked or
+    /// was aborted reads as a failed stream, never as whole.
+    async fn settle_pipes(&mut self) {
+        for pipe in self.pipes.iter_mut() {
+            if let Err(join) = (&mut pipe.task).await {
+                (pipe.stream)(&self.capture).finish(CaptureEnd::Failed(format!("its {} task did not finish: {join}", pipe.name)));
             }
         }
-        self.readers.clear(); // all at EOF or failed: nothing left to stop
+        self.pipes.clear(); // all settled: nothing left to stop
     }
 
-    /// Await the input writer to its end, IN PLACE: it stays owned here, so a cancel or panic
-    /// mid-await finds it in `writer` and [`Drop`] stops it and marks the input cut (Codex root
-    /// on #5035, the hole #5030 closed for the readers). A writer that panicked or was aborted
-    /// reads as failed delivery, never as delivered.
-    async fn settle_writer(&mut self) {
-        if let Some(writer) = self.writer.as_mut() {
-            if let Err(join) = writer.await {
-                self.capture.input.finish(CaptureEnd::Failed(format!("its writer did not finish: {join}")));
+    /// Stop every pipe that is still open, keeping what it read or wrote: each is marked cut with
+    /// `why`. Returns the names of the pipes that were still open.
+    fn cut_pipes(&mut self, why: &str) -> Vec<&'static str> {
+        let mut open = Vec::new();
+        for pipe in self.pipes.drain(..) {
+            if !pipe.task.is_finished() {
+                open.push(pipe.name);
             }
+            pipe.task.abort();
+            (pipe.stream)(&self.capture).finish(CaptureEnd::Cut(why.to_string())); // a pipe that already ended keeps its own end
         }
-        self.writer = None; // settled: nothing left to stop
+        open
+    }
+
+    /// After the child itself exited, a pipe still open is held by something it started, which
+    /// the tree walk can no longer find: it is kept on the admission as unidentified, never
+    /// claimed ended, and the release holds for it.
+    fn fence_holders(&self, open: &[&'static str], when: &str) {
+        if self.child.is_some() || open.is_empty() {
+            return; // the child's own end walks its tree
+        }
+        let why = format!("{}: {when}, a process it started still held its {} (holders unidentified, not claimed ended)", self.label, open.join(", "));
+        crate::probe!(class = "process.pipe_held", process = self.label, pipes = ?open, "an owned process exited but a process it started still held its pipes; the hands' release holds");
+        if let Some(lease) = &self.held {
+            lease.keep_unknown(why);
+        }
     }
 
     /// Hand the child to its end: a spawned task, so the caller's cancellation can't cut it
@@ -311,31 +340,10 @@ impl OwnedChild {
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        if let Some(writer) = self.writer.take() {
-            let writing = !writer.is_finished();
-            writer.abort(); // a child that never read its input doesn't keep a writer alive
-            self.capture.input.finish(CaptureEnd::Cut("the operation was cancelled".into()));
-            if writing && self.child.is_none() {
-                // the child exited but something still held its stdin: unidentified, and the
-                // release holds for it, as for a holder of its output
-                if let Some(lease) = &self.held {
-                    lease.keep_unknown(format!("{}: cancelled while a process it started may still hold its stdin (holders unidentified, not claimed ended)", self.label));
-                }
-            }
-        }
         // its waiter is gone mid-run (cancel, panic): the end still runs, holding its admission;
-        // the readers stop and what they read stays on the shared capture
-        let reading = self.readers.iter().any(|r| !r.is_finished());
-        if !self.readers.is_empty() {
-            self.cut_readers("the operation was cancelled");
-        }
-        if reading && self.child.is_none() {
-            // the child already exited, so its tree can't be walked: whatever still held its
-            // output when reading stopped is unidentified, and the release must hold for it
-            if let Some(lease) = &self.held {
-                lease.keep_unknown(format!("{}: cancelled while a process it started may still hold its output (holders unidentified, not claimed ended)", self.label));
-            }
-        }
+        // the pipes stop and what they carried stays on the shared capture
+        let open = self.cut_pipes("the operation was cancelled");
+        self.fence_holders(&open, "cancelled");
         let _ = self.end();
     }
 }
@@ -470,12 +478,13 @@ pub async fn run_owned_with_input(
         }
         _ => None,
     };
+    let mut pipes = vec![
+        PipeTask { task: tokio::spawn(read_stream(out_pipe, capture.clone(), |c| &c.stdout)), stream: |c| &c.stdout, name: "stdout" },
+        PipeTask { task: tokio::spawn(read_stream(err_pipe, capture.clone(), |c| &c.stderr)), stream: |c| &c.stderr, name: "stderr" },
+    ];
+    pipes.extend(writer.map(|task| PipeTask { task, stream: |c| &c.input, name: "stdin" }));
     let mut owned = OwnedChild {
-        writer,
-        readers: vec![
-            tokio::spawn(read_stream(out_pipe, capture.clone(), |c| &c.stdout)),
-            tokio::spawn(read_stream(err_pipe, capture.clone(), |c| &c.stderr)),
-        ],
+        pipes,
         child: Some(child),
         capture: capture.clone(),
         held: crate::code::hands::current(),
@@ -492,51 +501,26 @@ pub async fn run_owned_with_input(
         Ok(status) => {
             let status = status?; // a wait that failed leaves the child to the owner's end
             owned.child = None; // exited and reaped by wait()
-            // the lifecycle isn't over until the output is read: a process it started can hold the pipes
+            capture.exited.store(true, std::sync::atomic::Ordering::Release);
+            // the lifecycle isn't over until every pipe is settled: a process it started can hold
+            // its output open, or its stdin unread
             let in_time = match deadline {
-                Some(at) => tokio::time::timeout_at(at, owned.drain_readers()).await.is_ok(),
+                Some(at) => tokio::time::timeout_at(at, owned.settle_pipes()).await.is_ok(),
                 None => {
-                    owned.drain_readers().await;
+                    owned.settle_pipes().await;
                     true
                 }
             };
-            // and its input's delivery settled: once the child exits, a write it never took ends
-            // (a broken pipe) unless a process it started holds its stdin open
-            let settled = match deadline {
-                Some(at) => tokio::time::timeout_at(at, owned.settle_writer()).await.is_ok(),
-                None => {
-                    owned.settle_writer().await;
-                    true
-                }
-            };
-            if !settled {
-                // still owned: the timed-out settle left it in place
-                if let Some(writer) = owned.writer.take() {
-                    writer.abort();
-                }
-                let why = "a process it started held its stdin past the bound (holders unidentified, not claimed ended)";
-                capture.input.finish(CaptureEnd::Cut(why.into()));
-                if let Some(lease) = &owned.held {
-                    lease.keep_unknown(format!("{label}: {why}"));
-                }
-            }
             if !in_time {
-                let why = "a process it started held its output past the bound (holders unidentified, not claimed ended)";
-                owned.cut_readers(why); // still owned: the timed-out drain left them in place
-                if let Some(lease) = &owned.held {
-                    lease.keep_unknown(format!("{label}: {why}"));
-                }
-                crate::probe!(class = "process.output_held", process = label, "an owned process exited but a process it started held its output past the bound; the hands' release holds");
+                // still owned: the timed-out settle left them in place
+                let open = owned.cut_pipes("a process it started held it past the bound (holders unidentified, not claimed ended)");
+                owned.fence_holders(&open, "past the bound");
             }
             Ended::Exited(status)
         }
         Err(_elapsed) => {
             let pid = child.id();
-            owned.cut_readers("the bound elapsed");
-            if let Some(writer) = owned.writer.take() {
-                writer.abort();
-                capture.input.finish(CaptureEnd::Cut("the bound elapsed".into())); // a finished write already recorded its own end
-            }
+            owned.cut_pipes("the bound elapsed"); // the child's own end walks its tree
             let end = owned
                 .end()
                 .ok_or_else(|| std::io::Error::other("no runtime to end the timed-out process on"))? // never inside the core's async code
@@ -1059,7 +1043,7 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(5), "the bound covers the pipes, not only the exit");
         assert!(matches!(out.ended, Ended::Exited(status) if status.success()), "the shell itself exited: {out:?}");
         assert_eq!(String::from_utf8_lossy(&out.stdout.bytes), "out\n", "what was read is kept");
-        assert!(matches!(out.stdout.end, CaptureEnd::Cut(ref why) if why.contains("held its output")), "the read is cut by the holder: {out:?}");
+        assert!(matches!(out.stdout.end, CaptureEnd::Cut(ref why) if why.contains("held it past the bound")), "the read is cut by the holder: {out:?}");
         let lingering = crate::code::hands::close(context).await;
         assert_eq!(lingering.unknown.len(), 1, "the holder is held by name on the hands, never claimed ended: {lingering:?}");
         if let Some(pid) = std::fs::read_to_string(&holder_pid).ok().and_then(|t| t.trim().parse::<u32>().ok()) {
@@ -1079,14 +1063,9 @@ mod tests {
         tokio::select! {
             out = run => panic!("the run ended while its output was held: {out:?}"),
             () = async {
-                // the shell has exited and been reaped (the drain is under way) before the cancel
-                loop {
-                    if let Some(sh) = read_pid(&shell_pid) {
-                        let gone = !std::process::Command::new("kill").args(["-0", &sh.to_string()]).status().is_ok_and(|s| s.success());
-                        if gone && read_pid(&holder_pid).is_some() {
-                            break;
-                        }
-                    }
+                // the run itself says the shell has exited and been reaped, so the settle of its
+                // pipes is under way: the cancel lands in that phase, not on a guessed delay
+                while !capture.exited() {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             } => {}, // the run's future is dropped mid-drain
@@ -1177,7 +1156,7 @@ mod tests {
             .await
             .expect("ran");
         assert!(matches!(out.ended, Ended::Exited(_)), "the shell itself exited: {out:?}");
-        assert!(matches!(out.input, Some(CaptureEnd::Cut(ref why)) if why.contains("held its stdin")), "the input is cut by the holder: {:?}", out.input);
+        assert!(matches!(out.input, Some(CaptureEnd::Cut(ref why)) if why.contains("held it past the bound")), "the input is cut by the holder: {:?}", out.input);
         assert_eq!(crate::code::hands::close(context).await.unknown.len(), 1, "and the holder holds the release by name");
         if let Some(pid) = read_pid(&first) {
             kill9(pid); // the test's own cleanup of the holder it made
@@ -1192,11 +1171,11 @@ mod tests {
         tokio::select! {
             out = run => panic!("the run ended while its stdin was held: {out:?}"),
             () = async {
-                // the shell has written the holder's pid, so it is about to exit (or has)
-                while read_pid(&second).is_none() {
+                // the run itself says the shell has exited and been reaped: the writer's wait on the
+                // holder is under way, and the cancel lands in it, not after a guessed delay
+                while !capture.exited() {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(300)).await; // past its exit and reap
             } => {}, // the run's future is dropped during the writer's wait
         }
         assert_eq!(capture.input.snapshot().end, CaptureEnd::Cut("the operation was cancelled".into()), "the cancel cuts the input by name");
