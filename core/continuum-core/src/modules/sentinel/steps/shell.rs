@@ -82,12 +82,19 @@ pub async fn execute(
     let note = output.capture_note(); // its output isn't whole: said beside the result, never hidden
     let status = match output.ended {
         Ended::Exited(status) => status,
-        Ended::TimedOut { .. } => {
-            return Err(step_err(
-                pipeline_ctx.handle_id,
-                "Shell step",
-                format!("timed out after {timeout_secs}s{}", note.map(|n| format!("; {n}")).unwrap_or_default()),
-            ))
+        Ended::TimedOut { ref unconfirmed } => {
+            // what it wrote before the bound stays in the error, and teardown it couldn't
+            // confirm is named, never claimed complete (Codex root on #5035)
+            let mut why = format!("timed out after {timeout_secs}s");
+            if !unconfirmed.is_empty() {
+                why.push_str(&format!("; not confirmed gone: {unconfirmed:?}"));
+            }
+            for (name, read) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+                if !read.bytes.is_empty() {
+                    why.push_str(&format!("\n{name} before the bound:\n{}", String::from_utf8_lossy(&read.bytes).trim_end()));
+                }
+            }
+            return Err(step_err(pipeline_ctx.handle_id, "Shell step", why));
         }
     };
     let stdout = String::from_utf8_lossy(&output.stdout.bytes).to_string();

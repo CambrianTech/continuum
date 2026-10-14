@@ -274,11 +274,26 @@ impl ProcessCommand {
                     command = %self.name,
                     timeout_ms = self.manifest.timeout_ms,
                     unconfirmed = ?unconfirmed,
-                    "authored command exceeded its declared bound — it and what it started were ended"
+                    "authored command exceeded its declared bound; it was ended, and any pid listed is not confirmed gone"
                 );
-                return Err(format!("{}: timed out after {} ms", self.name, self.manifest.timeout_ms));
+                // what it wrote before the bound is kept in the error, and teardown is named,
+                // never claimed complete (Codex root on #5035)
+                let mut why = format!("{}: timed out after {} ms", self.name, self.manifest.timeout_ms);
+                if !unconfirmed.is_empty() {
+                    why.push_str(&format!("; not confirmed gone: {unconfirmed:?}"));
+                }
+                for (name, read) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
+                    if !read.bytes.is_empty() {
+                        why.push_str(&format!("\n{name} before the bound:\n{}", String::from_utf8_lossy(&read.bytes).trim_end()));
+                    }
+                }
+                return Err(why);
             }
         };
+        if let Some(note) = out.input_note() {
+            // its params didn't all reach it: whatever it answered, it didn't answer THIS call
+            return Err(format!("{}: exited, but {note}", self.name));
+        }
         if let Some(note) = out.capture_note() {
             // a result read from output that isn't whole is not a result
             return Err(format!("{}: exited, but its output is not whole: {note}", self.name));
