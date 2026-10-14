@@ -266,6 +266,19 @@ impl OwnedChild {
         self.capture.stderr.finish(CaptureEnd::Cut(why.to_string()));
     }
 
+    /// Await every reader to its end, IN PLACE: they stay owned here, so a cancel or panic
+    /// mid-drain finds them in `readers` and [`Drop`] stops them (Codex root on #5030). A reader
+    /// that panicked or was aborted reads as a failed capture, never as whole.
+    async fn drain_readers(&mut self) {
+        let streams: [fn(&RunCapture) -> &StreamCapture; 2] = [|c| &c.stdout, |c| &c.stderr];
+        for (reader, stream) in self.readers.iter_mut().zip(streams) {
+            if let Err(join) = reader.await {
+                stream(&self.capture).finish(CaptureEnd::Failed(format!("its reader did not finish: {join}")));
+            }
+        }
+        self.readers.clear(); // all at EOF or failed: nothing left to stop
+    }
+
     /// Hand the child to its end: a spawned task, so the caller's cancellation can't cut it
     /// short. `None` once it exited and was reaped, or with no runtime to run the end on.
     fn end(&mut self) -> Option<tokio::task::JoinHandle<TreeEnd>> {
@@ -277,10 +290,18 @@ impl OwnedChild {
 
 impl Drop for OwnedChild {
     fn drop(&mut self) {
-        // its waiter is gone (or the run is over): the end still runs, holding its admission;
+        // its waiter is gone mid-run (cancel, panic): the end still runs, holding its admission;
         // the readers stop and what they read stays on the shared capture
+        let reading = self.readers.iter().any(|r| !r.is_finished());
         if !self.readers.is_empty() {
             self.cut_readers("the operation was cancelled");
+        }
+        if reading && self.child.is_none() {
+            // the child already exited, so its tree can't be walked: whatever still held its
+            // output when reading stopped is unidentified, and the release must hold for it
+            if let Some(lease) = &self.held {
+                lease.keep_unknown(format!("{}: cancelled while a process it started may still hold its output (holders unidentified, not claimed ended)", self.label));
+            }
         }
         let _ = self.end();
     }
@@ -384,27 +405,16 @@ pub async fn run_owned(
             let status = status?; // a wait that failed leaves the child to the owner's end
             owned.child = None; // exited and reaped by wait()
             // the lifecycle isn't over until the output is read: a process it started can hold the pipes
-            let readers = std::mem::take(&mut owned.readers);
-            let stops: Vec<tokio::task::AbortHandle> = readers.iter().map(|r| r.abort_handle()).collect();
-            let drained = async {
-                for reader in readers {
-                    let _ = reader.await; // a reader records its own end on the capture
-                }
-            };
             let in_time = match deadline {
-                Some(at) => tokio::time::timeout_at(at, drained).await.is_ok(),
+                Some(at) => tokio::time::timeout_at(at, owned.drain_readers()).await.is_ok(),
                 None => {
-                    drained.await;
+                    owned.drain_readers().await;
                     true
                 }
             };
             if !in_time {
-                for stop in &stops {
-                    stop.abort(); // dropping a JoinHandle detaches its task; the reader must STOP
-                }
                 let why = "a process it started held its output past the bound (holders unidentified, not claimed ended)";
-                capture.stdout.finish(CaptureEnd::Cut(why.into()));
-                capture.stderr.finish(CaptureEnd::Cut(why.into()));
+                owned.cut_readers(why); // still owned: the timed-out drain left them in place
                 if let Some(lease) = &owned.held {
                     lease.keep_unknown(format!("{label}: {why}"));
                 }
@@ -939,6 +949,38 @@ mod tests {
         let lingering = crate::code::hands::close(context).await;
         assert_eq!(lingering.unknown.len(), 1, "the holder is held by name on the hands, never claimed ended: {lingering:?}");
         if let Some(pid) = std::fs::read_to_string(&holder_pid).ok().and_then(|t| t.trim().parse::<u32>().ok()) {
+            kill9(pid); // the test's own cleanup of the holder it made
+        }
+
+        // A cancel DURING that drain (Codex root on #5030 at 3f597b9aa): the readers stay owned
+        // and are stopped, and the holder is fenced on the hands just the same.
+        let (shell_pid, holder_pid) = (dir.path().join("sh2.pid"), dir.path().join("holder2.pid"));
+        let context = crate::code::hands::HandsContext::fresh();
+        let lease = std::sync::Arc::new(crate::code::hands::admit(context).expect("open hands"));
+        let capture = std::sync::Arc::new(RunCapture::default());
+        let mut cmd = tokio::process::Command::new("sh");
+        cmd.arg("-c").arg(format!("echo $$ > {}; echo out; sleep 600 & echo $! > {}", shell_pid.display(), holder_pid.display()));
+        let run = crate::code::hands::admitted(Some(lease), run_owned(cmd, None, "test", capture.clone()));
+        let read_pid = |path: &std::path::Path| std::fs::read_to_string(path).ok().and_then(|t| t.trim().parse::<u32>().ok());
+        tokio::select! {
+            out = run => panic!("the run ended while its output was held: {out:?}"),
+            () = async {
+                // the shell has exited and been reaped (the drain is under way) before the cancel
+                loop {
+                    if let Some(sh) = read_pid(&shell_pid) {
+                        let gone = !std::process::Command::new("kill").args(["-0", &sh.to_string()]).status().is_ok_and(|s| s.success());
+                        if gone && read_pid(&holder_pid).is_some() {
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            } => {}, // the run's future is dropped mid-drain
+        }
+        let lingering = crate::code::hands::close(context).await;
+        assert_eq!(lingering.unknown.len(), 1, "a cancel mid-drain fences the unidentified holder: {lingering:?}");
+        assert!(matches!(capture.stdout.snapshot().end, CaptureEnd::Cut(_)), "and its read is cut, its prefix kept on the capture");
+        if let Some(pid) = read_pid(&holder_pid) {
             kill9(pid); // the test's own cleanup of the holder it made
         }
     }
