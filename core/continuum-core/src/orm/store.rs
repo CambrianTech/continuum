@@ -34,11 +34,10 @@
 //!   the collection; callers needing filters today drop down to the
 //!   underlying `QueryBuilder` + `adapter.query()`. Later slice
 //!   wraps that as `find(filter)` once the use sites are clear.
-//! - No batch operations yet. The single-entity surface is what the
-//!   first wave of substrate entities (Engram, RoleTemplate,
-//!   HwTierDescriptor) needs; batching follows demand.
-//! - No transaction surface. The adapter trait doesn't expose
-//!   transactions yet either; that's a substrate-wide concern.
+//! - Atomic multi-row writes go through the adapter's all-or-nothing
+//!   `batch`: a store builds each row's operation ([`OrmStore::create_op`],
+//!   [`OrmStore::update_op`]) and [`commit`] applies them together, so a
+//!   decision and the record it changes land in ONE transaction.
 
 use std::marker::PhantomData;
 use std::sync::Arc;
@@ -50,7 +49,7 @@ use uuid::Uuid;
 use crate::orm::adapter::StorageAdapter;
 use crate::orm::entity::OrmEntity;
 use crate::orm::query::{QueryBuilder, StorageQuery};
-use crate::orm::types::{DataRecord, RecordMetadata, StorageResult};
+use crate::orm::types::{BatchOperation, BatchOperationType, DataRecord, RecordMetadata, StorageResult};
 
 /// Typed failure modes for OrmStore operations. Per [[no-fallbacks-
 /// ever]] + the typed-error pattern: every failure mode is named so
@@ -146,7 +145,7 @@ where
     /// Persist a new entity row. The caller supplies the entity's
     /// id — see module docs on identity discipline.
     pub async fn save(&self, id: Uuid, entity: &T) -> Result<(), OrmStoreError> {
-        let data = serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed)?;
+        let data = row_data(entity)?;
         let record = DataRecord {
             id: id.to_string(),
             collection: T::COLLECTION.to_string(),
@@ -220,7 +219,7 @@ where
         id: Uuid,
         fields: &P,
     ) -> Result<(), OrmStoreError> {
-        let data = serde_json::to_value(fields).map_err(OrmStoreError::SerializeFailed)?;
+        let data = row_data(fields)?;
         let result = self
             .adapter
             .update(T::COLLECTION, &id.to_string(), data, true)
@@ -229,12 +228,46 @@ where
         Ok(())
     }
 
+    /// The create of a new row, as one operation of an atomic [`commit`].
+    pub(crate) fn create_op(&self, id: Uuid, entity: &T) -> Result<BatchOperation, OrmStoreError> {
+        Ok(BatchOperation {
+            operation_type: BatchOperationType::Create,
+            collection: T::COLLECTION.to_string(),
+            id: Some(id.to_string()),
+            data: Some(row_data(entity)?),
+        })
+    }
+
+    /// The overwrite of an existing row ([`OrmStore::update`]), as one operation of an atomic
+    /// [`commit`].
+    pub(crate) fn update_op(&self, id: Uuid, entity: &T) -> Result<BatchOperation, OrmStoreError> {
+        Ok(BatchOperation {
+            operation_type: BatchOperationType::Update,
+            collection: T::COLLECTION.to_string(),
+            id: Some(id.to_string()),
+            data: Some(row_data(entity)?),
+        })
+    }
+
     /// Delete a row. Returns `Ok(true)` if a row was deleted,
     /// `Ok(false)` if the id wasn't present.
     pub async fn delete(&self, id: Uuid) -> Result<bool, OrmStoreError> {
         let result = self.adapter.delete(T::COLLECTION, &id.to_string()).await;
         Ok(unwrap_adapter(result, "delete", T::COLLECTION)?)
     }
+}
+
+/// An entity's row as the storage adapter takes it: the ONE place a store encodes a row.
+fn row_data<P: Serialize>(entity: &P) -> Result<serde_json::Value, OrmStoreError> {
+    serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed) // storage boundary: the adapter's row format (SQLite/Postgres JSON)
+}
+
+/// Apply `operations` (built by stores sharing `adapter`) ATOMICALLY: every one commits, or none
+/// does. The one way a decision and the row it changes are written together.
+pub(crate) async fn commit(adapter: &Arc<dyn StorageAdapter>, operations: Vec<BatchOperation>) -> Result<(), OrmStoreError> {
+    let result = adapter.batch(operations).await;
+    unwrap_adapter(result, "batch", "atomic commit")?;
+    Ok(())
 }
 
 /// Generic StorageResult unwrap for adapter CRUD operations.

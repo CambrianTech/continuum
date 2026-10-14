@@ -5,8 +5,11 @@
 //! which held 113 of Kimi's examples on the 5090 (card d24e3f25, 2026-10-10: dispatch
 //! 0512a303 never registered a job before the core was replaced). This verb is the
 //! operator's half of that contract: `not dispatched` makes the intent retryable so the
-//! next tick re-creates the job from the same batch; `dispatched` adopts a job the
-//! operator names. Both re-check the ledger first and refuse evidence that contradicts it.
+//! next tick re-creates the job from the same batch; `retry unconfirmed` does the same for an
+//! intent whose outcome can't be confirmed either way, as an AUDITED decision with the evidence
+//! checked about retained results journaled beside it, asserting nothing about whether a job
+//! existed (Codex root on Sahar's 2b4e7272); `dispatched` adopts a job the operator names. All
+//! re-check the ledger first and refuse evidence that contradicts it.
 
 use std::sync::Arc;
 
@@ -30,6 +33,18 @@ pub struct ResolveParams {
     /// registered under this dispatch.
     #[serde(default)]
     pub not_dispatched: bool,
+    /// The intent's outcome is UNCONFIRMED (no job registered under it, no evidence either way
+    /// that one ran) and the operator retries it anyway: it becomes retryable like
+    /// `notDispatched`, journaled as an operator decision with `evidence`, never as "no job was
+    /// created". Refused when a job IS registered under it: resolve that as dispatched with
+    /// `jobId`, then `genome/training-trigger/return` returns what it didn't train.
+    #[serde(default)]
+    pub retry_unconfirmed: bool,
+    /// With `retryUnconfirmed`: what was checked about retained results, one line per check
+    /// and its finding (adapters, artifacts, overlap with any job that ran). Kept on the
+    /// decision's receipt, committed together with the intent it releases.
+    #[serde(default)]
+    pub evidence: Vec<String>,
     /// The intent DID create this job (its registration carries no dispatch, or this
     /// one): the intent finishes as dispatched and the job takes the normal path.
     #[serde(default)]
@@ -97,8 +112,10 @@ impl From<ResolveReport> for ResolveOutcome {
 crate::action_command! {
     /// Settle a dispatch intent recovery cannot confirm, from named evidence: `notDispatched`
     /// (no job was ever registered under it; it becomes retryable and the next tick re-creates
-    /// the job from the same batch) or `jobId` (that job is adopted as the intent's). Both
-    /// re-check the ledger and refuse evidence it contradicts. The reason is journaled.
+    /// the job from the same batch), `retryUnconfirmed` with `evidence` (its outcome can't be
+    /// confirmed; retried as an audited operator decision, asserting no job either way), or
+    /// `jobId` (that job is adopted as the intent's). Each re-checks the ledger and refuses
+    /// evidence it contradicts. The reason is journaled.
     pub struct TrainingTriggerResolve {
         state: Arc<TrainingTriggerState>,
     }
@@ -123,17 +140,18 @@ pub(crate) async fn resolve(
             "a resolution carries its reason: say what evidence settles this dispatch".into(),
         ));
     }
-    let resolution = match (p.not_dispatched, p.job_id) {
-        (true, None) => DispatchResolution::NotDispatched,
-        (false, Some(job)) => DispatchResolution::Dispatched { job },
-        (true, Some(_)) => {
+    let resolution = match (p.not_dispatched, p.retry_unconfirmed, p.job_id) {
+        (true, false, None) => DispatchResolution::NotDispatched,
+        (false, true, None) => DispatchResolution::RetryUnconfirmed { evidence: p.evidence },
+        (false, false, Some(job)) => DispatchResolution::Dispatched { job },
+        (false, false, None) => {
             return Err(CommandError::Invalid(
-                "notDispatched OR jobId, not both: a dispatch either made a job or it did not".into(),
+                "nothing settled: give notDispatched, retryUnconfirmed (with evidence), or the jobId the dispatch made".into(),
             ))
         }
-        (false, None) => {
+        _ => {
             return Err(CommandError::Invalid(
-                "nothing settled: give notDispatched, or the jobId the dispatch made".into(),
+                "one disposition per resolution: notDispatched, retryUnconfirmed, or jobId".into(),
             ))
         }
     };
@@ -156,14 +174,16 @@ mod tests {
     async fn an_empty_reason_or_an_ambiguous_resolution_is_refused_up_front() {
         let (trigger, _executor, _dir) =
             crate::commands::training_trigger::test_support::build_runtime_trigger_only().await;
-        for (not_dispatched, job_id, reason) in [
-            (true, None, "  "),
-            (true, Some(Uuid::new_v4()), "x"),
-            (false, None, "x"),
+        for (not_dispatched, retry_unconfirmed, job_id, reason) in [
+            (true, false, None, "  "),
+            (true, false, Some(Uuid::new_v4()), "x"),
+            (true, true, None, "x"),
+            (false, true, Some(Uuid::new_v4()), "x"),
+            (false, false, None, "x"),
         ] {
             let got = resolve(
                 &trigger.state,
-                ResolveParams { dispatch_id: Uuid::new_v4(), not_dispatched, job_id, reason: reason.into() },
+                ResolveParams { dispatch_id: Uuid::new_v4(), not_dispatched, retry_unconfirmed, evidence: Vec::new(), job_id, reason: reason.into() },
                 None,
             )
             .await;
@@ -180,7 +200,7 @@ mod tests {
         let id = Uuid::new_v4();
         let got = resolve(
             &trigger.state,
-            ResolveParams { dispatch_id: id, not_dispatched: true, job_id: None, reason: "never made a job".into() },
+            ResolveParams { dispatch_id: id, not_dispatched: true, retry_unconfirmed: false, evidence: Vec::new(), job_id: None, reason: "never made a job".into() },
             None,
         )
         .await

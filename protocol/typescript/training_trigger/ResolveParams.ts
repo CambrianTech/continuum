@@ -12,6 +12,20 @@ dispatchId: string,
  */
 notDispatched: boolean, 
 /**
+ * The intent's outcome is UNCONFIRMED (no job registered under it, no evidence either way
+ * that one ran) and the operator retries it anyway: it becomes retryable like
+ * `notDispatched`, journaled as an operator decision with `evidence`, never as "no job was
+ * created". Refused when a job IS registered under it: resolve that as dispatched with
+ * `jobId`, then `genome/training-trigger/return` returns what it didn't train.
+ */
+retryUnconfirmed: boolean, 
+/**
+ * With `retryUnconfirmed`: what was checked about retained results, one line per check
+ * and its finding (adapters, artifacts, overlap with any job that ran). Kept on the
+ * decision's receipt, committed together with the intent it releases.
+ */
+evidence: Array<string>, 
+/**
  * The intent DID create this job (its registration carries no dispatch, or this
  * one): the intent finishes as dispatched and the job takes the normal path.
  */
