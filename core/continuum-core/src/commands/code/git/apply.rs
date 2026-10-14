@@ -71,7 +71,7 @@ crate::action_command! {
         let root = workspace_root_for(&this.state, ctx).await?;
         let written = root.clone();
         let check = p.check;
-        let message = git_bridge::git_apply(&root, &p.patch, check).await
+        let message = git_bridge::git_apply(&root, &p.patch, check)
             .await
             .map_err(|e| CommandError::Invalid(format!(
                 "patch did not apply cleanly: {e}. Regenerate it against the current \
