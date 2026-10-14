@@ -564,7 +564,7 @@ pub fn read_extent(
     let (content, encoding) = match String::from_utf8(bytes) {
         Ok(text) => (text, "utf8"),
         Err(e) => (
-            base64::engine::general_purpose::STANDARD.encode(e.as_bytes()),
+            base64::engine::general_purpose::STANDARD.encode(e.as_bytes()), // tool/output JSON wire: preserve exact non-UTF8 page bytes in its string field
             "base64",
         ),
     };
