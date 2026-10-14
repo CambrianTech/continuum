@@ -325,6 +325,8 @@ pub struct WorkingMemory {
 pub enum WmKind {
     /// Chain-of-thought the persona produced (`record`).
     Thought,
+    /// Public text authored alongside native tool calls, scoped to their activity.
+    ActionStatement { room: Uuid },
     /// A REAL tool execution + its result head — the only kind that renders
     /// the `[action #N]` receipt stamp.
     Receipt { n: u64 },
@@ -530,6 +532,47 @@ pub struct WmEntry {
 }
 
 impl WorkingMemory {
+    /// Preserve the public decision separately from private reasoning and tool output.
+    /// It uses the existing bounded, checkpointed entry stream and acting-root scope.
+    pub fn record_action_statement(&self, text: &str, room: Uuid) {
+        if text.trim().is_empty() || room.is_nil() {
+            return;
+        }
+        let scope = self.scope.lock().clone();
+        let mut entries = self.entries.lock();
+        entries.push_back(WmEntry {
+            kind: WmKind::ActionStatement { room },
+            text: text.to_owned(),
+            acts: Vec::new(),
+            scope,
+        });
+        while entries.len() > self.capacity {
+            entries.pop_front();
+        }
+    }
+
+    /// The latest authored decision in this exact activity/root, until settlement.
+    /// The prompt owner prices the whole statement with required action feedback;
+    /// attention's optional working-memory bid cannot silently remove it.
+    pub fn action_statement(&self, room: Uuid) -> Option<String> {
+        if room.is_nil() {
+            return None;
+        }
+        let scope = self.scope.lock().clone();
+        self.entries
+            .lock()
+            .iter()
+            .rev()
+            .filter(|entry| entry.scope == scope || matches!(entry.kind, WmKind::Settlement))
+            .take_while(|entry| !matches!(entry.kind, WmKind::Settlement))
+            .find_map(|entry| match entry.kind {
+                WmKind::ActionStatement { room: authored_room } if authored_room == room => {
+                    Some(entry.text.clone())
+                }
+                _ => None,
+            })
+    }
+
     pub fn new(capacity: usize) -> Self {
         static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
         Self {
@@ -1634,6 +1677,9 @@ impl Faculty for WorkingMemoryFaculty {
     // reasoning into phase 1 so the deliberator conditions on it in phase 2.
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         let mut entries = self.memory.recent_entries();
+        // Public action statements use their room-scoped assistant projection,
+        // never the optional interior-thought bid.
+        entries.retain(|entry| !matches!(entry.kind, WmKind::ActionStatement { .. }));
         let dispatched = self.memory.dispatched_snapshot();
         if entries.is_empty() && dispatched.is_empty() {
             return None;
