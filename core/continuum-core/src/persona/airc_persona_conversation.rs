@@ -1307,7 +1307,29 @@ mod tests {
             }),
         ).unwrap();
         work.headers = headers;
+        // Optional routing metadata must not gate valid work-bridge payloads.
+        work.headers.remove(airc_work::HEADER_FORGE_WORK_EVENT_KIND);
         work.body = Some(body);
+        // Both bridge consumers accept valid body hints without a kind header.
+        // Exercise the review variant through the same admission owner too.
+        let media = serde_json::from_value(serde_json::json!({
+            "hash": "b".repeat(64), "size_bytes": 12
+        })).unwrap();
+        let review = airc_work::WorkEvent::WorkSubmissionReviewed(airc_work::WorkSubmissionReview {
+            review_id: airc_work::WorkReviewId::new(), card_id: airc_work::WorkCardId::new(),
+            submission_id: airc_work::SubmissionId::new(), artifact: media,
+            review_card_id: airc_work::WorkCardId::new(), review_claim_id: airc_work::ClaimId::new(),
+            reviewer: airc_core::PeerId::from_uuid(peer), outcome: airc_work::WorkReviewOutcome::Passed,
+            evidence: serde_json::from_value(serde_json::json!({ "hash": "c".repeat(64), "size_bytes": 12 })).unwrap(),
+            evidence_text: None, reviewed_at_ms: 1,
+        });
+        let mut review_event = event("");
+        let (mut headers, body) = airc_work::encode_work_event(&review).unwrap();
+        headers.remove(airc_work::HEADER_FORGE_WORK_EVENT_KIND);
+        review_event.headers = headers;
+        review_event.body = Some(body);
+        assert!(matches!(AttentionEvent::classify(Arc::new(review_event)).unwrap().perception.unwrap().work,
+            Some(crate::airc::realtime_wire::RoomWork::Reviewed { .. })));
         let work_id = work.event_id.as_uuid();
         frames.push(Ok(Arc::new(work)));
         let mut directed = event("@citizen Shared Cargo owner: please wait");
@@ -1879,6 +1901,11 @@ mod tests {
         let incoming = perceptual_from_event(&media_event).expect("caption turn");
         assert_eq!(incoming.text, row.text);
         assert_eq!(incoming.media.len(), 1);
+        let (sender, rendered) = crate::airc::realtime_wire::room_turn_from_event(&media_event).unwrap();
+        let attention = AttentionEvent::classify(Arc::new(media_event.clone())).unwrap();
+        let classified = attention.perception.unwrap();
+        assert_eq!(SeenRooms::fingerprint(sender, &rendered),
+            SeenRooms::fingerprint(classified.peer_id, &classified.render_content()));
         assert!(incoming.render_room_update().contains("contents not loaded"));
         let restored: IncomingMessage = serde_json::from_value(serde_json::to_value(&incoming).unwrap()).unwrap();
         assert_eq!(restored.media, incoming.media);
@@ -2140,11 +2167,10 @@ impl AircPersonaConversation {
         attention: AttentionEvent,
     ) -> Option<IncomingMessage> {
         let event = attention.event;
-        // #146 diagnostic: every classified envelope reaching attention. If this probe never fires
-        // under a room burst, the stream is empty → airc-lib delivery
-        // gap. If it fires but perceptual/self drops it, the gap is
-        // continuum-side (decode/self-filter). One line per event,
-        // greppable by probe_class, cheap enough for a live stream.
+        // #146 diagnostic: every classified envelope reaching attention. Absence
+        // is not evidence of a delivery gap: a healthy stream may contain only
+        // non-perceptual frames filtered by the shared admission boundary.
+        // Retained decode faults and self-filter outcomes remain observable here.
         let body_kind = match event.body.as_ref() {
             None => "none",
             Some(b) if b.as_text().is_some() => "text",
@@ -2155,7 +2181,7 @@ impl AircPersonaConversation {
             persona = %self.own_peer_id,
             from_peer = %event.peer_id,
             body_kind,
-            "persona subscribe stream yielded a raw event (#146)"
+            "classified attention envelope reached consumer (#146)"
         );
         // Card-state transitions bridge onto the internal bus HERE —
         // the persona subscribe streams are the only channel-complete

@@ -198,12 +198,14 @@ pub enum RoomWork {
 /// Decode a typed work event from the room, if the event is one. `Ok(None)` = not a
 /// work event (the chat path applies). Headers decide; the body is decoded once.
 pub fn room_work_from_event(event: &TranscriptEvent) -> Result<Option<RoomWork>, &'static str> {
-    // The same gate the codec applies, on the public header: a work event carries the
-    // forge work body hint and its kind header. Anything else is the chat path.
-    let kind = match event.headers.get(airc_work::HEADER_FORGE_WORK_EVENT_KIND) {
-        Some(kind) => kind.clone(),
-        None => return Ok(None),
-    };
+    // The body hint is authoritative in the shared work codec. The kind header
+    // is optional routing metadata; requiring it would hide valid bridge events.
+    // Retain kind-only malformed frames for the existing decode diagnostic.
+    if !airc_work::transcript_is_work_event(event)
+        && !event.headers.contains_key(airc_work::HEADER_FORGE_WORK_EVENT_KIND)
+    {
+        return Ok(None);
+    }
     let work = airc_work::decode_work_event(&event.headers, event.body.as_ref()).map_err(|_| "work_event_decode_error")?;
     use airc_work::WorkEvent as W;
     Ok(Some(match &work {
@@ -220,7 +222,13 @@ pub fn room_work_from_event(event: &TranscriptEvent) -> Result<Option<RoomWork>,
         W::CardStateChanged(c) => RoomWork::StateChanged { card_id: c.card_id.as_uuid(), state: c.state, by: c.changed_by.as_uuid() },
         W::WorkSubmitted(s) => RoomWork::Submitted { card_id: s.card_id.as_uuid(), publisher: s.publisher.as_uuid() },
         W::CardClaimed(c) => RoomWork::Claimed { card_id: c.card_id.as_uuid(), owner: c.owner.as_uuid() },
-        _ => RoomWork::Other { kind },
+        _ => RoomWork::Other {
+            // Project the decoded variant through the SDK owner, never trust an
+            // optional (or contradictory) routing hint as the board fact.
+            kind: airc_work::work_event_headers(&work)
+                .remove(airc_work::HEADER_FORGE_WORK_EVENT_KIND)
+                .ok_or("work_event_decode_error")?,
+        },
     }))
 }
 
