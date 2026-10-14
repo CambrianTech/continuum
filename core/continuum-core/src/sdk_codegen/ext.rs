@@ -23,6 +23,7 @@
 //! connection) is declared in the schema as the next tier and refused until built.
 
 use super::{AccessLevel, CommandDescriptor, DynCommand, TypeRef, WireShape};
+use crate::inference::lane_process::Answer;
 use crate::runtime::CommandResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -266,9 +267,34 @@ impl ProcessCommand {
         let out = crate::inference::lane_process::run_owned_with_input(cmd, Some(body), Some(bound), "ext-command", std::sync::Arc::default())
             .await
             .map_err(|e| format!("{}: cannot run {:?}: {e}", self.name, self.manifest.exec[0]))?;
-        let status = match out.ended {
-            crate::inference::lane_process::Ended::Exited(status) => status,
-            crate::inference::lane_process::Ended::TimedOut { ref unconfirmed } => {
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let stdout = match out.answer() {
+            Answer::Whole(stdout) => stdout,
+            // its params didn't all reach it, or what it wrote wasn't read whole: whatever it
+            // answered, it didn't answer THIS call
+            Answer::NotWhole(note) => return Err(format!("{}: exited 0, but {note}", self.name)),
+            Answer::Failed { status, stderr, note } => {
+                crate::probe!(
+                    class = "ext.command.failed",
+                    command = %self.name,
+                    code = status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
+                    elapsed_ms,
+                    "authored command exited non-zero"
+                );
+                // its own failure first, whole: what to show is the budgeter's call, never a fixed
+                // cut (Joel, 2026-10-11); a delivery note goes beside it, never in its place
+                let mut why = format!(
+                    "{}: exit {} — {}",
+                    self.name,
+                    status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
+                    String::from_utf8_lossy(&stderr.bytes).trim()
+                );
+                if let Some(note) = note {
+                    why.push_str(&format!(" ({note})"));
+                }
+                return Err(why);
+            }
+            Answer::TimedOut { unconfirmed } => {
                 crate::probe!(
                     class = "ext.command.timed_out",
                     command = %self.name,
@@ -290,32 +316,7 @@ impl ProcessCommand {
                 return Err(why);
             }
         };
-        if let Some(note) = out.input_note() {
-            // its params didn't all reach it: whatever it answered, it didn't answer THIS call
-            return Err(format!("{}: exited, but {note}", self.name));
-        }
-        if let Some(note) = out.capture_note() {
-            // a result read from output that isn't whole is not a result
-            return Err(format!("{}: exited, but its output is not whole: {note}", self.name));
-        }
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        if !status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr.bytes);
-            crate::probe!(
-                class = "ext.command.failed",
-                command = %self.name,
-                code = status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
-                elapsed_ms,
-                "authored command exited non-zero"
-            );
-            return Err(format!(
-                "{}: exit {} — {}",
-                self.name,
-                status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
-                stderr.trim() // whole: what to show is the budgeter's call, never a fixed cut (Joel, 2026-10-11)
-            ));
-        }
-        let stdout = String::from_utf8_lossy(&out.stdout.bytes);
+        let stdout = String::from_utf8_lossy(&stdout.bytes);
         let value = if stdout.trim().is_empty() {
             Value::Null
         } else {

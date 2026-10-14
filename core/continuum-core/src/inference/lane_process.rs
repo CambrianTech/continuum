@@ -379,10 +379,43 @@ pub struct OwnedOutput {
     pub ended: Ended,
 }
 
+/// A run's answer, read ONE way by every consumer whose result is its stdout (an
+/// authored command, a git): see [`OwnedOutput::answer`].
+#[derive(Debug)]
+pub enum Answer<'a> {
+    /// It exited 0 with its input delivered and its output read whole: `stdout` is the answer.
+    Whole(&'a Captured),
+    /// It exited non-zero: ITS failure, said with its status and stderr. `note` says, beside
+    /// that and never in place of it, what of its input or output wasn't whole.
+    Failed { status: std::process::ExitStatus, stderr: &'a Captured, note: Option<String> },
+    /// It exited 0, but its input wasn't delivered or its output isn't whole: not an answer.
+    NotWhole(String),
+    /// It outlived its bound and was ended with what it started; these pids are not confirmed gone.
+    TimedOut { unconfirmed: &'a [u32] },
+}
+
 impl OwnedOutput {
-    /// Why its input wasn't delivered whole, when it wasn't: a consumer whose result depends
-    /// on its input (an authored command's params, a patch) rejects the result then.
-    pub fn input_note(&self) -> Option<String> {
+    /// The run's answer. A non-zero exit is the child's own verdict and outranks a delivery note: a child may
+    /// legitimately exit before reading its input, and whether the write lands first is a race
+    /// (canary run 38541241843, Codex root on #5035). A zero exit is an answer only when its
+    /// input was delivered whole and its output read whole.
+    pub fn answer(&self) -> Answer<'_> {
+        let status = match self.ended {
+            Ended::Exited(status) => status,
+            Ended::TimedOut { ref unconfirmed } => return Answer::TimedOut { unconfirmed },
+        };
+        let notes: Vec<String> = [self.input_note(), self.capture_note()].into_iter().flatten().collect();
+        let note = (!notes.is_empty()).then(|| notes.join("; "));
+        match (status.success(), note) {
+            (false, note) => Answer::Failed { status, stderr: &self.stderr, note },
+            (true, Some(note)) => Answer::NotWhole(note),
+            (true, None) => Answer::Whole(&self.stdout),
+        }
+    }
+
+    /// Why its input wasn't delivered whole, when it wasn't: read through [`Self::answer`], where
+    /// it decides a zero exit and sits beside a non-zero one.
+    fn input_note(&self) -> Option<String> {
         match self.input.as_ref()? {
             CaptureEnd::Complete => None,
             CaptureEnd::Failed(why) => Some(format!("its input was not delivered ({why})")),
@@ -1117,7 +1150,24 @@ mod tests {
         assert!(matches!(closed.ended, Ended::Exited(status) if status.success()), "it exited 0: {closed:?}");
         assert_eq!(String::from_utf8_lossy(&closed.stdout.bytes).trim(), "{}", "with valid JSON");
         assert!(matches!(closed.input, Some(CaptureEnd::Failed(_))), "but its input was not delivered: {:?}", closed.input);
-        assert!(closed.input_note().is_some(), "and a required-input consumer is told so");
+        assert!(matches!(closed.answer(), Answer::NotWhole(ref note) if note.contains("input")), "and it is not an answer: {:?}", closed.answer());
+
+        // canary run 38541241843 (Codex root on #5035): a child that exits non-zero BEFORE reading
+        // its input lost its own verdict to the broken-pipe note whenever the write landed first.
+        // Past the pipe's buffer the write can only end by the exit, so this is that race, always.
+        let mut refuses = tokio::process::Command::new("sh");
+        refuses.arg("-c").arg("echo boom >&2; exit 3");
+        let failed = run_owned_with_input(refuses, Some(vec![b'x'; 4 << 20]), Some(std::time::Duration::from_secs(10)), "test", std::sync::Arc::default())
+            .await
+            .expect("ran");
+        match failed.answer() {
+            Answer::Failed { status, stderr, note } => {
+                assert_eq!(status.code(), Some(3), "its own exit status is kept");
+                assert_eq!(String::from_utf8_lossy(&stderr.bytes).trim(), "boom", "and its own stderr");
+                assert!(note.is_some_and(|n| n.contains("input")), "the undelivered input is said beside it, never in place of it");
+            }
+            other => panic!("a non-zero exit is the child's own failure: {other:?}"),
+        }
 
         // A cancelled run: the input's end is on the operation's capture, never left open.
         let capture = std::sync::Arc::new(RunCapture::default());
