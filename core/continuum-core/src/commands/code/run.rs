@@ -211,35 +211,42 @@ impl ActionCommand for CodeRun {
     }
 }
 
-/// `stderr` with the note of why the run's output isn't whole, when it isn't (a read that
-/// failed, or a process it started holding the pipes past the bound): beside the verdict, never
-/// in place of it. A timeout's own cut is the timeout note's to say.
-fn with_capture_note(mut stderr: String, out: &crate::inference::lane_process::OwnedOutput) -> String {
-    if matches!(out.ended, crate::inference::lane_process::Ended::TimedOut { .. }) {
-        return stderr;
-    }
-    if let Some(note) = out.capture_note() {
+/// `stderr` with everything the run's own output can't say about itself, on EVERY path (Codex
+/// root on #5030 at 6c7bd0d82): a timeout and what it couldn't confirm gone, and how each stream
+/// was read. A timeout's output is what was READ before the kill, never claimed as everything
+/// it produced; a read that failed, or one a process it started held past the bound, is named
+/// beside the verdict, never hidden behind it.
+fn with_run_notes(mut stderr: String, out: &crate::inference::lane_process::OwnedOutput, secs: u64, hint: &str) -> String {
+    use crate::inference::lane_process::{CaptureEnd, Ended};
+    let mut note = |line: String| {
         if !stderr.is_empty() && !stderr.ends_with('\n') {
             stderr.push('\n');
         }
-        stderr.push_str(&format!("[{note}]"));
+        stderr.push_str(&line);
+    };
+    let timed_out = matches!(out.ended, Ended::TimedOut { .. });
+    if let Ended::TimedOut { unconfirmed } = &out.ended {
+        note(format!("[killed: exceeded the {secs}s run timeout{hint} — the output above is what was read before the kill]"));
+        if !unconfirmed.is_empty() {
+            note(format!("[not confirmed gone: {unconfirmed:?}]"));
+        }
+    }
+    for (name, read) in [("stdout", &out.stdout), ("stderr", &out.stderr)] {
+        match &read.end {
+            CaptureEnd::Complete => {}
+            CaptureEnd::Cut(_) if timed_out => {} // the kill's own cut, said above
+            CaptureEnd::Cut(why) => note(format!("[{name} was cut: {why}]")),
+            CaptureEnd::Failed(why) => note(format!("[{name} could not be read whole: {why}]")),
+        }
     }
     stderr
 }
 
-/// The timeout verdict, appended AFTER whatever the child managed to write (QA from Joaquin,
-/// card ba846f38: a killed sweep must still show its work). `unconfirmed` names what the end
-/// couldn't confirm gone; while any is, its output wasn't awaited.
-fn timeout_note(partial_stderr: &str, secs: u64, hint: &str, unconfirmed: &[u32]) -> String {
-    let mut s = partial_stderr.to_string();
-    if !s.is_empty() && !s.ends_with('\n') {
-        s.push('\n');
-    }
-    s.push_str(&format!("[killed: exceeded the {secs}s run timeout{hint} — the output above is everything it produced before the kill]"));
-    if !unconfirmed.is_empty() {
-        s.push_str(&format!("\n[not confirmed gone: {unconfirmed:?}]"));
-    }
-    s
+/// Whether both streams were read to their end: a run whose output isn't whole is not `ok`,
+/// whatever its exit status (its result can't be read as complete).
+fn read_whole(out: &crate::inference::lane_process::OwnedOutput) -> bool {
+    use crate::inference::lane_process::CaptureEnd;
+    out.stdout.end == CaptureEnd::Complete && out.stderr.end == CaptureEnd::Complete
 }
 
 /// Compile the given complete Rust program with `rustc`, then run the produced
@@ -298,28 +305,23 @@ async fn run_python(
     // line endings, so the result carries one shape on every host (BigMama's note on
     // #4427: her stdout rows carried a trailing `\r`).
     let stdout = String::from_utf8_lossy(&out.stdout.bytes).replace("\r\n", "\n");
-    let stderr = with_capture_note(String::from_utf8_lossy(&out.stderr.bytes).replace("\r\n", "\n"), &out);
+    let hint = format!(" (raise timeout_secs up to {MAX_TIMEOUT_SECS}s, or use code/shell for long-running work)");
+    let stderr = with_run_notes(String::from_utf8_lossy(&out.stderr.bytes).replace("\r\n", "\n"), &out, timeout.as_secs(), &hint);
+    let whole = read_whole(&out);
     match out.ended {
         // Same honest shape as the Rust path: a timeout is a RESULT (she reads it
         // and adjusts), never a hidden kill — and it carries the partial output.
-        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => Ok(CodeRunResult {
+        crate::inference::lane_process::Ended::TimedOut { .. } => Ok(CodeRunResult {
             ok: false,
             stdout,
-            stderr: timeout_note(
-                &stderr,
-                timeout.as_secs(),
-                &format!(
-                    " (raise timeout_secs up to {MAX_TIMEOUT_SECS}s, or use code/shell for long-running work)"
-                ),
-                &unconfirmed,
-            ),
+            stderr,
             exit_code: None,
             duration_ms,
             timed_out: true,
             interpreter: interpreter_label.clone(),
         }),
         crate::inference::lane_process::Ended::Exited(status) => Ok(CodeRunResult {
-            ok: status.success(),
+            ok: status.success() && whole,
             stdout,
             stderr,
             exit_code: status.code(),
@@ -381,24 +383,26 @@ async fn compile_and_run_rust(
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: failed to run rustc (is it on PATH?): {e}")))?;
     match &compiled.ended {
-        crate::inference::lane_process::Ended::Exited(status) if status.success() => {} // compiled — fall through to run
+        // compiled, and rustc's output read whole — fall through to run. A successful exit whose
+        // output a process it started still held (a linker) doesn't vouch for the binary yet.
+        crate::inference::lane_process::Ended::Exited(status) if status.success() && read_whole(&compiled) => {}
         crate::inference::lane_process::Ended::Exited(status) => {
             return Ok(CodeRunResult {
                 exit_code: status.code(),
                 ok: false,
                 stdout: String::from_utf8_lossy(&compiled.stdout.bytes).into_owned(),
-                stderr: with_capture_note(String::from_utf8_lossy(&compiled.stderr.bytes).into_owned(), &compiled),
+                stderr: with_run_notes(String::from_utf8_lossy(&compiled.stderr.bytes).into_owned(), &compiled, timeout.as_secs(), " (rustc)"),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: false,
                 interpreter: "rustc".to_string(),
             })
         }
-        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
+        crate::inference::lane_process::Ended::TimedOut { .. } => {
             return Ok(CodeRunResult {
                 exit_code: None,
                 ok: false,
                 stdout: String::new(),
-                stderr: timeout_note(&String::from_utf8_lossy(&compiled.stderr.bytes), timeout.as_secs(), " (rustc)", &unconfirmed),
+                stderr: with_run_notes(String::from_utf8_lossy(&compiled.stderr.bytes).into_owned(), &compiled, timeout.as_secs(), " (rustc)"),
                 duration_ms: started.elapsed().as_millis() as u64,
                 timed_out: true,
                 interpreter: "rustc".to_string(),
@@ -415,14 +419,15 @@ async fn compile_and_run_rust(
         .await
         .map_err(|e| CommandError::Internal(format!("code/run: failed to run the compiled binary: {e}")))?;
     let stdout = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
-    let stderr = with_capture_note(String::from_utf8_lossy(&out.stderr.bytes).into_owned(), &out);
+    let stderr = with_run_notes(String::from_utf8_lossy(&out.stderr.bytes).into_owned(), &out, timeout.as_secs(), "");
+    let whole = read_whole(&out);
     match out.ended {
         // Ran to completion (clean, or a nonzero exit / panic on stderr).
         crate::inference::lane_process::Ended::Exited(status) => {
             let code = status.code();
             Ok(CodeRunResult {
                 exit_code: code,
-                ok: code == Some(0),
+                ok: code == Some(0) && whole,
                 stdout,
                 stderr,
                 duration_ms: started.elapsed().as_millis() as u64,
@@ -432,11 +437,11 @@ async fn compile_and_run_rust(
         }
         // Safety timeout fired — a RESULT, not an error: a hung run IS information
         // the mind should observe and react to, and so is everything it printed first.
-        crate::inference::lane_process::Ended::TimedOut { unconfirmed } => Ok(CodeRunResult {
+        crate::inference::lane_process::Ended::TimedOut { .. } => Ok(CodeRunResult {
             exit_code: None,
             ok: false,
             stdout,
-            stderr: timeout_note(&stderr, timeout.as_secs(), "", &unconfirmed),
+            stderr,
             duration_ms: started.elapsed().as_millis() as u64,
             timed_out: true,
             interpreter: "rustc".to_string(),
@@ -566,6 +571,34 @@ mod tests {
             out.stdout.is_empty(),
             "the binary never ran, so no program stdout"
         );
+    }
+
+    // what this catches (Codex root on #5030 at 6c7bd0d82): code/run told her a timed-out run's
+    // output was "everything it produced" when its read had failed, and a run whose output a
+    // process it started held past the bound read as whole and ok. Every path names how each
+    // stream was read, and an output that isn't whole is never ok.
+    #[cfg(unix)]
+    #[test]
+    fn a_runs_capture_status_is_said_on_every_path_and_an_unwhole_run_is_never_ok() {
+        use crate::inference::lane_process::{CaptureEnd, Captured, Ended, OwnedOutput};
+        use std::os::unix::process::ExitStatusExt;
+        let read = |end: CaptureEnd| Captured { bytes: b"partial".to_vec(), end };
+        let timed = OwnedOutput {
+            stdout: read(CaptureEnd::Cut("the bound elapsed".into())),
+            stderr: read(CaptureEnd::Failed("the pipe broke".into())),
+            ended: Ended::TimedOut { unconfirmed: vec![] },
+        };
+        let note = with_run_notes(String::new(), &timed, 5, "");
+        assert!(note.contains("what was read before the kill") && !note.contains("everything it produced"), "{note}");
+        assert!(note.contains("stderr could not be read whole: the pipe broke"), "a failed read is named on the timeout path too: {note}");
+        assert!(!note.contains("stdout was cut"), "the kill's own cut is said once: {note}");
+        let held = OwnedOutput {
+            stdout: read(CaptureEnd::Cut("a process it started held its output past the bound".into())),
+            stderr: read(CaptureEnd::Complete),
+            ended: Ended::Exited(std::process::ExitStatus::from_raw(0)),
+        };
+        assert!(with_run_notes(String::new(), &held, 5, "").contains("stdout was cut: a process it started held"), "an exit's cut is named");
+        assert!(!read_whole(&held), "and a run whose output isn't whole is never ok");
     }
 
     // what this catches: the safety timeout ACTUALLY kills the child process — not
