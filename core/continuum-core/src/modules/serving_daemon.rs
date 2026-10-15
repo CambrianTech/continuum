@@ -1618,7 +1618,7 @@ impl ServingDaemonModule {
             // above covers the roster and the scratch slot; the plan re-applies it over
             // `lanes + leased_in` (2026-09-19 23:14Z: 2 + 1 = 3 lanes against a knee of 2).
             .with_knee(knee);
-        demand.served_median = served_median;
+        demand.served_median = model_for_knee.zip(served_median);
         demand
     }
 
@@ -4881,7 +4881,7 @@ impl ServingDaemonModule {
         {
             let seat_model = incumbent.as_deref().or(boot.as_ref().map(|g| g.model_id.as_str()));
             let record = crate::modules::served_window_store::load_geometry();
-            let observed = match typical_prompt_for_plan(demand.served_median, seat_model, record.as_ref()) {
+            let observed = match typical_prompt_for_plan(demand.served_median.as_ref().map(|(model, tokens)| (model.as_str(), *tokens)), seat_model, record.as_ref()) {
                 TypicalPrompt::Live(median) => {
                     if let Some(model) = seat_model {
                         crate::modules::served_window_store::save_typical_prompt(model, median);
@@ -6655,11 +6655,11 @@ enum TypicalPrompt {
     None,
 }
 fn typical_prompt_for_plan(
-    live_median: Option<u32>,
+    live_median: Option<(&str, u32)>,
     seat_model: Option<&str>,
     record: Option<&crate::modules::served_window_store::StoredServedWindow>,
 ) -> TypicalPrompt {
-    if let Some(m) = live_median.filter(|m| *m > 0) {
+    if let Some((_, m)) = live_median.filter(|(model, tokens)| Some(*model) == seat_model && *tokens > 0) {
         return TypicalPrompt::Live(m);
     }
     record.filter(|r| Some(r.model_id.as_str()) == seat_model)
@@ -11795,11 +11795,13 @@ pub(crate) mod tests {
             model_id: model.into(), per_slot_window: 49_243, lanes: 1, typical_prompt_tokens: typical, observed_prompt_tokens: Some(typical), set_at_ms: 1,
         };
         let same = rec("qwen-27b", 30_000);
-        assert_eq!(typical_prompt_for_plan(Some(31_000), Some("qwen-27b"), Some(&same)), TypicalPrompt::Live(31_000), "arm 1: live wins over the record");
+        assert_eq!(typical_prompt_for_plan(Some(("qwen-27b", 31_000)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Live(31_000), "arm 1: live wins over the record");
+        assert_eq!(typical_prompt_for_plan(Some(("other-4b", 31_000)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a changed incumbent cannot inherit the previous snapshot's live observation");
+        assert_eq!(typical_prompt_for_plan(Some(("other-4b", 31_000)), Some("qwen-27b"), None), TypicalPrompt::None, "foreign live observations never become this model's persisted evidence");
         assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "arm 2: unmeasured → the same model's remembered prompt");
         assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("other-4b", 33_000))), TypicalPrompt::None, "arm 3a: a different model's record floors nothing");
         assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("qwen-27b", 0))), TypicalPrompt::None, "arm 3b: a 0 on disk is not a floor");
         assert_eq!(typical_prompt_for_plan(None, None, Some(&same)), TypicalPrompt::None, "no seat model (a cold boot with no record model) floors nothing");
-        assert_eq!(typical_prompt_for_plan(Some(0), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a live 0 is unmeasured, not a measurement");
+        assert_eq!(typical_prompt_for_plan(Some(("qwen-27b", 0)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a live 0 is unmeasured, not a measurement");
     }
 }

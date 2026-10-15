@@ -232,7 +232,7 @@ pub struct ServingDemand {
     pub sent_median: Option<u32>,
     /// Successful provider prompt counts, distinct from starvation-aware growth
     /// samples above. Only this evidence may certify remembered service geometry.
-    pub served_median: Option<u32>,
+    pub served_median: Option<(String, u32)>,
     /// Per-mind lane requirements (see `with_requirements`). Empty = the legacy
     /// median/bootstrap derivation below, kept for callers that have not migrated
     /// (card 2eec3977: to be deleted with them).
