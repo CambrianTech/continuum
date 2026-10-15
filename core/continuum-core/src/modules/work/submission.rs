@@ -1891,6 +1891,13 @@ mod tests {
         assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
         let empty = super::derive_submission(dir.path(), card, None, Some(clean_base)).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
+        // Regression for 6dd8befa: a valid empty submission is not malformed
+        // arguments. The real refusal reaches her without advice to retry its schema.
+        let refusal = format!("work/submit: {empty}");
+        assert_eq!(
+            crate::cognition::tool_executor::command_executor::persona_tool_error("work_submit", refusal.clone()),
+            refusal,
+        );
     }
 
     // what this catches (Kimi, 2026-09-21): the two halves of the supplied-claim guard

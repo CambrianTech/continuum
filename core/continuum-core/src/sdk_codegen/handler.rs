@@ -54,7 +54,9 @@ use super::{CommandSpec, WireShape};
 /// parsing prose.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandError {
-    /// Params failed validation or a domain precondition.
+    /// The request could not be decoded, or a required envelope argument is absent.
+    Arguments(String),
+    /// A decoded request failed validation or a domain precondition.
     Invalid(String),
     /// A referenced resource (handle, id, session) was not found.
     NotFound(String),
@@ -67,6 +69,7 @@ pub enum CommandError {
 impl CommandError {
     fn category(&self) -> &'static str {
         match self {
+            CommandError::Arguments(_) => "arguments",
             CommandError::Invalid(_) => "invalid",
             CommandError::NotFound(_) => "not_found",
             CommandError::Denied(_) => "denied",
@@ -76,11 +79,19 @@ impl CommandError {
 
     fn message(&self) -> &str {
         match self {
-            CommandError::Invalid(m)
+            CommandError::Arguments(m)
+            | CommandError::Invalid(m)
             | CommandError::NotFound(m)
             | CommandError::Denied(m)
             | CommandError::Internal(m) => m,
         }
+    }
+
+    /// Read our category at the refusal boundary, never a tag quoted in domain prose.
+    /// The transport preserves command errors as `command: [category] message`.
+    pub(crate) fn is_argument_refusal(command: &str, refusal: &str) -> bool {
+        let body = refusal.strip_prefix(command).and_then(|rest| rest.strip_prefix(": ")).unwrap_or(refusal);
+        body.starts_with("[arguments] ")
     }
 }
 
@@ -138,13 +149,13 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// Require a handle (for handle-consuming commands), or a typed `Invalid`
+    /// Require a handle (for handle-consuming commands), or a typed `Arguments`
     /// error naming what's missing — so the author writes `ctx.handle()?`
     /// instead of an `ok_or_else(...)` per command.
     pub fn handle(&self) -> Result<HandleRef, CommandError> {
         self.handle
             .clone()
-            .ok_or_else(|| CommandError::Invalid("missing required `handle` on the request".into()))
+            .ok_or_else(|| CommandError::Arguments("missing required `handle` on the request".into()))
     }
 }
 
@@ -237,7 +248,7 @@ where
 {
     let name = <H::Spec as CommandSpec>::NAME;
     let req = CommandRequest::<<H::Spec as CommandSpec>::Params>::from_value(params)
-        .map_err(|e| format!("{name}: [invalid] {e}"))?;
+        .map_err(|e| format!("{name}: {}", CommandError::Arguments(e.to_string())))?;
     let ctx = Ctx {
         handle: req.handle,
         session_id: req.session_id,
@@ -444,20 +455,25 @@ mod tests {
             err.starts_with("test/echo-env:"),
             "error names the command: {err}"
         );
-        assert!(err.contains("invalid"), "carries the category: {err}");
+        assert!(err.contains("[arguments]"), "carries the category: {err}");
         assert!(err.contains("handle"), "names what's missing: {err}");
     }
 
-    // what this catches: bad params become a named `invalid` refusal at the parse
-    // boundary — the author never wrote a parse/try-catch.
+    // Regression for 6dd8befa: malformed params get argument recovery through
+    // real dispatch; decoded domain refusals must not share that category.
     #[tokio::test]
-    async fn dispatch_bad_params_is_named_invalid() {
+    async fn dispatch_bad_params_has_argument_recovery() {
         let err = dispatch(&BareHandler, serde_json::json!({ "text": 123 }))
             .await
             .expect_err("type mismatch must refuse");
         assert!(
-            err.starts_with("test/echo-bare: [invalid]"),
+            err.starts_with("test/echo-bare: [arguments]"),
             "named + categorized: {err}"
         );
+        let rendered = crate::cognition::tool_executor::command_executor::persona_tool_error(
+            "test/echo-bare", err.clone(),
+        );
+        assert!(rendered.contains(&err), "the real decode failure survives: {rendered}");
+        assert!(rendered.contains("commands/help"), "the missing manual is discoverable: {rendered}");
     }
 }
