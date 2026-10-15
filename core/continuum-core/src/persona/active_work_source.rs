@@ -59,12 +59,17 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 pub struct ActiveWorkSource {
     persona_id: uuid::Uuid,
     reader: Arc<dyn AircWorkReader>,
-    /// Last observed claims plus losses not yet admitted to a source delivery.
-    /// `None` until the first successful read (a fresh mind has no baseline to
-    /// lose from). Budget refusal must not acknowledge a transition. This is
-    /// source admission, not acknowledgement that a model consumed the fact.
-    /// Locked only after `active_claims` resolves, never across an await.
-    prev_claims: std::sync::Mutex<Option<std::collections::HashMap<uuid::Uuid, String>>>,
+    /// Observation and source-admission state, never held across an await.
+    claims_seen: std::sync::Mutex<ClaimsSeen>,
+}
+
+/// One current snapshot plus a coalesced historical notice. Refused transitions
+/// must not accumulate card ids/titles under claim churn. The authoritative
+/// board owns detail; this source retains only whether reconciliation is due.
+#[derive(Default)]
+struct ClaimsSeen {
+    current: Option<std::collections::HashMap<uuid::Uuid, String>>,
+    loss_notice_pending: bool,
 }
 
 impl ActiveWorkSource {
@@ -72,7 +77,7 @@ impl ActiveWorkSource {
         Self {
             persona_id,
             reader,
-            prev_claims: std::sync::Mutex::new(None),
+            claims_seen: std::sync::Mutex::new(ClaimsSeen::default()),
         }
     }
 
@@ -98,6 +103,17 @@ impl ActiveWorkSource {
                 "fact": "claim_lost",
                 "card_id": card_id.to_string(),
             }),
+        }
+    }
+
+    fn deferred_loss_item() -> RagItem {
+        let content =
+            "[work] Earlier claims ended; current ownership, including reacquisitions: work/list."
+                .to_string();
+        RagItem {
+            tokens: estimate_tokens(&content),
+            content,
+            metadata: json!({ "fact": "claim_lost", "coalesced": true }),
         }
     }
 
@@ -141,7 +157,7 @@ impl RagSource for ActiveWorkSource {
 
         // One airc call (board-wide, all rooms). Failure is non-fatal — empty
         // delivery, cognition stays up (good-citizen doctrine). CRUCIALLY the
-        // early return leaves `prev_claims` untouched: a degraded read must
+        // early return leaves `claims_seen` untouched: a degraded read must
         // never fabricate "you lost everything" transition facts.
         let claims = match self.reader.active_claims().await {
             Ok(c) => c,
@@ -156,18 +172,26 @@ impl RagSource for ActiveWorkSource {
         };
 
         // Reconcile successful observations with source admission atomically.
-        // An omitted loss remains in the existing baseline for the next read;
-        // a reacquired claim supersedes that pending loss. Failed reads above
-        // leave the baseline untouched.
-        let mut now: std::collections::HashMap<uuid::Uuid, String> = claims
+        // Refused losses coalesce into one historical notice, never an unbounded
+        // queue or a stale assertion about current ownership after reacquisition.
+        // Source admission is not acknowledgement by the final model consumer.
+        let now: std::collections::HashMap<uuid::Uuid, String> = claims
             .iter()
             .map(|c| (c.card_id.as_uuid(), c.title.clone()))
             .collect();
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
         {
-            let mut prev = self.prev_claims.lock().unwrap_or_else(|p| p.into_inner());
-            let mut lost: Vec<_> = match prev.as_ref() {
+            let mut seen = self.claims_seen.lock().unwrap_or_else(|p| p.into_inner());
+            if seen.loss_notice_pending {
+                let notice = Self::deferred_loss_item();
+                if notice.tokens <= budget {
+                    tokens_used += notice.tokens;
+                    items.push(notice);
+                    seen.loss_notice_pending = false;
+                }
+            }
+            let mut lost: Vec<_> = match seen.current.as_ref() {
                 Some(before) => before
                     .iter()
                     .filter(|(id, _)| !now.contains_key(*id))
@@ -182,13 +206,13 @@ impl RagSource for ActiveWorkSource {
             for (card_id, title) in lost {
                 let item = Self::lost_claim_item(&card_id, &title);
                 if tokens_used.saturating_add(item.tokens) > budget {
-                    now.insert(card_id, title);
+                    seen.loss_notice_pending = true;
                     continue;
                 }
                 tokens_used += item.tokens;
                 items.push(item);
             }
-            *prev = Some(now);
+            seen.current = Some(now);
         }
         // Rejected-claim facts (the #159-family sibling of the lost-claim
         // diff): `work/claim` records rejections into the per-persona ring;
@@ -458,11 +482,10 @@ mod tests {
         assert!(d3.items.is_empty());
     }
 
-    // what this catches: source-budget refusal used to advance the baseline and
-    // permanently erase a lost-claim fact. Admission retries must retain scope,
-    // survive read failures, and discard a loss superseded by reacquisition.
+    // what this catches: refused losses survive as bounded historical notice,
+    // while current claims remain visible and reacquisition is not revoked.
     #[tokio::test]
-    async fn refused_losses_retry_without_blocking_smaller_or_reacquired_claims() {
+    async fn refused_losses_coalesce_without_blocking_current_claims() {
         let persona = Uuid::new_v4();
         let mut large = card(&"long title ".repeat(100));
         let mut small = card("small");
@@ -476,16 +499,20 @@ mod tests {
                 Ok(vec![large.clone(), small.clone()]),
                 Ok(vec![]),
                 Err(()),
-                Ok(vec![]),
                 Ok(vec![large.clone()]),
-                Ok(vec![]),
-                Ok(vec![]),
+                Ok(vec![large.clone()]),
             ],
         );
         let raw = ResolutionPreference::Raw;
         src.deliver(&ctx(persona), 10_000, raw).await;
-        assert!(src.deliver(&ctx(persona), 0, raw).await.items.is_empty());
-        // A different persona must neither receive nor consume the transition.
+        let partial = src.deliver(&ctx(persona), small_cost, raw).await;
+        assert_eq!(partial.items.len(), 1);
+        assert_eq!(
+            partial.items[0].metadata["card_id"],
+            small.card_id.as_uuid().to_string()
+        );
+        assert_eq!(partial.tokens_used, small_cost);
+        // Neither a different persona nor a failed read consumes the notice.
         assert!(src
             .deliver(&ctx(Uuid::new_v4()), 10_000, raw)
             .await
@@ -496,32 +523,50 @@ mod tests {
             .await
             .items
             .is_empty());
-        let partial = src.deliver(&ctx(persona), small_cost, raw).await;
-        assert_eq!(partial.items.len(), 1);
-        assert_eq!(
-            partial.items[0].metadata["card_id"],
-            small.card_id.as_uuid().to_string()
-        );
-        assert_eq!(partial.tokens_used, small_cost);
-        // Reacquisition cancels the undelivered loss instead of warning that a
-        // currently held card is no longer ours.
         let regained = src.deliver(&ctx(persona), 10_000, raw).await;
-        assert_eq!(regained.items.len(), 1);
-        assert!(regained.items[0].metadata.get("fact").is_none());
-        let lost_again = src.deliver(&ctx(persona), 10_000, raw).await;
-        assert_eq!(lost_again.items.len(), 1);
-        assert_eq!(lost_again.items[0].metadata["fact"], "claim_lost");
-        assert_eq!(
-            lost_again.items[0].metadata["card_id"],
-            large.card_id.as_uuid().to_string()
+        assert_eq!(regained.items.len(), 2);
+        assert_eq!(regained.items[0].metadata["coalesced"], true);
+        assert!(regained.items[0].content.contains("Earlier claims ended"));
+        assert!(regained.items[0].content.contains("work/list"));
+        assert!(regained.items[0].metadata.get("card_id").is_none());
+        assert!(
+            regained.items[1].metadata.get("fact").is_none(),
+            "current claim remains visible"
         );
-        assert!(src
+        assert_eq!(src.deliver(&ctx(persona), 10_000, raw).await.items.len(), 1);
+
+        // Churn at zero budget retains one current snapshot and a boolean,
+        // never a growing queue of ended card ids or unrenderable titles.
+        let mut reads = Vec::new();
+        for _ in 0..100 {
+            reads.push(Ok(vec![card(&"long title ".repeat(100))]));
+            reads.push(Ok(vec![]));
+        }
+        reads.extend([Ok(vec![]), Ok(vec![])]);
+        let churn = source(persona, reads);
+        for _ in 0..200 {
+            assert!(churn.deliver(&ctx(persona), 0, raw).await.items.is_empty());
+        }
+        {
+            let seen = churn.claims_seen.lock().unwrap();
+            assert!(seen.current.as_ref().unwrap().is_empty());
+            assert!(seen.loss_notice_pending);
+        }
+        let recovered = churn
+            .deliver(&ctx(persona), churn.floor_tokens(), raw)
+            .await;
+        assert_eq!(
+            recovered.items.len(),
+            1,
+            "the digest fits the existing source floor"
+        );
+        assert_eq!(recovered.items[0].metadata["fact"], "claim_lost");
+        assert!(churn
             .deliver(&ctx(persona), 10_000, raw)
             .await
             .items
             .is_empty());
     }
-
     // what this catches: a DEGRADED read must never fabricate loss — the
     // baseline survives the error, and the loss fact only fires when a
     // SUCCESSFUL read actually shows the card gone.
