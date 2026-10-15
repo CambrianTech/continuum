@@ -390,7 +390,8 @@ jobs:
           if cuda_version:
               manifest["cuda_version"] = cuda_version
               manifest["cuda_compute_cap"] = int(cuda_cap)
-              # the cards the engine loads on without a JIT (its SASS), beside the PTX floor
+              # the engine's CMake targets (its SASS, and 80's PTX floor), for a reader of the manifest;
+              # no consumer selects on it yet (card 9b27d49b)
               manifest["cuda_engine_architectures"] = os.environ["CMAKE_CUDA_ARCHITECTURES"]
               manifest["runtime_libs"] = libs.split()
               bootstrap = (Path(stage) / "bootstrap-runtime-libs.txt").read_text(encoding="utf-8-sig").split()
