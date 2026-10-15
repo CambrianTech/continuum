@@ -169,6 +169,7 @@ jobs:
             cuda_version="$(nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
             [ -n "$cuda_version" ] || { echo "::error::nvcc reported no release"; exit 1; }
             echo "CUDA_COMPUTE_CAP=$CUDA_COMPUTE_CAP" >> "$GITHUB_ENV"
+            echo "CMAKE_CUDA_ARCHITECTURES=$CMAKE_CUDA_ARCHITECTURES" >> "$GITHUB_ENV"
           fi
           echo "CUDA_VERSION=$cuda_version" >> "$GITHUB_ENV"
           manifest=core/continuum-core/Cargo.toml
@@ -226,7 +227,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
+          ENGINE_KEY: published-engine-windows-${{ hashFiles('core/vendor/LLAMA_CPP_PIN', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/cuda-targets.sh', 'core/llama/cpu_target_cli.rs') }}-cuda${{ env.CUDA_VERSION }}-sm${{ env.CUDA_COMPUTE_CAP }}-image${{ steps.runner-image.outputs.version }}
         # The completion contract: `published-engine.ready` is uploaded LAST and names the archive
         # by its sha256; a reader trusts nothing else. Any failure here (no release, no marker yet,
         # a partial download, a checksum mismatch, a release pruned mid-download) is a MISS and the
@@ -263,7 +264,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $ProgressPreference = 'SilentlyContinue'
-          if (-not $env:CUDA_VERSION -or -not $env:CUDA_COMPUTE_CAP) { throw 'Published NVIDIA engine requires the core CUDA contract.' }
+          if (-not $env:CUDA_VERSION -or -not $env:CUDA_COMPUTE_CAP -or -not $env:CMAKE_CUDA_ARCHITECTURES) { throw 'Published NVIDIA engine requires the core CUDA contract.' }
           . ./tools/scripts/lib/install-common.ps1
           . ./tools/scripts/lib/win-modules.ps1
           $policy = Join-Path $env:RUNNER_TEMP 'cpu-target-policy.exe'
@@ -273,7 +274,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Cannot read shared CPU build policy.' }
           $engine = Join-Path $env:RUNNER_TEMP 'published-engine'
           Mod-LlamaServer -RepoRoot $PWD.Path -InstallDirectory $engine -RequireReceipt `
-            -PublishedCudaArchitectures $env:CUDA_COMPUTE_CAP -PublishedCpuDefinitions $definitions
+            -PublishedCudaArchitectures $env:CMAKE_CUDA_ARCHITECTURES -PublishedCpuDefinitions $definitions
           Get-CoreEngineReceipt -Directory $engine | Out-Null
 
       # Saved as soon as it is built and receipted, not at job end, so a later failing step does
@@ -370,7 +371,7 @@ jobs:
           "$py" - "$RUNNER_TEMP/$name.json" "$RUNNER_TEMP/$name.tar.gz.sha256" "${{ matrix.platform }}" \
             "${{ matrix.uname }}" "$GITHUB_SHA" "$CONTINUUM_FEATURES" "$name.tar.gz" \
             "$CUDA_VERSION" "${CUDA_COMPUTE_CAP:-}" "$runtime_libs" "$stage" <<'EOF'
-          import json, sys
+          import json, os, sys
           from pathlib import Path
           out, sums, platform, uname, sha, features, archive, cuda_version, cuda_cap, libs, stage = sys.argv[1:]
           manifest = {
@@ -389,6 +390,9 @@ jobs:
           if cuda_version:
               manifest["cuda_version"] = cuda_version
               manifest["cuda_compute_cap"] = int(cuda_cap)
+              # the engine's CMake targets (its SASS, and 80's PTX floor), for a reader of the manifest;
+              # no consumer selects on it yet (card 9b27d49b)
+              manifest["cuda_engine_architectures"] = os.environ["CMAKE_CUDA_ARCHITECTURES"]
               manifest["runtime_libs"] = libs.split()
               bootstrap = (Path(stage) / "bootstrap-runtime-libs.txt").read_text(encoding="utf-8-sig").split()
               if not set(bootstrap).issubset(set(manifest["runtime_libs"])):

@@ -42,8 +42,32 @@ configure_cuda_targets() {
 # A node below the floor must not take the build; the manifest carries the value so the
 # consumer can refuse it (prebuilt_artifact::manifest_verdict).
 PUBLISHED_CUDA_COMPUTE_CAP=80
+# The published ENGINE (llama-server) is different: built for 80 alone it carries machine code
+# (SASS) for no consumer card, so on an RTX 30/40/50 the driver JIT-compiles every ggml-cuda kernel
+# from the PTX the first time a binary loads (and caches it). On 2026-10-15 the 5090 rolled engine
+# 56507cceb back after 240 s of HTTP 503 while engine 5b8500ee2, also built for 80, was ready in
+# 23.45 s; a cold JIT cache for the new binary is the leading explanation, NOT proven (card
+# 9b27d49b owes the cold-cache test). Either way a supported card should not depend on a JIT: the
+# engine carries SASS for the consumer cards (Ampere 86: RTX 30xx; Ada 89: RTX 40xx; Blackwell
+# 120: RTX 50xx) and 80 as SASS plus the PTX floor (A100, and the forward-JIT path for newer cards).
+PUBLISHED_CUDA_ENGINE_ARCHITECTURES='80;86-real;89-real;120-real'
 configure_published_cuda_targets() {
+    local compiler='nvcc' supported entry
+    if [[ -n "${CUDA_PATH:-}" ]]; then
+        compiler=''
+        for candidate in "$CUDA_PATH"/{bin,Library/bin}/nvcc{,.exe}; do
+            [[ -x "$candidate" && -f "$candidate" ]] && { compiler="$candidate"; break; }
+        done
+        [[ -n "$compiler" ]] || { echo "No nvcc under CUDA_PATH=$CUDA_PATH (bin/ or Library/bin/)" >&2; return 1; }
+    fi
+    supported="$("$compiler" --list-gpu-arch)" || { echo 'CUDA compiler architecture query failed' >&2; return 1; }
+    # every published target must be one the selected toolkit compiles (sm_120 needs CUDA 12.8+)
+    for entry in ${PUBLISHED_CUDA_ENGINE_ARCHITECTURES//;/ } "$PUBLISHED_CUDA_COMPUTE_CAP"; do
+        grep -qx "compute_${entry%%-*}" <<< "${supported//$'\r'/}" || {
+            echo "Selected CUDA toolkit cannot compile published target ${entry%%-*}; refusing a published build without it" >&2; return 1;
+        }
+    done
     export CUDA_COMPUTE_CAP="$PUBLISHED_CUDA_COMPUTE_CAP"
-    export CMAKE_CUDA_ARCHITECTURES="$PUBLISHED_CUDA_COMPUTE_CAP"
-    printf 'CUDA targets (published floor): CMake=%s, Candle PTX=%s\n' "$CMAKE_CUDA_ARCHITECTURES" "$CUDA_COMPUTE_CAP" >&2
+    export CMAKE_CUDA_ARCHITECTURES="$PUBLISHED_CUDA_ENGINE_ARCHITECTURES"
+    printf 'CUDA targets (published): engine CMake=%s, Candle PTX floor=%s\n' "$CMAKE_CUDA_ARCHITECTURES" "$CUDA_COMPUTE_CAP" >&2
 }

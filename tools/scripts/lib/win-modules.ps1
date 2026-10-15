@@ -949,7 +949,7 @@ function Mod-LlamaServer {
 
     $published = -not [string]::IsNullOrEmpty($PublishedCudaArchitectures)
     if ($published) {
-        if ($PublishedCudaArchitectures -cnotmatch '^[1-9][0-9]*(;[1-9][0-9]*)*$' -or
+        if ($PublishedCudaArchitectures -cnotmatch '^[1-9][0-9]*(-real|-virtual)?(;[1-9][0-9]*(-real|-virtual)?)*$' -or
             -not $RequireReceipt -or -not $PublishedCpuDefinitions.Count -or
             $PublishedCpuDefinitions -cnotcontains '-DGGML_NATIVE=OFF' -or
             @($PublishedCpuDefinitions | Where-Object { $_ -cnotmatch '^-DGGML_[A-Z0-9_]+=OFF$' }).Count) {
