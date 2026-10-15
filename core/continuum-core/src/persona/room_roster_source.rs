@@ -61,6 +61,21 @@ use crate::persona::rag_budget::{
     ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };
 
+/// Both roster adapters share the existing task-124 allowance (256 at 16k).
+/// Content policy survives the legacy-to-ViewState identifier migration.
+pub(crate) fn roster_budget_claim(
+    source_id: &str,
+    window: u32,
+    headroom: u32,
+) -> super::rag_budget::RagSourceBudget {
+    super::rag_budget::RagSourceBudget::floorless_share(
+        source_id,
+        window,
+        headroom,
+        std::num::NonZeroU32::new(64).expect("existing nonzero roster share"),
+    )
+}
+
 /// Source identifier — used by budget presets, telemetry, and the
 /// service-loop projection that routes this delivery into system-prompt
 /// grounding rather than conversation history.
@@ -314,6 +329,10 @@ impl RoomRosterSource {
 impl RagSource for RoomRosterSource {
     fn source_id(&self) -> &'static str {
         SOURCE_ID
+    }
+
+    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        roster_budget_claim(self.source_id(), window, headroom)
     }
 
     fn expand_command(&self) -> Option<&'static str> {

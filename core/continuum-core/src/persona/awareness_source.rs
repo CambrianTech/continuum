@@ -94,6 +94,16 @@ impl RagSource for AwarenessRagSource {
         SOURCE_ID
     }
 
+    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        // Existing strip allowance: one short line per activity, window / 48.
+        super::rag_budget::RagSourceBudget::floorless_share(
+            self.source_id(),
+            window,
+            headroom,
+            std::num::NonZeroU32::new(48).expect("existing nonzero source share"),
+        )
+    }
+
     fn expand_command(&self) -> Option<&'static str> {
         // The strip is already her whole awareness, reduced; nothing fuller to expand to.
         None

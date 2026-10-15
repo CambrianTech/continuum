@@ -254,6 +254,42 @@ pub struct RagSourceBudget {
     pub required: bool,
 }
 
+impl RagSourceBudget {
+    /// Existing retrieval appetite, resolved against this turn's capacity.
+    /// The source owns its atomic floor; the shared allocator still owns fitting.
+    pub fn retrieval(source_id: &str, floor: u32, window: u32, headroom: u32) -> Self {
+        let max = (((window as u64) * 6 / 10) as u32).min(headroom);
+        let floor = floor.min(max);
+        Self {
+            source_id: source_id.to_owned(),
+            priority: 10,
+            floor_tokens: floor,
+            min_tokens: COMFORTABLE_SOURCE_TOKENS.min(max).max(floor),
+            max_tokens: max,
+            required: false,
+        }
+    }
+
+    /// A lightweight source's existing window-relative offer. The denominator
+    /// belongs to that source's content policy, never to its identifier.
+    pub fn floorless_share(
+        source_id: &str,
+        window: u32,
+        headroom: u32,
+        denominator: std::num::NonZeroU32,
+    ) -> Self {
+        let mut claim = Self::retrieval(source_id, 0, window, headroom);
+        claim.min_tokens = 0;
+        claim.max_tokens = claim.max_tokens.min(window / denominator.get());
+        claim
+    }
+}
+
+/// Existing comfortable retrieval target (not the atomic survival floor).
+/// Measured first units are 6..40 tokens; a source can survive below this target.
+// context-budget-exempt: a per-source TARGET, capped by the resolved window/headroom
+const COMFORTABLE_SOURCE_TOKENS: u32 = 500;
+
 /// Per-source outcome. Reported back from the allocator.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SourceAllocation {
@@ -529,6 +565,12 @@ pub trait RagSource: Send + Sync {
     /// impl on purpose: a default would let a new source silently inherit
     /// someone else's appetite, which is exactly how the 500 got everywhere.
     fn floor_tokens(&self) -> u32;
+
+    /// Declare this source's appetite independently of its name or decoration.
+    /// This is input to the existing allocator, not a second allocation path.
+    fn budget_claim(&self, window: u32, headroom: u32) -> RagSourceBudget {
+        RagSourceBudget::retrieval(self.source_id(), self.floor_tokens(), window, headroom)
+    }
 
     /// Deliver as many complete atomic units as fit within `budget`.
     /// The source decides what counts as complete; allocator only

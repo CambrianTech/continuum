@@ -136,6 +136,10 @@ impl RagSource for CachedRagSource {
         self.inner.floor_tokens()
     }
 
+    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        self.inner.budget_claim(window, headroom)
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,

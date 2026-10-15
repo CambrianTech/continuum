@@ -322,6 +322,16 @@ impl RagSource for RoomDoctrineSource {
         SOURCE_ID
     }
 
+    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        // Existing task-124 allowance: 1024 at 16k, scaling with the window.
+        super::rag_budget::RagSourceBudget::floorless_share(
+            self.source_id(),
+            window,
+            headroom,
+            std::num::NonZeroU32::new(16).expect("existing nonzero source share"),
+        )
+    }
+
     fn expand_command(&self) -> Option<&'static str> {
         // the room's doctrine is a single standing statement, delivered whole.
         None
