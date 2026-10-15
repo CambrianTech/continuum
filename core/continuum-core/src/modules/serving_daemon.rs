@@ -3435,7 +3435,7 @@ impl ServingDaemonModule {
                 let measured_state = crate::inference::slots::measured_state_bytes(
                     &crate::inference::llama_server::kv_page_dir(desired.as_str(), live.served_context_window),
                 );
-                let cache_holds_no_state = launched_cache_holds_no_state(live.host_prompt_cache_mib, measured_state)
+                let cache_holds_no_state = crate::inference::lane_args::launched_cache_holds_no_state(live.host_prompt_cache_mib, measured_state)
                     && {
                         // what a relaunch would launch with: computed only in this rare case
                         let would_launch_mib = (self.model_resolver)(&desired)
@@ -3452,7 +3452,7 @@ impl ServingDaemonModule {
                                 .mib
                             })
                             .unwrap_or(0); // unwrap_or: an unresolvable model would launch nothing better, so no relaunch for size
-                        cache_relaunch_needed(live.host_prompt_cache_mib, would_launch_mib, measured_state)
+                        crate::inference::lane_args::cache_relaunch_needed(live.host_prompt_cache_mib, would_launch_mib, measured_state)
                     };
                 let worth_it = worth_it || short_of_slots || cache_holds_no_state;
                 // A plan may shrink while the host pages out; it never GROWS into it
@@ -6387,19 +6387,6 @@ pub fn with_measured_state(demands: Vec<u32>, kv_per_token: Option<u64>, measure
     demands.into_iter().map(|t| t.max(state_tokens)).collect()
 }
 
-/// PURE: a lane's launched `--cache-ram` cannot hold even ONE measured saved state. Unknown
-/// (nothing measured, or an unrecorded launch size) is never true: no relaunch on a guess.
-pub fn launched_cache_holds_no_state(launched_mib: u32, measured_state: Option<u64>) -> bool {
-    measured_state.is_some_and(|state| launched_mib > 0 && u64::from(launched_mib) * 1024 * 1024 < state)
-}
-
-/// PURE: whether a relaunch is owed for cache size: the launched cache holds no measured
-/// state AND the cache a relaunch would launch with holds one. Without the second half a
-/// host that cannot afford one state would relaunch every cooldown and gain nothing.
-pub fn cache_relaunch_needed(launched_mib: u32, would_launch_mib: u32, measured_state: Option<u64>) -> bool {
-    launched_cache_holds_no_state(launched_mib, measured_state)
-        && measured_state.is_some_and(|state| u64::from(would_launch_mib) * 1024 * 1024 >= state)
-}
 
 /// PURE: the lane count the admission gate sizes by: the running engine's own lanes when it
 /// is serving, the plan's only before an engine is up (a cold boot has nothing else to go
@@ -7484,24 +7471,6 @@ pub(crate) mod tests {
         assert_eq!(admitted_lanes(true, 1, 2), 1, "and a 1-lane engine as one, until the reconcile relaunches it");
         assert_eq!(admitted_lanes(false, 0, 2), 2, "cold boot: the plan is all there is");
         assert_eq!(admitted_lanes(true, 0, 2), 2, "a ready snapshot without a lane count is no evidence");
-    }
-
-    // what this catches (the 5090, 2026-10-11: launched --cache-ram 4288 against ~5.5 GB
-    // measured states, 114 skips, 76% of restores cold, and nothing ever relaunched for it):
-    // the agreed rule. A cache that holds no measured state is evidence for a re-home when a
-    // relaunch would hold one; a cache that holds at least one state is never a reason,
-    // however far below the derived target; nothing measured is never a reason; and a host
-    // that cannot afford one state does not relaunch for nothing.
-    #[test]
-    fn a_lane_relaunches_for_cache_size_only_when_its_cache_holds_no_state() {
-        let mib = 1024u64 * 1024;
-        let state = Some(5_511 * mib);
-        assert!(cache_relaunch_needed(4_288, 11_022, state), "the 5090: holds nothing, a relaunch holds two");
-        assert!(!cache_relaunch_needed(6_000, 40_000, state), "holds one state: waits for the next relaunch, however far below target");
-        assert!(!cache_relaunch_needed(4_288, 11_022, None), "nothing measured: no relaunch on a guess");
-        assert!(!cache_relaunch_needed(4_288, 5_000, state), "a relaunch would hold no state either: no futile relaunch");
-        assert!(!cache_relaunch_needed(0, 11_022, state), "an unrecorded launch size is not a measurement");
-        assert!(launched_cache_holds_no_state(4_288, state) && !launched_cache_holds_no_state(5_512, state));
     }
 
     // what this catches (card 58ba9752): the cache sized for lanes x 2 while more minds
