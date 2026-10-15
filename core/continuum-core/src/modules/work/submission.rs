@@ -680,7 +680,7 @@ pub struct WorkSubmitResult {
 /// - any other card is graded when a reviewer's verdict passes the submission.
 /// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
 /// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
-pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool) -> Option<String> {
+pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
     let submission = short8(latest?);
     Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
         format!("Submission {submission} passed review: the grade fired. Nothing more to do on this card.")
@@ -692,12 +692,19 @@ pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work:
              (marking the card done runs the same grade). A failed grade: revise and work/submit again. \
              A passed grade: nothing more to do."
         )
-    } else {
+    } else if let Some(review) = review {
         format!(
-            "Submitted as {submission}. Nothing more to do on this card until its reviewer's verdict: a pass \
+            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the reviewer's verdict: a pass \
              grades it; a send-back appears in its reviews. Do not submit again unless it is sent back."
         )
+    } else {
+        format!("Submission {submission} is retained, but no review handoff is recorded. Retry work/submit with this same submission_id to establish review; do not publish a new candidate just to retry handoff.")
     })
+}
+
+pub(crate) fn submission_review_handoff(board: &airc_work::WorkBoardProjection, parent: WorkCardId, submission: Option<airc_work::SubmissionId>) -> Option<WorkCardId> {
+    let id = airc_work::submission_review_card_id(parent, submission?);
+    board.review_request(id).map(|_| id)
 }
 
 #[async_trait]
@@ -957,6 +964,11 @@ impl ActionCommand for WorkSubmit {
             instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
             "submission publication was not acknowledged; retry the same submission_id and selection: {e}")))?;
+        let handoff = if bench {
+            Ok(None)
+        } else {
+            super::open_room_review_card(airc, &room, card, card_id, Some(published.submission_id)).await.map(Some)
+        };
         // A hand-in on a bench card is graded now, here, where the artifact lives; a
         // card that is not a SWE bench card returns at once.
         tokio::spawn(crate::modules::benchmark_grade::grade_submission(
@@ -966,6 +978,9 @@ impl ActionCommand for WorkSubmit {
             published.instance.clone(),
             grade_patch,
         ));
+        // Guidance reflects this command's board snapshot. A concurrently
+        // arriving verdict appears on the next work/get or work/submission read.
+        let outcomes: Vec<_> = board.submission_reviews_for(published.submission_id).filter(|review| review.card_id == card_id).map(|review| review.outcome).collect();
         Ok(WorkSubmitResult {
             submission_id: published.submission_id.as_uuid(),
             card_id: published.card_id.as_uuid(),
@@ -977,7 +992,10 @@ impl ActionCommand for WorkSubmit {
             artifact: (&published.artifact).into(),
             submitted_at_ms: published.submitted_at_ms,
             bound_staged_revision_id,
-            next: next_after_submission(Some(published.submission_id.as_uuid()), &[], bench).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+            next: match handoff {
+                Ok(review) => next_after_submission(Some(published.submission_id.as_uuid()), &outcomes, bench, review).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                Err(error) => format!("Submission {} is retained, but review handoff failed: {error}. Retry work/submit with this same submission_id; do not create a new candidate to retry handoff.", published.submission_id),
+            },
         })
     }
 }
@@ -1181,28 +1199,11 @@ impl ActionCommand for WorkReview {
                 }
             },
         };
-        let parent = board
-            .card(card_id)
-            .ok_or_else(|| {
-                CommandError::NotFound(format!(
-                    "card {card_id} is absent from the board of room {} — you asked for '{}'",
-                    room_label(&room.name, room.channel.as_uuid()),
-                    p.room.as_deref().unwrap_or("none, the card's own") // unwrap_or: no room named is a fact to state, never an error
-                ))
-            })?;
-        let submission = match p.submission_id {
-            Some(id) => parent
-                .submissions
-                .iter()
-                .find(|s| s.submission_id.as_uuid() == id)
-                .ok_or_else(|| CommandError::Invalid(format!("card {card_id} has no submission {id}")))?,
-            None => latest_submission(parent)
-                .ok_or_else(|| {
-                    CommandError::Invalid(format!(
-                        "card {card_id} has no submission to review yet — the holder submits first (work/submit)"
-                    ))
-                })?,
-        };
+        if review_card.reviews != Some(card_id) {
+            return Err(CommandError::Invalid("review card does not review the named parent".into()));
+        }
+        let submission = board.candidate_for_review(review_card.card_id, p.submission_id.map(airc_work::SubmissionId::from_uuid))
+            .map_err(|e| CommandError::Invalid(format!("review candidate: {e}")))?;
         // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
         // submission is admitted only where the room's policy says `self`; a room that
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
@@ -1487,7 +1488,7 @@ impl ActionCommand for WorkSubmission {
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
-                next: next_after_submission(Some(submission_uuid), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title)).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                next: next_after_submission(Some(submission_uuid), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title), submission_review_handoff(&board, card.card_id, Some(submitted.submission_id))).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
             },
             claim_id: submitted.claim_id.as_uuid(),
             base_sha: submitted.base_sha.to_string(),
@@ -1585,18 +1586,20 @@ mod tests {
     fn after_a_submit_the_receipt_says_what_happens_next() {
         use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
         let id = uuid::Uuid::new_v4();
-        let bench = super::next_after_submission(Some(id), &[], true).expect("submitted");
+        let bench = super::next_after_submission(Some(id), &[], true, None).expect("submitted");
         assert!(bench.contains(&short8(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
         assert!(bench.contains("marking the card done") && !bench.contains("No state"), "never contradicts the bench card's own text: {bench}");
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
-        let reviewed = super::next_after_submission(Some(id), &[], false).expect("submitted");
+        let handoff = Some(airc_lib::WorkCardId::new());
+        let reviewed = super::next_after_submission(Some(id), &[], false, handoff).expect("submitted");
         assert!(reviewed.contains("reviewer's verdict") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
-        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false), Some(reviewed.clone()), "an unknown verdict is still waiting");
-        let back = super::next_after_submission(Some(id), &[Failed], true).expect("sent back");
+        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff), Some(reviewed.clone()), "an unknown verdict is still waiting");
+        assert!(super::next_after_submission(Some(id), &[], false, None).unwrap().contains("no review handoff is recorded"));
+        let back = super::next_after_submission(Some(id), &[Failed], true, None).expect("sent back");
         assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
-        let done = super::next_after_submission(Some(id), &[Failed, Passed], false).expect("passed");
+        let done = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff).expect("passed");
         assert!(done.contains("passed review") && done.contains("grade fired"), "a pass outranks an earlier send-back: {done}");
-        assert_eq!(super::next_after_submission(None, &[], true), None, "nothing submitted, nothing to say");
+        assert_eq!(super::next_after_submission(None, &[], true, None), None, "nothing submitted, nothing to say");
     }
 
     // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a

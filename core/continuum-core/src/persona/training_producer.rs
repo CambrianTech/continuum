@@ -3723,17 +3723,13 @@ pub(crate) mod tests {
                 .any(|s| Some(s.submission_id.as_uuid()) == overlap.submission_id),
             "failed binding cannot publish its artifact"
         );
-        let review_card = airc
-            .create_work_card(
-                airc_lib::CreateWorkCard::new(
-                    repo,
-                    "review exact candidate",
-                    airc_work::Priority::P1,
-                )
-                .reviewing(card),
-            )
-            .await
-            .unwrap();
+        let review_card = airc_work::submission_review_card_id(
+            card,
+            airc_work::SubmissionId::from_uuid(published.submission_id),
+        );
+        let handoff_board = airc.work_board_in(&room).await.unwrap();
+        assert!(handoff_board.review_request(review_card).is_some());
+        assert_eq!(handoff_board.card(review_card).unwrap().reviews, Some(card));
         let review_claim = airc
             .claim_work_card(airc_lib::ClaimWorkCard {
                 card_id: review_card,
@@ -3744,6 +3740,34 @@ pub(crate) mod tests {
         let focus = airc.join("unrelated-focus").await.unwrap();
         let replay = submit.run(&ctx, params.clone()).await.unwrap();
         assert_eq!(replay.submitted_at_ms, published.submitted_at_ms);
+        let failed = WorkReview {
+            registry: registry.clone(),
+            executor_slot: slot.clone(),
+        }
+        .run(
+            &ctx,
+            WorkReviewParams {
+                room: params.room.clone(),
+                review_id: Some(Uuid::new_v4()),
+                card_id: Some(card.as_uuid().to_string()),
+                submission_id: Some(published.submission_id),
+                artifact: params.artifact.clone(),
+                review_card_id: review_card.as_uuid().to_string(),
+                review_claim_id: Some(review_claim.as_uuid()),
+                outcome: ReviewOutcome::Failed,
+                evidence_text: None,
+                evidence: params.artifact.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert!(matches!(failed.outcome, ReviewOutcome::Failed));
+        let retry_after_review = submit.run(&ctx, params.clone()).await.unwrap();
+        assert_eq!(retry_after_review.submission_id, published.submission_id);
+        assert!(retry_after_review.next.contains("Revise the work"));
+        let board_after_review = airc.work_board_in(&room).await.unwrap();
+        assert_eq!(board_after_review.card(card).unwrap().claim_id, handoff_board.card(card).unwrap().claim_id);
+        assert_eq!(board_after_review.card(review_card).unwrap().claim_id, Some(review_claim));
         let reviewed = WorkReview {
             registry: registry.clone(),
             executor_slot: slot.clone(),
@@ -3832,7 +3856,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(inspected.submission.publisher, persona);
-        assert_eq!(inspected.reviews.len(), 1);
+        assert_eq!(inspected.reviews.len(), 2);
         assert_eq!(inspected.reviews[0].reviewer, persona);
         // Regression: Kimi's accepted review exposed only "unbound", with no
         // way to inspect the source-owned revision without reading private text.

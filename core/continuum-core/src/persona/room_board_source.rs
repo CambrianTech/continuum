@@ -314,6 +314,7 @@ impl RoomBoardSource {
     /// no teammate could recognize or reach out to.
     fn render(
         card: &airc_work::WorkCard,
+        board: &BoardSnapshot,
         self_id: uuid::Uuid,
         now_ms: u64,
         names: &dyn crate::persona::card_holder::PeerNames,
@@ -326,12 +327,31 @@ impl RoomBoardSource {
         // found live by Benchy on a board of 61 cards, 0 in state Open, 59 leases
         // stale — every available card read as taken.
         let owner = held.render();
-        format!(
+        let mut content = format!(
             "card {id8} [{state}] \"{title}\" ({prio:?}, {owner})",
             state = held.state_tag(),
             title = card.title,
             prio = card.priority,
-        )
+        );
+        // The current candidate and its accepted signed verdicts come from the
+        // same room read. Keep evidence addressable; card state is not a verdict.
+        if let Some(candidate) = crate::modules::work::submission::latest_submission(card) {
+            let reviews: Vec<_> = board.submission_reviews.iter().filter(|review| {
+                review.card_id == card.card_id && review.submission_id == candidate.submission_id
+            }).collect();
+            if let Some(review) = reviews.first() {
+                use std::fmt::Write;
+                let outcomes: Vec<_> = reviews.iter().map(|review| review.outcome).collect();
+                if let Some(next) = crate::modules::work::submission::next_after_submission(
+                    Some(candidate.submission_id.as_uuid()), &outcomes,
+                    crate::modules::benchmark_grade::graded_at_submit(&card.title),
+                    Some(review.review_card_id),
+                ) {
+                    let _ = write!(content, "\n{next} Read work/submission card_id={} submission_id={} for all {} signed verdicts, reviewers, and evidence.", card.card_id, candidate.submission_id, reviews.len());
+                }
+            }
+        }
+        content
     }
 }
 
@@ -718,7 +738,7 @@ impl RagSource for RoomBoardSource {
 
         let mut cards_delivered = 0usize;
         for card in ordered.into_iter().take(render_budget_cards) {
-            let content = Self::render(card, self.persona_id, now_ms, &names);
+            let content = Self::render(card, &board, self.persona_id, now_ms, &names);
             let tokens = estimate_tokens(&content);
             if tokens_used.saturating_add(tokens) > budget {
                 // Budget exhausted — a truncated board is still truthful for the
@@ -916,6 +936,7 @@ mod tests {
     fn snapshot(cards: Vec<WorkCard>) -> BoardSnapshot {
         BoardSnapshot {
             cards,
+            submission_reviews: Vec::new(),
             lanes: Vec::new(),
             workspaces: Vec::new(),
             repo_tracking: Vec::new(),
@@ -1274,6 +1295,51 @@ mod tests {
     // HOLDS must lead the delivery as "[your work] you HOLD…" and render as
     // "owner YOU", never as her own unrecognizable hex prefix. Another peer's
     // claim stays hex-attributed and produces no your-work lead.
+    #[tokio::test]
+    async fn accepted_current_review_reaches_activity_board_but_not_other_room() {
+        let me = persona();
+        let room = uuid::Uuid::new_v4();
+        let mut mine = card("revise submitted work", CardState::Claimed, Some(airc_core::PeerId::from_uuid(me)));
+        let artifact: airc_work::SubmissionArtifact = serde_json::from_value(json!({
+            "hash": "a".repeat(64), "size_bytes": 5, "mime": "text/x-diff"
+        })).unwrap();
+        let candidate = airc_work::WorkSubmission {
+            submission_id: airc_work::SubmissionId::new(), card_id: mine.card_id,
+            claim_id: mine.claim_id.unwrap(), instance: "ordinary".into(),
+            base_sha: airc_work::GitObjectId::new("b".repeat(40)).unwrap(),
+            artifact: artifact.clone(), publisher: airc_core::PeerId::from_uuid(me), submitted_at_ms: 10,
+        };
+        mine.submissions.push(candidate.clone());
+        let review = airc_work::WorkSubmissionReview {
+            review_id: airc_work::WorkReviewId::new(), card_id: mine.card_id,
+            submission_id: candidate.submission_id, artifact: artifact.clone(),
+            review_card_id: airc_work::WorkCardId::new(), review_claim_id: airc_work::ClaimId::new(),
+            reviewer: airc_core::PeerId::new(), outcome: airc_work::WorkReviewOutcome::Failed,
+            evidence: artifact, evidence_text: Some("remaining trait callers do not compile".into()), reviewed_at_ms: 20,
+        };
+        let mut old = review.clone();
+        old.review_id = airc_work::WorkReviewId::new();
+        old.submission_id = airc_work::SubmissionId::new();
+        old.outcome = airc_work::WorkReviewOutcome::Passed;
+        let mut board = snapshot(vec![mine]);
+        board.submission_reviews = vec![old.clone()];
+        for _ in 0..32 {
+            board.submission_reviews.push(airc_work::WorkSubmissionReview { review_id: airc_work::WorkReviewId::new(), ..review.clone() });
+        }
+        let source = RoomBoardSource::new(me, Arc::new(StubReader::new(board))).for_room(room);
+        let activity = RagContext::for_persona_in_room(me, ctx().now_ms, room);
+        // Production room-kanban desired allocation (rag_budget preset).
+        let delivery = source.deliver(&activity, 500, ResolutionPreference::Raw).await;
+        let content = delivery.items.iter().map(|item| item.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(content.contains("Revise the work"));
+        assert!(content.contains("all 32 signed verdicts, reviewers, and evidence"));
+        assert!(content.contains(&candidate.submission_id.to_string()));
+        assert!(content.contains("work/submission"));
+        assert!(!content.contains(&old.review_id.to_string()));
+        let elsewhere = RagContext::for_persona_in_room(me, ctx().now_ms, uuid::Uuid::new_v4());
+        assert!(source.deliver(&elsewhere, 2_000, ResolutionPreference::Raw).await.items.is_empty());
+    }
+
     #[tokio::test]
     async fn held_cards_lead_as_your_work_and_render_owner_you() {
         let me = persona();

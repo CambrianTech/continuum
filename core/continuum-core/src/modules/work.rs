@@ -2375,7 +2375,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
         // A room's own card (not a bench card): its review card comes from the parent
         // itself, under the room's policy (card fa4aaaaa). The bench branch below is
         // unchanged.
-        return open_room_review_card(airc, &room, &card, parent).await;
+        return open_room_review_card(airc, &room, &card, parent, submission::latest_submission(&card).map(|s| s.submission_id)).await;
     };
     let owner = card
         .owner
@@ -2424,6 +2424,7 @@ async fn open_room_review_card(
     room: &airc_lib::Room,
     card: &airc_lib::WorkCard,
     parent: WorkCardId,
+    submission: Option<airc_work::SubmissionId>,
 ) -> Result<WorkCardId, String> {
     let owner = card
         .owner
@@ -2442,7 +2443,10 @@ async fn open_room_review_card(
     // on the parent's board, named: never through the shared current-room pointer (#4838)
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
     req.body = Some(body);
-    airc.create_work_card_in(room, req).await.map_err(|e| e.to_string())
+    match submission {
+        Some(candidate) => airc.ensure_submission_review_in(room, parent, candidate, req).await,
+        None => airc.create_work_card_in(room, req).await,
+    }.map_err(|e| e.to_string())
 }
 
 /// The card a review card reviews, by airc's native link (`reviews`), for review cards no
@@ -3530,11 +3534,11 @@ impl WorkGet {
             .map(submission::WorkReviewResult::from).collect();
         // the holder's card only: a review card's next step is its verdict, not a submission
         if card.reviews.is_none() {
-            let latest = card.submissions.last().map(|s| s.submission_id);
+            let latest = submission::latest_submission(card).map(|s| s.submission_id);
             let outcomes: Vec<_> = latest
                 .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
                 .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
-            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title));
+            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title), submission::submission_review_handoff(board, card.card_id, latest));
         }
         Ok(receipt)
     }
