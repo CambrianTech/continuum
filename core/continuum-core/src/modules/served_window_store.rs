@@ -71,15 +71,10 @@ pub struct StoredServedWindow {
 }
 
 impl StoredServedWindow {
-    /// The geometry a cold boot may plan FIRST — or `None` when the record is a COLLAPSE,
-    /// not a steady state. A window below the typical prompt the same record remembers
-    /// cannot have served a turn: it is what the plan shed to under pressure (the M5 at
-    /// 2026-09-20 07:52Z: 1 × 2,048 with residents sending ~30k; the 5090 the same
-    /// afternoon, refusing every 17–31k prompt against a 2,048 slot). Remembering it as
-    /// "the last steady geometry" seeds the NEXT boot with the collapse — its lane count
-    /// caps the boot's choice at one lane and its window joins the floor — so a node that
-    /// fell over once boots into the fall. An unknown typical (0, an older record) never
-    /// disqualifies: the window carries over as before. Zero lanes is no geometry.
+    /// Return retained restart geometry. Zero lanes denotes an unqualified first
+    /// candidate. An impossible recorded observation is rejected as inconsistent
+    /// legacy data; that check cannot detect pressure collapse. New qualification
+    /// happens in observe_to using the launch owner's capacity provenance.
     pub fn steady_geometry(&self) -> Option<(u32, u32)> {
         if self.lanes == 0 {
             return None;
@@ -158,6 +153,11 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry, qualification: Geome
         candidate: None,
     });
     let candidate = SettledGeometry { geometry, qualification };
+    // Settlement repeats. A later planning tick cannot relabel the admission
+    // reason of a generation that is already recorded.
+    if stored.candidate.as_ref().is_some_and(|old| old.geometry.generation == candidate.geometry.generation) {
+        return;
+    }
     if stored.candidate.as_ref() != Some(&candidate) {
         stored.candidate = Some(candidate);
         write_record(path, &stored);
@@ -165,7 +165,8 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry, qualification: Geome
 }
 
 /// A successful median certifies only the settled generation that produced it.
-/// Test the candidate against retained service BEFORE replacing that evidence.
+/// The launch owner's capacity decision qualifies geometry; prompt sizes cannot
+/// classify pressure because serving censors them at the window it admitted.
 pub fn save_observed_prompt(geometry: &ServedGeometry, tokens: u32) {
     if let Some(path) = default_path() {
         observe_to(&path, geometry, tokens);
@@ -176,11 +177,10 @@ fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     let Some(mut stored) = load_from(path) else { return };
     let Some(candidate) = stored.candidate.as_ref().filter(|c| &c.geometry == geometry) else { return };
     if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0
-        || (stored.model_id == geometry.model_id
+        || candidate.qualification == GeometryQualification::Unknown
+        || (stored.lanes > 0 && stored.model_id == geometry.model_id
             && (geometry.per_slot_window < stored.per_slot_window || geometry.lanes < stored.lanes)
-            && candidate.qualification != GeometryQualification::Unconstrained)
-        || (stored.model_id == geometry.model_id
-            && stored.observed_prompt_tokens.is_some_and(|prior| geometry.per_slot_window < prior))
+            && candidate.qualification == GeometryQualification::CapacityLimited)
     {
         return;
     }
@@ -270,14 +270,23 @@ mod tests {
         assert_eq!(restarted.steady_geometry(), Some((62_720, 1)));
         assert_eq!(restarted.observed_prompt_tokens, Some(30_000));
         assert_eq!(restarted.candidate.as_ref().map(|c| &c.geometry), Some(&collapsed));
+        let first_path = dir.path().join("first-pressure.json");
+        save_candidate_to(&first_path, collapsed.clone(), GeometryQualification::CapacityLimited);
+        observe_to(&first_path, &collapsed, median);
+        assert_eq!(load_from(&first_path).expect("first known capacity launch").steady_geometry(), Some((2_048, 1)), "a first hardware-constrained optimum is not a regression");
         // A genuinely fitting replacement remains eligible; this is not a max-window rule.
         let fitted = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: 40_000, ..large };
         save_candidate_to(&path, fitted.clone(), GeometryQualification::CapacityLimited);
         observe_to(&path, &fitted, 32_000);
         assert_eq!(load_from(&path).expect("pressure above prior usage").steady_geometry(), Some((62_720, 1)));
+        save_candidate_to(&path, fitted.clone(), GeometryQualification::Unconstrained);
+        observe_to(&path, &fitted, 32_000);
+        assert_eq!(load_from(&path).expect("same generation cannot be relabeled").steady_geometry(), Some((62_720, 1)));
+        let fitted = ServedGeometry { generation: uuid::Uuid::new_v4(), ..fitted };
         save_candidate_to(&path, fitted.clone(), GeometryQualification::Unknown);
         observe_to(&path, &fitted, 32_000);
         assert_eq!(load_from(&path).expect("unknown provenance").steady_geometry(), Some((62_720, 1)));
+        let fitted = ServedGeometry { generation: uuid::Uuid::new_v4(), ..fitted };
         save_candidate_to(&path, fitted.clone(), GeometryQualification::Unconstrained);
         observe_to(&path, &fitted, 32_000);
         assert_eq!(load_from(&path).expect("qualified replacement").steady_geometry(), Some((40_000, 1)));
@@ -288,14 +297,17 @@ mod tests {
         save_candidate_to(&path, one_lane.clone(), GeometryQualification::CapacityLimited);
         observe_to(&path, &one_lane, 1_024);
         assert_eq!(load_from(&path).expect("lane pressure survives restart").steady_geometry(), Some((40_000, 2)));
+        // A changed workload may legitimately use less than prior successful
+        // usage. Only an unconstrained owner decision permits this replacement.
+        let collapsed = ServedGeometry { generation: uuid::Uuid::new_v4(), ..collapsed };
+        save_candidate_to(&path, collapsed.clone(), GeometryQualification::Unconstrained);
+        observe_to(&path, &collapsed, 1_024);
+        assert_eq!(load_from(&path).expect("new workload").steady_geometry(), Some((2_048, 1)));
     }
 
-    // what this catches: a collapsed geometry must not seed the next boot as the steady one.
-    // Regression for the M5 (2026-09-20 08:43Z booted 1 × 2,048 from the record its 07:52Z
-    // collapse wrote) and the 5090 (serving 1 × 2,048 all afternoon, refusing 17–31k prompts):
-    // a window below the typical prompt the same record remembers is a fall, not a state.
+    // Structural compatibility check, not the lifecycle collapse regression above.
     #[test]
-    fn a_window_below_the_typical_prompt_is_a_collapse_not_a_steady_geometry() {
+    fn inconsistent_legacy_observation_and_unqualified_geometry_are_rejected() {
         let rec = |window: u32, lanes: u32, typical: u32| StoredServedWindow {
             model_id: "m".into(),
             per_slot_window: window,
