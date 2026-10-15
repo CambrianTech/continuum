@@ -1101,7 +1101,7 @@ mod tests {
         // tree left (end_tree takes ONE snapshot after its kill, so a descendant still dying is
         // reported, conservatively, never forgotten), retrying until confirmed. Nothing may stay
         // unknown, and every reported process must be confirmed gone by the release's own recheck
-        // within the deadline (#5062's CI, 2026-10-15: pid 15439 was still dying at the snapshot;
+        // within the deadline (#5062's CI, 2026-10-15: pid 15439 was unconfirmed at the snapshot;
         // card fb166622; the same race #5053 fixed for the hook pid).
         tokio::time::timeout(std::time::Duration::from_secs(10), async {
             let lingering = crate::code::hands::close(context).await;
