@@ -113,12 +113,20 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
 /// Record a settled launch separately from the last successfully observed geometry.
 /// The serving reconciler calls this under its existing ServingOperation guard;
 /// authority planning only reads the store and never races a second writer.
-pub fn save(geometry: ServedGeometry, observed_prompt: Option<u32>) {
+pub fn record_reconciled(geometry: ServedGeometry, settled_now: bool, observed_prompt: Option<u32>) {
     if let Some(path) = default_path() {
-        save_candidate_to(&path, geometry.clone());
-        if let Some(tokens) = observed_prompt {
-            observe_to(&path, &geometry, tokens);
-        }
+        record_reconciled_to(&path, geometry, settled_now, observed_prompt);
+    }
+}
+
+fn record_reconciled_to(path: &Path, geometry: ServedGeometry, settled_now: bool, observed_prompt: Option<u32>) {
+    if settled_now {
+        save_candidate_to(path, geometry.clone());
+    }
+    // Terminal usage commonly arrives after the one-shot settlement edge. Every
+    // subsequent reconcile may observe it; candidate identity rejects early/stale usage.
+    if let Some(tokens) = observed_prompt {
+        observe_to(path, &geometry, tokens);
     }
 }
 
@@ -209,9 +217,13 @@ mod tests {
                 LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)])).unwrap();
         let large = ServedGeometry { model_id: model.model_id.clone(), generation: uuid::Uuid::new_v4(),
             per_slot_window: initial.served_context_window, lanes: initial.lanes };
-        save_candidate_to(&path, large.clone());
+        record_reconciled_to(&path, large.clone(), false, Some(60_000));
+        assert!(load_from(&path).is_none(), "usage cannot settle an unrecorded launch");
+        record_reconciled_to(&path, large.clone(), true, None);
         assert_eq!(load_from(&path).unwrap().cache_geometry(), None);
-        observe_to(&path, &large, 60_000);
+        // A long turn finishes after settlement: the next reconcile must consume
+        // its terminal sample without requiring another settlement edge.
+        record_reconciled_to(&path, large.clone(), false, Some(60_000));
         let pressure = HostBudget { usable_bytes: model.peak_resident_bytes(8192, 1), perf_cores: 8 };
         let pressured = plan_serving_at_rest(&pressure, std::slice::from_ref(&model), None,
             &ServingDemand::new(2, Some(70_000))).unwrap();
@@ -219,7 +231,7 @@ mod tests {
         assert!(pressured.served_context_window < large.per_slot_window);
         let collapse = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: pressured.served_context_window,
             lanes: pressured.lanes, ..large.clone() };
-        save_candidate_to(&path, collapse.clone());
+        record_reconciled_to(&path, collapse.clone(), true, None);
         assert_eq!(load_from(&path).unwrap().cache_geometry(), Some((70_000, 2)));
         // Another endpoint/model, the prior generation, and a rewritten same-generation
         // shape cannot certify the current candidate's usage.
@@ -229,7 +241,7 @@ mod tests {
         }
         save_candidate_to(&path, ServedGeometry { lanes: 2, ..collapse.clone() });
         assert_eq!(load_from(&path).unwrap().candidate, Some(collapse.clone()));
-        observe_to(&path, &collapse, 2048);
+        record_reconciled_to(&path, collapse.clone(), false, Some(2048));
         let restarted = load_from(&path).unwrap();
         assert_eq!(restarted.cache_geometry(), Some((collapse.per_slot_window, 1)));
         assert_eq!(restarted.observed_prompt_tokens, Some(2048));

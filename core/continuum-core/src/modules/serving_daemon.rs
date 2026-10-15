@@ -3395,15 +3395,16 @@ impl ServingDaemonModule {
                 // Settlement records an owned candidate. Only terminal usage from this
                 // exact generation promotes its cache preference; neither transition
                 // constrains the next plan's lanes or current workload requirement.
-                if settles_this_tick(cooling, live.ready, live.lanes) {
-                    if let Some(model) = live.active_model.as_deref() {
-                        let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&live.base_url);
-                        if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
-                            .filter(|g| g.model_id == model && g.per_slot_window == live.served_context_window && g.lanes == live.lanes)
-                        {
-                            let observed = crate::cognition::working_set::PromptSample::geometry_median(&(self.leased_in_sent)(), endpoint.root(), &geometry);
-                            crate::modules::served_window_store::save(geometry, observed);
-                        }
+                let settled_now = settles_this_tick(cooling, live.ready, live.lanes);
+                if let Some(model) = live.active_model.as_deref() {
+                    let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&live.base_url);
+                    if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
+                        .filter(|g| g.model_id == model && g.per_slot_window == live.served_context_window && g.lanes == live.lanes)
+                    {
+                        let observed = crate::cognition::working_set::PromptSample::geometry_median(&(self.leased_in_sent)(), endpoint.root(), &geometry);
+                        crate::modules::served_window_store::record_reconciled(geometry, settled_now, observed);
+                    }
+                    if settled_now {
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
                         crate::modules::citizen_health::note_lanes(live.lanes as u64);
