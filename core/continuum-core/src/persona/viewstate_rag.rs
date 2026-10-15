@@ -97,11 +97,26 @@ use super::rag_budget::{
     ResolutionPreference,
 };
 
-/// A positron `ViewState` kind that knows how to render itself for a MIND.
-///
-/// Deliberately tiny: identity (`KIND`), a label, the verb that shows the whole
-/// thing, and the atomic units. Everything else — budgeting, packing, cursors,
-/// token counting, the honest-empty case — is the adapter's job, written once.
+/// One atomic projection: visible text and its machine-readable provenance are
+/// admitted together. Metadata must describe this unit, not smuggle omitted rows
+/// past packing. The adapter alone computes token costs and continuation offsets.
+#[derive(Debug)]
+pub struct RagRenderUnit {
+    pub content: String,
+    pub metadata: serde_json::Map<String, serde_json::Value>,
+}
+
+impl From<String> for RagRenderUnit {
+    fn from(content: String) -> Self {
+        Self {
+            content,
+            metadata: serde_json::Map::new(),
+        }
+    }
+}
+
+/// A positron `ViewState` rendered for a mind. Kinds own atomic projections;
+/// budgeting, packing, cursors and token counting belong to the shared adapter.
 pub trait RagRenderable: DeserializeOwned + Send + Sync + 'static {
     /// The positron state kind this renders (e.g. `RosterViewState::KIND`). The
     /// SAME const the web renderer subscribes to — that shared const is what makes
@@ -152,7 +167,7 @@ pub trait RagRenderable: DeserializeOwned + Send + Sync + 'static {
     /// compare a slot against, and the adapter (which DID hold `persona_id`, for the
     /// continuation cursor) was one frame too far out to fix it without
     /// post-processing another module's line format.
-    fn units(&self, viewer: uuid::Uuid) -> Vec<String>;
+    fn units(&self, viewer: uuid::Uuid) -> Vec<RagRenderUnit>;
 
     /// Which room this view describes, when it describes one.
     ///
@@ -256,7 +271,7 @@ pub trait RoomScopedView: RagRenderable {}
 /// not a guard, and this is the half that catches an over-tight bound:
 ///
 /// ```
-/// use continuum_core::persona::viewstate_rag::{NodeScopedView, RagRenderable, ViewStateRagSource};
+/// use continuum_core::persona::viewstate_rag::{NodeScopedView, RagRenderable, RagRenderUnit, ViewStateRagSource};
 /// use continuum_positron::Substrate;
 /// // No production kind is node-scoped any more (the bench board went per room on
 /// // 2026-10-04, HER-LOOP-IS-HER-OWN.md rule 5), so the mirror carries its own: a
@@ -268,7 +283,7 @@ pub trait RoomScopedView: RagRenderable {}
 ///     const BLOCK: &'static str = "node temperature";
 ///     const EXPAND: Option<&'static str> = None;
 ///     fn floor_tokens() -> u32 { 4 }
-///     fn units(&self, _viewer: uuid::Uuid) -> Vec<String> { vec![format!("{} C", self.celsius)] }
+///     fn units(&self, _viewer: uuid::Uuid) -> Vec<RagRenderUnit> { vec![format!("{} C", self.celsius).into()] }
 /// }
 /// impl NodeScopedView for NodeTemperature {}
 /// let _ = ViewStateRagSource::<NodeTemperature>::new(Substrate::new());
@@ -341,21 +356,30 @@ impl<V: RagRenderable> ViewStateRagSource<V> {
     /// Pack as many whole units as fit. Shared by `deliver` and the continuation
     /// path so a resumed delivery can never use different packing rules than the
     /// first one.
-    fn pack(&self, units: Vec<String>, budget: u32, from: usize) -> (Vec<RagItem>, u32, usize) {
+    fn pack(
+        &self,
+        units: Vec<RagRenderUnit>,
+        budget: u32,
+        from: usize,
+    ) -> (Vec<RagItem>, u32, usize) {
         let mut items = Vec::new();
         let mut used = 0u32;
         let mut next = from;
-        for unit in units.into_iter().skip(from) {
-            let cost = estimate_tokens(&unit);
+        for mut unit in units.into_iter().skip(from) {
+            let cost = estimate_tokens(&unit.content);
             if used + cost > budget {
                 break;
             }
             used += cost;
             next += 1;
+            unit.metadata
+                .insert("kind".into(), serde_json::json!(V::KIND));
+            unit.metadata
+                .insert("block".into(), serde_json::json!(V::BLOCK));
             items.push(RagItem {
-                content: unit,
+                content: unit.content,
                 tokens: cost,
-                metadata: serde_json::json!({ "kind": V::KIND, "block": V::BLOCK }),
+                metadata: serde_json::Value::Object(unit.metadata),
             });
         }
         (items, used, next)
@@ -378,9 +402,7 @@ impl<V: RagRenderable + RoomScopedView> ViewStateRagSource<V> {
     ///
     /// This is the constructor a room-scoped kind must use. It takes the REGISTRY,
     /// not a room, precisely so no caller can bind a room at construction time.
-    pub fn per_room(
-        rooms: std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>,
-    ) -> Self {
+    pub fn per_room(rooms: std::sync::Arc<continuum_positron::scoping::PerRoomSubstrates>) -> Self {
         Self {
             binding: SubstrateBinding::PerRoom(rooms),
             _kind: std::marker::PhantomData,
@@ -532,7 +554,7 @@ impl RagRenderable for continuum_positron::RosterViewState {
         10
     }
 
-    fn units(&self, viewer: uuid::Uuid) -> Vec<String> {
+    fn units(&self, viewer: uuid::Uuid) -> Vec<RagRenderUnit> {
         // STABLE ORDER for the mind (2026-09-01, Benchy hit_rate=0.0): this
         // block renders at ~0.4% prompt depth, and "presence order" rotates
         // as heartbeats land — his consecutive prompts diverged at char ~226
@@ -580,7 +602,12 @@ impl RagRenderable for continuum_positron::RosterViewState {
                 // role, are the stable facts; whether a peer is busy this second is
                 // presence — the live view carries it, and it belongs in the volatile
                 // tail if a turn ever needs it ([[a-mutating-system-prompt-destroys-kv-reuse]]).
-                line
+                let mut unit = RagRenderUnit::from(line);
+                unit.metadata
+                    .insert("peer_id".into(), serde_json::json!(slot.member_id));
+                unit.metadata
+                    .insert("display_name".into(), serde_json::json!(slot.display_name));
+                unit
             })
             .collect()
     }
@@ -633,7 +660,7 @@ impl RagRenderable for continuum_positron::bench::BenchViewState {
 
     /// Node-scoped: the bench board describes THIS NODE, not the people in a room,
     /// so every reader sees the identical text and `_viewer` is deliberately unused.
-    fn units(&self, _viewer: uuid::Uuid) -> Vec<String> {
+    fn units(&self, _viewer: uuid::Uuid) -> Vec<RagRenderUnit> {
         // Rounds first: the lifecycle truth a citizen orients on before the
         // per-run rows (#371) — the SAME scoreboard the human's screen renders,
         // which is the positronic-parity acceptance test.
@@ -674,6 +701,7 @@ impl RagRenderable for continuum_positron::bench::BenchViewState {
                 }
                 line
             }))
+            .map(RagRenderUnit::from)
             .collect()
     }
 }
@@ -743,11 +771,17 @@ mod tests {
             SenderKind::Agent,
         );
         slot.availability = Some("busy".to_string());
-        let view = RosterViewState { room_id: Uuid::from_u128(0xaa), roster: vec![slot] };
+        let view = RosterViewState {
+            room_id: Uuid::from_u128(0xaa),
+            roster: vec![slot],
+        };
         let units = RagRenderable::units(&view, Uuid::from_u128(7));
         assert_eq!(units.len(), 1);
-        assert!(units[0].starts_with("Anwen"), "{units:?}");
-        assert!(!units[0].contains("[busy]") && !units[0].contains('['), "{units:?}");
+        assert!(units[0].content.starts_with("Anwen"), "{units:?}");
+        assert!(
+            !units[0].content.contains("[busy]") && !units[0].content.contains('['),
+            "{units:?}"
+        );
     }
 
     /// what this catches (card bb387821): the citizen's OWN row rendering
@@ -773,11 +807,16 @@ mod tests {
         };
         let units = RagRenderable::units(&view, me);
         assert_eq!(units.len(), 2, "she stays listed: {units:?}");
-        let mine: Vec<&String> = units.iter().filter(|u| u.contains("YOU")).collect();
+        let mine: Vec<_> = units.iter().filter(|u| u.content.contains("YOU")).collect();
         assert_eq!(mine.len(), 1, "exactly one row marked: {units:?}");
-        assert!(mine[0].starts_with("Saoirse"), "the READER's row: {units:?}");
         assert!(
-            units.iter().any(|u| u.starts_with("Paige") && !u.contains("YOU")),
+            mine[0].content.starts_with("Saoirse"),
+            "the READER's row: {units:?}"
+        );
+        assert!(
+            units
+                .iter()
+                .any(|u| u.content.starts_with("Paige") && !u.content.contains("YOU")),
             "the peer stays unmarked: {units:?}"
         );
     }
@@ -804,7 +843,10 @@ mod tests {
         };
         let units = RagRenderable::units(&view, Uuid::from_u128(0xdead));
         assert_eq!(units.len(), 2);
-        assert!(!units.iter().any(|u| u.contains("YOU")), "{units:?}");
+        assert!(
+            !units.iter().any(|u| u.content.contains("YOU")),
+            "{units:?}"
+        );
     }
 
     /// what this catches: THE defect. A peer present in the room must reach the
@@ -850,6 +892,66 @@ mod tests {
             delivery.continuation.is_some(),
             "undelivered members must be resumable, not silently dropped"
         );
+        // Regression for card 84dee23e: live roster atoms must feed the actual
+        // turn-author and wake consumers, including under partial admission.
+        // A source-id alias alone cannot pass: the producer must retain identity.
+        let admitted: std::collections::HashMap<_, _> = delivery
+            .items
+            .iter()
+            .map(|item| {
+                (
+                    item.metadata["peer_id"].as_str().unwrap().to_owned(),
+                    item.metadata["display_name"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(admitted.len(), delivery.items.len());
+        for (id, name) in [(1, "Anwen"), (2, "Asha"), (3, "Anon")] {
+            if delivery.items.iter().any(|item| item.content.starts_with(name)) {
+                assert_eq!(admitted.get(&Uuid::from_u128(id).to_string()).map(String::as_str), Some(name));
+            }
+        }
+        let wake = super::super::service_loop::build_workspace_turns(
+            std::slice::from_ref(&delivery),
+            "self",
+            "Reader",
+            None,
+        );
+        assert_eq!(wake.len(), 1);
+        for name in admitted.values() {
+            assert!(wake[0].content.contains(name));
+        }
+        let transcript = RagDelivery {
+            source_id: "airc".into(),
+            items: (1..=3)
+                .map(|i| RagItem {
+                    content: format!("distinct observation {i}"),
+                    tokens: 4,
+                    metadata: serde_json::json!({"peer_id": Uuid::from_u128(i).to_string()}),
+                })
+                .collect(),
+            tokens_used: 12,
+            continuation: None,
+            resolution_used: ResolutionPreference::Raw,
+        };
+        let own = Uuid::from_u128(3).to_string();
+        let turns = super::super::service_loop::build_workspace_turns(
+            &[delivery, transcript],
+            &own,
+            "Native identity",
+            None,
+        );
+        assert!(turns.len() >= 3, "all transcript events survive attribution");
+        for (index, turn) in turns.iter().take(3).enumerate() {
+            let peer = Uuid::from_u128(index as u128 + 1).to_string();
+            assert_eq!(turn.is_self, peer == own);
+            let expected = if peer == own {
+                "Native identity"
+            } else {
+                admitted.get(&peer).map(String::as_str).unwrap_or(&peer)
+            };
+            assert_eq!(turn.author, expected);
+        }
     }
 
     /// what this catches: an unconditional cursor. If a fully-delivered source
@@ -893,19 +995,20 @@ mod tests {
             }));
 
         let source: ViewStateRagSource<RosterViewState> = ViewStateRagSource::per_room(rooms);
-        let in_other = RagContext::for_persona_in_room(
-            Uuid::from_u128(0x9),
-            0,
-            Uuid::from_u128(OTHER),
-        );
-        let delivery = source.deliver(&in_other, 500, ResolutionPreference::Raw).await;
+        let in_other =
+            RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(OTHER));
+        let delivery = source
+            .deliver(&in_other, 500, ResolutionPreference::Raw)
+            .await;
         let rendered = delivery
             .items
             .iter()
             .map(|i| i.content.clone())
             .collect::<Vec<_>>()
-            .join("
-");
+            .join(
+                "
+",
+            );
         assert!(
             rendered.contains("Saoirse"),
             "a turn in a room must be grounded in THAT room's people: {rendered}"
@@ -975,11 +1078,8 @@ mod tests {
 
         // Same persona, same source, DIFFERENT room: must refuse rather than index
         // into the other room's roster.
-        let in_other = RagContext::for_persona_in_room(
-            Uuid::from_u128(0x9),
-            0,
-            Uuid::from_u128(OTHER),
-        );
+        let in_other =
+            RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(OTHER));
         assert!(
             source
                 .deliver_continuation(&in_other, cursor.clone(), 500)
@@ -1010,12 +1110,11 @@ mod tests {
         let source: ViewStateRagSource<RosterViewState> =
             ViewStateRagSource::per_room(Arc::clone(&rooms));
         for n in 0..5u128 {
-            let elsewhere = RagContext::for_persona_in_room(
-                Uuid::from_u128(0x9),
-                0,
-                Uuid::from_u128(0xd0 + n),
-            );
-            let delivery = source.deliver(&elsewhere, 500, ResolutionPreference::Raw).await;
+            let elsewhere =
+                RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, Uuid::from_u128(0xd0 + n));
+            let delivery = source
+                .deliver(&elsewhere, 500, ResolutionPreference::Raw)
+                .await;
             assert!(delivery.items.is_empty(), "an unprojected room has no view");
         }
         assert_eq!(
@@ -1163,12 +1262,20 @@ mod tests {
         let source: ViewStateRagSource<BenchViewState> = ViewStateRagSource::per_room(rooms.clone());
 
         let in_a = source
-            .deliver(&RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_a), 500, ResolutionPreference::Raw)
+            .deliver(
+                &RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_a),
+                500,
+                ResolutionPreference::Raw,
+            )
             .await;
         assert!(in_a.items.iter().any(|i| i.content.contains("only-in-a")), "{in_a:?}");
 
         let in_b = source
-            .deliver(&RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_b), 500, ResolutionPreference::Raw)
+            .deliver(
+                &RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_b),
+                500,
+                ResolutionPreference::Raw,
+            )
             .await;
         assert!(in_b.items.is_empty(), "room B has no board; she is handed nothing: {in_b:?}");
 
@@ -1181,7 +1288,11 @@ mod tests {
             sample_interval_ms: 5000,
         }));
         let in_b = source
-            .deliver(&RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_b), 500, ResolutionPreference::Raw)
+            .deliver(
+                &RagContext::for_persona_in_room(Uuid::from_u128(0x9), 0, room_b),
+                500,
+                ResolutionPreference::Raw,
+            )
             .await;
         assert!(in_b.items.is_empty(), "a view of another room abstains: {in_b:?}");
     }
