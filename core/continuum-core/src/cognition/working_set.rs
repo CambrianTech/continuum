@@ -956,7 +956,7 @@ mod tests {
     #[test]
     fn requested_growth_and_observed_service_remain_distinct_across_restart() {
         use crate::cognition::serving_plan::ServingDemand;
-        use crate::modules::served_window_store::{load_from, save_to};
+
         let local = Uuid::new_v4();
         let registry = WorkingSetRegistry::new();
         let legacy: PersonaDemand = serde_json::from_str(
@@ -976,21 +976,6 @@ mod tests {
         assert_eq!(PromptSample::served_median(&samples, "seat", Some("absent")), None);
         assert_eq!(WorkingSetRegistry::sent_sample_for_plan(56_057, 828, 2_048), 56_057, "starvation still requests growth");
 
-        let dir = tempfile::tempdir().expect("temporary store");
-        let path = dir.path().join("served-window.json");
-        std::fs::write(&path, br#"{"model_id":"m","per_slot_window":62720,"lanes":1,"typical_prompt_tokens":2866096,"set_at_ms":1}"#).expect("legacy geometry");
-        let old = load_from(&path).expect("load legacy");
-        assert_eq!(old.observed_prompt_tokens, None, "legacy demand is not manufactured service");
-        assert_eq!(old.steady_geometry(), Some((62_720, 1)));
-        save_to(&path, "m", 62_720, 1, 0);
-        let migrated = load_from(&path).expect("unknown observation migration");
-        assert_eq!(migrated.observed_prompt_tokens, None);
-        assert_eq!(migrated.typical_prompt_tokens, 0, "rollback readers receive unknown, never contaminated demand");
-        assert_eq!(migrated.steady_geometry(), Some((62_720, 1)));
-        save_to(&path, "m", 62_720, 1, 30_000);
-        assert_eq!(load_from(&path).expect("new restart").steady_geometry(), Some((62_720, 1)));
-        save_to(&path, "m", 2_048, 1, 30_000);
-        assert_eq!(load_from(&path).expect("collapsed restart").steady_geometry(), None, "real service still refuses collapse");
         assert_eq!(registry.sent_median_of(&[local]), Some(2_866_096), "geometry migration never discards requested demand");
     }
 
