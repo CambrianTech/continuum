@@ -270,11 +270,13 @@ pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
 }
 
-/// One page dir's disk read, shared by every asker so a slow disk never grows a second stuck read.
-type StateSeed = futures::future::Shared<futures::future::BoxFuture<'static, ()>>;
-/// Reads in flight, per page dir. An entry leaves when its read lands; a timed-out asker leaves it
-/// in place, so the read keeps its custody and the next asker collects it.
-static SEEDING: parking_lot::Mutex<Vec<(std::path::PathBuf, StateSeed)>> = parking_lot::Mutex::new(Vec::new());
+/// The one disk read in flight, and the dir it reads. ONE: every page dir is under one store on one
+/// volume, so a second concurrent read only adds a second stuck thread when that volume stops
+/// answering, and a plan whose geometry churns could otherwise start one per window (root on
+/// #5060). The read is its own task: it lands its samples and clears this slot whether or not
+/// anyone is still waiting on it.
+static SEEDING: parking_lot::Mutex<Option<(std::path::PathBuf, futures::future::Shared<futures::future::BoxFuture<'static, ()>>)>> =
+    parking_lot::Mutex::new(None);
 #[cfg(test)]
 static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = parking_lot::Mutex::new(Vec::new());
 
@@ -286,26 +288,43 @@ static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = parking_lot::Mu
 /// started 12:15:15Z, launch derived 3,232 MiB 20 s later, and the re-home relaunched it at
 /// 9,477 MiB; card 37eb1925).
 ///
-/// The sample cache is the readiness authority: a dir it knows (measured, or read and empty) is
-/// never read again, a dir it evicted is unknown again and is read again alone, and a new geometry
-/// is a new dir. The read runs on the blocking pool, never on a worker (root on #5060), once per
-/// dir in flight, and each asker waits at most the disk reporters'
+/// The sample cache is the readiness authority: a dir it knows (measured, or read and empty) is not
+/// read again, and a dir it evicted is unknown again. One read is in flight at a time ([`SEEDING`]);
+/// while another dir's read is still running, this dir stays unknown and its sizing uses the
+/// estimate, and the next ask reads it. The read runs on the blocking pool, never on a worker (root
+/// on #5060), and each asker waits at most the disk reporters'
 /// [`REPORTER_TIMEOUT`](crate::system_resources::disk_pressure::REPORTER_TIMEOUT): an unavailable
-/// disk leaves the read in flight and that sizing on its estimate, and never holds serving. A read
+/// disk leaves one read in flight and the sizing on its estimate, and never holds serving. A read
 /// that fails leaves the dir unknown (probed), so the next ask reads again.
 pub async fn seed_state_samples(dir: &std::path::Path) {
+    seed_state_samples_with(dir, |dir| newest_page_states(dir, STATE_SAMPLES)).await;
+}
+
+async fn seed_state_samples_with(
+    dir: &std::path::Path,
+    read: impl FnOnce(&std::path::Path) -> Result<Vec<u64>, String> + Send + 'static,
+) {
     use crate::runtime::daemon::{guarded, Guarded};
     let reading = {
         let mut seeding = SEEDING.lock();
         if state_dir_known_in(&RECENT_STATE_BYTES.lock(), dir) {
             return;
         }
-        match seeding.iter().find(|(d, _)| d == dir) {
-            Some((_, read)) => read.clone(),
+        match &*seeding {
+            Some((reading, read)) if reading == dir => read.clone(),
+            Some((reading, _)) => {
+                crate::probe!(
+                    class = "inference.kv_page.seed_busy",
+                    dir = %dir.display(),
+                    reading = %reading.display(),
+                    "another page dir is still being read; this sizing uses the estimate, the next ask reads this one",
+                );
+                return;
+            }
             None => {
-                let read = read_state_samples(dir.to_path_buf());
-                seeding.push((dir.to_path_buf(), read.clone()));
-                read
+                let landed = spawn_state_read(dir.to_path_buf(), read);
+                *seeding = Some((dir.to_path_buf(), landed.clone()));
+                landed
             }
         }
     };
@@ -318,15 +337,20 @@ pub async fn seed_state_samples(dir: &std::path::Path) {
     }
 }
 
-/// The shared read of one dir: its samples land in the cache, THEN its entry leaves [`SEEDING`],
-/// so no asker between the two starts a second read. Never holds both locks.
-fn read_state_samples(dir: std::path::PathBuf) -> StateSeed {
+/// Start the read of `dir` as its own task and return its completion for askers to wait on. The
+/// task lands the samples (a live sample already there outranks them), THEN clears [`SEEDING`], so
+/// no asker between the two starts a second read; it never holds both locks.
+fn spawn_state_read(
+    dir: std::path::PathBuf,
+    read: impl FnOnce(&std::path::Path) -> Result<Vec<u64>, String> + Send + 'static,
+) -> futures::future::Shared<futures::future::BoxFuture<'static, ()>> {
     use futures::FutureExt;
-    async move {
-        #[cfg(test)]
-        SEED_READS.lock().push(dir.clone());
-        let read = dir.clone();
-        match tokio::task::spawn_blocking(move || newest_page_states(&read, STATE_SAMPLES))
+    #[cfg(test)]
+    SEED_READS.lock().push(dir.clone());
+    let released = dir.clone();
+    let task = tokio::spawn(async move {
+        let path = dir.clone();
+        match tokio::task::spawn_blocking(move || read(&path))
             .await
             .map_err(|error| error.to_string())
             .and_then(|states| states)
@@ -339,7 +363,20 @@ fn read_state_samples(dir: std::path::PathBuf) -> StateSeed {
                 "reading the saved pages on disk failed; left unmeasured, the next ask reads again",
             ),
         }
-        SEEDING.lock().retain(|(d, _)| d != &dir);
+        let mut seeding = SEEDING.lock();
+        if seeding.as_ref().is_some_and(|(reading, _)| reading == &dir) {
+            *seeding = None;
+        }
+    });
+    async move {
+        // A task that panicked never reached its own release: release the slot here, if it is
+        // still this dir's, so one panic cannot hold every later read out.
+        if task.await.is_err() {
+            let mut seeding = SEEDING.lock();
+            if seeding.as_ref().is_some_and(|(reading, _)| reading == &released) {
+                *seeding = None;
+            }
+        }
     }
     .boxed()
     .shared()
@@ -1884,15 +1921,13 @@ mod tests {
         let root = tempfile::tempdir().expect("test: page store");
         let geometry = |key: usize| root.path().join(format!("test-37eb1925--c{key}"));
         let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
-        // An asker waits at most REPORTER_TIMEOUT; a loaded runner may outlast it. Re-ask until the
-        // dir's one read has landed: a re-ask joins the same read, so the read count stays honest.
+        // An asker waits at most REPORTER_TIMEOUT and yields to another dir's read in flight (other
+        // tests seed concurrently). Re-ask until the dir is known: a re-ask joins its read or waits
+        // for the slot, never starting a second read of the same dir.
         let seeded = |dir: std::path::PathBuf| async move {
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                loop {
+                while !state_dir_known_in(&RECENT_STATE_BYTES.lock(), &dir) {
                     seed_state_samples(&dir).await;
-                    if !SEEDING.lock().iter().any(|(d, _)| d == &dir) {
-                        break;
-                    }
                     tokio::task::yield_now().await;
                 }
             })
@@ -1937,6 +1972,47 @@ mod tests {
             seed_dir_in(&mut samples, std::path::Path::new(&format!("/pages/s{i}")), vec![1]);
         }
         assert!(samples.len() <= STATE_DIRS, "seeding is bounded by dirs too");
+    }
+
+    // what this catches (root on #5060, ce7371d37): a stuck read per geometry when the volume stops
+    // answering, and a slot never released once a live save made its dir known after the asker
+    // timed out. One read is in flight; another dir starts no worker while it runs; the read lands
+    // and releases the slot with nobody waiting on it; and the live sample survives it.
+    #[tokio::test]
+    async fn one_stuck_read_holds_one_slot_and_releases_it_unwatched() {
+        let root = tempfile::tempdir().expect("test: page store");
+        let stuck = root.path().join("test-5060-stuck--c1");
+        let other = root.path().join("test-5060-other--c2");
+        let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = std::sync::Arc::new(parking_lot::Mutex::new(gate));
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while reads_of(&stuck) == 0 {
+                let gate = gate.clone();
+                seed_state_samples_with(&stuck, move |_| {
+                    let _ = gate.lock().recv(); // released by the test: a volume that stopped answering
+                    Ok(vec![111])
+                })
+                .await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("test: the stuck read starts once another test's read clears the slot");
+        assert_eq!(measured_state_bytes(&stuck), None, "still reading: unmeasured, not guessed");
+        seed_state_samples_with(&other, |_| Ok(vec![222])).await;
+        assert_eq!(reads_of(&other), 0, "another dir starts no worker while one read is in flight");
+        note_state_bytes(&stuck, 999);
+        release.send(()).expect("test: release the stuck read");
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while SEEDING.lock().as_ref().is_some_and(|(reading, _)| reading == &stuck) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("test: the read releases its slot with nobody waiting on it");
+        assert_eq!(measured_state_bytes(&stuck), Some(999), "the live sample outranks the disk's");
+        assert_eq!(reads_of(&stuck), 1, "one read, however many asks");
     }
 
     // what this catches (Fable on #4930): a node-wide sample, where a second model's lane on
