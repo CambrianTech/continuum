@@ -1576,8 +1576,6 @@ impl ServingDaemonModule {
         // with no residents of its own but leased-in minds still gets a floor from them.
         let leased_samples = (self.leased_in_sent)();
         let leased_sent: Vec<u32> = leased_samples.iter().filter_map(|s| s.requested()).collect();
-        let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&serving.base_url);
-        let served_median = crate::cognition::working_set::PromptSample::served_median(&leased_samples, endpoint.root(), model_for_knee.as_deref());
         let (demand, sent, median) = if live.is_empty() {
             // No registry yet (boot): the residents the working set REMEMBERS (rehydrated
             // from their last boot) are the demand pool — not only the leased-in ring. A
@@ -1609,7 +1607,7 @@ impl ServingDaemonModule {
         // once here and carried on the demand by value into the one plan — the
         // allocator's input, the governed size (card 2eec3977).
         let requirements = crate::cognition::window_allocator::requirements_for(&live, &self.working_set);
-        let mut demand = ServingDemand::new(lanes, demand)
+        ServingDemand::new(lanes, demand)
             .with_requirements(requirements)
             .with_sent_tokens(sent)
             .with_sent_median(median)
@@ -1617,9 +1615,7 @@ impl ServingDaemonModule {
             // The knee bounds the TOTAL the plan serves, leased-in included: the clamp
             // above covers the roster and the scratch slot; the plan re-applies it over
             // `lanes + leased_in` (2026-09-19 23:14Z: 2 + 1 = 3 lanes against a knee of 2).
-            .with_knee(knee);
-        demand.served_median = model_for_knee.zip(served_median);
-        demand
+            .with_knee(knee)
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to
@@ -3405,7 +3401,8 @@ impl ServingDaemonModule {
                         if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
                             .filter(|g| g.model_id == model && g.per_slot_window == live.served_context_window && g.lanes == live.lanes)
                         {
-                            crate::modules::served_window_store::save(geometry);
+                            let observed = crate::cognition::working_set::PromptSample::geometry_median(&(self.leased_in_sent)(), endpoint.root(), &geometry);
+                            crate::modules::served_window_store::save(geometry, observed);
                         }
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
@@ -4838,15 +4835,6 @@ impl ServingDaemonModule {
         let demand = self.serving_demand().with_sticky_window(
             seat_model.and_then(crate::modules::served_window_store::load_for),
         );
-        let serving = crate::inference::llama_server::current_serving();
-        let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&serving.base_url);
-        if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
-            .filter(|g| Some(g.model_id.as_str()) == seat_model)
-        {
-            if let Some(median) = crate::cognition::working_set::PromptSample::geometry_median(&(self.leased_in_sent)(), endpoint.root(), &geometry) {
-                crate::modules::served_window_store::save_observed_prompt(&geometry, median);
-            }
-        }
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
@@ -11723,9 +11711,4 @@ pub(crate) mod tests {
         assert_eq!(sidecar_admissible_bytes(floor / 2, 31 * GB, physical), 0);
     }
 
-    // what this catches (Cormac's three arms on #4207 — the 5090's 2 × 17k for 30k coders on
-    // a fresh boot): (1) a live median wins and is the one remembered; (2) no live median +
-    // a record for the SAME model → the plan floors from it; (3) no live median + a record
-    // for a DIFFERENT model, or a 0 on disk → nothing: a seat is never pinned to a stale or
-    // foreign prompt size. Pure over the store's record, so no daemon and no disk.
 }

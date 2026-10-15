@@ -223,9 +223,6 @@ pub struct ServingDemand {
     /// follows this so lanes multiply to the roster; `sent_tokens` (the ceiling)
     /// still shapes the window target when it fits.
     pub sent_median: Option<u32>,
-    /// Successful provider prompt counts, distinct from starvation-aware growth
-    /// samples above. Only this evidence may certify remembered service geometry.
-    pub served_median: Option<(String, u32)>,
     /// Per-mind lane requirements (see `with_requirements`). Empty = the legacy
     /// median/bootstrap derivation below, kept for callers that have not migrated
     /// (card 2eec3977: to be deleted with them).
@@ -272,7 +269,6 @@ impl ServingDemand {
             sticky_window: None,
             sent_tokens: None,
             sent_median: None,
-            served_median: None,
             requirements: Vec::new(),
             leased_in: 0,
             knee: None,
@@ -2829,20 +2825,13 @@ mod tests {
         assert!(plan.served_context_window <= 37_500 + 4_096 && plan.served_context_window >= 37_500 - 4_096, "served near the target: {}", plan.served_context_window);
     }
 
-    // what this catches (2026-09-18, the M5, every boot): with no incumbent the plan sized
-    // itself to the boot budget — the transient minimum of everything else resident — and
-    // launched many lanes at a small window (8 × 28k), then re-homed to 1 × 67k in 40 s,
-    // then to 2 × 67k: three geometries per boot and every first turn killed. A cold boot
-    // now plans the LAST STEADY GEOMETRY first: its window floors the lane choice and its
-    // lane count caps it — never raises it: a box that fits fewer lanes at that window plans
-    // fewer. Numbers are the M5's shape, the rule is the same on any box.
 
     // what this catches (card eb8d1839; the 5090, 2026-10-12, build 6160): a one-lane plan that
     // could not say WHICH term chose one lane. `bound_by=host-fit` meant only "the window came out
     // below demand", so the GPU accounting, the per-lane floor and a boot's memory all read alike.
     // The plan now carries the term from its own decision: the floor when one more lane would
     // starve each window, demand when every lane was granted, cores when the host capped it, and
-    // a boot's remembered lanes when that lowered it.
+    // the host core budget when it limits lanes.
     #[test]
     fn a_plan_names_the_term_that_chose_its_lane_count() {
         const GB: u64 = 1_000_000_000;

@@ -1594,7 +1594,7 @@ mod tests {
             samples.record(PromptSample::Served { endpoint: "seat".into(), tokens: 828, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "m".into(), generation: uuid::Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 } });
         }
         assert_eq!(samples.snapshot().iter().filter_map(PromptSample::requested).collect::<Vec<_>>(), vec![56_057], "a burst of local successes cannot evict unmet demand");
-        assert_eq!(PromptSample::served_median(&samples.snapshot(), "seat", Some("m")), Some(828));
+        assert_eq!(samples.snapshot().iter().find_map(|s| s.served("seat", Some("m"))), Some(828));
         for i in 1..=(LEASED_IN_SENT_SAMPLES as u32 + 8) {
             samples.record(PromptSample::Requested(30_000 + i));
         }

@@ -111,9 +111,14 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
 }
 
 /// Record a settled launch separately from the last successfully observed geometry.
-pub fn save(geometry: ServedGeometry) {
+/// The serving reconciler calls this under its existing ServingOperation guard;
+/// authority planning only reads the store and never races a second writer.
+pub fn save(geometry: ServedGeometry, observed_prompt: Option<u32>) {
     if let Some(path) = default_path() {
-        save_candidate_to(&path, geometry);
+        save_candidate_to(&path, geometry.clone());
+        if let Some(tokens) = observed_prompt {
+            observe_to(&path, &geometry, tokens);
+        }
     }
 }
 
@@ -140,12 +145,6 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
 
 /// Record usage only for the settled generation that produced it. Successful
 /// service does not certify that this geometry satisfies future workloads.
-pub fn save_observed_prompt(geometry: &ServedGeometry, tokens: u32) {
-    if let Some(path) = default_path() {
-        observe_to(&path, geometry, tokens);
-    }
-}
-
 fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     let Some(mut stored) = load_from(path) else { return };
     let Some(_) = stored.candidate.as_ref().filter(|c| *c == geometry) else { return };

@@ -82,12 +82,6 @@ impl PromptSample {
         }
     }
 
-    pub fn served_median(samples: &[Self], endpoint: &str, model: Option<&str>) -> Option<u32> {
-        let mut observed: Vec<u32> = samples.iter().filter_map(|s| s.served(endpoint, model)).collect();
-        observed.sort_unstable();
-        observed.get(observed.len() / 2).copied()
-    }
-
     /// Exact generation cohort: a later binding never certifies an older sample.
     pub fn geometry_median(samples: &[Self], endpoint: &str, geometry: &crate::modules::served_window_store::ServedGeometry) -> Option<u32> {
         let mut observed: Vec<u32> = samples.iter().filter_map(|sample| match sample {
@@ -971,9 +965,9 @@ mod tests {
         let requested: Vec<_> = samples.iter().filter_map(PromptSample::requested).collect();
         let growth = registry.sent_median_with(&[local], &requested).expect("requested demand");
         assert!(ServingDemand::new(1, Some(2_866_096)).with_sent_median(Some(growth)).window_target() > 2_048);
-        assert_eq!(PromptSample::served_median(&samples, "seat", Some("m")), Some(828));
-        assert_eq!(PromptSample::served_median(&samples, "other-seat", Some("m")), None);
-        assert_eq!(PromptSample::served_median(&samples, "seat", Some("absent")), None);
+        assert_eq!(samples[1].served("seat", Some("m")), Some(828));
+        assert_eq!(samples[1].served("other-seat", Some("m")), None);
+        assert_eq!(samples[1].served("seat", Some("absent")), None);
         assert_eq!(WorkingSetRegistry::sent_sample_for_plan(56_057, 828, 2_048), 56_057, "starvation still requests growth");
 
         assert_eq!(registry.sent_median_of(&[local]), Some(2_866_096), "geometry migration never discards requested demand");
