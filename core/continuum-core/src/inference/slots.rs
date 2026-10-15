@@ -376,7 +376,7 @@ const STATE_DIRS: usize = 8;
 type StateSamples = std::collections::VecDeque<(std::path::PathBuf, std::collections::VecDeque<u64>)>;
 static RECENT_STATE_BYTES: parking_lot::Mutex<StateSamples> = parking_lot::Mutex::new(std::collections::VecDeque::new());
 
-fn note_state_bytes(dir: &std::path::Path, bytes: u64) {
+pub(crate) fn note_state_bytes(dir: &std::path::Path, bytes: u64) {
     if bytes == 0 {
         return;
     }

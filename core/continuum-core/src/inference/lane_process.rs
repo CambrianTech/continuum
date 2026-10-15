@@ -1051,10 +1051,14 @@ pub fn cache_ram_mib_in(argv: &[String]) -> Option<u32> {
 /// Card 977842fd: the KV cache type is applied at SPAWN, an engine now survives a deploy
 /// (#4284), and the adopt rail compared model + window + lanes + sight — so a new
 /// decision (q8_0 on the 5090) never reached the f16 engine the new core adopted.
+/// `cache_ram_mib` is its `--cache-ram` grant ([`cache_ram_mib_in`]), the host-RAM store of
+/// saved KV states: fixed at spawn like the type, so the adopt rail must compare it too
+/// (card d7294f0b).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchKv {
     pub cache_type: Option<String>,
     pub flash_attn: bool,
+    pub cache_ram_mib: Option<u32>,
 }
 
 impl LaunchKv {
@@ -1090,7 +1094,7 @@ pub fn launch_kv_in(argv: &[String]) -> LaunchKv {
             flash_attn = v != "off";
         }
     }
-    LaunchKv { cache_type, flash_attn }
+    LaunchKv { cache_type, flash_attn, cache_ram_mib: cache_ram_mib_in(argv) }
 }
 
 #[cfg(test)]
@@ -1561,11 +1565,12 @@ mod tests {
     fn the_kv_decision_is_read_off_the_engines_own_argv() {
         let argv = |s: &str| s.split_whitespace().map(str::to_string).collect::<Vec<_>>();
         let kv = launch_kv_in(&argv("llama-server -m x.gguf --cache-type-k q8_0 --cache-type-v q8_0 --flash-attn on -c 53760"));
-        assert_eq!(kv, LaunchKv { cache_type: Some("q8_0".into()), flash_attn: true });
+        assert_eq!(kv, LaunchKv { cache_type: Some("q8_0".into()), flash_attn: true, cache_ram_mib: None });
         let plain = launch_kv_in(&argv("llama-server -m x.gguf -c 26880 --parallel 1"));
-        assert_eq!(plain, LaunchKv { cache_type: None, flash_attn: false });
+        assert_eq!(plain, LaunchKv { cache_type: None, flash_attn: false, cache_ram_mib: None });
         assert_eq!(plain.cache_type_or_default(), "f16", "no flag is the engine's f16 default");
-        assert_eq!(launch_kv_in(&argv("llama-server --cache-type-k=q4_0 --flash-attn=off")), LaunchKv { cache_type: Some("q4_0".into()), flash_attn: false });
+        assert_eq!(launch_kv_in(&argv("llama-server --cache-type-k=q4_0 --flash-attn=off")), LaunchKv { cache_type: Some("q4_0".into()), flash_attn: false, cache_ram_mib: None });
+        assert_eq!(launch_kv_in(&argv("llama-server -c 51968 --cache-ram 3248")).cache_ram_mib, Some(3_248), "the grant an adopted lane was launched with");
         assert!(launch_kv_in(&argv("llama-server -fa --mmproj p.gguf")).flash_attn, "a bare flag is on and eats nothing");
         assert!(!launch_kv_in(&argv("llama-server --flash-attn off")).flash_attn);
     }

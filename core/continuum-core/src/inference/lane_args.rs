@@ -677,8 +677,51 @@ impl LaneInvocation {
     }
 }
 
+/// PURE: a lane's launched `--cache-ram` cannot hold even ONE measured saved state. Unknown
+/// (nothing measured, or an unrecorded launch size) is never true: no relaunch on a guess.
+pub fn launched_cache_holds_no_state(launched_mib: u32, measured_state: Option<u64>) -> bool {
+    measured_state.is_some_and(|state| launched_mib > 0 && u64::from(launched_mib) * 1024 * 1024 < state)
+}
+
+/// PURE: the adopt rail's cache check (card d7294f0b). The running lane's `--cache-ram`
+/// grant read off its argv; unknown (no argv, no flag) is never a reason to relaunch.
+pub fn cache_relaunch_owed(running_mib: Option<u32>, target_mib: u32, measured_state: Option<u64>) -> bool {
+    running_mib.is_some_and(|launched| cache_relaunch_needed(launched, target_mib, measured_state))
+}
+
+/// PURE: whether a relaunch is owed for cache size: the launched cache holds no measured
+/// state AND the cache a relaunch would launch with holds one. Without the second half a
+/// host that cannot afford one state would relaunch every cooldown and gain nothing.
+pub fn cache_relaunch_needed(launched_mib: u32, would_launch_mib: u32, measured_state: Option<u64>) -> bool {
+    launched_cache_holds_no_state(launched_mib, measured_state)
+        && measured_state.is_some_and(|state| u64::from(would_launch_mib) * 1024 * 1024 >= state)
+}
+
 #[cfg(test)]
 mod tests {
+
+    // what this catches (the 5090, 2026-10-11: launched --cache-ram 4288 against ~5.5 GB
+    // measured states, 114 skips, 76% of restores cold, and nothing ever relaunched for it):
+    // the agreed rule. A cache that holds no measured state is evidence for a re-home when a
+    // relaunch would hold one; a cache that holds at least one state is never a reason,
+    // however far below the derived target; nothing measured is never a reason; and a host
+    // that cannot afford one state does not relaunch for nothing.
+    #[test]
+    fn a_lane_relaunches_for_cache_size_only_when_its_cache_holds_no_state() {
+        let mib = 1024u64 * 1024;
+        let state = Some(5_511 * mib);
+        assert!(cache_relaunch_needed(4_288, 11_022, state), "the 5090: holds nothing, a relaunch holds two");
+        assert!(!cache_relaunch_needed(6_000, 40_000, state), "holds one state: waits for the next relaunch, however far below target");
+        assert!(!cache_relaunch_needed(4_288, 11_022, None), "nothing measured: no relaunch on a guess");
+        assert!(!cache_relaunch_needed(4_288, 5_000, state), "a relaunch would hold no state either: no futile relaunch");
+        assert!(!cache_relaunch_needed(0, 11_022, state), "an unrecorded launch size is not a measurement");
+        assert!(launched_cache_holds_no_state(4_288, state) && !launched_cache_holds_no_state(5_512, state));
+        // the adopt rail (card d7294f0b): the running grant comes off argv, unknown never relaunches
+        assert!(!cache_relaunch_owed(None, 11_022, state), "no argv: unknown grant, no relaunch");
+        assert!(cache_relaunch_owed(Some(3_248), 11_022, state), "Kimi's 3,248 MiB grant holds no 5.5 GB state");
+        assert!(!cache_relaunch_owed(Some(3_248), 3_249, state), "a relaunch that would hold no state either is never owed");
+    }
+
     // what this catches: sizing the host prompt cache per SLOT when the workload
     // is per CITIZEN. Measured 2026-08-28 — four citizens time-sharing one
     // `--parallel 1` slot ran a 0.29 prompt-cache hit rate, ~20k tokens

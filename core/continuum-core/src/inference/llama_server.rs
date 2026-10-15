@@ -548,8 +548,8 @@ pub(crate) fn lane_grow_would_narrow_the_window(
 /// Only the lane and window axes are refused. A KV-type or sight relaunch is a
 /// DECISION change, not necessarily a larger footprint, and stays allowed. Pure, so the
 /// test does not touch the process-global gate.
-pub(crate) fn grow_refused_by_memory_gate(gate_closed: bool, window_ok: bool, lanes_ok: bool) -> bool {
-    gate_closed && (!window_ok || !lanes_ok)
+pub(crate) fn grow_refused_by_memory_gate(gate_closed: bool, window_ok: bool, lanes_ok: bool, cache_ok: bool) -> bool {
+    gate_closed && (!window_ok || !lanes_ok || !cache_ok)
 }
 
 /// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
@@ -3568,6 +3568,18 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             // exists for. A plan that keeps asking is now a probe line, not a relaunch.
             let served_window_n = served_window_probe.as_ref().ok().copied().unwrap_or(0); // unwrap_or: unreadable = 0 = no served window to compare against, same as window_ok's policy
             let served_lanes_n = served_lanes_probe.as_ref().ok().copied().unwrap_or(0); // unwrap_or: unreadable = 0 = no served lanes to compare against, same as lanes_ok's policy
+            // THE CACHE GRANT IS LAUNCH GEOMETRY TOO (card d7294f0b). `--cache-ram` is fixed
+            // at spawn. Kimi's node, 2026-10-15 07:37-07:39Z: the daemon found her adopted
+            // lane's 3,248 MiB grant held no measured state and decided "re-homing" twice,
+            // but this rail compared only model, genes, window, lanes, sight and the KV type,
+            // answered AlreadyServing, and every switch between minds stayed a full re-prefill.
+            // The daemon's own rule decides here too: relaunch only when the running grant
+            // holds no state and the target's would. Unknown (no argv) or drift is never one.
+            let cache_ok = !crate::inference::lane_args::cache_relaunch_owed(
+                running_kv.as_ref().and_then(|r| r.cache_ram_mib),
+                target.host_prompt_cache_mib,
+                crate::inference::slots::measured_state_bytes(&kv_page_dir(target.model_id(), served_window_n)),
+            );
             let refused_trade = !lanes_ok
                 && window_ok
                 && sight_ok
@@ -3593,7 +3605,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 );
             }
             let gate_closed = crate::system_resources::is_memory_gate_closed();
-            let refused_pressure = !refused_trade && grow_refused_by_memory_gate(gate_closed, window_ok, lanes_ok);
+            let refused_pressure = !refused_trade && grow_refused_by_memory_gate(gate_closed, window_ok, lanes_ok, cache_ok);
             if refused_pressure {
                 crate::probe!(
                     class = "serving.grow_refused_memory_gate",
@@ -3668,7 +3680,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 );
             }
             if !engine_ok
-                || ((!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade && !refused_pressure)
+                || ((!window_ok || !lanes_ok || !sight_ok || !kv_ok || !cache_ok) && !refused_trade && !refused_pressure)
             {
                 crate::probe!(
                     class = "serving.grow",
@@ -3680,6 +3692,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     lanes_ok,
                     sight_ok,
                     kv_ok,
+                    cache_ok,
                     planned_kv = %planned_kv.cache_type,
                     planned_flash_attn = planned_kv.flash_attn,
                     running_kv = running_kv.as_ref().map(|r| r.cache_type_or_default().to_string()).unwrap_or_default(), // unwrap_or_default: "" = the running decision is unknown (no live argv); kv_ok is then true
@@ -8300,7 +8313,17 @@ mod tests {
         }
         /// Model an engine launched with this KV decision (read off its argv in production).
         fn launched_with(mut self, cache_type: Option<&str>, flash_attn: bool) -> Self {
-            self.launched_kv = Some(crate::inference::lane_process::LaunchKv { cache_type: cache_type.map(str::to_string), flash_attn });
+            self.launched_kv = Some(crate::inference::lane_process::LaunchKv { cache_type: cache_type.map(str::to_string), flash_attn, cache_ram_mib: None });
+            self
+        }
+        /// Model an engine launched on THIS KV decision with a `--cache-ram` grant of `mib`.
+        fn launched_with_cache(mut self, mib: u32) -> Self {
+            let planned = crate::cognition::kv_cache_plan::resolve();
+            self.launched_kv = Some(crate::inference::lane_process::LaunchKv {
+                cache_type: planned.launcher_cache_type().map(str::to_string),
+                flash_attn: planned.flash_attn,
+                cache_ram_mib: Some(mib),
+            });
             self
         }
         /// Model a child we spawned ourselves (trusted without a per-tick probe).
@@ -8592,11 +8615,12 @@ mod tests {
     // and nothing is refused while the gate is open.
     #[test]
     fn a_closed_memory_gate_refuses_a_lane_or_window_grow() {
-        assert!(grow_refused_by_memory_gate(true, true, false), "more lanes through a closed gate");
-        assert!(grow_refused_by_memory_gate(true, false, true), "a wider window through a closed gate");
-        assert!(grow_refused_by_memory_gate(true, false, false), "both");
-        assert!(!grow_refused_by_memory_gate(true, true, true), "geometry matches: a KV/sight relaunch is not a grow");
-        assert!(!grow_refused_by_memory_gate(false, false, false), "an open gate refuses nothing");
+        assert!(grow_refused_by_memory_gate(true, true, false, true), "more lanes through a closed gate");
+        assert!(grow_refused_by_memory_gate(true, false, true, true), "a wider window through a closed gate");
+        assert!(grow_refused_by_memory_gate(true, false, false, true), "both");
+        assert!(grow_refused_by_memory_gate(true, true, true, false), "a bigger host cache through a closed gate (card d7294f0b)");
+        assert!(!grow_refused_by_memory_gate(true, true, true, true), "geometry matches: a KV/sight relaunch is not a grow");
+        assert!(!grow_refused_by_memory_gate(false, false, false, false), "an open gate refuses nothing");
     }
 
     #[tokio::test]
@@ -8730,6 +8754,36 @@ mod tests {
         // Unknown launch (no argv): not a mismatch.
         let unknown = FakeControl::probe(Ok(Some("coder-14b".into()))).owned();
         assert_eq!(ensure_model_serving(&unknown, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
+    }
+
+    // what this catches (card d7294f0b, Kimi's node 2026-10-15 07:37-07:39Z): the daemon decided a
+    // cache re-home for an adopted lane whose --cache-ram held no measured state, and this rail
+    // answered AlreadyServing because it never compared the grant. With a measured state between
+    // the running grant and the target's, the lane relaunches; an unknown grant, or a target that
+    // could not hold the state either, still adopts.
+    #[tokio::test]
+    async fn an_adopted_lane_whose_cache_holds_no_state_relaunches_onto_one_that_does() {
+        const MIB: u64 = 1024 * 1024;
+        let id = "cache-grant-d7294f0b"; // its own page dir: the state samples are process-wide
+        let t = target(id);
+        crate::inference::slots::note_state_bytes(&kv_page_dir(id, t.context_window), 3_800 * MIB);
+        let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
+        assert_eq!(
+            ensure_model_serving(&starved, &t, false).await,
+            EnsureOutcome::Spawned { model: id.into() },
+            "a 3,248 MiB grant holds no 3,800 MiB state and the target's 4,096 does"
+        );
+        assert_eq!(starved.serves.load(Ordering::SeqCst), 1);
+        let unknown = FakeControl::probe(Ok(Some(id.into()))).owned();
+        assert_eq!(ensure_model_serving(&unknown, &t, false).await, EnsureOutcome::AlreadyServing, "no argv: an unknown grant is not a mismatch");
+        let futile = ServingTarget { host_prompt_cache_mib: 3_500, ..t.clone() };
+        let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
+        assert_eq!(
+            ensure_model_serving(&starved, &futile, false).await,
+            EnsureOutcome::AlreadyServing,
+            "a relaunch whose grant holds no state either is not owed"
+        );
+        assert_eq!(starved.serves.load(Ordering::SeqCst), 0);
     }
 
     // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode
