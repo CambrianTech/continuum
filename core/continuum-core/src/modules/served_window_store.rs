@@ -24,13 +24,19 @@ pub struct StoredServedWindow {
     /// Absent on an older record (default 0 = unknown): the window still carries over.
     #[serde(default)]
     pub lanes: u32,
-    /// The typical prompt (median sent tokens, residents AND leased-in) the seat served at
+    /// Compatibility projection of the observed prompt median. Legacy records
+    /// also wrote requested demand here; only observed_prompt_tokens is evidence.
+    /// The typical prompt (residents AND leased-in) the seat served at
     /// its last steady plan — the per-lane FLOOR a cold boot starts from. Without it the
     /// floor is the 16,384 bootstrap prior until enough prompts land: the 5090 on
     /// 2026-09-19 00:3xZ planned 2 × 17k for coders sending ~30k, because the leased-in
     /// sample ring is process-static and empty at boot. 0 = unknown (older record).
     #[serde(default)]
     pub typical_prompt_tokens: u32,
+    /// Accepted provider counts. Absent on legacy records whose typical field
+    /// mixed unmet demand with actual service; that field is not observed evidence.
+    #[serde(default)]
+    pub observed_prompt_tokens: Option<u32>,
     pub set_at_ms: u64,
 }
 
@@ -48,7 +54,7 @@ impl StoredServedWindow {
         if self.lanes == 0 {
             return None;
         }
-        if self.typical_prompt_tokens > 0 && self.per_slot_window < self.typical_prompt_tokens {
+        if self.observed_prompt_tokens.is_some_and(|tokens| self.per_slot_window < tokens) {
             return None;
         }
         Some((self.per_slot_window, self.lanes))
@@ -108,7 +114,7 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
 /// idempotent. Keeps the record's typical prompt (the plan tick owns that half).
 pub fn save(model_id: &str, per_slot_window: u32, lanes: u32) {
     if let Some(p) = default_path() {
-        let typical = load_from(&p).filter(|s| s.model_id == model_id).map_or(0, |s| s.typical_prompt_tokens);
+        let typical = load_from(&p).filter(|s| s.model_id == model_id).and_then(|s| s.observed_prompt_tokens).unwrap_or(0); // no accepted evidence is unknown, never the legacy demand
         save_to(&p, model_id, per_slot_window, lanes, typical);
     }
 }
@@ -126,13 +132,14 @@ pub fn save_typical_prompt(model_id: &str, typical_prompt_tokens: u32) {
 }
 
 pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, typical_prompt_tokens: u32) {
+    let observed_prompt_tokens = (typical_prompt_tokens > 0).then_some(typical_prompt_tokens);
     if load_from(path).is_some_and(|s| {
-        s.model_id == model_id && s.per_slot_window == per_slot_window && s.lanes == lanes && s.typical_prompt_tokens == typical_prompt_tokens
+        s.model_id == model_id && s.per_slot_window == per_slot_window && s.lanes == lanes && s.observed_prompt_tokens == observed_prompt_tokens && s.typical_prompt_tokens == typical_prompt_tokens
     }) {
         return;
     }
     let set_at_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch stamps 0 — the stamp is informational, the window is the fact
-    let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, lanes, typical_prompt_tokens, set_at_ms };
+    let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, lanes, typical_prompt_tokens, observed_prompt_tokens, set_at_ms };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -168,6 +175,7 @@ mod tests {
             per_slot_window: window,
             lanes,
             typical_prompt_tokens: typical,
+            observed_prompt_tokens: Some(typical),
             set_at_ms: 1,
         };
         assert_eq!(rec(2_048, 1, 30_000).steady_geometry(), None, "the collapse seeds nothing");

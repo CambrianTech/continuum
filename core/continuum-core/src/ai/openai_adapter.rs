@@ -2135,6 +2135,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // makes the provisional physical KV attribution safe to retain.
         if generation_completed {
             if let Some(admission) = _admission.as_mut() {
+                admission.record_served_prompt(
+                    endpoints.root(),
+                    resp_model.as_deref(),
+                    usage.input_tokens,
+                );
                 admission.generation_completed();
                 // THE RESTORE ECONOMY, JUDGED ON REAL TRAFFIC. A turn whose KV was
                 // restored from a page either reused it (the engine reports cached
@@ -2922,7 +2927,11 @@ mod tests {
                     if mode == 1 {
                         return (StatusCode::BAD_REQUEST, "fixture generation failed").into_response();
                     }
-                    const PARTIAL: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+                    if mode == 5 {
+                        return ([("content-type", "text/event-stream")],
+                            "data: {\"model\":\"foreign-alias\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5555,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n").into_response();
+                    }
+                    const PARTIAL: &str = "data: {\"model\":\"test-model\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}],\"usage\":{\"prompt_tokens\":4444,\"completion_tokens\":1}}\n\n";
                     if mode == 2 {
                         return ([("content-type", "text/event-stream")], PARTIAL).into_response();
                     }
@@ -2941,7 +2950,7 @@ mod tests {
                         return ([("content-type", "text/event-stream")], axum::body::Body::from_stream(stream)).into_response();
                     }
                     ([ ("content-type", "text/event-stream") ],
-                     "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5}}\n\ndata: [DONE]\n\n").into_response()
+                     "data: {\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\ndata: [DONE]\n\n").into_response()
                 }
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2953,6 +2962,18 @@ mod tests {
         adapter.config.base_url = format!("http://{address}");
         adapter.config.llamacpp_sampling_extensions = true;
         adapter.concurrency = Arc::new(tokio::sync::Semaphore::new(1));
+        let root = adapter.endpoints().root().to_owned();
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("fixture engine generation");
+        transition.ready(&root, &generation, crate::inference::slots::KvPageContract {
+            model_id: "test-model".into(), model: "fixture.gguf".into(), adapters: vec![],
+            page_dir: None, context: 8192, slots: 1, cache_type: None,
+            engine: "fixture-engine".into(), revisions: None,
+        }).expect("fixture owned engine readiness");
+        drop(transition);
+        let observed_service = || crate::cognition::resource_admission::leased_in_sent_samples()
+            .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
         let activity =
             crate::inference::slots::ActivityKey::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
                 .expect("non-nil fixture activity");
@@ -2988,6 +3009,8 @@ mod tests {
             room_id: Some(uuid::Uuid::new_v4().to_string()),
             ..turn.clone()
         };
+        assert!(!observed_service().is_empty(), "real adapter terminal records owned service");
+        assert!(observed_service().iter().all(|tokens| *tokens == 4), "full prompt includes cached prefix; evaluated suffix is not the count");
         generation_mode.store(1, Ordering::SeqCst);
         assert!(tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -3065,6 +3088,7 @@ mod tests {
                     assert_eq!(result.expect("existing EOF response").text, "partial");
                 }
             }
+            assert!(!observed_service().contains(&4444), "partial usage before EOF/error/cancellation cannot certify service");
             generation_mode.store(0, Ordering::SeqCst);
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -3125,6 +3149,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["save", "generate", "restore", "generate", "generate"]
         );
+        generation_mode.store(5, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest::default()))
+            .await.expect("bounded foreign alias response").expect("response compatibility");
+        assert!(!crate::cognition::resource_admission::leased_in_sent_samples().iter()
+            .any(|sample| sample.served(&root, Some("foreign-alias")).is_some()),
+            "a wire alias that differs from the admitted engine cannot certify local service");
         server.abort();
         let _ = server.await;
     }

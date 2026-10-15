@@ -1027,6 +1027,19 @@ pub(crate) struct EndpointAdmission {
 }
 
 impl EndpointAdmission {
+    /// The response must name this owned engine's launch alias. The read lease
+    /// prevents replacement while this evidence is checked; a discovered or
+    /// remote endpoint without a launch contract cannot certify local service.
+    pub(crate) fn served_model(&self, response_model: &str) -> Option<String> {
+        let state = self.endpoint.state.lock();
+        let generation = state.generation.as_ref()?;
+        let contract = state.contract.as_ref()?;
+        if generation.has_exited() || contract.model_id != response_model {
+            return None;
+        }
+        Some(contract.model_id.clone())
+    }
+
     /// Called while this generation's read lease still prevents replacement.
     pub(crate) fn quarantine_paging(&self) {
         self.endpoint.quarantine_paging();
