@@ -123,7 +123,7 @@ impl EngineInstallReceipt {
     }
 
     fn artifact_identity(&self) -> Result<String, String> {
-        serde_json::to_vec(&self.receipt)
+        serde_json::to_vec(&self.receipt) // Disk contract: canonical engine-install.json fields hashed into the durable attempt identity.
             .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
             .map_err(|e| format!("engine artifact identity: {e}"))
     }

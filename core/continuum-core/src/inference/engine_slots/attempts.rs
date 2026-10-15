@@ -3,8 +3,9 @@
 //! Reusing a slot for a different admitted artifact replaces that slot's history;
 //! this is resident deployment disposition, not a permanent artifact blacklist.
 use super::*;
+use continuum_cli_lifecycle::installed_release::MAX_RECEIPT_BYTES;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{Read, Write};
 
 const FILE: &str = ".engine-attempt.json";
 
@@ -37,10 +38,18 @@ fn read(root: &Path, slot: &str) -> Result<Option<Attempt>, String> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(format!("engine attempt metadata: {e}")),
     };
-    if meta.len() > 65536 {
+    if meta.len() > MAX_RECEIPT_BYTES {
         return Err("engine attempt receipt oversized; promotion refused".into());
     }
-    let bytes = std::fs::read(&path).map_err(|e| format!("engine attempt read: {e}"))?;
+    let mut bytes = Vec::new();
+    std::fs::File::open(&path)
+        .and_then(|file| file.take(MAX_RECEIPT_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|e| format!("engine attempt read: {e}"))?;
+    if bytes.len() as u64 > MAX_RECEIPT_BYTES {
+        return Err(
+            "engine attempt receipt grew beyond lifecycle receipt bound; promotion refused".into(),
+        );
+    }
     let record: Attempt = serde_json::from_slice(&bytes)
         .map_err(|e| format!("engine attempt receipt corrupt; promotion refused: {e}"))?;
     if record.schema != 1 || record.stamp.is_empty() {
@@ -52,7 +61,7 @@ fn read(root: &Path, slot: &str) -> Result<Option<Attempt>, String> {
 fn write(root: &Path, slot: &str, record: &Attempt) -> Result<(), String> {
     let path = root.join(slot).join(FILE);
     let temporary = path.with_extension("tmp");
-    let bytes = serde_json::to_vec(record).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec(record).map_err(|e| e.to_string())?; // Disk boundary: durable per-slot attempt receipt read by later core/deploy processes.
     let mut staged =
         std::fs::File::create(&temporary).map_err(|e| format!("engine attempt create: {e}"))?;
     staged
