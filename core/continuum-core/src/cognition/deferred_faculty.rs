@@ -59,21 +59,6 @@ struct DeferredInput {
     cycle: CycleId,
 }
 
-impl DeferredInput {
-    /// The initial `watch` value: a sentinel the worker skips (UNSTAMPED cycle =
-    /// "no real burst yet"). `watch::Receiver::changed()` doesn't fire on the
-    /// initial value, so this is never actually computed against — it just gives
-    /// the channel something to hold before the first real tick.
-    fn sentinel() -> Self {
-        Self {
-            world_state: String::new(),
-            room_id: Uuid::nil(),
-            activity_room_id: Uuid::nil(),
-            cycle: CycleId::UNSTAMPED,
-        }
-    }
-}
-
 /// A finding tagged with both wake and resolved activity rooms so
 /// the hot path can refuse to serve it into a DIFFERENT room. This is the
 /// "assuming it didn't context-switch to where it's irrelevant" guard: a recall
@@ -95,7 +80,7 @@ pub struct DeferredFaculty {
     /// Hot path reads the inner faculty's last-good finding here, lock-free.
     latest: watch::Receiver<Option<StampedFinding>>,
     /// Hot path pushes the current world here for the worker to recompute against.
-    world_tx: watch::Sender<DeferredInput>,
+    world_tx: watch::Sender<Option<DeferredInput>>,
     /// The wrapped faculty, retained for the DIRECTED-turn bypass: an addressed
     /// question runs the inner faculty SYNCHRONOUSLY on ITS OWN burst (the
     /// orienting response — acute stimulus interrupts), because the deferred
@@ -138,7 +123,7 @@ impl DeferredFaculty {
     /// the wrapper to keep it in the perception phase regardless.
     pub fn spawn(inner: Arc<dyn Faculty>) -> Self {
         let id = inner.id();
-        let (world_tx, mut world_rx) = watch::channel(DeferredInput::sentinel());
+        let (world_tx, mut world_rx) = watch::channel::<Option<DeferredInput>>(None);
         let (latest_tx, latest) = watch::channel::<Option<StampedFinding>>(None);
         let warm_tx = latest_tx.clone();
 
@@ -154,7 +139,9 @@ impl DeferredFaculty {
                     break;
                 }
                 // Take the freshest burst (watch already coalesced to latest).
-                let input = world_rx.borrow_and_update().clone();
+                let Some(input) = world_rx.borrow_and_update().clone() else {
+                    continue; // no published burst yet
+                };
                 if input.cycle == CycleId::UNSTAMPED {
                     continue; // sentinel / not a real burst
                 }
@@ -260,12 +247,12 @@ impl Faculty for DeferredFaculty {
         }
         // Publish the current world for the worker (always-latest, never blocks).
         // Ignore send error: worker gone = serve whatever last-good we have.
-        let _ = self.world_tx.send(DeferredInput {
+        let _ = self.world_tx.send(Some(DeferredInput {
             world_state: ws.world_state.clone(),
             room_id: ws.room_id,
             activity_room_id: ws.activity_room_id,
             cycle: ws.cycle,
-        });
+        }));
         // Context guard: serve the last-good ONLY if it was computed for the room
         // the mind is in NOW, including its resolved activity. A different scope is
         // irrelevant — withhold it rather than inject a cross-context
@@ -607,12 +594,12 @@ mod tests {
         // Exercise the actual worker without a synchronous cold-start seed.
         deferred
             .world_tx
-            .send(DeferredInput {
+            .send(Some(DeferredInput {
                 world_state: original.world_state.clone(),
                 room_id: wake,
                 activity_room_id: activity,
                 cycle: original.cycle,
-            })
+            }))
             .unwrap();
         let mut switched =
             Workspace::in_room("new activity, same wake", wake).with_cycle(CycleId(2));
