@@ -347,7 +347,7 @@ fn incumbent_for_plan(published: Option<String>, inherited: Option<&LaneRecord>)
 /// test doing the stamping. Owning the evidence source per-daemon makes each test's answer
 /// its own; production still reads the global, through the default below.
 type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
-type LeasedInSentSource = Arc<dyn Fn() -> Vec<u32> + Send + Sync>;
+type LeasedInSentSource = Arc<dyn Fn() -> Vec<crate::cognition::working_set::PromptSample> + Send + Sync>;
 
 /// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
 /// since the last success" (#363). Defaults to the llama-server process-global stamped by
@@ -1498,7 +1498,8 @@ impl ServingDaemonModule {
         // 27B's knee of 2 arrived and it relaunched again to 2 × 67k. The knee is a
         // property of the model on this box; when no lane has reported one yet, the model
         // the box served last (the remembered geometry) is the one being planned for.
-        let active_model = crate::inference::llama_server::current_serving().active_model;
+        let serving = crate::inference::llama_server::current_serving();
+        let active_model = serving.active_model;
         let model_for_knee = knee_model(active_model, || {
             crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
         });
@@ -1553,7 +1554,7 @@ impl ServingDaemonModule {
         if LAST_CLAMP.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
             crate::probe!(
                 class = "serving.decode_knee.clamped",
-                model = %model_for_knee.unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
+                model = %model_for_knee.as_deref().unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,
                 knee = clamped as u64,
                 decode_knee = decode_knee.unwrap_or(0) as u64, // probe field: 0 = unmeasured
@@ -1573,7 +1574,10 @@ impl ServingDaemonModule {
         // typical-prompt pool (c84d885a): a seat that plans lanes for leased-in minds must
         // size them to the prompts those minds send, not to one local resident's. A seat
         // with no residents of its own but leased-in minds still gets a floor from them.
-        let leased_sent = (self.leased_in_sent)();
+        let leased_samples = (self.leased_in_sent)();
+        let leased_sent: Vec<u32> = leased_samples.iter().filter_map(|s| s.requested()).collect();
+        let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&serving.base_url);
+        let served_median = crate::cognition::working_set::PromptSample::served_median(&leased_samples, endpoint.root(), model_for_knee.as_deref());
         let (demand, sent, median) = if live.is_empty() {
             // No registry yet (boot): the residents the working set REMEMBERS (rehydrated
             // from their last boot) are the demand pool — not only the leased-in ring. A
@@ -1605,7 +1609,7 @@ impl ServingDaemonModule {
         // once here and carried on the demand by value into the one plan — the
         // allocator's input, the governed size (card 2eec3977).
         let requirements = crate::cognition::window_allocator::requirements_for(&live, &self.working_set);
-        ServingDemand::new(lanes, demand)
+        let mut demand = ServingDemand::new(lanes, demand)
             .with_requirements(requirements)
             .with_sent_tokens(sent)
             .with_sent_median(median)
@@ -1613,7 +1617,9 @@ impl ServingDaemonModule {
             // The knee bounds the TOTAL the plan serves, leased-in included: the clamp
             // above covers the roster and the scratch slot; the plan re-applies it over
             // `lanes + leased_in` (2026-09-19 23:14Z: 2 + 1 = 3 lanes against a knee of 2).
-            .with_knee(knee)
+            .with_knee(knee);
+        demand.served_median = model_for_knee.zip(served_median);
+        demand
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to
@@ -4875,14 +4881,18 @@ impl ServingDaemonModule {
         {
             let seat_model = incumbent.as_deref().or(boot.as_ref().map(|g| g.model_id.as_str()));
             let record = crate::modules::served_window_store::load_geometry();
-            match typical_prompt_for_plan(demand.sent_median, seat_model, record.as_ref()) {
+            let observed = match typical_prompt_for_plan(demand.served_median.as_ref().map(|(model, tokens)| (model.as_str(), *tokens)), seat_model, record.as_ref()) {
                 TypicalPrompt::Live(median) => {
                     if let Some(model) = seat_model {
                         crate::modules::served_window_store::save_typical_prompt(model, median);
                     }
+                    Some(median)
                 }
-                TypicalPrompt::Remembered(t) => demand = demand.with_sent_median(Some(t)),
-                TypicalPrompt::None => {}
+                TypicalPrompt::Remembered(t) => Some(t),
+                TypicalPrompt::None => None,
+            };
+            if demand.sent_median.is_none() {
+                demand = demand.with_sent_median(observed);
             }
         }
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
@@ -6645,19 +6655,16 @@ enum TypicalPrompt {
     None,
 }
 fn typical_prompt_for_plan(
-    live_median: Option<u32>,
+    live_median: Option<(&str, u32)>,
     seat_model: Option<&str>,
     record: Option<&crate::modules::served_window_store::StoredServedWindow>,
 ) -> TypicalPrompt {
-    if let Some(m) = live_median.filter(|m| *m > 0) {
+    if let Some((_, m)) = live_median.filter(|(model, tokens)| Some(*model) == seat_model && *tokens > 0) {
         return TypicalPrompt::Live(m);
     }
-    match (seat_model, record) {
-        (Some(model), Some(r)) if r.model_id == model && r.typical_prompt_tokens > 0 => {
-            TypicalPrompt::Remembered(r.typical_prompt_tokens)
-        }
-        _ => TypicalPrompt::None,
-    }
+    record.filter(|r| Some(r.model_id.as_str()) == seat_model)
+        .and_then(|r| r.observed_prompt_tokens).filter(|t| *t > 0)
+        .map_or(TypicalPrompt::None, TypicalPrompt::Remembered)
 }
 
 /// ONE FLOOR EVERYWHERE: the bytes a sidecar may take is the tighter of the LIVE free
@@ -11785,14 +11792,16 @@ pub(crate) mod tests {
     fn the_typical_prompt_is_live_when_measured_remembered_for_the_same_model_and_never_foreign() {
         use crate::modules::served_window_store::StoredServedWindow;
         let rec = |model: &str, typical: u32| StoredServedWindow {
-            model_id: model.into(), per_slot_window: 49_243, lanes: 1, typical_prompt_tokens: typical, set_at_ms: 1,
+            model_id: model.into(), per_slot_window: 49_243, lanes: 1, typical_prompt_tokens: typical, observed_prompt_tokens: Some(typical), set_at_ms: 1,
         };
         let same = rec("qwen-27b", 30_000);
-        assert_eq!(typical_prompt_for_plan(Some(31_000), Some("qwen-27b"), Some(&same)), TypicalPrompt::Live(31_000), "arm 1: live wins over the record");
+        assert_eq!(typical_prompt_for_plan(Some(("qwen-27b", 31_000)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Live(31_000), "arm 1: live wins over the record");
+        assert_eq!(typical_prompt_for_plan(Some(("other-4b", 31_000)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a changed incumbent cannot inherit the previous snapshot's live observation");
+        assert_eq!(typical_prompt_for_plan(Some(("other-4b", 31_000)), Some("qwen-27b"), None), TypicalPrompt::None, "foreign live observations never become this model's persisted evidence");
         assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "arm 2: unmeasured → the same model's remembered prompt");
         assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("other-4b", 33_000))), TypicalPrompt::None, "arm 3a: a different model's record floors nothing");
         assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("qwen-27b", 0))), TypicalPrompt::None, "arm 3b: a 0 on disk is not a floor");
         assert_eq!(typical_prompt_for_plan(None, None, Some(&same)), TypicalPrompt::None, "no seat model (a cold boot with no record model) floors nothing");
-        assert_eq!(typical_prompt_for_plan(Some(0), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a live 0 is unmeasured, not a measurement");
+        assert_eq!(typical_prompt_for_plan(Some(("qwen-27b", 0)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a live 0 is unmeasured, not a measurement");
     }
 }

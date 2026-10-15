@@ -102,6 +102,18 @@ impl TurnAdmission {
     pub(crate) fn generation_completed(&mut self) {
         self.uncommitted = None;
     }
+
+    /// Attribute complete provider usage before releasing this engine generation.
+    pub(crate) fn record_served_prompt(
+        &self,
+        endpoint: &str,
+        response_model: Option<&str>,
+        tokens: u32,
+    ) {
+        if let Some(model) = response_model.and_then(|model| self._endpoint.served_model(model)) {
+            crate::cognition::resource_admission::note_served_prompt(endpoint, &model, tokens);
+        }
+    }
 }
 
 impl Drop for TurnAdmission {

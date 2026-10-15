@@ -230,6 +230,9 @@ pub struct ServingDemand {
     /// follows this so lanes multiply to the roster; `sent_tokens` (the ceiling)
     /// still shapes the window target when it fits.
     pub sent_median: Option<u32>,
+    /// Successful provider prompt counts, distinct from starvation-aware growth
+    /// samples above. Only this evidence may certify remembered service geometry.
+    pub served_median: Option<(String, u32)>,
     /// Per-mind lane requirements (see `with_requirements`). Empty = the legacy
     /// median/bootstrap derivation below, kept for callers that have not migrated
     /// (card 2eec3977: to be deleted with them).
@@ -277,6 +280,7 @@ impl ServingDemand {
             boot_geometry: None,
             sent_tokens: None,
             sent_median: None,
+            served_median: None,
             requirements: Vec::new(),
             leased_in: 0,
             knee: None,
@@ -2881,6 +2885,16 @@ mod tests {
             &ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))))
         .expect("servable");
         assert_eq!(one.lanes, 1, "remembered lanes cap, never raise: this box fits one at that window");
+        // An untrimmed candidate pool is still growth demand, but cannot erase
+        // the remembered geometry's floor or create capacity beyond this host.
+        let unmet = ServingDemand::new(17, Some(2_866_096))
+            .with_sent_median(Some(2_866_096))
+            .with_sticky_window(Some(67_340))
+            .with_boot_geometry(Some((67_340, 2)));
+        let growing = plan_serving(&tight, std::slice::from_ref(&m27), &unmet).expect("known geometry still fits");
+        assert!(growing.served_context_window >= 67_340, "growth demand cannot collapse a known fitting geometry");
+        assert!(growing.served_context_window <= m27.context_window, "model capacity remains authoritative");
+        assert!(growing.base_model.peak_resident_bytes(growing.served_context_window, growing.lanes) <= tight.usable_bytes, "growth stays inside host admission");
         // No geometry = no effect; a nonsense geometry (zero lanes, a window under the floor) is ignored.
         assert!(ServingDemand::new(17, None).with_boot_geometry(Some((67_340, 0))).boot_geometry.is_none());
         assert!(ServingDemand::new(17, None).with_boot_geometry(Some((MIN_SERVE_CTX - 1, 2))).boot_geometry.is_none());
