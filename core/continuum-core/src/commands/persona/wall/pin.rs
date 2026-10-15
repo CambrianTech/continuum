@@ -163,14 +163,14 @@ mod tests {
             )
             .await
             .expect_err("malformed id must fail loud");
-        assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
+        assert!(matches!(err, CommandError::Arguments(_)), "got {err:?}");
     }
 
     // what this catches: a mal-formed supersedes id is rejected as Invalid even
     // when the persona_id is well-formed — an edit pointer typo fails loud rather
     // than silently pinning a fresh post that loses the supersede link.
     #[tokio::test]
-    async fn pin_with_malformed_supersedes_is_invalid() {
+    async fn pin_with_malformed_supersedes_is_argument_refusal() {
         use crate::sdk_codegen::{ActionCommand, Ctx};
         let cmd = PersonaWallPin {
             registry: PersonaAircRuntimeRegistry::new(),
@@ -187,7 +187,7 @@ mod tests {
             )
             .await
             .expect_err("malformed supersedes must fail loud");
-        assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
+        assert!(matches!(err, CommandError::Arguments(_)), "got {err:?}");
     }
 
     // what this catches: a well-formed but offline persona_id fails loud as
