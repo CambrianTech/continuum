@@ -174,7 +174,7 @@ impl AllowList {
 /// The policy for one caller. Built by the workspace authority (`ensure_shell`,
 /// `code/run`) from the same facts the engine roots on; nothing here reads a
 /// params field.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Confinement {
     /// The operator's home: the boundary the policy is written against.
     home: PathBuf,
@@ -183,21 +183,68 @@ pub struct Confinement {
     /// Her citizen directory under `~/.continuum/citizens/peers/<id>` when the caller
     /// is a citizen with one; the operator's own tools have none.
     citizen_dir: Option<PathBuf>,
+    continuum_root: PathBuf,
+}
+
+/// Produced by the bounded disk admission owner after validation and creation,
+/// never from a command's session environment. Bound to the requesting policy.
+pub struct CargoTargetGrant {
+    path: PathBuf,
+    policy: Confinement,
+}
+
+impl CargoTargetGrant {
+    pub(crate) fn admitted(path: PathBuf, policy: Confinement) -> Self {
+        Self { path, policy }
+    }
 }
 
 impl Confinement {
     /// A citizen's policy: `who` is the caller id the workspace is rooted for (a peer
     /// id when it parses as one), `workspace` her engine root.
-    pub fn for_caller(home: &Path, who: &str, workspace: &Path) -> Self {
+    pub fn for_caller(home: &Path, continuum_root: &Path, who: &str, workspace: &Path) -> Self {
         let citizen_dir = who
             .parse::<uuid::Uuid>()
             .ok()
-            .map(|id| crate::identity::citizen_peer_dir(&home.join(".continuum"), crate::identity::PeerId::from_uuid(id)));
-        Self { home: home.to_path_buf(), workspace: workspace.to_path_buf(), citizen_dir }
+            .map(|id| crate::identity::citizen_peer_dir(continuum_root, crate::identity::PeerId::from_uuid(id)));
+        Self { home: home.to_path_buf(), workspace: workspace.to_path_buf(), citizen_dir, continuum_root: continuum_root.to_path_buf() }
     }
 
     pub fn workspace(&self) -> &Path {
         &self.workspace
+    }
+
+    /// Validate a cache grant using the same credential and citizen boundaries
+    /// as the sandbox. Call from the bounded filesystem owner before creation.
+    pub(crate) fn validate_cargo_target(&self, target: &Path) -> Result<PathBuf, String> {
+        let physical = crate::paths::cargo::physical_root;
+        let target = physical(target)?;
+        let home = physical(&self.home)?;
+        if home.starts_with(&target) {
+            return Err("Cargo target would grant the operator's home or an ancestor".into());
+        }
+        for credential in self.credential_roots() {
+            let secret = physical(&credential)?;
+            if target.starts_with(&secret) || secret.starts_with(&target) {
+                return Err("Cargo target overlaps a carved-out credential path".into());
+            }
+        }
+        let peers = physical(&crate::identity::citizen_peers_dir(&self.continuum_root))?;
+        let own = self.citizen_dir.as_deref().map(physical).transpose()?;
+        if (target.starts_with(&peers) || peers.starts_with(&target))
+            && !own.as_ref().is_some_and(|own| target.starts_with(own))
+        {
+            return Err("Cargo target overlaps another citizen's directory".into());
+        }
+        Ok(target)
+    }
+
+    fn credential_roots(&self) -> Vec<PathBuf> {
+        let mut roots: Vec<_> = CARVED_OUT_HOME_ENTRIES.iter().map(|entry| self.home.join(entry)).collect();
+        roots.extend(CARVED_OUT_HOME_ENTRIES.iter().filter_map(|entry| entry.strip_prefix(".continuum/")).map(|entry| self.continuum_root.join(entry)));
+        roots.sort();
+        roots.dedup();
+        roots
     }
 
     /// The allow-list for THIS spawn, from the host as it is now (a toolchain installed
@@ -208,12 +255,12 @@ impl Confinement {
         self.materialize_with_cargo(None)
     }
 
-    fn materialize_with_cargo(&self, configured_target: Option<&Path>) -> AllowList {
+    fn materialize_with_cargo(&self, configured_target: Option<&CargoTargetGrant>) -> AllowList {
         let home = &self.home;
         let mut write: Vec<PathBuf> = vec![self.workspace.clone()];
         // Only the operator's configured target is an extra grant. Session
         // environment overrides are never inputs to this authority.
-        write.extend(configured_target.map(Path::to_path_buf));
+        write.extend(configured_target.filter(|grant| grant.policy == *self).map(|grant| grant.path.clone()));
         write.extend(self.citizen_dir.iter().cloned());
         write.extend(WRITABLE_HOME_ENTRIES.iter().map(|e| home.join(e)));
         write.push(std::env::temp_dir());
@@ -246,7 +293,7 @@ impl Confinement {
             }
         }
 
-        let mut deny: Vec<PathBuf> = CARVED_OUT_HOME_ENTRIES.iter().map(|e| home.join(e)).collect();
+        let mut deny = self.credential_roots();
 
         canonical_all(&mut write);
         canonical_all(&mut read);
@@ -378,6 +425,7 @@ pub fn command_for(
     program: &Path,
     args: &[std::ffi::OsString],
     cwd: Option<&Path>,
+    cargo_grant: Option<&CargoTargetGrant>,
 ) -> tokio::process::Command {
     let Some(confinement) = confinement else {
         let mut cmd = tokio::process::Command::new(program);
@@ -387,7 +435,7 @@ pub fn command_for(
         }
         return cmd;
     };
-    let (cmd, receipt) = confined_command(confinement, program, args, cwd);
+    let (cmd, receipt) = confined_command(confinement, program, args, cwd, cargo_grant);
     match &receipt {
         Enforcement::Enforced { mechanism } => crate::probe!(
             class = "shell.confinement",
@@ -418,10 +466,9 @@ pub fn confined_command(
     program: &Path,
     args: &[std::ffi::OsString],
     cwd: Option<&Path>,
+    cargo_grant: Option<&CargoTargetGrant>,
 ) -> (tokio::process::Command, Enforcement) {
-    let inherited = cwd.is_none().then(std::env::current_dir).transpose().ok().flatten();
-    let configured = cwd.or(inherited.as_deref()).and_then(|cwd| crate::paths::cargo::target_dir(cwd).ok());
-    let list = confinement.materialize_with_cargo(configured.as_deref());
+    let list = confinement.materialize_with_cargo(cargo_grant);
     let (mut cmd, receipt) = confined_command_with(confinement, &list, program, args);
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
@@ -569,7 +616,7 @@ mod tests {
         ]);
         let h = home.path().canonicalize().expect("test: canonical");
         let card_worktree = h.join(".airc/worktrees/ab12cd34");
-        let c = Confinement::for_caller(&h, &me.to_string(), &card_worktree);
+        let c = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &card_worktree);
         let list = c.materialize();
         let ok = |rel: &str| list.permits_read(&h.join(rel));
         // hers
@@ -613,20 +660,30 @@ mod tests {
         let override_root = h.join("private-override");
         std::fs::create_dir_all(&target).unwrap();
         std::fs::create_dir_all(&override_root).unwrap();
-        let configured_list = c.materialize_with_cargo(Some(&target));
+        let grant = CargoTargetGrant::admitted(c.validate_cargo_target(&target).unwrap(), c.clone());
+        let configured_list = c.materialize_with_cargo(Some(&grant));
         assert!(configured_list.write.contains(&target.canonicalize().unwrap()));
         assert!(!configured_list.write.contains(&child_cwd.canonicalize().unwrap()), "no parent grant");
         assert!(!configured_list.write.contains(&override_root.canonicalize().unwrap()), "session overrides do not grant access");
-        let explicit = command_for(None, "operator", Path::new("tool"), &[], Some(&child_cwd));
+        for forbidden in [h.clone(), h.parent().unwrap().to_path_buf(), h.join(".local/share/keyrings/cargo"), h.join(".continuum/citizens/peers").join(other.to_string()).join("derived")] {
+            assert!(c.validate_cargo_target(&forbidden).is_err(), "unsafe physical grant: {}", forbidden.display());
+        }
+        let other_policy = Confinement::for_caller(&h, &h.join(".continuum"), &other.to_string(), &card_worktree);
+        assert!(!other_policy.materialize_with_cargo(Some(&grant)).write.contains(&target.canonicalize().unwrap()), "an admitted grant cannot cross citizen policies");
+        let relocated = h.join("relocated-substrate");
+        let relocated_policy = Confinement::for_caller(&h, &relocated, &me.to_string(), &card_worktree);
+        assert!(relocated_policy.validate_cargo_target(&crate::identity::citizen_peer_dir(&relocated, crate::identity::PeerId::from_uuid(other))).is_err());
+        assert!(relocated_policy.validate_cargo_target(&relocated.join("config.env/derived")).is_err());
+        assert!(relocated_policy.validate_cargo_target(&crate::identity::citizen_peer_dir(&relocated, crate::identity::PeerId::from_uuid(me)).join("derived")).is_ok());
+        let explicit = command_for(None, "operator", Path::new("tool"), &[], Some(&child_cwd), None);
         assert_eq!(explicit.as_std().get_current_dir(), Some(child_cwd.as_path()));
-        let inherited = command_for(None, "operator", Path::new("tool"), &[], None);
+        let inherited = command_for(None, "operator", Path::new("tool"), &[], None, None);
         assert_eq!(inherited.as_std().get_current_dir(), None, "None preserves inherited cwd");
-        let confined = command_for(Some(&c), &me.to_string(), Path::new("tool"), &[], Some(&child_cwd));
+        let confined = command_for(Some(&c), &me.to_string(), Path::new("tool"), &[], Some(&child_cwd), Some(&grant));
         assert_eq!(confined.as_std().get_current_dir(), Some(child_cwd.as_path()), "the real confinement branch retains the actual spawn cwd");
         #[cfg(target_os = "macos")]
         {
-            let configured = crate::paths::cargo::target_dir(&child_cwd).unwrap();
-            let expected = seatbelt_profile(&c.home, &c.materialize_with_cargo(Some(&configured)));
+            let expected = seatbelt_profile(&c.home, &c.materialize_with_cargo(Some(&grant)));
             let args: Vec<_> = confined.as_std().get_args().collect();
             assert_eq!(args[1], std::ffi::OsStr::new(&expected), "command_for materializes configuration against its own cwd");
         }
@@ -642,7 +699,7 @@ mod tests {
         let home = home_with(&[".zshrc", ".cache/huggingface/token", ".cache/huggingface/hub/", &format!(".continuum/citizens/peers/{me}/workspace/")]);
         let h = home.path().canonicalize().expect("test: canonical");
         let ws = h.join(".continuum/citizens/peers").join(me.to_string()).join("workspace");
-        let c = Confinement::for_caller(&h, &me.to_string(), &ws);
+        let c = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &ws);
         let list = c.materialize();
         let p = seatbelt_profile(&h, &list);
         let at = |needle: &str| p.find(needle).unwrap_or_else(|| panic!("profile lacks {needle}:\n{p}"));
@@ -680,7 +737,7 @@ mod tests {
         ]);
         let h = home.path().canonicalize().expect("test: canonical");
         let ws = h.join(".airc/worktrees/ab12cd34");
-        let c = Confinement::for_caller(&h, &me.to_string(), &ws);
+        let c = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &ws);
         let leak = |rel: &str, tag: &str| format!("(cat '{}/{rel}' && echo LEAK-{tag}); ", h.display());
         let script = format!(
             "cat '{ws}/hello.txt' && cat '{h}/.zshrc' && cat '{h}/.cache/huggingface/hub/model.bin' && cat '{h}/.continuum/citizens/peers/{me}/experience.jsonl'; \
@@ -693,7 +750,7 @@ mod tests {
             g = leak(".config/gh/hosts.yml", "GH-TOKEN"),
             t = leak(".cache/huggingface/token", "HF-TOKEN"),
         );
-        let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()], None);
+        let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()], None, None);
         assert!(receipt.is_enforced(), "{receipt:?}");
         let out = cmd.output().await.expect("test: spawn");
         let stdout = String::from_utf8_lossy(&out.stdout);

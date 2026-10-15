@@ -59,10 +59,16 @@ struct State {
 type Resolution = futures::future::Shared<
     futures::future::BoxFuture<'static, Result<std::path::PathBuf, String>>,
 >;
+#[derive(Clone, PartialEq, Eq, Hash)]
+enum PathWork {
+    Resolve,
+    Validate(crate::code::confinement::Confinement),
+    Prepare(crate::code::confinement::Confinement),
+}
 pub(super) struct Registry(
     Mutex<State>,
     tokio::sync::Mutex<Option<DurableRoots>>,
-    Mutex<std::collections::HashMap<(std::path::PathBuf, bool), (Arc<()>, Resolution)>>,
+    Mutex<std::collections::HashMap<(std::path::PathBuf, PathWork), (Arc<()>, Resolution)>>,
 );
 
 struct DurableRoots {
@@ -109,12 +115,12 @@ impl Registry {
     }
 
     async fn resolve(&self, path: &Path) -> Result<std::path::PathBuf, String> {
-        self.path_work(path, false).await
+        self.path_work(path, PathWork::Resolve).await
     }
 
-    async fn path_work(&self, path: &Path, create: bool) -> Result<std::path::PathBuf, String> {
+    async fn path_work(&self, path: &Path, work: PathWork) -> Result<std::path::PathBuf, String> {
         use crate::runtime::daemon::{guarded, Guarded};
-        let key = (path.to_path_buf(), create);
+        let key = (path.to_path_buf(), work.clone());
         let (identity, request) = {
             let mut pending = self.2.lock();
             pending
@@ -123,7 +129,10 @@ impl Registry {
                     let path = path.to_path_buf();
                     let request = async move {
                         tokio::task::spawn_blocking(move || {
-                            if create {
+                            if let PathWork::Prepare(policy) = &work {
+                                policy.validate_cargo_target(&path)?;
+                            }
+                            if matches!(work, PathWork::Prepare(_)) {
                                 std::fs::create_dir_all(&path).map_err(|error| {
                                     format!(
                                         "cannot prepare configured Cargo root {}: {error}",
@@ -131,7 +140,12 @@ impl Registry {
                                     )
                                 })?;
                             }
-                            crate::paths::cargo::physical_root(&path)
+                            match &work {
+                                PathWork::Resolve => crate::paths::cargo::physical_root(&path),
+                                PathWork::Validate(policy) | PathWork::Prepare(policy) => {
+                                    policy.validate_cargo_target(&path)
+                                }
+                            }
                         })
                         .await
                         .map_err(|error| format!("Cargo root resolution worker failed: {error}"))?
@@ -305,16 +319,38 @@ pub async fn restore_cargo_roots(adapter: Arc<dyn StorageAdapter>) -> Result<(),
 
 /// Durable admission before a writer can launch. Failure to save refuses that
 /// write rather than produce an unowned tree after the next restart.
-pub async fn admit_cargo_target(path: &Path, cwd: &Path) -> Result<(), String> {
+pub async fn admit_cargo_target(
+    path: &Path,
+    cwd: &Path,
+    confinement: Option<&crate::code::confinement::Confinement>,
+) -> Result<Option<crate::code::confinement::CargoTargetGrant>, String> {
     let registry = writer_registry()?;
+    let policy = match confinement {
+        Some(policy) => policy.clone(),
+        None => crate::code::confinement::Confinement::for_caller(
+            &dirs::home_dir()
+                .ok_or_else(|| "Cargo target validation requires the native home".to_string())?,
+            &crate::paths::continuum_home()?,
+            "",
+            cwd,
+        ),
+    };
+    registry
+        .path_work(path, PathWork::Validate(policy.clone()))
+        .await?;
     registry.admit(path).await?;
     // Only operator configuration grants creation outside a citizen workspace.
     // Session overrides acquire ownership but gain no filesystem privileges.
     let configured = crate::paths::cargo::target_dir(cwd)?;
     if registry.resolve(path).await? == registry.resolve(&configured).await? {
-        registry.path_work(path, true).await?;
+        let prepared = registry
+            .path_work(path, PathWork::Prepare(policy.clone()))
+            .await?;
+        return Ok(Some(crate::code::confinement::CargoTargetGrant::admitted(
+            prepared, policy,
+        )));
     }
-    Ok(())
+    Ok(None)
 }
 
 fn register_pool(broker: &PressureBroker, dir: Arc<TrackedDir>) {
@@ -368,7 +404,7 @@ mod tests {
         let (adapter, _database) = crate::orm::store::fresh_adapter().await;
         let unavailable = tempfile::tempdir().unwrap();
         let available = tempfile::tempdir().unwrap();
-        let key = (unavailable.path().to_path_buf(), false);
+        let key = (unavailable.path().to_path_buf(), PathWork::Resolve);
         let identity = Arc::new(());
         let (complete, completion) = tokio::sync::oneshot::channel::<std::path::PathBuf>();
         let request = async move { completion.await.map_err(|error| error.to_string()) }
@@ -407,7 +443,9 @@ mod tests {
         );
         // Simulate the original filesystem operation becoming available. The
         // existing restore tick consumes the pending configuration and persists it.
-        complete.send(unavailable.path().canonicalize().unwrap()).unwrap();
+        complete
+            .send(unavailable.path().canonicalize().unwrap())
+            .unwrap();
         registry.open_records(adapter.clone()).await.unwrap();
         assert!(registry.0.lock().unresolved_boot.is_empty());
         let restarted = Registry::new(Vec::new()).await;
@@ -438,6 +476,27 @@ mod tests {
         first.open_records(adapter.clone()).await.unwrap();
         first.admit(later.path()).await.unwrap();
         first.admit(&later.path().join("unused/..")).await.unwrap();
+        // Cormac's 5058 P2: the actual bounded preparation path must refuse
+        // sensitive roots before mkdir, even when lexically hidden behind '..'.
+        let home = tempfile::tempdir().unwrap();
+        let policy = crate::code::confinement::Confinement::for_caller(
+            home.path(),
+            &home.path().join(".continuum"),
+            "",
+            later.path(),
+        );
+        for forbidden in [
+            home.path().to_path_buf(),
+            home.path().join("unused/../.local/share/keyrings/derived"),
+            home.path().join(".continuum/citizens/peers/other/derived"),
+        ] {
+            assert!(first
+                .path_work(&forbidden, PathWork::Prepare(policy.clone()))
+                .await
+                .is_err());
+        }
+        assert!(!home.path().join(".local").exists());
+        assert!(!home.path().join(".continuum").exists());
         drop(first);
         let restarted = Registry::new(boot()).await;
         restarted.open_records(adapter).await.unwrap();

@@ -406,17 +406,20 @@ impl ShellSession {
         let who = self.persona_id.clone();
 
         rt_handle.spawn(async move {
-            if let Err(error) = crate::system_resources::disk_reporters::admit_cargo_target(&target, &cwd).await {
-                if let Ok(mut state) = state.lock() {
-                    state.status = ShellExecutionStatus::Failed;
-                    state.stderr_lines.push(format!("Cargo cache ownership: {error}"));
-                    state.finished_at = Some(crate::time::EpochMs::now().millis());
-                    state.process_ended = true; // admission refused before any child existed
-                    state.output_notify.notify_one();
+            let cargo_grant = match crate::system_resources::disk_reporters::admit_cargo_target(&target, &cwd, confinement.as_ref()).await {
+                Ok(grant) => grant,
+                Err(error) => {
+                    if let Ok(mut state) = state.lock() {
+                        state.status = ShellExecutionStatus::Failed;
+                        state.stderr_lines.push(format!("Cargo cache ownership: {error}"));
+                        state.finished_at = Some(crate::time::EpochMs::now().millis());
+                        state.process_ended = true; // admission refused before any child existed
+                        state.output_notify.notify_one();
+                    }
+                    return;
                 }
-                return;
-            }
-            run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who).await;
+            };
+            run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who, cargo_grant.as_ref()).await;
             // A finished command may have written anywhere under its cwd (a build, a
             // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
             // not — observers re-read the workspace on this event instead of
@@ -839,6 +842,7 @@ async fn run_shell_command(
     timeout_ms: Option<u64>,
     confinement: Option<&super::confinement::Confinement>,
     who: &str,
+    cargo_grant: Option<&super::confinement::CargoTargetGrant>,
 ) {
     // Resolve a REAL POSIX shell. `TokioCommand::new("bash")` finds
     // C:\Windows\System32\bash.exe on Windows — the WSL launcher, not a shell —
@@ -904,6 +908,7 @@ async fn run_shell_command(
         &shell_bin,
         &[shell_flag.into(), effective_command.clone().into()],
         Some(cwd),
+        cargo_grant,
     );
     cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

@@ -94,7 +94,7 @@ fn cargo_test(dir: &Path) -> (bool, String) {
         // mine() already runs on the blocking pool; keep the durable admission
         // on its existing runtime before starting the compiler.
         tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?
-            .block_on(crate::system_resources::disk_reporters::admit_cargo_target(&target, dir))?;
+            .block_on(crate::system_resources::disk_reporters::admit_cargo_target(&target, dir, None))?;
         Ok(target)
     }) {
         Ok(target) => target,

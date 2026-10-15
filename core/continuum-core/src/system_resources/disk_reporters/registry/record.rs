@@ -1,6 +1,6 @@
 //! Durable backing for the tracked-root registry, through the node-local ORM.
 use crate::orm::entity::BaseEntity;
-use crate::Entity;
+use crate::orm::Entity;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 

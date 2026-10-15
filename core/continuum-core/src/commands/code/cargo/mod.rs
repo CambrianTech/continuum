@@ -100,9 +100,9 @@ pub(crate) async fn run_cargo(
     // A citizen's cargo is confined like her shell (card d598c806): the toolchain and
     // the shared target cache are in her roots, the operator's files are not.
     let target = crate::paths::cargo::target_dir(root).map_err(CommandError::Internal)?;
-    crate::system_resources::disk_reporters::admit_cargo_target(&target, root).await
+    let cargo_grant = crate::system_resources::disk_reporters::admit_cargo_target(&target, root, confinement).await
         .map_err(CommandError::Internal)?;
-    let mut cmd = crate::code::confinement::command_for(confinement, who, Path::new("cargo"), &args, Some(root));
+    let mut cmd = crate::code::confinement::command_for(confinement, who, Path::new("cargo"), &args, Some(root), cargo_grant.as_ref());
     cmd.env("CARGO_TERM_COLOR", "never");
     cmd.env("CARGO_TARGET_DIR", target);
     let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "cargo", std::sync::Arc::default())

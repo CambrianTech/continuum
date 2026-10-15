@@ -348,7 +348,7 @@ impl Hands {
     }
 
     fn command(&self, program: &std::path::Path, args: &[std::ffi::OsString], cwd: Option<&std::path::Path>) -> tokio::process::Command {
-        crate::code::confinement::command_for(self.confinement.as_ref(), &self.who, program, args, cwd)
+        crate::code::confinement::command_for(self.confinement.as_ref(), &self.who, program, args, cwd, None)
     }
 }
 
