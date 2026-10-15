@@ -91,7 +91,7 @@ mod tests {
     #[tokio::test]
     async fn returns_the_published_plan() {
         let plan = ServingPlan {
-            geometry_capacity_limited: false,
+            geometry_pressure_limited: None,
             base_model: crate::cognition::serving_plan::ModelFootprint {
                 model_id: "qwen3-coder".into(),
                 weights_bytes: 0,

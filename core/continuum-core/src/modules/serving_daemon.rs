@@ -3238,10 +3238,10 @@ impl ServingDaemonModule {
                 plan.base_model.model_id.clone(),
                 plan.served_context_window,
                 plan.lanes,
-                if plan.geometry_capacity_limited {
-                    crate::modules::served_window_store::GeometryQualification::CapacityLimited
-                } else {
-                    crate::modules::served_window_store::GeometryQualification::Unconstrained
+                match plan.geometry_pressure_limited {
+                    Some(true) => crate::modules::served_window_store::GeometryQualification::PressureLimited,
+                    Some(false) => crate::modules::served_window_store::GeometryQualification::Unconstrained,
+                    None => crate::modules::served_window_store::GeometryQualification::Unknown,
                 },
             ),
             None => {
@@ -3817,7 +3817,9 @@ impl ServingDaemonModule {
             .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
         {
             Some(fits) if floored > fits.max(crate::inference::planning::MIN_SERVE_CTX) => {
-                qualification = crate::modules::served_window_store::GeometryQualification::CapacityLimited;
+                // The launch was changed after its fit comparison. A fresh plan
+                // must establish provenance for this physical mode/placement.
+                qualification = crate::modules::served_window_store::GeometryQualification::Unknown;
                 let bound = fits.max(crate::inference::planning::MIN_SERVE_CTX);
                 crate::probe!(
                     class = "serving.reconcile.window",
@@ -4412,7 +4414,7 @@ impl ServingDaemonModule {
             }
             let capture = if current() {
                 let qualification = if snapshot.served_context_window < served_ctx {
-                    crate::modules::served_window_store::GeometryQualification::CapacityLimited
+                    crate::modules::served_window_store::GeometryQualification::Unknown
                 } else { qualification };
                 verified_capture(server.as_ref(), &snapshot, revision, qualification).map(|mut capture| {
                     // A reconcile that reuses the same process does not rewrite
@@ -5007,7 +5009,9 @@ impl ServingDaemonModule {
             }
         }
         match stable {
-            Some(plan) => {
+            Some(mut plan) => {
+                let physical = self.physical_budget();
+                plan.geometry_pressure_limited = plan.pressure_limited(&physical, &demand);
                 // NO PERSONA LANE BELOW WHAT THE RESIDENTS REQUIRE (2eec3977; Joel 2026-09-20:
                 // "2k context is a complete waste of a lane"). A plan whose per-slot window is
                 // below the residents' requirement (measured today, declared per role once the
@@ -11321,7 +11325,7 @@ pub(crate) mod tests {
         let on_disk = vec![big.clone(), tiny.clone()];
         let demand = ServingDemand::new(1, Some(8192));
         let plan_for = |m: &ModelFootprint| ServingPlan {
-            geometry_capacity_limited: false,
+            geometry_pressure_limited: None,
             base_model: m.clone(),
             served_context_window: 2048,
             lanes: 1,
@@ -11393,7 +11397,7 @@ pub(crate) mod tests {
         let devstral = footprint("devstral-24b", 14, 8);
         let tiny = footprint("qwen-0.5b", 1, 1);
         let plan_for = |id: &str| ServingPlan {
-            geometry_capacity_limited: false,
+            geometry_pressure_limited: None,
             base_model: footprint(id, 1, 1),
             served_context_window: 2048,
             lanes: 1,

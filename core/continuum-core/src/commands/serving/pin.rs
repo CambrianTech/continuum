@@ -209,7 +209,7 @@ mod tests {
 
     fn plan(fits: bool) -> ServingPlan {
         ServingPlan {
-            geometry_capacity_limited: false,
+            geometry_pressure_limited: None,
             base_model: crate::cognition::serving_plan::ModelFootprint {
                 model_id: "x".into(),
                 weights_bytes: 0,

@@ -31,7 +31,7 @@ pub enum GeometryQualification {
     #[default]
     Unknown,
     Unconstrained,
-    CapacityLimited,
+    PressureLimited,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -177,10 +177,7 @@ fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     let Some(mut stored) = load_from(path) else { return };
     let Some(candidate) = stored.candidate.as_ref().filter(|c| &c.geometry == geometry) else { return };
     if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0
-        || candidate.qualification == GeometryQualification::Unknown
-        || (stored.lanes > 0 && stored.model_id == geometry.model_id
-            && (geometry.per_slot_window < stored.per_slot_window || geometry.lanes < stored.lanes)
-            && candidate.qualification == GeometryQualification::CapacityLimited)
+        || candidate.qualification != GeometryQualification::Unconstrained
     {
         return;
     }
@@ -239,6 +236,54 @@ fn write_record(path: &Path, stored: &StoredServedWindow) {
 mod tests {
     use super::*;
 
+    // Real planning and persistence in sequence: the same small launch is
+    // temporary pressure on the original host, but a valid optimum after the
+    // physical hardware/mode budget changes. Prompt sizes cannot tell them apart.
+    #[test]
+    fn physical_fit_distinguishes_first_boot_pressure_from_legitimate_resize() {
+        use crate::cognition::serving_plan::{plan_serving, HostBudget, ModelFootprint, ServingDemand};
+        use crate::cognition::window_allocator::LaneRequirement;
+        let model = ModelFootprint { model_id: "qwen-27b".into(), weights_bytes: 19 << 30,
+            kv_per_token: 33_000, context_window: 262_144, capability_rank: 9, fixed_per_lane_bytes: 0 };
+        let physical = HostBudget { usable_bytes: model.peak_resident_bytes(70_000, 1), perf_cores: 1 };
+        let squeezed = HostBudget { usable_bytes: model.peak_resident_bytes(8_192, 1), perf_cores: 1 };
+        let demand = ServingDemand::new(1, None).with_requirements(vec![
+            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000).with_need(2_048),
+        ]);
+        let healthy = plan_serving(&physical, std::slice::from_ref(&model), &demand).expect("physical plan");
+        let small = plan_serving(&squeezed, std::slice::from_ref(&model), &demand).expect("live plan");
+        assert!(small.fits_on_gpu && small.served_context_window < healthy.served_context_window);
+        assert_eq!(healthy.pressure_limited(&physical, &demand), Some(false));
+        assert_eq!(small.pressure_limited(&physical, &demand), Some(true));
+        assert_eq!(small.pressure_limited(&squeezed, &demand), Some(false), "hardware/mode change is a new physical optimum");
+        let dir = tempfile::tempdir().expect("owner store");
+        let path = dir.path().join(FILE);
+        let geometry = |plan: &crate::cognition::serving_plan::ServingPlan| ServedGeometry {
+            model_id: model.model_id.clone(), generation: uuid::Uuid::new_v4(),
+            per_slot_window: plan.served_context_window, lanes: plan.lanes,
+        };
+        let qualification = |plan: &crate::cognition::serving_plan::ServingPlan, budget: &HostBudget| match plan.pressure_limited(budget, &demand) {
+            Some(true) => GeometryQualification::PressureLimited,
+            Some(false) => GeometryQualification::Unconstrained,
+            None => GeometryQualification::Unknown,
+        };
+        let first = geometry(&small);
+        save_candidate_to(&path, first.clone(), qualification(&small, &physical));
+        observe_to(&path, &first, 1_024);
+        assert_eq!(load_from(&path).expect("first boot reload").steady_geometry(), None);
+        let large = geometry(&healthy);
+        save_candidate_to(&path, large.clone(), qualification(&healthy, &physical));
+        observe_to(&path, &large, 30_000);
+        let pressure = geometry(&small);
+        save_candidate_to(&path, pressure.clone(), qualification(&small, &physical));
+        observe_to(&path, &pressure, 1_024);
+        assert_eq!(load_from(&path).expect("pressure restart").steady_geometry(), Some((large.per_slot_window, large.lanes)));
+        let resized = geometry(&small);
+        save_candidate_to(&path, resized.clone(), qualification(&small, &squeezed));
+        observe_to(&path, &resized, 1_024);
+        assert_eq!(load_from(&path).expect("changed physical budget restart").steady_geometry(), Some((resized.per_slot_window, resized.lanes)));
+    }
+
     // Regression for #5050: small successful work on a collapsed launch must
     // not erase the last geometry qualified by larger successful work.
     #[test]
@@ -255,7 +300,7 @@ mod tests {
         assert_eq!(load_from(&path).expect("candidate").steady_geometry(), None);
         let samples = vec![observe(&large, 30_000)];
         observe_to(&path, &large, PromptSample::geometry_median(&samples, "local", &large).expect("large usage"));
-        save_candidate_to(&path, collapsed.clone(), GeometryQualification::CapacityLimited);
+        save_candidate_to(&path, collapsed.clone(), GeometryQualification::PressureLimited);
         let mut samples = samples;
         samples.push(observe(&collapsed, 1_024));
         let foreign = ServedGeometry { model_id: "other".into(), ..collapsed.clone() };
@@ -271,12 +316,12 @@ mod tests {
         assert_eq!(restarted.observed_prompt_tokens, Some(30_000));
         assert_eq!(restarted.candidate.as_ref().map(|c| &c.geometry), Some(&collapsed));
         let first_path = dir.path().join("first-pressure.json");
-        save_candidate_to(&first_path, collapsed.clone(), GeometryQualification::CapacityLimited);
+        save_candidate_to(&first_path, collapsed.clone(), GeometryQualification::PressureLimited);
         observe_to(&first_path, &collapsed, median);
-        assert_eq!(load_from(&first_path).expect("first known capacity launch").steady_geometry(), Some((2_048, 1)), "a first hardware-constrained optimum is not a regression");
+        assert_eq!(load_from(&first_path).expect("first pressure launch").steady_geometry(), None, "temporary pressure cannot seed even the first boot");
         // A genuinely fitting replacement remains eligible; this is not a max-window rule.
         let fitted = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: 40_000, ..large };
-        save_candidate_to(&path, fitted.clone(), GeometryQualification::CapacityLimited);
+        save_candidate_to(&path, fitted.clone(), GeometryQualification::PressureLimited);
         observe_to(&path, &fitted, 32_000);
         assert_eq!(load_from(&path).expect("pressure above prior usage").steady_geometry(), Some((62_720, 1)));
         save_candidate_to(&path, fitted.clone(), GeometryQualification::Unconstrained);
@@ -294,7 +339,7 @@ mod tests {
         save_candidate_to(&path, expanded.clone(), GeometryQualification::Unconstrained);
         observe_to(&path, &expanded, 32_000);
         let one_lane = ServedGeometry { generation: uuid::Uuid::new_v4(), lanes: 1, ..expanded };
-        save_candidate_to(&path, one_lane.clone(), GeometryQualification::CapacityLimited);
+        save_candidate_to(&path, one_lane.clone(), GeometryQualification::PressureLimited);
         observe_to(&path, &one_lane, 1_024);
         assert_eq!(load_from(&path).expect("lane pressure survives restart").steady_geometry(), Some((40_000, 2)));
         // A changed workload may legitimately use less than prior successful
