@@ -8316,6 +8316,16 @@ mod tests {
             self.launched_kv = Some(crate::inference::lane_process::LaunchKv { cache_type: cache_type.map(str::to_string), flash_attn, cache_ram_mib: None });
             self
         }
+        /// Model an engine launched on THIS KV decision with a `--cache-ram` grant of `mib`.
+        fn launched_with_cache(mut self, mib: u32) -> Self {
+            let planned = crate::cognition::kv_cache_plan::resolve();
+            self.launched_kv = Some(crate::inference::lane_process::LaunchKv {
+                cache_type: planned.launcher_cache_type().map(str::to_string),
+                flash_attn: planned.flash_attn,
+                cache_ram_mib: Some(mib),
+            });
+            self
+        }
         /// Model a child we spawned ourselves (trusted without a per-tick probe).
         fn owned(mut self) -> Self {
             self.owns = true;
@@ -8744,6 +8754,36 @@ mod tests {
         // Unknown launch (no argv): not a mismatch.
         let unknown = FakeControl::probe(Ok(Some("coder-14b".into()))).owned();
         assert_eq!(ensure_model_serving(&unknown, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
+    }
+
+    // what this catches (card d7294f0b, Kimi's node 2026-10-15 07:37-07:39Z): the daemon decided a
+    // cache re-home for an adopted lane whose --cache-ram held no measured state, and this rail
+    // answered AlreadyServing because it never compared the grant. With a measured state between
+    // the running grant and the target's, the lane relaunches; an unknown grant, or a target that
+    // could not hold the state either, still adopts.
+    #[tokio::test]
+    async fn an_adopted_lane_whose_cache_holds_no_state_relaunches_onto_one_that_does() {
+        const MIB: u64 = 1024 * 1024;
+        let id = "cache-grant-d7294f0b"; // its own page dir: the state samples are process-wide
+        let t = target(id);
+        crate::inference::slots::note_state_bytes(&kv_page_dir(id, t.context_window), 3_800 * MIB);
+        let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
+        assert_eq!(
+            ensure_model_serving(&starved, &t, false).await,
+            EnsureOutcome::Spawned { model: id.into() },
+            "a 3,248 MiB grant holds no 3,800 MiB state and the target's 4,096 does"
+        );
+        assert_eq!(starved.serves.load(Ordering::SeqCst), 1);
+        let unknown = FakeControl::probe(Ok(Some(id.into()))).owned();
+        assert_eq!(ensure_model_serving(&unknown, &t, false).await, EnsureOutcome::AlreadyServing, "no argv: an unknown grant is not a mismatch");
+        let futile = ServingTarget { host_prompt_cache_mib: 3_500, ..t.clone() };
+        let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
+        assert_eq!(
+            ensure_model_serving(&starved, &futile, false).await,
+            EnsureOutcome::AlreadyServing,
+            "a relaunch whose grant holds no state either is not owed"
+        );
+        assert_eq!(starved.serves.load(Ordering::SeqCst), 0);
     }
 
     // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode
