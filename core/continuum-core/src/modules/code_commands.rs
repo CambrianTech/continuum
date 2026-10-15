@@ -747,7 +747,7 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
     // (1) Strict: already the tagged object — deserialize as-is (the preferred path, unchanged).
     if p.edit_mode.get("type").is_some() {
         return serde_json::from_value::<EditMode>(p.edit_mode.clone())
-            .map_err(|e| CommandError::Invalid(format!("code/edit: {e}. {EDIT_MODE_HELP}")));
+            .map_err(|e| CommandError::Arguments(format!("code/edit: {e}. {EDIT_MODE_HELP}")));
     }
     // A field pulled from top-level OR from an untyped edit_mode object (flat call shapes).
     let s = |top: &Option<String>, key: &str| -> Option<String> {
@@ -798,7 +798,7 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
         }
     });
     let miss =
-        |what: &str| CommandError::Invalid(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
+        |what: &str| CommandError::Arguments(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
     match mode.as_deref().map(|m| m.trim().to_lowercase()).as_deref() {
         Some("search_replace") => Ok(EditMode::SearchReplace {
             search: search.ok_or_else(|| miss("search"))?,
@@ -823,7 +823,7 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
             end_line: end_line.unwrap_or(u32::MAX),
             new_content: new_content.ok_or_else(|| miss("new_content"))?,
         }),
-        _ => Err(CommandError::Invalid(format!(
+        _ => Err(CommandError::Arguments(format!(
             "code/edit: could not determine the edit mode. {EDIT_MODE_HELP}"
         ))),
     }
@@ -1655,7 +1655,7 @@ impl ActionCommand for CodeUndo {
         match p.change_id {
             Some(id) => {
                 let change_uuid = uuid::Uuid::parse_str(&id)
-                    .map_err(|e| CommandError::Invalid(format!("invalid change_id: {e}")))?;
+                    .map_err(|e| CommandError::Arguments(format!("invalid change_id: {e}")))?;
                 let reverted = engine
                     .undo(&change_uuid)
                     .map_err(engine_err)?;
@@ -2300,6 +2300,7 @@ mod tests {
             "file_path": "a.py", "edit_mode": "append"
         })))
         .unwrap_err();
+        assert!(matches!(&err, CommandError::Arguments(_)), "missing edit fields need argument recovery: {err}");
         assert!(
             format!("{err}").contains("content"),
             "names the missing field: {err}"

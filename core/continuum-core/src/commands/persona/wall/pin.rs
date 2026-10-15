@@ -106,7 +106,7 @@ crate::action_command! {
                 .map_err(CommandError::Invalid)?;
         let supersedes = match p.supersedes.as_deref() {
             Some(s) => Some(Uuid::parse_str(s).map_err(|e| {
-                CommandError::Invalid(format!("supersedes '{s}' is not a valid post_id uuid: {e}"))
+                CommandError::Arguments(format!("supersedes '{s}' is not a valid post_id uuid: {e}"))
             })?),
             None => None,
         };

@@ -474,6 +474,8 @@ mod tests {
             "test/echo-bare", err.clone(),
         );
         assert!(rendered.contains(&err), "the real decode failure survives: {rendered}");
-        assert!(rendered.contains("commands/help"), "the missing manual is discoverable: {rendered}");
+        assert!(CommandError::is_argument_refusal("test/echo-bare", &err));
+        assert!(rendered.starts_with(&format!("{err}\n→ Call `commands/help` with name \"test/echo-bare\"")),
+            "the argument recovery branch preserves the refusal and names its manual: {rendered}");
     }
 }

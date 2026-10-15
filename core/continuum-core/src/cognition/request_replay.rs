@@ -171,7 +171,7 @@ impl ActionCommand for CognitionReplayRequest {
 
     async fn run(&self, _ctx: &Ctx, p: Self::Params) -> Result<Self::Output, CommandError> {
         let persona = Uuid::parse_str(p.persona_id.as_str())
-            .map_err(|e| CommandError::Invalid(format!("persona_id: {e}")))?;
+            .map_err(|e| CommandError::Arguments(format!("persona_id: {e}")))?;
         let selected = p.selected.clone();
         let prepared = tokio::task::spawn_blocking(move || {
             let dir = crate::persona::recorder::fixture_dir(prompt_capture::FIXTURE_DIR)

@@ -323,10 +323,10 @@ impl ActionCommand for BenchmarkRoundTrack {
     async fn run(&self, _ctx: &Ctx, p: BenchmarkRoundTrackParams) -> Result<Self::Output, CommandError> {
         let room = p.room_id;
         let cards = p.cards.as_array().ok_or_else(|| {
-            CommandError::Invalid("cards must be the array of work/create results".into())
+            CommandError::Arguments("cards must be the array of work/create results".into())
         })?;
         let tasks = p.tasks.as_array().ok_or_else(|| {
-            CommandError::Invalid("tasks must be the array of imported rows".into())
+            CommandError::Arguments("tasks must be the array of imported rows".into())
         })?;
         if cards.len() != tasks.len() {
             return Err(CommandError::Invalid(format!(
@@ -342,12 +342,12 @@ impl ActionCommand for BenchmarkRoundTrack {
                 .or_else(|| card.get("cardId"))
                 .and_then(|v| v.as_str())
                 .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                .ok_or_else(|| CommandError::Invalid(format!("a card row carries no card_id: {card}")))?;
+                .ok_or_else(|| CommandError::Arguments(format!("a card row carries no card_id: {card}")))?;
             let task_id = task
                 .get("taskId")
                 .or_else(|| task.get("task_id"))
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| CommandError::Invalid(format!("a task row carries no taskId: {task}")))?;
+                .ok_or_else(|| CommandError::Arguments(format!("a task row carries no taskId: {task}")))?;
             crate::cognition::bench_round::add_card(room, card_id);
             crate::cognition::bench_round::record_card_instance(card_id, task_id);
             tracked += 1;

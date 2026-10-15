@@ -377,7 +377,7 @@ impl ActionCommand for CognitionReplay {
         p: CognitionReplayParams,
     ) -> Result<CognitionReplayResult, CommandError> {
         let persona_uuid = Uuid::parse_str(p.persona_id.as_str()).map_err(|_| {
-            CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
+            CommandError::Arguments(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
 
         let mut burst = resolve_burst(&p, &persona_uuid)?;
