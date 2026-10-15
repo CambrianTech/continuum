@@ -605,7 +605,10 @@ mod tests {
             Workspace::in_room("new activity, same wake", wake).with_cycle(CycleId(2));
         switched.activity_room_id = Uuid::new_v4();
         // Completion is observed, not inferred from a sleep duration.
-        completed.changed().await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), completed.changed())
+            .await
+            .expect("deferred worker completion")
+            .expect("worker remains owned");
         assert!(
             deferred.contribute(&switched).await.is_none(),
             "old activity cannot leak into the new task"
