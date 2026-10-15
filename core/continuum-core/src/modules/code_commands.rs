@@ -2318,8 +2318,16 @@ mod tests {
         let envelope = manual.split_once("\n{").unwrap().1;
         let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
         let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
-        let params: CodeEditParams = serde_json::from_value(envelope["tool_call"]["arguments"].clone()).unwrap();
-        assert!(normalize_edit_mode(&params).is_ok(), "generated recovery must resolve an operation: {manual}");
+        let mut params: CodeEditParams = serde_json::from_value(envelope["tool_call"]["arguments"].clone()).unwrap();
+        let mode = normalize_edit_mode(&params).expect("generated recovery must resolve an operation");
+        // Fill the path blank; retain the generated numeric addresses unchanged and
+        // exercise the real executor, which rejects zero-based line positions.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("example.txt"), "original\n").unwrap();
+        params.file_path = "example.txt".into();
+        let engine = crate::code::FileEngine::new("edit-help-fixture", crate::code::PathSecurity::new(dir.path()).unwrap());
+        assert!(engine.edit(&params.file_path, &mode, None).unwrap().success);
+        assert_ne!(std::fs::read_to_string(dir.path().join("example.txt")).unwrap(), "original\n");
         for name in ["line_range", "search_replace", "insert_at", "append"] {
             assert!(manual.contains(name), "operation alternative missing: {name}");
         }

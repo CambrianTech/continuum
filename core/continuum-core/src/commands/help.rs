@@ -277,7 +277,7 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
         // `<string>` can. See card 6c55f7a7.
         let placeholder = match ty {
             "boolean" => json!(true),
-            "integer" | "number" => json!(0),
+            "integer" | "number" => numeric_example(spec, ty == "integer"),
             "array" => json!([]),
             "object" => json!({}),
             "null" => Value::Null,
@@ -376,6 +376,26 @@ fn required_object_example(spec: &Value, root: &Value) -> serde_json::Map<String
     result
 }
 
+fn numeric_example(spec: &Value, integer: bool) -> Value {
+    let minimum = spec.get("minimum").and_then(Value::as_f64);
+    let exclusive = spec.get("exclusiveMinimum").and_then(Value::as_f64);
+    let mut value = minimum.unwrap_or(0.0);
+    if integer {
+        value = value.ceil();
+    }
+    if let Some(bound) = exclusive {
+        let above = if integer { bound.floor() + 1.0 } else { bound.next_up() };
+        value = value.max(above);
+    }
+    if integer && value >= 0.0 {
+        json!(value as u64)
+    } else if integer {
+        json!(value as i64)
+    } else {
+        json!(value)
+    }
+}
+
 #[cfg(test)]
 mod param_shape_tests {
     use super::*;
@@ -443,6 +463,9 @@ mod param_shape_tests {
             }}]});
         let (_, example) = param_shape(&schema, &schema);
         assert_eq!(example, json!({"type":"example", "count":0, "enabled":true}));
+        assert_eq!(numeric_example(&json!({"minimum":1}), true), json!(1));
+        assert_eq!(numeric_example(&json!({"exclusiveMinimum":1}), true), json!(2));
+        assert!(numeric_example(&json!({"exclusiveMinimum":0.5}), false).as_f64().unwrap() > 0.5);
     }
 
     // what this catches: regression for card 6c55f7a7 — a string placeholder that reads
