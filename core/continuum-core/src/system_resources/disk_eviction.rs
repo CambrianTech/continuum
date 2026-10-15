@@ -1258,6 +1258,8 @@ mod tests {
             #[cfg(windows)]
             if error.raw_os_error() == Some(1314) {
                 eprintln!("UNVERIFIED: Windows reparse fixture requires symbolic-link privilege: {error}");
+                assert!(std::env::var_os("CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST").is_none(),
+                    "this validation run requires actual Windows reparse execution");
                 return;
             }
             panic!("create redirected profile fixture: {error}");
