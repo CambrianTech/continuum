@@ -133,6 +133,16 @@ pub trait RagRenderable: DeserializeOwned + Send + Sync + 'static {
     /// is why it is a measured constant here and a fraction nowhere.
     fn floor_tokens() -> u32;
 
+    /// Source-owned appetite, shared with non-ViewState grounding sources.
+    fn budget_claim(window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        super::rag_budget::RagSourceBudget::retrieval(
+            Self::KIND,
+            Self::floor_tokens(),
+            window,
+            headroom,
+        )
+    }
+
     /// Atomic units, **most-salient first**. Each must stand alone: the adapter
     /// packs a prefix of this list and drops the rest, so unit `n` may never
     /// depend on unit `n+1` having been included.
@@ -402,6 +412,11 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         V::floor_tokens()
     }
 
+    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        V::budget_claim(window, headroom)
+    }
+
+
     async fn deliver(
         &self,
         _ctx: &RagContext,
@@ -528,6 +543,10 @@ impl RagRenderable for continuum_positron::RosterViewState {
     /// One member line, measured: a name plus a short role runs ~10 tokens. The
     /// floor is ONE PERSON — under any budget that admits this source at all, a
     /// citizen should learn that at least someone is here.
+    fn budget_claim(window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        super::room_roster_source::roster_budget_claim(Self::KIND, window, headroom)
+    }
+
     fn floor_tokens() -> u32 {
         10
     }
@@ -815,6 +834,14 @@ mod tests {
     async fn a_present_peer_reaches_the_citizens_grounding() {
         let source: ViewStateRagSource<RosterViewState> =
             ViewStateRagSource::per_room(roster_registry(&["Anwen", "Asha"]));
+        // The canonical kind owns the same small claim as its legacy reader;
+        // adapting it through ViewState must not buy a retrieval-sized share.
+        for window in [0, 256, 2048, 51_712] {
+            let claim = source.budget_claim(window, window);
+            assert_eq!(claim.max_tokens, window / 64);
+            assert_eq!(claim.min_tokens, 0);
+            assert_eq!(claim.floor_tokens, 0);
+        }
         let delivery = source.deliver(&ctx(), 500, ResolutionPreference::Raw).await;
         let rendered = delivery
             .items
