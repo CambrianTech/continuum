@@ -747,17 +747,31 @@ impl JsonSchema for CodeEditParams {
     }
 
     fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        #[derive(JsonSchema)]
-        #[allow(dead_code)]
-        struct CanonicalEdit {
-            /// Path relative to the workspace root.
-            file_path: String,
-            /// Operation to apply.
-            edit_mode: EditMode,
-            /// Optional note recorded in change history.
-            description: Option<String>,
-        }
         CanonicalEdit::json_schema(generator)
+    }
+}
+
+/// The normalized edit consumed by the executor and advertised to callers.
+#[derive(JsonSchema)]
+struct CanonicalEdit {
+    /// Path relative to the workspace root.
+    file_path: String,
+    /// Operation to apply.
+    edit_mode: EditMode,
+    /// Optional note recorded in change history.
+    description: Option<String>,
+}
+
+impl TryFrom<CodeEditParams> for CanonicalEdit {
+    type Error = CommandError;
+
+    fn try_from(params: CodeEditParams) -> Result<Self, Self::Error> {
+        let edit_mode = normalize_edit_mode(&params)?;
+        Ok(Self {
+            file_path: params.file_path,
+            edit_mode,
+            description: params.description,
+        })
     }
 }
 
@@ -890,9 +904,9 @@ impl ActionCommand for CodeEdit {
     async fn run(&self, ctx: &Ctx, p: CodeEditParams) -> Result<WriteResult, CommandError> {
         reject_placeholder_path(&p.file_path)?;
         let engine = engine!(self, ctx);
-        let mode = normalize_edit_mode(&p)?;
+        let edit = CanonicalEdit::try_from(p)?;
         engine
-            .edit(&p.file_path, &mode, p.description.as_deref())
+            .edit(&edit.file_path, &edit.edit_mode, edit.description.as_deref())
             .map_err(engine_err)
     }
 }
@@ -2342,14 +2356,14 @@ mod tests {
         let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
         let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
         let mut params: CodeEditParams = serde_json::from_value(envelope["tool_call"]["arguments"].clone()).unwrap();
-        let mode = normalize_edit_mode(&params).expect("generated recovery must resolve an operation");
         // Fill the path blank; retain the generated numeric addresses unchanged and
         // exercise the real executor, which rejects zero-based line positions.
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("example.txt"), "original\n").unwrap();
         params.file_path = "example.txt".into();
         let engine = crate::code::FileEngine::new("edit-help-fixture", crate::code::PathSecurity::new(dir.path()).unwrap());
-        assert!(engine.edit(&params.file_path, &mode, None).unwrap().success);
+        let edit = CanonicalEdit::try_from(params).expect("generated recovery must resolve an operation");
+        assert!(engine.edit(&edit.file_path, &edit.edit_mode, edit.description.as_deref()).unwrap().success);
         assert_ne!(std::fs::read_to_string(dir.path().join("example.txt")).unwrap(), "original\n");
         for name in ["line_range", "search_replace", "insert_at", "append"] {
             assert!(manual.contains(name), "operation alternative missing: {name}");
