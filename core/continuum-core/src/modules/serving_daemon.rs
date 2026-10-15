@@ -11330,6 +11330,7 @@ pub(crate) mod tests {
         let demand = ServingDemand::new(1, Some(8192));
         let plan_for = |m: &ModelFootprint| ServingPlan {
             geometry_pressure_limited: None,
+            geometry_allocator_lane_cap: None,
             base_model: m.clone(),
             served_context_window: 2048,
             lanes: 1,
@@ -11402,6 +11403,7 @@ pub(crate) mod tests {
         let tiny = footprint("qwen-0.5b", 1, 1);
         let plan_for = |id: &str| ServingPlan {
             geometry_pressure_limited: None,
+            geometry_allocator_lane_cap: None,
             base_model: footprint(id, 1, 1),
             served_context_window: 2048,
             lanes: 1,

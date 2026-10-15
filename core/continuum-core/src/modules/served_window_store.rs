@@ -247,41 +247,45 @@ mod tests {
             kv_per_token: 33_000, context_window: 262_144, capability_rank: 9, fixed_per_lane_bytes: 0 };
         let physical = HostBudget { usable_bytes: model.peak_resident_bytes(70_000, 1), perf_cores: 1 };
         let squeezed = HostBudget { usable_bytes: model.peak_resident_bytes(8_192, 1), perf_cores: 1 };
-        let demand = ServingDemand::new(1, None).with_requirements(vec![
-            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000).with_need(2_048),
-        ]);
-        let healthy = plan_serving(&physical, std::slice::from_ref(&model), &demand).expect("physical plan");
-        let small = plan_serving(&squeezed, std::slice::from_ref(&model), &demand).expect("live plan");
-        assert!(small.fits_on_gpu && small.served_context_window < healthy.served_context_window);
-        assert_eq!(healthy.pressure_limited(&physical, &demand), Some(false));
-        assert_eq!(small.pressure_limited(&physical, &demand), Some(true));
-        assert_eq!(small.pressure_limited(&squeezed, &demand), Some(false), "hardware/mode change is a new physical optimum");
-        let dir = tempfile::tempdir().expect("owner store");
-        let path = dir.path().join(FILE);
-        let geometry = |plan: &crate::cognition::serving_plan::ServingPlan| ServedGeometry {
-            model_id: model.model_id.clone(), generation: uuid::Uuid::new_v4(),
-            per_slot_window: plan.served_context_window, lanes: plan.lanes,
-        };
-        let qualification = |plan: &crate::cognition::serving_plan::ServingPlan, budget: &HostBudget| match plan.pressure_limited(budget, &demand) {
-            Some(true) => GeometryQualification::PressureLimited,
-            Some(false) => GeometryQualification::Unconstrained,
-            None => GeometryQualification::Unknown,
-        };
-        let first = geometry(&small);
-        save_candidate_to(&path, first.clone(), qualification(&small, &physical));
-        observe_to(&path, &first, 1_024);
-        assert_eq!(load_from(&path).expect("first boot reload").steady_geometry(), None);
-        let large = geometry(&healthy);
-        save_candidate_to(&path, large.clone(), qualification(&healthy, &physical));
-        observe_to(&path, &large, 30_000);
-        let pressure = geometry(&small);
-        save_candidate_to(&path, pressure.clone(), qualification(&small, &physical));
-        observe_to(&path, &pressure, 1_024);
-        assert_eq!(load_from(&path).expect("pressure restart").steady_geometry(), Some((large.per_slot_window, large.lanes)));
-        let resized = geometry(&small);
-        save_candidate_to(&path, resized.clone(), qualification(&small, &squeezed));
-        observe_to(&path, &resized, 1_024);
-        assert_eq!(load_from(&path).expect("changed physical budget restart").steady_geometry(), Some((resized.per_slot_window, resized.lanes)));
+        for demand in [
+            ServingDemand::new(1, None).with_requirements(vec![
+                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000).with_need(2_048),
+            ]),
+            ServingDemand::new(1, Some(56_000)),
+        ] {
+            let healthy = plan_serving(&physical, std::slice::from_ref(&model), &demand).expect("physical plan");
+            let small = plan_serving(&squeezed, std::slice::from_ref(&model), &demand).expect("live plan");
+            assert!(small.fits_on_gpu && small.served_context_window < healthy.served_context_window);
+            assert_eq!(healthy.pressure_limited(&physical, &demand), Some(false));
+            assert_eq!(small.pressure_limited(&physical, &demand), Some(true));
+            assert_eq!(small.pressure_limited(&squeezed, &demand), Some(false), "hardware/mode change is a new physical optimum");
+            let dir = tempfile::tempdir().expect("owner store");
+            let path = dir.path().join(FILE);
+            let geometry = |plan: &crate::cognition::serving_plan::ServingPlan| ServedGeometry {
+                model_id: model.model_id.clone(), generation: uuid::Uuid::new_v4(),
+                per_slot_window: plan.served_context_window, lanes: plan.lanes,
+            };
+            let qualification = |plan: &crate::cognition::serving_plan::ServingPlan, budget: &HostBudget| match plan.pressure_limited(budget, &demand) {
+                Some(true) => GeometryQualification::PressureLimited,
+                Some(false) => GeometryQualification::Unconstrained,
+                None => GeometryQualification::Unknown,
+            };
+            let first = geometry(&small);
+            save_candidate_to(&path, first.clone(), qualification(&small, &physical));
+            observe_to(&path, &first, 1_024);
+            assert_eq!(load_from(&path).expect("first boot reload").steady_geometry(), None);
+            let large = geometry(&healthy);
+            save_candidate_to(&path, large.clone(), qualification(&healthy, &physical));
+            observe_to(&path, &large, 30_000);
+            let pressure = geometry(&small);
+            save_candidate_to(&path, pressure.clone(), qualification(&small, &physical));
+            observe_to(&path, &pressure, 1_024);
+            assert_eq!(load_from(&path).expect("pressure restart").steady_geometry(), Some((large.per_slot_window, large.lanes)));
+            let resized = geometry(&small);
+            save_candidate_to(&path, resized.clone(), qualification(&small, &squeezed));
+            observe_to(&path, &resized, 1_024);
+            assert_eq!(load_from(&path).expect("changed physical budget restart").steady_geometry(), Some((resized.per_slot_window, resized.lanes)));
+        }
     }
 
     // Regression for #5050: small successful work on a collapsed launch must

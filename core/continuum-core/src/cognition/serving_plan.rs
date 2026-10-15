@@ -625,6 +625,11 @@ pub struct ServingPlan {
     #[serde(skip)]
     #[ts(skip)]
     pub(crate) geometry_pressure_limited: Option<bool>,
+    /// Preserve the allocator's pre-boot packing cap; BootGeometry may replace
+    /// the public lane-bound label after allocation, but not this input.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub(crate) geometry_allocator_lane_cap: Option<u32>,
     /// Continuous-batching lanes (`n_seq_max`). ≥ 1.
     pub lanes: u32,
     /// Personas that DEMANDED a concurrent lane but couldn't get a local one — the
@@ -662,24 +667,22 @@ impl ServingPlan {
         let model = &self.base_model;
         let (lanes, window) = if demand.requirements.is_empty() {
             if let LanesBound::PerLaneFloor { floor_tokens, rejected_lanes, .. } = self.lanes_bound {
-                if model.window_within(physical.usable_bytes, rejected_lanes) >= floor_tokens {
+                if demand.boot_geometry.is_none_or(|(_, cap)| rejected_lanes <= cap)
+                    && rejected_lanes <= physical.perf_cores.max(1)
+                    && model.window_within(physical.usable_bytes, rejected_lanes) >= floor_tokens {
                     return Some(true);
                 }
             }
             (self.lanes, choose_served_window(model.window_within(physical.usable_bytes, self.lanes), demand.window_target(), demand.sticky_window))
         } else {
-            let lane_cap = match self.lanes_bound {
-                LanesBound::Allocator { lane_cap, .. } => lane_cap,
-                // The final boot cap is part of this plan's workload contract.
-                LanesBound::BootGeometry => self.lanes,
-                _ => return None,
-            };
+            let lane_cap = self.geometry_allocator_lane_cap?;
             let a = crate::cognition::window_allocator::allocate(&demand.requirements, std::slice::from_ref(model), physical, lane_cap).ok()?;
+            let lanes = demand.boot_geometry.map_or(a.lanes, |(_, cap)| a.lanes.min(cap));
             let window = match demand.sticky_window {
-                Some(s) if s >= a.window && s <= model.window_within(physical.usable_bytes, a.lanes) => s,
+                Some(s) if s >= a.window && s <= model.window_within(physical.usable_bytes, lanes) => s,
                 _ => a.window,
             };
-            (a.lanes, window)
+            (lanes, window)
         };
         Some(lanes > self.lanes || window > self.served_context_window)
     }
@@ -893,6 +896,7 @@ pub fn plan_serving(
             .expect("candidates non-empty checked above");
         return Some(ServingPlan {
             geometry_pressure_limited: None,
+            geometry_allocator_lane_cap: None,
             base_model: (*smallest).clone(),
             served_context_window: MIN_SERVE_CTX,
             lanes: 1,
@@ -1008,6 +1012,7 @@ pub fn plan_serving(
                 // a starved lane. The rationale carries the numbers.
                 return Some(ServingPlan {
                     geometry_pressure_limited: None,
+            geometry_allocator_lane_cap: None,
                     base_model: model.clone(),
                     served_context_window: 0,
                     lanes: 0,
@@ -1151,6 +1156,7 @@ pub fn plan_serving(
 
     Some(ServingPlan {
         geometry_pressure_limited: None,
+        geometry_allocator_lane_cap: allocation.as_ref().map(|a| a.lane_cap),
         base_model: model.clone(),
         served_context_window,
         lanes,
@@ -1380,6 +1386,10 @@ mod tests {
         let plan = plan_serving(&host, std::slice::from_ref(&qwen), &demand).expect("plan");
         assert_eq!((plan.lanes, plan.served_context_window), (2, 70_000), "{}", plan.rationale);
         assert!(plan.fits_on_gpu);
+        let boot_demand = demand.clone().with_boot_geometry(Some((70_000, 1)));
+        let one_budget = HostBudget { usable_bytes: qwen.peak_resident_bytes(70_000, 1), perf_cores: 8 };
+        let one = plan_serving(&one_budget, std::slice::from_ref(&qwen), &boot_demand).expect("one packed lane");
+        assert_eq!(one.pressure_limited(&host, &boot_demand), Some(false), "physical capacity for another lane does not override the boot cap");
 
         let five: Vec<_> = (0..5).map(|_| LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)).collect();
         let squeezed = plan_serving(&host, std::slice::from_ref(&qwen), &ServingDemand::new(5, Some(56_057)).with_requirements(five)).expect("plan");
@@ -2928,6 +2938,9 @@ mod tests {
         .expect("servable");
         assert_eq!(one.lanes, 1, "remembered lanes cap, never raise: this box fits one at that window");
         assert_eq!(one.pressure_limited(&boot_budget, &ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2)))), Some(true), "the capacity owner records why the lane count fell");
+        let one_boot = ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 1)));
+        let capped = plan_serving(&tight, std::slice::from_ref(&m27), &one_boot).expect("one-lane boot");
+        assert_eq!(capped.pressure_limited(&boot_budget, &one_boot), Some(false), "legacy rejected-lane witness obeys the same boot cap");
         // An untrimmed candidate pool is still growth demand, but cannot erase
         // the remembered geometry's floor or create capacity beyond this host.
         let unmet = ServingDemand::new(17, Some(2_866_096))

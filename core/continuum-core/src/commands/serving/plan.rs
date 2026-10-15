@@ -92,6 +92,7 @@ mod tests {
     async fn returns_the_published_plan() {
         let plan = ServingPlan {
             geometry_pressure_limited: None,
+            geometry_allocator_lane_cap: None,
             base_model: crate::cognition::serving_plan::ModelFootprint {
                 model_id: "qwen3-coder".into(),
                 weights_bytes: 0,
