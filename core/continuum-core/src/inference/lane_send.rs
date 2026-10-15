@@ -72,14 +72,14 @@ fn probe_client() -> &'static reqwest::Client {
 pub(crate) struct FillReceipt<'a> {
     pub model: &'a str,
     pub prompt_tokens: usize,
-    pub image_quote: Option<ImageQuote<'a>>,
+    pub prompt_quote: Option<PromptQuote<'a>>,
 }
 
-/// Request-specific authority for the engine's multimodal counter. The adapter
+/// Request-specific authority for the engine's finalized-prompt counter. The adapter
 /// supplies this only for its managed local engine, not every OpenAI-compatible
 /// provider or every gateway that happens to serve one resident model.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ImageQuote<'a> {
+pub(crate) struct PromptQuote<'a> {
     pub client: &'a reqwest::Client,
     pub dedicated_lane: bool,
     pub caller: &'a str,
@@ -123,28 +123,31 @@ pub(crate) async fn send_with_lane_retry(
     let mut relaunch_retries: u32 = 0;
     let quote_started = Instant::now();
     let response = loop {
-        if let Some(quote) = fill.image_quote {
+        if let Some(quote) = fill.prompt_quote {
             // A transport retry may reach a replacement engine. Re-count the
             // same prepared body on EVERY attempt; never reuse its predecessor's
             // template/projector count. A failed quote refuses this attempt.
             super::serving_guard::guard_resident_model(
                 cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
             ).await?;
-            fill.prompt_tokens = super::serving_guard::quote_image_prompt(
+            let count_started = Instant::now();
+            fill.prompt_tokens = super::serving_guard::quote_prompt(
                 quote.client,
                 &request_builder,
                 quote.patience.saturating_sub(quote_started.elapsed()),
             ).await?;
+            let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
             super::serving_guard::guard_resident_model(
                 cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
             ).await?;
             crate::probe!(
-                class = "inference.prompt.image_quote",
+                class = "inference.prompt.prompt_quote",
                 request_id = quote.request_id,
                 model = fill.model,
                 input_tokens = fill.prompt_tokens as u64,
+                elapsed_ms = count_elapsed_ms,
                 attempt = relaunch_retries,
-                "selected engine counted the finalized image-bearing prompt"
+                "selected engine counted the finalized prompt"
             );
         }
         let send_start = Instant::now();

@@ -1849,6 +1849,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             );
         }
 
+        let exact_prompt_quote = self.config.single_resident_model && self.targets_local_serving_lane();
         // Pre-flight the single-resident gateway (the serving guard, now its own module:
         // `inference::serving_guard`). Refuses when the lane cannot guarantee `model` or
         // the prompt alone overflows the served slot (#175).
@@ -1856,11 +1857,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             &self.config,
             self.dedicated_lane,
             model,
-            crate::inference::serving_guard::PromptCount::Estimated(prompt_tokens),
+            crate::inference::serving_guard::PromptCount::Estimated(if exact_prompt_quote { 0 } else { prompt_tokens }),
             request.persona_id.as_deref().unwrap_or("non-persona"), // unwrap_or: no persona = a non-persona caller in the refusal text
         )
         .await?;
 
+        // The managed engine quotes the finalized body before generation; the heuristic
+        // preflight above checks residency only so an overestimate cannot refuse a fit.
         // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
         let response = crate::inference::lane_send::send_with_lane_retry(
             &self.config,
@@ -1870,10 +1873,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             crate::inference::lane_send::FillReceipt {
                 model,
                 prompt_tokens,
-                image_quote: (self.config.single_resident_model
-                    && self.targets_local_serving_lane()
-                    && crate::inference::serving_guard::needs_media_quote(&body))
-                    .then_some(crate::inference::lane_send::ImageQuote {
+                prompt_quote: exact_prompt_quote
+                    .then_some(crate::inference::lane_send::PromptQuote {
                         client: &self.client,
                         dedicated_lane: self.dedicated_lane,
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
@@ -2808,7 +2809,7 @@ mod tests {
                 crate::inference::lane_send::FillReceipt {
                     model: "fixture",
                     prompt_tokens: 4,
-                    image_quote: Some(crate::inference::lane_send::ImageQuote {
+                    prompt_quote: Some(crate::inference::lane_send::PromptQuote {
                         client: &adapter.client,
                         dedicated_lane: true,
                         caller: "fixture",
@@ -2830,6 +2831,25 @@ mod tests {
         ));
         assert_eq!(*quotes.lock().expect("actual quotes"), vec![body.clone(), body.clone()],
             "the 503 transport retry must re-quote the unchanged prepared body");
+        // Regression: text density varies across Kimi's turns. The finalized HTTP
+        // count, not the previous turn's byte estimate, drives the same capacity
+        // check used by guard_resident_model. Reply allowance stays separate from
+        // the typed prompt count returned to the existing corrective fitter.
+        let measured = crate::inference::serving_guard::quote_prompt(
+            &adapter.client,
+            &adapter.client.post(format!("http://{address}/v1/chat/completions")).body(body.clone()),
+            std::time::Duration::from_secs(5),
+        ).await.unwrap();
+        use crate::inference::serving_guard::PromptCount;
+        assert!(PromptCount::Estimated(4).check(1400, "fixture", "fixture").is_ok());
+        assert!(matches!(PromptCount::Measured { prompt: measured, reply: 128 }
+            .check(1400, "fixture", "fixture"),
+            Err(InferenceError::ContextExceeded { requested: 1319, available: 1400 })));
+        assert!(PromptCount::Estimated(2000).check(1600, "fixture", "fixture").is_err());
+        assert!(PromptCount::Measured { prompt: measured, reply: 128 }
+            .check(1600, "fixture", "fixture").is_ok(),
+            "a heuristic overestimate cannot veto a measured fit");
+        assert_eq!(received.lock().unwrap().len(), 3, "counting and refusal never generate");
         // Use this same transport fixture to verify that quote failures remain
         // errors, never a zero-cost image estimate or a generation request.
         for (path, expected) in [
@@ -2837,7 +2857,7 @@ mod tests {
             ("bad/chat/completions", Err("positive input_tokens")),
             ("missing/chat/completions", Err("HTTP 404")),
         ] {
-            let quoted = crate::inference::serving_guard::quote_image_prompt(
+            let quoted = crate::inference::serving_guard::quote_prompt(
                 &adapter.client,
                 &adapter.client.post(format!("http://{address}/{path}")).body(body.clone()),
                 std::time::Duration::from_secs(5),

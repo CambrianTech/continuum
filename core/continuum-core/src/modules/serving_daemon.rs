@@ -9109,11 +9109,27 @@ pub(crate) mod tests {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = Router::new().route("/v1/chat/completions", post({
-            let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
-            move || {
-                let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
+        let quoted_body = Arc::new(std::sync::Mutex::new(None::<axum::body::Bytes>));
+        let quotes = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route("/v1/chat/completions/input_tokens", post({
+            let quoted_body = quoted_body.clone(); let quotes = quotes.clone();
+            move |body: axum::body::Bytes| {
+                let quoted_body = quoted_body.clone(); let quotes = quotes.clone();
                 async move {
+                    *quoted_body.lock().unwrap() = Some(body);
+                    quotes.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({"input_tokens":10}))
+                }
+            }
+        })).route("/v1/chat/completions", post({
+            let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
+            let quoted_body = quoted_body.clone();
+            move |body: axum::body::Bytes| {
+                let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
+                let quoted_body = quoted_body.clone();
+                async move {
+                    assert_eq!(quoted_body.lock().unwrap().take(), Some(body),
+                        "the real managed adapter must quote this finalized body before generation");
                     calls.fetch_add(1, Ordering::SeqCst);
                     entered.notify_one();
                     release.acquire().await.unwrap().forget();
@@ -9236,6 +9252,7 @@ pub(crate) mod tests {
             2,
             "cancelled batch schedules no second task"
         );
+        assert_eq!(quotes.load(Ordering::SeqCst), 2, "each generation is quoted once");
         assert_eq!(
             serves.load(Ordering::SeqCst),
             0,
