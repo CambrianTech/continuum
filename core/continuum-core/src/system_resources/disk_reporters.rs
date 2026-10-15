@@ -354,6 +354,14 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // 2026-07-13 rule exists to catch before it is the incident.
         TrackedDir::new("airc-board-cache", home.join(".airc/work-board-cache")),
         TrackedDir::new("airc-wall-cache", home.join(".airc/wall-cache")),
+        // airc's own durable state on the machine-account scope, unweighed until card
+        // 0af5d5ec. Measured IntelMac 2026-10-15T22:28Z: worktrees 103 GB (one per claimed
+        // card, never drained), events.sqlite 678 MiB, the daemon log 523 MiB (written into
+        // whichever scope spawned the daemon, here the project's `.airc`). airc owns every
+        // byte; continuum weighs them so pressure names its biggest holder.
+        TrackedDir::new("airc-worktrees", home.join(".airc/worktrees")),
+        TrackedDir::new("airc-store", home.join(".airc/events.sqlite")),
+        TrackedDir::new("airc-daemon-log", home.join(".airc/airc-daemon.log")),
         TrackedDir::new("logs", home.join(".continuum/logs")),
         TrackedDir::new("probes", home.join(".continuum/probes")),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
@@ -412,8 +420,13 @@ pub struct TreeWalk {
 
 /// Recursive size of `path` with the count of entries visited. Same contract as
 /// [`dir_size_bytes`]: symlinks are counted as entries but never followed, an
-/// unreadable entry is skipped, a missing root is an empty walk.
+/// unreadable entry is skipped, a missing root is an empty walk. A FILE root is
+/// its own length: a class can be one file another program keeps beside tracked
+/// directories (airc's event store sits in `~/.airc` next to its worktrees).
 pub(crate) fn walk_tree(path: &std::path::Path) -> TreeWalk {
+    if let Some(file) = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file) {
+        return TreeWalk { bytes: file.len(), entries: 1 };
+    }
     let Ok(entries) = std::fs::read_dir(path) else {
         return TreeWalk::default();
     };
@@ -701,6 +714,12 @@ mod tests {
         assert_eq!(walk.bytes, 1500);
         assert_eq!(walk.entries, 3 + u64::from(cfg!(unix)));
         assert_eq!(walk_tree(std::path::Path::new("/nonexistent-xyz")), TreeWalk::default());
+        // A file root is a class of its own length (airc's event store and daemon log
+        // sit in `~/.airc` beside tracked dirs; card 0af5d5ec). Before, read_dir failed
+        // on a file and the class reported a false 0 B. A symlinked root stays unfollowed.
+        assert_eq!(walk_tree(&tmp.path().join("a.bin")), TreeWalk { bytes: 1000, entries: 1 });
+        #[cfg(unix)]
+        assert_eq!(walk_tree(&tmp.path().join("link.bin")), TreeWalk::default());
     }
 
     // what this catches (the M5, 2026-09-19): a 2.44 M-entry `citizens` tree walked
