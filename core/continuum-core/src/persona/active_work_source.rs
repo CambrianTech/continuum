@@ -59,10 +59,11 @@ use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
 pub struct ActiveWorkSource {
     persona_id: uuid::Uuid,
     reader: Arc<dyn AircWorkReader>,
-    /// Card ids → titles from the LAST successful read — the diff memory behind
-    /// the lost-claim transition fact (#156). `None` until the first successful
-    /// read (a fresh mind has no baseline to lose from). A sync Mutex locked
-    /// only AFTER the `active_claims` await resolves — never held across await.
+    /// Last observed claims plus losses not yet admitted to a source delivery.
+    /// `None` until the first successful read (a fresh mind has no baseline to
+    /// lose from). Budget refusal must not acknowledge a transition. This is
+    /// source admission, not acknowledgement that a model consumed the fact.
+    /// Locked only after `active_claims` resolves, never across an await.
     prev_claims: std::sync::Mutex<Option<std::collections::HashMap<uuid::Uuid, String>>>,
 }
 
@@ -154,17 +155,19 @@ impl RagSource for ActiveWorkSource {
             }
         };
 
-        // Diff against the last SUCCESSFUL read (#156): cards that vanished are
-        // lost claims — surface each ONCE as a transition fact, then adopt the
-        // new baseline. Runs even when `claims` is empty: losing your LAST card
-        // is exactly the silent-handoff case this exists for.
-        let now: std::collections::HashMap<uuid::Uuid, String> = claims
+        // Reconcile successful observations with source admission atomically.
+        // An omitted loss remains in the existing baseline for the next read;
+        // a reacquired claim supersedes that pending loss. Failed reads above
+        // leave the baseline untouched.
+        let mut now: std::collections::HashMap<uuid::Uuid, String> = claims
             .iter()
             .map(|c| (c.card_id.as_uuid(), c.title.clone()))
             .collect();
-        let lost: Vec<(uuid::Uuid, String)> = {
+        let mut items: Vec<RagItem> = Vec::new();
+        let mut tokens_used: u32 = 0;
+        {
             let mut prev = self.prev_claims.lock().unwrap_or_else(|p| p.into_inner());
-            let lost = match prev.as_ref() {
+            let mut lost: Vec<_> = match prev.as_ref() {
                 Some(before) => before
                     .iter()
                     .filter(|(id, _)| !now.contains_key(*id))
@@ -173,19 +176,19 @@ impl RagSource for ActiveWorkSource {
                 // First successful read: no baseline, nothing to lose from.
                 None => Vec::new(),
             };
-            *prev = Some(now);
-            lost
-        };
-
-        let mut items: Vec<RagItem> = Vec::new();
-        let mut tokens_used: u32 = 0;
-        for (card_id, title) in &lost {
-            let item = Self::lost_claim_item(card_id, title);
-            if tokens_used.saturating_add(item.tokens) > budget {
-                break;
+            // Stable ordering makes partial admission reproducible; a long
+            // title cannot prevent a later, smaller notice from fitting.
+            lost.sort_unstable_by_key(|(id, _)| *id);
+            for (card_id, title) in lost {
+                let item = Self::lost_claim_item(&card_id, &title);
+                if tokens_used.saturating_add(item.tokens) > budget {
+                    now.insert(card_id, title);
+                    continue;
+                }
+                tokens_used += item.tokens;
+                items.push(item);
             }
-            tokens_used += item.tokens;
-            items.push(item);
+            *prev = Some(now);
         }
         // Rejected-claim facts (the #159-family sibling of the lost-claim
         // diff): `work/claim` records rejections into the per-persona ring;
@@ -216,7 +219,11 @@ impl RagSource for ActiveWorkSource {
             // Human-readable line; structured parts also ride in metadata so
             // prompt-assembly / verifiers can render without re-parsing.
             let stance = if claims.len() > 1 {
-                if focus == Some(card.card_id) { " — THIS TURN" } else { " — held, not this turn" }
+                if focus == Some(card.card_id) {
+                    " — THIS TURN"
+                } else {
+                    " — held, not this turn"
+                }
             } else {
                 ""
             };
@@ -313,7 +320,9 @@ mod tests {
         assert!(!renders_held_in_progress(&lost.content));
         assert!(!renders_held_in_progress(""));
         // The lane gate's key: a CLAIMED card is held work too (2026-09-15).
-        assert!(renders_held_card("card feadd5dc [Claimed] \"PROJECT [swe] psf__requests-2148\" (priority P1)"));
+        assert!(renders_held_card(
+            "card feadd5dc [Claimed] \"PROJECT [swe] psf__requests-2148\" (priority P1)"
+        ));
         assert!(renders_held_card("card feadd5dc [InProgress] \"x\""));
         assert!(!renders_held_card(&lost.content));
     }
@@ -447,6 +456,70 @@ mod tests {
             .deliver(&ctx(persona), 1_000, ResolutionPreference::Raw)
             .await;
         assert!(d3.items.is_empty());
+    }
+
+    // what this catches: source-budget refusal used to advance the baseline and
+    // permanently erase a lost-claim fact. Admission retries must retain scope,
+    // survive read failures, and discard a loss superseded by reacquisition.
+    #[tokio::test]
+    async fn refused_losses_retry_without_blocking_smaller_or_reacquired_claims() {
+        let persona = Uuid::new_v4();
+        let mut large = card(&"long title ".repeat(100));
+        let mut small = card("small");
+        large.card_id = WorkCardId::from_uuid(Uuid::from_u128(1));
+        small.card_id = WorkCardId::from_uuid(Uuid::from_u128(2));
+        let small_cost =
+            ActiveWorkSource::lost_claim_item(&small.card_id.as_uuid(), &small.title).tokens;
+        let src = source(
+            persona,
+            vec![
+                Ok(vec![large.clone(), small.clone()]),
+                Ok(vec![]),
+                Err(()),
+                Ok(vec![]),
+                Ok(vec![large.clone()]),
+                Ok(vec![]),
+                Ok(vec![]),
+            ],
+        );
+        let raw = ResolutionPreference::Raw;
+        src.deliver(&ctx(persona), 10_000, raw).await;
+        assert!(src.deliver(&ctx(persona), 0, raw).await.items.is_empty());
+        // A different persona must neither receive nor consume the transition.
+        assert!(src
+            .deliver(&ctx(Uuid::new_v4()), 10_000, raw)
+            .await
+            .items
+            .is_empty());
+        assert!(src
+            .deliver(&ctx(persona), 10_000, raw)
+            .await
+            .items
+            .is_empty());
+        let partial = src.deliver(&ctx(persona), small_cost, raw).await;
+        assert_eq!(partial.items.len(), 1);
+        assert_eq!(
+            partial.items[0].metadata["card_id"],
+            small.card_id.as_uuid().to_string()
+        );
+        assert_eq!(partial.tokens_used, small_cost);
+        // Reacquisition cancels the undelivered loss instead of warning that a
+        // currently held card is no longer ours.
+        let regained = src.deliver(&ctx(persona), 10_000, raw).await;
+        assert_eq!(regained.items.len(), 1);
+        assert!(regained.items[0].metadata.get("fact").is_none());
+        let lost_again = src.deliver(&ctx(persona), 10_000, raw).await;
+        assert_eq!(lost_again.items.len(), 1);
+        assert_eq!(lost_again.items[0].metadata["fact"], "claim_lost");
+        assert_eq!(
+            lost_again.items[0].metadata["card_id"],
+            large.card_id.as_uuid().to_string()
+        );
+        assert!(src
+            .deliver(&ctx(persona), 10_000, raw)
+            .await
+            .items
+            .is_empty());
     }
 
     // what this catches: a DEGRADED read must never fabricate loss — the
