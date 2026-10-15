@@ -327,6 +327,20 @@ const RECALL_DENOM: usize = 10;
         self.fraction(4)
     }
 
+    /// One source's grounding offer, in tokens. Preserve the source bridge's
+    /// window-relative share (task #124: 4096 on a 16k window), but apply the
+    /// same measured prefill affordability as recall, tools and working memory.
+    /// This is an offer ceiling, not a reservation: the existing prompt fitter
+    /// still allocates the assembled context and preserves complete source units.
+    /// Grounding and tool-output rendering have separate policy names even though
+    /// their current shares agree; changing one must not silently change the other.
+    pub fn grounding_tokens(&self) -> usize {
+        match self.total_chars {
+            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / 4,
+            None => usize::MAX,
+        }
+    }
+
     /// ONE tool's one-line summary in the catalog she is offered. A catalog lists ~100 tools,
     /// so an unbounded description per line re-creates the dump this bound exists to prevent —
     /// but on a roomy window she can afford a fuller clause per tool, which is real PX. At a
@@ -540,6 +554,22 @@ mod tests {
             ContextBudget::affordable_for_rate(MeasuredRate::UNKNOWN, 1_024, Audience::Interactive),
             1_024
         );
+
+        // Card 2bbee27a: grounding previously bypassed this rate ladder and
+        // offered a quarter of raw KV capacity while the other context sources
+        // used measured affordability. Exercise those same known/unknown rungs
+        // at the current 51,712-token geometry and a smaller-than-serve-floor
+        // window. These are deterministic policy inputs, not hardware receipts.
+        for (window, rate, expected) in [
+            (51_712, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 12_928),
+            (51_712, MeasuredRate::UNKNOWN, crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS / 4),
+            (256, MeasuredRate::UNKNOWN, 64),
+        ] {
+            let affordable = ContextBudget::affordable_for_rate(rate, window, Audience::Interactive);
+            let budget = ContextBudget::from_window_unbounded(affordable);
+            assert_eq!(budget.grounding_tokens(), expected as usize);
+            assert!(budget.grounding_tokens() <= window as usize);
+        }
     }
 
     /// what this catches: the fractions drifting away from the constants they replaced.

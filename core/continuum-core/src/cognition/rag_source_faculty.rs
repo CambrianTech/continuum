@@ -44,7 +44,7 @@
 //! must NOT lose a budget fight to a high-cosine memory, or the persona forgets
 //! the room's own rules mid-turn. Engram + conversation are **retrieved** — they
 //! SHOULD compete on relevance. So the bridge carries a [`SaliencePolicy`]:
-//! standing-framing bids at a high floor the top-k arbiter never truncates;
+//! standing-framing bids at a high floor (not a guarantee against top-k eviction);
 //! retrieved bids moderate and competes. The classification lives at the ASSEMBLY
 //! layer (who builds the cycle), NOT in `RagSource` — the source stays
 //! salience-free, no new coupling. In the converged end-state this policy is just
@@ -58,38 +58,22 @@ use uuid::Uuid;
 use super::workspace::{Contribution, Faculty, FacultyId, Workspace};
 use crate::persona::rag_budget::{RagContext, RagSource, ResolutionPreference};
 
-/// Per-source grounding ceiling as a FRACTION of the LIVE served window — the
-/// per-source budget must SCALE with the window, never a baked constant (task
-/// #124, [[no-hardcoded-context-numbers-derive-from-the-live-window]]). A source
-/// fills up to this ceiling then self-truncates; the window-sized prompt packer
-/// downstream is the real bound, and standing framing carries a high salience floor
-/// so it is never the first thing dropped. So the ceiling should be GENEROUS: let
-/// the workspace map show its full layout, the work board show every card, the wall
-/// show the whole plan — "be more verbose as the budget allows" (Joel 2026-07-13).
-///
-/// The old fixed 4096 was the exact anti-pattern: it forced the board + map + roster
-/// + doctrine + wall to each squeeze into ~4k tokens whether the served window was
-/// 16k or 128k — starving a big model of the very grounding it could hold, and
-/// (worse) over-spending on a tiny 2k window. Sizing at `window / 4` gives ~4096 at
-/// the common 16k served window (preserving the tuned value that let each source
-/// breathe), grows so a 128k model holds its full board/map/roster, and shrinks
-/// honestly on a tight window — the packer still keeps the TOTAL ≤ window.
-// context-budget-exempt: a DENOMINATOR — this is already the window-relative pattern this test exists to enforce
-const GROUNDING_WINDOW_FRACTION: u32 = 4;
-
-/// The per-source grounding ceiling for a given LIVE served window. Floored at the
-/// substrate serving floor's share ([`MIN_SERVE_CTX`]/[`GROUNDING_WINDOW_FRACTION`])
-/// so a faculty built without a window (tests) still gets a sane ceiling derived
-/// from a substrate constant, never a fresh magic number.
+/// Resolve a source offer through the same measured affordability owner as
+/// recall, tools and working memory. The serving minimum is not permission to
+/// exceed a caller's actual window. Explicit fixture budgets remain available
+/// through `with_budget`; final assembly still owns total prompt fitting.
+/// A zero window grants zero, rather than inventing serving capacity. The
+/// constructor's legacy default passes the declared serving minimum explicitly;
+/// production assembly passes its resolved model window.
 pub fn grounding_budget_for(served_window: u32) -> u32 {
-    use crate::inference::planning::MIN_SERVE_CTX;
-    (served_window / GROUNDING_WINDOW_FRACTION).max(MIN_SERVE_CTX / GROUNDING_WINDOW_FRACTION)
+    super::context_budget::ContextBudget::from_window(served_window)
+        .grounding_tokens()
+        .min(served_window as usize) as u32
 }
 
 /// Salience floor for **standing framing** (roster, doctrine) — always-present
-/// structural context, like the system prompt. High enough that the top-k arbiter
-/// never truncates it under attention pressure: a persona must not forget the
-/// room's own rules because a high-cosine memory out-bid the doctrine this tick.
+/// structural context, like the system prompt. This ranks above retrieved
+/// grounding but cannot guarantee survival when other bids fill the arbiter.
 /// NOT a caste/`@`-gate — it is "this framing always applies."
 const STANDING_FRAMING_SALIENCE: f32 = 0.9;
 
@@ -108,7 +92,7 @@ const RETRIEVED_SALIENCE: f32 = 0.5;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SaliencePolicy {
     /// Always-present structural context (roster, doctrine) — bids at the
-    /// [`STANDING_FRAMING_SALIENCE`] floor so attention pressure can't evict it.
+    /// [`STANDING_FRAMING_SALIENCE`] floor; this is preference, not required placement.
     StandingFraming,
     /// Turn-specific grounding (engram, conversation) — bids at
     /// [`RETRIEVED_SALIENCE`] and competes on relevance.
@@ -477,6 +461,7 @@ mod tests {
         items: Vec<RagItem>,
         seen_persona: Mutex<Option<Uuid>>,
         seen_room: Mutex<Option<Uuid>>,
+        seen_budget: Mutex<Option<u32>>,
     }
 
     impl StubSource {
@@ -494,6 +479,7 @@ mod tests {
                 items,
                 seen_persona: Mutex::new(None),
                 seen_room: Mutex::new(None),
+                seen_budget: Mutex::new(None),
             }
         }
     }
@@ -516,9 +502,10 @@ mod tests {
         async fn deliver(
             &self,
             ctx: &RagContext,
-            _budget: u32,
+            budget: u32,
             resolution: ResolutionPreference,
         ) -> RagDelivery {
+            *self.seen_budget.lock().unwrap() = Some(budget);
             *self.seen_persona.lock().unwrap() = Some(ctx.persona_id);
             *self.seen_room.lock().unwrap() = ctx.airc_room.map(|room| room.as_uuid());
             let tokens_used = self.items.iter().map(|i| i.tokens).sum();
@@ -1006,25 +993,34 @@ mod tests {
 
     // what this catches: the salience POLICY — standing framing (roster/doctrine)
     // bids HIGHER than retrieved grounding, so the floor exists. This is the
-    // load-bearing guard: it is what keeps a high-cosine memory from out-bidding
-    // the room's own rules. Fixed escape-hatch is honored verbatim.
+    // ordering is a preference, not required placement. Card 2bbee27a also pins
+    // the production budget bridge at tiny/zero windows and explicit overrides.
     #[tokio::test]
     async fn standing_framing_outbids_retrieved() {
+        assert_eq!(grounding_budget_for(0), 0);
+        let small = grounding_budget_for(256);
+        assert_eq!(small, 64, "a serving floor must not enlarge a known tiny window");
+        let framing_source = Arc::new(StubSource::new("room-doctrine", &["respond sparingly"]));
+        let retrieved_source = Arc::new(StubSource::new("conversation", &["someone said hi"]));
         let framing = RagSourceFaculty::new(
             persona(),
-            Arc::new(StubSource::new("room-doctrine", &["respond sparingly"])),
+            framing_source.clone(),
             SaliencePolicy::StandingFraming,
         )
+        .with_budget(small)
         .with_clock(Arc::new(|| 1));
         let retrieved = RagSourceFaculty::new(
             persona(),
-            Arc::new(StubSource::new("conversation", &["someone said hi"])),
+            retrieved_source.clone(),
             SaliencePolicy::Retrieved,
         )
+        .with_budget(small / 2)
         .with_clock(Arc::new(|| 1));
 
         let f = framing.contribute(&Workspace::new("q")).await.unwrap();
         let r = retrieved.contribute(&Workspace::new("q")).await.unwrap();
+        assert_eq!(*framing_source.seen_budget.lock().unwrap(), Some(small));
+        assert_eq!(*retrieved_source.seen_budget.lock().unwrap(), Some(small / 2));
         assert!(
             f.salience > r.salience,
             "standing framing must out-bid retrieved (floor): framing={} retrieved={}",

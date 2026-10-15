@@ -331,12 +331,10 @@ impl ReservedTokens {
         }
     }
 
-    /// Tokens left for sources after this reservation, floored at 512 so a
-    /// tiny window still delivers *some* context instead of zeroing every
-    /// source. Sibling of [`Self::scaled_for_window`] — both call sites
-    /// computed this identically too.
+    /// Actual tokens left for sources after this reservation. Exhausted capacity
+    /// is zero, never a fabricated minimum; the allocator reports underprovisioning.
     pub fn headroom_within(self, context_window: u32) -> u32 {
-        context_window.saturating_sub(self.total()).max(512)
+        context_window.saturating_sub(self.total())
     }
 }
 
@@ -640,7 +638,7 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         sources: &[RagSourceBudget],
     ) -> BudgetAllocation {
         let mut warnings = Vec::new();
-        let available = context_window.saturating_sub(reserved.total());
+        let available = reserved.headroom_within(context_window);
 
         if available == 0 {
             warnings.push(format!(
@@ -1425,8 +1423,8 @@ mod tests {
     /// What this catches: the window-scaled reservation stays ONE derivation
     /// with the documented shape — a second hand-copied variant (the exact
     /// duplication this replaced across unified.rs / rag_inspect.rs) shows up
-    /// as a drift here. Also pins the headroom floor: a tiny window must
-    /// still deliver ≥512 tokens to sources, never zero. regression for #424
+    /// as a drift here. Exhausted windows must not fabricate source capacity
+    /// (card 2bbee27a); construction and allocation share the same headroom.
     #[test]
     fn reserved_tokens_scaled_shape_is_the_one_derivation() {
         // Compat-tier 2048: percentages, floors active.
@@ -1441,11 +1439,22 @@ mod tests {
         assert_eq!(big.completion, 4_000);
         assert_eq!(big.headroom_within(32_768), 32_768 - 4_512);
 
-        // Degenerate window: floors dominate, headroom floor holds — sources
-        // still get 512, never zero (the zero-budget annihilation class, #259).
+        // Reservations exhaust the window: report no capacity rather than 512
+        // tokens that the lane cannot hold.
         let tiny = ReservedTokens::scaled_for_window(256);
         assert_eq!((tiny.system, tiny.completion), (128, 256));
-        assert_eq!(tiny.headroom_within(256), 512);
+        assert_eq!(tiny.headroom_within(256), 0);
+        for window in [0, 256, 384, 400, 512, 2_048, 51_712] {
+            let reserved = ReservedTokens::scaled_for_window(window);
+            let allocation = FlexboxRagBudgetAdapter::new().allocate(
+                &RagContext::for_persona(uuid::Uuid::nil(), 0),
+                window,
+                reserved,
+                &[],
+            );
+            assert_eq!(reserved.headroom_within(window), allocation.available_for_sources);
+            assert!(allocation.available_for_sources <= window);
+        }
     }
 }
 
