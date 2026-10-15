@@ -52,6 +52,7 @@ use crate::cognition::workspace::{Contribution, CycleId, Faculty, FacultyId, Wor
 struct DeferredInput {
     world_state: String,
     room_id: Uuid,
+    activity_room_id: Uuid,
     /// The cycle this input belongs to — the worker stamps its finding with it,
     /// so a finding always carries the moment it reasoned about, not the moment
     /// it finished.
@@ -67,20 +68,22 @@ impl DeferredInput {
         Self {
             world_state: String::new(),
             room_id: Uuid::nil(),
+            activity_room_id: Uuid::nil(),
             cycle: CycleId::UNSTAMPED,
         }
     }
 }
 
-/// A finding the worker has computed, tagged with the room it reasoned about so
+/// A finding tagged with both wake and resolved activity rooms so
 /// the hot path can refuse to serve it into a DIFFERENT room. This is the
 /// "assuming it didn't context-switch to where it's irrelevant" guard: a recall
 /// computed against room A's burst must not be injected into room B's turn just
 /// because it happens to be the last thing the worker finished.
 #[derive(Debug, Clone)]
 struct StampedFinding {
-    /// The room the inner faculty reasoned about.
+    /// Wake provenance and resolved subject scope both identify this finding.
     room_id: Uuid,
+    activity_room_id: Uuid,
     /// The finding itself (already carrying the cycle it was computed against).
     contribution: Contribution,
 }
@@ -165,11 +168,12 @@ impl DeferredFaculty {
                     );
                     continue;
                 };
-                let ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
+                let mut ws = Workspace::from_burst(crate::cognition::workspace::Burst::raw_in(
                     room,
                     input.world_state,
                 ))
                 .with_cycle(input.cycle);
+                ws.activity_room_id = input.activity_room_id;
 
                 // The inner faculty's contribute is async (real inference/IPC).
                 // Catch a panic so a flawed backend degrades the lane to stale,
@@ -189,6 +193,7 @@ impl DeferredFaculty {
                             c.cycle = input.cycle;
                             StampedFinding {
                                 room_id: room.as_uuid(),
+                                activity_room_id: input.activity_room_id,
                                 contribution: c,
                             }
                         });
@@ -240,6 +245,7 @@ impl Faculty for DeferredFaculty {
                 // ambient tick serves it non-blocking instead of a cold miss.
                 let _ = self.warm_tx.send(Some(StampedFinding {
                     room_id: ws.room_id,
+                    activity_room_id: ws.activity_room_id,
                     contribution: c.clone(),
                 }));
             }
@@ -257,17 +263,21 @@ impl Faculty for DeferredFaculty {
         let _ = self.world_tx.send(DeferredInput {
             world_state: ws.world_state.clone(),
             room_id: ws.room_id,
+            activity_room_id: ws.activity_room_id,
             cycle: ws.cycle,
         });
         // Context guard: serve the last-good ONLY if it was computed for the room
-        // the mind is in NOW. A finding from another room is "context-switched to
-        // where it's irrelevant" — withhold it rather than inject a cross-context
+        // the mind is in NOW, including its resolved activity. A different scope is
+        // irrelevant — withhold it rather than inject a cross-context
         // memory into this turn. A same-room-but-stale finding is REPROJECTED
         // forward (slice 3, below); a different-room finding is simply not ours.
         let cold = {
             let guard = self.latest.borrow();
             match guard.as_ref() {
-                Some(found) if found.room_id == ws.room_id => {
+                Some(found)
+                    if found.room_id == ws.room_id
+                        && found.activity_room_id == ws.activity_room_id =>
+                {
                     let served = Some(reproject_to_now(found, ws));
                     crate::probe!(
                         class = "deferred.serve",
@@ -306,6 +316,7 @@ impl Faculty for DeferredFaculty {
             // serves it non-blocking — the cold cost is paid exactly once.
             let _ = self.warm_tx.send(Some(StampedFinding {
                 room_id: ws.room_id,
+                activity_room_id: ws.activity_room_id,
                 contribution: c.clone(),
             }));
         }
@@ -583,43 +594,47 @@ mod tests {
         );
     }
 
-    // what this catches: the context guard — a finding computed against room A
-    // must NOT be served into room B's turn. This is Joel's "assuming it didn't
-    // context-switch to something where it was irrelevant": a deferred recall
-    // that lands a minute late is only useful if the mind is still in the room it
-    // was reasoned for; in a different room it's withheld, never injected as a
-    // cross-context memory. (Same-room-but-stale is slice-3 reproject; this test
-    // covers different-room = simply not ours to serve.)
+    // what this catches: a late result must retain both resolved activity and
+    // wake provenance. A task switch within one wake room invalidates it too.
     #[tokio::test]
     async fn deferred_finding_is_withheld_when_the_mind_changed_rooms() {
         let deferred = DeferredFaculty::spawn(Arc::new(SlowRecall));
-        let room_a = Uuid::new_v4();
-        let room_b = Uuid::new_v4();
-
-        // Tick against room A — kicks the worker to compute for room A.
-        let ws_a = Workspace::in_room("burst in A", room_a).with_cycle(CycleId(1));
-        let _ = deferred.contribute(&ws_a).await;
-
-        // Let the worker finish computing against room A.
-        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
-
-        // Now the mind is in room B. The room-A finding must be withheld.
-        let ws_b = Workspace::in_room("burst in B", room_b).with_cycle(CycleId(2));
-        let in_b = deferred.contribute(&ws_b).await;
+        let wake = Uuid::new_v4();
+        let activity = Uuid::new_v4();
+        let mut original = Workspace::in_room("original activity", wake).with_cycle(CycleId(1));
+        original.activity_room_id = activity;
+        let mut completed = deferred.latest.clone();
+        // Exercise the actual worker without a synchronous cold-start seed.
+        deferred
+            .world_tx
+            .send(DeferredInput {
+                world_state: original.world_state.clone(),
+                room_id: wake,
+                activity_room_id: activity,
+                cycle: original.cycle,
+            })
+            .unwrap();
+        let mut switched =
+            Workspace::in_room("new activity, same wake", wake).with_cycle(CycleId(2));
+        switched.activity_room_id = Uuid::new_v4();
+        // Completion is observed, not inferred from a sleep duration.
+        completed.changed().await.unwrap();
         assert!(
-            in_b.is_none(),
-            "a room-A finding must not be injected into room B's turn"
+            deferred.contribute(&switched).await.is_none(),
+            "old activity cannot leak into the new task"
         );
-
-        // Back in room A: the finding is relevant again and IS served.
-        let ws_a2 = Workspace::in_room("back in A", room_a).with_cycle(CycleId(3));
-        let in_a = deferred.contribute(&ws_a2).await;
-        let found = in_a.expect("the room-A finding is ours to serve back in room A");
-        assert_eq!(
-            found.cycle,
-            CycleId(1),
-            "still stamped with its original cycle"
+        let mut other_wake =
+            Workspace::in_room("same activity, other wake", Uuid::new_v4()).with_cycle(CycleId(3));
+        other_wake.activity_room_id = activity;
+        assert!(
+            deferred.contribute(&other_wake).await.is_none(),
+            "wake provenance remains part of the scope"
         );
+        let found = deferred
+            .contribute(&original)
+            .await
+            .expect("original scope remains eligible");
+        assert_eq!(found.cycle, CycleId(1));
     }
 
     // what this catches: reproject-to-now (slice 3) — the cheap synchronous "bring

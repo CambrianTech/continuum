@@ -1351,6 +1351,44 @@ mod tests {
         let elsewhere = RagContext::for_persona_in_room(me, ctx().now_ms, uuid::Uuid::new_v4());
         assert!(source.deliver(&elsewhere, 2_000, ResolutionPreference::Raw).await.items.is_empty());
         assert_eq!(*reader.last_room.lock().unwrap(), Some(elsewhere.airc_room.map(|room| room.as_uuid())));
+
+        // Regression 04dc5e95: the production deferred wrapper must preserve the
+        // resolved activity before RagSourceFaculty selects this board's room.
+        use crate::cognition::{
+            deferred_faculty::DeferredFaculty,
+            rag_source_faculty::{RagSourceFaculty, SaliencePolicy},
+            workspace::{CycleId, Faculty, Workspace},
+        };
+        let deferred = DeferredFaculty::spawn(Arc::new(
+            RagSourceFaculty::new(me, Arc::new(source), SaliencePolicy::StandingFraming)
+                .with_budget(500)
+                .with_clock(Arc::new(|| ctx().now_ms)),
+        ));
+        let wake = uuid::Uuid::new_v4();
+        let mut ws = Workspace::in_room("ambient wake in another room", wake).with_cycle(CycleId(1));
+        ws.activity_room_id = room;
+        let cold = deferred.contribute(&ws).await.expect("cold activity board");
+        assert!(cold.content.contains("Revise the work"));
+        *reader.last_room.lock().unwrap() = None;
+        // Observe an actual background read, not elapsed time. The fixture's
+        // reader is ready immediately, so this also lets its publish complete.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                tokio::task::yield_now().await;
+                if reader.last_room.lock().unwrap().is_some() {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("deferred board worker read");
+        assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(room)));
+        let cached = deferred.contribute(&ws).await.expect("background activity board");
+        assert!(cached.content.contains("Revise the work"));
+        assert!(cached.content.contains(&candidate.submission_id.to_string()));
+        assert_eq!(ws.room_id, wake, "task grounding must not change wake attribution");
+        ws.activity_room_id = wake;
+        assert!(deferred.contribute(&ws).await.is_none(), "old task board withheld after scope switch");
     }
 
     #[tokio::test]
