@@ -16,16 +16,18 @@
 //!
 //! 1. **Never race a live build.** Eviction takes non-blocking exclusive
 //!    flocks on cargo's own lock files (`<root>/.cargo-lock`,
-//!    `<root>/debug/.cargo-lock`) before touching anything; any lock we
+//!    `<root>/{debug,release}/.cargo-lock`) before touching anything; any lock we
 //!    can't get means a build is in flight → free 0 bytes and let the
 //!    broker retry next tick.
 //! 2. **Never leave the root.** The eviction ladder is a fixed list of
 //!    `root.join(...)` subpaths — no pattern matching, no following
-//!    symlinks out of the tree.
+//!    symlinks or Windows reparse points out of the tree. Validation and removal
+//!    stay under the same Cargo custody locks.
 //! 3. **Derived artifacts only.** The ladder deletes incremental state,
 //!    test binaries, then the debug tree — all reproducible by the next
-//!    `cargo build`. `release/` is never touched here (it is small and
-//!    holds the binaries ops copies into `~/.continuum/bin`).
+//!    `cargo build`. Standard release incremental state is also reclaimable;
+//!    release binaries, deps and build outputs remain untouched. Custom profiles
+//!    and target-triple subtrees are not inferred from arbitrary directory names.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -271,6 +273,10 @@ pub enum DeclinedEviction {
     BuildHoldsRootLock,
     /// A live cargo build holds `debug/.cargo-lock`. Same as above, one level in.
     BuildHoldsDebugLock,
+    /// Release incremental state belongs to the release profile's build lock.
+    BuildHoldsReleaseLock,
+    /// The deletion owner cannot establish an unredirected path inside its root.
+    UnsafePath(String),
     /// A process is EXECUTING an image under `debug/` (a test binary, a tool cargo built
     /// and ran). Cargo releases its locks at "Finished" and then runs what it built, so
     /// the locks say nothing about that window, and deleting a running image is a
@@ -297,6 +303,8 @@ impl DeclinedEviction {
             Self::BuildHoldsDebugLock => 2,
             Self::LockUnavailable(_) => 3,
             Self::DebugProfileInUse { .. } => 4,
+            Self::BuildHoldsReleaseLock => 5,
+            Self::UnsafePath(_) => 6,
         }
     }
 
@@ -315,6 +323,8 @@ impl DeclinedEviction {
                 "a live cargo build holds debug/.cargo-lock — standing down, the \
                  build's cache is safe"
             }
+            Self::BuildHoldsReleaseLock => "a live cargo build holds release/.cargo-lock — standing down",
+            Self::UnsafePath(_) => "a cache path is redirected or unverifiable — refusing reclamation",
             Self::DebugProfileInUse { .. } => {
                 "a process is executing an image under debug/ (a test binary cargo just \
                  built) — the debug rung stands down; deleting a running image kills it"
@@ -354,11 +364,68 @@ pub struct CargoTargetPool {
 }
 
 impl CargoTargetPool {
+    pub(crate) fn empty_root_custody(root: &Path) -> Result<Option<Vec<std::fs::File>>, String> {
+        Self::owned_metadata(root, root)?;
+        let mut locks = Vec::new();
+        for relative in [".cargo-lock", "debug/.cargo-lock", "release/.cargo-lock"] {
+            let path = root.join(relative);
+            let parent = path.parent().ok_or("cache lock has no parent")?;
+            if !parent.exists() {
+                continue;
+            }
+            Self::owned_metadata(parent, root)?;
+            if std::fs::symlink_metadata(&path).is_ok() {
+                Self::owned_metadata(&path, root)?;
+            }
+            match try_exclusive_flock_detailed(&path) {
+                LockAttempt::Acquired(lock) => locks.push(lock),
+                LockAttempt::HeldByAnother => return Ok(None),
+                LockAttempt::Unavailable(error) => return Err(error),
+            }
+        }
+        fn has_content(path: &Path, root: &Path) -> Result<bool, String> {
+            let metadata = CargoTargetPool::owned_metadata(path, root)?;
+            if metadata.is_dir() {
+                for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+                    if has_content(&entry.map_err(|error| error.to_string())?.path(), root)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            let custody = [".cargo-lock", "debug/.cargo-lock", "release/.cargo-lock"]
+                .iter()
+                .any(|relative| root.join(relative) == path);
+            Ok(!custody || !metadata.is_file() || metadata.len() != 0)
+        }
+        if has_content(root, root)? {
+            Ok(None)
+        } else {
+            Ok(Some(locks))
+        }
+    }
+
+    fn budget_for_volume(&self, volume: Option<&crate::capacity::system_profile::DriveInfo>) -> u64 {
+        volume.map(|volume| cargo_target_budget_bytes(volume.total_bytes)).unwrap_or(self.budget_bytes)
+    }
+
+    fn pressure_for_volume(&self, volume: Option<&crate::capacity::system_profile::DriveInfo>) -> f64 {
+        let own = self.tracked.bytes() as f64 / self.budget_for_volume(volume).max(1) as f64;
+        let volume = volume.filter(|volume| volume.total_bytes > 0)
+            .map(|volume| volume.total_bytes.saturating_sub(volume.available_bytes) as f64 / volume.total_bytes as f64)
+            .unwrap_or(0.0);
+        cache_pool_pressure(own, volume)
+    }
+
     pub fn new(tracked: Arc<TrackedDir>, budget_bytes: u64) -> Self {
+        use sha2::{Digest, Sha256};
+        // Display is lossy for native non-Unicode roots. It is a label, never
+        // identity: two distinct writer paths must retain separate broker pools.
+        let root_id = Sha256::digest(tracked.path().as_os_str().as_encoded_bytes());
         Self {
-            // "cargo-target" keeps its historical pool name so nothing that reads
-            // the ledger by that string breaks; every other class gets its own.
-            tier: format!("disk-{}", tracked.class()),
+            // Class plus physical root: distinct configured roots must not replace
+            // each other in the broker's dedup-by-name registration.
+            tier: format!("disk-{}:{root_id:x}", tracked.class()),
             last_decline: std::sync::atomic::AtomicU8::new(u8::MAX),
             decline_repeats: std::sync::atomic::AtomicU32::new(0),
             last_eviction_ms: std::sync::atomic::AtomicU64::new(0),
@@ -464,18 +531,80 @@ impl CargoTargetPool {
             run,
             THRASH_GAP_MS / 60_000,
             gap_ms / 60_000,
-            self.budget_bytes / (1024 * 1024 * 1024)
+            self.capacity_bytes() / (1024 * 1024 * 1024)
         );
     }
 
     /// The rungs, freed in order. The last one is `debug` ITSELF, which is why it
     /// is not a plain `remove_dir_all` — see [`Self::free_rung`].
-    fn ladder(root: &Path) -> [PathBuf; 3] {
+    fn ladder(root: &Path) -> [PathBuf; 4] {
         [
             root.join("debug/incremental"),
+            root.join("release/incremental"),
             root.join("tests"),
             root.join("debug"),
         ]
+    }
+
+    /// Inspect every existing component under the owned root without following
+    /// redirects. Cargo's locks exclude cooperating writers during this check
+    /// and removal; they are not a security boundary against a hostile OS user.
+    fn owned_metadata(path: &Path, root: &Path) -> Result<std::fs::Metadata, String> {
+        let relative = path.strip_prefix(root).map_err(|_| "cache path escaped its root")?;
+        let mut current = root.to_path_buf();
+        let check = |path: &Path| -> Result<std::fs::Metadata, String> {
+            let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+            let redirected = metadata.file_type().is_symlink();
+            #[cfg(windows)]
+            let redirected = {
+                use std::os::windows::fs::MetadataExt;
+                redirected || metadata.file_attributes() & 0x400 != 0
+            };
+            if redirected { return Err(format!("redirected cache path: {}", path.display())); }
+            Ok(metadata)
+        };
+        let mut metadata = check(&current)?;
+        // A durable root was physical when admitted. Refuse if an ancestor has
+        // since been redirected instead of silently reclaiming its destination.
+        for ancestor in root.ancestors().skip(1) { check(ancestor)?; }
+        for component in relative.components() {
+            if !matches!(component, std::path::Component::Normal(_)) {
+                return Err("cache path contains a non-child component".into());
+            }
+            current.push(component);
+            metadata = check(&current)?;
+        }
+        Ok(metadata)
+    }
+
+    fn validate_tree(path: &Path, root: &Path) -> Result<(), String> {
+        if Self::owned_metadata(path, root)?.is_dir() {
+            for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+                Self::validate_tree(&entry.map_err(|error| error.to_string())?.path(), root)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Recheck each child during removal and never traverse a redirected entry.
+    /// Count only successfully removed file bytes, including a partial IO failure.
+    fn free_owned_tree(path: &Path, root: &Path, preserve: Option<&Path>) -> u64 {
+        if preserve == Some(path) { return 0; }
+        let Ok(metadata) = Self::owned_metadata(path, root) else { return 0; };
+        if !metadata.is_dir() {
+            return if metadata.is_file() && std::fs::remove_file(path).is_ok() { metadata.len() } else { 0 };
+        }
+        let Ok(entries) = std::fs::read_dir(path) else { return 0; };
+        let mut freed = 0u64;
+        for entry in entries.flatten() {
+            freed = freed.saturating_add(Self::free_owned_tree(&entry.path(), root, preserve));
+        }
+        // Keeping a lock also keeps its directory. Other directories are removed
+        // only once empty; no recursive API can follow a late redirected child.
+        if !preserve.is_some_and(|lock| lock.parent() == Some(path)) {
+            let _ = std::fs::remove_dir(path);
+        }
+        freed
     }
 
     /// Free one rung, PRESERVING the lock this eviction is holding.
@@ -494,44 +623,8 @@ impl CargoTargetPool {
     /// bytes we decline to free by keeping it are not bytes.
     fn free_rung(rung: &Path, root: &Path) -> u64 {
         let debug = root.join("debug");
-        if rung != debug {
-            let size = dir_size_bytes(rung);
-            return if std::fs::remove_dir_all(rung).is_ok() {
-                size
-            } else {
-                0
-            };
-        }
         let lock = debug.join(".cargo-lock");
-        let mut freed = 0u64;
-        let Ok(entries) = std::fs::read_dir(&debug) else {
-            return 0;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path == lock {
-                continue;
-            }
-            // `dir_size_bytes` READS A DIRECTORY — it returns 0 for a file, so
-            // sizing children with it silently under-counts every loose artifact
-            // in `debug/` (`lib.rlib` and friends). The existing ladder test caught
-            // this the moment the rung stopped being one `remove_dir_all`.
-            let is_dir = path.is_dir();
-            let size = if is_dir {
-                dir_size_bytes(&path)
-            } else {
-                std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0)
-            };
-            let removed = if is_dir {
-                std::fs::remove_dir_all(&path).is_ok()
-            } else {
-                std::fs::remove_file(&path).is_ok()
-            };
-            if removed {
-                freed = freed.saturating_add(size);
-            }
-        }
-        freed
+        Self::free_owned_tree(rung, root, (rung == debug).then_some(lock.as_path()))
     }
 }
 
@@ -541,7 +634,7 @@ impl ResourcePool for CargoTargetPool {
     }
 
     fn capacity_bytes(&self) -> u64 {
-        self.budget_bytes
+        self.budget_for_volume(super::DiskPressureMonitor::volume_for(self.tracked.path()).as_ref())
     }
 
     fn usage_bytes(&self) -> u64 {
@@ -559,21 +652,25 @@ impl ResourcePool for CargoTargetPool {
     /// critical volume should shed first, so the volume's pressure is this pool's
     /// floor: over budget OR on a hot volume, either one brings the broker.
     fn pressure(&self) -> f64 {
-        let own = if self.budget_bytes == 0 {
-            0.0
-        } else {
-            self.usage_bytes() as f64 / self.budget_bytes as f64
-        };
-        let volume = super::DiskPressureMonitor::current_snapshot()
-            .map(|s| s.pressure)
-            .unwrap_or(0.0); // unwrap_or: no disk reading yet = the pool's own budget alone governs, as before
-        cache_pool_pressure(own, volume)
+        self.pressure_for_volume(super::DiskPressureMonitor::volume_for(self.tracked.path()).as_ref())
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
         let root = self.tracked.path().to_path_buf();
         if !root.exists() {
             return self.declined(DeclinedEviction::NoSuchDirectory);
+        }
+        // Validate lock locations before opening them: a profile or lock symlink
+        // must not redirect custody to an unrelated file outside this cache.
+        for path in [&root, &root.join(".cargo-lock"), &root.join("debug"),
+            &root.join("debug/.cargo-lock"), &root.join("release"), &root.join("release/.cargo-lock")] {
+            match std::fs::symlink_metadata(path) {
+                Ok(_) => if let Err(error) = Self::owned_metadata(path, &root) {
+                    return self.declined(DeclinedEviction::UnsafePath(error));
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {},
+                Err(error) => return self.declined(DeclinedEviction::UnsafePath(error.to_string())),
+            }
         }
         // Safety invariant 1: hold cargo's lock files exclusively for the
         // whole eviction, or do nothing. Guards held in scope until return.
@@ -586,20 +683,20 @@ impl ResourcePool for CargoTargetPool {
                 return self.declined(DeclinedEviction::LockUnavailable(why))
             }
         };
-        let debug_lock_path = root.join("debug/.cargo-lock");
-        let _debug_lock = if debug_lock_path.parent().is_some_and(Path::exists) {
-            match try_exclusive_flock_detailed(&debug_lock_path) {
-                LockAttempt::Acquired(lock) => Some(lock),
-                LockAttempt::HeldByAnother => {
-                    return self.declined(DeclinedEviction::BuildHoldsDebugLock)
-                }
-                LockAttempt::Unavailable(why) => {
-                    return self.declined(DeclinedEviction::LockUnavailable(why))
+        let mut profile_locks = Vec::new();
+        for (profile, held_reason) in [
+            ("debug", DeclinedEviction::BuildHoldsDebugLock),
+            ("release", DeclinedEviction::BuildHoldsReleaseLock),
+        ] {
+            let lock_path = root.join(profile).join(".cargo-lock");
+            if lock_path.parent().is_some_and(Path::exists) {
+                match try_exclusive_flock_detailed(&lock_path) {
+                    LockAttempt::Acquired(lock) => profile_locks.push(lock),
+                    LockAttempt::HeldByAnother => return self.declined(held_reason),
+                    LockAttempt::Unavailable(why) => return self.declined(DeclinedEviction::LockUnavailable(why)),
                 }
             }
-        } else {
-            None
-        };
+        }
 
         let mut freed = 0u64;
         let debug = root.join("debug");
@@ -608,6 +705,10 @@ impl ResourcePool for CargoTargetPool {
                 break;
             }
             if !rung.exists() {
+                continue;
+            }
+            if let Err(error) = Self::validate_tree(&rung, &root) {
+                self.declined(DeclinedEviction::UnsafePath(error));
                 continue;
             }
             // THE WINDOW THE LOCKS DO NOT COVER: cargo has finished and is RUNNING what it
@@ -627,7 +728,7 @@ impl ResourcePool for CargoTargetPool {
             crate::clog_warn!(
                 "💾 cargo-target eviction freed {} GB (budget {} GB) — derived artifacts only; next build recreates them",
                 freed / (1024 * 1024 * 1024),
-                self.budget_bytes / (1024 * 1024 * 1024)
+                self.capacity_bytes() / (1024 * 1024 * 1024)
             );
             self.note_eviction();
         }
@@ -1003,6 +1104,22 @@ impl ResourcePool for NvmeServingTierPool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cache_pressure_follows_its_own_mount_instead_of_the_home_mount() {
+        use crate::capacity::system_profile::{DriveInfo, DriveRole, drive_holding};
+        let home = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let drives = [
+            DriveInfo { mount: home.path().into(), total_bytes: 10_000, available_bytes: 100, role: DriveRole::System },
+            DriveInfo { mount: other.path().into(), total_bytes: 100_000, available_bytes: 90_000, role: DriveRole::System },
+        ];
+        let legacy = CargoTargetPool::new(TrackedDir::new("cargo-target", home.path().join("cache")), 1_000);
+        let relocated = CargoTargetPool::new(TrackedDir::new("cargo-target", other.path().join("cache")), 1_000);
+        assert_eq!(legacy.pressure_for_volume(drive_holding(&drives, legacy.tracked.path())), 0.99);
+        assert_eq!(relocated.pressure_for_volume(drive_holding(&drives, relocated.tracked.path())), 0.1);
+        assert_eq!(relocated.budget_for_volume(drive_holding(&drives, relocated.tracked.path())), cargo_target_budget_bytes(100_000));
+        assert_eq!(relocated.budget_for_volume(None), 1_000, "unmeasured volume retains the explicit fallback budget");
+    }
     use super::*;
 
     // what this catches (2026-09-18, the 5090 at 95 % with both cargo caches "within
@@ -1026,7 +1143,7 @@ mod tests {
         std::fs::write(tmp.join("debug/lib.rlib"), vec![0u8; 3000]).expect("write");
         std::fs::write(tmp.join("tests/t.bin"), vec![0u8; 2000]).expect("write");
         std::fs::write(tmp.join("release/keep.bin"), vec![0u8; 1000]).expect("write");
-        let tracked = TrackedDir::new("cargo-target", tmp.to_path_buf());
+        let tracked = TrackedDir::new("cargo-target", tmp.canonicalize().unwrap());
         // Seed the cached size the way the scanner would.
         tracked.set_bytes(dir_size_bytes(tmp));
         tracked
@@ -1034,7 +1151,7 @@ mod tests {
 
     // what this catches: the eviction ladder frees cheapest-regret first
     // (incremental before the whole debug tree), stops once `want` is met,
-    // NEVER touches release/, and decrements the shared TrackedDir so the
+    // preserves release binaries, and decrements the shared TrackedDir so the
     // broker doesn't re-fire against space already freed.
     // what this catches (the M5, 2026-10-05): cargo has finished and is RUNNING what it
     // built, no lock held, and the debug rung deleted the executing test binary three
@@ -1065,7 +1182,7 @@ mod tests {
     }
 
     #[test]
-    fn ladder_frees_in_order_and_never_touches_release() {
+    fn ladder_frees_in_order_and_preserves_release_outputs() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
         let usage_before = tracked.bytes();
@@ -1133,6 +1250,83 @@ mod tests {
             .expect("test takes the lock first");
         assert_eq!(pool.evict_at_least(u64::MAX), 0, "locked ⇒ untouched");
         assert!(tmp.path().join("debug/incremental").exists());
+    }
+
+    #[test]
+    fn broker_reclaims_release_incremental_only_after_profile_custody() {
+        use crate::paging::{BrokerConfig, PressureBroker};
+        let tmp = tempfile::tempdir().unwrap();
+        let release = tmp.path().join("release");
+        std::fs::create_dir_all(release.join("incremental/unit")).unwrap();
+        std::fs::create_dir_all(release.join("deps")).unwrap();
+        std::fs::create_dir_all(release.join("build")).unwrap();
+        std::fs::write(release.join("incremental/unit/derived.o"), vec![0u8; 4096]).unwrap();
+        let outputs = ["continuum", "deps/library.rlib", "build/output"];
+        for output in outputs { std::fs::write(release.join(output), b"preserve installed inputs").unwrap(); }
+        let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
+        tracked.set_bytes(dir_size_bytes(tmp.path()));
+        let pool = Arc::new(CargoTargetPool::new(tracked.clone(), 1));
+        let broker = PressureBroker::new(BrokerConfig::default());
+        broker.register(pool);
+        let lock_path = release.join(".cargo-lock");
+        let build_lock = try_exclusive_flock(&lock_path).unwrap();
+        assert_eq!(broker.relieve().bytes_freed, 0, "an active release compiler owns its profile");
+        assert!(release.join("incremental/unit/derived.o").exists());
+        drop(build_lock);
+        #[cfg(unix)]
+        let inode = { use std::os::unix::fs::MetadataExt; std::fs::metadata(&lock_path).unwrap().ino() };
+        let before = tracked.bytes();
+        assert_eq!(broker.relieve().bytes_freed, 4096, "the existing broker reaches release-only incremental pressure");
+        assert_eq!(tracked.bytes(), before - 4096);
+        assert!(!release.join("incremental").exists());
+        assert!(lock_path.exists());
+        #[cfg(unix)]
+        { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), inode); }
+        for output in outputs { assert_eq!(std::fs::read(release.join(output)).unwrap(), b"preserve installed inputs"); }
+        assert!(try_exclusive_flock(&lock_path).is_some(), "custody is released with the original lock path intact");
+    }
+
+    #[test]
+    fn redirected_profile_or_incremental_child_never_reaches_external_data() {
+        #[cfg(unix)]
+        use std::os::unix::fs::symlink;
+        #[cfg(windows)]
+        use std::os::windows::fs::symlink_dir as symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("keep"), b"not cache ownership").unwrap();
+        if let Err(error) = symlink(outside.path(), tmp.path().join("release")) {
+            #[cfg(windows)]
+            if error.raw_os_error() == Some(1314) {
+                eprintln!("UNVERIFIED: Windows reparse fixture requires symbolic-link privilege: {error}");
+                assert!(std::env::var_os("CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST").is_none(),
+                    "this validation run requires actual Windows reparse execution");
+                return;
+            }
+            panic!("create redirected profile fixture: {error}");
+        }
+        let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
+        let pool = CargoTargetPool::new(tracked, 1);
+        assert_eq!(pool.evict_at_least(u64::MAX), 0);
+        assert!(!outside.path().join(".cargo-lock").exists(), "refuse before creating custody through a redirect");
+        #[cfg(unix)]
+        std::fs::remove_file(tmp.path().join("release")).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(tmp.path().join("release")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("release/incremental")).unwrap();
+        symlink(outside.path(), tmp.path().join("release/incremental/redirect")).unwrap();
+        assert_eq!(pool.evict_at_least(u64::MAX), 0);
+        assert_eq!(std::fs::read(outside.path().join("keep")).unwrap(), b"not cache ownership");
+        assert!(tmp.path().join("release/incremental/redirect").symlink_metadata().unwrap().file_type().is_symlink());
+        let parent = tmp.path().join("parent");
+        std::fs::create_dir_all(parent.join("cache")).unwrap();
+        let remembered = TrackedDir::new("cargo-target", parent.join("cache").canonicalize().unwrap());
+        std::fs::rename(&parent, tmp.path().join("parent-before")).unwrap();
+        std::fs::create_dir_all(outside.path().join("cache/release/incremental")).unwrap();
+        symlink(outside.path(), &parent).unwrap();
+        assert_eq!(CargoTargetPool::new(remembered, 1).evict_at_least(u64::MAX), 0,
+            "a formerly physical root cannot acquire a new destination through its ancestor");
+        assert!(!outside.path().join("cache/.cargo-lock").exists());
     }
 
     // what this catches: pressure is usage/BUDGET (policy-bounded), not
@@ -1669,18 +1863,25 @@ mod tests {
         #[test]
         fn two_build_caches_are_two_pools_and_not_one_replacing_the_other() {
             let tmp = tempfile::tempdir().expect("tempdir");
-            let shared = TrackedDir::new("cargo-target", tmp.path().join("a"));
-            let worktree = TrackedDir::new("cargo-target-wt", tmp.path().join("b"));
+            #[cfg(windows)]
+            let names = {
+                use std::os::windows::ffi::OsStringExt;
+                [std::ffi::OsString::from_wide(&[0xd800]), std::ffi::OsString::from_wide(&[0xd801])]
+            };
+            #[cfg(not(windows))]
+            let names = {
+                use std::os::unix::ffi::OsStringExt;
+                [std::ffi::OsString::from_vec(vec![0xfe]), std::ffi::OsString::from_vec(vec![0xff])]
+            };
+            assert_eq!(names[0].to_string_lossy(), names[1].to_string_lossy(), "display cannot identify these distinct native roots");
+            let shared = TrackedDir::new("cargo-target", tmp.path().join(&names[0]));
+            let worktree = TrackedDir::new("cargo-target", tmp.path().join(&names[1]));
 
             let a = CargoTargetPool::new(shared, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
             let b = CargoTargetPool::new(worktree, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
 
-            assert_eq!(
-                a.tier_name(),
-                "disk-cargo-target",
-                "the original class keeps its historical pool name, so anything                  reading the ledger by that string still finds it"
-            );
-            assert_eq!(b.tier_name(), "disk-cargo-target-wt");
+            assert!(a.tier_name().starts_with("disk-cargo-target:"));
+            assert!(b.tier_name().starts_with("disk-cargo-target:"));
             assert_ne!(
                 a.tier_name(),
                 b.tier_name(),

@@ -553,7 +553,8 @@ pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<c
         return None;
     }
     let home = crate::paths::home_dir()?;
-    Some(crate::code::confinement::Confinement::for_caller(&home, &caller_id(ctx), workspace))
+    let continuum_root = crate::paths::continuum_home().ok()?;
+    Some(crate::code::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(ctx), workspace))
 }
 
 /// How long `code/shell` waits INLINE for completion before handing back a handle
@@ -1786,9 +1787,13 @@ impl ActionCommand for CodeReleaseHands {
                     .into(),
             ));
         }
-        let lingering = crate::code::hands::close(context).await;
+        crate::code::hands::close(context).await;
         let who = key.map_key();
         let pending = self.state.begin_release(&who);
+        // Detached shells hold process custody, not foreground command admission.
+        // Their owner has now received the kill request; drain their full task
+        // lifetime before reading uncertainty or deleting the acting world.
+        let lingering = crate::code::hands::drain_processes(context).await;
         // WAIT each one out: its own task sets `process_ended` after the reap, or
         // `process_end_error` when the reap itself failed, at the cadence the task notices a
         // kill (`KILL_POLL`). SIGKILL can't be ignored, so a direct child's reap always comes;

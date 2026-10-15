@@ -4,6 +4,7 @@ from pathlib import Path
 import tempfile
 import unittest
 import sys
+import os
 
 sys.dont_write_bytecode = True
 
@@ -38,7 +39,7 @@ class ArtifactReuseTest(unittest.TestCase):
             result = artifact.environment(messages, manifest, root / "rustlib", "/inherited/lib")
             self.assertEqual(result["CONTINUUM_LIB_TEST"], str(executable))
             self.assertEqual(result["CARGO_MANIFEST_DIR"], str(manifest))
-            self.assertEqual(result["CONTINUUM_LIB_TEST_LD_LIBRARY_PATH"], ":".join([
+            self.assertEqual(result["CONTINUUM_LIB_TEST_LD_LIBRARY_PATH"], os.pathsep.join([
                 str(native), str(executable.parent), str(executable.parent.parent),
                 str(root / "rustlib"), "/inherited/lib",
             ]))

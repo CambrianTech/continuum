@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select Cargo's exact unit-test artifact and retain its Linux loader paths."""
+"""Select Cargo's exact unit-test artifact and retain native loader paths."""
 import json
 import os
 from pathlib import Path
@@ -45,7 +45,7 @@ def environment(messages, manifest_dir, rust_libdir, inherited_library_path):
         paths.append(inherited_library_path)
     result = {
         "CONTINUUM_LIB_TEST": str(executable),
-        "CONTINUUM_LIB_TEST_LD_LIBRARY_PATH": ":".join(paths),
+        "CONTINUUM_LIB_TEST_LD_LIBRARY_PATH": os.pathsep.join(paths),
         "CARGO_MANIFEST_DIR": str(manifest_dir),
     }
     if any("\n" in value or "\r" in value for value in result.values()):
@@ -56,7 +56,7 @@ def environment(messages, manifest_dir, rust_libdir, inherited_library_path):
 if __name__ == "__main__":
     try:
         artifacts_file, manifest_dir, rust_libdir = sys.argv[1:]
-        with open(artifacts_file, encoding="utf-8") as stream:
+        with open(artifacts_file, encoding="utf-8-sig") as stream:
             messages = [json.loads(line) for line in stream if line.strip()]
         for name, value in environment(messages, manifest_dir, rust_libdir, os.environ.get("LD_LIBRARY_PATH", "")).items():
             print(f"{name}={value}")

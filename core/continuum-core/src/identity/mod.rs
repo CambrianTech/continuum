@@ -105,9 +105,12 @@ pub use activity::{ActivityRoom, RoomlessTurn};
 /// directory to exist say so themselves, so a read-only caller never has the side
 /// effect of minting an empty citizen dir.
 pub fn citizen_peer_dir(root: &std::path::Path, peer: PeerId) -> std::path::PathBuf {
-    root.join("citizens")
-        .join("peers")
-        .join(peer.as_uuid().to_string())
+    citizen_peers_dir(root).join(peer.as_uuid().to_string())
+}
+
+/// Parent of the peer homes; shared by their writers and confinement boundary.
+pub fn citizen_peers_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join("citizens").join("peers")
 }
 
 /// What a CALLER writes when it means "that persona" — a full UUID, an 8-char

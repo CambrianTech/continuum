@@ -315,10 +315,9 @@ async fn run_python(
     std::fs::write(&src, code)
         .map_err(|e| CommandError::Internal(format!("code/run: write failed: {e}")))?;
     let interpreter_label = interpreter.display().to_string();
-    let mut cmd = hands.command(interpreter, &[src.clone().into()]);
+    let mut cmd = hands.command(interpreter, &[src.clone().into()], Some(cwd.unwrap_or(dir)));
     crate::code::shell_session::strip_secret_env(&mut cmd);
     crate::code::shell_session::utf8_text_env(&mut cmd);
-    cmd.current_dir(cwd.unwrap_or(dir));
     let started = std::time::Instant::now();
     let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "code-run", std::sync::Arc::default())
         .await
@@ -348,8 +347,8 @@ impl Hands {
         Self { confinement: None, who: "test".into() }
     }
 
-    fn command(&self, program: &std::path::Path, args: &[std::ffi::OsString]) -> tokio::process::Command {
-        crate::code::confinement::command_for(self.confinement.as_ref(), &self.who, program, args)
+    fn command(&self, program: &std::path::Path, args: &[std::ffi::OsString], cwd: Option<&std::path::Path>) -> tokio::process::Command {
+        crate::code::confinement::command_for(self.confinement.as_ref(), &self.who, program, args, cwd, None)
     }
 }
 
@@ -372,6 +371,7 @@ async fn compile_and_run_rust(
     let mut rustc = hands.command(
         std::path::Path::new("rustc"),
         &["--edition".into(), "2021".into(), "-o".into(), bin.clone().into(), src.clone().into()],
+        None,
     );
     crate::code::shell_session::strip_secret_env(&mut rustc);
     let compiled = crate::inference::lane_process::run_owned(rustc, Some(timeout), "rustc", std::sync::Arc::default())
@@ -389,7 +389,7 @@ async fn compile_and_run_rust(
     // 2. Run the compiled binary, owned (lane_process::run_owned): at the safety timeout,
     //    or when this command is dropped, it and everything it started are ended, never
     //    orphaned to init burning a core (observed: 6h+ runaway at 100% CPU).
-    let mut child = hands.command(&bin, &[]);
+    let mut child = hands.command(&bin, &[], None);
     crate::code::shell_session::strip_secret_env(&mut child);
     let out = crate::inference::lane_process::run_owned(child, Some(timeout), "code-run", std::sync::Arc::default())
         .await

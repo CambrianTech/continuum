@@ -2775,10 +2775,9 @@ fn resolve_core_artifact() -> Result<PathBuf, String> {
         }
         return Err(format!("CONTINUUM_CORE_BIN={explicit} is not a file"));
     }
-    let home = home_dir()?;
-    let target = std::env::var("CARGO_TARGET_DIR").ok();
+    let target = continuum_core::paths::cargo::target_dir(&std::env::current_dir().map_err(|error| error.to_string())?)?;
     let payload = continuum_core::paths::payload_root(&continuum_core::paths::continuum_home()?)?;
-    let candidates = core_artifact_candidates(&home, &payload, target.as_deref());
+    let candidates = core_artifact_candidates(&target, &payload);
     candidates
         .iter()
         .find(|p| p.is_file())
@@ -2798,22 +2797,19 @@ fn resolve_core_artifact() -> Result<PathBuf, String> {
 
 /// The ordered candidate list behind [`resolve_core_artifact`] — pure (paths in, paths out)
 /// so the shared resolution ORDER is pinned by a unit test against install-service.sh.
-fn core_artifact_candidates(home: &str, payload: &Path, cargo_target_dir: Option<&str>) -> Vec<PathBuf> {
+fn core_artifact_candidates(target: &Path, payload: &Path) -> Vec<PathBuf> {
     let exe = if cfg!(windows) {
         "continuum-core-server.exe"
     } else {
         "continuum-core-server"
     };
-    let target = cargo_target_dir
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{home}/.continuum/cache/cargo-target"));
     let mut out = Vec::new();
     if !cfg!(windows) {
         out.push(PathBuf::from("/usr/local/bin").join(exe));
     }
     out.push(payload.join("bin").join(exe));
-    out.push(PathBuf::from(&target).join("release").join(exe));
-    out.push(PathBuf::from(&target).join("debug").join(exe));
+    out.push(target.join("release").join(exe));
+    out.push(target.join("debug").join(exe));
     out
 }
 
@@ -3842,11 +3838,8 @@ async fn prepared_install_core(repo: &Path, head: &str) -> Result<Option<PathBuf
     if !git_in(repo, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty() {
         return Ok(None);
     }
-    let target = match std::env::var("CARGO_TARGET_DIR") {
-        Ok(target) => target,
-        Err(_) => format!("{}/.continuum/cache/cargo-target", home_dir()?),
-    };
-    let cli = Path::new(&target).join("release/continuum.exe");
+    let target = continuum_core::paths::cargo::target_dir(repo)?;
+    let cli = target.join("release/continuum.exe");
     let Ok(cli_sha) = binary_build_sha(&cli).await else { return Ok(None) };
     if !continuum_cli_lifecycle::deploy_tracker::same_commit(&cli_sha, head) {
         return Ok(None);
@@ -9207,7 +9200,7 @@ mod tests {
     // "could not locate continuum-core-server" while a 2-day-old core kept serving).
     #[test]
     fn artifact_resolution_order_matches_install_service() {
-        let c = core_artifact_candidates("/home/u", Path::new("/home/u/.continuum"), None);
+        let c = core_artifact_candidates(Path::new("/home/u/.continuum/cache/cargo-target"), Path::new("/home/u/.continuum"));
         let shown: Vec<String> = c.iter().map(|p| p.display().to_string()).collect();
         #[cfg(not(windows))]
         assert_eq!(
@@ -9231,7 +9224,7 @@ mod tests {
             );
         }
         // explicit CARGO_TARGET_DIR overrides the default cache location
-        let c = core_artifact_candidates("/home/u", Path::new("/cold/payload"), Some("/tgt"));
+        let c = core_artifact_candidates(Path::new("/tgt"), Path::new("/cold/payload"));
         assert!(c.iter().any(|p| p.starts_with("/cold/payload/bin")));
         assert!(!c.iter().any(|p| p.starts_with("/home/u/.continuum/bin")));
         assert!(

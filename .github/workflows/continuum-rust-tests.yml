@@ -266,13 +266,41 @@ jobs:
           save-if: ${{ github.event_name != 'pull_request' }}
           cache-workspace-crates: true
           cache-on-failure: true
-      - name: cargo check (lib + test harness, incl. test-fixtures targets; headless, no avatar-3d)
+      - name: Build one headless core test artifact and run Windows cache custody fixtures
         if: needs.changes.outputs.rust != 'false'
         # Headless configuration: --no-default-features drops `avatar-3d` (bevy/wgpu), which is
         # what the Intel-Mac CPU path and the CUDA CLI build (card be575955). Folded into this
         # existing job (one job per contract, Joel 2026-10-02) rather than a new one. The
         # bevy-on configuration stays covered by cargo-test-continuum-core (default features).
-        run: cargo check -p continuum-core --lib --tests --no-default-features --features livekit-webrtc,test-fixtures
+        shell: pwsh
+        run: |
+          python tools/scripts/tests/test_ci_lib_test_artifact.py
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Replace the lib-only type check with a runnable artifact. The existing
+          # reduced-debug profile avoids the full-debug PDB size failure; compile
+          # once and reuse it for these native custody tests, not a second lane.
+          cargo test -p continuum-core --lib --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures --no-run --message-format=json > windows-lib-artifacts.jsonl
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $testEnv = python tools/scripts/ci-lib-test-artifact.py windows-lib-artifacts.jsonl core/continuum-core (rustc --print target-libdir)
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($entry in $testEnv) {
+            $parts = $entry -split '=', 2
+            [Environment]::SetEnvironmentVariable($parts[0], $parts[1], 'Process')
+          }
+          $env:PATH = $env:CONTINUUM_LIB_TEST_LD_LIBRARY_PATH + ';' + $env:PATH
+          $env:CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST = '1'
+          Push-Location core/continuum-core
+          foreach ($test in @('broker_reclaims_release_incremental_only_after_profile_custody', 'redirected_profile_or_incremental_child_never_reaches_external_data', 'ladder_frees_in_order_and_preserves_release_outputs')) {
+            $output = & $env:CONTINUUM_LIB_TEST "system_resources::disk_eviction::tests::$test" --exact --nocapture 2>&1
+            $result = $LASTEXITCODE
+            $output | Write-Output
+            if ($result -ne 0) { exit $result }
+            if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
+          }
+          Pop-Location
+      - name: Type-check integration targets using the same headless profile
+        if: needs.changes.outputs.rust != 'false'
+        run: cargo check -p continuum-core --test '*' --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures
       - name: Windows installed release and supervisor regressions
         if: needs.changes.outputs.installer != 'false'
         shell: powershell

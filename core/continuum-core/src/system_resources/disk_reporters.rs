@@ -135,27 +135,33 @@ impl TrackedDir {
     }
 }
 
-/// Process-wide registry of the tracked cache classes, set ONCE at boot by
-/// [`install_tracked_dirs`]. Exists so later boot phases (the IPC thread's
-/// broker block registering eviction pools) can reach the SAME TrackedDir
-/// instances the reporters use without threading a param through every
-/// server-start signature. Same singleton pattern as the rest of the boot
-/// sequence's shared services.
-static TRACKED_DIRS: std::sync::OnceLock<Vec<Arc<TrackedDir>>> = std::sync::OnceLock::new();
+/// One process-wide measurement registry, installed once and extended when a
+/// writer selects another Cargo root. Boot consumers, durable replay and later
+/// writers all use the same TrackedDir instances and scanner.
+mod registry;
+pub use registry::{admit_cargo_target, bind_cargo_owners, register_cargo_target, restore_cargo_roots};
+#[cfg(test)]
+pub(crate) use registry::prepare_writer_fixture;
+use registry::TRACKED_DIRS;
+
+pub(crate) fn registry_installed() -> bool { TRACKED_DIRS.get().is_some() }
 
 /// Install the boot-time tracked-dir set. Second call is a boot-sequence
 /// bug — fail loud, never silently keep two measurement sets.
-pub fn install_tracked_dirs(dirs: Vec<Arc<TrackedDir>>) {
-    if TRACKED_DIRS.set(dirs).is_err() {
+pub async fn install_tracked_dirs(dirs: Vec<Arc<TrackedDir>>) -> Vec<Arc<TrackedDir>> {
+    let registry = registry::Registry::new(dirs).await;
+    let dirs = registry.snapshot();
+    if TRACKED_DIRS.set(registry).is_err() {
         panic!("install_tracked_dirs called twice — one measurement registry per process");
     }
+    dirs
 }
 
 /// Fetch a tracked cache class by name, e.g. `"cargo-target"`. `None`
 /// before boot installs the registry (tests, tools) — callers treat that
 /// as "class not under management," never a default path guess.
 pub fn tracked_dir(name: &str) -> Option<Arc<TrackedDir>> {
-    TRACKED_DIRS.get()?.iter().find(|d| d.name == name).cloned()
+    TRACKED_DIRS.get()?.snapshot().into_iter().find(|d| d.name == name)
 }
 
 impl DiskReporter for TrackedDir {
@@ -250,6 +256,8 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
     };
 
     let mut dirs = vec![
+        // Retain the historical root when configuration moves future writes.
+        // Boot and later writers register configured roots in this same registry.
         TrackedDir::new("cargo-target", home.join(".continuum/cache/cargo-target")),
         // THE CACHE I INVENTED IS A CACHE THE SUBSTRATE OWNS (Joel, 2026-09-08: "the
         // system is supposed to manage disk; you've been defying design principles so it
@@ -510,7 +518,9 @@ impl Daemon for DiskUsageScanner {
                 return; // IPC thread gone — the process is exiting
             }
         }
-        for dir in &self.dirs {
+        let dirs = TRACKED_DIRS.get().map(|registry| registry.snapshot())
+            .unwrap_or_else(|| self.dirs.clone());
+        for dir in &dirs {
             // A tree whose last walk was expensive is not due yet: its own cost set
             // the wait ([`next_scan_delay`]). The cached size stands meanwhile.
             if !dir.due(self.started.elapsed().as_millis() as u64) {
