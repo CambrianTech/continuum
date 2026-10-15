@@ -968,6 +968,14 @@ mod tests {
         assert_eq!(samples[1].served("seat", Some("m")), Some(828));
         assert_eq!(samples[1].served("other-seat", Some("m")), None);
         assert_eq!(samples[1].served("seat", Some("absent")), None);
+        let PromptSample::Served { geometry, .. } = &samples[1] else { unreachable!() };
+        assert_eq!(PromptSample::geometry_median(&samples, "seat", geometry), Some(828));
+        assert_eq!(PromptSample::geometry_median(&samples, "neighbor-seat", geometry), None);
+        let rebound = crate::modules::served_window_store::ServedGeometry {
+            generation: Uuid::new_v4(), ..geometry.clone()
+        };
+        assert_eq!(PromptSample::geometry_median(&samples, "seat", &rebound), None,
+            "same model and geometry on a later generation cannot reuse prior usage");
         assert_eq!(WorkingSetRegistry::sent_sample_for_plan(56_057, 828, 2_048), 56_057, "starvation still requests growth");
 
         assert_eq!(registry.sent_median_of(&[local]), Some(2_866_096), "geometry migration never discards requested demand");
