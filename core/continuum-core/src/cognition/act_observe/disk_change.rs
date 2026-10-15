@@ -92,11 +92,12 @@ pub(crate) async fn fingerprint_at(root: Option<std::path::PathBuf>) -> Option<u
 }
 
 /// What the batch did to her checkout, as a typed fact (never a guess either way).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) enum DiskChange {
     Changed,
     Unchanged,
     /// No checkout, or one side could not be read: not counted as a write, and said so.
+    #[default]
     Unknown,
 }
 

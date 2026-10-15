@@ -38,7 +38,7 @@ mod types;
 pub use types::{SettleOutcome, SettleStep};
 
 mod apply;
-mod disk_change;
+pub(crate) mod disk_change;
 pub use apply::{apply_act, ActChain};
 
 mod settle;

@@ -527,6 +527,9 @@ pub struct WmEntry {
     pub text: String,
     #[serde(default)]
     pub acts: Vec<Observation>,
+    /// Measured checkout change for this whole receipt batch, never attributed to one call.
+    #[serde(default)]
+    pub(crate) disk_change: crate::cognition::act_observe::disk_change::DiskChange,
     /// Where her hands stood when this was recorded (the acting root), for
     /// receipts made while rooted at a card's checkout. `None` = her own
     /// workspace / not a receipt. A receipt from another root is not perceived
@@ -546,6 +549,7 @@ impl WorkingMemory {
         let scope = self.scope.lock().clone();
         let mut entries = self.entries.lock();
         entries.push_back(WmEntry {
+            disk_change: Default::default(),
             kind: WmKind::ActionStatement { room },
             text: text.to_owned(),
             acts: Vec::new(),
@@ -673,6 +677,7 @@ impl WorkingMemory {
         }
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
+            disk_change: Default::default(),
             kind: WmKind::Thought,
             text: r.to_string(),
             acts: Vec::new(),
@@ -692,7 +697,7 @@ impl WorkingMemory {
     /// changes the perception window (see `next_action_seq`). Oldest ages out past
     /// capacity, same rolling scratchpad as reasoning.
     pub fn record_receipt(&self, result: &str) {
-        self.record_receipt_inner(result, Vec::new(), None, None);
+        self.record_receipt_inner(result, Vec::new(), None, None, Default::default());
     }
 
     /// TYPED sibling of [`record_receipt`](Self::record_receipt): store the same
@@ -714,7 +719,18 @@ impl WorkingMemory {
         room: Option<Uuid>,
         custody: crate::ai::types::ResultCustody,
     ) {
-        self.record_receipt_inner(rendered, acts.to_vec(), room, custody.handle().map(str::to_owned));
+        self.record_receipt_measured(acts, rendered, room, custody, Default::default());
+    }
+
+    pub(crate) fn record_receipt_measured(
+        &self,
+        acts: &[Observation],
+        rendered: &str,
+        room: Option<Uuid>,
+        custody: crate::ai::types::ResultCustody,
+        disk_change: crate::cognition::act_observe::disk_change::DiskChange,
+    ) {
+        self.record_receipt_inner(rendered, acts.to_vec(), room, custody.handle().map(str::to_owned), disk_change);
     }
 
     /// Shared body: mint the monotonic `#seq`, keep the FULL latest result, and push
@@ -728,6 +744,7 @@ impl WorkingMemory {
         acts: Vec<Observation>,
         room: Option<Uuid>,
         handle: Option<String>,
+        disk_change: crate::cognition::act_observe::disk_change::DiskChange,
     ) {
         let a = result.trim();
         if a.is_empty() {
@@ -815,6 +832,7 @@ impl WorkingMemory {
         let scope = self.scope.lock().clone();
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
+            disk_change,
             kind: WmKind::Receipt { n: seq },
             text,
             acts,
@@ -954,6 +972,7 @@ impl WorkingMemory {
         }
         let mut e = self.entries.lock();
         e.push_back(WmEntry {
+            disk_change: Default::default(),
             kind: WmKind::Fact,
             text: f.to_string(),
             acts: Vec::new(),
@@ -1618,6 +1637,7 @@ impl WorkingMemory {
                 || !matches!(entry.kind, WmKind::ActionStatement { room: authored_room } if Some(authored_room) == room)
         });
         e.push_back(WmEntry {
+            disk_change: Default::default(),
             kind: WmKind::Settlement,
             text: if a.is_empty() {
                 WM_SETTLEMENT_PREFIX.to_string()

@@ -228,6 +228,21 @@ impl ActOutcome {
 }
 
 impl Observation {
+    /// Execution alone is not success: projected running/failed/undecodable
+    /// results do not establish an effect. Legacy unprojected commands retain
+    /// their transport outcome contract.
+    pub(crate) fn completed_successfully(&self) -> bool {
+        use crate::sdk_codegen::ActVerdict;
+        matches!(self.status, ActStatus::Executed)
+            && !self.is_err()
+            && (self.output.verdict.succeeded()
+                || self.output.verdict == ActVerdict::Unprojected)
+    }
+
+    pub(crate) fn mutated_workspace(&self) -> bool {
+        self.completed_successfully() && self.output.verb.mutates()
+    }
+
     /// Humanized result body — the ONE decode both renderings share (card
     /// 0a4c0648: the executor hands back serde-serialized JSON; render code as
     /// code, never escape-soup).

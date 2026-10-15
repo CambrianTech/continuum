@@ -706,8 +706,12 @@ pub async fn apply_act(
     // The ring keeps this exact text; save THAT, so the pointer it leaves when it collapses
     // resolves to what she saw, every call of the batch included.
     let custody = pin.retain(body.persona_id, observation.trim());
+    let disk = super::disk_change::DiskChange::between(
+        disk_before,
+        super::disk_change::fingerprint_at(acting_root).await,
+    );
     body.working_memory
-        .record_receipt_typed(&acts, &observation, Some(room_id), custody);
+        .record_receipt_measured(&acts, &observation, Some(room_id), custody, disk);
     // Recorded and published: working memory now names every handle this batch saved, its
     // receipt's and each call's, so the pin that held them since before they were written can go.
     drop(pin);
@@ -732,19 +736,11 @@ pub async fn apply_act(
     // serious plumbing bug"). An executed mutating verb still counts on its own, for a
     // write that lands outside the checkout. A mutating verb that ERRORED reached no disk
     // (Freya, 2026-09-05: a `code/edit` answering "File not found" read as a write).
-    let disk = super::disk_change::DiskChange::between(
-        disk_before,
-        super::disk_change::fingerprint_at(acting_root).await,
-    );
-    let wrote_by_verb = acts.iter().any(|a| {
-        let n = a.call.name.replace('_', "/");
-        matches!(a.status, crate::cognition::act_observe::ActStatus::Executed)
-            && (n.contains("write") || n.contains("edit") || n.contains("apply") || n.contains("commit"))
-    });
+    let wrote_by_verb = acts.iter().any(Observation::mutated_workspace);
     // and the board: a submission, a review verdict, a ledger note or a card she put up is
     // written work that reaches no disk, and counted as reading until now
     let published = acts.iter().any(|a| {
-        matches!(a.status, crate::cognition::act_observe::ActStatus::Executed) && a.output.verb.publishes()
+        a.completed_successfully() && a.output.verb.publishes()
     });
     let wrote = wrote_by_verb || published || disk == super::disk_change::DiskChange::Changed;
     crate::probe!(

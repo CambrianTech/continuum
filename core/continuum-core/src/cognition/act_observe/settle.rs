@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::cognition::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle};
 
 use super::apply::apply_act;
-use super::perception::{any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace, wrote_without_observation};
+use super::perception::{any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace, ConcernPhase, wrote_without_observation};
 use super::types::{SettleOutcome, SettleStep};
 
 /// The FLOOR under one ACT — perceive, deliberate, act, observe — never the ceiling.
@@ -833,7 +833,7 @@ async fn settle_to_outcome(
                 // hers; the caller budget and lifecycle deadlines still apply.
                 if framing.workspace_deliverable && narrations_since_act < NARRATION_BUDGET {
                     if let Some(body) = cycle.acting() {
-                        if !mutated_workspace(&body.working_memory.recent_entries()) {
+                        if !mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::JustSettled) {
                             narrations_since_act += 1;
                             acts_at_last_nudge = Some(acts);
                             // Sense, not steer (2026-09-01): the receipt-absence is
@@ -886,7 +886,7 @@ async fn settle_to_outcome(
                 // fact — one truth for "did an act change a file".
                 if framing.workspace_deliverable && !mutated_yet {
                     if let Some(body) = cycle.acting() {
-                        mutated_yet = mutated_workspace(&body.working_memory.recent_entries());
+                        mutated_yet = mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::Ongoing);
                     }
                 }
                 // THE DELIVERABLE FACT BELONGS ON THE ACT PATH, NOT ONLY ON SETTLE.
@@ -907,7 +907,7 @@ async fn settle_to_outcome(
                 // #206 failure this file already documents.
                 if framing.workspace_deliverable && acts_at_last_nudge != Some(acts) {
                     if let Some(body) = cycle.acting() {
-                        if !mutated_workspace(&body.working_memory.recent_entries()) {
+                        if !mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::Ongoing) {
                             acts_at_last_nudge = Some(acts);
                             // Sense, not steer — same contract as the settle-path fact.
                             body.working_memory.record_fact(&format!(
