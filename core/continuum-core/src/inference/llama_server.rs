@@ -3575,10 +3575,12 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             // answered AlreadyServing, and every switch between minds stayed a full re-prefill.
             // The daemon's own rule decides here too: relaunch only when the running grant
             // holds no state and the target's would. Unknown (no argv) or drift is never one.
+            let page_dir = kv_page_dir(target.model_id(), served_window_n);
+            crate::inference::slots::seed_state_samples(&page_dir).await;
             let cache_ok = !crate::inference::lane_args::cache_relaunch_owed(
                 running_kv.as_ref().and_then(|r| r.cache_ram_mib),
                 target.host_prompt_cache_mib,
-                crate::inference::slots::measured_state_bytes(&kv_page_dir(target.model_id(), served_window_n)),
+                crate::inference::slots::measured_state_bytes(&page_dir),
             );
             let refused_trade = !lanes_ok
                 && window_ok

@@ -7140,6 +7140,9 @@ impl ServiceModule for ServingDaemonModule {
                  expired, not resumed; a fresh benchmark/dispatch re-measures it",
             );
         }
+        // The first reconcile sizes the host prompt cache from the states saved on disk, so
+        // they are measured first, off the worker (card 37eb1925).
+        crate::inference::slots::seed_page_store(&crate::inference::llama_server::kv_pages_root()).await;
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.
