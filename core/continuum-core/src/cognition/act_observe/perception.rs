@@ -145,7 +145,7 @@ pub(super) fn claimed_file_without_act(text: &str, recent: &[WmEntry]) -> Option
     candidates.into_iter().find(|f| {
         // Unbacked iff no MUTATING act names this file in its typed paths.
         !acts_in(recent).any(|a| {
-            a.output.verb.mutates()
+            a.mutated_workspace()
                 && a.output
                     .paths
                     .iter()
@@ -160,15 +160,18 @@ pub(super) fn claimed_file_without_act(text: &str, recent: &[WmEntry]) -> Option
 /// appears with NO subsequent observing act (`ToolVerb::observes`) after the LAST
 /// mutation. Typed verbs, not receipt prose — the seam-5 fix (`acts_in`). Pure
 /// geometry over her own acts; no judgment about whether the artifact needed
-/// observing, the recorded fact leaves that to her.
+/// observing, the recorded fact leaves that to her. Batch-only disk change cannot
+/// establish where a shell mutation fell relative to reads within that batch;
+/// this ordered predicate therefore uses successful per-call evidence only.
 pub(super) fn wrote_without_observation(recent: &[WmEntry]) -> bool {
     let start = last_settlement(recent).map_or(0, |i| i + 1);
-    let verbs: Vec<&super::observation::ToolVerb> =
-        acts_in(&recent[start..]).map(|a| &a.output.verb).collect();
-    let Some(m) = verbs.iter().rposition(|v| v.mutates()) else {
+    let acts: Vec<_> = acts_in(&recent[start..]).collect();
+    let Some(m) = acts.iter().rposition(|act| act.mutated_workspace()) else {
         return false;
     };
-    !verbs[m + 1..].iter().any(|v| v.observes())
+    !acts[m + 1..].iter().any(|act| {
+        act.completed_successfully() && act.output.verb.observes()
+    })
 }
 
 /// The caller knows whether settlement has already appended its boundary.
@@ -308,6 +311,7 @@ mod tests {
             failed.output.verdict = verdict;
             entries.push(receipt(vec![failed]));
             assert!(!mutated_workspace(&entries, ConcernPhase::Ongoing));
+            assert!(!wrote_without_observation(&entries));
         }
         let mut transport_error = act("code/edit", Some("current.rs"));
         transport_error.output.result.is_error = Some(true);
@@ -316,7 +320,13 @@ mod tests {
         refused.status = ActStatus::Errored { message: "not executed".into() };
         entries.push(receipt(vec![refused]));
         assert!(!mutated_workspace(&entries, ConcernPhase::Ongoing));
+        assert!(!wrote_without_observation(&entries));
         entries.push(receipt(vec![act("code/edit", Some("current.rs"))]));
+        assert!(wrote_without_observation(&entries));
+        let mut failed_read = act("code/read", Some("current.rs"));
+        failed_read.output.result.is_error = Some(true);
+        entries.push(receipt(vec![failed_read]));
+        assert!(wrote_without_observation(&entries), "failed read does not observe the edit");
         assert!(mutated_workspace(&entries, ConcernPhase::Ongoing));
         entries.push(settle());
         assert!(mutated_workspace(&entries, ConcernPhase::JustSettled));
