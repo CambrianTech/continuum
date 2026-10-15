@@ -3775,6 +3775,7 @@ impl ServingDaemonModule {
         // cascade ratchet the per-slot window DOWN on a same-lane relaunch and strand
         // the personas pinned to the earlier, larger slot — keep the incumbent window
         // when lanes are unchanged (memory-safe; a lane change legitimately resizes KV).
+        let planned_ctx = served_ctx;
         let served_ctx = sticky_served_window(served_ctx, lanes, &self.serving_tx.borrow());
         // #363 prevention: the WEDGE-HEAL floor. The sticky floor above reads the live
         // snapshot, but declaring a wedge EMPTIES that snapshot first — so the very
@@ -3788,6 +3789,9 @@ impl ServingDaemonModule {
         let floor_l = self.last_healthy_lanes.load(Ordering::Relaxed);
         let live_ready = self.serving_tx.borrow().ready;
         let floored = wedge_heal_floor(served_ctx, lanes, live_ready, floor_w, floor_l);
+        if floored != planned_ctx {
+            qualification = crate::modules::served_window_store::GeometryQualification::Unknown;
+        }
         if floored != served_ctx {
             crate::probe!(
                 class = "serving.reconcile.window",
@@ -4413,7 +4417,7 @@ impl ServingDaemonModule {
                 }
             }
             let capture = if current() {
-                let qualification = if snapshot.served_context_window < served_ctx {
+                let qualification = if snapshot.served_context_window != served_ctx || snapshot.lanes != lanes {
                     crate::modules::served_window_store::GeometryQualification::Unknown
                 } else { qualification };
                 verified_capture(server.as_ref(), &snapshot, revision, qualification).map(|mut capture| {
