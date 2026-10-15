@@ -557,6 +557,7 @@ mod tests {
     /// projects only cards + lanes.
     fn board(cards: Vec<WorkCard>, lanes: Vec<LaneRecord>) -> BoardSnapshot {
         BoardSnapshot {
+            submission_reviews: Vec::new(),
             cards,
             lanes,
             workspaces: Vec::new(),
