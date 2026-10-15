@@ -217,9 +217,6 @@ impl PerceptionFact for ContextBounds {
 /// parked fabricated receipts in the disclosed blind spot within minutes).
 struct StepsLedger;
 
-/// The visible ledger banner. Placement comes from its typed source, not this text.
-pub(crate) const STEPS_LEDGER_BANNER: &str = "[steps taken this session]";
-
 /// When the ledger cannot show every step, its oldest shown step is rounded UP to a
 /// multiple of this, so its head moves once per this many acts instead of every act; in
 /// between it only grows at its tail (card 5b09111e: the head slid one action per act).
