@@ -351,6 +351,8 @@ pub struct CargoTargetPool {
     tier: String,
     tracked: Arc<TrackedDir>,
     budget_bytes: u64,
+    /// Read the owning volume's already-published sample; never probe here.
+    volume_sample: fn(&Path) -> Option<crate::capacity::system_profile::DriveInfo>,
     /// The last decline reason (as a discriminant) and how many times it has
     /// repeated unchanged — so a persistent condition is reported once and then
     /// rarely, instead of once per broker tick (@Astra, #3910 review).
@@ -432,6 +434,7 @@ impl CargoTargetPool {
             fast_gaps: std::sync::atomic::AtomicU32::new(0),
             tracked,
             budget_bytes: budget_bytes.max(1),
+            volume_sample: super::DiskPressureMonitor::volume_for,
         }
     }
 
@@ -634,7 +637,7 @@ impl ResourcePool for CargoTargetPool {
     }
 
     fn capacity_bytes(&self) -> u64 {
-        self.budget_for_volume(super::DiskPressureMonitor::volume_for(self.tracked.path()).as_ref())
+        self.budget_for_volume((self.volume_sample)(self.tracked.path()).as_ref())
     }
 
     fn usage_bytes(&self) -> u64 {
@@ -652,7 +655,7 @@ impl ResourcePool for CargoTargetPool {
     /// critical volume should shed first, so the volume's pressure is this pool's
     /// floor: over budget OR on a hot volume, either one brings the broker.
     fn pressure(&self) -> f64 {
-        self.pressure_for_volume(super::DiskPressureMonitor::volume_for(self.tracked.path()).as_ref())
+        self.pressure_for_volume((self.volume_sample)(self.tracked.path()).as_ref())
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
@@ -1104,6 +1107,14 @@ impl ResourcePool for NvmeServingTierPool {
 
 #[cfg(test)]
 mod tests {
+    // Broker fixtures own their volume input as well as their temp files. The
+    // constructor budget is only a fallback: a concurrently published monitor
+    // sample must not turn a custody test into a test of the runner's free disk.
+    fn critical_fixture_volume(path: &Path) -> Option<crate::capacity::system_profile::DriveInfo> {
+        use crate::capacity::system_profile::{DriveInfo, DriveRole};
+        Some(DriveInfo { mount: path.into(), total_bytes: 100_000, available_bytes: 0, role: DriveRole::System })
+    }
+
     #[test]
     fn cache_pressure_follows_its_own_mount_instead_of_the_home_mount() {
         use crate::capacity::system_profile::{DriveInfo, DriveRole, drive_holding};
@@ -1252,6 +1263,9 @@ mod tests {
         assert!(tmp.path().join("debug/incremental").exists());
     }
 
+    // what this catches: the real broker must reach release incremental after
+    // compiler custody ends, even when the pool uses a measured volume instead
+    // of its fallback budget (3d4a push CI previously depended on global timing).
     #[test]
     fn broker_reclaims_release_incremental_only_after_profile_custody() {
         use crate::paging::{BrokerConfig, PressureBroker};
@@ -1265,12 +1279,17 @@ mod tests {
         for output in outputs { std::fs::write(release.join(output), b"preserve installed inputs").unwrap(); }
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
         tracked.set_bytes(dir_size_bytes(tmp.path()));
-        let pool = Arc::new(CargoTargetPool::new(tracked.clone(), 1));
+        let mut pool = CargoTargetPool::new(tracked.clone(), 1);
+        pool.volume_sample = critical_fixture_volume;
+        assert_eq!(pool.pressure(), 1.0, "the fixture supplies measured critical-volume pressure");
+        assert!(pool.capacity_bytes() > tracked.bytes(), "pressure comes from the volume, not the fallback budget");
+        let pool = Arc::new(pool);
         let broker = PressureBroker::new(BrokerConfig::default());
-        broker.register(pool);
+        broker.register(pool.clone());
         let lock_path = release.join(".cargo-lock");
         let build_lock = try_exclusive_flock(&lock_path).unwrap();
         assert_eq!(broker.relieve().bytes_freed, 0, "an active release compiler owns its profile");
+        assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), DeclinedEviction::BuildHoldsReleaseLock.discriminant(), "the broker reached the real custody guard");
         assert!(release.join("incremental/unit/derived.o").exists());
         drop(build_lock);
         #[cfg(unix)]
@@ -1371,9 +1390,12 @@ mod tests {
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
-        // Budget below measured usage → pool pressure > 1.0 → Critical.
+        // Measured critical volume admits the broker independently of any
+        // process-global monitor updates from concurrently running tests.
         let budget = tracked.bytes() / 2;
-        let pool = Arc::new(CargoTargetPool::new(tracked.clone(), budget));
+        let mut pool = CargoTargetPool::new(tracked.clone(), budget);
+        pool.volume_sample = critical_fixture_volume;
+        let pool = Arc::new(pool);
 
         let broker = PressureBroker::new(BrokerConfig::default());
         broker.register(pool as Arc<dyn ResourcePool>);
