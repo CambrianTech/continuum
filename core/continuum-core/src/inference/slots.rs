@@ -270,139 +270,79 @@ pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
 }
 
-/// One model's disk seed: in flight (shared, so a slow disk never grows a second stuck read),
-/// or done with the dirs it filled.
-#[derive(Clone)]
-enum ModelSeed {
-    Reading(futures::future::Shared<futures::future::BoxFuture<'static, ()>>),
-    Read(Vec<std::path::PathBuf>),
-}
-/// Per model. A `Reading` entry is never dropped, so its worker is never orphaned; `Read`
-/// entries beyond [`STATE_DIRS`] are dropped oldest first (that model is read once more).
-static MODEL_SEEDS: parking_lot::Mutex<Vec<(String, ModelSeed)>> = parking_lot::Mutex::new(Vec::new());
+/// One page dir's disk read, shared by every asker so a slow disk never grows a second stuck read.
+type StateSeed = futures::future::Shared<futures::future::BoxFuture<'static, ()>>;
+/// Reads in flight, per page dir. An entry leaves when its read lands; a timed-out asker leaves it
+/// in place, so the read keeps its custody and the next asker collects it.
+static SEEDING: parking_lot::Mutex<Vec<(std::path::PathBuf, StateSeed)>> = parking_lot::Mutex::new(Vec::new());
+#[cfg(test)]
+static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = parking_lot::Mutex::new(Vec::new());
 
-/// A restarted core starts with no state samples while the pages it would measure sit on
-/// disk (IntelMac, 2026-10-11 02:46Z: derived 1,792 MiB beside states up to 865 MB). Seed every
-/// geometry dir of `model_id` from its newest pages before anything sizes from them: they are
-/// exactly the saves a running core would have measured. Seeding at the spawn sized every fresh
-/// core's first lane from the KV estimate, because the sizing for that spawn runs first (Kimi's
-/// node, 2026-10-15: core started 12:15:15Z, launch derived 3,232 MiB 20 s later, and the
-/// re-home relaunched it at 9,477 MiB; card 37eb1925).
+/// A restarted core starts with no state samples while the pages it would measure sit on disk
+/// (IntelMac, 2026-10-11 02:46Z: derived 1,792 MiB beside states up to 865 MB). Seed the EXACT page
+/// dir a sizing is about to read from its newest pages, before it reads: they are exactly the saves
+/// a running core would have measured. Seeding at the spawn sized every fresh core's first lane from
+/// the KV estimate, because the sizing for that spawn runs first (Kimi's node, 2026-10-15: core
+/// started 12:15:15Z, launch derived 3,232 MiB 20 s later, and the re-home relaunched it at
+/// 9,477 MiB; card 37eb1925).
 ///
-/// Awaited by the serving daemon before each reconcile and by the adopt rail. Every one of the
-/// model's dirs is read, so the planned geometry is measured whenever it has pages; a geometry
-/// with no dir has no saved state, and the estimate is the honest answer there. The read runs on
-/// the blocking pool, never on a worker (root on #5060), once per model while the samples it
-/// filled are still held; if any was evicted it is read again. Each asker waits at most the disk
-/// reporters' [`REPORTER_TIMEOUT`](crate::system_resources::disk_pressure::REPORTER_TIMEOUT):
-/// an unavailable disk leaves the read in flight and that sizing on its estimate, and never
-/// holds serving. A read that fails is an error, never an empty store: it is probed and forgotten,
-/// and the next ask reads again. A dir with no pages is remembered empty; a live sample outranks
-/// the disk's.
-pub async fn seed_model_pages(model_id: &str) {
-    seed_model_pages_under(crate::inference::llama_server::kv_pages_root(), model_id).await;
-}
-
-async fn seed_model_pages_under(root: std::path::PathBuf, model_id: &str) {
+/// The sample cache is the readiness authority: a dir it knows (measured, or read and empty) is
+/// never read again, a dir it evicted is unknown again and is read again alone, and a new geometry
+/// is a new dir. The read runs on the blocking pool, never on a worker (root on #5060), once per
+/// dir in flight, and each asker waits at most the disk reporters'
+/// [`REPORTER_TIMEOUT`](crate::system_resources::disk_pressure::REPORTER_TIMEOUT): an unavailable
+/// disk leaves the read in flight and that sizing on its estimate, and never holds serving. A read
+/// that fails leaves the dir unknown (probed), so the next ask reads again.
+pub async fn seed_state_samples(dir: &std::path::Path) {
     use crate::runtime::daemon::{guarded, Guarded};
     let reading = {
-        let mut seeds = MODEL_SEEDS.lock();
-        let held = |dirs: &[std::path::PathBuf]| {
-            let samples = RECENT_STATE_BYTES.lock();
-            dirs.iter().all(|dir| state_dir_known_in(&samples, dir))
-        };
-        let current = seeds.iter().position(|(m, _)| m == model_id).map(|i| (i, seeds[i].1.clone()));
-        match current {
-            Some((_, ModelSeed::Reading(read))) => read,
-            Some((_, ModelSeed::Read(dirs))) if held(dirs.as_slice()) => return,
-            Some((i, ModelSeed::Read(_))) => {
-                seeds.remove(i);
-                start_model_seed(&mut seeds, root, model_id)
+        let mut seeding = SEEDING.lock();
+        if state_dir_known_in(&RECENT_STATE_BYTES.lock(), dir) {
+            return;
+        }
+        match seeding.iter().find(|(d, _)| d == dir) {
+            Some((_, read)) => read.clone(),
+            None => {
+                let read = read_state_samples(dir.to_path_buf());
+                seeding.push((dir.to_path_buf(), read.clone()));
+                read
             }
-            None => start_model_seed(&mut seeds, root, model_id),
         }
     };
     if let Guarded::TimedOut = guarded(crate::system_resources::disk_pressure::REPORTER_TIMEOUT, reading).await {
         crate::probe!(
             class = "inference.kv_page.seed_pending",
-            model = model_id,
+            dir = %dir.display(),
             "the saved pages are still being read; this sizing uses the estimate, the next one the pages",
         );
     }
 }
 
-/// Register and return the shared read of `model_id`'s dirs. Its completion replaces the
-/// `Reading` entry with what it filled, or removes it on failure.
-fn start_model_seed(
-    seeds: &mut Vec<(String, ModelSeed)>,
-    root: std::path::PathBuf,
-    model_id: &str,
-) -> futures::future::Shared<futures::future::BoxFuture<'static, ()>> {
+/// The shared read of one dir: its samples land in the cache, THEN its entry leaves [`SEEDING`],
+/// so no asker between the two starts a second read. Never holds both locks.
+fn read_state_samples(dir: std::path::PathBuf) -> StateSeed {
     use futures::FutureExt;
-    let model = model_id.to_owned();
-    let prefix = crate::inference::llama_server::kv_page_dir_prefix(model_id);
-    let read = async move {
-        let outcome = tokio::task::spawn_blocking(move || model_page_dirs(&root, &prefix))
+    async move {
+        #[cfg(test)]
+        SEED_READS.lock().push(dir.clone());
+        let read = dir.clone();
+        match tokio::task::spawn_blocking(move || newest_page_states(&read, STATE_SAMPLES))
             .await
             .map_err(|error| error.to_string())
-            .and_then(|read| read);
-        let mut seeds = MODEL_SEEDS.lock();
-        seeds.retain(|(m, _)| m != &model);
-        match outcome {
-            Ok(dirs) => {
-                {
-                    let mut samples = RECENT_STATE_BYTES.lock();
-                    for (dir, states) in &dirs {
-                        seed_dir_in(&mut samples, dir, states.clone());
-                    }
-                }
-                seeds.push((model, ModelSeed::Read(dirs.into_iter().map(|(dir, _)| dir).collect())));
-                let read = seeds.iter().filter(|(_, s)| matches!(s, ModelSeed::Read(_))).count();
-                if read > STATE_DIRS {
-                    if let Some(i) = seeds.iter().position(|(_, s)| matches!(s, ModelSeed::Read(_))) {
-                        seeds.remove(i);
-                    }
-                }
-            }
+            .and_then(|states| states)
+        {
+            Ok(states) => seed_dir_in(&mut RECENT_STATE_BYTES.lock(), &dir, states),
             Err(error) => crate::probe!(
                 class = "inference.kv_page.seed_failed",
-                model = model.as_str(),
+                dir = %dir.display(),
                 error = %error,
                 "reading the saved pages on disk failed; left unmeasured, the next ask reads again",
             ),
         }
+        SEEDING.lock().retain(|(d, _)| d != &dir);
     }
     .boxed()
-    .shared();
-    seeds.push((model_id.to_owned(), ModelSeed::Reading(read.clone())));
-    read
-}
-
-/// Every geometry dir under `root` whose name starts with `prefix` (one model's dirs, all of
-/// them), each with its [`newest_page_states`]. A root that does not exist is an empty store; any
-/// other failure to read the root or one of the model's dirs is an error, not an empty answer.
-fn model_page_dirs(root: &std::path::Path, prefix: &str) -> Result<Vec<(std::path::PathBuf, Vec<u64>)>, String> {
-    let entries = match std::fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("{}: {error}", root.display())),
-    };
-    let mut dirs = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("{}: {error}", root.display()))?;
-        if !entry.file_name().to_string_lossy().starts_with(prefix) {
-            continue;
-        }
-        if !entry.file_type().map_err(|error| format!("{}: {error}", entry.path().display()))?.is_dir() {
-            continue;
-        }
-        let dir = entry.path();
-        // pages_in reads an unreadable dir as empty; prove it readable first.
-        std::fs::read_dir(&dir).map_err(|error| format!("{}: {error}", dir.display()))?;
-        let states = newest_page_states(&dir, STATE_SAMPLES);
-        dirs.push((dir, states));
-    }
-    Ok(dirs)
+    .shared()
 }
 
 /// The engine's sidecars beside each page, saved and restored with it: the context checkpoints
@@ -424,15 +364,24 @@ pub fn page_sidecar_bytes(page: &str) -> Option<u64> {
 }
 
 /// Every page in `dir` (`a-*.bin`), as (page name -> (the page file's mtime, bytes of the page
-/// and its sidecars)). Reads the dir once; anything unreadable is skipped.
-fn pages_in(dir: &std::path::Path) -> std::collections::HashMap<String, (std::time::SystemTime, u64)> {
+/// and its sidecars)). Reads the dir once. A dir that does not exist holds no pages, and an entry
+/// that vanishes between the listing and its stat (a trim racing this read) is skipped; any other
+/// failure is an error, so no reader mistakes an unreadable store for an empty one (root on #5060).
+fn pages_in(dir: &std::path::Path) -> Result<std::collections::HashMap<String, (std::time::SystemTime, u64)>, String> {
     let mut pages = std::collections::HashMap::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return pages;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(pages),
+        Err(error) => return Err(format!("{}: {error}", dir.display())),
     };
-    for e in entries.flatten() {
+    for e in entries {
+        let e = e.map_err(|error| format!("{}: {error}", dir.display()))?;
         let name = e.file_name().to_string_lossy().into_owned();
-        let Ok(md) = e.metadata() else { continue };
+        let md = match e.metadata() {
+            Ok(md) => md,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("{}: {error}", e.path().display())),
+        };
         let sidecar = PAGE_SIDECARS.iter().find_map(|s| name.strip_suffix(s));
         let page = sidecar.unwrap_or(&name).to_string(); // unwrap_or: a name with no sidecar suffix IS the page name
         if !md.is_file() || !(page.starts_with("a-") && page.ends_with(".bin")) {
@@ -444,16 +393,16 @@ fn pages_in(dir: &std::path::Path) -> std::collections::HashMap<String, (std::ti
             entry.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // unwrap_or: an unreadable mtime sorts oldest, the safe side for an eviction candidate and the least likely sample
         }
     }
-    pages
+    Ok(pages)
 }
 
 /// The sizes of the newest `n` saved states in `dir` (each page with its sidecars), oldest
-/// first. Anything unreadable is simply not a sample.
-fn newest_page_states(dir: &std::path::Path, n: usize) -> Vec<u64> {
-    let mut by_age: Vec<(std::time::SystemTime, u64)> = pages_in(dir).into_values().filter(|(_, b)| *b > 0).collect();
+/// first, or why the dir could not be read ([`pages_in`]).
+fn newest_page_states(dir: &std::path::Path, n: usize) -> Result<Vec<u64>, String> {
+    let mut by_age: Vec<(std::time::SystemTime, u64)> = pages_in(dir)?.into_values().filter(|(_, b)| *b > 0).collect();
     by_age.sort_by_key(|(t, _)| *t);
     let skip = by_age.len().saturating_sub(n);
-    by_age.into_iter().skip(skip).map(|(_, b)| b).collect()
+    Ok(by_age.into_iter().skip(skip).map(|(_, b)| b).collect())
 }
 
 /// After a successful save of `just_saved` (a page filename), keep the live
@@ -561,8 +510,20 @@ pub fn trim_page_store(
     max_bytes: u64,
     min_age_ms: u64,
 ) -> (usize, u64, u64) {
-    // page name → (mtime, bytes incl. sidecars)
-    let pages = pages_in(dir);
+    // page name → (mtime, bytes incl. sidecars). An unreadable store trims nothing: deleting on a
+    // partial listing could remove what the read did not see.
+    let pages = match pages_in(dir) {
+        Ok(pages) => pages,
+        Err(error) => {
+            crate::probe!(
+                class = "inference.kv_page.store_unreadable",
+                dir = %dir.display(),
+                error = %error,
+                "the KV page store could not be read; nothing trimmed",
+            );
+            return (0, 0, 0);
+        }
+    };
     let mut total: u64 = pages.values().map(|v| v.1).sum();
     if total <= max_bytes {
         return (0, 0, total);
@@ -1902,40 +1863,67 @@ mod tests {
         std::fs::write(dir.path().join("a-p1-r1.bin.lora"), vec![0u8; 5]).expect("test: adapter sidecar");
         std::fs::write(dir.path().join("a-p2-r2.bin"), vec![0u8; 300]).expect("test: page");
         std::fs::write(dir.path().join("saved-ledger.json"), vec![0u8; 9_999]).expect("test: not a page");
-        let mut states = newest_page_states(dir.path(), STATE_SAMPLES);
+        let mut states = newest_page_states(dir.path(), STATE_SAMPLES).expect("test: readable dir");
         states.sort_unstable();
         assert_eq!(states, vec![300, 865], "each page with its sidecars, the ledger excluded");
-        assert_eq!(newest_page_states(dir.path(), 1).len(), 1, "at most n");
-        assert!(newest_page_states(&dir.path().join("absent"), 4).is_empty(), "no dir, no samples");
+        assert_eq!(newest_page_states(dir.path(), 1).expect("test: readable dir").len(), 1, "at most n");
+        assert!(newest_page_states(&dir.path().join("absent"), 4).expect("test: absent dir").is_empty(), "no dir, no samples");
+        let not_a_dir = dir.path().join("saved-ledger.json");
+        assert!(newest_page_states(&not_a_dir, 4).is_err(), "an unreadable store is an error, never an empty one");
     }
 
     // what this catches (card 37eb1925, Kimi's node 2026-10-15: a fresh core sized its first
     // lane from the KV estimate, 3,232 MiB, because the pages on disk were only read at the
-    // spawn that sizing precedes, and the re-home relaunched it at 9,477 MiB): the planned
-    // model's own geometry dirs are measured before any spawn, whatever other models' dirs are
-    // newer; another model's dir is not read; the read is shared and bounded. A dir with no pages
-    // is remembered empty; a live sample is never replaced by the disk's.
+    // spawn that sizing precedes, and the re-home relaunched it at 9,477 MiB): the exact dir a
+    // sizing reads is measured before it reads, among more same-model geometries than the sample
+    // cache holds; a known dir is not read again; a geometry made after an earlier seed is read
+    // for itself; a dir evicted from the bounded cache is read again, alone (root's fixtures on
+    // #5060). A dir with no pages is remembered empty; a live sample is never replaced by the disk's.
     #[tokio::test]
     async fn the_first_sizing_after_a_restart_reads_the_pages_on_disk() {
         let root = tempfile::tempdir().expect("test: page store");
-        let model = "test-37eb1925/model";
-        let prefix = crate::inference::llama_server::kv_page_dir_prefix(model);
-        let geometry = root.path().join(format!("{prefix}4096"));
-        std::fs::create_dir(&geometry).expect("test: geometry dir");
-        std::fs::write(geometry.join("a-p1-r1.bin"), vec![0u8; 4_000]).expect("test: page");
-        std::fs::write(geometry.join("a-p1-r1.bin.ckpt"), vec![0u8; 900]).expect("test: sidecar");
-        let other = root.path().join("another-model--c4096");
-        std::fs::create_dir(&other).expect("test: other model's dir");
-        std::fs::write(other.join("a-p9-r9.bin"), vec![0u8; 77]).expect("test: page");
-        for i in 0..(STATE_DIRS + 2) {
-            std::fs::create_dir(root.path().join(format!("newer-{i}--c1"))).expect("test: newer dirs");
+        let geometry = |key: usize| root.path().join(format!("test-37eb1925--c{key}"));
+        let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
+        // An asker waits at most REPORTER_TIMEOUT; a loaded runner may outlast it. Re-ask until the
+        // dir's one read has landed: a re-ask joins the same read, so the read count stays honest.
+        let seeded = |dir: std::path::PathBuf| async move {
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                loop {
+                    seed_state_samples(&dir).await;
+                    if !SEEDING.lock().iter().any(|(d, _)| d == &dir) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("test: the read lands");
+        };
+        for key in 0..(STATE_DIRS + 3) {
+            std::fs::create_dir(geometry(key)).expect("test: same-model geometry");
+            std::fs::write(geometry(key).join("a-p1-r1.bin"), vec![0u8; 1_000 + key]).expect("test: page");
         }
-        assert_eq!(measured_state_bytes(&geometry), None, "a fresh core has measured nothing");
-        seed_model_pages_under(root.path().to_path_buf(), model).await;
-        assert_eq!(measured_state_bytes(&geometry), Some(4_900), "the planned model's dir, no spawn first");
-        assert_eq!(measured_state_bytes(&other), None, "another model's dir is not read");
-        assert_eq!(model_page_dirs(root.path(), &prefix).expect("test: readable store").len(), 1, "only the model's own dirs");
-        assert!(model_page_dirs(&root.path().join("absent"), &prefix).expect("test: no store").is_empty(), "no store is empty, not an error");
+        let desired = geometry(0);
+        std::fs::write(desired.join("a-p1-r1.bin.ckpt"), vec![0u8; 900]).expect("test: sidecar");
+        assert_eq!(measured_state_bytes(&desired), None, "a fresh core has measured nothing");
+        seeded(desired.clone()).await;
+        assert_eq!(measured_state_bytes(&desired), Some(1_900), "the exact dir, no spawn first");
+        seeded(desired.clone()).await;
+        assert_eq!(reads_of(&desired), 1, "a known dir is not read again");
+
+        let later = geometry(STATE_DIRS + 7);
+        std::fs::create_dir(&later).expect("test: a geometry made after the seed");
+        std::fs::write(later.join("a-p2-r2.bin"), vec![0u8; 333]).expect("test: page");
+        seeded(later.clone()).await;
+        assert_eq!(measured_state_bytes(&later), Some(333), "a new geometry is read for itself");
+
+        for key in 1..(STATE_DIRS + 3) {
+            seeded(geometry(key)).await;
+        }
+        assert_eq!(measured_state_bytes(&desired), None, "evicted from the bounded cache");
+        seeded(desired.clone()).await;
+        assert_eq!(measured_state_bytes(&desired), Some(1_900), "an evicted dir is read again");
+        assert_eq!(reads_of(&desired), 2, "and read alone, not by a census of its model");
 
         let mut samples = StateSamples::new();
         let empty = std::path::Path::new("/pages/fresh");

@@ -574,13 +574,67 @@ impl ServingOperation {
     }
 }
 impl ServingDaemonModule {
-    /// The reconcile sizes the host prompt cache from the states saved in the planned model's
-    /// page dirs; measure them first, bounded and off the worker (card 37eb1925). Once per
-    /// model per process; after that this is a lookup.
-    async fn seed_planned_pages(&self) {
-        let model = self.plan_tx.borrow().plan.as_ref().map(|plan| plan.base_model.model_id.clone());
-        if let Some(model) = model {
-            crate::inference::slots::seed_model_pages(&model).await;
+    /// The per-slot window a launch of `desired` at `lanes` takes from the plan's window: the
+    /// #175 sticky floor (keep the incumbent window on a same-lane relaunch), the #363 wedge-heal
+    /// floor (the last healthy lane's window, through a teardown-transient plan), then the
+    /// physical-fit bound (a kept window must still fit the card). ONE derivation, so the
+    /// reconcile that sizes a launch and the tick that seeds the page dir it sizes from read the
+    /// same geometry (card 37eb1925). Pure of side effects: the reconcile probes each step.
+    fn launch_window(&self, desired: &str, plan_window: u32, lanes: u32) -> LaunchWindow {
+        // #175: a relaunch WILL happen past the no-relaunch guard (a genome page-in / model
+        // change). Don't let the startup LoRA-load cascade ratchet the per-slot window DOWN on a
+        // same-lane relaunch and strand the personas pinned to the earlier, larger slot: keep
+        // the incumbent window when lanes are unchanged (a lane change legitimately resizes KV).
+        let sticky = sticky_served_window(plan_window, lanes, &self.serving_tx.borrow());
+        // #363: the sticky floor reads the live snapshot, but declaring a wedge EMPTIES that
+        // snapshot first, so the relaunch the detector triggers used to spawn at whatever the
+        // teardown-transient plan said (the dying predecessor still holds its memory when the
+        // successor's budget samples free RAM). Floor the successor to the last HEALTHY lane's
+        // window when the lane count is unchanged.
+        let floored = wedge_heal_floor(
+            sticky,
+            lanes,
+            self.serving_tx.borrow().ready,
+            self.last_healthy_window.load(Ordering::Relaxed),
+            self.last_healthy_lanes.load(Ordering::Relaxed),
+        );
+        // A KEPT WINDOW MUST STILL FIT. Both floors keep the BIGGER window on the assumption it
+        // was legitimately sized. On 2026-09-17 it was not: a 144,640 window sized against a
+        // fictional 54 GB budget (the ledger's uncapped add-back) was kept by sticky, then by
+        // wedge-heal, across every relaunch onto a 26 GB budget (31.9 of 32.6 GB VRAM, 44 s
+        // prefills). Bound it by what the PHYSICAL budget fits at this lane count (physical, not
+        // live: the live budget is exactly the transient the wedge-heal law sees through). The
+        // plan's own window is always within it, so this touches nothing but a kept fiction.
+        let served = match self
+            .catalog
+            .snapshot()
+            .get(desired)
+            .and_then(|live| footprint_for(&live.model))
+            .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
+        {
+            Some(fits) if floored > fits.max(crate::inference::planning::MIN_SERVE_CTX) => {
+                fits.max(crate::inference::planning::MIN_SERVE_CTX)
+            }
+            _ => floored,
+        };
+        LaunchWindow { sticky, floored, served }
+    }
+
+    /// Before a reconcile sizes anything, measure the saved states in the exact page dirs it will
+    /// read for the plan's model: the dir a launch would size its prompt cache from, and the dir
+    /// at the running lane's window (the cache-holds-no-state check). Bounded and off the worker
+    /// (card 37eb1925).
+    async fn seed_reconcile_pages(&self) {
+        let Some((model, plan_window, lanes)) = self.plan_tx.borrow().plan.as_ref().map(|plan| {
+            (plan.base_model.model_id.clone(), plan.served_context_window, plan.lanes)
+        }) else {
+            return;
+        };
+        let launch = self.launch_window(&model, plan_window, lanes).served;
+        crate::inference::slots::seed_state_samples(&crate::inference::llama_server::kv_page_dir(&model, launch)).await;
+        let live = self.serving_tx.borrow().served_context_window;
+        if live > 0 && live != launch {
+            crate::inference::slots::seed_state_samples(&crate::inference::llama_server::kv_page_dir(&model, live)).await;
         }
     }
 
@@ -3755,67 +3809,36 @@ impl ServingDaemonModule {
             }
         }
 
-        // #175 sticky window: we're past the no-relaunch guard, so a relaunch WILL
-        // happen (a genome page-in / model change). Don't let the startup LoRA-load
-        // cascade ratchet the per-slot window DOWN on a same-lane relaunch and strand
-        // the personas pinned to the earlier, larger slot — keep the incumbent window
-        // when lanes are unchanged (memory-safe; a lane change legitimately resizes KV).
-        let served_ctx = sticky_served_window(served_ctx, lanes, &self.serving_tx.borrow());
-        // #363 prevention: the WEDGE-HEAL floor. The sticky floor above reads the live
-        // snapshot, but declaring a wedge EMPTIES that snapshot first — so the very
-        // relaunch the detector triggers used to spawn at whatever the teardown-transient
-        // plan said (the dying predecessor still holds its memory when the successor's
-        // budget samples free RAM). Floor the successor to the last HEALTHY lane's window
-        // when the lane count is unchanged; the predecessor's window is exactly the
-        // memory being freed, so the successor inherits it, and the existing overflow
-        // protection stays the backstop if the world genuinely shrank.
-        let floor_w = self.last_healthy_window.load(Ordering::Relaxed);
-        let floor_l = self.last_healthy_lanes.load(Ordering::Relaxed);
-        let live_ready = self.serving_tx.borrow().ready;
-        let floored = wedge_heal_floor(served_ctx, lanes, live_ready, floor_w, floor_l);
-        if floored != served_ctx {
+        // Past the no-relaunch guard a relaunch WILL happen: the window it takes is the plan's
+        // through the sticky, wedge-heal and physical-fit laws (`launch_window`, the one owner the
+        // tick's page seed reads too), each step that moved it reported here.
+        let window = self.launch_window(&desired, served_ctx, lanes);
+        if window.floored != window.sticky {
             crate::probe!(
                 class = "serving.reconcile.window",
                 decision = "wedge-heal-floor",
                 live_window = 0u32,
-                plan_window = served_ctx,
-                floored_to = floored,
+                plan_window = window.sticky,
+                floored_to = window.floored,
                 plan_lanes = lanes,
                 "spawn-at-transient guarded: successor floored to the last healthy \
                  lane's window instead of a teardown-dip plan (#363)",
             );
         }
-        // A KEPT WINDOW MUST STILL FIT. Both laws above keep the BIGGER window on the
-        // assumption it was legitimately sized. On 2026-09-17 it was not: a 144,640
-        // window sized against a fictional 54 GB budget (the ledger's uncapped add-back)
-        // was kept by sticky, then by wedge-heal, across every relaunch onto a 26 GB
-        // budget — 31.9 of 32.6 GB VRAM, 44 s prefills, the cache demand it implied.
-        // Bound the kept window by what the PHYSICAL budget fits at this lane count
-        // (physical, not live: the live budget is exactly the teardown transient the
-        // wedge-heal law exists to see through). The plan's own window is always
-        // within it, so this touches nothing but a kept fiction.
-        let served_ctx = match self
-            .catalog
-            .snapshot()
-            .get(&desired)
-            .and_then(|live| footprint_for(&live.model))
-            .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
-        {
-            Some(fits) if floored > fits.max(crate::inference::planning::MIN_SERVE_CTX) => {
-                let bound = fits.max(crate::inference::planning::MIN_SERVE_CTX);
-                crate::probe!(
-                    class = "serving.reconcile.window",
-                    decision = "kept-window-exceeds-physical-fit",
-                    kept_window = floored,
-                    bound_to = bound,
-                    plan_lanes = lanes,
-                    physical_usable_gb = (self.physical_budget().usable_bytes / 1_000_000_000),
-                    "a kept (sticky / wedge-heal) window does not fit this host's physical \\n                     budget at this lane count — bounded; a kept window is never a licence \\n                     to exceed the card",
-                );
-                bound
-            }
-            _ => floored,
-        };
+        if window.served != window.floored {
+            crate::probe!(
+                class = "serving.reconcile.window",
+                decision = "kept-window-exceeds-physical-fit",
+                kept_window = window.floored,
+                bound_to = window.served,
+                plan_lanes = lanes,
+                physical_usable_gb = (self.physical_budget().usable_bytes / 1_000_000_000),
+                "a kept (sticky / wedge-heal) window does not fit this host's physical \
+                 budget at this lane count — bounded; a kept window is never a licence \
+                 to exceed the card",
+            );
+        }
+        let served_ctx = window.served;
 
         // Resolve the full Model struct ONCE, here, and carry it on the target —
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
@@ -7061,6 +7084,14 @@ fn snapshot_from_outcome(
     }
 }
 
+/// The window a launch takes ([`ServingDaemonModule::launch_window`]), with the steps the
+/// reconcile reports: after the sticky floor, after the wedge-heal floor, and the window served.
+struct LaunchWindow {
+    sticky: u32,
+    floored: u32,
+    served: u32,
+}
+
 #[async_trait]
 impl ServiceModule for ServingDaemonModule {
     fn config(&self) -> ModuleConfig {
@@ -7154,7 +7185,7 @@ impl ServiceModule for ServingDaemonModule {
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.
         self.recompute();
-        self.seed_planned_pages().await;
+        self.seed_reconcile_pages().await;
         let _ = self.reconcile_to_plan();
         Ok(())
     }
@@ -7172,7 +7203,7 @@ impl ServiceModule for ServingDaemonModule {
         // not-ready when the reconcile reads the snapshot — otherwise the escalation waits a
         // full tick behind the very guard it exists to defeat.
         self.take_reported_wedge();
-        self.seed_planned_pages().await;
+        self.seed_reconcile_pages().await;
         let _ = self.reconcile_to_plan();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
