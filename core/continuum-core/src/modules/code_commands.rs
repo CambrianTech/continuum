@@ -693,7 +693,7 @@ const EDIT_MODE_HELP: &str = "edit_mode must be ONE of (preferred = a tagged obj
 {\"type\":\"insert_at\",\"line\":N,\"content\":\"...\"} | \
 {\"type\":\"append\",\"content\":\"...\"}. A bare mode string (e.g. \"append\") with the fields at top level is also accepted.";
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct CodeEditParams {
     /// Path to the file, relative to the workspace (repo) root.
     pub file_path: String,
@@ -703,9 +703,6 @@ pub struct CodeEditParams {
     /// Forgiving: a bare mode string (e.g. `"append"`) with the fields at top level also works.
     #[serde(default)]
     #[ts(type = "any")]
-    // Publish the canonical operation contract. Deserialization remains forgiving of
-    // the documented flat/alias forms, but a path alone is never an edit.
-    #[schemars(with = "EditMode", required)]
     pub edit_mode: serde_json::Value,
     // Top-level convenience fields — accepted when edit_mode is given as a bare mode string
     // (or when the mode is inferred from which of these are present). Forgives the common
@@ -738,6 +735,30 @@ pub struct CodeEditParams {
     /// Optional note describing the change (recorded in the change history).
     #[serde(default)]
     pub description: Option<String>,
+}
+
+// Advertise one typed call shape; the serde structure above deliberately also accepts
+// legacy flat and alias forms. Deriving its schema would make the defaulted operation
+// optional (even `schemars(required)` cannot override serde(default) in schemars 0.8).
+// Keep compatibility parsing out of the native tool contract and recovery example.
+impl JsonSchema for CodeEditParams {
+    fn schema_name() -> String {
+        "CodeEditParams".into()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        #[derive(JsonSchema)]
+        #[allow(dead_code)]
+        struct CanonicalEdit {
+            /// Path relative to the workspace root.
+            file_path: String,
+            /// Operation to apply.
+            edit_mode: EditMode,
+            /// Optional note recorded in change history.
+            description: Option<String>,
+        }
+        CanonicalEdit::json_schema(generator)
+    }
 }
 
 /// Normalize a (possibly mis-shaped) code/edit call into a real [`EditMode`]. Forgives the
@@ -2314,6 +2335,8 @@ mod tests {
     fn generated_edit_recovery_contains_a_normalizable_operation() {
         let schema = serde_json::to_value(schemars::schema_for!(CodeEditParams)).unwrap();
         assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("edit_mode")));
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 3,
+            "legacy fallback fields must not duplicate the canonical operation schema");
         let manual = crate::commands::help::render_ai_help("code/edit", "edit", &schema);
         let envelope = manual.split_once("\n{").unwrap().1;
         let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
