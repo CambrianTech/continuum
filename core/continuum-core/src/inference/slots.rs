@@ -268,22 +268,32 @@ static PAGE_DIR: parking_lot::Mutex<Option<std::path::PathBuf>> = parking_lot::M
 /// a save can trim the store it just wrote into.
 pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
-    // A restarted core starts with no state samples, so its first cache sizing fell back to the
-    // KV estimate while the pages it would measure sat on disk (IntelMac, 2026-10-11 02:46Z:
-    // derived 1,792 MiB beside states up to 865 MB). Seed them from the newest pages already
-    // here, once per dir: they are exactly the saves a running core would have measured.
-    // Cheap check first, then the dir read with no lock held (Fable on #4933), then insert
-    // only if no save measured this dir meanwhile: a live sample outranks the disk's.
-    if measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), dir).is_some() {
-        return;
+    seed_from_disk(dir);
+}
+
+/// A restarted core starts with no state samples while the pages it would measure sit on
+/// disk (IntelMac, 2026-10-11 02:46Z: derived 1,792 MiB beside states up to 865 MB). Seed a
+/// dir from its newest pages the first time anything asks about it: they are exactly the
+/// saves a running core would have measured. The FIRST asker is the cache sizing that runs
+/// before the spawn, so seeding only at the spawn sized every fresh core's first lane from the
+/// KV estimate (Kimi's node, 2026-10-15: core started 12:15:15Z, launch derived 3,232 MiB
+/// 20 s later, the re-home relaunched it at 9,477 MiB; card 37eb1925).
+/// Cheap check first, then the dir read with no lock held (Fable on #4933), then insert only
+/// if nothing touched this dir meanwhile: a live sample outranks the disk's. A dir with no
+/// pages is recorded empty, so it is read once, not on every ask. Returns the dir's
+/// measurement read under the same lock that seeded it, so a bounded eviction between the
+/// two cannot answer `None` for pages that are on disk.
+fn seed_from_disk(dir: &std::path::Path) -> Option<u64> {
+    {
+        let samples = RECENT_STATE_BYTES.lock();
+        if state_dir_known_in(&samples, dir) {
+            return measured_state_bytes_in(&samples, dir);
+        }
     }
     let seeded = newest_page_states(dir, STATE_SAMPLES);
     let mut samples = RECENT_STATE_BYTES.lock();
-    if measured_state_bytes_in(&samples, dir).is_none() {
-        for bytes in seeded {
-            note_state_bytes_in(&mut samples, dir, bytes);
-        }
-    }
+    seed_dir_in(&mut samples, dir, seeded);
+    measured_state_bytes_in(&samples, dir)
 }
 
 /// The engine's sidecars beside each page, saved and restored with it: the context checkpoints
@@ -399,6 +409,24 @@ fn note_state_bytes_in(samples: &mut StateSamples, dir: &std::path::Path, bytes:
     }
 }
 
+/// PURE: whether `dir` has an entry yet, measured or seeded empty.
+fn state_dir_known_in(samples: &StateSamples, dir: &std::path::Path) -> bool {
+    samples.iter().any(|(d, _)| d == dir)
+}
+
+/// PURE: give an unknown `dir` its disk samples (possibly none), within [`STATE_DIRS`]. A dir
+/// already known keeps what it has.
+fn seed_dir_in(samples: &mut StateSamples, dir: &std::path::Path, seeded: Vec<u64>) {
+    if state_dir_known_in(samples, dir) {
+        return;
+    }
+    let skip = seeded.len().saturating_sub(STATE_SAMPLES);
+    samples.push_back((dir.to_path_buf(), seeded.into_iter().skip(skip).collect()));
+    while samples.len() > STATE_DIRS {
+        samples.pop_front();
+    }
+}
+
 /// PURE: the largest recent state recorded under `dir`.
 fn measured_state_bytes_in(samples: &StateSamples, dir: &std::path::Path) -> Option<u64> {
     samples.iter().find(|(d, _)| d == dir).and_then(|(_, r)| r.iter().copied().max())
@@ -411,7 +439,7 @@ fn measured_state_bytes_in(samples: &StateSamples, dir: &std::path::Path) -> Opt
 /// so 104 states were skipped and 220 evicted, and two minds on one slot found nothing.
 /// The largest, not a median: the engine refuses any state over the limit outright.
 pub fn measured_state_bytes(page_dir: &std::path::Path) -> Option<u64> {
-    measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), page_dir)
+    seed_from_disk(page_dir)
 }
 
 /// Pure trim: pages (`a-*.bin`) with their sidecars ([`PAGE_SIDECARS`]), oldest mtime first,
@@ -1770,6 +1798,32 @@ mod tests {
         assert_eq!(states, vec![300, 865], "each page with its sidecars, the ledger excluded");
         assert_eq!(newest_page_states(dir.path(), 1).len(), 1, "at most n");
         assert!(newest_page_states(&dir.path().join("absent"), 4).is_empty(), "no dir, no samples");
+    }
+
+    // what this catches (card 37eb1925, Kimi's node 2026-10-15: a fresh core sized its first
+    // lane from the KV estimate, 3,232 MiB, because the pages on disk were only read at the
+    // spawn that sizing precedes, and the re-home relaunched it at 9,477 MiB): the sizing's own
+    // read measures the pages on disk with no spawn in between; a dir with no pages is
+    // remembered empty; a live sample is never replaced by the disk's.
+    #[test]
+    fn the_first_sizing_after_a_restart_reads_the_pages_on_disk() {
+        let dir = tempfile::tempdir().expect("test: page dir");
+        std::fs::write(dir.path().join("a-p1-r1.bin"), vec![0u8; 4_000]).expect("test: page");
+        std::fs::write(dir.path().join("a-p1-r1.bin.ckpt"), vec![0u8; 900]).expect("test: sidecar");
+        assert_eq!(measured_state_bytes(dir.path()), Some(4_900), "no note_page_dir first");
+
+        let mut samples = StateSamples::new();
+        let empty = std::path::Path::new("/pages/fresh");
+        seed_dir_in(&mut samples, empty, Vec::new());
+        assert!(state_dir_known_in(&samples, empty) && measured_state_bytes_in(&samples, empty).is_none());
+        let live = std::path::Path::new("/pages/live");
+        note_state_bytes_in(&mut samples, live, 7);
+        seed_dir_in(&mut samples, live, vec![1, 2, 3]);
+        assert_eq!(measured_state_bytes_in(&samples, live), Some(7), "the live sample stands");
+        for i in 0..(STATE_DIRS * 2) {
+            seed_dir_in(&mut samples, std::path::Path::new(&format!("/pages/s{i}")), vec![1]);
+        }
+        assert!(samples.len() <= STATE_DIRS, "seeding is bounded by dirs too");
     }
 
     // what this catches (Fable on #4930): a node-wide sample, where a second model's lane on
