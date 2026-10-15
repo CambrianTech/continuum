@@ -30,19 +30,21 @@
 //!   calls in a turn, the replay returns them in the same order.
 //!   Random-access by some semantic key (e.g., "give me the
 //!   delivery that matches THIS ctx") is slice 12+ territory.
+//!   Legacy events without turn IDs remain sequential: interleaved anonymous
+//!   turns cannot be distinguished when associating recorded budget claims.
 //! - Continuation matching is by FIFO order, not by cursor
 //!   equality. The replay assumes the caller exercises the source
 //!   in the same shape that produced the capture. Good for golden-
 //!   trace replay; not yet ideal for free-form interactive replay.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 
 use crate::persona::rag_budget::{
-    ContinuationCursor, RagContext, RagDelivery, RagSource, ResolutionPreference,
+    ContinuationCursor, RagContext, RagDelivery, RagSource, RagSourceBudget, ResolutionPreference,
 };
 use crate::persona::rag_capture::RagCaptureEvent;
 
@@ -52,9 +54,9 @@ use crate::persona::rag_capture::RagCaptureEvent;
 pub struct ReplayRagSource {
     source_id: &'static str,
     persona_id: uuid::Uuid,
-    /// Deliveries from `deliver()` calls — popped FIFO on each
-    /// `deliver()` request.
-    initial: Mutex<VecDeque<RagDelivery>>,
+    /// Each delivery retains its captured claim; observation does not advance
+    /// either, and delivery consumes both atomically in the existing FIFO.
+    initial: Mutex<VecDeque<(RagDelivery, Option<RagSourceBudget>)>>,
     /// Deliveries from `deliver_continuation()` calls — popped FIFO.
     continuations: Mutex<VecDeque<RagDelivery>>,
 }
@@ -73,7 +75,12 @@ impl ReplayRagSource {
         Self {
             source_id,
             persona_id,
-            initial: Mutex::new(initial.into()),
+            initial: Mutex::new(
+                initial
+                    .into_iter()
+                    .map(|delivery| (delivery, None))
+                    .collect(),
+            ),
             continuations: Mutex::new(continuations.into()),
         }
     }
@@ -82,34 +89,63 @@ impl ReplayRagSource {
     /// `source_id` and `persona_id`; events from other sources or
     /// other personas are dropped on the floor. Events with a
     /// `cursor` field set go into the continuation queue; events
-    /// without go into the initial queue.
+    /// without go into the initial queue. Matching TurnStart claims travel with
+    /// that delivery, even when different turns are interleaved in the trace.
+    /// Source-only/older traces without a claim use the ordinary default claim;
+    /// their identity never selects an invented historical policy.
     pub fn from_captures(
         source_id: &'static str,
         persona_id: uuid::Uuid,
         events: impl IntoIterator<Item = RagCaptureEvent>,
     ) -> Self {
-        let mut initial: Vec<RagDelivery> = Vec::new();
+        let mut initial = VecDeque::new();
         let mut continuations: Vec<RagDelivery> = Vec::new();
+        let mut claims = HashMap::new();
         for event in events {
-            if let RagCaptureEvent::SourceDelivered {
-                source_id: captured_source_id,
-                persona_id: captured_persona_id,
-                cursor,
-                delivery,
-                ..
-            } = event
-            {
-                if captured_source_id != source_id || captured_persona_id != persona_id {
-                    continue;
+            match event {
+                RagCaptureEvent::TurnStart {
+                    persona_id: captured_persona_id,
+                    turn_id,
+                    source_budgets,
+                    ..
+                } if captured_persona_id == persona_id => {
+                    claims.insert(
+                        turn_id,
+                        source_budgets
+                            .into_iter()
+                            .find(|claim| claim.source_id == source_id),
+                    );
                 }
-                if cursor.is_some() {
-                    continuations.push(delivery);
-                } else {
-                    initial.push(delivery);
+                RagCaptureEvent::SourceDelivered {
+                    source_id: captured_source_id,
+                    persona_id: captured_persona_id,
+                    turn_id,
+                    cursor,
+                    delivery,
+                    ..
+                } if captured_source_id == source_id && captured_persona_id == persona_id => {
+                    if cursor.is_some() {
+                        continuations.push(delivery);
+                    } else {
+                        initial.push_back((delivery, claims.get(&turn_id).cloned().flatten()));
+                    }
                 }
+                RagCaptureEvent::TurnEnd {
+                    persona_id: captured_persona_id,
+                    turn_id,
+                    ..
+                } if captured_persona_id == persona_id => {
+                    claims.remove(&turn_id);
+                }
+                _ => {}
             }
         }
-        Self::from_deliveries(source_id, persona_id, initial, continuations)
+        Self {
+            source_id,
+            persona_id,
+            initial: Mutex::new(initial),
+            continuations: Mutex::new(continuations.into()),
+        }
     }
 
     /// How many deliveries remain in the initial queue. Useful for
@@ -140,6 +176,19 @@ impl RagSource for ReplayRagSource {
         0
     }
 
+    /// Reproduce the next captured resolved claim, rather than reinterpreting a
+    /// source's name under today's policy. Like delivery replay this deliberately
+    /// preserves recorded values; a diagnostic caller can explicitly override
+    /// allocator inputs to compare a different window or policy.
+    fn budget_claim(&self, window: u32, headroom: u32) -> RagSourceBudget {
+        self.initial
+            .lock()
+            .unwrap()
+            .front()
+            .and_then(|(_, claim)| claim.clone())
+            .unwrap_or_else(|| RagSourceBudget::retrieval(self.source_id, 0, window, headroom))
+    }
+
     async fn deliver(
         &self,
         ctx: &RagContext,
@@ -156,7 +205,7 @@ impl RagSource for ReplayRagSource {
             };
         }
         match self.initial.lock().unwrap().pop_front() {
-            Some(delivery) => delivery,
+            Some((delivery, _)) => delivery,
             None => RagDelivery {
                 source_id: self.source_id.to_string(),
                 items: Vec::new(),
@@ -274,6 +323,11 @@ mod tests {
         let canned = delivery("stub", vec![item("hello", 5)]);
         let source =
             ReplayRagSource::from_deliveries("stub", persona(), vec![canned.clone()], Vec::new());
+        assert_eq!(
+            source.budget_claim(2048, 512),
+            RagSourceBudget::retrieval("stub", 0, 2048, 512),
+            "a source-only fixture declares no captured policy"
+        );
         let result = source.deliver(&ctx(), 100, ResolutionPreference::Raw).await;
         assert_eq!(result.items.len(), 1);
         assert_eq!(result.items[0].content, "hello");
@@ -383,19 +437,85 @@ mod tests {
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let recorder = RecordingRagSource::new(live, sink_dyn);
 
+        // Regression for 3ea02ba7: interleaved turns keep their own resolved
+        // source claims; neither the next turn nor another persona replaces it.
+        let mut first_ctx = ctx();
+        first_ctx.substrate.turn_id = Some(Uuid::new_v4());
+        let mut second_ctx = ctx();
+        second_ctx.substrate.turn_id = Some(Uuid::new_v4());
+        let first_claim = RagSourceBudget::floorless_share(
+            "stub",
+            2048,
+            512,
+            std::num::NonZeroU32::new(64).unwrap(),
+        );
+        let second_claim = RagSourceBudget::retrieval("stub", 5, 2048, 512);
+        for (context, claim) in [
+            (first_ctx.clone(), first_claim.clone()),
+            (second_ctx.clone(), second_claim.clone()),
+        ] {
+            sink.record(RagCaptureEvent::TurnStart {
+                captured_at_ms: context.now_ms,
+                persona_id: persona(),
+                turn_id: context.substrate.turn_id,
+                context_window: 2048,
+                reserved: crate::persona::rag_budget::ReservedTokens {
+                    system: 0,
+                    completion: 0,
+                },
+                source_budgets: vec![claim],
+                context,
+            });
+        }
+        sink.record(RagCaptureEvent::TurnStart {
+            captured_at_ms: 0,
+            persona_id: Uuid::new_v4(),
+            turn_id: first_ctx.substrate.turn_id,
+            context_window: 2048,
+            reserved: crate::persona::rag_budget::ReservedTokens {
+                system: 0,
+                completion: 0,
+            },
+            source_budgets: vec![second_claim.clone()],
+            context: first_ctx.clone(),
+        });
+
         // Two deliver calls — captures should accumulate.
-        recorder.deliver(&ctx(), 8, ResolutionPreference::Raw).await; // packs 1 item
         recorder
-            .deliver(&ctx(), 100, ResolutionPreference::Raw)
+            .deliver(&first_ctx, 8, ResolutionPreference::Raw)
+            .await; // packs 1 item
+        recorder
+            .deliver(&second_ctx, 100, ResolutionPreference::Raw)
             .await; // packs the rest
 
         // Now replay the captured events through ReplayRagSource.
         let captured = sink.events();
         let replay = ReplayRagSource::from_captures("stub", persona(), captured.into_iter());
 
+        assert_eq!(
+            replay.budget_claim(1, 1),
+            first_claim,
+            "recorded policy is not recomputed"
+        );
+        assert!(replay
+            .deliver(
+                &RagContext::for_persona(Uuid::new_v4(), 0),
+                999,
+                ResolutionPreference::Raw
+            )
+            .await
+            .items
+            .is_empty());
+        assert_eq!(
+            replay.budget_claim(1, 1),
+            first_claim,
+            "foreign delivery cannot advance the claim"
+        );
+
         let first = replay.deliver(&ctx(), 999, ResolutionPreference::Raw).await;
         assert_eq!(first.items.len(), 1);
         assert_eq!(first.items[0].content, "alpha");
+        assert_eq!(replay.budget_claim(1, 1), second_claim);
 
         let second = replay.deliver(&ctx(), 999, ResolutionPreference::Raw).await;
         assert_eq!(second.items.len(), 1);
@@ -404,6 +524,10 @@ mod tests {
         // Trace exhausted now.
         let third = replay.deliver(&ctx(), 999, ResolutionPreference::Raw).await;
         assert_eq!(third.items.len(), 0);
+        assert_eq!(
+            replay.budget_claim(2048, 512),
+            RagSourceBudget::retrieval("stub", 0, 2048, 512)
+        );
     }
 
     // ---- JSONL reader ----
