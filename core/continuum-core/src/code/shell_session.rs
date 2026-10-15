@@ -92,18 +92,36 @@ pub struct ExecutionState {
     pub output_notify: Arc<Notify>,
     /// Compiled sentinel filter rules (empty = pass all lines through as Info).
     pub sentinel: CompiledSentinel,
-cargo_hold: Option<crate::inference::lane_process::Kept>,
-    cargo_task_ended: bool,
 }
 
-impl ExecutionState {
-    pub(crate) fn release_ended_cargo_hold(&mut self) {
-        if self.cargo_task_ended
-            && self.process_ended
-            && self.process_end_error.is_none()
-            && self.unconfirmed_descendants.is_empty()
-        {
-            self.cargo_hold = None;
+// Process custody cannot live only in bounded shell history: GC may drop a
+// completed-looking execution whose descendants have not been confirmed ended.
+struct ShellCargoCustody {
+    state: Arc<Mutex<ExecutionState>>,
+    admission: Arc<super::hands::HandsLease>,
+    kept: crate::inference::lane_process::Kept,
+}
+impl Drop for ShellCargoCustody {
+    fn drop(&mut self) {
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                self.admission.keep_unknown("shell process custody state is poisoned".into());
+                self.admission.keep_held(&[self.kept.clone()]);
+                return;
+            }
+        };
+        // Spawn and publishing its PID are synchronous, with no cancellation point.
+        if state.pid.is_none() { return; }
+        let end = crate::inference::lane_process::TreeEnd {
+            reaped: if state.process_ended && state.process_end_error.is_none() { Ok(()) }
+                else { Err(state.process_end_error.clone().unwrap_or_else(|| "shell task ended without confirming its child".into())) },
+            survivors: state.unconfirmed_descendants.clone(),
+            unwalked: None,
+        };
+        if !end.confirmed() {
+            self.admission.keep_unconfirmed(&end);
+            self.admission.keep_held(&[self.kept.clone()]);
         }
     }
 }
@@ -406,8 +424,6 @@ impl ShellSession {
             stderr_cursor: 0,
             output_notify: notify,
             sentinel: CompiledSentinel::empty(),
-        cargo_hold: None,
-            cargo_task_ended: false,
         }));
 
         self.executions.insert(execution_id.clone(), state.clone());
@@ -421,7 +437,9 @@ impl ShellSession {
         let confinement = self.confinement.clone();
         let who = self.persona_id.clone();
 
+        let admission = super::hands::current();
         rt_handle.spawn(async move {
+            let result = super::hands::admitted(admission, super::hands::scoped_admitted(async {
             let cargo_grant = match crate::system_resources::disk_reporters::admit_cargo_target(&target, &cwd, confinement.as_ref()).await {
                 Ok(grant) => grant,
                 Err(error) => {
@@ -435,23 +453,37 @@ impl ShellSession {
                     return;
                 }
             };
-            if let Ok(mut execution) = state.lock() {
-                execution.cargo_hold = Some(cargo_grant.kept());
-            }
+            let Some(admission) = super::hands::current() else {
+                if let Ok(mut state) = state.lock() {
+                    state.status = ShellExecutionStatus::Failed;
+                    state.stderr_lines.push("Shell has no process custody admission".into());
+                    state.process_ended = true;
+                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.output_notify.notify_one();
+                }
+                return;
+            };
+            let _custody = ShellCargoCustody { state: state.clone(), admission, kept: cargo_grant.kept() };
             run_shell_command(
                 state.clone(),
                 &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who, cargo_grant.grant(),
             )
             .await;
-            if let Ok(mut execution) = state.lock() {
-                execution.cargo_task_ended = true;
-                execution.release_ended_cargo_hold();
-            }
             // A finished command may have written anywhere under its cwd (a build, a
             // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
             // not — observers re-read the workspace on this event instead of
             // polling it with git on a clock (card f860e59c).
             super::workspace_events::note_written(&cwd);
+            })).await;
+            if let Err(error) = result {
+                if let Ok(mut state) = state.lock() {
+                    state.status = ShellExecutionStatus::Failed;
+                    state.stderr_lines.push(format!("Shell process admission: {error}"));
+                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.process_ended = true;
+                    state.output_notify.notify_one();
+                }
+            }
         });
 
         log_info!(
@@ -1704,11 +1736,24 @@ mod tests {
         assert!(receipt.lock().unwrap().stdout_lines.join("\n").contains("done"));
         assert_eq!(receipt.lock().unwrap().exit_code, Some(0));
 
+        // 5058: bounded history must not own an unresolved process's cache hold.
+        let context = crate::code::hands::HandsContext::fresh();
+        let admission = Arc::new(crate::code::hands::admit(context).unwrap());
+        let held = Arc::new(());
+        let witness = Arc::downgrade(&held);
+        receipt.lock().unwrap().unconfirmed_descendants.push(crate::inference::lane_process::ProcessIdentity { pid: 4242, start_time: 7 });
+        drop(ShellCargoCustody { state: receipt.clone(), admission: admission.clone(), kept: held });
+        receipt.lock().unwrap().unconfirmed_descendants.clear();
+        drop(admission);
+
         // Count eviction keeps only the newest terminal receipt, not running work.
         let running = session.execute("sleep 60", None, rt.handle()).unwrap();
         session.retain_completed(1, usize::MAX);
         assert_eq!(session.history().len(), 1);
         assert!(session.get_execution_state(&result.execution_id).is_err());
+        assert!(witness.upgrade().is_some(), "history eviction must not release unresolved process custody");
+        crate::code::hands::retain_processes(context, Vec::new());
+        assert!(witness.upgrade().is_none());
         assert!(session.get_execution_state(&running).is_ok());
         let retained_id = session.history()[0].execution_id.clone();
         assert!(session.get_execution_state(&retained_id).is_ok());
