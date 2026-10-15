@@ -443,7 +443,9 @@ impl ShellSession {
         let confinement = self.confinement.clone();
         let who = self.persona_id.clone();
 
-        let admission = super::hands::current();
+        // This task can outlive the command. Release must reach the existing
+        // shell kill path before waiting for the task's process/output lifetime.
+        let admission = super::hands::current().map(|lease| Arc::new(lease.process_custody()));
         rt_handle.spawn(async move {
             let result = super::hands::admitted(admission, super::hands::scoped_admitted(async {
             let cargo_grant = match crate::system_resources::disk_reporters::admit_cargo_target(&target, &cwd, confinement.as_ref()).await {
@@ -932,6 +934,7 @@ async fn run_shell_command(
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("no usable shell: {why}"));
+                s.process_ended = true; // no child was spawned
                 s.finished_at = Some(crate::time::EpochMs::now().millis());
                 s.output_notify.notify_one();
             }

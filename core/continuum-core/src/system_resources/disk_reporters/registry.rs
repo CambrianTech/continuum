@@ -482,10 +482,14 @@ impl DurableRoots {
             .unwrap_or_else(|| RootRecord::new(class, &physical));
         record.volume_id = volume_id;
         let id = uuid::Uuid::parse_str(&record.base.id).map_err(|error| error.to_string())?;
-        self.store
-            .save(id, &record)
-            .await
-            .map_err(|error| error.to_string())?;
+        // save creates a row; a newly observed volume updates the existing owner
+        // rather than trying to insert its stable identity a second time.
+        if self.saved.contains_key(&physical) {
+            self.store.update(id, &record).await
+        } else {
+            self.store.save(id, &record).await
+        }
+        .map_err(|error| error.to_string())?;
         self.saved.insert(physical, record);
         Ok(())
     }

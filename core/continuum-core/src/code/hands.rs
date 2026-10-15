@@ -97,6 +97,8 @@ struct Gate {
     scoped: Option<HandsContext>,
     closing: bool,
     in_flight: usize,
+    /// Detached shell tasks drain after release requests their existing kill path.
+    processes_in_flight: usize,
     /// What admitted work started and couldn't confirm ended (Codex root on #5026).
     lingering: Lingering,
     /// What that work's callers held for it ([`crate::inference::lane_process::holding`], a
@@ -128,16 +130,16 @@ static GATES: std::sync::LazyLock<dashmap::DashMap<HandsContext, GateCell>> = st
 /// One admitted command's or turn's hold on a set of hands. Dropping it lets a release finish.
 pub struct HandsLease {
     cell: GateCell,
+    process_custody: bool,
 }
 
 impl Drop for HandsLease {
     fn drop(&mut self) {
         let (gate, ended) = &*self.cell;
         let mut g = gate.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still counts down
-        g.in_flight = g.in_flight.saturating_sub(1);
-        if g.in_flight == 0 {
-            ended.notify_waiters();
-        }
+        let count = if self.process_custody { &mut g.processes_in_flight } else { &mut g.in_flight };
+        *count = count.saturating_sub(1);
+        ended.notify_waiters();
         let scoped = g.scoped;
         drop(g);
         if let Some(context) = scoped { retire_scoped(context); }
@@ -147,12 +149,19 @@ impl Drop for HandsLease {
 fn retire_scoped(context: HandsContext) {
     GATES.remove_if(&context, |_, cell| {
         let gate = cell.0.lock().unwrap_or_else(|error| error.into_inner());
-        gate.scoped == Some(context) && gate.closing && gate.in_flight == 0
+        gate.scoped == Some(context) && gate.closing && gate.in_flight == 0 && gate.processes_in_flight == 0
             && gate.lingering.is_empty() && gate.kept.is_empty()
     });
 }
 
 impl HandsLease {
+    /// Register detached process custody while its launching command is still
+    /// admitted. It must not keep the foreground gate open: release waits that
+    /// gate before asking the shell owner to kill, then drains this custody.
+    pub fn process_custody(&self) -> Self {
+        self.cell.0.lock().unwrap_or_else(|error| error.into_inner()).processes_in_flight += 1;
+        Self { cell: self.cell.clone(), process_custody: true }
+    }
     /// Record what ending a process this admitted work owned left unconfirmed, BEFORE the lease
     /// drops: the release that waits the lease out then finds it. A surviving descendant is
     /// re-checked; an unproven reap and an unwalked tree are held (`TreeEnd::unknown`).
@@ -192,7 +201,7 @@ pub fn admit(context: HandsContext) -> Result<HandsLease, String> {
         }
         g.in_flight += 1;
     }
-    Ok(HandsLease { cell })
+    Ok(HandsLease { cell, process_custody: false })
 }
 
 tokio::task_local! {
@@ -254,13 +263,23 @@ pub async fn scoped_admitted<F: std::future::Future>(work: F) -> Result<F::Outpu
 /// the process's life, one per context released. Returns what admitted work recorded as
 /// started and not confirmed ended ([`HandsLease::keep_unconfirmed`]), for the release.
 pub async fn close(context: HandsContext) -> Lingering {
+    drain(context, false).await
+}
+
+/// Called after the shell owner requests termination. Includes output draining
+/// and any uncertainty recorded on task cancellation before forgetting the world.
+pub async fn drain_processes(context: HandsContext) -> Lingering {
+    drain(context, true).await
+}
+
+async fn drain(context: HandsContext, processes: bool) -> Lingering {
     let cell = GATES.entry(context).or_default().clone();
     loop {
         let ended = cell.1.notified();
         {
             let mut g = cell.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned gate still closes
             g.closing = true;
-            if g.in_flight == 0 {
+            if g.in_flight == 0 && (!processes || g.processes_in_flight == 0) {
                 return g.lingering.clone();
             }
         }
@@ -326,6 +345,23 @@ impl HandsKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn release_can_request_kill_before_draining_detached_process_custody() {
+        let context = HandsContext::fresh();
+        let command = admit(context).unwrap();
+        let process = command.process_custody();
+        let mut closing = Box::pin(close(context));
+        assert!(futures::poll!(&mut closing).is_pending(), "launching command still owns admission");
+        drop(command);
+        assert!(closing.await.is_empty(), "release can now reach its shell kill authority");
+        assert!(admit(context).is_err(), "release has sealed new commands");
+        let mut draining = Box::pin(drain_processes(context));
+        assert!(futures::poll!(&mut draining).is_pending(), "world must survive process/output lifetime");
+        process.keep_unknown("cancelled output lifetime".into());
+        drop(process);
+        assert_eq!(draining.await.unknown, vec!["cancelled output lifetime"], "uncertainty is read after process drain");
+    }
 
     // 5058: an operator scope must preserve resources with an unresolved child,
     // while refusing new work after the scope returns.
