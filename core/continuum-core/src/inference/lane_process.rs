@@ -164,10 +164,39 @@ pub async fn end_tree(child: &mut tokio::process::Child) -> TreeEnd {
         Ok(tree) => (tree, None),
         Err(why) => (Vec::new(), Some(why)),
     };
-    let candidates = check.clone();
-    // a re-check that didn't run confirms nothing: every candidate stays unconfirmed
-    let survivors = tokio::task::spawn_blocking(move || still_present(&check)).await.unwrap_or(candidates);
+    // A SIGKILL can't be ignored, but the kernel tears the process down after the signal is sent,
+    // and an orphan is reaped by init after its parent (the shell, reaped above) is gone: one
+    // snapshot taken right after the kill can still see a descendant that is dying. Measured on the
+    // M5 (2026-10-15, a shell's `sleep` grandchild, n=200): gone 2.2 ms p50, 3.7 ms max after its
+    // SIGKILL; a loaded CI runner saw one still present at the first snapshot (canary 8eaed76f3,
+    // shell_session test_kill_execution). So the killed set is re-checked, at a doubling interval
+    // from 1 ms, until it is gone or one KILL_POLL has passed, the cadence a release already checks
+    // a killed execution at. What remains after that is recorded, never assumed gone: a release
+    // re-checks it, as before.
+    let survivors = confirm_gone(check, crate::code::shell_session::KILL_POLL).await;
     TreeEnd { reaped, survivors, unwalked }
+}
+
+/// Re-check `killed` (each killed again while its pid still names it) until none is present or
+/// `within` has passed, and return what is still present. A re-check that couldn't run confirms
+/// nothing: everything it was given stays unconfirmed.
+pub async fn confirm_gone(killed: Vec<ProcessIdentity>, within: std::time::Duration) -> Vec<ProcessIdentity> {
+    let deadline = tokio::time::Instant::now() + within;
+    let mut still = killed;
+    let mut wait = std::time::Duration::from_millis(1);
+    loop {
+        let check = still.clone();
+        still = match tokio::task::spawn_blocking(move || recheck(&check)).await {
+            Ok(present) => present,
+            Err(_) => return still,
+        };
+        let now = tokio::time::Instant::now();
+        if still.is_empty() || now >= deadline {
+            return still;
+        }
+        tokio::time::sleep(wait.min(deadline - now)).await;
+        wait *= 2;
+    }
 }
 
 /// How reading one of an owned child's streams ended. Kept apart from how the PROCESS ended:
