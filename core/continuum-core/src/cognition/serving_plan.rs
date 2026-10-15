@@ -369,11 +369,15 @@ impl ServingDemand {
 /// runnable floor. A demand that outgrows the remembered window re-keys the pages
 /// once and is remembered in turn. Pure.
 pub fn choose_served_window(fits: u32, demand_tokens: u32, sticky: Option<u32>) -> u32 {
-    let wanted = match sticky {
+    remembered_or_required_window(fits, demand_tokens, sticky).min(fits).max(MIN_SERVE_CTX)
+}
+
+/// Both legacy demand and allocated requirements use the same sticky-window law.
+fn remembered_or_required_window(fits: u32, demand_tokens: u32, sticky: Option<u32>) -> u32 {
+    match sticky {
         Some(s) if s <= fits && s >= demand_tokens => s,
         _ => demand_tokens,
-    };
-    wanted.min(fits).max(MIN_SERVE_CTX)
+    }
 }
 
 /// Hysteresis margin for switching UP to a more capable model: it must fit
@@ -678,10 +682,7 @@ impl ServingPlan {
             let lane_cap = self.geometry_allocator_lane_cap?;
             let a = crate::cognition::window_allocator::allocate(&demand.requirements, std::slice::from_ref(model), physical, lane_cap).ok()?;
             let lanes = demand.boot_geometry.map_or(a.lanes, |(_, cap)| a.lanes.min(cap));
-            let window = match demand.sticky_window {
-                Some(s) if s >= a.window && s <= model.window_within(physical.usable_bytes, lanes) => s,
-                _ => a.window,
-            };
+            let window = remembered_or_required_window(model.window_within(physical.usable_bytes, lanes), a.window, demand.sticky_window);
             (lanes, window)
         };
         Some(lanes > self.lanes || window > self.served_context_window)
@@ -1110,10 +1111,7 @@ pub fn plan_serving(
     let served_context_window = match &allocation {
         // The allocator's window IS the requirement it serves; the sticky window may
         // only stand in when it still covers that requirement and fits.
-        Some(a) => match demand.sticky_window {
-            Some(s) if s >= a.window && s <= window_for(lanes as u64) => s,
-            _ => a.window,
-        },
+        Some(a) => remembered_or_required_window(window_for(lanes as u64), a.window, demand.sticky_window),
         None => choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window),
     };
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
