@@ -127,6 +127,24 @@ impl LaneInvocation {
     /// invocation that reaches Command, after the model's original placement.
     pub(crate) fn constrain_to_cpu(&mut self) {
         pair(&mut self.args, "--n-gpu-layers", "0");
+        self.no_repack_when_training_on_cpu(true);
+    }
+
+    /// A lane that can train (`--train-dir`) and keeps base weights on the CPU serves
+    /// them unrepacked. llama.cpp repacks quantized CPU weights into a layout only its
+    /// CPU kernels read (CPU_REPACK: get_tensor/cpy_tensor NULL), and the backward pass
+    /// needs the standard layout. Measured IntelMac 2026-10-15T23:35Z (fork cc2e05ff2,
+    /// Qwen2.5-0.5B Q4_K_M, -ngl 0): repacked, a learn fails ("OUT_PROD 'grad for
+    /// ffn_swiglu-23' on blk.23.ffn_down.weight: no backend can run"); on a Metal host
+    /// the same request crashes in ggml_backend_tensor_copy (card 5b497852). With
+    /// --no-repack it learns (loss 1.608, 1418 ms). Price there: prompt 3-8% slower,
+    /// generation within noise, so only train-capable CPU lanes pay it; a GPU lane keeps
+    /// repack. `cpu_weights` mirrors the engine's own /train guard: CPU-only, or any
+    /// tensor override (server-train.cpp: "-ngl all or --no-repack").
+    fn no_repack_when_training_on_cpu(&mut self, cpu_weights: bool) {
+        if cpu_weights && self.has("--train-dir") && !self.has("--no-repack") {
+            self.args.push("--no-repack".to_string());
+        }
     }
 
     /// Value of the flag named `flag`, if present — i.e. the argument that follows
@@ -645,9 +663,11 @@ impl LaneInvocation {
         for pat in opts.host_pinned_tensors {
             ot_parts.push(format!("{pat}=CPU"));
         }
+        let weights_on_cpu = opts.cpu_only || !ot_parts.is_empty();
         if !ot_parts.is_empty() {
             pair(&mut self.args, "--override-tensor", ot_parts.join(","));
         }
+        self.no_repack_when_training_on_cpu(weights_on_cpu);
         // Per-model serving prefs (catalog-declared, measured — see ModelServingPrefs).
         if opts.fit_off {
             pair(&mut self.args, "-fit", "off");
@@ -984,6 +1004,32 @@ mod tests {
         });
         assert_eq!(on.value_of("--train-dir"), Some(dir.to_string_lossy().as_ref()));
         assert_eq!(on.args.iter().filter(|a| *a == "--train-dir").count(), 1);
+        // A train-capable lane whose weights sit on the CPU serves them unrepacked, or
+        // its learns fail (x86) or crash the engine (Metal host) — card 5b497852. A GPU
+        // lane and a lane that cannot train keep repack's prompt speed.
+        assert!(!on.has("--no-repack"), "GPU training lane keeps repack\n{:?}", on.args);
+        let cpu_train = inv(1, 4096).with_options(&LaneOptions {
+            train_dir: Some(&dir),
+            cpu_only: true,
+            ..LaneOptions::default()
+        });
+        assert!(cpu_train.has("--no-repack"), "{:?}", cpu_train.args);
+        let paged_train = inv(1, 4096).with_options(&LaneOptions {
+            train_dir: Some(&dir),
+            expert_ot: Some("blk\\.3\\.ffn_.*_exps=CPU"),
+            ..LaneOptions::default()
+        });
+        assert!(paged_train.has("--no-repack"), "{:?}", paged_train.args);
+        let cpu_serve = inv(1, 4096).with_options(&LaneOptions {
+            cpu_only: true,
+            ..LaneOptions::default()
+        });
+        assert!(!cpu_serve.has("--no-repack"), "{:?}", cpu_serve.args);
+        // A probe that constrains an assembled GPU training lane to CPU owes it too, once.
+        let mut constrained = on;
+        constrained.constrain_to_cpu();
+        constrained.constrain_to_cpu();
+        assert_eq!(constrained.args.iter().filter(|a| *a == "--no-repack").count(), 1);
     }
 
     // what this catches: GPU offload left to the backend's default. Metal defaults to
