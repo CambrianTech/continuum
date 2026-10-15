@@ -694,7 +694,7 @@ const EDIT_MODE_HELP: &str = "edit_mode must be ONE of (preferred = a tagged obj
 {\"type\":\"insert_at\",\"line\":N,\"content\":\"...\"} | \
 {\"type\":\"append\",\"content\":\"...\"}. A bare mode string (e.g. \"append\") with the fields at top level is also accepted.";
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct CodeEditParams {
     /// Path to the file, relative to the workspace (repo) root.
     pub file_path: String,
@@ -736,6 +736,44 @@ pub struct CodeEditParams {
     /// Optional note describing the change (recorded in the change history).
     #[serde(default)]
     pub description: Option<String>,
+}
+
+// Advertise one typed call shape; the serde structure above deliberately also accepts
+// legacy flat and alias forms. Deriving its schema would make the defaulted operation
+// optional (even `schemars(required)` cannot override serde(default) in schemars 0.8).
+// Keep compatibility parsing out of the native tool contract and recovery example.
+impl JsonSchema for CodeEditParams {
+    fn schema_name() -> String {
+        "CodeEditParams".into()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        CanonicalEdit::json_schema(generator)
+    }
+}
+
+/// The normalized edit consumed by the executor and advertised to callers.
+#[derive(JsonSchema)]
+struct CanonicalEdit {
+    /// Path relative to the workspace root.
+    file_path: String,
+    /// Operation to apply.
+    edit_mode: EditMode,
+    /// Optional note recorded in change history.
+    description: Option<String>,
+}
+
+impl TryFrom<CodeEditParams> for CanonicalEdit {
+    type Error = CommandError;
+
+    fn try_from(params: CodeEditParams) -> Result<Self, Self::Error> {
+        let edit_mode = normalize_edit_mode(&params)?;
+        Ok(Self {
+            file_path: params.file_path,
+            edit_mode,
+            description: params.description,
+        })
+    }
 }
 
 /// Normalize a (possibly mis-shaped) code/edit call into a real [`EditMode`]. Forgives the
@@ -867,9 +905,9 @@ impl ActionCommand for CodeEdit {
     async fn run(&self, ctx: &Ctx, p: CodeEditParams) -> Result<WriteResult, CommandError> {
         reject_placeholder_path(&p.file_path)?;
         let engine = engine!(self, ctx);
-        let mode = normalize_edit_mode(&p)?;
+        let edit = CanonicalEdit::try_from(p)?;
         engine
-            .edit(&p.file_path, &mode, p.description.as_deref())
+            .edit(&edit.file_path, &edit.edit_mode, edit.description.as_deref())
             .map_err(engine_err)
     }
 }
@@ -2310,6 +2348,33 @@ mod tests {
             format!("{err}").contains("content"),
             "names the missing field: {err}"
         );
+    }
+
+    #[test]
+    fn generated_edit_recovery_contains_a_normalizable_operation() {
+        let schema = serde_json::to_value(schemars::schema_for!(CodeEditParams)).unwrap();
+        assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("edit_mode")));
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 3,
+            "legacy fallback fields must not duplicate the canonical operation schema");
+        let manual = crate::commands::help::render_ai_help("code/edit", "edit", &schema);
+        let envelope = manual.split_once("\n{").unwrap().1;
+        let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
+        let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        let mut params: CodeEditParams = serde_json::from_value(envelope["tool_call"]["arguments"].clone()).unwrap();
+        // Fill the path blank; retain the generated numeric addresses unchanged and
+        // exercise the real executor, which rejects zero-based line positions.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("example.txt"), "original\n").unwrap();
+        params.file_path = "example.txt".into();
+        let engine = crate::code::FileEngine::new("edit-help-fixture", crate::code::PathSecurity::new(dir.path()).unwrap());
+        let edit = CanonicalEdit::try_from(params).expect("generated recovery must resolve an operation");
+        assert!(engine.edit(&edit.file_path, &edit.edit_mode, edit.description.as_deref()).unwrap().success);
+        assert_ne!(std::fs::read_to_string(dir.path().join("example.txt")).unwrap(), "original\n");
+        for name in ["line_range", "search_replace", "insert_at", "append"] {
+            assert!(manual.contains(name), "operation alternative missing: {name}");
+        }
+        let path_only: CodeEditParams = serde_json::from_value(serde_json::json!({"file_path":"x"})).unwrap();
+        assert!(matches!(normalize_edit_mode(&path_only), Err(CommandError::Arguments(_))));
     }
 
     // what this catches: THE live edit-stall (2026-07-14). Devstral personas

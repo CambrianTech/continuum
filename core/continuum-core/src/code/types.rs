@@ -93,6 +93,7 @@ pub struct DiffHunk {
 pub enum EditMode {
     /// Replace content between line numbers (1-indexed, inclusive).
     LineRange {
+        #[schemars(range(min = 1))]
         start_line: u32,
         end_line: u32,
         new_content: String,
@@ -105,7 +106,11 @@ pub enum EditMode {
         all: bool,
     },
     /// Insert content at a specific line (pushes existing lines down).
-    InsertAt { line: u32, content: String },
+    InsertAt {
+        #[schemars(range(min = 1))]
+        line: u32,
+        content: String,
+    },
     /// Append content to end of file.
     Append { content: String },
 }
