@@ -1061,8 +1061,26 @@ mod tests {
         let started = tokio::time::Instant::now();
         let err = within(started + std::time::Duration::from_secs(2), run_git(dir.path(), &commit)).await.unwrap_err();
         assert!(interrupted(&err) && out_of_time(&err), "a git the deadline ended is interrupted: {err}");
-        assert!(!err.contains("not confirmed gone"), "its tree's end is confirmed: {err}");
         assert!(started.elapsed() < std::time::Duration::from_secs(60), "the deadline ended it, not the hook");
+        // regression for card 0d18171d (canary a3546a125, run 38689841317): SIGKILL to another
+        // process is not synchronous, so the first check after it may still see the hook running
+        // and report it "not confirmed gone" (the hands lease keeps it for release's recheck).
+        // What must hold is that the tree ENDS: the hook it started is gone (a zombie is gone,
+        // the same rule as lane_process::still_present) well inside this test's own bound.
+        let hook = fs::read_to_string(&hook_pid).expect("the hook ran and recorded its pid");
+        let hook = sysinfo::Pid::from_u32(hook.trim().parse().expect("the hook's pid"));
+        let hooks = [hook];
+        let gone_by = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let mut sys = sysinfo::System::new();
+            let only_hook = sysinfo::ProcessesToUpdate::Some(&hooks);
+            sys.refresh_processes_specifics(only_hook, true, sysinfo::ProcessRefreshKind::nothing());
+            if sys.process(hook).is_none_or(|p| p.status() == sysinfo::ProcessStatus::Zombie) {
+                break;
+            }
+            assert!(tokio::time::Instant::now() < gone_by, "the hook the deadline ended is still running: {err}");
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
 
         let err = within(tokio::time::Instant::now(), run_git(dir.path(), &["status"])).await.unwrap_err();
         assert!(out_of_time(&err) && !interrupted(&err), "with no time left a git never starts: {err}");
