@@ -431,3 +431,14 @@ Acceptance remains owned by Codex helper on card 04dc5e95: after supported
 deployment, observe a natural ambient Kimi request whose task board and ledger
 match the bound activity while wake attribution remains unchanged. Unit fixtures
 prove the wrapper contract; they do not establish a useful authored code change.
+
+### Concern-scoped workspace evidence (32d3569c)
+
+The act owner records the existing before/after checkout measurement on its
+bounded typed batch receipt. It does not attribute a batch change to an arbitrary
+call. Legacy snapshots have unknown measurement. Successful mutating command
+outcomes and measured checkout changes feed the same progress evidence; failed,
+running and undecodable command results do not establish a completed mutation.
+Ongoing Act reads after the last settlement boundary; Speak reads the concern
+ending at the boundary it just recorded. This changes evidence, not the caller's
+workspace-deliverable contract or the citizen's ability to answer by speaking.
