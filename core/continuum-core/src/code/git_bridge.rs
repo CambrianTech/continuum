@@ -1097,10 +1097,25 @@ mod tests {
                 }
             } => {}, // the command is cancelled while its git's hook runs: the waiter is dropped
         }
-        let lingering = tokio::time::timeout(std::time::Duration::from_secs(10), crate::code::hands::close(context))
-            .await
-            .expect("the release completes once the cancelled git's tree has ended");
-        assert!(lingering.is_empty(), "nothing it started is left unconfirmed: {lingering:?}");
+        // The release, as code/release-hands runs it: close, then re-check what the cancelled git's
+        // tree left (end_tree takes ONE snapshot after its kill, so a descendant still dying is
+        // reported, conservatively, never forgotten), retrying until confirmed. Nothing may stay
+        // unknown, and every reported process must be confirmed gone by the release's own recheck
+        // within the deadline (#5062's CI, 2026-10-15: pid 15439 was unconfirmed at the snapshot;
+        // card fb166622; the same race #5053 fixed for the hook pid).
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let lingering = crate::code::hands::close(context).await;
+            assert!(lingering.unknown.is_empty(), "no tree it started is unknown: {lingering:?}");
+            let mut still = lingering.processes;
+            while !still.is_empty() {
+                still = crate::inference::lane_process::recheck(&still);
+                crate::code::hands::retain_processes(context, still.clone());
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            assert!(crate::code::hands::close(context).await.is_empty(), "the release confirmed everything it started");
+        })
+        .await
+        .expect("the release confirms the cancelled git's tree ended");
 
         // a pipe holds 64 KiB; 1 MiB to a git that never reads stdin can't be delivered whole
         let err = run_git_input(dir.path(), &["--version"], &[], Some(vec![b'x'; 1 << 20])).await.unwrap_err();
