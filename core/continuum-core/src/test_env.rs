@@ -16,6 +16,11 @@
 //! drop, panic included. Real-toolchain fixtures use [`HomeGuard::preserve`]
 //! instead: rustup must inherit the installed home, not another fixture's tempdir.
 //! Acquire once at the fixture boundary; guards are exclusive, not reentrant.
+//!
+//! The same lock serializes every test that mutates OTHER process environment too (e.g.
+//! `CONTINUUM_PROBE_DIR`/`CONTINUUM_PROBE_CLASSES`), with [`HomeGuard::preserve_blocking`]:
+//! one env lock, not one per variable, or two tests restoring each other's saved values
+//! interleave (card cb3221a5).
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
