@@ -2972,6 +2972,7 @@ mod tests {
             engine: "fixture-engine".into(), revisions: None,
         }).expect("fixture owned engine readiness");
         drop(transition);
+        let owned_geometry = endpoint.served_geometry().expect("fixture owned geometry");
         let observed_service = || crate::cognition::resource_admission::leased_in_sent_samples()
             .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
         let activity =
@@ -3011,6 +3012,9 @@ mod tests {
         };
         assert!(!observed_service().is_empty(), "real adapter terminal records owned service");
         assert!(observed_service().iter().all(|tokens| *tokens == 4), "full prompt includes cached prefix; evaluated suffix is not the count");
+        assert_eq!(crate::cognition::working_set::PromptSample::geometry_median(
+            &crate::cognition::resource_admission::leased_in_sent_samples(), &root, &owned_geometry,
+        ), Some(4), "real adapter terminal preserves launch model, window, lanes and generation");
         generation_mode.store(1, Ordering::SeqCst);
         assert!(tokio::time::timeout(
             std::time::Duration::from_secs(5),

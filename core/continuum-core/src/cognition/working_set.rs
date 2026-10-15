@@ -62,7 +62,7 @@ use uuid::Uuid;
 /// establishes observed service. A refusal cannot be interpreted as a success.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PromptSample {
-    Served { endpoint: String, model: String, tokens: u32 },
+    Served { endpoint: String, tokens: u32, geometry: crate::modules::served_window_store::ServedGeometry },
     Requested(u32),
 }
 
@@ -76,14 +76,24 @@ impl PromptSample {
 
     pub fn served(&self, endpoint: &str, model: Option<&str>) -> Option<u32> {
         match self {
-            Self::Served { endpoint: sampled_endpoint, model: sampled, tokens }
-                if *tokens > 0 && sampled_endpoint == endpoint && model == Some(sampled.as_str()) => Some(*tokens),
+            Self::Served { endpoint: sampled_endpoint, geometry, tokens }
+                if *tokens > 0 && sampled_endpoint == endpoint && model == Some(geometry.model_id.as_str()) => Some(*tokens),
             _ => None,
         }
     }
 
     pub fn served_median(samples: &[Self], endpoint: &str, model: Option<&str>) -> Option<u32> {
         let mut observed: Vec<u32> = samples.iter().filter_map(|s| s.served(endpoint, model)).collect();
+        observed.sort_unstable();
+        observed.get(observed.len() / 2).copied()
+    }
+
+    /// Exact generation cohort: a later binding never certifies an older sample.
+    pub fn geometry_median(samples: &[Self], endpoint: &str, geometry: &crate::modules::served_window_store::ServedGeometry) -> Option<u32> {
+        let mut observed: Vec<u32> = samples.iter().filter_map(|sample| match sample {
+            Self::Served { geometry: g, .. } if g == geometry => sample.served(endpoint, Some(&geometry.model_id)),
+            _ => None,
+        }).collect();
         observed.sort_unstable();
         observed.get(observed.len() / 2).copied()
     }
@@ -955,8 +965,8 @@ mod tests {
         registry.observed.insert(local, legacy);
         let samples = [
             PromptSample::Requested(56_057),
-            PromptSample::Served { endpoint: "seat".into(), model: "m".into(), tokens: 828 },
-            PromptSample::Served { endpoint: "seat".into(), model: "other".into(), tokens: 120_000 },
+            PromptSample::Served { endpoint: "seat".into(), tokens: 828, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "m".into(), generation: Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 } },
+            PromptSample::Served { endpoint: "seat".into(), tokens: 120_000, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "other".into(), generation: Uuid::new_v4(), per_slot_window: 128_000, lanes: 1 } },
         ];
         let requested: Vec<_> = samples.iter().filter_map(PromptSample::requested).collect();
         let growth = registry.sent_median_with(&[local], &requested).expect("requested demand");

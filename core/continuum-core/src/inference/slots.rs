@@ -1030,14 +1030,8 @@ impl EndpointAdmission {
     /// The response must name this owned engine's launch alias. The read lease
     /// prevents replacement while this evidence is checked; a discovered or
     /// remote endpoint without a launch contract cannot certify local service.
-    pub(crate) fn served_model(&self, response_model: &str) -> Option<String> {
-        let state = self.endpoint.state.lock();
-        let generation = state.generation.as_ref()?;
-        let contract = state.contract.as_ref()?;
-        if generation.has_exited() || contract.model_id != response_model {
-            return None;
-        }
-        Some(contract.model_id.clone())
+    pub(crate) fn served_geometry(&self, response_model: &str) -> Option<crate::modules::served_window_store::ServedGeometry> {
+        self.endpoint.served_geometry().filter(|g| g.model_id == response_model)
     }
 
     /// Called while this generation's read lease still prevents replacement.
@@ -1051,6 +1045,21 @@ impl EndpointAdmission {
         } else {
             Err("serving endpoint suspended; paging or engine completion remains unverified".into())
         }
+    }
+}
+
+impl EndpointSlots {
+    pub(crate) fn served_geometry(&self) -> Option<crate::modules::served_window_store::ServedGeometry> {
+        let state = self.state.lock();
+        let generation = state.generation.as_ref()?;
+        let contract = state.contract.as_ref()?;
+        if generation.has_exited() || !*state.ready.borrow() || contract.context == 0 || contract.slots == 0 {
+            return None;
+        }
+        Some(crate::modules::served_window_store::ServedGeometry {
+            model_id: contract.model_id.clone(), generation: generation.id,
+            per_slot_window: contract.context, lanes: contract.slots,
+        })
     }
 }
 

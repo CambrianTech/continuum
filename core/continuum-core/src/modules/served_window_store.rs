@@ -6,14 +6,24 @@
 //! moving measured demand each time). The page dir is keyed `<model>--c<window>`
 //! and the spawn sweeps every other generation, so NO page ever survived a
 //! reboot — every citizen re-prefilled cold after every deploy. Joel: "virtual
-//! disk paging … managed and maintained across runs." One writer (the spawn, the
-//! place that knows what actually served), one reader (the plan, which prefers a
-//! stored window that still fits over a fresh derivation).
+//! disk paging … managed and maintained across runs." The serving lifecycle records
+//! settled candidates; successful terminal usage qualifies an exact generation.
+//! Both updates belong to this store. Planning reads the last qualified geometry,
+//! which survives temporary pressure without treating a small success as recovery.
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 const FILE: &str = "served-window.json";
+
+/// Geometry observed under the endpoint owner's generation lease, not a planner proposal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServedGeometry {
+    pub model_id: String,
+    pub generation: uuid::Uuid,
+    pub per_slot_window: u32,
+    pub lanes: u32,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredServedWindow {
@@ -38,6 +48,10 @@ pub struct StoredServedWindow {
     #[serde(default)]
     pub observed_prompt_tokens: Option<u32>,
     pub set_at_ms: u64,
+    /// Current settled launch. It does not replace the last qualified geometry
+    /// until successful usage from this exact generation qualifies it.
+    #[serde(default)]
+    pub candidate: Option<ServedGeometry>,
 }
 
 impl StoredServedWindow {
@@ -79,7 +93,7 @@ pub fn load_geometry() -> Option<StoredServedWindow> {
 /// The remembered window for `model_id`, if the store holds one for THAT model.
 /// Missing or foreign = `None` silently; corrupt = `None` with a probe.
 pub fn load_for(model_id: &str) -> Option<u32> {
-    default_path().and_then(|p| load_from(&p)).filter(|s| s.model_id == model_id).map(|s| s.per_slot_window)
+    default_path().and_then(|p| load_from(&p)).filter(|s| s.model_id == model_id && s.steady_geometry().is_some()).map(|s| s.per_slot_window)
 }
 
 pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
@@ -110,27 +124,60 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
     }
 }
 
-/// Remember what actually served — the window AND the lane count. Called by the spawn;
-/// idempotent. Keeps the record's typical prompt (the plan tick owns that half).
-pub fn save(model_id: &str, per_slot_window: u32, lanes: u32) {
-    if let Some(p) = default_path() {
-        let typical = load_from(&p).filter(|s| s.model_id == model_id).and_then(|s| s.observed_prompt_tokens).unwrap_or(0); // no accepted evidence is unknown, never the legacy demand
-        save_to(&p, model_id, per_slot_window, lanes, typical);
+/// Record a settled launch separately from the geometry qualified by successful work.
+pub fn save(geometry: ServedGeometry) {
+    if let Some(path) = default_path() {
+        save_candidate_to(&path, geometry);
     }
 }
 
-/// Remember the typical prompt the seat serves (the plan tick, once measured); the
-/// window and lanes halves are kept. Idempotent; a 0 never overwrites a measurement.
-pub fn save_typical_prompt(model_id: &str, typical_prompt_tokens: u32) {
-    if typical_prompt_tokens == 0 {
+fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
+    let mut stored = load_from(path).unwrap_or_else(|| StoredServedWindow {
+        model_id: geometry.model_id.clone(),
+        per_slot_window: geometry.per_slot_window,
+        lanes: 0, // An unobserved first launch is not a qualified boot geometry.
+        typical_prompt_tokens: 0,
+        observed_prompt_tokens: None,
+        set_at_ms: crate::time::EpochMs::now().millis(),
+        candidate: None,
+    });
+    if stored.candidate.as_ref() != Some(&geometry) {
+        stored.candidate = Some(geometry);
+        write_record(path, &stored);
+    }
+}
+
+/// A successful median certifies only the settled generation that produced it.
+/// Test the candidate against retained service BEFORE replacing that evidence.
+pub fn save_observed_prompt(geometry: &ServedGeometry, tokens: u32) {
+    if let Some(path) = default_path() {
+        observe_to(&path, geometry, tokens);
+    }
+}
+
+fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
+    let Some(mut stored) = load_from(path) else { return };
+    if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0
+        || stored.candidate.as_ref() != Some(geometry)
+        || (stored.model_id == geometry.model_id
+            && stored.observed_prompt_tokens.is_some_and(|prior| geometry.per_slot_window < prior))
+    {
         return;
     }
-    if let Some(p) = default_path() {
-        let Some(s) = load_from(&p).filter(|s| s.model_id == model_id) else { return };
-        save_to(&p, model_id, s.per_slot_window, s.lanes, typical_prompt_tokens);
+    if stored.model_id == geometry.model_id && stored.per_slot_window == geometry.per_slot_window
+        && stored.lanes == geometry.lanes && stored.observed_prompt_tokens == Some(tokens)
+    {
+        return;
     }
+    stored.model_id = geometry.model_id.clone();
+    stored.per_slot_window = geometry.per_slot_window;
+    stored.lanes = geometry.lanes;
+    stored.typical_prompt_tokens = tokens;
+    stored.observed_prompt_tokens = Some(tokens);
+    stored.set_at_ms = crate::time::EpochMs::now().millis();
+    write_record(path, &stored);
 }
-
+#[cfg(test)]
 pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, typical_prompt_tokens: u32) {
     let observed_prompt_tokens = (typical_prompt_tokens > 0).then_some(typical_prompt_tokens);
     if load_from(path).is_some_and(|s| {
@@ -139,7 +186,15 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, ty
         return;
     }
     let set_at_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch stamps 0 — the stamp is informational, the window is the fact
-    let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, lanes, typical_prompt_tokens, observed_prompt_tokens, set_at_ms };
+    let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, lanes, typical_prompt_tokens, observed_prompt_tokens, set_at_ms, candidate: None };
+    write_record(path, &stored);
+}
+
+fn write_record(path: &Path, stored: &StoredServedWindow) {
+    let model_id = stored.model_id.as_str();
+    let per_slot_window = stored.per_slot_window;
+    let lanes = stored.lanes;
+    let typical_prompt_tokens = stored.typical_prompt_tokens;
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -150,7 +205,7 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, ty
             per_slot_window = per_slot_window as u64,
             lanes = lanes as u64,
             typical_prompt_tokens = typical_prompt_tokens as u64,
-            "served geometry remembered (window, lanes, typical prompt) — the next boot plans it first, so KV pages carry over and the first launch is the steady one"
+            "serving geometry lifecycle recorded — candidate and qualified restart evidence remain distinct"
         ),
         _ => crate::probe!(
             class = "serving.window.store_failed",
@@ -163,6 +218,44 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, ty
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression for #5050: small successful work on a collapsed launch must
+    // not erase the last geometry qualified by larger successful work.
+    #[test]
+    fn qualified_geometry_survives_collapse_small_success_and_restart() {
+        use crate::cognition::working_set::PromptSample;
+        let dir = tempfile::tempdir().expect("temporary owner store");
+        let path = dir.path().join(FILE);
+        let large = ServedGeometry { model_id: "m".into(), generation: uuid::Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 };
+        let collapsed = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: 2_048, ..large.clone() };
+        let observe = |geometry: &ServedGeometry, tokens| PromptSample::Served {
+            endpoint: "local".into(), tokens, geometry: geometry.clone(),
+        };
+        save_candidate_to(&path, large.clone());
+        assert_eq!(load_from(&path).expect("candidate").steady_geometry(), None);
+        let samples = vec![observe(&large, 30_000)];
+        observe_to(&path, &large, PromptSample::geometry_median(&samples, "local", &large).expect("large usage"));
+        save_candidate_to(&path, collapsed.clone());
+        let mut samples = samples;
+        samples.push(observe(&collapsed, 1_024));
+        let foreign = ServedGeometry { model_id: "other".into(), ..collapsed.clone() };
+        samples.push(observe(&foreign, 1_500));
+        samples.push(PromptSample::Served { endpoint: "neighbor".into(), tokens: 1_900, geometry: collapsed.clone() });
+        let median = PromptSample::geometry_median(&samples, "local", &collapsed).expect("small successful usage");
+        assert_eq!(median, 1_024, "foreign model, neighbor and old generation do not certify this launch");
+        observe_to(&path, &collapsed, median);
+        observe_to(&path, &large, 500); // late old-generation completion
+        observe_to(&path, &foreign, 500);
+        let restarted = load_from(&path).expect("restart reloads durable qualification");
+        assert_eq!(restarted.steady_geometry(), Some((62_720, 1)));
+        assert_eq!(restarted.observed_prompt_tokens, Some(30_000));
+        assert_eq!(restarted.candidate, Some(collapsed));
+        // A genuinely fitting replacement remains eligible; this is not a max-window rule.
+        let fitted = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: 40_000, ..large };
+        save_candidate_to(&path, fitted.clone());
+        observe_to(&path, &fitted, 32_000);
+        assert_eq!(load_from(&path).expect("qualified replacement").steady_geometry(), Some((40_000, 1)));
+    }
 
     // what this catches: a collapsed geometry must not seed the next boot as the steady one.
     // Regression for the M5 (2026-09-20 08:43Z booted 1 × 2,048 from the record its 07:52Z
@@ -177,6 +270,7 @@ mod tests {
             typical_prompt_tokens: typical,
             observed_prompt_tokens: Some(typical),
             set_at_ms: 1,
+            candidate: None,
         };
         assert_eq!(rec(2_048, 1, 30_000).steady_geometry(), None, "the collapse seeds nothing");
         assert_eq!(rec(67_072, 2, 30_000).steady_geometry(), Some((67_072, 2)), "a window that served the residents' prompts is steady");

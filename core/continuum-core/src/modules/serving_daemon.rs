@@ -3401,11 +3401,17 @@ impl ServingDaemonModule {
                 // SPAWNED one. Measured 2026-09-19 on the M5: the 12:19Z Eco relaunch spawned
                 // `--parallel 1`, the spawn wrote `lanes: 1` to the store, and every boot after
                 // (13:2xZ, 13:36Z) planned `min(fit, 1)` = one lane on a box whose fit held two
-                // — a shrink-only ratchet across boots. Saving on settle makes "the first
-                // launch is the steady one" (the boot probe's own words) true.
+                // — a shrink-only ratchet across boots. Settling records a candidate;
+                // same-generation successful usage must qualify it before it replaces
+                // the geometry a boot plans first.
                 if settles_this_tick(cooling, live.ready, live.lanes) {
                     if let Some(model) = live.active_model.as_deref() {
-                        crate::modules::served_window_store::save(model, live.served_context_window, live.lanes);
+                        let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&live.base_url);
+                        if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
+                            .filter(|g| g.model_id == model && g.per_slot_window == live.served_context_window && g.lanes == live.lanes)
+                        {
+                            crate::modules::served_window_store::save(geometry);
+                        }
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
                         crate::modules::citizen_health::note_lanes(live.lanes as u64);
@@ -3414,7 +3420,7 @@ impl ServingDaemonModule {
                             model,
                             per_slot_window = live.served_context_window as u64,
                             lanes = live.lanes as u64,
-                            "the launch outlived its spawn cooldown without a re-home — this geometry is what the next boot plans first"
+                            "the launch outlived its spawn cooldown without a re-home — successful usage must still qualify its restart geometry"
                         );
                     }
                 }
@@ -4880,14 +4886,19 @@ impl ServingDaemonModule {
         // the floor until prompts land. A boot never plans thinner than what it served.
         {
             let seat_model = incumbent.as_deref().or(boot.as_ref().map(|g| g.model_id.as_str()));
+            // Persist successful usage only against the same owned settled generation.
+            let serving = crate::inference::llama_server::current_serving();
+            let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&serving.base_url);
+            if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
+                .filter(|g| Some(g.model_id.as_str()) == seat_model)
+            {
+                if let Some(median) = crate::cognition::working_set::PromptSample::geometry_median(&(self.leased_in_sent)(), endpoint.root(), &geometry) {
+                    crate::modules::served_window_store::save_observed_prompt(&geometry, median);
+                }
+            }
             let record = crate::modules::served_window_store::load_geometry();
             let observed = match typical_prompt_for_plan(demand.served_median.as_ref().map(|(model, tokens)| (model.as_str(), *tokens)), seat_model, record.as_ref()) {
-                TypicalPrompt::Live(median) => {
-                    if let Some(model) = seat_model {
-                        crate::modules::served_window_store::save_typical_prompt(model, median);
-                    }
-                    Some(median)
-                }
+                TypicalPrompt::Live(median) => Some(median),
                 TypicalPrompt::Remembered(t) => Some(t),
                 TypicalPrompt::None => None,
             };
@@ -11792,7 +11803,7 @@ pub(crate) mod tests {
     fn the_typical_prompt_is_live_when_measured_remembered_for_the_same_model_and_never_foreign() {
         use crate::modules::served_window_store::StoredServedWindow;
         let rec = |model: &str, typical: u32| StoredServedWindow {
-            model_id: model.into(), per_slot_window: 49_243, lanes: 1, typical_prompt_tokens: typical, observed_prompt_tokens: Some(typical), set_at_ms: 1,
+            model_id: model.into(), per_slot_window: 49_243, lanes: 1, typical_prompt_tokens: typical, observed_prompt_tokens: Some(typical), set_at_ms: 1, candidate: None,
         };
         let same = rec("qwen-27b", 30_000);
         assert_eq!(typical_prompt_for_plan(Some(("qwen-27b", 31_000)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Live(31_000), "arm 1: live wins over the record");

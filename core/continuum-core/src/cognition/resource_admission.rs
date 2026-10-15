@@ -226,13 +226,13 @@ pub fn note_leased_in_sent(input_tokens: u32) {
 
 /// Called while the local engine generation's admission is still owned and its
 /// explicit successful terminal frame has arrived. Never sampled from a later binding.
-pub(crate) fn note_served_prompt(endpoint: &str, model: &str, input_tokens: u32) {
-    if model.is_empty() || input_tokens == 0 {
+pub(crate) fn note_served_prompt(endpoint: &str, geometry: crate::modules::served_window_store::ServedGeometry, input_tokens: u32) {
+    if geometry.model_id.is_empty() || input_tokens == 0 {
         return;
     }
     note_prompt_sample(super::working_set::PromptSample::Served {
         endpoint: endpoint.to_owned(),
-        model: model.to_owned(),
+        geometry,
         tokens: input_tokens,
     });
 }
@@ -1591,7 +1591,7 @@ mod tests {
         // pool only ever sees what fit and the window measures itself.
         samples.record(PromptSample::Requested(56_057));
         for _ in 0..=LEASED_IN_SENT_SAMPLES {
-            samples.record(PromptSample::Served { endpoint: "seat".into(), model: "m".into(), tokens: 828 });
+            samples.record(PromptSample::Served { endpoint: "seat".into(), tokens: 828, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "m".into(), generation: uuid::Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 } });
         }
         assert_eq!(samples.snapshot().iter().filter_map(PromptSample::requested).collect::<Vec<_>>(), vec![56_057], "a burst of local successes cannot evict unmet demand");
         assert_eq!(PromptSample::served_median(&samples.snapshot(), "seat", Some("m")), Some(828));
