@@ -161,24 +161,9 @@ pub(crate) fn render_ai_help(name: &str, description: &str, schema: &Value) -> S
             // `EditMode` enum) collapsed to a useless `"any"`, so a model literally
             // could not tell what to pass — the invisible-contract bug.
             let (ty, placeholder) = param_shape(spec, schema);
-            // The example is the MINIMAL VALID CALL — required arguments only. Every
-            // optional one stays in the argument list below, documented, and out of the
-            // envelope a caller is told to copy.
-            //
-            // Because a caller copies the example. Measured 2026-09-05, a citizen
-            // emitted `code/edit`'s ENTIRE manual back as a tool call:
-            //
-            //   [code/edit(all=<any>, content=<any>, description=<any>, edit_mode=<any>,
-            //    end_line=<any>, file_path=<string>, line=<any>, new_content=<any>,
-            //    replace=<any>, search=<any>)]
-            //
-            // Ten arguments, nine of them optional, every one a placeholder. She was not
-            // guessing — she pasted exactly what she was shown. An example that carries
-            // every optional argument teaches the caller to send every optional argument,
-            // and for a union-typed param the placeholder cannot even deserialize.
-            //
-            // Required-only cuts that call to `{"file_path": "<string>"}`, which is the
-            // shape the manual is trying to teach in the first place.
+            // Only canonical required arguments belong in the example. Conditional
+            // requirements must be represented by the owning command's typed schema;
+            // optional compatibility fields are documented without becoming examples.
             if req {
                 example.insert(key.clone(), placeholder);
             }
@@ -239,6 +224,20 @@ fn resolve_ref<'a>(spec: &'a Value, root: &'a Value) -> &'a Value {
 /// left `code/edit`'s `edit_mode` uncallable). Graceful `any` fallback on any unknown shape.
 fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
     let spec = resolve_ref(spec, root);
+    if let Some(value) = spec.get("const") {
+        return (format!("constant {value}"), value.clone());
+    }
+    if let Some(types) = spec.get("type").and_then(Value::as_array) {
+        let types: Vec<&str> = types.iter().filter_map(Value::as_str).collect();
+        // JSON Schema permits a type array for nullable scalars. Describe every type,
+        // but show a non-null value so the example demonstrates useful input.
+        if let Some(ty) = types.iter().find(|ty| **ty != "null").or(types.first()) {
+            let mut scalar = spec.clone();
+            scalar["type"] = json!(ty);
+            let (_, value) = param_shape(&scalar, root);
+            return (types.join(" | "), value);
+        }
+    }
     if let Some(ty) = spec.get("type").and_then(Value::as_str) {
         if let Some(en) = spec.get("enum").and_then(Value::as_array) {
             let opts: Vec<String> = en
@@ -281,6 +280,7 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
             "integer" | "number" => json!(0),
             "array" => json!([]),
             "object" => json!({}),
+            "null" => Value::Null,
             // A string placeholder IS a valid string: it parses, then fails on content.
             _ => json!(format!("<replace-with-{ty}>")),
         };
@@ -331,13 +331,7 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
                     if i == 0 {
                         let mut inner = serde_json::Map::new();
                         inner.insert(tag_field.clone(), json!(vname.clone()));
-                        for (fk, fv) in props.iter().filter(|(k, _)| **k != tag_field) {
-                            let ft = resolve_ref(fv, root)
-                                .get("type")
-                                .and_then(Value::as_str)
-                                .unwrap_or("any");
-                            inner.insert(fk.clone(), json!(format!("<{ft}>")));
-                        }
+                        inner.extend(required_object_example(v, root));
                         example = Value::Object(inner);
                     }
                 } else if props.len() == 1 {
@@ -355,16 +349,7 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
                         format!("{vname}{{{}}}", fields.join(", "))
                     });
                     if i == 0 {
-                        let mut inner = serde_json::Map::new();
-                        if let Some(o) = vs.get("properties").and_then(Value::as_object) {
-                            for (fk, fv) in o {
-                                let ft = resolve_ref(fv, root)
-                                    .get("type")
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("any");
-                                inner.insert(fk.clone(), json!(format!("<{ft}>")));
-                            }
-                        }
+                        let inner = required_object_example(vs, root);
                         example = json!({ vname.clone(): Value::Object(inner) });
                     }
                 }
@@ -375,6 +360,20 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
         }
     }
     ("any".to_string(), json!("<any>"))
+}
+
+/// Required fields retain their actual JSON types, including inside tagged variants.
+fn required_object_example(spec: &Value, root: &Value) -> serde_json::Map<String, Value> {
+    let mut result = serde_json::Map::new();
+    if let Some(required) = spec.get("required").and_then(Value::as_array) {
+        for name in required.iter().filter_map(Value::as_str) {
+            if let Some(field) = spec.get("properties").and_then(|p| p.get(name)) {
+                let (_, value) = param_shape(field, root);
+                result.insert(name.to_owned(), value);
+            }
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -431,6 +430,19 @@ mod param_shape_tests {
         let schema = json!({"type":"object","required":["p"],"properties":{"p":{"type":"string"}}});
         let out = render_ai_help("x", "y", &schema);
         assert!(out.contains("p (string, required)"), "{out}");
+    }
+
+    #[test]
+    fn nullable_scalar_and_tagged_fields_keep_their_json_types() {
+        let schema = json!({"type": ["integer", "null"]});
+        assert_eq!(param_shape(&schema, &schema), ("integer | null".into(), json!(0)));
+        let schema = json!({"oneOf": [{"type":"object",
+            "required":["type", "count", "enabled"], "properties": {
+                "type":{"const":"example"}, "count":{"type":"integer"},
+                "enabled":{"type":"boolean"}, "optional":{"type":"string"}
+            }}]});
+        let (_, example) = param_shape(&schema, &schema);
+        assert_eq!(example, json!({"type":"example", "count":0, "enabled":true}));
     }
 
     // what this catches: regression for card 6c55f7a7 — a string placeholder that reads

@@ -703,6 +703,9 @@ pub struct CodeEditParams {
     /// Forgiving: a bare mode string (e.g. `"append"`) with the fields at top level also works.
     #[serde(default)]
     #[ts(type = "any")]
+    // Publish the canonical operation contract. Deserialization remains forgiving of
+    // the documented flat/alias forms, but a path alone is never an edit.
+    #[schemars(with = "EditMode", required)]
     pub edit_mode: serde_json::Value,
     // Top-level convenience fields — accepted when edit_mode is given as a bare mode string
     // (or when the mode is inferred from which of these are present). Forgives the common
@@ -2305,6 +2308,23 @@ mod tests {
             format!("{err}").contains("content"),
             "names the missing field: {err}"
         );
+    }
+
+    #[test]
+    fn generated_edit_recovery_contains_a_normalizable_operation() {
+        let schema = serde_json::to_value(schemars::schema_for!(CodeEditParams)).unwrap();
+        assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("edit_mode")));
+        let manual = crate::commands::help::render_ai_help("code/edit", "edit", &schema);
+        let envelope = manual.split_once("\n{").unwrap().1;
+        let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
+        let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        let params: CodeEditParams = serde_json::from_value(envelope["tool_call"]["arguments"].clone()).unwrap();
+        assert!(normalize_edit_mode(&params).is_ok(), "generated recovery must resolve an operation: {manual}");
+        for name in ["line_range", "search_replace", "insert_at", "append"] {
+            assert!(manual.contains(name), "operation alternative missing: {name}");
+        }
+        let path_only: CodeEditParams = serde_json::from_value(serde_json::json!({"file_path":"x"})).unwrap();
+        assert!(matches!(normalize_edit_mode(&path_only), Err(CommandError::Arguments(_))));
     }
 
     // what this catches: THE live edit-stall (2026-07-14). Devstral personas
