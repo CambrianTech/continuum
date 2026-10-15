@@ -8759,7 +8759,13 @@ mod tests {
             // takes her into her mind room (PRIVACY-OF-THOUGHT.md). Its text was cut
             // to one line each (it measured 17230 first); the 63 left are the param's
             // schema itself, the feature. Measured, not guessed.
-            const AGENTIC_SURFACE_CEILING: u32 = 17150;
+            // 17150 -> 17238 (PR #5059, 2026-10-15): code/edit now advertises
+            // its required typed four-operation contract instead of an untyped,
+            // optional operation that generated an invalid path-only retry. Hosted
+            // run 38738554029 on 6aa0cbe21 measured 17238; deleting duplicate legacy
+            // fallback fields first saved 280 tokens from 17518. Retain the remaining
+            // 88 for the callable contract, with no slack or production budget change.
+            const AGENTIC_SURFACE_CEILING: u32 = 17238;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
