@@ -3174,12 +3174,20 @@ impl LlmDeliberationFaculty {
             room_id: Some(ws.activity_room_id),
             persona_id: Some(self.persona_id),
         };
-        let (ledger, facts): (Vec<String>, Vec<String>) = super::perception_facts::render_facts(
+        let mut ledger = Vec::new();
+        let mut facts = Vec::new();
+        let mut notices = Vec::new();
+        for fact in super::perception_facts::render_facts(
             &fact_cx,
             &super::perception_facts::FactPolicy::default(),
-        )
-        .into_iter()
-        .partition(|fact| super::perception_facts::is_steps_ledger(fact));
+        ) {
+            use super::perception_facts::FactPlacement;
+            match fact.placement {
+                FactPlacement::History => facts.push(fact.text),
+                FactPlacement::Ledger => ledger.push(fact.text),
+                FactPlacement::Notice => notices.push(ChatMessage::text("user", fact.text)),
+            }
+        }
         // MESSAGE ORDER IS MONOTONE IN STABILITY (2026-08-23, the byte-diff
         // verdict). Consecutive-act prompt captures showed the flickering
         // content — perception facts whose presence/wording changes per act,
@@ -3378,6 +3386,7 @@ impl LlmDeliberationFaculty {
             latest_result,
             action_statement,
             room_updates,
+            notices,
             ledger: ledger.into_iter().next().map(|text| ChatMessage::text("user", text)),
         }
     }
@@ -3791,11 +3800,13 @@ impl LlmDeliberationFaculty {
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
             prompt.history.extend(prompt.ledger);
+            prompt.history.extend(prompt.notices);
             prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.latest_result);
         } else {
             prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.ledger);
+            prompt.history.extend(prompt.notices);
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
         }
@@ -3929,6 +3940,9 @@ struct PromptMessages {
     /// The steps ledger, which changes on every act: it rides after the room updates and
     /// before the pinned result, so nothing stable sits behind it (card 5b09111e).
     ledger: Option<ChatMessage>,
+    /// Substrate notices cannot disappear with the optional thought bid. Their
+    /// existing store owns retention; oversized payloads use the explicit fit refusal.
+    notices: Vec<ChatMessage>,
 }
 
 /// Her OWN most recent move and its outcome, priced — the SUFFIX of the optional history
@@ -4128,6 +4142,7 @@ impl PromptMessages {
             .iter()
             .chain(self.room_updates.iter())
             .chain(self.ledger.iter())
+            .chain(self.notices.iter())
             .chain(self.action_statement.iter())
             .chain(self.latest_result.iter())
             .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
@@ -6008,6 +6023,79 @@ mod tests {
     // framing — never on the generated text.
     mod prompt_shaping {
         use super::*;
+
+        // Regression: Kimi's seventh perception bid evicted working memory and its
+        // recorded no-deliverable facts. Fit the actual projection after that eviction.
+        #[tokio::test]
+        async fn substrate_notices_survive_attention_and_history_pressure_once() {
+            use crate::cognition::working_memory::{WorkingMemory, WorkingMemoryFaculty};
+            use crate::cognition::workspace::{Arbiter, Faculty, FocusContext, SalienceArbiter, Situation};
+            let wm = Arc::new(WorkingMemory::new(8));
+            wm.record("weighing the next step");
+            wm.record_fact("[no-deliverable] No workspace change yet.");
+            wm.pin_fact("hands", "[hands] The workspace remains bound.");
+            // Arbitrary ledger author text uses the source-owned expansion route.
+            use crate::experience::ledger::{CardLedger, render_for_turn, render_reference_for_turn};
+            let ledger = CardLedger {
+                card_id: Uuid::new_v4(), by: Uuid::new_v4(),
+                decided_fix: Some("large-ledger-detail ".repeat(4_000)),
+                ..Default::default()
+            };
+            let reference = render_reference_for_turn(&ledger, ledger.by);
+            wm.pin_expandable_fact("ledger", &reference, Some(render_for_turn(&ledger, ledger.by)));
+
+            let faculty = LlmDeliberationFaculty::new(
+                Uuid::new_v4(), "T", "You are T.", Arc::new(HeuristicInferenceAdapter::new()),
+            ).with_working_memory(Arc::clone(&wm));
+            let mut ws = Workspace::new("continue the existing task");
+            let memory = WorkingMemoryFaculty::new(Arc::clone(&wm)).contribute(&ws).await.unwrap();
+            assert!(!memory.content.contains("[no-deliverable]"), "notices have one projection");
+            let mut bids: Vec<_> = (0..6).map(|i| Contribution::context(
+                FacultyId::Custom(format!("source-{i}")), "standing context", 0.9, "fixture",
+            )).collect();
+            bids.push(memory.clone());
+            ws.broadcast = SalienceArbiter.focus(bids, 6, &FocusContext {
+                world_state: &ws.world_state, situation: Situation::PostAction,
+            });
+            assert!(!ws.broadcast.iter().any(|c| c.faculty == memory.faculty));
+            for keep_memory in [false, true] {
+                if keep_memory { ws.broadcast.push(memory.clone()); }
+                let mut prompt = faculty.messages_unfitted(&ws, None);
+                let required = prompt.required_tokens();
+                assert!(required > 0);
+                prompt.history.push(ChatMessage::text("user", "old history ".repeat(500)));
+                let fitted = faculty.fit_messages(prompt, required).expect("required notices fit");
+                let text = fitted.messages.iter().map(ChatMessage::content_text).collect::<Vec<_>>().join("\n");
+                assert_eq!(text.matches("[no-deliverable]").count(), 1);
+                assert_eq!(text.matches("[hands]").count(), 1);
+                assert!(text.contains(crate::cognition::framing_echo::NOTICES_HEADER));
+                assert!(text.contains(&format!("work/get(card_id=\"{}\")", ledger.card_id)));
+                assert!(!text.contains("large-ledger-detail"), "oversized detail yields without muting the turn");
+                assert!(!text.contains("weighing the next step"), "optional thought trail yielded; notices retain substrate provenance");
+                let prompt = faculty.messages_unfitted(&ws, None);
+                assert!(faculty.fit_messages(prompt, required - 1).is_err(), "shortfall is explicit, not dropped feedback");
+            }
+            let prompt = faculty.messages_unfitted(&ws, None);
+            let all = prompt.required_tokens() + LlmDeliberationFaculty::messages_cost(&prompt.history);
+            let fitted = faculty.fit_messages(prompt, all).expect("inline ledger fits");
+            assert!(fitted.messages.iter().any(|message| message.content_text().contains("large-ledger-detail")));
+            wm.pin_fact("ledger", "[ledger] No saved note remains.");
+            assert!(wm.notice_details().is_empty(), "replacement retires old expandable detail");
+            wm.pin_expandable_fact("ledger", &reference, Some(render_for_turn(&ledger, ledger.by)));
+            wm.end_of_work_turn();
+            assert!(wm.notice_details().is_empty(), "detail and reference share expiry");
+            assert!(!wm.notices().iter().any(|notice| notice.contains("work/get")));
+            // A notice-only memory has no optional thought bid at all.
+            let only = Arc::new(WorkingMemory::new(8));
+            only.record_fact("[no-deliverable] No workspace change yet.");
+            assert!(WorkingMemoryFaculty::new(Arc::clone(&only)).contribute(&ws).await.is_none());
+            let faculty = faculty.with_working_memory(only);
+            ws.broadcast.clear();
+            let prompt = faculty.messages_unfitted(&ws, None);
+            let required = prompt.required_tokens();
+            let fitted = faculty.fit_messages(prompt, required).expect("fact-only input");
+            assert_eq!(fitted.messages.iter().filter(|message| message.content_text().contains("[no-deliverable]")).count(), 1);
+        }
 
         /// A citizen must never be silenced by her own last tool result.
         mod an_action_result_cannot_mute_a_citizen {
@@ -8940,7 +9028,7 @@ mod tests {
                 history,
                 stimulus: Some(stimulus.clone()),
                 latest_result: None, action_statement: None,
-                room_updates: Vec::new(), ledger: None,
+                room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
             let required = prompt(Vec::new()).required_tokens();
             let total: usize = history.iter().map(LlmDeliberationFaculty::message_cost).sum();
@@ -9001,7 +9089,7 @@ mod tests {
                             history: msgs[..n].to_vec(),
                             stimulus: None,
                             latest_result: None, action_statement: None,
-                            room_updates: Vec::new(), ledger: None,
+                            room_updates: Vec::new(), ledger: None, notices: Vec::new(),
                         },
                         budget,
                     )
@@ -9051,7 +9139,7 @@ mod tests {
                         history: clustered,
                         stimulus: None,
                         latest_result: None, action_statement: None,
-                        room_updates: Vec::new(), ledger: None,
+                        room_updates: Vec::new(), ledger: None, notices: Vec::new(),
                     },
                     budget,
                 )
@@ -9080,7 +9168,7 @@ mod tests {
                 ],
                 stimulus: None,
                 latest_result: None, action_statement: None,
-                room_updates: Vec::new(), ledger: None,
+                room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
             let ambient_cost =
                 LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
@@ -9107,6 +9195,7 @@ mod tests {
                 stimulus: Some(ChatMessage::text("user", "the ask")),
                 latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")), action_statement: None,
                 room_updates: vec![ChatMessage::text("user", "[Room message received during this turn] hi")],
+                notices: Vec::new(),
                 ledger: Some(ChatMessage::text("user", "[steps taken this session]\n[action #1832] code/read")),
             };
             let order = |result: bool| -> Vec<String> {
@@ -9135,7 +9224,7 @@ mod tests {
             let expected = LlmDeliberationFaculty::messages_cost(&history);
             let prompt = PromptMessages {
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
-                history, stimulus: None, latest_result: None, action_statement: None, room_updates: Vec::new(), ledger: None,
+                history, stimulus: None, latest_result: None, action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
             assert!(prompt.recent_move_evidence().tokens >= expected,
                 "a new follow-up cannot make the preceding action and result disposable");
@@ -9153,7 +9242,7 @@ mod tests {
                     ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
                     ChatMessage::text("user", "Full result of code/write: file written successfully."),
                 ],
-                stimulus: None, latest_result: None, action_statement: None, room_updates: Vec::new(), ledger: None,
+                stimulus: None, latest_result: None, action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
             let insufficient = prompt.recent_move_evidence().tokens - 1;
             assert!(faculty.fit_messages(prompt, insufficient).is_err(),
@@ -9202,7 +9291,7 @@ mod tests {
                 history: history.clone(),
                 stimulus: None,
                 latest_result: None, action_statement: None,
-                room_updates: Vec::new(), ledger: None,
+                room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
 
             // The run that must survive: her act, its result, and the ask that opened them.
@@ -9285,7 +9374,7 @@ mod tests {
                 history,
                 stimulus: None,
                 latest_result: None, action_statement: None,
-                room_updates: Vec::new(), ledger: None,
+                room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
 
             // A MULTI-TOOL CHAIN LONGER THAN THE SCAN BOUND. Protected as a suffix, and

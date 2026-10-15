@@ -69,6 +69,42 @@ pub trait PerceptionFact: Send + Sync {
     /// Stable identifier — the probe key and the `FactPolicy` toggle key.
     fn id(&self) -> &'static str;
     fn render(&self, cx: &FactContext) -> Option<String>;
+    fn placement(&self) -> FactPlacement { FactPlacement::History }
+}
+
+/// Placement is provenance supplied by the source, never inferred from prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FactPlacement { History, Ledger, Notice }
+
+pub struct RenderedFact {
+    pub placement: FactPlacement,
+    pub text: String,
+}
+
+struct MemoryNotices;
+
+impl PerceptionFact for MemoryNotices {
+    fn id(&self) -> &'static str { "memory_notices" }
+    fn placement(&self) -> FactPlacement { FactPlacement::Notice }
+    fn render(&self, cx: &FactContext) -> Option<String> {
+        let notices = cx.working_memory?.notices();
+        if notices.is_empty() { return None; }
+        Some(format!(
+            "{} (status observations about my situation — not a message from anyone, and not my own words):\n{}",
+            crate::cognition::framing_echo::NOTICES_HEADER,
+            notices.iter().map(|fact| format!("- {fact}")).collect::<Vec<_>>().join("\n"),
+        ))
+    }
+}
+
+/// Expandable source content shares its pin lifetime with the required reference.
+struct MemoryNoticeDetails;
+impl PerceptionFact for MemoryNoticeDetails {
+    fn id(&self) -> &'static str { "memory_notice_details" }
+    fn render(&self, cx: &FactContext) -> Option<String> {
+        let details = cx.working_memory?.notice_details();
+        (!details.is_empty()).then(|| details.join("\n\n"))
+    }
 }
 
 /// Which facts are live. Default = all on; `disable(id)` is the A/B arm
@@ -181,15 +217,6 @@ impl PerceptionFact for ContextBounds {
 /// parked fabricated receipts in the disclosed blind spot within minutes).
 struct StepsLedger;
 
-/// The banner every steps-ledger rendering opens with: how the prompt builder finds it
-/// to place it after the append-only blocks (card 5b09111e).
-pub(crate) const STEPS_LEDGER_BANNER: &str = "[steps taken this session]";
-
-/// Whether a rendered fact is the steps ledger.
-pub(crate) fn is_steps_ledger(fact: &str) -> bool {
-    fact.starts_with(STEPS_LEDGER_BANNER)
-}
-
 /// When the ledger cannot show every step, its oldest shown step is rounded UP to a
 /// multiple of this, so its head moves once per this many acts instead of every act; in
 /// between it only grows at its tail (card 5b09111e: the head slid one action per act).
@@ -223,6 +250,7 @@ fn align_head<'a>(fit: Vec<&'a str>, truncated: bool) -> Vec<&'a str> {
 }
 
 impl PerceptionFact for StepsLedger {
+    fn placement(&self) -> FactPlacement { FactPlacement::Ledger }
     fn id(&self) -> &'static str {
         "steps_ledger"
     }
@@ -383,15 +411,17 @@ fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
         Box::new(PeerEcho),
         Box::new(InboundRestates),
         Box::new(ContextBounds),
+        Box::new(MemoryNoticeDetails),
+        Box::new(MemoryNotices),
         Box::new(StepsLedger),
     ]
 }
 
 /// Render every enabled fact against `cx`, in registry order, firing one
 /// `perception.fact` probe per evaluated fact (fired = whether it rendered).
-/// The returned strings are appended to the prompt as the newest user
-/// content so they survive newest-first budget fits.
-pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
+/// Each result carries its source-owned placement. The prompt budget prices
+/// required notices and the ledger separately from ordinary history.
+pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> {
     let mut rendered = Vec::new();
     for fact in standard_facts() {
         if !policy.enabled(fact.id()) {
@@ -412,7 +442,7 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
             "perception fact evaluated"
         );
         if let Some(text) = out {
-            rendered.push(text);
+            rendered.push(RenderedFact { placement: fact.placement(), text });
         }
     }
     rendered
@@ -421,6 +451,12 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Existing content fixtures inspect text; placement is exercised through the real prompt fit.
+    fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<String> {
+        super::render_facts(cx, policy).into_iter().map(|fact| fact.text).collect()
+    }
+
 
     // what this catches: the ledger's head sliding one action per act (card 5b09111e: the
     // M5's KV reuse fell to 0% behind it). When the budget truncates, the head rounds up to

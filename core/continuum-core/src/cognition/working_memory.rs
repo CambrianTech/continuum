@@ -181,6 +181,7 @@ struct TurnPinnedFact {
     key: String,
     text: String,
     turns_left: u8,
+    detail: Option<String>,
 }
 
 #[derive(Debug)]
@@ -915,6 +916,8 @@ impl WorkingMemory {
     /// renders first among the notices. For conditions that hold across acts
     /// (her hands' root, her checkout's environment) — `record_fact` is for
     /// one-off observations that may age out.
+    /// Text is required prompt input. Producers own its size; raw payloads belong
+    /// in the existing retrievable-result path, not an unbounded status notice.
     pub fn pin_fact(&self, key: &str, text: &str) {
         self.pin_fact_for_turns(key, text, 1);
     }
@@ -926,6 +929,16 @@ impl WorkingMemory {
     /// takes one, the next turn's end takes the last (IntelMac's review of #3848:
     /// pin and unpin in the same restore block is a no-op).
     pub fn pin_fact_for_turns(&self, key: &str, text: &str, turns: u8) {
+        self.pin_notice(key, text, turns, None);
+    }
+
+    /// A source-owned expansion reference remains required while its full detail
+    /// competes with history. Both share the same key and turn lifetime.
+    pub(crate) fn pin_expandable_fact(&self, key: &str, reference: &str, detail: Option<String>) {
+        self.pin_notice(key, reference, 1, detail);
+    }
+
+    fn pin_notice(&self, key: &str, text: &str, turns: u8, detail: Option<String>) {
         let t = text.trim();
         if t.is_empty() {
             return;
@@ -935,11 +948,13 @@ impl WorkingMemory {
         if let Some(slot) = p.iter_mut().find(|f| f.key == key) {
             slot.text = t.to_string();
             slot.turns_left = turns;
+            slot.detail = detail;
         } else {
             p.push(TurnPinnedFact {
                 key: key.to_string(),
                 text: t.to_string(),
                 turns_left: turns,
+                detail,
             });
         }
     }
@@ -960,11 +975,30 @@ impl WorkingMemory {
         self.pinned.lock().iter().map(|f| f.text.clone()).collect()
     }
 
+    pub(crate) fn notice_details(&self) -> Vec<String> {
+        self.pinned.lock().iter().filter_map(|fact| fact.detail.clone()).collect()
+    }
+
+    /// Substrate notices use the input projection, not the optional thought bid.
+    /// Their storage, scope and lifetime remain owned by this memory. The entry
+    /// ring is count-bounded; neither fact text nor keyed pins have a byte ceiling.
+    pub(crate) fn notices(&self) -> Vec<String> {
+        let scope = self.scope.lock().clone();
+        let mut notices = self.pinned_facts();
+        notices.extend(self.entries.lock().iter()
+            .filter(|entry| matches!(entry.kind, WmKind::Fact)
+                && (entry.scope.is_none() || entry.scope == scope))
+            .map(|entry| entry.text.clone()));
+        notices
+    }
+
     /// Drop the pinned fact under `key` (the condition ended: hands restored).
     pub fn unpin_fact(&self, key: &str) {
         self.pinned.lock().retain(|f| f.key != key);
     }
 
+    /// Records required prompt input. Producers must account for text size; the
+    /// shared prompt budget refuses oversized notices instead of silently clipping.
     pub fn record_fact(&self, fact: &str) {
         let f = fact.trim();
         if f.is_empty() {
@@ -1731,8 +1765,8 @@ impl Faculty for WorkingMemoryFaculty {
     async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
         let mut entries = self.memory.recent_entries();
         // Public action statements use their room-scoped assistant projection,
-        // never the optional interior-thought bid.
-        entries.retain(|entry| !matches!(entry.kind, WmKind::ActionStatement { .. }));
+        // never the optional interior-thought bid. Facts use the required notice projection.
+        entries.retain(|entry| !matches!(entry.kind, WmKind::ActionStatement { .. } | WmKind::Fact));
         let dispatched = self.memory.dispatched_snapshot();
         if entries.is_empty() && dispatched.is_empty() {
             return None;
@@ -1806,19 +1840,7 @@ impl Faculty for WorkingMemoryFaculty {
         };
         let recent: Vec<String> = entries
             .iter()
-            .filter(|e| !matches!(e.kind, WmKind::Fact))
             .map(clip)
-            .collect();
-        let notices: Vec<String> = self
-            .memory
-            .pinned_facts()
-            .into_iter()
-            .chain(
-                entries
-                    .iter()
-                    .filter(|e| matches!(e.kind, WmKind::Fact))
-                    .map(|e| e.text.clone()),
-            )
             .collect();
         // Render oldest-first, newest-LAST: position alone carries recency (the last
         // line is the most recent thought), the universal chat-history convention.
@@ -1861,25 +1883,9 @@ impl Faculty for WorkingMemoryFaculty {
         // message builder as its own durable trailing turn — see
         // [`WorkingMemory::active_action_full`] and [`WorkingMemory::full_result_message`]
         // — so no attention pass can drop it.
-        // This contribution keeps only the append-only trail + notices + dispatched status,
+        // This contribution keeps only the append-only trail + dispatched status,
         // which are proprioceptive summary, not the just-fetched result.
-        // Substrate notices AFTER the trail: nearest generation (the [resumed]
-        // fact's must-be-newest recency intent survives the kind split), framed
-        // in the substrate's own voice so they read as status about her
-        // situation, not words of hers to continue. A fact, never an
-        // instruction — she still decides what any notice means.
-        if !notices.is_empty() {
-            sections.push(format!(
-                "{} (status observations about my situation — not a message from \
-                 anyone, and not my own words):\n{}",
-                crate::cognition::framing_echo::NOTICES_HEADER,
-                notices
-                    .iter()
-                    .map(|f| format!("- {f}"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ));
-        }
+        // Substrate notices are projected by PerceptionFact independently of this bid.
         // Background commands the mind sent away — sentinels, compiles, debuggers —
         // streaming their status back by handle. The mind sees what's outstanding and what
         // just finished, and can pass a handle to a follow-up command (cancel/query). Fresh
@@ -2441,47 +2447,6 @@ mod tests {
         assert!(
             !wm.recent_results_messages().join("\n").contains("E0601"),
             "oldest tails collapse to pointers at settlement — bounded, not immortal"
-        );
-    }
-
-    // what this catches: #264 fourth finding (glass-boxed 2026-08-01) — substrate
-    // Facts ([resumed]…) rendered inside the "My own recent thoughts" block; the
-    // model resolved the voice conflict by SPEAKING the notice — persona 2f50b223
-    // posted "My session was interrupted under a minute ago and my memory
-    // restored; nothing was in flight" verbatim into the room. Facts must render
-    // under the substrate-notices section, never inside the interior-state block.
-    #[tokio::test]
-    async fn facts_render_as_substrate_notices_not_own_thoughts() {
-        let wm = Arc::new(WorkingMemory::new(8));
-        wm.record("weighing the next step on the wordstats card");
-        wm.record_fact(
-            "[resumed] your session was interrupted under a minute ago and your \
-             memory restored; nothing was in flight",
-        );
-        let faculty = WorkingMemoryFaculty::new(wm);
-        let ws = Workspace::new("ambient");
-        let c = faculty.contribute(&ws).await.expect("has content");
-        let thoughts = c
-            .content
-            .find("My own recent thoughts")
-            .expect("trail section present");
-        let notices = c
-            .content
-            .find("Notices my substrate posted")
-            .expect("notices section present");
-        let own_block = &c.content[thoughts..notices];
-        assert!(
-            !own_block.contains("[resumed]"),
-            "the substrate's notice must not masquerade as her own thought:\n{own_block}"
-        );
-        assert!(
-            own_block.contains("weighing the next step"),
-            "her real thought stays in the trail:\n{own_block}"
-        );
-        assert!(
-            c.content[notices..].contains("[resumed]"),
-            "the notice renders under the substrate-notices framing:\n{}",
-            &c.content[notices..]
         );
     }
 
@@ -3576,6 +3541,16 @@ mod tests {
         wm.unpin_fact("hands");
         wm.unpin_fact("env");
         assert!(wm.pinned_facts().is_empty());
+        // The input projection uses the same scope predicate as the memory trail.
+        wm.set_scope(Some("/a".into()));
+        {
+            let mut entries = wm.entries.lock();
+            entries[0].scope = Some("/a".into());
+            entries[1].scope = Some("/b".into());
+        }
+        assert_eq!(wm.notices(), vec!["chatty fact 9", "chatty fact 11"]);
+        wm.set_scope(Some("/b".into()));
+        assert_eq!(wm.notices(), vec!["chatty fact 10", "chatty fact 11"]);
         // Turn lifetimes: a 1-turn pin dies at the first turn end, a 2-turn pin at the second.
         wm.pin_fact("hands", "[hands] rooted at /c");
         wm.pin_fact_for_turns("released", "[released] card x", 2);
@@ -3587,5 +3562,6 @@ mod tests {
         );
         wm.end_of_work_turn();
         assert!(wm.pinned_facts().is_empty(), "and leaves after it");
+        assert!(!wm.notices().iter().any(|text| text.contains("[released]")));
     }
 }
