@@ -523,6 +523,9 @@ impl CargoTargetPool {
             Ok(metadata)
         };
         let mut metadata = check(&current)?;
+        // A durable root was physical when admitted. Refuse if an ancestor has
+        // since been redirected instead of silently reclaiming its destination.
+        for ancestor in root.ancestors().skip(1) { check(ancestor)?; }
         for component in relative.components() {
             if !matches!(component, std::path::Component::Normal(_)) {
                 return Err("cache path contains a non-child component".into());
@@ -1099,7 +1102,7 @@ mod tests {
         std::fs::write(tmp.join("debug/lib.rlib"), vec![0u8; 3000]).expect("write");
         std::fs::write(tmp.join("tests/t.bin"), vec![0u8; 2000]).expect("write");
         std::fs::write(tmp.join("release/keep.bin"), vec![0u8; 1000]).expect("write");
-        let tracked = TrackedDir::new("cargo-target", tmp.to_path_buf());
+        let tracked = TrackedDir::new("cargo-target", tmp.canonicalize().unwrap());
         // Seed the cached size the way the scanner would.
         tracked.set_bytes(dir_size_bytes(tmp));
         tracked
@@ -1219,7 +1222,7 @@ mod tests {
         std::fs::write(release.join("incremental/unit/derived.o"), vec![0u8; 4096]).unwrap();
         let outputs = ["continuum", "deps/library.rlib", "build/output"];
         for output in outputs { std::fs::write(release.join(output), b"preserve installed inputs").unwrap(); }
-        let tracked = TrackedDir::new("cargo-target", tmp.path().into());
+        let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
         tracked.set_bytes(dir_size_bytes(tmp.path()));
         let pool = Arc::new(CargoTargetPool::new(tracked.clone(), 1));
         let broker = PressureBroker::new(BrokerConfig::default());
@@ -1242,24 +1245,45 @@ mod tests {
         assert!(try_exclusive_flock(&lock_path).is_some(), "custody is released with the original lock path intact");
     }
 
-    #[cfg(unix)]
     #[test]
     fn redirected_profile_or_incremental_child_never_reaches_external_data() {
+        #[cfg(unix)]
         use std::os::unix::fs::symlink;
+        #[cfg(windows)]
+        use std::os::windows::fs::symlink_dir as symlink;
         let tmp = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::write(outside.path().join("keep"), b"not cache ownership").unwrap();
-        symlink(outside.path(), tmp.path().join("release")).unwrap();
-        let tracked = TrackedDir::new("cargo-target", tmp.path().into());
+        if let Err(error) = symlink(outside.path(), tmp.path().join("release")) {
+            #[cfg(windows)]
+            if error.raw_os_error() == Some(1314) {
+                eprintln!("UNVERIFIED: Windows reparse fixture requires symbolic-link privilege: {error}");
+                return;
+            }
+            panic!("create redirected profile fixture: {error}");
+        }
+        let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
         let pool = CargoTargetPool::new(tracked, 1);
         assert_eq!(pool.evict_at_least(u64::MAX), 0);
         assert!(!outside.path().join(".cargo-lock").exists(), "refuse before creating custody through a redirect");
+        #[cfg(unix)]
         std::fs::remove_file(tmp.path().join("release")).unwrap();
+        #[cfg(windows)]
+        std::fs::remove_dir(tmp.path().join("release")).unwrap();
         std::fs::create_dir_all(tmp.path().join("release/incremental")).unwrap();
         symlink(outside.path(), tmp.path().join("release/incremental/redirect")).unwrap();
         assert_eq!(pool.evict_at_least(u64::MAX), 0);
         assert_eq!(std::fs::read(outside.path().join("keep")).unwrap(), b"not cache ownership");
         assert!(tmp.path().join("release/incremental/redirect").symlink_metadata().unwrap().file_type().is_symlink());
+        let parent = tmp.path().join("parent");
+        std::fs::create_dir_all(parent.join("cache")).unwrap();
+        let remembered = TrackedDir::new("cargo-target", parent.join("cache").canonicalize().unwrap());
+        std::fs::rename(&parent, tmp.path().join("parent-before")).unwrap();
+        std::fs::create_dir_all(outside.path().join("cache/release/incremental")).unwrap();
+        symlink(outside.path(), &parent).unwrap();
+        assert_eq!(CargoTargetPool::new(remembered, 1).evict_at_least(u64::MAX), 0,
+            "a formerly physical root cannot acquire a new destination through its ancestor");
+        assert!(!outside.path().join("cache/.cargo-lock").exists());
     }
 
     // what this catches: pressure is usage/BUDGET (policy-bounded), not
