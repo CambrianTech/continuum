@@ -110,8 +110,8 @@ impl TurnAdmission {
         response_model: Option<&str>,
         tokens: u32,
     ) {
-        if let Some(model) = response_model.and_then(|model| self._endpoint.served_model(model)) {
-            crate::cognition::resource_admission::note_served_prompt(endpoint, &model, tokens);
+        if let Some(geometry) = response_model.and_then(|model| self._endpoint.served_geometry(model)) {
+            crate::cognition::resource_admission::note_served_prompt(endpoint, geometry, tokens);
         }
     }
 }

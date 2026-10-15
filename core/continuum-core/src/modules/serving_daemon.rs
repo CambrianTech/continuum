@@ -1576,8 +1576,6 @@ impl ServingDaemonModule {
         // with no residents of its own but leased-in minds still gets a floor from them.
         let leased_samples = (self.leased_in_sent)();
         let leased_sent: Vec<u32> = leased_samples.iter().filter_map(|s| s.requested()).collect();
-        let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&serving.base_url);
-        let served_median = crate::cognition::working_set::PromptSample::served_median(&leased_samples, endpoint.root(), model_for_knee.as_deref());
         let (demand, sent, median) = if live.is_empty() {
             // No registry yet (boot): the residents the working set REMEMBERS (rehydrated
             // from their last boot) are the demand pool — not only the leased-in ring. A
@@ -1609,7 +1607,7 @@ impl ServingDaemonModule {
         // once here and carried on the demand by value into the one plan — the
         // allocator's input, the governed size (card 2eec3977).
         let requirements = crate::cognition::window_allocator::requirements_for(&live, &self.working_set);
-        let mut demand = ServingDemand::new(lanes, demand)
+        ServingDemand::new(lanes, demand)
             .with_requirements(requirements)
             .with_sent_tokens(sent)
             .with_sent_median(median)
@@ -1617,9 +1615,7 @@ impl ServingDaemonModule {
             // The knee bounds the TOTAL the plan serves, leased-in included: the clamp
             // above covers the roster and the scratch slot; the plan re-applies it over
             // `lanes + leased_in` (2026-09-19 23:14Z: 2 + 1 = 3 lanes against a knee of 2).
-            .with_knee(knee);
-        demand.served_median = model_for_knee.zip(served_median);
-        demand
+            .with_knee(knee)
     }
 
     /// The registry personas report their turn demand into. Cheap clone — handed to
@@ -3396,16 +3392,19 @@ impl ServingDaemonModule {
                     // "sustained" meaning sustained-NOW.
                     self.reset_rehome_streak();
                 }
-                // The geometry a cold boot plans first is the last SETTLED one — the lane
-                // that outlived its own spawn cooldown without a re-home — never the last
-                // SPAWNED one. Measured 2026-09-19 on the M5: the 12:19Z Eco relaunch spawned
-                // `--parallel 1`, the spawn wrote `lanes: 1` to the store, and every boot after
-                // (13:2xZ, 13:36Z) planned `min(fit, 1)` = one lane on a box whose fit held two
-                // — a shrink-only ratchet across boots. Saving on settle makes "the first
-                // launch is the steady one" (the boot probe's own words) true.
-                if settles_this_tick(cooling, live.ready, live.lanes) {
-                    if let Some(model) = live.active_model.as_deref() {
-                        crate::modules::served_window_store::save(model, live.served_context_window, live.lanes);
+                // Settlement records an owned candidate. Only terminal usage from this
+                // exact generation promotes its cache preference; neither transition
+                // constrains the next plan's lanes or current workload requirement.
+                let settled_now = settles_this_tick(cooling, live.ready, live.lanes);
+                if let Some(model) = live.active_model.as_deref() {
+                    let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&live.base_url);
+                    if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
+                        .filter(|g| g.model_id == model && g.per_slot_window == live.served_context_window && g.lanes == live.lanes)
+                    {
+                        let observed = crate::cognition::working_set::PromptSample::geometry_median(&(self.leased_in_sent)(), endpoint.root(), &geometry);
+                        crate::modules::served_window_store::record_reconciled(geometry, settled_now, observed);
+                    }
+                    if settled_now {
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
                         crate::modules::citizen_health::note_lanes(live.lanes as u64);
@@ -3414,7 +3413,7 @@ impl ServingDaemonModule {
                             model,
                             per_slot_window = live.served_context_window as u64,
                             lanes = live.lanes as u64,
-                            "the launch outlived its spawn cooldown without a re-home — this geometry is what the next boot plans first"
+                            "the launch settled — same-generation successful usage may record its cache preference"
                         );
                     }
                 }
@@ -4829,72 +4828,14 @@ impl ServingDaemonModule {
                 .map(|p| p.base_model.model_id.clone()),
             (self.inherited_lane)().as_ref(),
         );
-        // The window this host served the incumbent at last time (across runs) is
-        // the plan's first choice — the KV page geometry holds still (card 6e8214e8).
-        // A COLD BOOT PLANS THE LAST STEADY GEOMETRY FIRST (9/18). The store was keyed by
-        // the incumbent, and a cold boot has none — so it was never consulted at the one
-        // moment it mattered, and every boot planned against the transient minimum of
-        // external RAM: 8 × 28k on the M5, re-homed to 1 × 67k in 40 s, then 2 × 67k. Three
-        // geometries per boot, every first turn killed. The store now carries lanes with
-        // the window; with no incumbent, the remembered geometry is the plan's first choice
-        // when its model is still a candidate.
-        // …and only a STEADY one: a record whose window is below the typical prompt it
-        // remembers is the collapse the last plan shed to, not a geometry that served
-        // anyone (`StoredServedWindow::steady_geometry`, 2026-09-20).
-        let boot = if incumbent.is_none() {
-            crate::modules::served_window_store::load_geometry().filter(|g| {
-                g.steady_geometry().is_some() && candidates.iter().any(|c| c.model_id == g.model_id)
-            })
-        } else {
-            None
-        };
-        if let Some(g) = &boot {
-            static SAID: std::sync::Mutex<Option<(String, u32, u32)>> = std::sync::Mutex::new(None);
-            let key = (g.model_id.clone(), g.per_slot_window, g.lanes);
-            let mut said = SAID.lock().unwrap_or_else(|p| p.into_inner()); // unwrap_or_else: a probe dedupe, never truth
-            if said.as_ref() != Some(&key) {
-                crate::probe!(
-                    class = "serving.plan.boot_geometry",
-                    model = g.model_id.as_str(),
-                    per_slot_window = g.per_slot_window as u64,
-                    lanes = g.lanes as u64,
-                    "cold boot: planning the last steady geometry first — the first launch is the steady one"
-                );
-                *said = Some(key);
-            }
-        }
-        let mut demand = self
-            .serving_demand()
-            .with_sticky_window(
-                incumbent
-                    .as_deref()
-                    .and_then(crate::modules::served_window_store::load_for)
-                    .or(boot.as_ref().map(|g| g.per_slot_window)),
-            )
-            .with_boot_geometry(boot.as_ref().map(|g| (g.per_slot_window, g.lanes)));
-        // THE FLOOR REMEMBERS (2026-09-19): the typical prompt the seat served last time is
-        // the per-lane floor a boot starts from. The leased-in sample ring is process-static
-        // — empty on a fresh core — so the first plans after a boot floored at the 16,384
-        // bootstrap prior and the 5090 chose 2 × 17k for coders sending ~30k. Measured now:
-        // the record follows the live median; unmeasured now: the record's last median is
-        // the floor until prompts land. A boot never plans thinner than what it served.
-        {
-            let seat_model = incumbent.as_deref().or(boot.as_ref().map(|g| g.model_id.as_str()));
-            let record = crate::modules::served_window_store::load_geometry();
-            let observed = match typical_prompt_for_plan(demand.served_median.as_ref().map(|(model, tokens)| (model.as_str(), *tokens)), seat_model, record.as_ref()) {
-                TypicalPrompt::Live(median) => {
-                    if let Some(model) = seat_model {
-                        crate::modules::served_window_store::save_typical_prompt(model, median);
-                    }
-                    Some(median)
-                }
-                TypicalPrompt::Remembered(t) => Some(t),
-                TypicalPrompt::None => None,
-            };
-            if demand.sent_median.is_none() {
-                demand = demand.with_sent_median(observed);
-            }
-        }
+        // Remembered geometry is a cache preference, never capacity or demand.
+        // The current roster, knee and admission budget decide lanes and width.
+        let remembered = crate::modules::served_window_store::load_geometry()
+            .filter(|g| candidates.iter().any(|c| c.model_id == g.model_id));
+        let seat_model = incumbent.as_deref().or(remembered.as_ref().map(|g| g.model_id.as_str()));
+        let demand = self.serving_demand().with_sticky_window(
+            seat_model.and_then(crate::modules::served_window_store::load_for),
+        );
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
@@ -5077,7 +5018,7 @@ impl ServingDaemonModule {
                             if let Some(inc) = incumbent.as_deref() {
                                 let geometry = crate::modules::served_window_store::load_geometry()
                                     .filter(|g| g.model_id == inc)
-                                    .and_then(|g| g.steady_geometry());
+                                    .and_then(|g| g.cache_geometry());
                                 match incumbent_adoption_plan(
                                     &self.physical_budget(),
                                     candidates,
@@ -5450,7 +5391,7 @@ fn incumbent_adoption_plan(
     geometry: Option<(u32, u32)>,
 ) -> Option<ServingPlan> {
     let footprint = candidates.iter().find(|c| c.model_id == incumbent)?;
-    let demand = demand.clone().with_boot_geometry(geometry);
+    let demand = demand.clone().with_sticky_window(geometry.map(|(window, _)| window));
     plan_serving(physical, std::slice::from_ref(footprint), &demand)
 }
 
@@ -6640,31 +6581,6 @@ fn sidecar_planned_headroom_bytes(
         .saturating_add((target.host_prompt_cache_mib as u64) * 1024 * 1024)
         .saturating_add(host_os_floor_bytes(physical_bytes));
     physical_bytes.saturating_sub(working_set)
-}
-
-/// The typical prompt a plan floors from — the three arms, pure (card c84d885a, 9/19):
-/// a LIVE median always wins and is what gets remembered; with no live median the
-/// remembered one for THE SAME model is the floor; a different model's record, or a 0 on
-/// disk, floors nothing. "Typical" is the median of the prompts the seat SERVES — residents
-/// and leased-in minds in one pool (#4197) — so on a seat that mostly serves other nodes'
-/// coders the remembered median is theirs, which is correct for a seat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TypicalPrompt {
-    Live(u32),
-    Remembered(u32),
-    None,
-}
-fn typical_prompt_for_plan(
-    live_median: Option<(&str, u32)>,
-    seat_model: Option<&str>,
-    record: Option<&crate::modules::served_window_store::StoredServedWindow>,
-) -> TypicalPrompt {
-    if let Some((_, m)) = live_median.filter(|(model, tokens)| Some(*model) == seat_model && *tokens > 0) {
-        return TypicalPrompt::Live(m);
-    }
-    record.filter(|r| Some(r.model_id.as_str()) == seat_model)
-        .and_then(|r| r.observed_prompt_tokens).filter(|t| *t > 0)
-        .map_or(TypicalPrompt::None, TypicalPrompt::Remembered)
 }
 
 /// ONE FLOOR EVERYWHERE: the bytes a sidecar may take is the tighter of the LIVE free
@@ -8084,6 +8000,19 @@ pub(crate) mod tests {
         // with none it is not — the first stair of the staircase.
         assert_eq!(knee_lanes(17, Some(2)), 2);
         assert_eq!(knee_lanes(17, None), 17);
+        // Exercise the actual plan as well as the lookup: remembering a one-lane
+        // collapse cannot defeat today's two-lane knee, even before a slot reports.
+        use crate::cognition::serving_plan::{HostBudget, ModelFootprint, ServingDemand, plan_serving_at_rest};
+        let model = ModelFootprint { model_id: remembered.clone().unwrap(), weights_bytes: 19 << 30,
+            kv_per_token: 33_000, context_window: 262_144, capability_rank: 9, fixed_per_lane_bytes: 0 };
+        let host = HostBudget { usable_bytes: 30 << 30, perf_cores: 8 };
+        let demand = ServingDemand::new(knee_lanes(resident_lane_demand(1, 17, false), Some(2)), Some(60_000))
+            .with_sticky_window(Some(67_340));
+        let cold = plan_serving_at_rest(&host, std::slice::from_ref(&model), None, &demand).unwrap();
+        let settled = plan_serving_at_rest(&host, std::slice::from_ref(&model), Some(&model.model_id), &demand).unwrap();
+        assert_eq!((cold.lanes, cold.served_context_window), (settled.lanes, settled.served_context_window));
+        assert_eq!(cold.lanes, 2, "remembered model applies its knee before boot, not the eight-core maximum");
+        assert!(roster_short_of_slots(1, cold.lanes), "a prior one-lane collapse can recover the second slot");
     }
 
     // what this catches (2026-09-19 15:4xZ, the M5 stuck at one lane): the knee's mirror.
@@ -11783,25 +11712,4 @@ pub(crate) mod tests {
         assert_eq!(sidecar_admissible_bytes(floor / 2, 31 * GB, physical), 0);
     }
 
-    // what this catches (Cormac's three arms on #4207 — the 5090's 2 × 17k for 30k coders on
-    // a fresh boot): (1) a live median wins and is the one remembered; (2) no live median +
-    // a record for the SAME model → the plan floors from it; (3) no live median + a record
-    // for a DIFFERENT model, or a 0 on disk → nothing: a seat is never pinned to a stale or
-    // foreign prompt size. Pure over the store's record, so no daemon and no disk.
-    #[test]
-    fn the_typical_prompt_is_live_when_measured_remembered_for_the_same_model_and_never_foreign() {
-        use crate::modules::served_window_store::StoredServedWindow;
-        let rec = |model: &str, typical: u32| StoredServedWindow {
-            model_id: model.into(), per_slot_window: 49_243, lanes: 1, typical_prompt_tokens: typical, observed_prompt_tokens: Some(typical), set_at_ms: 1,
-        };
-        let same = rec("qwen-27b", 30_000);
-        assert_eq!(typical_prompt_for_plan(Some(("qwen-27b", 31_000)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Live(31_000), "arm 1: live wins over the record");
-        assert_eq!(typical_prompt_for_plan(Some(("other-4b", 31_000)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a changed incumbent cannot inherit the previous snapshot's live observation");
-        assert_eq!(typical_prompt_for_plan(Some(("other-4b", 31_000)), Some("qwen-27b"), None), TypicalPrompt::None, "foreign live observations never become this model's persisted evidence");
-        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "arm 2: unmeasured → the same model's remembered prompt");
-        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("other-4b", 33_000))), TypicalPrompt::None, "arm 3a: a different model's record floors nothing");
-        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("qwen-27b", 0))), TypicalPrompt::None, "arm 3b: a 0 on disk is not a floor");
-        assert_eq!(typical_prompt_for_plan(None, None, Some(&same)), TypicalPrompt::None, "no seat model (a cold boot with no record model) floors nothing");
-        assert_eq!(typical_prompt_for_plan(Some(("qwen-27b", 0)), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a live 0 is unmeasured, not a measurement");
-    }
 }
