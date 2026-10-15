@@ -469,6 +469,21 @@ impl HandoffSelection {
         Ok(())
     }
 
+    /// A deferred candidate permits the core handoff only while the captured,
+    /// verified fallback is still selected. Keep this selection's restore
+    /// authority: later core launch failure must not invent a candidate swap.
+    pub fn confirm_preserved(&self) -> Result<(), String> {
+        let prior = self.prior.ok_or("deferred engine has no prior selection")?;
+        if current_slot(&self.root) != Some(prior)
+            || !is_verified(&self.root, prior)
+            || !slot_bin(&self.root, prior).is_file()
+            || slot_stamp(&self.root, prior).is_none()
+        {
+            return Err("deferred engine fallback is not the captured verified selection".into());
+        }
+        Ok(())
+    }
+
     /// Restore before starting the previous core, whose reader may not understand
     /// the new engine receipt. Normal launch-failure rollback deliberately refuses
     /// during deployment; this caller already owns that authority.
@@ -635,6 +650,7 @@ mod tests {
         assert!(promote(root, "engine-b", "abc123:cuda").is_err(), "stamp is not the pin built");
         engine(root, "engine-a", "aaa000:cuda");
         let fresh = HandoffSelection::capture(root, &slot_bin(root, "engine-a")).expect("capture absent selection");
+        assert!(fresh.confirm_preserved().is_err(), "no fallback cannot be a successful deferred handoff");
         fresh.restore().expect("preparation refused before promotion");
         promote(root, "engine-a", "aaa000:cuda").expect("first install promotes");
         fresh.restore().expect("failed first handoff restores absence");
@@ -645,7 +661,11 @@ mod tests {
         // A core rollback must restore its actual prior engine before the old
         // reader encounters the newly published stamp-bearing receipt.
         let handoff = HandoffSelection::capture(root, &slot_bin(root, "engine-b")).expect("capture actual prior engine");
+        assert!(handoff.confirm_preserved().is_err(), "unproven fallback cannot authorize core adoption");
+        mark_verified(root, "engine-a").unwrap();
+        handoff.confirm_preserved().expect("deferred published candidate preserves verified prior selection");
         promote(root, "engine-b", "abc123:cuda").expect("verified slot promotes");
+        assert!(handoff.confirm_preserved().is_err(), "changed selection cannot claim preservation");
         handoff.confirm().expect("promotion receipt");
         handoff.restore().expect("core failure restores actual prior engine");
         handoff.restore().expect("repeated recovery preserves restored selection");

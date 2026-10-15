@@ -2545,10 +2545,18 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         let selection = continuum_core::inference::engine_slots::HandoffSelection::capture(&root, Path::new(&release.engine))?;
         selected.engine_selection = Some(selection);
         let promotion = async {
-            let promoted = PreparedCoreService::prepare_engine(&repo, true).await?
-                .ok_or("published engine promotion returned no receipt")?;
-            if promoted.0 != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
-            selected.engine_selection.as_ref().ok_or("missing captured engine selection")?.confirm()
+            let promoted = PreparedCoreService::prepare_engine(&repo, true).await?;
+            if PreparedCoreService::query().await?.description != selected.task.description {
+                return Err("installed release changed during published engine preparation".into());
+            }
+            let selection = selected.engine_selection.as_ref().ok_or("missing captured engine selection")?;
+            match promoted {
+                Some((description, _)) => {
+                    if description != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
+                    selection.confirm()
+                }
+                None => selection.confirm_preserved(),
+            }
         }.await;
         if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await); }
     }
