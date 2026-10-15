@@ -2030,10 +2030,10 @@ function Mod-LlamaServer {
         function Mod-CMake { throw 'fixture: fresh published build required' }
         $stamp = Join-Path $engineOut '.llama-server.stamp'
         [IO.File]::WriteAllText($stamp, 'aaaaaaa:cuda:80:portable-v1')
-        Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut -RequireReceipt -PublishedCudaArchitectures 80 -PublishedCpuDefinitions @('-DGGML_NATIVE=OFF')
+        Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut -RequireReceipt -PublishedCudaArchitectures '80;86-real;89-real;120-real' -PublishedCpuDefinitions @('-DGGML_NATIVE=OFF')
         [IO.File]::WriteAllText($stamp, 'aaaaaaa:cuda:80')
         $refused = $false
-        try { Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut -RequireReceipt -PublishedCudaArchitectures 80 -PublishedCpuDefinitions @('-DGGML_NATIVE=OFF') }
+        try { Mod-LlamaServer -RepoRoot $engineRepo -InstallDirectory $engineOut -RequireReceipt -PublishedCudaArchitectures '80;86-real;89-real;120-real' -PublishedCpuDefinitions @('-DGGML_NATIVE=OFF') }
         catch { $refused = $_ -match 'fresh published build required' }
         if (-not $refused) { throw 'Publisher reused a native engine stamp.' }
         foreach ($invalid in @(

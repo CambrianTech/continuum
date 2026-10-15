@@ -42,8 +42,16 @@ configure_cuda_targets() {
 # A node below the floor must not take the build; the manifest carries the value so the
 # consumer can refuse it (prebuilt_artifact::manifest_verdict).
 PUBLISHED_CUDA_COMPUTE_CAP=80
+# The published ENGINE (llama-server) is different: it loads every ggml-cuda kernel at start, and
+# on a card it carries no machine code (SASS) for, the driver JIT-compiles all of them from the
+# PTX first. Built for 80 alone, the 5090 (sm_120) took its first launch of engine 56507cceb past
+# the 240 s readiness bound and rolled back (2026-10-15, card 9b27d49b). So the engine carries
+# SASS for the consumer cards a published build serves (Ampere 86: RTX 30xx; Ada 89: RTX 40xx;
+# Blackwell 120: RTX 50xx) and the floor as SASS and PTX (80: A100, and the forward-JIT path for
+# any newer card): a supported card loads without a JIT.
+PUBLISHED_CUDA_ENGINE_ARCHITECTURES='80;86-real;89-real;120-real'
 configure_published_cuda_targets() {
     export CUDA_COMPUTE_CAP="$PUBLISHED_CUDA_COMPUTE_CAP"
-    export CMAKE_CUDA_ARCHITECTURES="$PUBLISHED_CUDA_COMPUTE_CAP"
-    printf 'CUDA targets (published floor): CMake=%s, Candle PTX=%s\n' "$CMAKE_CUDA_ARCHITECTURES" "$CUDA_COMPUTE_CAP" >&2
+    export CMAKE_CUDA_ARCHITECTURES="$PUBLISHED_CUDA_ENGINE_ARCHITECTURES"
+    printf 'CUDA targets (published): engine CMake=%s, Candle PTX floor=%s\n' "$CMAKE_CUDA_ARCHITECTURES" "$CUDA_COMPUTE_CAP" >&2
 }
