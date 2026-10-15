@@ -369,8 +369,10 @@ fn spawn_state_read(
         }
     });
     async move {
-        // A task that panicked never reached its own release: release the slot here, if it is
-        // still this dir's, so one panic cannot hold every later read out.
+        // The read's own failures (the reader, the blocking pool) release the slot inside the
+        // task. Only a panic of the task itself skips that, and then the slot is released here,
+        // when an asker next waits on it: waiter-dependent, and with no reachable panic in the
+        // task body, not relied on (root on #5060).
         if task.await.is_err() {
             let mut seeding = SEEDING.lock();
             if seeding.as_ref().is_some_and(|(reading, _)| reading == &released) {
