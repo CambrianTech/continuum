@@ -414,6 +414,24 @@ review.
    analog.** "Like the brain's X" is not enough. Find the OS
    primitive that matches X and use IT.
 
+9. **A capability gate decided by anything but an affirmative signal
+   from the running core** — or `build_number` used as authorization at
+   all (#3941, companion to #3940). A gate asks "can you do X?" and may
+   only be answered by a typed declaration FROM the peer (a
+   `capabilities` field on its ping, populated from the actual verb
+   registry it serves). Typed absence is the safe answer: no signal →
+   treat as legacy / refuse. Never infer capability from a version
+   number or branch ordinal — `build_number` counts the last commit
+   reachable at BUILD time (a binary built from uncommitted edits lags)
+   and branch numbers are not comparable across branches (5250 on a
+   pre-verb branch passes any 5210 threshold). Its only role is
+   informative refusal text ("reports build N, predates the verb"). And
+   keep the distinct outcomes distinct: definitively legacy (answered,
+   no capability) vs unknown (did not answer). Both block; only the
+   latter deserves a retry. The #3940 defect was this in reverse: an
+   unmatched error phrasing PASSED — parse of rendered text is not a
+   signal, and a gate that cannot decide must fail closed.
+
 ## What this doc is not
 
 - It is not the substrate's API reference. See the per-module docs
