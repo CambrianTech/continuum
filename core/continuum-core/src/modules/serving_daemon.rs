@@ -114,6 +114,17 @@ const REHOME_HOLD_DEFER_TICKS: u32 = 24;
 /// re-running that measurement against fresher receipts.
 const REHOME_SUSTAINED_TICKS: u32 = 3;
 
+/// PURE: record `plan` among the last [`REHOME_SUSTAINED_TICKS`] plans and answer whether it is
+/// their high. Bounded by the evidence span, so a high ages out with the evidence it came from
+/// and a settled plan's own best tick is always reachable.
+fn at_recent_plan_high(recent: &mut std::collections::VecDeque<u64>, plan: u64) -> bool {
+    recent.push_back(plan);
+    while recent.len() > REHOME_SUSTAINED_TICKS as usize {
+        recent.pop_front();
+    }
+    recent.iter().all(|&seen| plan >= seen)
+}
+
 /// One line per 5 s tick makes the decline probe the defect at the other end, so
 /// it speaks on ENTRY and roughly once a minute thereafter.
 ///
@@ -1026,6 +1037,11 @@ pub struct ServingDaemonModule {
     /// a plan alternating 33k/70k never re-homed for an hour, because every rise
     /// reset the streak).
     rehome_plan_high: Arc<std::sync::atomic::AtomicU64>,
+    /// The last [`REHOME_SUSTAINED_TICKS`] plan windows the re-home decision saw: the span of
+    /// evidence a streak needs. A re-home fires at the best of THESE, not at the streak's
+    /// all-time high, so one transient high cannot make the fire tick unreachable (see
+    /// [`at_recent_plan_high`]).
+    rehome_recent_plans: Arc<parking_lot::Mutex<std::collections::VecDeque<u64>>>,
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
     /// ready incumbent, and which model that was. A model swap re-homes every
     /// persona to different weights, so it earns the same sustained-streak bar as
@@ -1262,6 +1278,7 @@ impl ServingDaemonModule {
             last_swap_used: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = no reading yet: unknown is never "rising"
             decline_log_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_plan_high: Arc::new(std::sync::atomic::AtomicU64::new(0)), // 0 = no plan seen in this streak yet
+            rehome_recent_plans: Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new())),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -3581,12 +3598,16 @@ impl ServingDaemonModule {
                     }
                     0
                 };
-                // Fire only on a tick whose plan IS the streak's high (BigMama on #4851): the
-                // relaunch takes this tick's plan, so firing on a low tick of an alternating
-                // plan would land the lane at the low value (33k under Kimi's 52k) and re-home
-                // again; launching the remembered high instead would use a budget this tick
-                // did not plan. The high tick is both: the best the streak saw, planned now.
-                let at_high = plan_space >= self.rehome_plan_high.load(Ordering::Relaxed);
+                // Fire only on a tick whose plan IS the high of the streak's evidence (BigMama on
+                // #4851): the relaunch takes this tick's plan, so firing on a low tick of an
+                // alternating plan would land the lane at the low value (33k under Kimi's 52k) and
+                // re-home again; launching the remembered high instead would use a budget this
+                // tick did not plan. The high is taken over the last REHOME_SUSTAINED_TICKS plans,
+                // the evidence the streak itself needs, NOT over the whole streak: a high recorded
+                // once, while a relaunch was still freeing memory (Kimi's node 2026-10-15,
+                // 109,768, then a plan settled at 33k-87k), made this unreachable, and the lane
+                // served a 6,144 window until an operator relaunched it (card 5bac4968).
+                let at_high = at_recent_plan_high(&mut self.rehome_recent_plans.lock(), plan_space);
                 let starved = streak >= REHOME_SUSTAINED_TICKS && cooling == 0 && at_high;
                 // NOTE: the guards are re-armed at the FIRE point below, not here —
                 // `starved` only means the evidence qualifies. A later suppression
@@ -10390,6 +10411,49 @@ pub(crate) mod tests {
         // and it lands at the HIGH value (the relaunch takes the fire tick's plan): a re-home
         // on a low tick would bring her back under her need and owe a second relaunch
         assert_eq!(fired_at % 2, 1, "fired on a low tick (half the plan), not the high one");
+    }
+
+    // what this catches (card 5bac4968, Kimi's node 2026-10-15): one transient high stranding a
+    // lane. The plan read 109,768 at the post-deploy relaunch tick while memory was still being
+    // freed, then settled at 33k-87k; the fire tick had to reach that one-off high, never did, and
+    // her lane served 6,144 until an operator relaunched it. The high is the best of the last
+    // REHOME_SUSTAINED_TICKS plans, so a spike ages out and the lane re-homes to the settled
+    // plan; the rule is also pinned on its own, alternating and staircase cases kept above/below.
+    #[tokio::test]
+    async fn a_transient_plan_spike_does_not_strand_the_lane_below_the_settled_plan() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let (daemon, full) = lane_under_plan(serves.clone(), 65_536, 4);
+        let live_window = daemon.serving_tx.borrow().served_context_window;
+        let settled_window = full * 3 / 4;
+        assert!(live_window * 4 < settled_window / 2, "fixture: the lane must sit far below the settled plan");
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
+        let spike = vec![footprint_from_parts("coder-14b", 9 * GB, full, true, None).unwrap()];
+        let settled = vec![footprint_from_parts("coder-14b", 9 * GB, settled_window, true, None).unwrap()];
+        daemon.publish_plan(budget, &spike, &spike);
+        assert!(daemon.reconcile_to_plan().is_none(), "one spike tick is not sustained evidence");
+        let mut fired_at = None;
+        for tick in 1..(REHOME_SUSTAINED_TICKS * 4) {
+            daemon.publish_plan(budget, &settled, &settled);
+            if daemon.reconcile_to_plan().is_some() {
+                fired_at = Some(tick);
+                break;
+            }
+        }
+        let fired_at = fired_at.expect("a lane far below a settled plan must re-home once the spike ages out");
+        assert!(
+            fired_at <= REHOME_SUSTAINED_TICKS + 1,
+            "re-homed only at tick {fired_at}: the spike outlived the evidence span"
+        );
+
+        let mut recent = std::collections::VecDeque::new();
+        assert!(at_recent_plan_high(&mut recent, 109_768), "the first plan is its own high");
+        for (plan, expect) in [(87_000, false), (84_000, false), (86_000, false), (87_000, true)] {
+            assert_eq!(at_recent_plan_high(&mut recent, plan), expect, "plan {plan} against {recent:?}");
+        }
+        assert!(recent.len() <= REHOME_SUSTAINED_TICKS as usize, "bounded by the evidence span");
     }
 
     // what this catches: the boot staircase (2026-09-02) the streak's plan-high rule
