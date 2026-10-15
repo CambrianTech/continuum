@@ -97,6 +97,16 @@ impl PerceptionFact for MemoryNotices {
     }
 }
 
+/// Expandable source content shares its pin lifetime with the required reference.
+struct MemoryNoticeDetails;
+impl PerceptionFact for MemoryNoticeDetails {
+    fn id(&self) -> &'static str { "memory_notice_details" }
+    fn render(&self, cx: &FactContext) -> Option<String> {
+        let details = cx.working_memory?.notice_details();
+        (!details.is_empty()).then(|| details.join("\n\n"))
+    }
+}
+
 /// Which facts are live. Default = all on; `disable(id)` is the A/B arm
 /// switch. Deny-list (not allow-list) so a newly registered fact is live by
 /// default — an experiment must opt OUT, never silently miss enrollment.
@@ -404,6 +414,7 @@ fn standard_facts() -> Vec<Box<dyn PerceptionFact>> {
         Box::new(PeerEcho),
         Box::new(InboundRestates),
         Box::new(ContextBounds),
+        Box::new(MemoryNoticeDetails),
         Box::new(MemoryNotices),
         Box::new(StepsLedger),
     ]

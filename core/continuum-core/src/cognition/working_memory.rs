@@ -181,6 +181,7 @@ struct TurnPinnedFact {
     key: String,
     text: String,
     turns_left: u8,
+    detail: Option<String>,
 }
 
 #[derive(Debug)]
@@ -928,6 +929,16 @@ impl WorkingMemory {
     /// takes one, the next turn's end takes the last (IntelMac's review of #3848:
     /// pin and unpin in the same restore block is a no-op).
     pub fn pin_fact_for_turns(&self, key: &str, text: &str, turns: u8) {
+        self.pin_notice(key, text, turns, None);
+    }
+
+    /// A source-owned expansion reference remains required while its full detail
+    /// competes with history. Both share the same key and turn lifetime.
+    pub(crate) fn pin_expandable_fact(&self, key: &str, reference: &str, detail: Option<String>) {
+        self.pin_notice(key, reference, 1, detail);
+    }
+
+    fn pin_notice(&self, key: &str, text: &str, turns: u8, detail: Option<String>) {
         let t = text.trim();
         if t.is_empty() {
             return;
@@ -937,11 +948,13 @@ impl WorkingMemory {
         if let Some(slot) = p.iter_mut().find(|f| f.key == key) {
             slot.text = t.to_string();
             slot.turns_left = turns;
+            slot.detail = detail;
         } else {
             p.push(TurnPinnedFact {
                 key: key.to_string(),
                 text: t.to_string(),
                 turns_left: turns,
+                detail,
             });
         }
     }
@@ -960,6 +973,10 @@ impl WorkingMemory {
     /// The pinned facts in pin order — what the notices open with.
     pub fn pinned_facts(&self) -> Vec<String> {
         self.pinned.lock().iter().map(|f| f.text.clone()).collect()
+    }
+
+    pub(crate) fn notice_details(&self) -> Vec<String> {
+        self.pinned.lock().iter().filter_map(|fact| fact.detail.clone()).collect()
     }
 
     /// Substrate notices use the input projection, not the optional thought bid.

@@ -6034,6 +6034,16 @@ mod tests {
             wm.record("weighing the next step");
             wm.record_fact("[no-deliverable] No workspace change yet.");
             wm.pin_fact("hands", "[hands] The workspace remains bound.");
+            // Arbitrary ledger author text uses the source-owned expansion route.
+            use crate::experience::ledger::{CardLedger, render_for_turn, render_reference_for_turn};
+            let ledger = CardLedger {
+                card_id: Uuid::new_v4(), by: Uuid::new_v4(),
+                decided_fix: Some("large-ledger-detail ".repeat(4_000)),
+                ..Default::default()
+            };
+            let reference = render_reference_for_turn(&ledger, ledger.by);
+            wm.pin_expandable_fact("ledger", &reference, Some(render_for_turn(&ledger, ledger.by)));
+
             let faculty = LlmDeliberationFaculty::new(
                 Uuid::new_v4(), "T", "You are T.", Arc::new(HeuristicInferenceAdapter::new()),
             ).with_working_memory(Arc::clone(&wm));
@@ -6059,10 +6069,22 @@ mod tests {
                 assert_eq!(text.matches("[no-deliverable]").count(), 1);
                 assert_eq!(text.matches("[hands]").count(), 1);
                 assert!(text.contains(crate::cognition::framing_echo::NOTICES_HEADER));
+                assert!(text.contains(&format!("work/get(card_id=\"{}\")", ledger.card_id)));
+                assert!(!text.contains("large-ledger-detail"), "oversized detail yields without muting the turn");
                 assert!(!text.contains("weighing the next step"), "optional thought trail yielded; notices retain substrate provenance");
                 let prompt = faculty.messages_unfitted(&ws, None);
                 assert!(faculty.fit_messages(prompt, required - 1).is_err(), "shortfall is explicit, not dropped feedback");
             }
+            let prompt = faculty.messages_unfitted(&ws, None);
+            let all = prompt.required_tokens() + LlmDeliberationFaculty::messages_cost(&prompt.history);
+            let fitted = faculty.fit_messages(prompt, all).expect("inline ledger fits");
+            assert!(fitted.messages.iter().any(|message| message.content_text().contains("large-ledger-detail")));
+            wm.pin_fact("ledger", "[ledger] No saved note remains.");
+            assert!(wm.notice_details().is_empty(), "replacement retires old expandable detail");
+            wm.pin_expandable_fact("ledger", &reference, Some(render_for_turn(&ledger, ledger.by)));
+            wm.end_of_work_turn();
+            assert!(wm.notice_details().is_empty(), "detail and reference share expiry");
+            assert!(!wm.notices().iter().any(|notice| notice.contains("work/get")));
             // A notice-only memory has no optional thought bid at all.
             let only = Arc::new(WorkingMemory::new(8));
             only.record_fact("[no-deliverable] No workspace change yet.");
