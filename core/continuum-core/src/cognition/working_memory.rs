@@ -915,6 +915,8 @@ impl WorkingMemory {
     /// renders first among the notices. For conditions that hold across acts
     /// (her hands' root, her checkout's environment) — `record_fact` is for
     /// one-off observations that may age out.
+    /// Text is required prompt input. Producers own its size; raw payloads belong
+    /// in the existing retrievable-result path, not an unbounded status notice.
     pub fn pin_fact(&self, key: &str, text: &str) {
         self.pin_fact_for_turns(key, text, 1);
     }
@@ -978,6 +980,8 @@ impl WorkingMemory {
         self.pinned.lock().retain(|f| f.key != key);
     }
 
+    /// Records required prompt input. Producers must account for text size; the
+    /// shared prompt budget refuses oversized notices instead of silently clipping.
     pub fn record_fact(&self, fact: &str) {
         let f = fact.trim();
         if f.is_empty() {
