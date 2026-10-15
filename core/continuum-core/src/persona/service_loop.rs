@@ -488,7 +488,7 @@ async fn serve_persona_loop_inner(
     let mut recent_inbound: std::collections::VecDeque<String> =
         std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
     // Roster-name memory for engram attribution: harvested from each turn's
-    // composed `room-roster` delivery (zero extra I/O — the roster scan already
+    // composed roster delivery (zero extra I/O — the shared projection already
     // runs per turn), consulted at admit time so her MEMORY records
     // "Joel said…" / "Claude said…", never "peer-7711fe60 said…". First-class
     // peers — humans, outside agents, personas — all resolve through the one
@@ -1140,20 +1140,9 @@ async fn serve_persona_loop_inner(
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
         // Harvest the roster resolution this compose already fetched into the
         // admit-time name memory (see `roster_names` above).
-        for d in composed
-            .deliveries
-            .iter()
-            .filter(|d| d.source_id == "room-roster")
-        {
-            for item in &d.items {
-                if let (Some(peer), Some(name)) = (
-                    item.metadata.get("peer_id").and_then(|v| v.as_str()),
-                    item.metadata.get("display_name").and_then(|v| v.as_str()),
-                ) {
-                    if let Ok(id) = Uuid::parse_str(peer) {
-                        roster_names.insert(id, name.to_string());
-                    }
-                }
+        for (peer, name) in roster_identities(&composed.deliveries) {
+            if let Ok(id) = Uuid::parse_str(peer) {
+                roster_names.insert(id, name.to_string());
             }
         }
 
@@ -2012,21 +2001,40 @@ pub(crate) struct RoomRosterProjection {
     pub(crate) other_persona_names: Vec<String>,
 }
 
-/// Fold the `room-roster` delivery into its two grounding consumers, routed by
-/// `source_id`. Pure and extracted from the heartbeat loop (sibling of
-/// [`build_workspace_turns`]) so the live path and the convergence seam-proof
-/// test exercise the IDENTICAL projection — one roster truth, no inline
-/// duplication. See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+/// The shared roster projection's admitted atoms. The legacy source remains
+/// readable for existing replay/diagnostic deliveries; live turns use KIND.
+fn roster_items(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+) -> impl Iterator<Item = &crate::persona::rag_budget::RagItem> {
+    deliveries
+        .iter()
+        .filter(|d| {
+            d.source_id == continuum_positron::RosterViewState::KIND
+                || d.source_id == super::room_roster_source::SOURCE_ID
+        })
+        .flat_map(|d| d.items.iter())
+}
+
+/// Resolve identity from admitted roster atoms, never rendered text or a second
+/// unbudgeted roster read. Legacy replay deliveries carry the same metadata.
+fn roster_identities(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+) -> impl Iterator<Item = (&str, &str)> {
+    roster_items(deliveries).filter_map(|item| {
+        Some((
+            item.metadata.get("peer_id")?.as_str()?,
+            item.metadata.get("display_name")?.as_str()?,
+        ))
+    })
+}
+
+/// Project the same admitted roster atoms for the legacy prompt-assembly seam.
 pub(crate) fn project_room_roster(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
 ) -> RoomRosterProjection {
     let mut room_roster: Vec<String> = Vec::new();
     let mut other_persona_names: Vec<String> = Vec::new();
-    for item in deliveries
-        .iter()
-        .filter(|d| d.source_id == "room-roster")
-        .flat_map(|d| d.items.iter())
-    {
+    for item in roster_items(deliveries) {
         room_roster.push(item.content.clone());
         if let Some(name) = item.metadata.get("display_name").and_then(|v| v.as_str()) {
             other_persona_names.push(name.to_string());
@@ -2179,22 +2187,13 @@ pub(crate) fn build_workspace_turns(
 ) -> Vec<crate::cognition::workspace::BurstTurn> {
     use crate::cognition::workspace::BurstTurn;
     use std::collections::HashMap;
-    // airc owns identity: the `room-roster` source already joined peer_id → display
-    // name in one batched scan ([[airc-native-identity-rooms-security]]). Reuse THAT
+    // airc owns identity: roster atoms carry peer_id → display name from the
+    // shared projection ([[airc-native-identity-rooms-security]]). Reuse THAT
     // resolution — same deliveries slice — so the history reads `Joel:`, `BigMama:`
     // instead of raw UUIDs. A peer not in the roster (or an eval-synthesized delivery
     // with no roster) falls back to its own peer_id: honest, never invisible, never a
     // fabricated name ([[fallbacks-are-illegal-fail-loud]]).
-    let names: HashMap<&str, &str> = deliveries
-        .iter()
-        .filter(|d| d.source_id == "room-roster")
-        .flat_map(|d| d.items.iter())
-        .filter_map(|item| {
-            let peer = item.metadata.get("peer_id").and_then(|v| v.as_str())?;
-            let name = item.metadata.get("display_name").and_then(|v| v.as_str())?;
-            Some((peer, name))
-        })
-        .collect();
+    let names: HashMap<&str, &str> = roster_identities(deliveries).collect();
     let mut turns: Vec<BurstTurn> = deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
@@ -2446,11 +2445,8 @@ pub(crate) fn build_workspace_turns(
     // denials. An authorless opaque FACT block (same shape as [pattern]) —
     // orientation, never instruction ([[no-hardcoded-heuristics-to-steer-cognition]]).
     if turns.is_empty() {
-        let peers: Vec<&str> = deliveries
-            .iter()
-            .filter(|d| d.source_id == "room-roster")
-            .flat_map(|d| d.items.iter())
-            .filter_map(|i| i.metadata.get("display_name").and_then(|v| v.as_str()))
+        let peers: Vec<&str> = roster_identities(deliveries)
+            .map(|(_, name)| name)
             .filter(|n| *n != agent_name)
             .take(8)
             .collect();
