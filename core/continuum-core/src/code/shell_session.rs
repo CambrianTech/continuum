@@ -100,6 +100,7 @@ struct ShellCargoCustody {
     state: Arc<Mutex<ExecutionState>>,
     admission: Arc<super::hands::HandsLease>,
     kept: crate::inference::lane_process::Kept,
+    completed: bool,
 }
 impl Drop for ShellCargoCustody {
     fn drop(&mut self) {
@@ -113,6 +114,11 @@ impl Drop for ShellCargoCustody {
         };
         // Spawn and publishing its PID are synchronous, with no cancellation point.
         if state.pid.is_none() { return; }
+        if !self.completed {
+            self.admission.keep_unknown("shell task cancelled before its process and output lifetime completed".into());
+            self.admission.keep_held(&[self.kept.clone()]);
+            return;
+        }
         let end = crate::inference::lane_process::TreeEnd {
             reaped: if state.process_ended && state.process_end_error.is_none() { Ok(()) }
                 else { Err(state.process_end_error.clone().unwrap_or_else(|| "shell task ended without confirming its child".into())) },
@@ -463,12 +469,13 @@ impl ShellSession {
                 }
                 return;
             };
-            let _custody = ShellCargoCustody { state: state.clone(), admission, kept: cargo_grant.kept() };
+            let mut custody = ShellCargoCustody { state: state.clone(), admission, kept: cargo_grant.kept(), completed: false };
             run_shell_command(
                 state.clone(),
                 &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who, cargo_grant.grant(),
             )
             .await;
+            custody.completed = true;
             // A finished command may have written anywhere under its cwd (a build, a
             // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
             // not — observers re-read the workspace on this event instead of
@@ -1742,9 +1749,20 @@ mod tests {
         let held = Arc::new(());
         let witness = Arc::downgrade(&held);
         receipt.lock().unwrap().unconfirmed_descendants.push(crate::inference::lane_process::ProcessIdentity { pid: 4242, start_time: 7 });
-        drop(ShellCargoCustody { state: receipt.clone(), admission: admission.clone(), kept: held });
+        drop(ShellCargoCustody { state: receipt.clone(), admission: admission.clone(), kept: held, completed: true });
         receipt.lock().unwrap().unconfirmed_descendants.clear();
         drop(admission);
+        // A direct-child exit alone does not prove output-holding descendants
+        // ended when cancellation interrupts the remainder of the shell task.
+        let cancelled_context = crate::code::hands::HandsContext::fresh();
+        let cancelled_admission = Arc::new(crate::code::hands::admit(cancelled_context).unwrap());
+        let cancelled_hold = Arc::new(());
+        let cancelled_witness = Arc::downgrade(&cancelled_hold);
+        drop(ShellCargoCustody { state: receipt.clone(), admission: cancelled_admission.clone(), kept: cancelled_hold, completed: false });
+        drop(cancelled_admission);
+        assert!(!rt.block_on(crate::code::hands::close(cancelled_context)).unknown.is_empty());
+        crate::code::hands::retain_processes(cancelled_context, Vec::new());
+        assert!(cancelled_witness.upgrade().is_some(), "unknown output lifetime is not cleared by an empty known-descendant list");
 
         // Count eviction keeps only the newest terminal receipt, not running work.
         let running = session.execute("sleep 60", None, rt.handle()).unwrap();
