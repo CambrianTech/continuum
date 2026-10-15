@@ -416,3 +416,18 @@ An exhausted cooperative scan slice is not an empty inbox. It yields to the runt
 and continues under the existing caller deadline, without a new timer or larger cap.
 The real-pump regression covers more than one page of non-chat envelopes before
 speech, work-fact survival, decode faults, duplicates and lag through the same setup.
+
+### Deferred perception scope (04dc5e95)
+
+The resolved activity room and wake room travel together through the existing
+DeferredFaculty input and last-good finding. The worker reconstructs both before
+calling its inner faculty; source-owned room selection therefore behaves the same
+on the direct and deferred paths. A cached result is eligible only when both rooms
+match, including a late completion after an activity switch within one wake room.
+Cold-start and directed results seed that same identity. No new cache, refresh
+policy, task selection, or speech attribution is introduced.
+
+Acceptance remains owned by Codex helper on card 04dc5e95: after supported
+deployment, observe a natural ambient Kimi request whose task board and ledger
+match the bound activity while wake attribution remains unchanged. Unit fixtures
+prove the wrapper contract; they do not establish a useful authored code change.
