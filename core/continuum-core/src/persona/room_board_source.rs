@@ -949,6 +949,8 @@ mod tests {
 
     struct StubReader {
         board: BoardSnapshot,
+        /// When seeded, model the production reader's subscription boundary.
+        board_room: Option<uuid::Uuid>,
         fail: Mutex<bool>,
         /// Published aliases the stub knows, standing in for airc's durable
         /// alias store. Empty by default — an owner with no published name
@@ -964,6 +966,7 @@ mod tests {
         fn new(board: BoardSnapshot) -> Self {
             Self {
                 board,
+                board_room: None,
                 fail: Mutex::new(false),
                 names: std::collections::HashMap::new(),
                 last_room: Mutex::new(None),
@@ -971,6 +974,10 @@ mod tests {
         }
         fn with_name(mut self, peer: airc_core::PeerId, name: &str) -> Self {
             self.names.insert(peer, name.to_string());
+            self
+        }
+        fn in_room(mut self, room: uuid::Uuid) -> Self {
+            self.board_room = Some(room);
             self
         }
         fn set_fail(&self, fail: bool) {
@@ -982,6 +989,9 @@ mod tests {
     impl RoomBoardReader for StubReader {
         async fn work_board(&self, room: Option<uuid::Uuid>) -> Result<BoardSnapshot, AircError> {
             *self.last_room.lock().unwrap() = Some(room);
+            if self.board_room.is_some() && room != self.board_room {
+                return Err(AircError::NotSubscribed(format!("{room:?}")));
+            }
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(airc_core::PeerId::new()));
             }
@@ -1326,7 +1336,8 @@ mod tests {
         for _ in 0..32 {
             board.submission_reviews.push(airc_work::WorkSubmissionReview { review_id: airc_work::WorkReviewId::new(), ..review.clone() });
         }
-        let source = RoomBoardSource::new(me, Arc::new(StubReader::new(board))).for_room(room);
+        let reader = Arc::new(StubReader::new(board).in_room(room));
+        let source = RoomBoardSource::new(me, reader.clone()).for_room(room);
         let activity = RagContext::for_persona_in_room(me, ctx().now_ms, room);
         // Production room-kanban desired allocation (rag_budget preset).
         let delivery = source.deliver(&activity, 500, ResolutionPreference::Raw).await;
@@ -1336,8 +1347,10 @@ mod tests {
         assert!(content.contains(&candidate.submission_id.to_string()));
         assert!(content.contains("work/submission"));
         assert!(!content.contains(&old.review_id.to_string()));
+        assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(room)));
         let elsewhere = RagContext::for_persona_in_room(me, ctx().now_ms, uuid::Uuid::new_v4());
         assert!(source.deliver(&elsewhere, 2_000, ResolutionPreference::Raw).await.items.is_empty());
+        assert_eq!(*reader.last_room.lock().unwrap(), Some(elsewhere.airc_room.map(|room| room.as_uuid())));
     }
 
     #[tokio::test]
