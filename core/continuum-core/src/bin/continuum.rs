@@ -4571,7 +4571,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
 /// (`request_path`) no longer names `requested_tip`:
 /// the caller lists candidates again against the new tip.
 async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
-    use continuum_cli_lifecycle::prebuilt_artifact::{newest_published, platform_key, when_artifact_missing, MissingArtifact};
+    use continuum_cli_lifecycle::prebuilt_artifact::{select_published_core, platform_key, when_artifact_missing, MissingArtifact};
     let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
     let newest = &candidates[0]; // deploy_candidates always puts the tip's key first
     let mut tick = tokio::time::interval(Duration::from_secs(60));
@@ -4586,19 +4586,10 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
         let missing = match platform {
             None => when_artifact_missing(None, 0),
             Some(p) => {
-                let mut published = Vec::with_capacity(candidates.len());
-                for key in candidates {
-                    published.push(match ci_core_published(key, p).await {
-                        Ok(out) => out,
-                        Err(why) => {
-                            deploy_note(&format!("deploy-consume: could not ask CI whether {key} is out: {why}"));
-                            false
-                        }
-                    });
-                }
-                match newest_published(candidates, &published) {
+                let source = CiPublishedCore { repo, platform: p };
+                match select_published_core(candidates, &source).await {
                     None => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
-                    Some(key) => match fetch_ci_core(repo, key, p).await {
+                    Some((key, artifact)) => match artifact {
                         Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
                         // published a moment ago and gone now: the next tick asks again
                         Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
@@ -4686,6 +4677,34 @@ async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
     }
 }
 
+struct CiPublishedCore<'a> {
+    repo: &'a Path,
+    platform: &'a str,
+}
+
+#[async_trait::async_trait]
+impl continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreSource for CiPublishedCore<'_> {
+    type Artifact = PathBuf;
+    async fn published(&self, key: &str) -> Result<bool, String> {
+        let result = ci_core_published(key, self.platform).await;
+        if let Err(why) = &result { deploy_note(&format!("deploy-consume: could not ask CI whether {key} is out: {why}")); }
+        result
+    }
+    async fn checks(&self, key: &str) -> Result<continuum_cli_lifecycle::deploy_tracker::Checks, String> {
+        let repo = self.repo.to_path_buf();
+        let revision = key.to_string();
+        let result = tokio::task::spawn_blocking(move || continuum_core::modules::deploy_tracker::revision_checks(&repo, &revision))
+            .await.map_err(|e| format!("revision-check task failed: {e}"))?;
+        match &result {
+            Ok(continuum_cli_lifecycle::deploy_tracker::Checks::Green) => {},
+            other => deploy_note(&format!("deploy-consume: published {key} is not authorized: {other:?}")),
+        }
+        result
+    }
+    async fn fetch(&self, key: &str) -> Result<Option<PathBuf>, String> {
+        fetch_ci_core(self.repo, key, self.platform).await
+    }
+}
 /// What the CI wait resolved to.
 enum CiCore {
     /// The extracted core, and the build key it is (the tip's, or an older published one).

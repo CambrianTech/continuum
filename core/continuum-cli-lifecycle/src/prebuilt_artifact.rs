@@ -345,15 +345,28 @@ pub fn candidate_keys_log_args(running: &str, tip: &str) -> Vec<String> {
     args
 }
 
-/// The build to deploy, given the candidates newest first and whether CI published each:
-/// the newest PUBLISHED one. `None` = nothing newer than the running core is out yet, so
-/// the consumer waits on the newest candidate.
-pub fn newest_published<'a>(candidates: &'a [String], published: &[bool]) -> Option<&'a str> {
-    candidates
-        .iter()
-        .zip(published)
-        .find(|(_, &out)| out)
-        .map(|(key, _)| key.as_str())
+/// The existing consumer's IO boundary. Selection owns the order: publication,
+/// exact-revision authorization, then fetch. A source failure never reaches fetch.
+#[async_trait::async_trait]
+pub trait PublishedCoreSource: Sync {
+    type Artifact: Send;
+    async fn published(&self, key: &str) -> Result<bool, String>;
+    async fn checks(&self, key: &str) -> Result<crate::deploy_tracker::Checks, String>;
+    async fn fetch(&self, key: &str) -> Result<Option<Self::Artifact>, String>;
+}
+
+pub async fn select_published_core<S: PublishedCoreSource>(candidates: &[String], source: &S)
+    -> Option<(String, Result<Option<S::Artifact>, String>)>
+{
+    use crate::deploy_tracker::Checks;
+    for key in candidates {
+        if source.published(key).await != Ok(true) { continue; }
+        let checks = source.checks(key).await.unwrap_or(Checks::Unknown); // unreadable CI is never authorization
+        if matches!(checks, Checks::Green) {
+            return Some((key.clone(), source.fetch(key).await));
+        }
+    }
+    None
 }
 
 /// What the consumer does when its tip has no artifact yet.
@@ -661,30 +674,68 @@ mod tests {
     // while an older build is published. Core 5b496e307 ran from 12:30Z while 8de501e35's
     // core had been out since 15:18Z: 5dbfadbca was building and e428cbd50 queued, and the
     // consumer only ever waited on the tip. The newest PUBLISHED candidate is the deploy.
-    #[test]
-    fn the_newest_published_build_is_deployed_not_only_the_tip() {
+    #[tokio::test]
+    async fn the_newest_published_build_is_deployed_not_only_the_tip() {
+        async fn newest_published(candidates: &[String], published: &[bool], verdicts: &[Option<crate::deploy_tracker::Checks>]) -> Option<String> {
+            struct Source<'a> {
+                keys: &'a [String],
+                published: &'a [bool],
+                verdicts: &'a [Option<crate::deploy_tracker::Checks>],
+                fetched: std::sync::Mutex<Vec<String>>,
+            }
+            #[async_trait::async_trait]
+            impl PublishedCoreSource for Source<'_> {
+                type Artifact = String;
+                async fn published(&self, key: &str) -> Result<bool, String> {
+                    Ok(self.published[self.keys.iter().position(|k| k == key).unwrap()])
+                }
+                async fn checks(&self, key: &str) -> Result<crate::deploy_tracker::Checks, String> {
+                    let verdict = self.verdicts[self.keys.iter().position(|k| k == key).unwrap()];
+                    // None exercises a failed read; Some(Unknown) tests an explicit unknown verdict.
+                    verdict.ok_or_else(|| "CI source unavailable".into())
+                }
+                async fn fetch(&self, key: &str) -> Result<Option<String>, String> {
+                    self.fetched.lock().unwrap().push(key.to_string());
+                    Ok(Some(key.to_string()))
+                }
+            }
+            let source = Source { keys: candidates, published, verdicts, fetched: Default::default() };
+            let selected = select_published_core(candidates, &source).await;
+            let key = selected.map(|(key, artifact)| { assert_eq!(artifact.unwrap(), Some(key.clone())); key });
+            assert_eq!(*source.fetched.lock().unwrap(), key.iter().cloned().collect::<Vec<_>>(),
+                "only the authorized revision may reach artifact fetch");
+            key
+        }
         let candidates: Vec<String> = ["e428cbd50", "5dbfadbca", "8de501e35"]
             .map(String::from)
             .to_vec();
+        use crate::deploy_tracker::Checks;
+        let green = [Some(Checks::Green); 3];
         assert_eq!(
-            newest_published(&candidates, &[false, false, true]),
+            newest_published(&candidates, &[false, false, true], &green).await.as_deref(),
             Some("8de501e35")
         );
         assert_eq!(
-            newest_published(&candidates, &[false, true, true]),
+            newest_published(&candidates, &[false, true, true], &green).await.as_deref(),
             Some("5dbfadbca"),
             "the newest out wins"
         );
         assert_eq!(
-            newest_published(&candidates, &[true, false, true]),
+            newest_published(&candidates, &[true, false, true], &green).await.as_deref(),
             Some("e428cbd50"),
             "the tip, when it is out"
         );
         assert_eq!(
-            newest_published(&candidates, &[false, false, false]),
+            newest_published(&candidates, &[false, false, false], &green).await.as_deref(),
             None,
             "none out: wait"
         );
+        for refused in [Some(Checks::Red), Some(Checks::Pending), Some(Checks::Unknown), None] {
+            assert_eq!(newest_published(&candidates, &[false, true, true], &[Some(Checks::Green), refused, Some(Checks::Green)]).await.as_deref(),
+                Some("8de501e35"), "a green request cannot authorize a non-green published ancestor");
+            assert_eq!(newest_published(&candidates, &[false, true, false], &[Some(Checks::Green), refused, Some(Checks::Unknown)]).await.as_deref(),
+                None, "without a published green candidate the running core stands");
+        }
         let args = candidate_keys_log_args("5b496e307", "e428cbd50");
         assert!(
             args.contains(&"5b496e307..e428cbd50".to_string()),
