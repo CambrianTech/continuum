@@ -4417,7 +4417,10 @@ impl ServingDaemonModule {
                 }
             }
             let capture = if current() {
-                let qualification = if snapshot.served_context_window != served_ctx || snapshot.lanes != lanes {
+                // The backend may pad the admitted window upward (its owner
+                // reports the exact value). More capacity does not invalidate
+                // the comparison; fewer tokens or different lanes do.
+                let qualification = if snapshot.served_context_window < served_ctx || snapshot.lanes != lanes {
                     crate::modules::served_window_store::GeometryQualification::Unknown
                 } else { qualification };
                 verified_capture(server.as_ref(), &snapshot, revision, qualification).map(|mut capture| {
