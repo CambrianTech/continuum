@@ -249,7 +249,11 @@ mod tests {
         // credited budget for cold boot and settled reconciliation.
         for requirements in [vec![], vec![LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
             LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)]] {
-            let demand = ServingDemand::new(2, Some(70_000)).with_sticky_window(Some(restarted.per_slot_window))
+            // Legacy callers express their current per-lane requirement through
+            // the measured prompt median (56k plus existing headroom = 70k).
+            // Without it they may legitimately choose two narrower lanes.
+            let demand = ServingDemand::new(2, Some(70_000)).with_sent_median(Some(56_000))
+                .with_sticky_window(Some(restarted.per_slot_window))
                 .with_requirements(requirements);
             let cold = plan_serving_at_rest(&host, std::slice::from_ref(&model), None, &demand).unwrap();
             let settled = plan_serving_at_rest(&host, std::slice::from_ref(&model), Some(&model.model_id), &demand).unwrap();
