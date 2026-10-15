@@ -95,7 +95,7 @@ static CURRENT_DISK_LEVEL: std::sync::atomic::AtomicU8 = std::sync::atomic::Atom
 /// The last published snapshot, for the command surface (`system/resources`). A
 /// brief `RwLock` written once per 30 s poll and read on demand — never across an
 /// await.
-static CURRENT_DISK_SNAPSHOT: parking_lot::RwLock<Option<DiskPressureSnapshot>> =
+static CURRENT_DISK_SNAPSHOT: parking_lot::RwLock<Option<(DiskPressureSnapshot, Vec<crate::capacity::system_profile::DriveInfo>)>> =
     parking_lot::RwLock::new(None);
 
 /// Check if the disk gate is closed (critical pressure sustained).
@@ -351,7 +351,7 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 const QUARANTINE_AFTER: u32 = 3;
 
 /// Reporter call budget — 100 ms hard ceiling per call.
-const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
+pub(crate) const REPORTER_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// THE VOLUME WE MEASURE IS THE ONE THAT HOLDS THE SUBSTRATE'S HOME — resolved
 /// through the drive adapter ([`crate::capacity::system_profile::drive_holding`]),
@@ -488,9 +488,15 @@ impl DiskPressureMonitor {
     /// beside cpu/memory/gpu. `None` before the first poll: "not measured yet", never
     /// a zero-sized volume.
     pub fn current_snapshot() -> Option<DiskPressureSnapshot> {
-        CURRENT_DISK_SNAPSHOT.read().clone()
+        CURRENT_DISK_SNAPSHOT.read().as_ref().map(|(snapshot, _)| snapshot.clone())
     }
 
+    /// Same mount sample as the monitor snapshot; no caller starts another probe.
+    pub fn volume_for(path: &std::path::Path) -> Option<crate::capacity::system_profile::DriveInfo> {
+        let current = CURRENT_DISK_SNAPSHOT.read();
+        let (_, drives) = current.as_ref()?;
+        crate::capacity::system_profile::drive_holding(drives, path).cloned()
+    }
     /// Lock-free current level. Updated every poll.
     pub fn current_level() -> DiskPressureLevel {
         match CURRENT_DISK_LEVEL.load(Ordering::Relaxed) {
@@ -540,7 +546,7 @@ impl DiskPressureMonitor {
     /// an await; `self.channel.publish` happens last, lock-free.
     async fn poll(&self) {
         // --- Phase 1: brief lock — ingest + plan. ---
-        let (total, available, used, pressure, level, consecutive_at_level, live, volume_source) = {
+        let (total, available, used, pressure, level, consecutive_at_level, live, volume_source, drives) = {
             let mut st = self.state.lock();
 
             // Drain dynamically-added reporters.
@@ -635,6 +641,7 @@ impl DiskPressureMonitor {
                 consecutive_at_level,
                 live,
                 volume_source,
+                drives,
             )
         };
 
@@ -788,7 +795,7 @@ impl DiskPressureMonitor {
         // process-wide copy is what `system/resources` reads: until 2026-09-18 the
         // disk had NO field on any command surface, so a monitor reading (0, 0) for
         // months was invisible from every seat — the absence had nowhere to show.
-        *CURRENT_DISK_SNAPSHOT.write() = Some(snapshot.clone());
+        *CURRENT_DISK_SNAPSHOT.write() = Some((snapshot.clone(), drives));
         self.channel.publish(snapshot);
 
         if fire_ready {

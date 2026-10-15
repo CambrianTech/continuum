@@ -288,6 +288,8 @@ impl DataState {
     /// - `"@metrics"` — telemetry SQLite. Resolves to
     ///   `$HOME/.continuum/metrics/metrics.sqlite` on the host. Same
     ///   Mac Option B rationale.
+    /// - `"@node"` — machine-local SQLite ownership state under the native continuum home;
+    ///   never follows the shared DATABASE_URL backend.
     /// - 36-char UUID shape — per-persona database (UUID-keyed variant).
     ///   Maps to `$HOME/.continuum/personas/<uuid>/longterm.db`. Kept
     ///   for back-compat with callers using UUIDs as identity.
@@ -300,7 +302,23 @@ impl DataState {
     /// `$HOME` remains the explicit home override; otherwise the native home
     /// directory is used (including Windows launches without a shell's HOME).
     fn resolve_handle(&self, handle: &str) -> Result<String, String> {
-        Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), dirs::home_dir)
+        Self::resolve_node_or_backend(handle, crate::paths::continuum_home, ||
+            Self::resolve_handle_with(handle, |key| std::env::var(key).ok(), dirs::home_dir))
+    }
+
+    fn resolve_node_or_backend(
+        handle: &str,
+        node_home: impl FnOnce() -> Result<PathBuf, String>,
+        backend: impl FnOnce() -> Result<String, String>,
+    ) -> Result<String, String> {
+        if handle == "@node" {
+            // Local filesystem ownership never follows a remote DATABASE_URL.
+            // The existing node-home policy also provides isolated test homes.
+            return node_home()?.join("database/node.db")
+                .into_os_string().into_string()
+                .map_err(|_| "node database path is not valid UTF-8".to_string());
+        }
+        backend()
     }
 
     /// Keep environment access at the resolution boundary so all local handle
@@ -2346,6 +2364,26 @@ impl DataState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn node_local_catalog_cannot_follow_a_remote_main_database() {
+        let node = tempfile::tempdir().unwrap();
+        let remote = "postgres://shared.example/fleet";
+        let backend = || DataState::resolve_handle_with("main", |key| {
+            assert_eq!(key, "DATABASE_URL");
+            Some(remote.to_string())
+        }, || panic!("remote backend does not need a home"));
+        assert_eq!(DataState::resolve_node_or_backend("main", || panic!("main keeps backend scope"), backend).unwrap(), remote);
+        assert_eq!(DataState::resolve_node_or_backend("@node", || Ok(node.path().into()), || panic!("node catalog must never resolve DATABASE_URL")).unwrap(), node.path().join("database/node.db").to_str().unwrap());
+        // Broker initialization may precede DataModule::initialize. The actual
+        // adapter owner must open independently and reuse its resolved backend.
+        // continuum_home supplies the existing process-local test isolation.
+        let state = DataState::new();
+        assert!(state.context.read().unwrap().is_none());
+        let first = state.get_adapter("@node").await.unwrap();
+        let second = state.get_adapter("@node").await.unwrap();
+        assert!(Arc::ptr_eq(&first, &second));
+    }
 
     // What this catches: generic data/vector commands cannot bypass the owning
     // recall command's authorization or mutate its retained decisions.

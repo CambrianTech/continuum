@@ -1555,51 +1555,10 @@ pub fn start_server(
         // artifacts only (safe on any user's machine — the next build
         // recreates everything it deletes). Shares its TrackedDir with the
         // disk reporter — one measurement per class.
-        // BOTH build caches, not just the shared one. Worktree builds are required to
-        // write into `cargo-target-wt` so they cannot poison the main checkout's target
-        // (card d2cda466), and that directory then grew to 87 GB unweighed because it was
-        // registered nowhere — the 2026-07-13 law with a new name on it. Same pool, same
-        // flock discipline; the broker now sees both.
-        //
-        // AND THE BUDGET IS DERIVED FROM THE VOLUME, not a constant (#3906). A fixed
-        // 50 GiB sat BELOW this workspace's debug tree on a workstation, so the pool was
-        // permanently over budget and evicted every ~13 minutes all day: 36 evictions and
-        // 356 GB of compilation destroyed in one measured day, at a 13.5-minute
-        // median. (That is the measured FREQUENCY; this pool never observes whether
-        // a given build reused the cache, and the warning says so.)
-        // `cargo-target-wt` is a build cache for the SAME workspace
-        // and was already at 87 GB, so giving it the flat constant would have reproduced
-        // the defect on a second cache the day it was registered. A volume we cannot
-        // resolve keeps the floor — never a guess, never zero.
-        use crate::capacity::system_profile::detect_drives;
-        let drives = detect_drives();
-        for class in crate::system_resources::CARGO_TARGET_CLASSES {
-            if let Some(cargo_dir) = crate::system_resources::tracked_dir(class) {
-                // Resolved per class: the two caches can live on different volumes
-                // (an operator who moves worktree builds to a second drive is exactly
-                // who this pool is for), so each gets the budget ITS drive earns.
-                let volume_total =
-                    crate::capacity::system_profile::drive_holding(&drives, cargo_dir.path())
-                        .map(|d| d.total_bytes);
-                let budget = volume_total
-                    .map(crate::system_resources::cargo_target_budget_bytes)
-                    .unwrap_or(crate::system_resources::DEFAULT_CARGO_TARGET_BUDGET_BYTES);
-                broker.register(Arc::new(crate::system_resources::CargoTargetPool::new(
-                    cargo_dir, budget,
-                ))
-                    as Arc<dyn crate::paging::pool::ResourcePool>);
-                let line = format!(
-                    "CargoTargetPool registered with PressureBroker for {class}                      (budget {} GB {}, flock-guarded)",
-                    budget / (1024 * 1024 * 1024),
-                    if volume_total.is_some() {
-                        "derived from volume"
-                    } else {
-                        "= floor, volume unresolved"
-                    }
-                );
-                log_info!("ipc", "server", "{}", line);
-            }
-        }
+        // Bind existing and later writer-selected roots through one registry;
+        // each pool reads the same monitor snapshot for its actual owning volume.
+        // Legacy roots remain owned after configuration changes (d86e79e8).
+        crate::system_resources::disk_reporters::bind_cargo_owners(&disk_pressure_monitor, &broker);
 
         // Rotation-generation eviction owners (2026-08-06): the
         // substrate's own `logs` + `probes` dirs. These were the two

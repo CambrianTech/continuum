@@ -90,11 +90,21 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, CommandError> {
 /// Run `cargo test --quiet` in `dir`; Ok(true) = suite green. Output tail kept
 /// for the miner's verification record.
 fn cargo_test(dir: &Path) -> (bool, String) {
+    let target = match crate::paths::cargo::target_dir(dir).and_then(|target| {
+        // mine() already runs on the blocking pool; keep the durable admission
+        // on its existing runtime before starting the compiler.
+        tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?
+            .block_on(crate::system_resources::disk_reporters::admit_cargo_target(&target, dir))?;
+        Ok(target)
+    }) {
+        Ok(target) => target,
+        Err(error) => return (false, error),
+    };
     match std::process::Command::new("cargo")
         .arg("test")
         .arg("--quiet")
         .current_dir(dir)
-        .envs(shared_target_dir().map(|t| ("CARGO_TARGET_DIR", t)))
+        .env("CARGO_TARGET_DIR", target)
         .output()
     {
         Ok(o) => {
@@ -114,11 +124,14 @@ fn cargo_test(dir: &Path) -> (bool, String) {
     }
 }
 
-/// The machine's ONE cargo cache ([`crate::paths::shared_cargo_target_dir`]): mined-task
-/// builds must never grow a per-checkout target/ (the citizen-layer economy applies to gym
-/// tasks too). `None` with no home: the env is left unset rather than a guessed `target`.
-fn shared_target_dir() -> Option<String> {
-    crate::paths::shared_cargo_target_dir().map(|p| p.display().to_string())
+/// The exported oracle is shell text: reject a native path it cannot represent,
+/// and quote the resolved target as one literal assignment value.
+fn shared_target_dir(cwd: &Path) -> Result<String, CommandError> {
+    let path = crate::paths::cargo::target_dir(cwd).map_err(CommandError::Internal)?;
+    let text = path.into_os_string().into_string().map_err(|_| {
+        CommandError::Invalid("gym oracle shell text cannot represent this non-UTF-8 Cargo target".into())
+    })?;
+    Ok(format!("'{}'", text.replace('\'', "'\\''")))
 }
 
 /// One mined, DOUBLY-VERIFIED task, as emitted (a superset of the EvalTask
@@ -435,7 +448,7 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
             dod_shell: format!(
                 "{restore_tests}cd {d} && {t}cargo test --quiet",
                 d = task_dir.display(),
-                t = shared_target_dir().map(|t| format!("CARGO_TARGET_DIR={t} ")).unwrap_or_default() // unwrap_or_default: no shared cache, no env prefix
+                t = format!("CARGO_TARGET_DIR={} ", shared_target_dir(&task_dir)?)
             ),
             setup_shell: break_cmd,
             commit: commit.to_string(),
@@ -568,7 +581,11 @@ mod tests {
         sh("git add -A && git -c user.email=t@t -c user.name=t commit -qm 'fix add + test'");
 
         let tasks_dir = dir.path().join("mini-gym");
-        let out = mine(&repo, &tasks_dir, 5).expect("mine");
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(crate::system_resources::disk_reporters::prepare_writer_fixture());
+        let out = rt.block_on(async move {
+            tokio::task::spawn_blocking(move || mine(&repo, &tasks_dir, 5)).await.unwrap()
+        }).expect("mine");
         assert_eq!(out.tasks.len(), 1, "exactly the fix commit qualifies");
         let t = &out.tasks[0];
         assert_eq!(t.source_file, "src/lib.rs");

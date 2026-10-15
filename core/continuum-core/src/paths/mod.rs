@@ -21,15 +21,15 @@
 //! - (future) `nvme_pool` — LoRA Genome Paging tier
 
 pub mod docker;
+pub mod cargo;
 
 /// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
 /// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
 /// curriculum drain (`genome/teach --from-experience`) resolves the SAME citizen
 /// layout as the grader that wrote the stream — one layout, never two.
 pub fn continuum_home() -> Result<std::path::PathBuf, String> {
-    std::env::var("CONTINUUM_HOME")
+    std::env::var_os("CONTINUUM_HOME")
         .map(std::path::PathBuf::from)
-        .ok()
         .or_else(test_home)
         .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
         .ok_or_else(|| "no home dir".to_string())
@@ -122,19 +122,12 @@ pub fn shared_cargo_target_dir() -> Option<std::path::PathBuf> {
     resolve_cargo_target(configured("CARGO_TARGET_DIR"), configured("CONTINUUM_STORAGE_PATH"), home_dir())
 }
 
-/// [`shared_cargo_target_dir`] with `home` as the default's root (the disk registry's own home).
-pub(crate) fn shared_cargo_target_dir_under(home: &std::path::Path) -> std::path::PathBuf {
-    resolve_cargo_target(configured("CARGO_TARGET_DIR"), configured("CONTINUUM_STORAGE_PATH"), Some(home.to_path_buf()))
-        .unwrap_or_else(|| home.join(".continuum").join("cache").join("cargo-target")) // unwrap_or_else: unreachable, a home is given
-}
-
 /// A setting from the process env, else `~/.continuum/config.env`; blank is unset.
 fn configured(key: &str) -> Option<std::path::PathBuf> {
-    std::env::var(key)
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .or_else(|| crate::config_env::read(key).filter(|v| !v.trim().is_empty()))
+    std::env::var_os(key)
+        .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
+        .or_else(|| crate::config_env::read(key).filter(|v| !v.is_empty()).map(Into::into))
 }
 
 /// PURE: [`shared_cargo_target_dir`] from its inputs (an empty value is unset).

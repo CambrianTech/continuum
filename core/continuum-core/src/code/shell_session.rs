@@ -255,7 +255,9 @@ impl ShellSession {
         let mut env = HashMap::new();
         let shared_target = crate::paths::shared_cargo_target_dir();
         if let Some(t) = shared_target {
-            env.insert("CARGO_TARGET_DIR".to_string(), t.display().to_string());
+            let value = t.into_os_string().into_string()
+                .map_err(|_| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?;
+            env.insert("CARGO_TARGET_DIR".to_string(), value);
         }
         Ok(Self {
             id: session_id.to_string(),
@@ -361,6 +363,13 @@ impl ShellSession {
         // Auto-GC: move completed executions to history before starting new one
         self.gc();
 
+        let target = match self.env.get("CARGO_TARGET_DIR").filter(|value| !value.is_empty()) {
+            Some(target) => crate::paths::cargo::resolve_target(Path::new(target), &self.cwd),
+            None => crate::paths::cargo::target_dir(&self.cwd)?,
+        };
+        let target_env = target.to_str()
+            .ok_or_else(|| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?.to_owned();
+
         let execution_id = Uuid::new_v4().to_string();
         let now_ms = crate::time::EpochMs::now().millis();
 
@@ -390,12 +399,23 @@ impl ShellSession {
 
         // Spawn the process in a tokio task
         let cwd = self.cwd.clone();
-        let env = self.env.clone();
+        let mut env = self.env.clone();
+        env.insert("CARGO_TARGET_DIR".to_string(), target_env);
         let cmd_str = command.to_string();
         let confinement = self.confinement.clone();
         let who = self.persona_id.clone();
 
         rt_handle.spawn(async move {
+            if let Err(error) = crate::system_resources::disk_reporters::admit_cargo_target(&target, &cwd).await {
+                if let Ok(mut state) = state.lock() {
+                    state.status = ShellExecutionStatus::Failed;
+                    state.stderr_lines.push(format!("Cargo cache ownership: {error}"));
+                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.process_ended = true; // admission refused before any child existed
+                    state.output_notify.notify_one();
+                }
+                return;
+            }
             run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who).await;
             // A finished command may have written anywhere under its cwd (a build, a
             // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
@@ -883,9 +903,9 @@ async fn run_shell_command(
         who,
         &shell_bin,
         &[shell_flag.into(), effective_command.clone().into()],
+        Some(cwd),
     );
-    cmd.current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
+    cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         // Don't inherit stdin — non-interactive
         .stdin(std::process::Stdio::null());
@@ -1280,6 +1300,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/main.ts"), "console.log('hello');").unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(crate::system_resources::disk_reporters::prepare_writer_fixture());
         (dir, rt)
     }
 

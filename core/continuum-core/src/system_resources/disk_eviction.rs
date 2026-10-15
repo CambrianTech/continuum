@@ -354,11 +354,27 @@ pub struct CargoTargetPool {
 }
 
 impl CargoTargetPool {
+    fn budget_for_volume(&self, volume: Option<&crate::capacity::system_profile::DriveInfo>) -> u64 {
+        volume.map(|volume| cargo_target_budget_bytes(volume.total_bytes)).unwrap_or(self.budget_bytes)
+    }
+
+    fn pressure_for_volume(&self, volume: Option<&crate::capacity::system_profile::DriveInfo>) -> f64 {
+        let own = self.tracked.bytes() as f64 / self.budget_for_volume(volume).max(1) as f64;
+        let volume = volume.filter(|volume| volume.total_bytes > 0)
+            .map(|volume| volume.total_bytes.saturating_sub(volume.available_bytes) as f64 / volume.total_bytes as f64)
+            .unwrap_or(0.0);
+        cache_pool_pressure(own, volume)
+    }
+
     pub fn new(tracked: Arc<TrackedDir>, budget_bytes: u64) -> Self {
+        use sha2::{Digest, Sha256};
+        // Display is lossy for native non-Unicode roots. It is a label, never
+        // identity: two distinct writer paths must retain separate broker pools.
+        let root_id = Sha256::digest(tracked.path().as_os_str().as_encoded_bytes());
         Self {
-            // "cargo-target" keeps its historical pool name so nothing that reads
-            // the ledger by that string breaks; every other class gets its own.
-            tier: format!("disk-{}", tracked.class()),
+            // Class plus physical root: distinct configured roots must not replace
+            // each other in the broker's dedup-by-name registration.
+            tier: format!("disk-{}:{root_id:x}", tracked.class()),
             last_decline: std::sync::atomic::AtomicU8::new(u8::MAX),
             decline_repeats: std::sync::atomic::AtomicU32::new(0),
             last_eviction_ms: std::sync::atomic::AtomicU64::new(0),
@@ -464,7 +480,7 @@ impl CargoTargetPool {
             run,
             THRASH_GAP_MS / 60_000,
             gap_ms / 60_000,
-            self.budget_bytes / (1024 * 1024 * 1024)
+            self.capacity_bytes() / (1024 * 1024 * 1024)
         );
     }
 
@@ -541,7 +557,7 @@ impl ResourcePool for CargoTargetPool {
     }
 
     fn capacity_bytes(&self) -> u64 {
-        self.budget_bytes
+        self.budget_for_volume(super::DiskPressureMonitor::volume_for(self.tracked.path()).as_ref())
     }
 
     fn usage_bytes(&self) -> u64 {
@@ -559,15 +575,7 @@ impl ResourcePool for CargoTargetPool {
     /// critical volume should shed first, so the volume's pressure is this pool's
     /// floor: over budget OR on a hot volume, either one brings the broker.
     fn pressure(&self) -> f64 {
-        let own = if self.budget_bytes == 0 {
-            0.0
-        } else {
-            self.usage_bytes() as f64 / self.budget_bytes as f64
-        };
-        let volume = super::DiskPressureMonitor::current_snapshot()
-            .map(|s| s.pressure)
-            .unwrap_or(0.0); // unwrap_or: no disk reading yet = the pool's own budget alone governs, as before
-        cache_pool_pressure(own, volume)
+        self.pressure_for_volume(super::DiskPressureMonitor::volume_for(self.tracked.path()).as_ref())
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
@@ -627,7 +635,7 @@ impl ResourcePool for CargoTargetPool {
             crate::clog_warn!(
                 "💾 cargo-target eviction freed {} GB (budget {} GB) — derived artifacts only; next build recreates them",
                 freed / (1024 * 1024 * 1024),
-                self.budget_bytes / (1024 * 1024 * 1024)
+                self.capacity_bytes() / (1024 * 1024 * 1024)
             );
             self.note_eviction();
         }
@@ -1003,6 +1011,22 @@ impl ResourcePool for NvmeServingTierPool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cache_pressure_follows_its_own_mount_instead_of_the_home_mount() {
+        use crate::capacity::system_profile::{DriveInfo, DriveRole, drive_holding};
+        let home = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let drives = [
+            DriveInfo { mount: home.path().into(), total_bytes: 10_000, available_bytes: 100, role: DriveRole::System },
+            DriveInfo { mount: other.path().into(), total_bytes: 100_000, available_bytes: 90_000, role: DriveRole::System },
+        ];
+        let legacy = CargoTargetPool::new(TrackedDir::new("cargo-target", home.path().join("cache")), 1_000);
+        let relocated = CargoTargetPool::new(TrackedDir::new("cargo-target", other.path().join("cache")), 1_000);
+        assert_eq!(legacy.pressure_for_volume(drive_holding(&drives, legacy.tracked.path())), 0.99);
+        assert_eq!(relocated.pressure_for_volume(drive_holding(&drives, relocated.tracked.path())), 0.1);
+        assert_eq!(relocated.budget_for_volume(drive_holding(&drives, relocated.tracked.path())), cargo_target_budget_bytes(100_000));
+        assert_eq!(relocated.budget_for_volume(None), 1_000, "unmeasured volume retains the explicit fallback budget");
+    }
     use super::*;
 
     // what this catches (2026-09-18, the 5090 at 95 % with both cargo caches "within
@@ -1669,18 +1693,25 @@ mod tests {
         #[test]
         fn two_build_caches_are_two_pools_and_not_one_replacing_the_other() {
             let tmp = tempfile::tempdir().expect("tempdir");
-            let shared = TrackedDir::new("cargo-target", tmp.path().join("a"));
-            let worktree = TrackedDir::new("cargo-target-wt", tmp.path().join("b"));
+            #[cfg(windows)]
+            let names = {
+                use std::os::windows::ffi::OsStringExt;
+                [std::ffi::OsString::from_wide(&[0xd800]), std::ffi::OsString::from_wide(&[0xd801])]
+            };
+            #[cfg(not(windows))]
+            let names = {
+                use std::os::unix::ffi::OsStringExt;
+                [std::ffi::OsString::from_vec(vec![0xfe]), std::ffi::OsString::from_vec(vec![0xff])]
+            };
+            assert_eq!(names[0].to_string_lossy(), names[1].to_string_lossy(), "display cannot identify these distinct native roots");
+            let shared = TrackedDir::new("cargo-target", tmp.path().join(&names[0]));
+            let worktree = TrackedDir::new("cargo-target", tmp.path().join(&names[1]));
 
             let a = CargoTargetPool::new(shared, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
             let b = CargoTargetPool::new(worktree, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
 
-            assert_eq!(
-                a.tier_name(),
-                "disk-cargo-target",
-                "the original class keeps its historical pool name, so anything                  reading the ledger by that string still finds it"
-            );
-            assert_eq!(b.tier_name(), "disk-cargo-target-wt");
+            assert!(a.tier_name().starts_with("disk-cargo-target:"));
+            assert!(b.tier_name().starts_with("disk-cargo-target:"));
             assert_ne!(
                 a.tier_name(),
                 b.tier_name(),

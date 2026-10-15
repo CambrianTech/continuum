@@ -205,8 +205,15 @@ impl Confinement {
     /// `~/.continuum` enumerated one level down so an allow-only enforcer never has to
     /// express "all but".
     pub fn materialize(&self) -> AllowList {
+        self.materialize_with_cargo(None)
+    }
+
+    fn materialize_with_cargo(&self, configured_target: Option<&Path>) -> AllowList {
         let home = &self.home;
         let mut write: Vec<PathBuf> = vec![self.workspace.clone()];
+        // Only the operator's configured target is an extra grant. Session
+        // environment overrides are never inputs to this authority.
+        write.extend(configured_target.map(Path::to_path_buf));
         write.extend(self.citizen_dir.iter().cloned());
         write.extend(WRITABLE_HOME_ENTRIES.iter().map(|e| home.join(e)));
         write.push(std::env::temp_dir());
@@ -370,13 +377,17 @@ pub fn command_for(
     who: &str,
     program: &Path,
     args: &[std::ffi::OsString],
+    cwd: Option<&Path>,
 ) -> tokio::process::Command {
     let Some(confinement) = confinement else {
         let mut cmd = tokio::process::Command::new(program);
         cmd.args(args);
+        if let Some(cwd) = cwd {
+            cmd.current_dir(cwd);
+        }
         return cmd;
     };
-    let (cmd, receipt) = confined_command(confinement, program, args);
+    let (cmd, receipt) = confined_command(confinement, program, args, cwd);
     match &receipt {
         Enforcement::Enforced { mechanism } => crate::probe!(
             class = "shell.confinement",
@@ -406,9 +417,16 @@ pub fn confined_command(
     confinement: &Confinement,
     program: &Path,
     args: &[std::ffi::OsString],
+    cwd: Option<&Path>,
 ) -> (tokio::process::Command, Enforcement) {
-    let list = confinement.materialize();
-    confined_command_with(confinement, &list, program, args)
+    let inherited = cwd.is_none().then(std::env::current_dir).transpose().ok().flatten();
+    let configured = cwd.or(inherited.as_deref()).and_then(|cwd| crate::paths::cargo::target_dir(cwd).ok());
+    let list = confinement.materialize_with_cargo(configured.as_deref());
+    let (mut cmd, receipt) = confined_command_with(confinement, &list, program, args);
+    if let Some(cwd) = cwd {
+        cmd.current_dir(cwd);
+    }
+    (cmd, receipt)
 }
 
 #[cfg(target_os = "macos")]
@@ -587,6 +605,31 @@ mod tests {
         assert!(list.write.contains(&card_worktree), "her workspace is writable");
         assert!(list.write.iter().any(|w| w.ends_with(".cargo")), "a build writes the registry");
         assert!(!list.write.iter().any(|w| w.ends_with(".zshrc") || w.ends_with("models") || w.ends_with("miniconda3")), "rc files, models and installs are read-only");
+
+        // d86: a relative operator target follows the actual child cwd, never
+        // the workspace or an arbitrary per-session environment override.
+        let child_cwd = h.join("build-location");
+        let target = crate::paths::cargo::resolve_target(Path::new("derived"), &child_cwd);
+        let override_root = h.join("private-override");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::create_dir_all(&override_root).unwrap();
+        let configured_list = c.materialize_with_cargo(Some(&target));
+        assert!(configured_list.write.contains(&target.canonicalize().unwrap()));
+        assert!(!configured_list.write.contains(&child_cwd.canonicalize().unwrap()), "no parent grant");
+        assert!(!configured_list.write.contains(&override_root.canonicalize().unwrap()), "session overrides do not grant access");
+        let explicit = command_for(None, "operator", Path::new("tool"), &[], Some(&child_cwd));
+        assert_eq!(explicit.as_std().get_current_dir(), Some(child_cwd.as_path()));
+        let inherited = command_for(None, "operator", Path::new("tool"), &[], None);
+        assert_eq!(inherited.as_std().get_current_dir(), None, "None preserves inherited cwd");
+        let confined = command_for(Some(&c), &me.to_string(), Path::new("tool"), &[], Some(&child_cwd));
+        assert_eq!(confined.as_std().get_current_dir(), Some(child_cwd.as_path()), "the real confinement branch retains the actual spawn cwd");
+        #[cfg(target_os = "macos")]
+        {
+            let configured = crate::paths::cargo::target_dir(&child_cwd).unwrap();
+            let expected = seatbelt_profile(&c.home, &c.materialize_with_cargo(Some(&configured)));
+            let args: Vec<_> = confined.as_std().get_args().collect();
+            assert_eq!(args[1], std::ffi::OsStr::new(&expected), "command_for materializes configuration against its own cwd");
+        }
     }
 
     // what this catches: the seatbelt profile granting before it denies the home, or a
@@ -650,7 +693,7 @@ mod tests {
             g = leak(".config/gh/hosts.yml", "GH-TOKEN"),
             t = leak(".cache/huggingface/token", "HF-TOKEN"),
         );
-        let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()]);
+        let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()], None);
         assert!(receipt.is_enforced(), "{receipt:?}");
         let out = cmd.output().await.expect("test: spawn");
         let stdout = String::from_utf8_lossy(&out.stdout);

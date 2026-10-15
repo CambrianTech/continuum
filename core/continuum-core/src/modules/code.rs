@@ -226,6 +226,7 @@ mod tests {
     // caller (or a caller-id prefix) reaches nothing.
     #[tokio::test]
     async fn a_running_command_stays_reachable_by_its_handle_in_any_of_her_hands() {
+        crate::system_resources::disk_reporters::prepare_writer_fixture().await;
         use crate::code::hands::{HandsContext, HandsKey};
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
@@ -272,6 +273,7 @@ mod tests {
     // reachable (so a release that can't confirm can retry) until `finish_release`.
     #[tokio::test]
     async fn ending_hands_keeps_every_handle_until_each_execution_is_proven_ended() {
+        crate::system_resources::disk_reporters::prepare_writer_fixture().await;
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
         let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());

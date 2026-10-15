@@ -527,7 +527,16 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error>> {
     // Process-wide registry: the IPC thread's broker block fetches the
     // SAME TrackedDir instances to build eviction pools over (one
     // measurement per cache class, shared by reporter + pool).
-    continuum_core::system_resources::install_tracked_dirs(tracked_dirs.clone());
+    let tracked_dirs = continuum_core::system_resources::install_tracked_dirs(tracked_dirs).await;
+    let configured_root = std::env::current_dir().map_err(|error| error.to_string())
+        .and_then(|cwd| continuum_core::paths::cargo::target_dir(&cwd))
+        ;
+    match configured_root {
+        Ok(target) => if let Err(error) = continuum_core::system_resources::disk_reporters::register_cargo_target(&target).await {
+            eprintln!("Configured Cargo root could not be registered: {error}");
+        },
+        Err(error) => eprintln!("Configured Cargo root could not be registered: {error}"),
+    }
     let _disk_usage_scanner =
         continuum_core::system_resources::DiskUsageScanner::start(tracked_dirs.clone());
     let disk_pressure_monitor = continuum_core::system_resources::DiskPressureMonitor::start(
