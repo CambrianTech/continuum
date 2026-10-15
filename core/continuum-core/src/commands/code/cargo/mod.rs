@@ -100,14 +100,29 @@ pub(crate) async fn run_cargo(
     // A citizen's cargo is confined like her shell (card d598c806): the toolchain and
     // the shared target cache are in her roots, the operator's files are not.
     let target = crate::paths::cargo::target_dir(root).map_err(CommandError::Internal)?;
-    let cargo_grant = crate::system_resources::disk_reporters::admit_cargo_target(&target, root, confinement).await
-        .map_err(CommandError::Internal)?;
-    let mut cmd = crate::code::confinement::command_for(confinement, who, Path::new("cargo"), &args, Some(root), cargo_grant.as_ref());
+    let cargo_grant = crate::system_resources::disk_reporters::admit_cargo_target(&target, root, confinement)
+            .await
+            .map_err(CommandError::Internal)?;
+    let mut cmd = crate::code::confinement::command_for(
+        confinement,
+        who, Path::new("cargo"), &args, Some(root), cargo_grant.grant(),
+    );
     cmd.env("CARGO_TERM_COLOR", "never");
     cmd.env("CARGO_TARGET_DIR", target);
-    let out = crate::inference::lane_process::run_owned(cmd, Some(timeout), "cargo", std::sync::Arc::default())
-        .await
-        .map_err(|e| CommandError::Internal(format!("code/cargo: failed to run cargo (is it on PATH?): {e}")))?;
+    let out = crate::code::hands::scoped_admitted(crate::inference::lane_process::holding(
+        cargo_grant.kept(),
+        crate::inference::lane_process::run_owned(
+            cmd,
+            Some(timeout), "cargo", std::sync::Arc::default(),
+        ),
+    ))
+    .await
+        .map_err(CommandError::Internal)?
+    .map_err(|e| {
+        CommandError::Internal(format!(
+            "code/cargo: failed to run cargo (is it on PATH?): {e}"
+        ))
+    })?;
     let mut stderr = String::from_utf8_lossy(&out.stderr.bytes).into_owned();
     if let Some(note) = out.capture_note() {
         stderr.push_str(&format!("\n[{note}]"));

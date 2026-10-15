@@ -304,11 +304,15 @@ enum ReporterCallOutcome {
 struct DiskTickState {
     disks: sysinfo::Disks,
     reporters: Vec<ReporterEntry>,
-    reporter_rx: tokio::sync::mpsc::UnboundedReceiver<Arc<dyn DiskReporter>>,
+    reporter_rx: tokio::sync::mpsc::UnboundedReceiver<ReporterChange>,
     prev_level: DiskPressureLevel,
     consecutive_at_level: u32,
     log_counter: u64,
     first_snapshot_published: bool,
+}
+enum ReporterChange {
+    Add(Arc<dyn DiskReporter>),
+    Remove(Arc<dyn DiskReporter>),
 }
 
 /// Independent disk-pressure monitoring system.
@@ -337,7 +341,7 @@ pub struct DiskPressureMonitor {
     /// by the monitor loop on its next poll.
     reporters: parking_lot::RwLock<Vec<Arc<dyn DiskReporter>>>,
     /// Channel for sending new reporters to the loop task.
-    reporter_tx: tokio::sync::mpsc::UnboundedSender<Arc<dyn DiskReporter>>,
+    reporter_tx: tokio::sync::mpsc::UnboundedSender<ReporterChange>,
     /// Loop-private tick state — see [`DiskTickState`].
     state: parking_lot::Mutex<DiskTickState>,
 }
@@ -512,7 +516,18 @@ impl DiskPressureMonitor {
     /// next poll. Same shape as `MemoryPressureMonitor::add_reporter`.
     pub fn add_reporter(&self, reporter: Arc<dyn DiskReporter>) {
         self.reporters.write().push(reporter.clone());
-        let _ = self.reporter_tx.send(reporter);
+        let _ = self.reporter_tx.send(ReporterChange::Add(reporter));
+    }
+
+    /// Retirement uses the same channel as registration. Identity, not a class
+    /// name, removes exactly one physical root among same-class reporters.
+    pub fn remove_reporter(&self, reporter: &Arc<dyn DiskReporter>) {
+        self.reporters
+            .write()
+            .retain(|current| !Arc::ptr_eq(current, reporter));
+        let _ = self
+            .reporter_tx
+            .send(ReporterChange::Remove(reporter.clone()));
     }
 
     /// Subscribe to snapshot changes. The receiver gets notified
@@ -550,7 +565,15 @@ impl DiskPressureMonitor {
             let mut st = self.state.lock();
 
             // Drain dynamically-added reporters.
-            while let Ok(new_reporter) = st.reporter_rx.try_recv() {
+            while let Ok(change) = st.reporter_rx.try_recv() {
+                let new_reporter = match change {
+                    ReporterChange::Add(reporter) => reporter,
+                    ReporterChange::Remove(reporter) => {
+                        st.reporters
+                            .retain(|entry| !Arc::ptr_eq(&entry.reporter, &reporter));
+                        continue;
+                    }
+                };
                 let name = new_reporter.name();
                 st.reporters.push(ReporterEntry {
                     reporter: new_reporter,

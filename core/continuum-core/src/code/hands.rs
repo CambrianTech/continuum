@@ -93,6 +93,8 @@ fn claim_id(persona: Uuid, card: Uuid, claim: Uuid) -> Uuid {
 /// runs in (Codex root and Astra on fc9e9fd7 and #5026).
 #[derive(Default)]
 struct Gate {
+    /// Private operator scopes have no externally reusable binding/tombstone.
+    scoped: Option<HandsContext>,
     closing: bool,
     in_flight: usize,
     /// What admitted work started and couldn't confirm ended (Codex root on #5026).
@@ -136,7 +138,18 @@ impl Drop for HandsLease {
         if g.in_flight == 0 {
             ended.notify_waiters();
         }
+        let scoped = g.scoped;
+        drop(g);
+        if let Some(context) = scoped { retire_scoped(context); }
     }
+}
+
+fn retire_scoped(context: HandsContext) {
+    GATES.remove_if(&context, |_, cell| {
+        let gate = cell.0.lock().unwrap_or_else(|error| error.into_inner());
+        gate.scoped == Some(context) && gate.closing && gate.in_flight == 0
+            && gate.lingering.is_empty() && gate.kept.is_empty()
+    });
 }
 
 impl HandsLease {
@@ -200,6 +213,40 @@ pub fn current() -> Option<std::sync::Arc<HandsLease>> {
     ADMITTED.try_with(|a| a.clone()).ok().flatten()
 }
 
+/// Operator work without contextual hands still needs the same child custody
+/// when it holds a resource. Reuse an existing admission or own one scoped set;
+/// cancellation closes its gate and unresolved children retain held resources.
+pub async fn scoped_admitted<F: std::future::Future>(work: F) -> Result<F::Output, String> {
+    if current().is_some() {
+        return Ok(work.await);
+    }
+    struct Scope(HandsContext);
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            if let Some(cell) = GATES.get(&self.0) {
+                cell.0
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .closing = true;
+            }
+            retire_scoped(self.0);
+        }
+    }
+    let scope = Scope(HandsContext::fresh());
+    let admission = std::sync::Arc::new(admit(scope.0)?);
+    admission.cell.0.lock().unwrap_or_else(|error| error.into_inner()).scoped = Some(scope.0);
+    let output = admitted(Some(admission), work).await;
+    let lingering = close(scope.0).await;
+    if !lingering.is_empty() {
+        crate::clog_warn!(
+            "Scoped process admission {} retains unresolved children and their resources: {:?}",
+            scope.0.id(),
+            lingering
+        );
+    }
+    Ok(output)
+}
+
 /// Close `context`'s hands to new work and wait until every admitted command and turn has
 /// ended: the first step of releasing them (`code/release-hands`). A closed gate STAYS
 /// closed: a context is never reused (a re-acquired card is a new claim), so a stale binding
@@ -232,6 +279,7 @@ pub fn retain_processes(context: HandsContext, still: Vec<crate::inference::lane
             g.kept.clear();
         }
     }
+    retire_scoped(context);
 }
 
 /// The key of one set of hands: whose (the caller) and in which context.
@@ -278,6 +326,38 @@ impl HandsKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 5058: an operator scope must preserve resources with an unresolved child,
+    // while refusing new work after the scope returns.
+    #[tokio::test]
+    async fn scoped_operator_custody_retains_unconfirmed_resources() {
+        let witness = std::sync::Arc::new(());
+        let weak = std::sync::Arc::downgrade(&witness);
+        let context = scoped_admitted(async move {
+            let lease = current().expect("operator admission");
+            let context = GATES.iter().find(|entry| std::sync::Arc::ptr_eq(entry.value(), &lease.cell)).map(|entry| *entry.key()).unwrap();
+            lease.keep_unconfirmed(&crate::inference::lane_process::TreeEnd {
+                reaped: Ok(()), survivors: vec![crate::inference::lane_process::ProcessIdentity { pid: 4242, start_time: 7 }], unwalked: None,
+            });
+            lease.keep_held(&[witness]);
+            context
+        }).await.unwrap();
+        assert!(admit(context).is_err());
+        assert!(weak.upgrade().is_some(), "scope completion is not confirmed process completion");
+        retain_processes(context, Vec::new());
+        assert!(weak.upgrade().is_none(), "existing release authority drops custody after confirmation");
+        assert!(!GATES.contains_key(&context), "private scope needs no stale-binding tombstone");
+        let captured = std::sync::Mutex::new(None);
+        let mut cancelled = Box::pin(scoped_admitted(async {
+            let lease = current().unwrap();
+            let context = GATES.iter().find(|entry| std::sync::Arc::ptr_eq(entry.value(), &lease.cell)).map(|entry| *entry.key()).unwrap();
+            *captured.lock().unwrap() = Some(context);
+            std::future::pending::<()>().await;
+        }));
+        assert!(futures::poll!(&mut cancelled).is_pending());
+        drop(cancelled);
+        assert!(!GATES.contains_key(&captured.lock().unwrap().unwrap()), "cancellation before child spawn retires the private admission");
+    }
 
     // what this catches: two contexts of one caller sharing a hands map entry, which is
     // how an eval's root moved a citizen's live tools. The default context must keep the

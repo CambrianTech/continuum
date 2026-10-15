@@ -1558,7 +1558,9 @@ pub fn start_server(
         // Bind existing and later writer-selected roots through one registry;
         // each pool reads the same monitor snapshot for its actual owning volume.
         // Legacy roots remain owned after configuration changes (d86e79e8).
-        crate::system_resources::disk_reporters::bind_cargo_owners(&disk_pressure_monitor, &broker);
+        if let Err(error) = crate::system_resources::disk_reporters::bind_cargo_owners(&disk_pressure_monitor, &broker) {
+            crate::clog_warn!("Cargo disk ownership binding refused: {error}");
+        }
 
         // Rotation-generation eviction owners (2026-08-06): the
         // substrate's own `logs` + `probes` dirs. These were the two

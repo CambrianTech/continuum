@@ -92,6 +92,20 @@ pub struct ExecutionState {
     pub output_notify: Arc<Notify>,
     /// Compiled sentinel filter rules (empty = pass all lines through as Info).
     pub sentinel: CompiledSentinel,
+cargo_hold: Option<crate::inference::lane_process::Kept>,
+    cargo_task_ended: bool,
+}
+
+impl ExecutionState {
+    pub(crate) fn release_ended_cargo_hold(&mut self) {
+        if self.cargo_task_ended
+            && self.process_ended
+            && self.process_end_error.is_none()
+            && self.unconfirmed_descendants.is_empty()
+        {
+            self.cargo_hold = None;
+        }
+    }
 }
 
 impl std::fmt::Debug for ExecutionState {
@@ -392,6 +406,8 @@ impl ShellSession {
             stderr_cursor: 0,
             output_notify: notify,
             sentinel: CompiledSentinel::empty(),
+        cargo_hold: None,
+            cargo_task_ended: false,
         }));
 
         self.executions.insert(execution_id.clone(), state.clone());
@@ -419,7 +435,18 @@ impl ShellSession {
                     return;
                 }
             };
-            run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who, cargo_grant.as_ref()).await;
+            if let Ok(mut execution) = state.lock() {
+                execution.cargo_hold = Some(cargo_grant.kept());
+            }
+            run_shell_command(
+                state.clone(),
+                &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who, cargo_grant.grant(),
+            )
+            .await;
+            if let Ok(mut execution) = state.lock() {
+                execution.cargo_task_ended = true;
+                execution.release_ended_cargo_hold();
+            }
             // A finished command may have written anywhere under its cwd (a build, a
             // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
             // not — observers re-read the workspace on this event instead of
@@ -569,8 +596,12 @@ impl ShellSession {
         if self.history.iter().any(|entry| entry.execution_id == execution_id) {
             return Err(format!("Output for completed shell execution '{execution_id}' was evicted by the session retention limit; exit/timing metadata remains in shell history"));
         }
-        let candidates: Vec<Uuid> = self.executions.keys()
-            .map(|id| Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}")))
+        let candidates: Vec<Uuid> = self
+            .executions
+            .keys()
+            .map(|id| {
+                Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}"))
+            })
             .collect::<Result<_, _>>()?;
         let id = crate::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
         self.executions.get(&id.to_string()).cloned()
@@ -665,7 +696,9 @@ impl ShellSession {
             }).collect();
         // HashMap order must not choose which completed receipt is oldest.
         self.history.extend(completed);
-        self.history.sort_by(|a, b| (a.finished_at, &a.execution_id).cmp(&(b.finished_at, &b.execution_id)));
+        self.history.sort_by(|a, b| {
+            (a.finished_at, &a.execution_id).cmp(&(b.finished_at, &b.execution_id))
+        });
         if self.history.len() > max_entries {
             let drain_count = self.history.len() - max_entries;
             for entry in self.history.drain(..drain_count) {

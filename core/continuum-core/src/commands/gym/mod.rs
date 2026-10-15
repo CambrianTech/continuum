@@ -89,27 +89,51 @@ fn git(repo: &Path, args: &[&str]) -> Result<String, CommandError> {
 
 /// Run `cargo test --quiet` in `dir`; Ok(true) = suite green. Output tail kept
 /// for the miner's verification record.
-fn cargo_test(dir: &Path) -> (bool, String) {
-    let target = match crate::paths::cargo::target_dir(dir).and_then(|target| {
-        // mine() already runs on the blocking pool; keep the durable admission
-        // on its existing runtime before starting the compiler.
-        tokio::runtime::Handle::try_current().map_err(|error| error.to_string())?
-            .block_on(crate::system_resources::disk_reporters::admit_cargo_target(&target, dir, None))?;
-        Ok(target)
-    }) {
-        Ok(target) => target,
-        Err(error) => return (false, error),
+fn cargo_test(
+    dir: &Path,
+    admission: std::sync::Arc<crate::code::hands::HandsLease>,
+) -> (bool, String) {
+    let runtime = match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => runtime,
+        Err(error) => return (false, error.to_string()),
     };
-    match std::process::Command::new("cargo")
-        .arg("test")
-        .arg("--quiet")
-        .current_dir(dir)
-        .env("CARGO_TARGET_DIR", target)
-        .output()
-    {
+    // The blocking miner borrows the batch's existing admission. Its compiler
+    // uses the same owned child path as code/cargo, including unresolved ends.
+    let result: Result<_, String> =
+        runtime.block_on(crate::code::hands::admitted(Some(admission), async {
+            let target = crate::paths::cargo::target_dir(dir)?;
+            let cargo =
+                crate::system_resources::disk_reporters::admit_cargo_target(&target, dir, None)
+                    .await?;
+            let args = [
+                std::ffi::OsString::from("test"),
+                std::ffi::OsString::from("--quiet"),
+            ];
+            let mut command = crate::code::confinement::command_for(
+                None,
+                "gym",
+                Path::new("cargo"),
+                &args,
+                Some(dir),
+                cargo.grant(),
+            );
+            command.env("CARGO_TARGET_DIR", target);
+            crate::inference::lane_process::holding(
+                cargo.kept(),
+                crate::inference::lane_process::run_owned(
+                    command,
+                    None,
+                    "gym cargo",
+                    std::sync::Arc::default(),
+                ),
+            )
+            .await
+            .map_err(|error| error.to_string())
+        }));
+    match result {
         Ok(o) => {
-            let mut s = String::from_utf8_lossy(&o.stdout).into_owned();
-            s.push_str(&String::from_utf8_lossy(&o.stderr));
+            let mut s = String::from_utf8_lossy(&o.stdout.bytes).into_owned();
+            s.push_str(&String::from_utf8_lossy(&o.stderr.bytes));
             let tail: String = {
                 let n = s.chars().count();
                 if n > 1200 {
@@ -118,7 +142,10 @@ fn cargo_test(dir: &Path) -> (bool, String) {
                     s
                 }
             };
-            (o.status.success(), tail)
+            (
+                matches!(o.ended, crate::inference::lane_process::Ended::Exited(status) if status.success()),
+                tail,
+            )
         }
         Err(e) => (false, format!("cargo spawn failed: {e}")),
     }
@@ -247,9 +274,15 @@ impl ActionCommand for GymMine {
 
         // The mining walk is blocking (git + cargo shell-outs, potentially
         // minutes) — off the async worker, one spawn_blocking for the batch.
-        let mined = tokio::task::spawn_blocking(move || mine(&repo, &tasks_dir, limit))
-            .await
-            .map_err(|e| CommandError::Internal(format!("mining task panicked: {e}")))??;
+        let mined = crate::code::hands::scoped_admitted(async move {
+            let admission = crate::code::hands::current()
+                .ok_or_else(|| CommandError::Internal("mining needs process admission".into()))?;
+            tokio::task::spawn_blocking(move || mine(&repo, &tasks_dir, limit, admission))
+                .await
+            .map_err(|e| CommandError::Internal(format!("mining task panicked: {e}")))?
+        })
+        .await
+        .map_err(CommandError::Internal)??;
 
         let mut lines = String::new();
         for t in &mined.tasks {
@@ -291,7 +324,10 @@ struct MineOutcome {
 }
 
 /// The blocking mining walk. Newest-first over non-merge commits touching `.rs`.
-fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, CommandError> {
+fn mine(
+    repo: &Path, tasks_dir: &Path, limit: usize,
+    admission: std::sync::Arc<crate::code::hands::HandsLease>,
+) -> Result<MineOutcome, CommandError> {
     let log = git(repo, &["log", "--no-merges", "--pretty=%H", "--", "*.rs"])?;
     let mut tasks = Vec::new();
     let mut scanned = 0usize;
@@ -382,7 +418,7 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
             rejected += 1;
             continue;
         }
-        let (broken_green, failing_output) = cargo_test(&task_dir);
+        let (broken_green, failing_output) = cargo_test(&task_dir, admission.clone());
         if broken_green {
             // Reverting the "fix" didn't break the suite → not a real bugfix
             // (or tests don't cover it). Not a task.
@@ -402,7 +438,7 @@ fn mine(repo: &Path, tasks_dir: &Path, limit: usize) -> Result<MineOutcome, Comm
             rejected += 1;
             continue;
         }
-        let (fixed_green, _) = cargo_test(&task_dir);
+        let (fixed_green, _) = cargo_test(&task_dir, admission.clone());
         if !fixed_green {
             rejected += 1;
             let _ = git(
@@ -583,9 +619,18 @@ mod tests {
         let tasks_dir = dir.path().join("mini-gym");
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(crate::system_resources::disk_reporters::prepare_writer_fixture());
-        let out = rt.block_on(async move {
-            tokio::task::spawn_blocking(move || mine(&repo, &tasks_dir, 5)).await.unwrap()
-        }).expect("mine");
+        let out = rt
+            .block_on(async move {
+            crate::code::hands::scoped_admitted(async move {
+                    let admission = crate::code::hands::current().unwrap();
+                    tokio::task::spawn_blocking(move || mine(&repo, &tasks_dir, 5, admission))
+                        .await
+                        .unwrap()
+                })
+                .await
+                .unwrap()
+            })
+            .expect("mine");
         assert_eq!(out.tasks.len(), 1, "exactly the fix commit qualifies");
         let t = &out.tasks[0];
         assert_eq!(t.source_file, "src/lib.rs");

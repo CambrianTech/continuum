@@ -364,6 +364,47 @@ pub struct CargoTargetPool {
 }
 
 impl CargoTargetPool {
+    pub(crate) fn empty_root_custody(root: &Path) -> Result<Option<Vec<std::fs::File>>, String> {
+        Self::owned_metadata(root, root)?;
+        let mut locks = Vec::new();
+        for relative in [".cargo-lock", "debug/.cargo-lock", "release/.cargo-lock"] {
+            let path = root.join(relative);
+            let parent = path.parent().ok_or("cache lock has no parent")?;
+            if !parent.exists() {
+                continue;
+            }
+            Self::owned_metadata(parent, root)?;
+            if std::fs::symlink_metadata(&path).is_ok() {
+                Self::owned_metadata(&path, root)?;
+            }
+            match try_exclusive_flock_detailed(&path) {
+                LockAttempt::Acquired(lock) => locks.push(lock),
+                LockAttempt::HeldByAnother => return Ok(None),
+                LockAttempt::Unavailable(error) => return Err(error),
+            }
+        }
+        fn has_content(path: &Path, root: &Path) -> Result<bool, String> {
+            let metadata = CargoTargetPool::owned_metadata(path, root)?;
+            if metadata.is_dir() {
+                for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+                    if has_content(&entry.map_err(|error| error.to_string())?.path(), root)? {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+            let custody = [".cargo-lock", "debug/.cargo-lock", "release/.cargo-lock"]
+                .iter()
+                .any(|relative| root.join(relative) == path);
+            Ok(!custody || !metadata.is_file() || metadata.len() != 0)
+        }
+        if has_content(root, root)? {
+            Ok(None)
+        } else {
+            Ok(Some(locks))
+        }
+    }
+
     fn budget_for_volume(&self, volume: Option<&crate::capacity::system_profile::DriveInfo>) -> u64 {
         volume.map(|volume| cargo_target_budget_bytes(volume.total_bytes)).unwrap_or(self.budget_bytes)
     }

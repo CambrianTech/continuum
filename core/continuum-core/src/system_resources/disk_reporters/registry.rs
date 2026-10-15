@@ -55,36 +55,82 @@ struct State {
     unresolved_boot: Vec<Arc<TrackedDir>>,
     boot_reporters: usize,
     consumers: Option<Consumers>,
+    active: std::collections::HashMap<std::path::PathBuf, usize>,
+    permanent: std::collections::HashSet<std::path::PathBuf>,
 }
-type Resolution = futures::future::Shared<
-    futures::future::BoxFuture<'static, Result<std::path::PathBuf, String>>,
->;
+#[derive(Clone, Debug)]
+struct Observation {
+    path: std::path::PathBuf,
+    volume: Option<u64>,
+    empty_custody: Option<Arc<Vec<std::fs::File>>>,
+}
+type Resolution =
+    futures::future::Shared<futures::future::BoxFuture<'static, Result<Observation, String>>>;
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum PathWork {
     Resolve,
     Validate(crate::code::confinement::Confinement),
     Prepare(crate::code::confinement::Confinement),
+    Observe,
+    Empty,
 }
 pub(super) struct Registry(
-    Mutex<State>,
+    Arc<Mutex<State>>,
     tokio::sync::Mutex<Option<DurableRoots>>,
     Mutex<std::collections::HashMap<(std::path::PathBuf, PathWork), (Arc<()>, Resolution)>>,
 );
 
 struct DurableRoots {
     store: OrmStore<RootRecord>,
-    saved: std::collections::HashSet<std::path::PathBuf>,
+    saved: std::collections::HashMap<std::path::PathBuf, RootRecord>,
+}
+
+/// The registry's writer hold starts before durable admission and is retained by
+/// the existing child-process authority until termination is confirmed.
+pub struct CargoAdmission {
+    grant: Option<crate::code::confinement::CargoTargetGrant>,
+    lease: Arc<RootLease>,
+}
+impl CargoAdmission {
+    pub fn grant(&self) -> Option<&crate::code::confinement::CargoTargetGrant> {
+        self.grant.as_ref()
+    }
+    pub fn kept(&self) -> crate::inference::lane_process::Kept {
+        self.lease.clone()
+    }
+}
+struct RootLease {
+    state: Arc<Mutex<State>>,
+    path: std::path::PathBuf,
+}
+impl std::fmt::Debug for RootLease {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CargoRootLease").field(&self.path).finish()
+    }
+}
+impl Drop for RootLease {
+    fn drop(&mut self) {
+        let mut state = self.state.lock();
+        if let Some(count) = state.active.get_mut(&self.path) {
+            *count -= 1;
+            if *count == 0 {
+                state.active.remove(&self.path);
+            }
+        }
+    }
 }
 
 impl Registry {
     pub(super) async fn new(dirs: Vec<Arc<TrackedDir>>) -> Self {
         let registry = Self(
-            Mutex::new(State {
+            Arc::new(Mutex::new(State {
                 dirs: Vec::new(),
                 unresolved_boot: Vec::new(),
                 boot_reporters: 0,
                 consumers: None,
-            }),
+                active: Default::default(),
+                permanent: Default::default(),
+            })),
             tokio::sync::Mutex::new(None),
             Mutex::new(Default::default()),
         );
@@ -97,7 +143,7 @@ impl Registry {
                     }
                     Ok(_) => continue,
                     Err(error) => {
-                        eprintln!("Cargo ownership retains unavailable root: {error}");
+                        crate::clog_warn!("Cargo ownership retains unavailable root: {error}");
                         registry.0.lock().unresolved_boot.push(dir);
                         continue;
                     }
@@ -110,15 +156,21 @@ impl Registry {
         {
             let mut state = registry.0.lock();
             state.boot_reporters = state.dirs.len();
+            state.permanent = state
+                .dirs
+                .iter()
+                .filter(|dir| CARGO_TARGET_CLASSES.contains(&dir.class()))
+                .map(|dir| dir.path().to_path_buf())
+                .collect();
         }
         registry
     }
 
     async fn resolve(&self, path: &Path) -> Result<std::path::PathBuf, String> {
-        self.path_work(path, PathWork::Resolve).await
+        Ok(self.path_work(path, PathWork::Resolve).await?.path)
     }
 
-    async fn path_work(&self, path: &Path, work: PathWork) -> Result<std::path::PathBuf, String> {
+    async fn path_work(&self, path: &Path, work: PathWork) -> Result<Observation, String> {
         use crate::runtime::daemon::{guarded, Guarded};
         let key = (path.to_path_buf(), work.clone());
         let (identity, request) = {
@@ -140,12 +192,36 @@ impl Registry {
                                     )
                                 })?;
                             }
-                            match &work {
-                                PathWork::Resolve => crate::paths::cargo::physical_root(&path),
+                            let physical = match &work {
+                                PathWork::Resolve | PathWork::Observe | PathWork::Empty => {
+                                    crate::paths::cargo::physical_root(&path)
+                                }
                                 PathWork::Validate(policy) | PathWork::Prepare(policy) => {
                                     policy.validate_cargo_target(&path)
                                 }
-                            }
+                            }?;
+                            let volume = if matches!(work, PathWork::Observe | PathWork::Empty) {
+                                Some(if matches!(work, PathWork::Empty) {
+                                    crate::paths::cargo::volume_id(&path)?
+                                } else {
+                                    crate::paths::cargo::existing_volume_id(&path)?
+                                })
+                            } else {
+                                None
+                            };
+                            let empty_custody = if matches!(work, PathWork::Empty) {
+                                if physical != path {
+                                    return Err("stored physical root was redirected".into());
+                                }
+                                CargoTargetPool::empty_root_custody(&path)?.map(Arc::new)
+                            } else {
+                                None
+                            };
+                            Ok(Observation {
+                                path: physical,
+                                volume,
+                                empty_custody,
+                            })
                         })
                         .await
                         .map_err(|error| format!("Cargo root resolution worker failed: {error}"))?
@@ -195,6 +271,7 @@ impl Registry {
                 return Err(error);
             }
         };
+        self.0.lock().permanent.insert(physical.clone());
         Ok(self.register_resolved(physical))
     }
 
@@ -227,6 +304,7 @@ impl Registry {
         let pending = self.0.lock().unresolved_boot.clone();
         for dir in pending {
             if let Ok(physical) = self.resolve(dir.path()).await {
+                self.0.lock().permanent.insert(physical.clone());
                 self.register_resolved(physical);
                 self.0
                     .lock()
@@ -234,21 +312,34 @@ impl Registry {
                     .retain(|entry| !Arc::ptr_eq(entry, &dir));
             }
         }
+        let mut observations = Vec::new();
+        for dir in self
+            .snapshot()
+            .into_iter()
+            .filter(|dir| CARGO_TARGET_CLASSES.contains(&dir.class()))
+        {
+            let volume = self
+                .path_work(dir.path(), PathWork::Observe)
+                .await
+                .ok()
+                .and_then(|observation| observation.volume);
+            observations.push((dir, volume));
+        }
         let mut durable = self.1.lock().await;
         if let Some(records) = durable.as_mut() {
-            for dir in self
-                .snapshot()
-                .into_iter()
-                .filter(|dir| CARGO_TARGET_CLASSES.contains(&dir.class()))
-            {
-                records.remember(dir.class(), dir.path()).await?;
+            for (dir, volume) in observations {
+                // Historical roots retain their recorded device; only an actual
+                // writer admission can replace that ownership observation.
+                if !records.saved.contains_key(dir.path()) {
+                    records.remember(dir.class(), dir.path(), volume).await?;
+                }
             }
             return Ok(());
         }
         let store = OrmStore::<RootRecord>::new(adapter)
             .await
             .map_err(|error| error.to_string())?;
-        let mut saved = std::collections::HashSet::new();
+        let mut saved = std::collections::HashMap::new();
         for (_, record) in store.find_all().await.map_err(|error| error.to_string())? {
             if !CARGO_TARGET_CLASSES.contains(&record.class.as_str()) {
                 return Err(format!("unknown tracked Cargo class {}", record.class));
@@ -260,52 +351,142 @@ impl Registry {
             // Stored paths already name physical roots. Offline volumes do not
             // need a filesystem probe to recover their durable ownership.
             self.register_resolved(path.clone());
-            saved.insert(path);
+            saved.insert(path, record);
         }
         let mut records = DurableRoots { store, saved };
-        for dir in self
-            .snapshot()
-            .into_iter()
-            .filter(|dir| CARGO_TARGET_CLASSES.contains(&dir.class()))
-        {
-            if !records.saved.contains(dir.path()) {
-                records.remember(dir.class(), dir.path()).await?;
+        for (dir, volume) in observations {
+            if !records.saved.contains_key(dir.path()) {
+                records.remember(dir.class(), dir.path(), volume).await?;
             }
         }
         *durable = Some(records);
         Ok(())
     }
 
-    async fn admit(&self, path: &Path) -> Result<(), String> {
-        let physical = self.resolve(path).await?;
+    async fn admit(&self, path: &Path) -> Result<Arc<RootLease>, String> {
+        let observation = self.path_work(path, PathWork::Observe).await?;
+        let physical = observation.path;
         let mut durable = self.1.lock().await;
         let records = durable
             .as_mut()
             .ok_or_else(|| "disk root ownership has not restored yet".to_string())?;
-        records.remember("cargo-target", &physical).await?;
+        *self.0.lock().active.entry(physical.clone()).or_default() += 1;
+        let lease = Arc::new(RootLease {
+            state: self.0.clone(),
+            path: physical.clone(),
+        });
+        records
+            .remember("cargo-target", &physical, observation.volume)
+            .await?;
         self.register_resolved(physical);
+        Ok(lease)
+    }
+
+    async fn retire_empty(&self) -> Result<(), String> {
+        let candidates = {
+            let durable = self.1.lock().await;
+            let Some(records) = durable.as_ref() else {
+                return Ok(());
+            };
+            let state = self.0.lock();
+            records
+                .saved
+                .iter()
+                .filter(|(path, record)| {
+                    record.volume_id.is_some()
+                        && !state.permanent.contains(*path)
+                        && !state.active.contains_key(*path)
+                        && state
+                            .dirs
+                            .iter()
+                            .any(|dir| dir.path() == path.as_path() && dir.bytes() == 0)
+                })
+                .map(|(path, record)| (path.clone(), record.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (path, before) in candidates {
+            let Ok(observation) = self.path_work(&path, PathWork::Empty).await else {
+                continue;
+            };
+            if observation.empty_custody.is_none() || observation.volume != before.volume_id {
+                continue;
+            }
+            // The filesystem custody guards stay in observation through the
+            // transaction. Admission takes this same durable lock before its hold.
+            let mut durable = self.1.lock().await;
+            let Some(records) = durable.as_mut() else {
+                continue;
+            };
+            if !records.saved.get(&path).is_some_and(|record| {
+                record.base.id == before.base.id && record.volume_id == before.volume_id
+            }) {
+                continue;
+            }
+            {
+                let state = self.0.lock();
+                if state.active.contains_key(&path) || state.permanent.contains(&path) {
+                    continue;
+                }
+            }
+            records
+                .store
+                .delete(uuid::Uuid::parse_str(&before.base.id).map_err(|error| error.to_string())?)
+                .await
+                .map_err(|error| error.to_string())?;
+            records.saved.remove(&path);
+            let mut state = self.0.lock();
+            if let Some(index) = state.dirs.iter().position(|dir| dir.path() == path) {
+                let dir = state.dirs.remove(index);
+                if let Some(consumers) = &state.consumers {
+                    if let Some(monitor) = consumers.monitor.upgrade() {
+                        let reporter: Arc<
+                            dyn crate::system_resources::disk_pressure::DiskReporter,
+                        > = dir.clone();
+                        monitor.remove_reporter(&reporter);
+                    }
+                    if let Some(broker) = consumers.broker.upgrade() {
+                        let pool = CargoTargetPool::new(dir, 0);
+                        broker.unregister(crate::paging::ResourcePool::tier_name(&pool));
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
 
 impl DurableRoots {
-    async fn remember(&mut self, class: &str, path: &Path) -> Result<(), String> {
+    async fn remember(
+        &mut self,
+        class: &str,
+        path: &Path,
+        volume_id: Option<u64>,
+    ) -> Result<(), String> {
         // Boot/replay retain unavailable volumes as named ownership. New writes
         // already require successful physical resolution in admit().
         let physical = path.to_path_buf();
         if !physical.is_absolute() {
             return Err("cache ownership requires an absolute root".into());
         }
-        if self.saved.contains(&physical) {
+        if self
+            .saved
+            .get(&physical)
+            .is_some_and(|record| record.volume_id == volume_id)
+        {
             return Ok(());
         }
-        let record = RootRecord::new(class, &physical);
+        let mut record = self
+            .saved
+            .get(&physical)
+            .cloned()
+            .unwrap_or_else(|| RootRecord::new(class, &physical));
+        record.volume_id = volume_id;
         let id = uuid::Uuid::parse_str(&record.base.id).map_err(|error| error.to_string())?;
         self.store
             .save(id, &record)
             .await
             .map_err(|error| error.to_string())?;
-        self.saved.insert(physical);
+        self.saved.insert(physical, record);
         Ok(())
     }
 }
@@ -313,6 +494,7 @@ impl DurableRoots {
 pub async fn restore_cargo_roots(adapter: Arc<dyn StorageAdapter>) -> Result<(), String> {
     if let Some(registry) = TRACKED_DIRS.get() {
         registry.open_records(adapter).await?;
+        registry.retire_empty().await?;
     }
     Ok(())
 }
@@ -323,7 +505,7 @@ pub async fn admit_cargo_target(
     path: &Path,
     cwd: &Path,
     confinement: Option<&crate::code::confinement::Confinement>,
-) -> Result<Option<crate::code::confinement::CargoTargetGrant>, String> {
+) -> Result<CargoAdmission, String> {
     let registry = writer_registry()?;
     let policy = match confinement {
         Some(policy) => policy.clone(),
@@ -338,7 +520,7 @@ pub async fn admit_cargo_target(
     registry
         .path_work(path, PathWork::Validate(policy.clone()))
         .await?;
-    registry.admit(path).await?;
+    let lease = registry.admit(path).await?;
     // Only operator configuration grants creation outside a citizen workspace.
     // Session overrides acquire ownership but gain no filesystem privileges.
     let configured = crate::paths::cargo::target_dir(cwd)?;
@@ -346,11 +528,15 @@ pub async fn admit_cargo_target(
         let prepared = registry
             .path_work(path, PathWork::Prepare(policy.clone()))
             .await?;
-        return Ok(Some(crate::code::confinement::CargoTargetGrant::admitted(
-            prepared, policy,
-        )));
+        return Ok(CargoAdmission {
+            grant: Some(crate::code::confinement::CargoTargetGrant::admitted(
+                prepared.path,
+                policy,
+            )),
+            lease,
+        });
     }
-    Ok(None)
+    Ok(CargoAdmission { grant: None, lease })
 }
 
 fn register_pool(broker: &PressureBroker, dir: Arc<TrackedDir>) {
@@ -362,12 +548,22 @@ fn register_pool(broker: &PressureBroker, dir: Arc<TrackedDir>) {
 
 /// Connect the existing boot consumers once. Monitor already owns the boot
 /// reporters; roots registered before binding are included in the same snapshot.
-pub fn bind_cargo_owners(monitor: &Arc<DiskPressureMonitor>, broker: &Arc<PressureBroker>) {
+pub fn bind_cargo_owners(
+    monitor: &Arc<DiskPressureMonitor>,
+    broker: &Arc<PressureBroker>,
+) -> Result<(), String> {
     let Some(registry) = TRACKED_DIRS.get() else {
-        return;
+        return Err("Cargo owners have no installed measurement registry".into());
     };
     let mut state = registry.0.lock();
-    assert!(state.consumers.is_none(), "Cargo owners bound twice");
+    if let Some(consumers) = &state.consumers {
+        if Weak::ptr_eq(&consumers.monitor, &Arc::downgrade(monitor))
+            && Weak::ptr_eq(&consumers.broker, &Arc::downgrade(broker))
+        {
+            return Ok(());
+        }
+        return Err("Cargo roots already belong to different monitor/broker owners".into());
+    }
     for (index, dir) in state.dirs.iter().enumerate() {
         if index >= state.boot_reporters {
             monitor.add_reporter(dir.clone());
@@ -380,6 +576,7 @@ pub fn bind_cargo_owners(monitor: &Arc<DiskPressureMonitor>, broker: &Arc<Pressu
         monitor: Arc::downgrade(monitor),
         broker: Arc::downgrade(broker),
     });
+    Ok(())
 }
 
 /// Tools without the running substrate do not create a second registry/scanner.
@@ -406,14 +603,18 @@ mod tests {
         let available = tempfile::tempdir().unwrap();
         let key = (unavailable.path().to_path_buf(), PathWork::Resolve);
         let identity = Arc::new(());
-        let (complete, completion) = tokio::sync::oneshot::channel::<std::path::PathBuf>();
+        let (complete, completion) = tokio::sync::oneshot::channel::<Observation>();
         let request = async move { completion.await.map_err(|error| error.to_string()) }
             .boxed()
             .shared();
         registry
             .2
             .lock()
-            .insert(key.clone(), (identity.clone(), request));
+            .insert(key.clone(), (identity.clone(), request.clone()));
+        registry.2.lock().insert(
+            (unavailable.path().to_path_buf(), PathWork::Observe),
+            (identity.clone(), request),
+        );
         registry.0.lock().unresolved_boot.push(TrackedDir::new(
             "cargo-target",
             unavailable.path().to_path_buf(),
@@ -438,13 +639,17 @@ mod tests {
         assert_eq!(registry.snapshot().len(), 1);
         assert_eq!(
             registry.2.lock().len(),
-            1,
+            2,
             "the original unresolved request remains quarantined"
         );
         // Simulate the original filesystem operation becoming available. The
         // existing restore tick consumes the pending configuration and persists it.
         complete
-            .send(unavailable.path().canonicalize().unwrap())
+            .send(Observation {
+                path: unavailable.path().canonicalize().unwrap(),
+                volume: Some(crate::paths::cargo::volume_id(unavailable.path()).unwrap()),
+                empty_custody: None,
+            })
             .unwrap();
         registry.open_records(adapter.clone()).await.unwrap();
         assert!(registry.0.lock().unresolved_boot.is_empty());
@@ -455,6 +660,105 @@ mod tests {
             2,
             "both physical roots survive restart"
         );
+    }
+
+    // 5058: retirement must coordinate persistent ownership and the live pool,
+    // retain a writer and unknown/replaced volumes, and stay retired on restart.
+    #[tokio::test]
+    async fn empty_root_retirement_respects_writer_custody_and_native_volume() {
+        let (adapter, _database) = crate::orm::store::fresh_adapter().await;
+        let empty = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let unknown = tempfile::tempdir().unwrap();
+        let replaced = tempfile::tempdir().unwrap();
+        std::fs::write(other.path().join("artifact"), b"keep").unwrap();
+        let registry = Registry::new(Vec::new()).await;
+        registry.open_records(adapter.clone()).await.unwrap();
+        let broker = Arc::new(PressureBroker::new(Default::default()));
+        registry.0.lock().consumers = Some(Consumers {
+            monitor: Weak::new(),
+            broker: Arc::downgrade(&broker),
+        });
+        let hold = registry.admit(empty.path()).await.unwrap();
+        drop(registry.admit(other.path()).await.unwrap());
+        drop(registry.admit(unknown.path()).await.unwrap());
+        drop(registry.admit(replaced.path()).await.unwrap());
+        {
+            let mut durable = registry.1.lock().await;
+            let records = durable.as_mut().unwrap();
+            records
+                .remember(
+                    "cargo-target",
+                    &unknown.path().canonicalize().unwrap(),
+                    None,
+                )
+                .await
+                .unwrap();
+            let volume = crate::paths::cargo::volume_id(replaced.path()).unwrap();
+            records
+                .remember(
+                    "cargo-target",
+                    &replaced.path().canonicalize().unwrap(),
+                    Some(volume.wrapping_add(1)),
+                )
+                .await
+                .unwrap();
+        }
+        registry.retire_empty().await.unwrap();
+        assert_eq!(
+            registry.snapshot().len(),
+            4,
+            "writer, content and uncertain devices remain owned"
+        );
+        assert_eq!(broker.snapshot().pools.len(), 4);
+        drop(hold);
+        // The probe may finish after a new writer entered. The durable transaction
+        // must recheck admission, not trust the earlier candidate list.
+        let physical = empty.path().canonicalize().unwrap();
+        let (complete, completion) = tokio::sync::oneshot::channel::<Observation>();
+        registry.2.lock().insert(
+            (physical.clone(), PathWork::Empty),
+            (
+                Arc::new(()),
+                async move { completion.await.map_err(|error| error.to_string()) }
+                    .boxed()
+                    .shared(),
+            ),
+        );
+        let retirement = registry.retire_empty();
+        tokio::pin!(retirement);
+        assert!(futures::poll!(&mut retirement).is_pending());
+        let late = registry.admit(empty.path()).await.unwrap();
+        complete
+            .send(Observation {
+                path: physical.clone(),
+                volume: Some(crate::paths::cargo::volume_id(&physical).unwrap()),
+                empty_custody: CargoTargetPool::empty_root_custody(&physical)
+                    .unwrap()
+                    .map(Arc::new),
+            })
+            .unwrap();
+        retirement.await.unwrap();
+        assert_eq!(
+            registry.snapshot().len(),
+            4,
+            "a late admission prevents retirement"
+        );
+        drop(late);
+        registry.retire_empty().await.unwrap();
+        assert_eq!(registry.snapshot().len(), 3);
+        assert_eq!(broker.snapshot().pools.len(), 3);
+        assert!(
+            empty.path().is_dir(),
+            "retiring metadata does not delete a root"
+        );
+        let restarted = Registry::new(Vec::new()).await;
+        restarted.open_records(adapter).await.unwrap();
+        assert_eq!(restarted.snapshot().len(), 3);
+        assert!(!restarted
+            .snapshot()
+            .iter()
+            .any(|dir| dir.path() == empty.path().canonicalize().unwrap()));
     }
 
     #[tokio::test]

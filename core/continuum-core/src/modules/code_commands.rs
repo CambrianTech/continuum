@@ -1830,6 +1830,7 @@ impl ActionCommand for CodeReleaseHands {
                         .map_err(|e| CommandError::Internal(format!("release-hands: re-checking descendants failed to run: {e}")))?;
                         if let Ok(mut s) = state.lock() {
                             s.unconfirmed_descendants = still.clone();
+                            s.release_ended_cargo_hold();
                         }
                         if !still.is_empty() {
                             unconfirmed.extend(still.iter().map(|who| who.pid));

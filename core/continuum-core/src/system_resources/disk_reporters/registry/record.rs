@@ -67,6 +67,8 @@ pub(super) struct RootRecord {
     pub class: String,
     #[entity(json)]
     pub path: NativePath,
+    #[serde(default)]
+    pub volume_id: Option<u64>,
 }
 
 inventory::submit! {
@@ -82,6 +84,7 @@ impl RootRecord {
             base: BaseEntity::for_new_record(),
             class: class.into(),
             path: NativePath::encode(path),
+            volume_id: None,
         }
     }
 }

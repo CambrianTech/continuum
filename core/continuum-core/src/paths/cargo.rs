@@ -44,6 +44,46 @@ pub fn physical_root(path: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// Native device identity, not a mount-path inference. An unavailable device is
+/// an error; callers retain its ownership rather than treating it as empty.
+pub(crate) fn volume_id(path: &Path) -> Result<u64, String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        std::fs::metadata(path)
+            .map(|metadata| metadata.dev())
+            .map_err(|error| error.to_string())
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::{fs::OpenOptionsExt, io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::{
+            GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS,
+        };
+        let directory = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+            .open(path)
+            .map_err(|error| error.to_string())?;
+        let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+        // The owned handle remains live, and info is the native output structure.
+        if unsafe { GetFileInformationByHandle(directory.as_raw_handle() as _, &mut info) } == 0 {
+            return Err(std::io::Error::last_os_error().to_string());
+        }
+        Ok(u64::from(info.dwVolumeSerialNumber))
+    }
+}
+
+pub(crate) fn existing_volume_id(path: &Path) -> Result<u64, String> {
+    match std::fs::metadata(path) {
+        Ok(_) => volume_id(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            existing_volume_id(path.parent().ok_or_else(|| error.to_string())?)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
