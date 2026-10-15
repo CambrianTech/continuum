@@ -212,6 +212,10 @@ impl NodeRegistry {
             let stale = silent > silent_after_ms;
             // BEHIND is a comparison of build NUMBERS (monotonic), never of shas: a
             // different sha may be AHEAD. Unknown (0) on either side = not judged.
+            // DOCTRINE #3941: this verdict is an INFORMATIVE drift receipt only — the
+            // fold says it once in the org room and nothing gates, routes, or dispatches
+            // on `behind`. build_number never authorizes; a capability question must be
+            // answered by an affirmative signal from the running peer (clause 9).
             let behind = n.build_number != 0 && local_build_number != 0 && n.build_number < local_build_number;
             let label = n.node_name.clone().unwrap_or_else(|| n.node_id.clone()); // JUSTIFIED unwrap_or_else: an unnamed node is named by its id
             if stale != n.stale {
