@@ -166,7 +166,7 @@ fn affordable_for_rate(
     served: u32,
     audience: crate::inference::prefill_rate::Audience,
 ) -> u32 {
-    match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
+    let affordable = match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
         Some(tps) => crate::inference::prefill_rate::affordable_prompt_tokens(
             tps,
             crate::inference::planning::MIN_SERVE_CTX,
@@ -179,7 +179,11 @@ fn affordable_for_rate(
         None => u32::try_from(crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS)
             .unwrap_or(served) // unwrap_or: a floor that cannot be a u32 is not a floor; the window is the only other truth
             .min(served),
-    }
+    };
+    // The planning helper may raise a proposed lane to MIN_SERVE_CTX. This
+    // owner budgets an already-resolved window: a serving floor cannot enlarge
+    // its capacity, including small explicit evaluation windows.
+    affordable.min(served)
 }
 
 /// The served window clamped to what the served lane can prefill inside the turn's
@@ -564,11 +568,16 @@ mod tests {
             (51_712, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 12_928),
             (51_712, MeasuredRate::UNKNOWN, crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS / 4),
             (256, MeasuredRate::UNKNOWN, 64),
+            (256, MeasuredRate { tps: Some(12.5), source: RateSource::Stale }, 64),
+            (0, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 0),
         ] {
             let affordable = ContextBudget::affordable_for_rate(rate, window, Audience::Interactive);
-            let budget = ContextBudget::from_window_unbounded(affordable);
-            assert_eq!(budget.grounding_tokens(), expected as usize);
-            assert!(budget.grounding_tokens() <= window as usize);
+            assert!(affordable <= window);
+            if window > 0 {
+                let budget = ContextBudget::from_window_unbounded(affordable);
+                assert_eq!(budget.grounding_tokens(), expected as usize);
+                assert!(budget.grounding_tokens() <= window as usize);
+            }
         }
     }
 
