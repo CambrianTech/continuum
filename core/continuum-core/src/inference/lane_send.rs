@@ -136,6 +136,7 @@ pub(crate) async fn send_with_lane_retry(
                 &request_builder,
                 quote.patience.saturating_sub(quote_started.elapsed()),
             ).await?;
+            let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
             super::serving_guard::guard_resident_model(
                 cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
             ).await?;
@@ -144,7 +145,7 @@ pub(crate) async fn send_with_lane_retry(
                 request_id = quote.request_id,
                 model = fill.model,
                 input_tokens = fill.prompt_tokens as u64,
-                elapsed_ms = count_started.elapsed().as_millis() as u64,
+                elapsed_ms = count_elapsed_ms,
                 attempt = relaunch_retries,
                 "selected engine counted the finalized prompt"
             );
