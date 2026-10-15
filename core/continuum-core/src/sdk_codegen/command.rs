@@ -520,7 +520,7 @@ mod tests {
         );
     }
 
-    // what this catches: bad params become a named `invalid` refusal at the
+    // what this catches: bad params become a named `arguments` refusal at the
     // erased boundary — the author wrote no parse/try-catch, and the type erasure
     // didn't swallow the categorized error.
     #[tokio::test]
@@ -531,7 +531,7 @@ mod tests {
             .await
             .expect_err("type mismatch must refuse");
         assert!(
-            err.starts_with("test/echo-action: [invalid]"),
+            err.starts_with("test/echo-action: [arguments]"),
             "named + categorized: {err}"
         );
     }

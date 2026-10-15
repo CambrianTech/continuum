@@ -184,7 +184,7 @@ impl ActionCommand for CognitionPrompt {
     ) -> Result<CognitionPromptResult, CommandError> {
         let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
-            .map_err(|_| CommandError::Invalid("persona_id must be a UUID".into()))?;
+            .map_err(|_| CommandError::Arguments("persona_id must be a UUID".into()))?;
         let dir = crate::persona::recorder::fixture_dir(super::prompt_capture::FIXTURE_DIR)
             .ok_or_else(|| {
                 CommandError::Internal("cannot resolve capture home directory".into())
@@ -335,7 +335,7 @@ impl ActionCommand for CognitionPlayback {
     type Output = CognitionPlaybackResult;
     async fn run(&self, _ctx: &Ctx, p: Self::Params) -> Result<Self::Output, CommandError> {
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
-            .map_err(|_| CommandError::Invalid("persona_id must be a UUID".into()))?;
+            .map_err(|_| CommandError::Arguments("persona_id must be a UUID".into()))?;
         let dir = crate::persona::recorder::fixture_dir(super::prompt_capture::FIXTURE_DIR)
             .ok_or_else(|| {
                 CommandError::Internal("cannot resolve capture home directory".into())

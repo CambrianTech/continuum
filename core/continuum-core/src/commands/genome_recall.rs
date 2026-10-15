@@ -305,7 +305,7 @@ impl ActionCommand for GenomeRecallReplay {
 
     async fn run(&self, ctx: &Ctx, p: Self::Params) -> Result<Self::Output, CommandError> {
         let id =
-            uuid::Uuid::parse_str(&p.trace_id).map_err(|e| CommandError::Invalid(e.to_string()))?;
+            uuid::Uuid::parse_str(&p.trace_id).map_err(|e| CommandError::Arguments(e.to_string()))?;
         let weights = p
             .policy
             .as_ref()

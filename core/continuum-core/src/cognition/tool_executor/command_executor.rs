@@ -238,7 +238,7 @@ pub(crate) const CUT_AT_LIMIT_SENTINEL: &str = "tools/<cut at the output limit>"
 /// never executed; her thinking is already in working memory, and she decides.
 pub(crate) const THOUGHT_CUT_SENTINEL: &str = "tools/<thought cut at the output limit>";
 
-fn persona_tool_error(attempted: &str, raw: String) -> String {
+pub(crate) fn persona_tool_error(attempted: &str, raw: String) -> String {
     // The MISSING-name case, which is not the wrong-name case and must not borrow its
     // sentence. Rendering "`X` is not a tool you can call" here would be actively
     // misleading: nothing she wrote was wrong, something was absent. Measured live
@@ -421,10 +421,9 @@ fn persona_tool_error(attempted: &str, raw: String) -> String {
         );
     }
 
-    // Bad/missing arguments: the `[invalid]` prefix means serde already named the
-    // offending field — INLINE the exact shape + example so she fixes it in place
-    // instead of spending a turn on `commands/help`.
-    if raw.contains("[invalid]") {
+    // Only a request-shape refusal calls for the manual. A decoded call can fail
+    // a domain precondition (e.g. an empty patch); changing arguments is not its fix.
+    if crate::sdk_codegen::CommandError::is_argument_refusal(&normalized, &raw) {
         if let Some(manual) = manual_for(&normalized) {
             return format!(
                 "{raw}\n\nHere is the correct call — fix your arguments and retry:\n{manual}"
@@ -1028,7 +1027,7 @@ mod tests {
     // problem and the fix in the SAME observation, no help-lookup turn (#1916).
     #[test]
     fn invalid_params_feedback_reinforces_help() {
-        let raw = "code/write: [invalid] missing field `filePath`".to_string();
+        let raw = "code/write: [arguments] missing field `filePath`".to_string();
         let out = persona_tool_error("code/write", raw);
         assert!(
             out.contains("missing field `filePath`"),
@@ -1046,9 +1045,13 @@ mod tests {
     // bury a genuine cause under boilerplate. [[fallbacks-are-illegal-fail-loud]]
     #[test]
     fn other_refusals_pass_through_unchanged() {
-        let raw = "data/delete: refused — requires Owner trust".to_string();
-        let out = persona_tool_error("data/delete", raw.clone());
-        assert_eq!(out, raw);
+        for raw in [
+            "data/delete: refused — requires Owner trust",
+            "data/delete: [invalid] domain evidence contains [arguments] but is not a schema failure",
+        ] {
+            let out = persona_tool_error("data/delete", raw.to_string());
+            assert_eq!(out, raw);
+        }
     }
 
     /// Build a persona's tool executor over the uniform client: a
