@@ -574,6 +574,16 @@ impl ServingOperation {
     }
 }
 impl ServingDaemonModule {
+    /// The reconcile sizes the host prompt cache from the states saved in the planned model's
+    /// page dirs; measure them first, bounded and off the worker (card 37eb1925). Once per
+    /// model per process; after that this is a lookup.
+    async fn seed_planned_pages(&self) {
+        let model = self.plan_tx.borrow().plan.as_ref().map(|plan| plan.base_model.model_id.clone());
+        if let Some(model) = model {
+            crate::inference::slots::seed_model_pages(&model).await;
+        }
+    }
+
     /// This daemon's lifecycle gate, for the boot path to publish (`LifecycleGate::set_global`).
     pub(crate) fn lifecycle_gate(&self) -> LifecycleGate {
         LifecycleGate {
@@ -7140,13 +7150,11 @@ impl ServiceModule for ServingDaemonModule {
                  expired, not resumed; a fresh benchmark/dispatch re-measures it",
             );
         }
-        // The first reconcile sizes the host prompt cache from the states saved on disk, so
-        // they are measured first, off the worker (card 37eb1925).
-        crate::inference::slots::seed_page_store(&crate::inference::llama_server::kv_pages_root()).await;
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.
         self.recompute();
+        self.seed_planned_pages().await;
         let _ = self.reconcile_to_plan();
         Ok(())
     }
@@ -7164,6 +7172,7 @@ impl ServiceModule for ServingDaemonModule {
         // not-ready when the reconcile reads the snapshot — otherwise the escalation waits a
         // full tick behind the very guard it exists to defeat.
         self.take_reported_wedge();
+        self.seed_planned_pages().await;
         let _ = self.reconcile_to_plan();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published

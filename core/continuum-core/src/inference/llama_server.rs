@@ -955,11 +955,17 @@ pub fn port_of_base_url(url: &str) -> Option<u16> {
 /// (tracked in `system_resources::disk_reporters`, eviction decided in
 /// `disk_eviction` — the no-new-cache-dir-without-an-eviction-decision law).
 pub fn kv_page_dir(model_id: &str, per_slot_ctx: u32) -> PathBuf {
+    kv_pages_root().join(format!("{}{}", kv_page_dir_prefix(model_id), page_geometry_key(per_slot_ctx)))
+}
+
+/// The name every geometry dir of `model_id` starts with: what [`kv_page_dir`] appends the
+/// geometry key to, and how a reader finds all of one model's dirs.
+pub fn kv_page_dir_prefix(model_id: &str) -> String {
     let sanitized: String = model_id
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
         .collect();
-    kv_pages_root().join(format!("{sanitized}--c{}", page_geometry_key(per_slot_ctx)))
+    format!("{sanitized}--c")
 }
 
 /// The per-slot window is derived from LIVE memory at every plan, so it jitters by
@@ -3576,7 +3582,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             // The daemon's own rule decides here too: relaunch only when the running grant
             // holds no state and the target's would. Unknown (no argv) or drift is never one.
             let page_dir = kv_page_dir(target.model_id(), served_window_n);
-            crate::inference::slots::seed_state_samples(&page_dir).await;
+            crate::inference::slots::seed_model_pages(target.model_id()).await;
             let cache_ok = !crate::inference::lane_args::cache_relaunch_owed(
                 running_kv.as_ref().and_then(|r| r.cache_ram_mib),
                 target.host_prompt_cache_mib,
