@@ -1670,7 +1670,8 @@ mod tests {
         // what this catches (card ea06701d; Astra's design): a kill that ended only `bash` and left
         // what it started running (a pipeline, a test runner's workers, a backgrounded server).
         // The execution's own task kills the shell's descendants deepest first, then the shell,
-        // and records nothing as surviving. Unix: the grandchild's pid is written by the shell.
+        // and retains any unconfirmed descendant identities for later re-check. Unix: the
+        // grandchild's pid is written by the shell.
         #[cfg(unix)]
         {
             let pidfile = dir.path().join("grandchild.pid");
@@ -1699,11 +1700,19 @@ mod tests {
                 assert!(std::time::Instant::now() < deadline, "the killed shell is reaped");
                 std::thread::sleep(KILL_POLL);
             }
-            assert!(state.lock().unwrap().unconfirmed_descendants.is_empty(), "nothing the shell started is recorded as surviving");
-            assert!(
-                crate::inference::lane_process::still_present(&[identity]).is_empty(),
-                "the grandchild died with its shell, not only bash"
-            );
+            // Regression for combined canary 8ea: direct-child reap does not imply that
+            // every signalled descendant has already exited at end_tree's snapshot.
+            // Observe those retained identities AND the independently witnessed child;
+            // never clear custody or send another signal to make this fixture pass.
+            let mut observed = state.lock().unwrap().unconfirmed_descendants.clone();
+            observed.push(identity);
+            loop {
+                let surviving = crate::inference::lane_process::still_present(&observed);
+                if surviving.is_empty() { break; }
+                assert!(std::time::Instant::now() < deadline,
+                    "the grandchild and recorded descendants must die with their shell: {surviving:?}");
+                std::thread::sleep(KILL_POLL);
+            }
         }
     }
 
