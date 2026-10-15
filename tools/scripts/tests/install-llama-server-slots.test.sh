@@ -52,7 +52,7 @@ root="$(managed_payload_root "$CONTINUUM_HOME")/bin" || exit 1
 echo "$*" >> "$FIXTURE_LOG"
 case "$1" in
   idle-slot) [ "$IDLE_RC" = 0 ] && echo "$root/$IDLE_SLOT"; exit "$IDLE_RC" ;;
-  promote) printf '%s\n' "$2" > "$root/current"; exit 0 ;;
+  promote) [ "${PROMOTE_RC:-0}" = 0 ] || exit "$PROMOTE_RC"; printf '%s\n' "$2" > "$root/current"; exit 0 ;;
 esac
 exit 64
 SH
@@ -125,3 +125,12 @@ IDLE_RC=0 IDLE_SLOT=engine-a run || fail "cold current: exit $?"
 [ ! -s "$scratch/log" ] || fail "cold current: rebuilt or promoted unnecessarily"
 
 echo "install-llama-server slots: legacy and cold cases pass"
+
+# Deferred promotion is a successful preservation, never a candidate-path receipt.
+fresh_home
+engine_at "$CONTINUUM_HOME/bin/engine-a" 'older:cpu'
+engine_at "$CONTINUUM_HOME/bin/engine-c" "$want"
+printf 'engine-a\n' > "$CONTINUUM_HOME/bin/current"
+PROMOTE_RC=4 IDLE_RC=0 IDLE_SLOT=engine-c run || fail "deferred engine: exit $?"
+[ "$(cat "$CONTINUUM_HOME/bin/current")" = engine-a ] || fail "deferred engine changed current"
+[ "$(cat "$scratch/out")" = "$CONTINUUM_HOME/bin/engine-a/llama-server" ] || fail "deferred engine named candidate"

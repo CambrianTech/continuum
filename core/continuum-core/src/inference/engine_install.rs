@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Deserialize)]
+#[derive(Clone, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct InstallReceipt {
     schema: u32,
@@ -111,6 +111,23 @@ fn platform_system_directory() -> Result<PathBuf, String> {
 }
 
 impl EngineInstallReceipt {
+    /// Offline promotion evidence, using the same complete application verification
+    /// as launch. Only the artifact contract is hashed; inherited environment and
+    /// private restoration authority never leave this owner. Absence is legacy,
+    /// not evidence that the executable alone describes its dependency closure.
+    pub(crate) fn promotion_identity(program: &Path) -> Result<Option<String>, String> {
+        let program = program.to_str().ok_or("engine path is not UTF-8")?;
+        Self::load(program, &|| false)?
+            .map(|verified| verified.artifact_identity())
+            .transpose()
+    }
+
+    fn artifact_identity(&self) -> Result<String, String> {
+        serde_json::to_vec(&self.receipt)
+            .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
+            .map_err(|e| format!("engine artifact identity: {e}"))
+    }
+
     pub(crate) async fn prepare(program: String) -> Result<Option<Self>, String> {
         let (cancel, _cancellation_guard) = tokio::sync::oneshot::channel::<()>();
         tokio::time::timeout(
@@ -395,6 +412,7 @@ mod tests {
             &|| false,
         )
         .unwrap();
+        let original_identity = captured.artifact_identity().unwrap();
         assert!(captured
             .require_absolute(Path::new("relative/adapter.gguf"))
             .is_err());
@@ -473,6 +491,43 @@ mod tests {
         rewritten["files"]["cublas64_12.dll"] = hash(&dll, &|| Ok(()), &mut 1024).unwrap().0.into();
         std::fs::write(&path, serde_json::to_vec(&rewritten).unwrap()).unwrap();
         assert!(captured.verify(&|| false).is_err());
+        let replacement = EngineInstallReceipt::read(
+            program.clone(),
+            directory.clone(),
+            system.clone(),
+            &path,
+            &|| false,
+        )
+        .unwrap();
+        assert_ne!(
+            replacement.artifact_identity().unwrap(),
+            original_identity,
+            "same revision and executable with changed verified DLL bytes is a different artifact"
+        );
+        let relocated = canonical.join("engine-c");
+        std::fs::create_dir(&relocated).unwrap();
+        for name in [
+            "llama-server.exe",
+            "cublas64_12.dll",
+            ".llama-server.stamp",
+            "engine-install.json",
+        ] {
+            std::fs::copy(directory.join(name), relocated.join(name)).unwrap();
+        }
+        let relocated_receipt = EngineInstallReceipt::read(
+            relocated.join("llama-server.exe"),
+            relocated.clone(),
+            system.clone(),
+            &relocated.join("engine-install.json"),
+            &|| false,
+        )
+        .unwrap();
+        assert_eq!(
+            replacement.artifact_identity().unwrap(),
+            relocated_receipt.artifact_identity().unwrap(),
+            "moving the same verified closure to another slot cannot reset failure identity"
+        );
+        drop(replacement);
         std::fs::remove_file(&dll).unwrap();
         assert!(EngineInstallReceipt::read(program, directory, system, &path, &|| false).is_err());
     }

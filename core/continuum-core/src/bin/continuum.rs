@@ -180,6 +180,10 @@ async fn run() -> Result<(), CliError> {
                 eprintln!("{}", VerbError::NoIdleSlot);
                 std::process::exit(3);
             }
+            Err(VerbError::DeferredFailedAttempt(reason)) => {
+                eprintln!("{reason}");
+                std::process::exit(4);
+            }
             Err(e) => return Err(CliError::Command(e.to_string())),
         }
     }
@@ -7269,6 +7273,8 @@ fn usage() -> String {
        continuum engine root                print the managed engine root\n  \
        continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
        continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
+       continuum engine attempt <slot>       inspect admitted artifact and failure disposition\n  \
+       continuum engine retry <slot> <commit:backend> <artifact-identity>\n                                       explicitly retry exactly that artifact\n  \
        continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\
      \n\
      Desktop (the core serves it; no port to remember):\n  \
