@@ -203,12 +203,23 @@ mod tests {
         let path = path_under(home.path());
         let model = ModelFootprint { model_id: "qwen-27b".into(), weights_bytes: 19 << 30,
             kv_per_token: 33_000, context_window: 262_144, capability_rank: 9, fixed_per_lane_bytes: 0 };
+        let host = HostBudget { usable_bytes: 30 << 30, perf_cores: 8 };
+        let initial = plan_serving_at_rest(&host, std::slice::from_ref(&model), None,
+            &ServingDemand::new(2, Some(70_000)).with_requirements(vec![
+                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
+                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)])).unwrap();
         let large = ServedGeometry { model_id: model.model_id.clone(), generation: uuid::Uuid::new_v4(),
-            per_slot_window: 70_000, lanes: 2 };
+            per_slot_window: initial.served_context_window, lanes: initial.lanes };
         save_candidate_to(&path, large.clone());
         assert_eq!(load_from(&path).unwrap().cache_geometry(), None);
         observe_to(&path, &large, 60_000);
-        let collapse = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: 8192, lanes: 1, ..large.clone() };
+        let pressure = HostBudget { usable_bytes: model.peak_resident_bytes(8192, 1), perf_cores: 8 };
+        let pressured = plan_serving_at_rest(&pressure, std::slice::from_ref(&model), None,
+            &ServingDemand::new(2, Some(70_000))).unwrap();
+        assert_eq!(pressured.lanes, 1);
+        assert!(pressured.served_context_window < large.per_slot_window);
+        let collapse = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: pressured.served_context_window,
+            lanes: pressured.lanes, ..large.clone() };
         save_candidate_to(&path, collapse.clone());
         assert_eq!(load_from(&path).unwrap().cache_geometry(), Some((70_000, 2)));
         // Another endpoint/model, the prior generation, and a rewritten same-generation
@@ -221,9 +232,8 @@ mod tests {
         assert_eq!(load_from(&path).unwrap().candidate, Some(collapse.clone()));
         observe_to(&path, &collapse, 2048);
         let restarted = load_from(&path).unwrap();
-        assert_eq!(restarted.cache_geometry(), Some((8192, 1)));
+        assert_eq!(restarted.cache_geometry(), Some((collapse.per_slot_window, 1)));
         assert_eq!(restarted.observed_prompt_tokens, Some(2048));
-        let host = HostBudget { usable_bytes: 30 << 30, perf_cores: 8 };
         // Both real allocation branches use the same current demand and already
         // credited budget for cold boot and settled reconciliation.
         for requirements in [vec![], vec![LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
