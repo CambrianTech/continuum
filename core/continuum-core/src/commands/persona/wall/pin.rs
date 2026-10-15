@@ -163,10 +163,10 @@ mod tests {
             )
             .await
             .expect_err("malformed id must fail loud");
-        assert!(matches!(err, CommandError::Arguments(_)), "got {err:?}");
+        assert!(matches!(err, CommandError::Invalid(_)), "got {err:?}");
     }
 
-    // what this catches: a mal-formed supersedes id is rejected as Invalid even
+    // what this catches: a mal-formed supersedes id is rejected as Arguments even
     // when the persona_id is well-formed — an edit pointer typo fails loud rather
     // than silently pinning a fresh post that loses the supersede link.
     #[tokio::test]
