@@ -346,14 +346,16 @@ pub fn candidate_keys_log_args(running: &str, tip: &str) -> Vec<String> {
 }
 
 /// The build to deploy, given the candidates newest first and whether CI published each:
-/// the newest PUBLISHED one. `None` = nothing newer than the running core is out yet, so
-/// the consumer waits on the newest candidate.
-pub fn newest_published<'a>(candidates: &'a [String], published: &[bool]) -> Option<&'a str> {
+/// the newest published one whose OWN checks are green. The request tip's verdict
+/// cannot authorize a different artifact revision. `None` means the consumer waits
+/// on the newest candidate.
+pub fn newest_published<'a>(candidates: &'a [String], published: &[bool], checks: &[crate::deploy_tracker::Checks]) -> Option<&'a str> {
     candidates
         .iter()
         .zip(published)
-        .find(|(_, &out)| out)
-        .map(|(key, _)| key.as_str())
+        .zip(checks)
+        .find(|((_, out), verdict)| **out && matches!(verdict, crate::deploy_tracker::Checks::Green))
+        .map(|((key, _), _)| key.as_str())
 }
 
 /// What the consumer does when its tip has no artifact yet.
@@ -666,25 +668,33 @@ mod tests {
         let candidates: Vec<String> = ["e428cbd50", "5dbfadbca", "8de501e35"]
             .map(String::from)
             .to_vec();
+        use crate::deploy_tracker::Checks;
+        let green = [Checks::Green; 3];
         assert_eq!(
-            newest_published(&candidates, &[false, false, true]),
+            newest_published(&candidates, &[false, false, true], &green),
             Some("8de501e35")
         );
         assert_eq!(
-            newest_published(&candidates, &[false, true, true]),
+            newest_published(&candidates, &[false, true, true], &green),
             Some("5dbfadbca"),
             "the newest out wins"
         );
         assert_eq!(
-            newest_published(&candidates, &[true, false, true]),
+            newest_published(&candidates, &[true, false, true], &green),
             Some("e428cbd50"),
             "the tip, when it is out"
         );
         assert_eq!(
-            newest_published(&candidates, &[false, false, false]),
+            newest_published(&candidates, &[false, false, false], &green),
             None,
             "none out: wait"
         );
+        for refused in [Checks::Red, Checks::Pending, Checks::Unknown] {
+            assert_eq!(newest_published(&candidates, &[false, true, true], &[Checks::Green, refused, Checks::Green]),
+                Some("8de501e35"), "a green request cannot authorize a non-green published ancestor");
+            assert_eq!(newest_published(&candidates, &[false, true, false], &[Checks::Green, refused, Checks::Unknown]),
+                None, "without a published green candidate the running core stands");
+        }
         let args = candidate_keys_log_args("5b496e307", "e428cbd50");
         assert!(
             args.contains(&"5b496e307..e428cbd50".to_string()),

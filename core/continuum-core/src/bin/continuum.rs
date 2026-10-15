@@ -4587,16 +4587,34 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
             None => when_artifact_missing(None, 0),
             Some(p) => {
                 let mut published = Vec::with_capacity(candidates.len());
+                let mut checks = Vec::with_capacity(candidates.len());
                 for key in candidates {
-                    published.push(match ci_core_published(key, p).await {
+                    let out = match ci_core_published(key, p).await {
                         Ok(out) => out,
                         Err(why) => {
                             deploy_note(&format!("deploy-consume: could not ask CI whether {key} is out: {why}"));
                             false
                         }
-                    });
+                    };
+                    let verdict = if out {
+                        let repo = repo.to_path_buf();
+                        let revision = key.clone();
+                        tokio::task::spawn_blocking(move || continuum_core::modules::deploy_tracker::revision_checks(&repo, &revision))
+                            .await.unwrap_or(continuum_cli_lifecycle::deploy_tracker::Checks::Unknown) // a failed source task never authorizes a build
+                    } else {
+                        continuum_cli_lifecycle::deploy_tracker::Checks::Unknown
+                    };
+                    if out && !matches!(verdict, continuum_cli_lifecycle::deploy_tracker::Checks::Green) {
+                        deploy_note(&format!("deploy-consume: published {key} has {verdict:?} checks; it is not authorized by request {requested_tip}"));
+                    }
+                    published.push(out);
+                    checks.push(verdict);
+                    // Candidates are newest first: nothing older can improve this choice.
+                    if matches!(verdict, continuum_cli_lifecycle::deploy_tracker::Checks::Green) {
+                        break;
+                    }
                 }
-                match newest_published(candidates, &published) {
+                match newest_published(candidates, &published, &checks) {
                     None => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
                     Some(key) => match fetch_ci_core(repo, key, p).await {
                         Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
