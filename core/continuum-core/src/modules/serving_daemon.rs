@@ -462,6 +462,7 @@ struct ServingPlanSnapshot {
 pub struct VerifiedServingCapture {
     pub launch: crate::inference::llama_server::OwnedServingTarget,
     pub intent_revision: u64,
+    pub(crate) qualification: crate::modules::served_window_store::GeometryQualification,
 }
 
 /// The existing reconcile gate, armed before spawning so abort-before-first-poll
@@ -700,6 +701,7 @@ fn verified_capture(
     server: &dyn LlamaServerControl,
     snapshot: &ServingSnapshot,
     intent_revision: u64,
+    qualification: crate::modules::served_window_store::GeometryQualification,
 ) -> Option<VerifiedServingCapture> {
     if !snapshot.ready || server.paging_recovery_required() {
         return None;
@@ -717,6 +719,7 @@ fn verified_capture(
     Some(VerifiedServingCapture {
         launch,
         intent_revision,
+        qualification,
     })
 }
 
@@ -1699,16 +1702,22 @@ impl ServingDaemonModule {
             self.server.as_ref(),
             &self.serving_tx.borrow(),
             capture.intent_revision,
+            capture.qualification,
         )?;
         (current.launch.identity == capture.launch.identity).then_some(capture)
     }
 
     fn acknowledge_verified_target(&self, live: &ServingSnapshot, intent_revision: u64) {
         if self.intent.snapshot().revision == intent_revision {
+            let qualification = self.verified_target.borrow().as_ref()
+                .filter(|old| self.server.owned_engine().as_ref() == Some(&old.launch.identity))
+                .map(|old| old.qualification)
+                .unwrap_or_default();
             let _ = self.verified_target.send_replace(verified_capture(
                 self.server.as_ref(),
                 live,
                 intent_revision,
+                qualification,
             ));
         }
     }
@@ -3224,11 +3233,16 @@ impl ServingDaemonModule {
         // single source of truth (task #50). We carry them on the ServingTarget
         // so llama-server's `-c` (= window × lanes) and `--parallel` (= lanes)
         // match exactly what was planned: each slot gets one full served window.
-        let (desired, served_ctx, lanes) = match planned.plan.as_ref() {
+        let (desired, served_ctx, lanes, mut qualification) = match planned.plan.as_ref() {
             Some(plan) => (
                 plan.base_model.model_id.clone(),
                 plan.served_context_window,
                 plan.lanes,
+                if plan.geometry_capacity_limited {
+                    crate::modules::served_window_store::GeometryQualification::CapacityLimited
+                } else {
+                    crate::modules::served_window_store::GeometryQualification::Unconstrained
+                },
             ),
             None => {
                 let live = self.serving_tx.borrow();
@@ -3410,7 +3424,11 @@ impl ServingDaemonModule {
                         if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
                             .filter(|g| g.model_id == model && g.per_slot_window == live.served_context_window && g.lanes == live.lanes)
                         {
-                            crate::modules::served_window_store::save(geometry);
+                            let qualification = self.verified_target.borrow().as_ref()
+                                .filter(|capture| self.server.owned_engine().as_ref() == Some(&capture.launch.identity))
+                                .map(|capture| capture.qualification)
+                                .unwrap_or_default();
+                            crate::modules::served_window_store::save(geometry, qualification);
                         }
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
@@ -3799,6 +3817,7 @@ impl ServingDaemonModule {
             .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
         {
             Some(fits) if floored > fits.max(crate::inference::planning::MIN_SERVE_CTX) => {
+                qualification = crate::modules::served_window_store::GeometryQualification::CapacityLimited;
                 let bound = fits.max(crate::inference::planning::MIN_SERVE_CTX);
                 crate::probe!(
                     class = "serving.reconcile.window",
@@ -4392,7 +4411,19 @@ impl ServingDaemonModule {
                 }
             }
             let capture = if current() {
-                verified_capture(server.as_ref(), &snapshot, revision)
+                let qualification = if snapshot.served_context_window < served_ctx {
+                    crate::modules::served_window_store::GeometryQualification::CapacityLimited
+                } else { qualification };
+                verified_capture(server.as_ref(), &snapshot, revision, qualification).map(|mut capture| {
+                    // A reconcile that reuses the same process does not rewrite
+                    // the admission reason of that process's geometry.
+                    if let Some(old) = verified_target.borrow().as_ref()
+                        .filter(|old| old.launch.identity == capture.launch.identity)
+                    {
+                        capture.qualification = old.qualification;
+                    }
+                    capture
+                })
             } else {
                 None
             };
@@ -11290,6 +11321,7 @@ pub(crate) mod tests {
         let on_disk = vec![big.clone(), tiny.clone()];
         let demand = ServingDemand::new(1, Some(8192));
         let plan_for = |m: &ModelFootprint| ServingPlan {
+            geometry_capacity_limited: false,
             base_model: m.clone(),
             served_context_window: 2048,
             lanes: 1,
@@ -11361,6 +11393,7 @@ pub(crate) mod tests {
         let devstral = footprint("devstral-24b", 14, 8);
         let tiny = footprint("qwen-0.5b", 1, 1);
         let plan_for = |id: &str| ServingPlan {
+            geometry_capacity_limited: false,
             base_model: footprint(id, 1, 1),
             served_context_window: 2048,
             lanes: 1,

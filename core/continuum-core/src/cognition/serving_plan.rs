@@ -620,6 +620,11 @@ pub struct ServingPlan {
     /// llama-server's `-c`, the persona's `context_length`, and the deliberation
     /// prompt budget. Never a hardcoded constant.
     pub served_context_window: u32,
+    /// The planner's capacity calculation constrained the remembered window or lanes.
+    /// Internal launch provenance, not a new demand or a permanent capacity cap.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub(crate) geometry_capacity_limited: bool,
     /// Continuous-batching lanes (`n_seq_max`). ≥ 1.
     pub lanes: u32,
     /// Personas that DEMANDED a concurrent lane but couldn't get a local one — the
@@ -854,6 +859,7 @@ pub fn plan_serving(
             })
             .expect("candidates non-empty checked above");
         return Some(ServingPlan {
+            geometry_capacity_limited: true,
             base_model: (*smallest).clone(),
             served_context_window: MIN_SERVE_CTX,
             lanes: 1,
@@ -968,6 +974,7 @@ pub fn plan_serving(
                 // serving option here — the same honest degrade as "does not fit", never
                 // a starved lane. The rationale carries the numbers.
                 return Some(ServingPlan {
+                    geometry_capacity_limited: true,
                     base_model: model.clone(),
                     served_context_window: 0,
                     lanes: 0,
@@ -1110,6 +1117,14 @@ pub fn plan_serving(
     }
 
     Some(ServingPlan {
+        geometry_capacity_limited: demand.sticky_window.is_some_and(|s| s > window_for(lanes as u64))
+            || match lanes_bound {
+                LanesBound::NoFit | LanesBound::PerLaneFloor { .. }
+                | LanesBound::Cores | LanesBound::MaxLanes => true,
+                LanesBound::Allocator { lane_cap, lane_cap_by, .. } => lanes < lane_cap
+                    || matches!(lane_cap_by, LaneCapBy::Cores | LaneCapBy::MaxLanes),
+                LanesBound::Demand | LanesBound::BootGeometry => false,
+            },
         base_model: model.clone(),
         served_context_window,
         lanes,
@@ -2878,6 +2893,7 @@ mod tests {
             &ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))))
         .expect("servable");
         assert_eq!((remembered.lanes, remembered.served_context_window), (2, 67_340), "the last steady geometry, first");
+        assert!(!remembered.geometry_capacity_limited, "the boot cap is remembered geometry, not capacity pressure");
         let tight = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
         let one = plan_serving(
             &tight,
@@ -2885,6 +2901,7 @@ mod tests {
             &ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))))
         .expect("servable");
         assert_eq!(one.lanes, 1, "remembered lanes cap, never raise: this box fits one at that window");
+        assert!(one.geometry_capacity_limited, "the capacity owner records why the lane count fell");
         // An untrimmed candidate pool is still growth demand, but cannot erase
         // the remembered geometry's floor or create capacity beyond this host.
         let unmet = ServingDemand::new(17, Some(2_866_096))

@@ -25,6 +25,22 @@ pub struct ServedGeometry {
     pub lanes: u32,
 }
 
+/// The launch owner's decision, retained with the generation through settlement.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum GeometryQualification {
+    #[default]
+    Unknown,
+    Unconstrained,
+    CapacityLimited,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettledGeometry {
+    pub geometry: ServedGeometry,
+    #[serde(default)]
+    pub qualification: GeometryQualification,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredServedWindow {
     pub model_id: String,
@@ -51,7 +67,7 @@ pub struct StoredServedWindow {
     /// Current settled launch. It does not replace the last qualified geometry
     /// until successful usage from this exact generation qualifies it.
     #[serde(default)]
-    pub candidate: Option<ServedGeometry>,
+    pub candidate: Option<SettledGeometry>,
 }
 
 impl StoredServedWindow {
@@ -125,13 +141,13 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
 }
 
 /// Record a settled launch separately from the geometry qualified by successful work.
-pub fn save(geometry: ServedGeometry) {
+pub fn save(geometry: ServedGeometry, qualification: GeometryQualification) {
     if let Some(path) = default_path() {
-        save_candidate_to(&path, geometry);
+        save_candidate_to(&path, geometry, qualification);
     }
 }
 
-fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
+fn save_candidate_to(path: &Path, geometry: ServedGeometry, qualification: GeometryQualification) {
     let mut stored = load_from(path).unwrap_or_else(|| StoredServedWindow {
         model_id: geometry.model_id.clone(),
         per_slot_window: geometry.per_slot_window,
@@ -141,8 +157,9 @@ fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
         set_at_ms: crate::time::EpochMs::now().millis(),
         candidate: None,
     });
-    if stored.candidate.as_ref() != Some(&geometry) {
-        stored.candidate = Some(geometry);
+    let candidate = SettledGeometry { geometry, qualification };
+    if stored.candidate.as_ref() != Some(&candidate) {
+        stored.candidate = Some(candidate);
         write_record(path, &stored);
     }
 }
@@ -157,8 +174,11 @@ pub fn save_observed_prompt(geometry: &ServedGeometry, tokens: u32) {
 
 fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
     let Some(mut stored) = load_from(path) else { return };
+    let Some(candidate) = stored.candidate.as_ref().filter(|c| &c.geometry == geometry) else { return };
     if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0
-        || stored.candidate.as_ref() != Some(geometry)
+        || (stored.model_id == geometry.model_id
+            && (geometry.per_slot_window < stored.per_slot_window || geometry.lanes < stored.lanes)
+            && candidate.qualification != GeometryQualification::Unconstrained)
         || (stored.model_id == geometry.model_id
             && stored.observed_prompt_tokens.is_some_and(|prior| geometry.per_slot_window < prior))
     {
@@ -231,11 +251,11 @@ mod tests {
         let observe = |geometry: &ServedGeometry, tokens| PromptSample::Served {
             endpoint: "local".into(), tokens, geometry: geometry.clone(),
         };
-        save_candidate_to(&path, large.clone());
+        save_candidate_to(&path, large.clone(), GeometryQualification::Unconstrained);
         assert_eq!(load_from(&path).expect("candidate").steady_geometry(), None);
         let samples = vec![observe(&large, 30_000)];
         observe_to(&path, &large, PromptSample::geometry_median(&samples, "local", &large).expect("large usage"));
-        save_candidate_to(&path, collapsed.clone());
+        save_candidate_to(&path, collapsed.clone(), GeometryQualification::CapacityLimited);
         let mut samples = samples;
         samples.push(observe(&collapsed, 1_024));
         let foreign = ServedGeometry { model_id: "other".into(), ..collapsed.clone() };
@@ -249,12 +269,25 @@ mod tests {
         let restarted = load_from(&path).expect("restart reloads durable qualification");
         assert_eq!(restarted.steady_geometry(), Some((62_720, 1)));
         assert_eq!(restarted.observed_prompt_tokens, Some(30_000));
-        assert_eq!(restarted.candidate, Some(collapsed));
+        assert_eq!(restarted.candidate.as_ref().map(|c| &c.geometry), Some(&collapsed));
         // A genuinely fitting replacement remains eligible; this is not a max-window rule.
         let fitted = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: 40_000, ..large };
-        save_candidate_to(&path, fitted.clone());
+        save_candidate_to(&path, fitted.clone(), GeometryQualification::CapacityLimited);
+        observe_to(&path, &fitted, 32_000);
+        assert_eq!(load_from(&path).expect("pressure above prior usage").steady_geometry(), Some((62_720, 1)));
+        save_candidate_to(&path, fitted.clone(), GeometryQualification::Unknown);
+        observe_to(&path, &fitted, 32_000);
+        assert_eq!(load_from(&path).expect("unknown provenance").steady_geometry(), Some((62_720, 1)));
+        save_candidate_to(&path, fitted.clone(), GeometryQualification::Unconstrained);
         observe_to(&path, &fitted, 32_000);
         assert_eq!(load_from(&path).expect("qualified replacement").steady_geometry(), Some((40_000, 1)));
+        let expanded = ServedGeometry { generation: uuid::Uuid::new_v4(), lanes: 2, ..fitted.clone() };
+        save_candidate_to(&path, expanded.clone(), GeometryQualification::Unconstrained);
+        observe_to(&path, &expanded, 32_000);
+        let one_lane = ServedGeometry { generation: uuid::Uuid::new_v4(), lanes: 1, ..expanded };
+        save_candidate_to(&path, one_lane.clone(), GeometryQualification::CapacityLimited);
+        observe_to(&path, &one_lane, 1_024);
+        assert_eq!(load_from(&path).expect("lane pressure survives restart").steady_geometry(), Some((40_000, 2)));
     }
 
     // what this catches: a collapsed geometry must not seed the next boot as the steady one.
