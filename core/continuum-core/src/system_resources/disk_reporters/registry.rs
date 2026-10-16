@@ -74,6 +74,7 @@ type Resolution =
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum PathWork {
     Resolve,
+    ResolveExisting,
     Validate(crate::code::confinement::Confinement),
     Prepare(crate::code::confinement::Confinement),
     Observe,
@@ -227,6 +228,8 @@ impl Registry {
                                 })?;
                             }
                             let physical = match &work {
+                                PathWork::ResolveExisting => std::fs::canonicalize(&path)
+                                    .map_err(|error| format!("cannot resolve existing storage path: {error}")),
                                 PathWork::Resolve | PathWork::Observe | PathWork::Empty => {
                                     crate::paths::cargo::physical_root(&path)
                                 }
@@ -560,6 +563,12 @@ pub async fn restore_cargo_roots(adapter: Arc<dyn StorageAdapter>) -> Result<(),
         registry.retire_empty().await?;
     }
     Ok(())
+}
+
+/// Existing-path custody uses the registry's bounded, retained path worker;
+/// an unavailable mount cannot create a new orphan worker on every request.
+pub(crate) async fn resolve_existing_storage_path(path: &Path) -> Result<std::path::PathBuf, String> {
+    Ok(writer_registry()?.path_work(path, PathWork::ResolveExisting).await?.path)
 }
 
 /// Durable admission before a writer can launch. Failure to save refuses that
