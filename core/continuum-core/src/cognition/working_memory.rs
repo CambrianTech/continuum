@@ -1480,6 +1480,12 @@ impl WorkingMemory {
     /// instead of re-ingesting it. First message carries the banner so the
     /// semantics of the ledger stay stated.
     pub fn recent_results_messages(&self) -> Vec<String> {
+        self.recent_results_with_pointers().into_iter().map(|(body, _)| body).collect()
+    }
+
+    /// Source-owned alternatives for prompt fitting: only a saved result may
+    /// collapse to its expansion handle. The live ring and its custody stay intact.
+    pub(crate) fn recent_results_with_pointers(&self) -> Vec<(String, Option<String>)> {
         // The active result renders WHOLE as the "Full result of your most recent action"
         // message; holding it here too would spend its share twice. It joins the ring's
         // tail when the next act replaces it: an append at the frontier, so the prefix
@@ -1493,10 +1499,10 @@ impl WorkingMemory {
         // can never take it — gluing it to entry #1 would delete the ledger's
         // semantics on the first pop_front).
         let mut out = Vec::with_capacity(rr.len() + 2);
-        out.push(
+        out.push((
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
-                .to_string(),
-        );
+                .to_string(), None,
+        ));
         out.extend(rr.iter().filter(|(seq, ..)| Some(*seq) != active).map(|(seq, room, tail, operation, handle)| {
             let attribution = ResultAttribution {
                 seq: *seq,
@@ -1504,7 +1510,8 @@ impl WorkingMemory {
                 operation: Some(operation),
                 spill_handle: handle.as_deref(),
             };
-            format!("[result {attribution}] {tail}")
+            let pointer = handle.as_ref().map(|_| format!("[result {attribution} — collapsed; query tool/output to expand]"));
+            (format!("[result {attribution}] {tail}"), pointer)
         }));
         // Collapsed-results index LAST — it CHANGES on every eviction, and
         // message order is MONOTONE IN STABILITY (the KV law this same night
@@ -1513,10 +1520,10 @@ impl WorkingMemory {
         {
             let ptrs = self.evicted_pointers.lock();
             if !ptrs.is_empty() {
-                out.push(format!(
+                out.push((format!(
                     "Older results, collapsed to pointers (query to expand):\n{}",
                     ptrs.iter().map(|(pointer, _)| pointer.as_str()).collect::<Vec<_>>().join("\n")
-                ));
+                ), None));
             }
         }
         out
