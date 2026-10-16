@@ -1761,6 +1761,11 @@ exit 64
             Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
             if ($script:promoted -ne 'engine-c' -or $script:selected) { throw 'A slot already at the pin was not promoted directly' }
             if ([IO.File]::ReadAllText($receipt) -ne (Join-Path $bin 'engine-c\llama-server.exe')) { throw 'The receipt does not name the promoted slot' }
+            # Shared owner deferred a failed artifact and certified the fallback.
+            $script:promoteResult = $null
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
+            if ($script:selected -or -not ([IO.File]::ReadAllText($receipt)).StartsWith('SKIP: failed engine attempt')) { throw 'Deferred attempt did not preserve current without rebuilding' }
+            $script:promoteResult = $true
             # (2) no slot at the pin: falls through to idle-slot selection (a busy set skips)
             $script:matching = 'none'; $script:selected = $false; $script:promoted = $null
             Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt
@@ -1785,6 +1790,10 @@ exit 64
             $script:selected = $false
             Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt -PrebuiltOnly
             if ($script:selected -or $script:promoted -ne 'engine-c') { throw 'Published handoff took a developer path.' }
+            $script:promoteResult = $null
+            Prepare-CoreServiceEngine -RepoRoot $scratch -Description $script:releaseJson -ReceiptPath $receipt -PrebuiltOnly
+            if ($script:selected -or -not ([IO.File]::ReadAllText($receipt)).StartsWith('SKIP: failed engine attempt')) { throw 'Published deferral did not preserve fallback.' }
+            $script:promoteResult = $true
             foreach ($failure in @('drift','stamp','promote')) {
                 $script:matching = if ($failure -eq 'drift') { 'none' } else { 'engine-c' }
                 $script:promoteResult = $failure -ne 'promote'

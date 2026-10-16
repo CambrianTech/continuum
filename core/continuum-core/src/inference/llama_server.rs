@@ -1444,7 +1444,8 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
     if continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks() {
         return false;
     }
-    match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch(&root)) {
+    let failure_class = if matches!(error, LlamaServerError::Spawn(_)) { "spawn failed" } else { "readiness failed" };
+    match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch_reason(&root, failure_class)) {
         Ok(Some((failed, restored))) => {
             crate::probe!(
                 class = "serving.engine.rolled_back",

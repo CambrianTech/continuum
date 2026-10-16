@@ -270,6 +270,9 @@ function Invoke-CoreEnginePromote {
         $said = (Invoke-InstallerProcess $Cli @('engine', 'promote', $name, $stamp) 2>&1 | Out-String).Trim()
         $code = $LASTEXITCODE
     } finally { $env:CONTINUUM_HOME = $saved }
+    # Exit 4 is the shared owner's proof that a verified fallback remains current.
+    # Null is distinct from the legacy CLI's false (unsupported promotion).
+    if ($code -eq 4) { Write-Warning $said; return $null }
     if ($code -ne 0) { throw "continuum engine promote refused $name (exit $code): $said" }
     return $true
 }
@@ -291,7 +294,12 @@ function Prepare-CoreServiceEngine {
         if ($drift) { throw $drift }
         $engineReceipt = Get-CoreEngineReceipt -Directory $built
         Get-CorePublishedEngineStamp -Directory $built -Receipt $engineReceipt | Out-Null
-        if (-not (Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $built)) { throw 'Prepared CLI cannot promote the published engine.' }
+        $promoted = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $built
+        if ($null -eq $promoted) {
+            [IO.File]::WriteAllText($ReceiptPath, 'SKIP: failed engine attempt deferred; verified current engine preserved', (New-Object Text.UTF8Encoding $false))
+            return
+        }
+        if (-not $promoted) { throw 'Prepared CLI cannot promote the published engine.' }
         $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
         if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
         [IO.File]::WriteAllText($ReceiptPath, $release.engine, (New-Object Text.UTF8Encoding $false))
@@ -309,7 +317,12 @@ function Prepare-CoreServiceEngine {
         $built = Join-Path $slotRoot $name
         if (-not (Test-Path -LiteralPath (Join-Path $built 'llama-server.exe'))) { continue }
         if (Get-CoreEngineDrift -Directory $built -Requirement $requirement) { continue }
-        if (Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot $installRoot -Slot $built) {
+        $promoted = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot $installRoot -Slot $built
+        if ($null -eq $promoted) {
+            [IO.File]::WriteAllText($ReceiptPath, 'SKIP: failed engine attempt deferred; verified current engine preserved', (New-Object Text.UTF8Encoding $false))
+            return
+        }
+        if ($promoted) {
             $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
             if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
             [IO.File]::WriteAllText($ReceiptPath, (Join-Path $built 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
@@ -336,7 +349,11 @@ function Prepare-CoreServiceEngine {
     if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
     # The verified slot becomes the engine by the core's own verb, for install and unattended
     # deploy alike (card d5584dfc); install still registers it as the release's bootstrap engine.
-    $null = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
+    $promoted = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
+    if ($null -eq $promoted) {
+        [IO.File]::WriteAllText($ReceiptPath, 'SKIP: failed engine attempt deferred; verified current engine preserved', (New-Object Text.UTF8Encoding $false))
+        return
+    }
     [IO.File]::WriteAllText($ReceiptPath, (Join-Path $slot 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
 }
 

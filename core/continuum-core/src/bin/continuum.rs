@@ -180,6 +180,10 @@ async fn run() -> Result<(), CliError> {
                 eprintln!("{}", VerbError::NoIdleSlot);
                 std::process::exit(3);
             }
+            Err(VerbError::DeferredFailedAttempt(reason)) => {
+                eprintln!("{reason}");
+                std::process::exit(4);
+            }
             Err(e) => return Err(CliError::Command(e.to_string())),
         }
     }
@@ -2541,10 +2545,18 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         let selection = continuum_core::inference::engine_slots::HandoffSelection::capture(&root, Path::new(&release.engine))?;
         selected.engine_selection = Some(selection);
         let promotion = async {
-            let promoted = PreparedCoreService::prepare_engine(&repo, true).await?
-                .ok_or("published engine promotion returned no receipt")?;
-            if promoted.0 != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
-            selected.engine_selection.as_ref().ok_or("missing captured engine selection")?.confirm()
+            let promoted = PreparedCoreService::prepare_engine(&repo, true).await?;
+            if PreparedCoreService::query().await?.description != selected.task.description {
+                return Err("installed release changed during published engine preparation".into());
+            }
+            let selection = selected.engine_selection.as_ref().ok_or("missing captured engine selection")?;
+            match promoted {
+                Some((description, _)) => {
+                    if description != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
+                    selection.confirm()
+                }
+                None => selection.confirm_preserved(),
+            }
         }.await;
         if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await); }
     }
@@ -7269,6 +7281,8 @@ fn usage() -> String {
        continuum engine root                print the managed engine root\n  \
        continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
        continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
+       continuum engine attempt <slot>       inspect admitted artifact and failure disposition\n  \
+       continuum engine retry <slot> <commit:backend> <artifact-identity>\n                                       explicitly retry exactly that artifact\n  \
        continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\
      \n\
      Desktop (the core serves it; no port to remember):\n  \
