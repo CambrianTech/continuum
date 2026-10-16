@@ -47,10 +47,21 @@ pub struct TrackedDir {
     /// Scanner-clock ms (monotonic, from the scanner's own start) before which
     /// this dir is NOT walked again. 0 = due now.
     next_due_ms: AtomicU64,
+    /// Suffixes naming files this class owns beside a FILE root — a SQLite store's
+    /// `-wal`/`-shm`, a log's rotated `.1`. Declared by the class, never inferred
+    /// from a name prefix (that admitted `events.sqlite.backup`), and weighed
+    /// whether or not the root file itself exists (a log between rotation and
+    /// reopen is all predecessor). Empty for a directory class.
+    companions: &'static [&'static str],
 }
 
 impl TrackedDir {
     pub fn new(name: &'static str, path: PathBuf) -> Arc<Self> {
+        Self::with_companions(name, path, &[])
+    }
+
+    /// A class rooted at one FILE plus the companion files it owns (see `companions`).
+    pub fn with_companions(name: &'static str, path: PathBuf, companions: &'static [&'static str]) -> Arc<Self> {
         Arc::new(Self {
             name,
             path,
@@ -59,7 +70,21 @@ impl TrackedDir {
             entries: AtomicU64::new(0),
             walk_ms: AtomicU64::new(0),
             next_due_ms: AtomicU64::new(0),
+            companions,
         })
+    }
+
+    /// Everything this class holds: its root's walk plus each declared companion's.
+    pub(crate) fn walk(&self) -> TreeWalk {
+        let mut total = walk_tree(&self.path);
+        for suffix in self.companions {
+            let mut companion = self.path.as_os_str().to_owned();
+            companion.push(suffix);
+            let part = walk_tree(std::path::Path::new(&companion));
+            total.bytes = total.bytes.saturating_add(part.bytes);
+            total.entries = total.entries.saturating_add(part.entries);
+        }
+        total
     }
 
     pub fn path(&self) -> &std::path::Path {
@@ -360,10 +385,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // whichever scope spawned the daemon, here the project's `.airc`). airc owns every
         // byte; continuum weighs them so pressure names its biggest holder.
         TrackedDir::new("airc-worktrees", home.join(".airc/worktrees")),
-        // File roots weigh their family (walk_tree): the store with its -wal/-shm,
-        // the log with its rotated `.1`.
-        TrackedDir::new("airc-store", home.join(".airc/events.sqlite")),
-        TrackedDir::new("airc-daemon-log", home.join(".airc/airc-daemon.log")),
+        // File roots with the companions they own: the store's WAL and shared-memory
+        // index, the log's one rotated predecessor (airc 551fe5ae).
+        TrackedDir::with_companions("airc-store", home.join(".airc/events.sqlite"), &["-wal", "-shm"]),
+        TrackedDir::with_companions("airc-daemon-log", home.join(".airc/airc-daemon.log"), &[".1"]),
         TrackedDir::new("logs", home.join(".continuum/logs")),
         TrackedDir::new("probes", home.join(".continuum/probes")),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
@@ -422,14 +447,13 @@ pub struct TreeWalk {
 
 /// Recursive size of `path` with the count of entries visited. Same contract as
 /// [`dir_size_bytes`]: symlinks are counted as entries but never followed, an
-/// unreadable entry is skipped, a missing root is an empty walk. A FILE root names
-/// a file FAMILY: the file and every sibling file whose name extends it — a class
-/// can be one file another program keeps beside tracked directories, and its
-/// companions are its bytes too (airc's `events.sqlite` + `-wal`/`-shm`, its
-/// `airc-daemon.log` + the rotated `.1`; Codex review of #5080).
+/// unreadable entry is skipped, a missing root is an empty walk. A FILE root is its
+/// own length: a class can be one file another program keeps beside tracked
+/// directories (airc's event store in `~/.airc`); the files it owns beside it are
+/// the class's declared companions ([`TrackedDir::walk`]), never a name prefix.
 pub(crate) fn walk_tree(path: &std::path::Path) -> TreeWalk {
-    if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_file()) {
-        return walk_file_family(path);
+    if let Some(file) = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file) {
+        return TreeWalk { bytes: file.len(), entries: 1 };
     }
     let Ok(entries) = std::fs::read_dir(path) else {
         return TreeWalk::default();
@@ -446,30 +470,6 @@ pub(crate) fn walk_tree(path: &std::path::Path) -> TreeWalk {
             walk.bytes = walk.bytes.saturating_add(sub.bytes);
             walk.entries = walk.entries.saturating_add(sub.entries);
         } else {
-            walk.bytes = walk.bytes.saturating_add(meta.len());
-        }
-    }
-    walk
-}
-
-/// The file at `path` plus its sibling FILES whose names start with its name,
-/// unfollowed. Only reached for a file root (see [`walk_tree`]).
-fn walk_file_family(path: &std::path::Path) -> TreeWalk {
-    let (Some(dir), Some(stem)) = (path.parent(), path.file_name()) else {
-        return TreeWalk::default();
-    };
-    let stem = stem.to_string_lossy();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return TreeWalk::default();
-    };
-    let mut walk = TreeWalk::default();
-    for entry in entries.flatten() {
-        if !entry.file_name().to_string_lossy().starts_with(stem.as_ref()) {
-            continue;
-        }
-        walk.entries = walk.entries.saturating_add(1);
-        let Ok(meta) = entry.metadata() else { continue };
-        if meta.is_file() {
             walk.bytes = walk.bytes.saturating_add(meta.len());
         }
     }
@@ -567,11 +567,11 @@ impl Daemon for DiskUsageScanner {
             if !dir.due(self.started.elapsed().as_millis() as u64) {
                 continue;
             }
-            let path = dir.path.clone();
+            let class = dir.clone();
             // Walk on the blocking pool — a deep tree must never stall
             // the async runtime the substrate's minds run on.
             let began = Instant::now();
-            let walked = tokio::task::spawn_blocking(move || walk_tree(&path)).await;
+            let walked = tokio::task::spawn_blocking(move || class.walk()).await;
             let took = began.elapsed();
             match walked {
                 Ok(walk) => {
@@ -742,15 +742,22 @@ mod tests {
         assert_eq!(walk.bytes, 1500);
         assert_eq!(walk.entries, 3 + u64::from(cfg!(unix)));
         assert_eq!(walk_tree(std::path::Path::new("/nonexistent-xyz")), TreeWalk::default());
-        // A file root is its FAMILY: the file and the siblings its name prefixes (airc's
-        // event store + WAL, its log + rotated predecessor; card 0af5d5ec). Before,
-        // read_dir failed on a file and the class reported a false 0 B. A symlinked
-        // root stays unfollowed, and a sibling the name does not prefix is not counted.
+        // A file root is its own length; a class weighs exactly the companions it
+        // declares (card 0af5d5ec, Codex review of #5080): a rotated predecessor
+        // counts while its live file is absent, and a same-prefix file the class
+        // does not own (a backup, an unrelated `-x` file) never does. Before, read_dir
+        // failed on a file and the class reported a false 0 B.
         let family = tempfile::tempdir().expect("tempdir");
         std::fs::write(family.path().join("events.sqlite"), vec![0u8; 1000]).expect("write");
         std::fs::write(family.path().join("events.sqlite-wal"), vec![0u8; 300]).expect("write");
-        std::fs::write(family.path().join("other.sqlite"), vec![0u8; 50]).expect("write");
-        assert_eq!(walk_tree(&family.path().join("events.sqlite")), TreeWalk { bytes: 1300, entries: 2 });
+        std::fs::write(family.path().join("events.sqlite.backup"), vec![0u8; 70]).expect("write");
+        std::fs::write(family.path().join("airc-daemon.log.1"), vec![0u8; 400]).expect("write");
+        std::fs::write(family.path().join("airc-daemon.log-unrelated"), vec![0u8; 90]).expect("write");
+        assert_eq!(walk_tree(&family.path().join("events.sqlite")), TreeWalk { bytes: 1000, entries: 1 });
+        let store = TrackedDir::with_companions("airc-store", family.path().join("events.sqlite"), &["-wal", "-shm"]);
+        assert_eq!(store.walk(), TreeWalk { bytes: 1300, entries: 2 });
+        let log = TrackedDir::with_companions("airc-daemon-log", family.path().join("airc-daemon.log"), &[".1"]);
+        assert_eq!(log.walk(), TreeWalk { bytes: 400, entries: 1 }, "the predecessor counts with no live log");
         #[cfg(unix)]
         assert_eq!(walk_tree(&tmp.path().join("link.bin")), TreeWalk::default());
     }
