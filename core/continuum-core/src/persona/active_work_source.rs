@@ -235,9 +235,9 @@ impl RagSource for ActiveWorkSource {
         if claims.is_empty() && items.is_empty() {
             return Self::empty();
         }
-        // ONE card is this turn's (`work_focus`); the rest are held, not worked now —
-        // said in the line itself, so two held cards never read as two jobs at once.
-        let focus = crate::persona::work_focus::focus_card(claims.iter()).map(|c| c.card_id);
+        // Advertise the same card that selects her workspace: active work takes
+        // precedence over a retained Review claim, even when that claim is newer.
+        let focus = crate::persona::work_focus::focus_workspace_card(claims.iter()).map(|c| c.card_id);
         for card in &claims {
             let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
             // Human-readable line; structured parts also ride in metadata so
@@ -401,6 +401,39 @@ mod tests {
                 results: Mutex::new(results),
             }),
         )
+    }
+
+    #[tokio::test]
+    async fn advertised_focus_matches_workspace_with_a_newer_review_claim() {
+        let persona = Uuid::new_v4();
+        let mut active = card("active source repair");
+        active.state = CardState::InProgress;
+        let mut review = card("submitted change awaiting review");
+        review.state = CardState::Review;
+        review.last_heartbeat_at_ms = Some(active.updated_at_ms + 1);
+        let held = vec![active.clone(), review.clone()];
+        // The former projection selected the newer Review claim, unlike hands.
+        assert_eq!(crate::persona::work_focus::focus_card(&held).unwrap().card_id, review.card_id);
+        let expected = crate::persona::work_focus::focus_workspace_card(&held).unwrap().card_id;
+        assert_eq!(expected, active.card_id);
+        let src = source(persona, vec![Ok(held)]);
+        let delivered = src.deliver(&ctx(persona), 10_000, ResolutionPreference::Raw).await;
+        let focused: Vec<_> = delivered.items.iter()
+            .filter(|item| item.content.ends_with(" — THIS TURN"))
+            .collect();
+        assert_eq!(focused.len(), 1);
+        assert_eq!(focused[0].metadata["card_id"], expected.as_uuid().to_string());
+        assert!(delivered.items.iter().any(|item|
+            item.metadata["card_id"] == review.card_id.as_uuid().to_string()
+                && item.content.ends_with(" — held, not this turn")));
+
+        // Retained review remains a valid workspace focus when no active work exists.
+        active.state = CardState::Review;
+        let held = vec![active, review.clone()];
+        let src = source(persona, vec![Ok(held)]);
+        let delivered = src.deliver(&ctx(persona), 10_000, ResolutionPreference::Raw).await;
+        let focused = delivered.items.iter().find(|item| item.content.ends_with(" — THIS TURN")).unwrap();
+        assert_eq!(focused.metadata["card_id"], review.card_id.as_uuid().to_string());
     }
 
     // what this catches: the rejection-amnesia fix (the #159-family
