@@ -119,6 +119,7 @@ const MAX_DISPATCHED: usize = 16;
 /// lines in the one collapsed index (see `recent_results_with_pointers`).
 const RENDERED_RESULTS: usize = 16;
 /// The head kept for an index line of a result that has no spill handle to point at.
+// context-budget-exempt: a phrase length for one index line, the same at any window
 const INDEX_HEAD_CHARS: usize = 120;
 /// Pointer lines the collapsed index lists; older results are counted, not listed.
 const INDEX_LINES: usize = 24;

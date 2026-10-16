@@ -487,7 +487,17 @@ fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid,
 /// lines is the text itself, not its JSON escape. Any other shape goes on as compact JSON.
 pub fn result_text(value: &serde_json::Value) -> String {
     let compact = value.to_string();
-    let Some(object) = value.as_object() else { return compact };
+    // A long result with no text body (an array of cards, of matches) goes on pretty-printed:
+    // one element per lines, so its head shows the first elements and the rest pages by line.
+    // Compact, a board of 776 cards was ONE 198k-char line (the M5, 2026-10-16).
+    let pretty_when_long = |v: &serde_json::Value, compact: String| {
+        if compact.len() > PRETTY_JSON_OVER_CHARS {
+            serde_json::to_string_pretty(v).unwrap_or(compact) // unwrap_or: a value that serialized compact serializes pretty; the compact form is the fallback
+        } else {
+            compact
+        }
+    };
+    let Some(object) = value.as_object() else { return pretty_when_long(value, compact) };
     let Some((body_key, body)) = object
         .iter()
         .filter_map(|(k, v)| v.as_str().map(|s| (k, s)))
@@ -496,7 +506,7 @@ pub fn result_text(value: &serde_json::Value) -> String {
         return compact;
     };
     if body.len() * 2 < compact.len() || !body.contains('\n') {
-        return compact;
+        return pretty_when_long(value, compact);
     }
     let mut head = serde_json::Map::new();
     for (k, v) in object {
@@ -507,6 +517,11 @@ pub fn result_text(value: &serde_json::Value) -> String {
     head.insert(body_key.clone(), serde_json::Value::String(format!("<{} lines below>", body.lines().count())));
     format!("{}\n{body}", serde_json::Value::Object(head))
 }
+
+/// A result with no text body longer than this goes on pretty-printed (see [`result_text`]).
+// context-budget-exempt: a readability threshold, not a window bound: compact JSON past a
+// couple of thousand chars is one unreadable line at any window
+const PRETTY_JSON_OVER_CHARS: usize = 2_000;
 
 /// A spilled result's shown head takes this fraction of the one-result share: the share
 /// itself is what the mind's view holds for a result, and the pointer plus a quarter of it
