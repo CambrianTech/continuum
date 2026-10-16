@@ -2351,6 +2351,17 @@ pub(crate) fn engine_condemned() -> bool {
     SERVING_STATE.get().is_some_and(|rx| !rx.borrow().ready)
 }
 
+/// Capability discovery uses the same bounded props read as the managed lane.
+pub(crate) async fn engine_props(root: &str, client: &reqwest::Client) -> Result<serde_json::Value, LlamaServerError> {
+    let response = client.get(format!("{}/props", root.trim_end_matches('/')))
+        .timeout(PROBE_TIMEOUT).send().await
+        .map_err(|error| LlamaServerError::Unreachable(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(LlamaServerError::Unreachable(format!("status {}", response.status())));
+    }
+    response.json().await.map_err(|error| LlamaServerError::Unreachable(error.to_string()))
+}
+
 pub(crate) async fn engine_probe(root: &str, client: &reqwest::Client) -> EngineProbe {
     if engine_condemned() {
         return EngineProbe::Condemned;
@@ -4143,23 +4154,7 @@ impl LlamaServerProcess {
     }
 
     async fn props_json(&self) -> Result<serde_json::Value, LlamaServerError> {
-        let url = format!("{}/props", self.root);
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(PROBE_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(LlamaServerError::Unreachable(format!(
-                "status {}",
-                resp.status()
-            )));
-        }
-        resp.json()
-            .await
-            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))
+        engine_props(&self.root, &self.client).await
     }
 
     /// Where the weights were ALLOCATED, from `/props` (`model_weight_buffers`).

@@ -569,11 +569,13 @@ impl OpenAICompatibleAdapter {
         let dir = crate::inference::slots::directory();
         // Fast path: this server's state already known (process-global directory —
         // every adapter instance talking to the same server shares ONE assignment).
-        match dir.get(root) {
-            Some(Some(pool)) => return Some(pool),
+        let existing_pool = match dir.get(root) {
+            Some(Some(pool)) if dir.page_admission_known(root) => return Some(pool),
+            Some(Some(pool)) => Some(pool),
             Some(None) => return None, // latched unsupported
-            None => {}                 // never probed — probe below
-        }
+            None => None,              // never probed — probe below
+        };
+        let discovery_generation = dir.page_discovery_generation(root);
         // Probe /props once. Lock is NOT held across the await.
         let url = endpoints.props();
         let resp = match self.client.get(&url).send().await {
@@ -643,14 +645,20 @@ impl OpenAICompatibleAdapter {
             // Missing geometry is not proof that activity paging is unsupported.
             return None;
         }
+        if dir.page_discovery_generation(root) != discovery_generation {
+            return None; // props belongs to the superseded process, not its replacement
+        }
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
-        let pool = dir.ensure_pool(root, n_slots);
+        let pool = existing_pool.clone().unwrap_or_else(|| dir.ensure_pool(root, n_slots));
+        if pool.n_slots() != n_slots {
+            return None; // installed geometry and this props response must agree
+        }
         // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
         // so its confirmed saves come from the ledger it left, when that ledger names this
-        // very process. A spawned engine already attached its own at readiness and returned
-        // on the fast path above, so this only runs for an engine this core did not spawn.
-        let adoption = match crate::inference::lane_registry::live_lane() {
+        // very process. A spawned engine already attached its own at readiness;
+        // its first capability probe must not pretend it adopted another ledger.
+        let adoption = if existing_pool.is_some() { Err("pool_already_installed") } else { match crate::inference::lane_registry::live_lane() {
             None => Err("no_live_lane_record"),
             Some(lane) if lane.root_url() != root.trim_end_matches('/') => Err("live_lane_is_another_root"),
             Some(lane) if crate::inference::engine_residency::process_start_s(lane.pid) != Some(lane.started_s) => {
@@ -666,7 +674,7 @@ impl OpenAICompatibleAdapter {
                         .map_err(crate::inference::slots::AdoptRefusal::as_str)
                 }
             },
-        };
+        }};
         crate::probe!(
             class = "inference.kv_page.ledger_adopted",
             adopted = adoption.is_ok(),
@@ -674,6 +682,9 @@ impl OpenAICompatibleAdapter {
             why = adoption.err().unwrap_or("adopted"), // probe field: the refusal, or "adopted" when the ledger was the engine's
             "an adopted engine's confirmed-save ledger: its saved pages are restorable only when the ledger names this same process"
         );
+        if !dir.negotiate_page_admission(root, &pool, discovery_generation, body.get("slot_save_size_version")).await {
+            return None;
+        }
         tracing::info!(
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"
@@ -2937,9 +2948,12 @@ mod tests {
         let generate_log = Arc::clone(&operations);
         let generate_mode = Arc::clone(&generation_mode);
         let generate_release = Arc::clone(&release_stream);
+        let props_slots = Arc::new(AtomicU8::new(2));
+        let advertised_slots = Arc::clone(&props_slots);
         let app = Router::new()
-            .route("/props", get(|| async {
-                Json(json!({"total_slots": 1, "default_generation_settings": {"n_ctx": 8192}}))
+            .route("/props", get(move || {
+                let slots = advertised_slots.load(Ordering::SeqCst);
+                async move { Json(json!({"total_slots": slots, "default_generation_settings": {"n_ctx": 8192}})) }
             }))
             .route("/slots/{slot}", post(move |
                 Query(query): Query<std::collections::HashMap<String, String>>,
@@ -3018,6 +3032,12 @@ mod tests {
             engine: "fixture-engine".into(), revisions: None,
         }).expect("fixture owned engine readiness");
         drop(transition);
+        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_none(),
+            "props cannot authorize an already installed pool with different geometry");
+        assert!(!crate::inference::slots::directory().page_admission_known(&root));
+        props_slots.store(1, Ordering::SeqCst);
+        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_some());
+        assert!(crate::inference::slots::directory().page_admission_known(&root));
         let owned_geometry = endpoint.served_geometry().expect("fixture owned geometry");
         let observed_service = || crate::cognition::resource_admission::leased_in_sent_samples()
             .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
