@@ -405,12 +405,12 @@ pub fn recheck_resource_deferral(
     pending: &mut Option<(String, ResourceDeferral)>,
     measured: Result<(), PublishedCoreError>,
 ) -> Option<MissingArtifact> {
-    let (key, _) = pending.as_ref()?;
+    let (key, condition) = pending.as_mut()?;
     match measured {
         Ok(()) => { *pending = None; None }
         Err(PublishedCoreError::ResourceDeferred(next)) => {
             let why = format!("published build {key} awaits resource admission: {}", next.reason);
-            pending.as_mut().expect("pending checked above").1 = next;
+            *condition = next;
             Some(MissingArtifact::Wait(why))
         }
         Err(PublishedCoreError::Artifact(reason)) => Some(MissingArtifact::Refuse(reason)),
