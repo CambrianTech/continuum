@@ -459,6 +459,12 @@ mod tests {
         let escaped = render_pointer_invocations([&shell], &budget);
         assert!(!escaped.chars().any(char::is_control));
         assert!(escaped.contains("日本語") && escaped.contains("\\n") && escaped.contains("\\\""));
+        let control_key = call("code/read", serde_json::Value::Object(serde_json::Map::from_iter([
+            ("\n".repeat(budget.trail_head_chars()), serde_json::json!("x")),
+        ])));
+        let expanded = render_pointer_invocations([&control_key], &budget);
+        assert!(expanded.chars().count() <= budget.trail_head_chars(), "escaping is charged before clipping");
+        assert!(!expanded.chars().any(char::is_control));
         let large = call("code/write", args);
         let folded = render_pointer_invocations([&large], &budget);
         assert!(folded.contains("chars, #") && folded.contains("sympy/core/basic.py"));
