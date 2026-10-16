@@ -2360,7 +2360,15 @@ where
     PF: std::future::Future<Output = EngineProbe>,
 {
     tokio::pin!(work);
-    let mut last = match progress().await {
+    // A probe is observation, never a suspension of the request it observes.
+    // In particular a terminal HTTP receipt wins over a simultaneous stale
+    // probe verdict; otherwise paging can quarantine work that already finished.
+    let initial = tokio::select! {
+        biased;
+        done = &mut work => return Some(done),
+        observed = progress() => observed,
+    };
+    let mut last = match initial {
         EngineProbe::Progress(p) => Some(p.fingerprint),
         EngineProbe::Busy | EngineProbe::Unreachable | EngineProbe::Condemned => None,
     };
@@ -2368,9 +2376,15 @@ where
     let mut quiet_in_a_row: u32 = 0;
     loop {
         tokio::select! {
+            biased;
             done = &mut work => return Some(done),
             _ = tokio::time::sleep(bound) => {
-                match progress().await {
+                let observed = tokio::select! {
+                    biased;
+                    done = &mut work => return Some(done),
+                    observed = progress() => observed,
+                };
+                match observed {
                     EngineProbe::Unreachable => return None,
                     EngineProbe::Condemned => {
                         crate::probe!(
@@ -6582,6 +6596,33 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_header_wait_rides_a_moving_engine_and_ends_on_a_quiet_one() {
         let bound = std::time::Duration::from_secs(300);
+        // Card 198ffe08: a slow initial/checkpoint probe must not stop polling
+        // work or discard its terminal receipt when the probe later reports dead.
+        for slow_initial in [true, false] {
+            let mut calls = 0;
+            let slow_probe = || {
+                calls += 1;
+                let slow = slow_initial || calls > 1;
+                async move {
+                    if slow {
+                        tokio::time::sleep(bound * 3).await;
+                        EngineProbe::Unreachable
+                    } else {
+                        EngineProbe::Busy
+                    }
+                }
+            };
+            let completes_after = if slow_initial { bound / 2 } else { bound + bound / 2 };
+            let work = async {
+                tokio::time::sleep(completes_after).await;
+                "terminal receipt"
+            };
+            let started = tokio::time::Instant::now();
+            assert_eq!(wait_while_engine_progresses(work, bound, 1, slow_probe, |_| {}).await,
+                Some("terminal receipt"));
+            assert_eq!(started.elapsed(), completes_after,
+                "completion must not wait for the unrelated probe deadline");
+        }
         let moving = std::sync::atomic::AtomicU64::new(0);
         let advancing = || {
             let n = moving.fetch_add(2048, std::sync::atomic::Ordering::Relaxed);
