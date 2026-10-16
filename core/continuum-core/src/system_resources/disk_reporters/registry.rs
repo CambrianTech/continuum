@@ -877,8 +877,16 @@ mod tests {
         drop(first);
         let restarted = Registry::new(boot()).await;
         restarted.open_records(adapter).await.unwrap();
-        assert_eq!(restarted.snapshot().iter().find(|dir| dir.path() == later.path().canonicalize().unwrap())
-            .unwrap().citizen(), Some(citizen), "restart retains the eviction's hands gate");
+        let restored_child = restarted.snapshot().into_iter()
+            .find(|dir| dir.path() == later.path().canonicalize().unwrap()).unwrap();
+        assert_eq!(restored_child.citizen(), Some(citizen), "restart retains the eviction's hands gate");
+        restored_child.set_bytes(4096);
+        let eviction = restored_child.eviction_custody();
+        assert!(restarted.observe_citizen_target(later.path(), citizen).await.is_err());
+        assert_eq!(super::super::disk_pressure::DiskReporter::report(restored_child.as_ref()).bytes, 0,
+            "a failed update of an already restored child cannot double charge the inclusive parent");
+        assert_eq!(restored_child.bytes(), 4096);
+        drop(eviction);
         assert_eq!(
             restarted.snapshot().len(),
             2,
