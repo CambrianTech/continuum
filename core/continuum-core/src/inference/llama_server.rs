@@ -114,6 +114,69 @@ fn ready_budget(base: Duration, loading_and_alive: bool) -> Duration {
     }
 }
 
+/// Measured loading work for one owned child. Labels and repeated samples do not
+/// renew the existing quiet allowance. After the last measured advance (including
+/// a stage reaching 1.0), unmeasured context initialization and warmup must finish
+/// within that same quiet allowance; a future shorter allowance must cover that tail.
+#[derive(Default)]
+struct ReadyLoadProgress {
+    stages: Vec<String>,
+    high: Vec<f64>,
+    last_advanced: Duration,
+}
+
+/// Existing native load callback snapshot carried by the health response.
+#[derive(serde::Deserialize)]
+struct LoadProgressSample {
+    pid: u32,
+    stages: Vec<String>,
+    current: String,
+    value: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct LoadingHealth {
+    load_progress: Option<LoadProgressSample>,
+}
+
+impl ReadyLoadProgress {
+    fn observe(&mut self, sample: &LoadProgressSample, pid: u32, elapsed: Duration) -> bool {
+        if sample.pid != pid {
+            return false;
+        }
+        let stages = &sample.stages;
+        let Some(stage) = stages.iter().position(|name| name == &sample.current) else {
+            return false;
+        };
+        if stages.iter().any(|name| name.is_empty())
+            || stages
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != stages.len()
+        {
+            return false;
+        }
+        if self.stages.is_empty() {
+            self.stages = stages.clone();
+            self.high = vec![0.0; stages.len()];
+        } else if self.stages != *stages {
+            return false;
+        }
+        let value = sample.value;
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) || value <= self.high[stage] {
+            return false;
+        }
+        self.high[stage] = value;
+        self.last_advanced = elapsed;
+        true
+    }
+
+    fn stalled(&self, elapsed: Duration, allowance: Duration) -> bool {
+        elapsed.saturating_sub(self.last_advanced) >= allowance
+    }
+}
+
 /// Poll cadence while waiting for `/health`. 503 → still loading, keep waiting.
 const READY_POLL: Duration = Duration::from_millis(500);
 
@@ -4369,6 +4432,21 @@ impl LlamaServerProcess {
         };
         let health = format!("{}/health", self.root);
         let started = Instant::now();
+        let owned_loading = {
+            let child = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic mutating the owned child.
+            child.as_ref().and_then(|owned| {
+                owned.child.id().map(|pid| {
+                    (
+                        OwnedEngineIdentity {
+                            owner: Arc::downgrade(&self.child),
+                            generation: owned.generation.clone(),
+                        },
+                        pid,
+                    )
+                })
+            })
+        };
+        let mut progress = ReadyLoadProgress::default();
         // Assigned by every arm below before the deadline check reads it.
         let mut last: String;
         // Sticky: once the server has said it is loading, the finish of that load (the 200
@@ -4386,8 +4464,30 @@ impl LlamaServerProcess {
                     last = String::from("/health 200 but decode smoke-probe failed");
                 }
                 Ok(resp) => {
-                    seen_loading |= resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE;
+                    let loading = resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE;
+                    seen_loading |= loading;
                     last = format!("status {}", resp.status());
+                    if loading {
+                        if let Some((expected, pid)) = &owned_loading {
+                            if let Ok(LoadingHealth {
+                                load_progress: Some(sample),
+                            }) = resp.json::<LoadingHealth>().await
+                            {
+                                if self.owned_engine().as_ref() == Some(expected)
+                                    && progress.observe(&sample, *pid, started.elapsed())
+                                {
+                                    crate::probe!(
+                                        class = "serving.load.progress",
+                                        pid = *pid,
+                                        elapsed_ms = started.elapsed().as_millis() as u64,
+                                        stage = %sample.current,
+                                        value = sample.value,
+                                        "owned model loading made measured progress; retaining the existing stall allowance"
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => last = e.to_string(),
             }
@@ -4405,7 +4505,7 @@ impl LlamaServerProcess {
                 )));
             }
             let budget = ready_budget(budget, seen_loading && self.owns_child());
-            if started.elapsed() >= budget {
+            if progress.stalled(started.elapsed(), budget) {
                 // Even a non-exiting HANG now surfaces the stderr state: an empty log
                 // fingerprints "child emitted nothing before it stopped" — the diagnostic
                 // that was missing when this masked as a bare 240s /health timeout. The
@@ -4415,8 +4515,12 @@ impl LlamaServerProcess {
                 // (no exit status). Glass-boxed 2026-07-28: a second 24B eval lane co-resident
                 // with the live 24B lane was jetsam-killed with 9.6 GB free.
                 return Err(LlamaServerError::NotReady(
-                    budget,
-                    format!("{last} — last stderr:\n{}", self.stderr_log_tail()),
+                    started.elapsed(),
+                    format!(
+                        "{last}; measured load progress quiet for {:?} (allowance {budget:?}) — last stderr:\n{}",
+                        started.elapsed().saturating_sub(progress.last_advanced),
+                        self.stderr_log_tail()
+                    ),
                 ));
             }
             tokio::time::sleep(READY_POLL).await;
@@ -4519,10 +4623,11 @@ pub enum LaneAdmission {
 /// `resident` is the verified-live ephemeral census at decision time — the authority
 /// never has to re-derive it, and cannot disagree with the caller about what is
 /// already running.
-pub type LaneAdmissionAuthority =
-    Arc<dyn Fn(&ServingTarget, &[crate::inference::lane_registry::LaneRecord]) -> LaneAdmission
+pub type LaneAdmissionAuthority = Arc<
+    dyn Fn(&ServingTarget, &[crate::inference::lane_registry::LaneRecord]) -> LaneAdmission
         + Send
-        + Sync>;
+        + Sync,
+>;
 
 static LANE_ADMISSION: OnceLock<LaneAdmissionAuthority> = OnceLock::new();
 
@@ -4928,7 +5033,10 @@ impl LlamaServerControl for LlamaServerProcess {
 
     async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
         let body = self.props_json().await?;
-        Ok(body.get("build_info").and_then(|v| v.as_str()).map(str::to_string))
+        Ok(body
+            .get("build_info")
+            .and_then(|v| v.as_str())
+            .map(str::to_string))
     }
 
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
@@ -8293,12 +8401,61 @@ mod tests {
     #[test]
     fn a_loading_engine_of_ours_is_not_a_failed_one() {
         assert_eq!(ready_budget(READY_TIMEOUT, true), EPHEMERAL_READY_TIMEOUT);
-        assert!(ready_budget(READY_TIMEOUT, true) > Duration::from_secs(92), "the measured first load fits");
-        assert_eq!(ready_budget(READY_TIMEOUT, false), READY_TIMEOUT, "silence or an adopted process keeps the tight budget");
+        assert!(
+            ready_budget(READY_TIMEOUT, true) > Duration::from_secs(92),
+            "the measured first load fits"
+        );
+        assert_eq!(
+            ready_budget(READY_TIMEOUT, false),
+            READY_TIMEOUT,
+            "silence or an adopted process keeps the tight budget"
+        );
         assert_eq!(
             ready_budget(EPHEMERAL_READY_TIMEOUT, true),
             EPHEMERAL_READY_TIMEOUT,
             "never shorter than the caller's own budget"
+        );
+        // Regression: total cold load may exceed 240s while measured work advances.
+        // Repeated 503, stage labels, wrong children and warmup silence earn no time.
+        assert!(
+            serde_json::from_str::<LoadingHealth>(r#"{"error":{"code":503}}"#)
+                .expect("older engine health shape")
+                .load_progress
+                .is_none()
+        );
+        assert!(
+            serde_json::from_str::<LoadingHealth>(r#"{"load_progress":{"pid":"wrong"}}"#).is_err()
+        );
+        let mut progress = ReadyLoadProgress::default();
+        let sample = |pid, current, value| {
+            serde_json::from_value::<LoadProgressSample>(serde_json::json!({
+                "pid": pid, "stages": ["weights", "vision"], "current": current, "value": value,
+            }))
+            .expect("native snapshot shape")
+        };
+        let seconds = Duration::from_secs;
+        assert!(!progress.observe(&sample(7, "weights", 0.0), 7, seconds(100)));
+        assert!(progress.stalled(seconds(240), EPHEMERAL_READY_TIMEOUT));
+        assert!(progress.observe(&sample(7, "weights", 0.5), 7, seconds(200)));
+        assert!(!progress.stalled(seconds(300), EPHEMERAL_READY_TIMEOUT));
+        assert!(!progress.observe(&sample(7, "weights", 0.5), 7, seconds(300)));
+        assert!(!progress.observe(&sample(7, "weights", 0.4), 7, seconds(300)));
+        assert!(!progress.observe(&sample(8, "weights", 1.0), 7, seconds(300)));
+        assert!(!progress.observe(&sample(7, "vision", 0.0), 7, seconds(300)));
+        assert!(!progress.observe(&sample(7, "vision", 1.1), 7, seconds(300)));
+        let mut changed = sample(7, "vision", 0.5);
+        changed.stages.reverse();
+        assert!(!progress.observe(&changed, 7, seconds(300)));
+        assert_eq!(
+            progress.last_advanced,
+            seconds(200),
+            "rejected samples cannot renew the allowance"
+        );
+        assert!(progress.observe(&sample(7, "vision", 1.0), 7, seconds(400)));
+        assert!(!progress.stalled(seconds(639), EPHEMERAL_READY_TIMEOUT));
+        assert!(
+            progress.stalled(seconds(640), EPHEMERAL_READY_TIMEOUT),
+            "unmeasured warmup stays bounded"
         );
     }
 
