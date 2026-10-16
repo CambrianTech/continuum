@@ -273,6 +273,14 @@ impl Confinement {
             }
         }
 
+        // HER WORKTREE'S GIT. A card checkout is a `git worktree`: its `.git` is a FILE naming a
+        // gitdir under the main checkout's `.git/worktrees/<card>`, whose `commondir` names the
+        // main `.git` (objects, refs, packed-refs, locks). Git reads and writes both on every
+        // command. Without them `git status` in her own worktree answered "fatal: not a git
+        // repository: …/.git/worktrees/cc2db61d" while her `test -e` on that path said EXISTS
+        // (Benchy, M5, 2026-10-16): every confined citizen's git had been dead since
+        // confinement landed (#4882, 10/9), so no citizen could commit or push.
+        write.extend(worktree_git_dirs(&self.workspace));
         let mut read: Vec<PathBuf> = READABLE_HOME_ENTRIES.iter().map(|e| home.join(e)).collect();
         // `~/.continuum`, minus the citizens' directories (hers is a write root above),
         // the shared cache (a write root above) and the core's secrets.
@@ -303,6 +311,40 @@ impl Confinement {
         AllowList { write, read, deny }
     }
 
+}
+
+/// The gitdir and common dir a `git worktree` checkout's `.git` FILE names, both physical.
+/// Empty for a checkout whose `.git` is a directory (its git lives inside the workspace), for
+/// a workspace that is no checkout, and for a `.git` file whose link is not git's own: git
+/// writes the back-pointer `<gitdir>/gitdir` naming this checkout's `.git`, and a `.git` file
+/// she wrote herself pointing at another repository's `.git` cannot plant that back-pointer
+/// there (she cannot write outside her roots), so it grants nothing.
+fn worktree_git_dirs(workspace: &Path) -> Vec<PathBuf> {
+    let physical = crate::paths::cargo::physical_root;
+    let dot_git = workspace.join(".git");
+    let Ok(pointer) = std::fs::read_to_string(&dot_git) else {
+        return Vec::new(); // a directory (or nothing): no gitdir outside the workspace
+    };
+    let Some(gitdir) = pointer.trim().strip_prefix("gitdir:").map(str::trim) else {
+        return Vec::new();
+    };
+    let (Ok(gitdir), Ok(dot_git)) = (physical(&workspace.join(gitdir)), physical(&dot_git)) else {
+        return Vec::new();
+    };
+    let back = std::fs::read_to_string(gitdir.join("gitdir"))
+        .ok()
+        .and_then(|p| physical(Path::new(p.trim())).ok());
+    if back.as_deref() != Some(dot_git.as_path()) {
+        return Vec::new();
+    }
+    let mut dirs = vec![gitdir.clone()];
+    // The common dir is the `.git` this gitdir lives in (`<common>/worktrees/<name>`).
+    let common = std::fs::read_to_string(gitdir.join("commondir"))
+        .ok()
+        .and_then(|c| physical(&gitdir.join(c.trim())).ok())
+        .filter(|c| gitdir.starts_with(c) && c.file_name().is_some_and(|n| n == ".git"));
+    dirs.extend(common);
+    dirs
 }
 
 /// Replace every granted root that CONTAINS a carve-out by its children minus the
@@ -650,6 +692,10 @@ mod tests {
         assert!(!ok("Development/continuum/Cargo.toml"), "the operator's own checkout");
         // write vs read
         assert!(list.write.contains(&card_worktree), "her workspace is writable");
+        assert!(
+            !list.write.iter().any(|w| w.ends_with(".git")),
+            "a workspace with no git worktree link grants no .git outside it"
+        );
         assert!(list.write.iter().any(|w| w.ends_with(".cargo")), "a build writes the registry");
         assert!(!list.write.iter().any(|w| w.ends_with(".zshrc") || w.ends_with("models") || w.ends_with("miniconda3")), "rc files, models and installs are read-only");
 
@@ -713,6 +759,44 @@ mod tests {
         assert!(!p.contains(&format!("(subpath \"{}\"))", h.join(".cache/huggingface").display())), "the root holding a carve-out is granted by its children, never whole:\n{p}");
         assert!(!list.write.iter().chain(list.read.iter()).any(|r| r.ends_with("huggingface")), "same on the allow-only side");
         assert!(!p.contains("file* "), "never the wildcard class: a deny in it loses to an earlier specific allow\n{p}");
+    }
+
+    // what this catches: her card worktree's git being dead under confinement (Benchy, M5,
+    // 2026-10-16: "fatal: not a git repository: …/.git/worktrees/cc2db61d"). A worktree's
+    // `.git` FILE names a gitdir under the main checkout's `.git`, whose commondir is that
+    // `.git`; both are granted for write when git's own back-pointer names this checkout, and
+    // a forged `.git` file (no back-pointer she can write) grants nothing.
+    #[test]
+    fn a_card_worktree_gets_its_gitdir_and_common_dir_and_a_forged_link_gets_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let h = tmp.path().join("home");
+        let me = uuid::Uuid::new_v4();
+        let main_git = h.join("Development/repo/.git");
+        let worktree = h.join(".airc/worktrees/ab12cd34");
+        let gitdir = main_git.join("worktrees/ab12cd34");
+        std::fs::create_dir_all(&gitdir).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", gitdir.display())).unwrap();
+        std::fs::write(gitdir.join("gitdir"), format!("{}\n", worktree.join(".git").display())).unwrap();
+        std::fs::write(gitdir.join("commondir"), "../..\n").unwrap();
+        let list = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &worktree).materialize();
+        let physical = |p: &Path| std::fs::canonicalize(p).unwrap();
+        assert!(list.write.contains(&physical(&gitdir)), "the worktree's gitdir is writable: {:?}", list.write);
+        assert!(list.write.contains(&physical(&main_git)), "the common .git is writable: {:?}", list.write);
+        assert!(!list.write.iter().any(|w| *w == physical(&h)), "never the home");
+
+        // Forged: her `.git` file points at the operator's other repository, which carries
+        // no back-pointer to her checkout.
+        let other_git = h.join("Documents/resume/.git");
+        std::fs::create_dir_all(other_git.join("worktrees/ab12cd34")).unwrap();
+        std::fs::write(other_git.join("worktrees/ab12cd34/commondir"), "../..\n").unwrap();
+        std::fs::write(worktree.join(".git"), format!("gitdir: {}\n", other_git.join("worktrees/ab12cd34").display())).unwrap();
+        let forged = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &worktree).materialize();
+        assert!(
+            !forged.write.iter().any(|w| w.starts_with(physical(&other_git.parent().unwrap()))),
+            "a forged link grants nothing of the other repository: {:?}",
+            forged.write
+        );
     }
 
     // what this catches (the M5 incident, kernel-level): with the profile applied, a
