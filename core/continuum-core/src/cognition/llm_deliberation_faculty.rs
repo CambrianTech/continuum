@@ -3632,7 +3632,7 @@ impl LlmDeliberationFaculty {
         // Text-only lower bound, calibrated by the provider's measured prompt
         // count. Never count base64 characters as image tokens. Native images
         // require the finalized-body image quote before local generation.
-        let tokens = super::token_budget::estimate_message_content_tokens(&message.content) as usize;
+        let tokens = super::token_budget::estimate_message_content_tokens(&message.content, est_tokens);
         tokens + Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
@@ -8480,6 +8480,13 @@ mod tests {
             assert!(wire[call_at + 1]["content"].as_str().unwrap().contains(needle));
             let prompt = faculty.messages_unfitted(&ws, None);
             let required = prompt.required_tokens();
+            // Preserve the conservative guard, including UTF-8 bytes: structured
+            // traversal must not substitute RAG's chars/4 pricing policy.
+            let guard_text = format!("{grep_result}日本語訳");
+            assert_eq!(
+                LlmDeliberationFaculty::message_cost(&ChatMessage::user(&guard_text)),
+                est_tokens(&guard_text) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS,
+            );
             assert!(required >= est_tokens(&grep_result));
             assert!(faculty.fit_messages(prompt, required - 1).is_err(), "native pair cannot be split under pressure");
             let fitted = faculty.fit_messages(faculty.messages_unfitted(&ws, None), required).unwrap();

@@ -30,24 +30,28 @@ pub fn estimate_prompt_tokens(content: &str) -> u32 {
     ((content.chars().count() / 4) as u32).saturating_add(1)
 }
 
-/// Structured textual lower bound; media payload bytes are not text tokens.
-/// The finalized provider-body quote owns actual media/template cost.
-pub fn estimate_message_content_tokens(content: &crate::ai::types::MessageContent) -> u32 {
+/// Traverse structured textual payloads using the caller's existing pricing policy.
+/// Deliberation's conservative guard and RAG's relative estimate have different
+/// units; preserving that policy avoids silently recalibrating existing text.
+/// Media bytes are excluded; the finalized provider quote owns media/template cost.
+pub fn estimate_message_content_tokens(
+    content: &crate::ai::types::MessageContent,
+    estimate: impl Fn(&str) -> usize,
+) -> usize {
     use crate::ai::types::{ContentPart, MessageContent};
     match content {
-        MessageContent::Text(text) => estimate_prompt_tokens(text),
-        MessageContent::Parts(parts) => parts.iter().fold(0u32, |total, part| {
+        MessageContent::Text(text) => estimate(text),
+        MessageContent::Parts(parts) => parts.iter().fold(0usize, |total, part| {
             let tokens = match part {
-                ContentPart::Text { text } => estimate_prompt_tokens(text),
-                ContentPart::ToolUse { id, name, input } => estimate_prompt_tokens(id)
-                    .saturating_add(estimate_prompt_tokens(name))
-                    .saturating_add(estimate_prompt_tokens(&input.to_string())),
+                ContentPart::Text { text } => estimate(text),
+                ContentPart::ToolUse { id, name, input } => estimate(id)
+                    .saturating_add(estimate(name))
+                    .saturating_add(estimate(&input.to_string())),
                 ContentPart::ToolResult {
                     tool_use_id,
                     content,
                     ..
-                } => estimate_prompt_tokens(tool_use_id)
-                    .saturating_add(estimate_prompt_tokens(content)),
+                } => estimate(tool_use_id).saturating_add(estimate(content)),
                 ContentPart::Image { .. }
                 | ContentPart::Audio { .. }
                 | ContentPart::Video { .. } => 0,
@@ -193,8 +197,8 @@ mod tests {
             },
         ]);
         assert!(
-            estimate_message_content_tokens(&parts)
-                > estimate_prompt_tokens(&"payload".repeat(100))
+            estimate_message_content_tokens(&parts, |text| estimate_prompt_tokens(text) as usize)
+                > estimate_prompt_tokens(&"payload".repeat(100)) as usize
         );
         let pixels = MessageContent::Parts(vec![ContentPart::Image {
             image: ImageInput {
@@ -204,7 +208,7 @@ mod tests {
             },
         }]);
         assert_eq!(
-            estimate_message_content_tokens(&pixels),
+            estimate_message_content_tokens(&pixels, |text| estimate_prompt_tokens(text) as usize),
             0,
             "base64 is not text; finalized provider quote prices pixels"
         );
