@@ -1247,6 +1247,7 @@ mod tests {
     /// scale math would silently reintroduce the scale=20 destabilization.
     #[test]
     fn native_dry_run_resolves_spec_with_scale_from_alpha_over_rank() {
+        let _home = crate::test_env::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         let home = std::env::var("HOME").unwrap_or_default();
         let p: ForgeTrainParams = serde_json::from_value(json!({
             "dataset_path": "/unused.jsonl",

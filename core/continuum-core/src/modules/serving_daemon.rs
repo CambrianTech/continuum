@@ -9944,6 +9944,7 @@ pub(crate) mod tests {
     // would otherwise serve launches nothing; once the binding is released it proceeds.
     #[tokio::test]
     async fn an_engine_bound_to_live_work_is_never_replaced_under_it() {
+        let _home = crate::test_env::HomeGuard::preserve().await; // reads the process home a guarded fixture may be swapping (card cb3221a5)
         use crate::inference::engine_residency::{record, release, store_path, EngineIncarnation, ResidentWork};
         let serves = Arc::new(AtomicUsize::new(0));
         let mut daemon = daemon_with(Arc::new(FakeServer::healthy(serves.clone(), true)));

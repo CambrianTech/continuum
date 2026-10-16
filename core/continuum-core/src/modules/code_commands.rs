@@ -2227,6 +2227,7 @@ mod tests {
     // NOT confined. The decision is the gate's trust, never a params field.
     #[test]
     fn a_citizen_is_confined_to_her_workspace_and_the_operator_is_not() {
+        let _home = crate::test_env::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
         let ws = tempfile::tempdir().expect("test: ws");
         assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
         let persona = uuid::Uuid::from_u128(0xC1);

@@ -16,6 +16,11 @@
 //! drop, panic included. Real-toolchain fixtures use [`HomeGuard::preserve`]
 //! instead: rustup must inherit the installed home, not another fixture's tempdir.
 //! Acquire once at the fixture boundary; guards are exclusive, not reentrant.
+//!
+//! The same lock serializes every test that mutates OTHER process environment too (e.g.
+//! `CONTINUUM_PROBE_DIR`/`CONTINUUM_PROBE_CLASSES`), with [`HomeGuard::preserve_blocking`]:
+//! one env lock, not one per variable, or two tests restoring each other's saved values
+//! interleave (card cb3221a5).
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
@@ -39,6 +44,18 @@ impl HomeGuard {
         Self {
             prior: Vec::new(),
             _lock: HOME_ENV.clone().lock_owned().await,
+        }
+    }
+
+    /// [`preserve`](Self::preserve) for a sync test: hold the restored process home
+    /// unchanged while the test reads it. A test that READS the home a guarded fixture
+    /// may be swapping (`continuum_home`, `HOME`) needs this as much as a writer needs
+    /// [`set_blocking`](Self::set_blocking): unguarded, it races the swap (card cb3221a5).
+    /// Panics inside an async runtime, as `set_blocking` does.
+    pub(crate) fn preserve_blocking() -> Self {
+        Self {
+            prior: Vec::new(),
+            _lock: HOME_ENV.clone().blocking_lock_owned(),
         }
     }
 
