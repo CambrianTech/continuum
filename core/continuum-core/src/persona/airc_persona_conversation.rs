@@ -1322,6 +1322,7 @@ mod tests {
         let release = airc_work::WorkEvent::ClaimReleased(airc_work::ClaimReleased {
             card_id, claim_id, owner: airc_core::PeerId::from_uuid(peer),
             reason: Some("work remains available".into()), released_at_ms: 1,
+            taken_over_from: Some(airc_core::PeerId::from_uuid(own)),
         });
         let mut released = event("");
         let (headers, body) = airc_work::encode_work_event(&release).unwrap();
