@@ -68,6 +68,7 @@ type Resolution =
     futures::future::Shared<futures::future::BoxFuture<'static, Result<Observation, String>>>;
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum PathWork {
+    ResolveExisting,
     Resolve,
     Validate(crate::code::confinement::Confinement),
     Prepare(crate::code::confinement::Confinement),
@@ -193,6 +194,7 @@ impl Registry {
                                 })?;
                             }
                             let physical = match &work {
+                                PathWork::ResolveExisting => std::fs::canonicalize(&path).map_err(|error| format!("cannot resolve existing storage {}: {error}", path.display())),
                                 PathWork::Resolve | PathWork::Observe | PathWork::Empty => {
                                     crate::paths::cargo::physical_root(&path)
                                 }
@@ -503,6 +505,12 @@ pub async fn restore_cargo_roots(adapter: Arc<dyn StorageAdapter>) -> Result<(),
     Ok(())
 }
 
+/// Existing-path custody uses the registry's bounded, retained path worker;
+/// an unavailable mount cannot create a new orphan worker on every request.
+pub(crate) async fn resolve_existing_storage_path(path: &Path) -> Result<std::path::PathBuf, String> {
+    Ok(writer_registry()?.path_work(path, PathWork::ResolveExisting).await?.path)
+}
+
 /// Durable admission before a writer can launch. Failure to save refuses that
 /// write rather than produce an unowned tree after the next restart.
 pub async fn admit_cargo_target(
@@ -617,8 +625,10 @@ mod tests {
             .insert(key.clone(), (identity.clone(), request.clone()));
         registry.2.lock().insert(
             (unavailable.path().to_path_buf(), PathWork::Observe),
-            (identity.clone(), request),
+            (identity.clone(), request.clone()),
         );
+        let existing_key = (unavailable.path().to_path_buf(), PathWork::ResolveExisting);
+        registry.2.lock().insert(existing_key.clone(), (identity.clone(), request));
         registry.0.lock().unresolved_boot.push(TrackedDir::new(
             "cargo-target",
             unavailable.path().to_path_buf(),
@@ -638,13 +648,16 @@ mod tests {
                 &registry.2.lock().get(&key).unwrap().0,
                 &identity
             ));
+            assert!(registry.path_work(unavailable.path(), PathWork::ResolveExisting)
+                .await.unwrap_err().contains("still pending"));
+            assert!(Arc::ptr_eq(&registry.2.lock().get(&existing_key).unwrap().0, &identity));
         }
         registry.admit(available.path()).await.unwrap();
         assert_eq!(registry.snapshot().len(), 1);
         assert_eq!(
             registry.2.lock().len(),
-            2,
-            "the original unresolved request remains quarantined"
+            3,
+            "the original unresolved requests remain quarantined"
         );
         // Simulate the original filesystem operation becoming available. The
         // existing restore tick consumes the pending configuration and persists it.

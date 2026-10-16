@@ -2391,27 +2391,21 @@ impl ServingDaemonModule {
     /// file path protects its per-model dir and vice versa, whichever
     /// layout the artifact uses.
     fn set_active_artifact(&self, path: Option<std::path::PathBuf>) {
-        Self::set_active_artifact_in(&self.active_artifact, path);
+        Self::set_active_artifact_in(&self.active_artifact, path, None);
     }
 
     fn set_active_artifact_in(
         active: &std::sync::Mutex<Option<std::path::PathBuf>>,
         path: Option<std::path::PathBuf>,
+        physical: Option<std::path::PathBuf>,
     ) {
         let Ok(mut current) = active.lock() else {
             return; // poisoned: the set fails SAFE (protects everything)
         };
-        if *current == path {
-            return;
-        }
+
         let set = crate::system_resources::serving_active_artifacts();
-        if let Some(old) = current.take() {
-            set.release(&old);
-        }
-        if let Some(new) = path {
-            set.register(new.clone());
-            *current = Some(new);
-        }
+        set.replace(current.as_deref(), path.clone().map(|raw| (raw, physical)));
+        *current = path;
     }
 
     /// Once a minute, read the live lane's anonymous footprint off its process and feed
@@ -3979,6 +3973,10 @@ impl ServingDaemonModule {
             if !current() {
                 return;
             }
+            let physical_artifact = match target.model.gguf_local_path.as_deref() {
+                Some(path) => crate::system_resources::ActiveArtifactSet::resolve(path).await,
+                None => None,
+            };
             let mut force_probe = ForcedProbe::claim(force_relaunch);
             let admit = || {
                 // This short borrow is the linearization point with intent writers.
@@ -4004,6 +4002,7 @@ impl ServingDaemonModule {
                 Self::set_active_artifact_in(
                     &active_artifact,
                     target.model.gguf_local_path.clone(),
+                    physical_artifact.clone(),
                 );
 
                 drop(intent);

@@ -766,3 +766,5 @@ mod tests {
         }
     }
 }
+
+pub(crate) use registry::resolve_existing_storage_path;

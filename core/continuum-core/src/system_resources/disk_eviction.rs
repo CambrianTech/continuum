@@ -360,6 +360,7 @@ pub struct CargoTargetPool {
     tier: String,
     tracked: Arc<TrackedDir>,
     budget_bytes: u64,
+    active_artifacts: Arc<ActiveArtifactSet>,
     /// Read the owning volume's already-published sample; never probe here.
     volume_sample: fn(&Path) -> Option<crate::capacity::system_profile::DriveInfo>,
     /// The last decline reason (as a discriminant) and how many times it has
@@ -448,6 +449,7 @@ impl CargoTargetPool {
             tracked,
             budget_bytes: budget_bytes.max(1),
             volume_sample: super::DiskPressureMonitor::volume_for,
+            active_artifacts: serving_active_artifacts(),
         }
     }
 
@@ -773,7 +775,7 @@ impl ResourcePool for CargoTargetPool {
                     continue;
                 }
             }
-            if serving_active_artifacts().protects(&rung) {
+            if self.active_artifacts.protects(&rung) {
                 self.declined(DeclinedEviction::ActiveArtifact { path: rung });
                 continue;
             }
@@ -830,13 +832,44 @@ pub fn serving_tier_capacity_bytes(volume_total_bytes: u64) -> u64 {
 /// protects everything inside it.
 #[derive(Default)]
 pub struct ActiveArtifactSet {
-    paths: RwLock<HashSet<PathBuf>>,
+    paths: RwLock<std::collections::HashMap<PathBuf, Option<PathBuf>>>,
 }
 
 impl ActiveArtifactSet {
+    /// Raw identities without physical proof cannot authorize any reclamation.
     pub fn register(&self, path: PathBuf) {
         if let Ok(mut set) = self.paths.write() {
-            set.insert(path);
+            set.insert(path, None);
+        }
+    }
+
+    /// Resolve before the synchronous serving admission, through the shared bounded
+    /// path worker. Failed resolution is published as unresolved custody, never guessed.
+    pub async fn resolve(path: &Path) -> Option<PathBuf> {
+        if !path.is_absolute() { return None; }
+        match super::disk_reporters::resolve_existing_storage_path(path).await {
+            Ok(physical) => Some(physical),
+            Err(error) => {
+                crate::clog_warn!("active artifact identity unresolved: {}", error);
+                None
+            }
+        }
+    }
+
+    pub fn register_resolved(&self, path: PathBuf, physical: Option<PathBuf>) {
+        if let Ok(mut set) = self.paths.write() {
+            let physical = physical.filter(|resolved| path.is_absolute() && resolved.is_absolute());
+            set.insert(path, physical);
+        }
+    }
+
+    pub fn replace(&self, old: Option<&Path>, new: Option<(PathBuf, Option<PathBuf>)>) {
+        if let Ok(mut set) = self.paths.write() {
+            if let Some(old) = old { set.remove(old); }
+            if let Some((raw, physical)) = new {
+                let physical = physical.filter(|resolved| raw.is_absolute() && resolved.is_absolute());
+                set.insert(raw, physical);
+            }
         }
     }
 
@@ -846,6 +879,7 @@ impl ActiveArtifactSet {
         }
     }
 
+    /// `candidate` must be resolved by its eviction owner before this lock-only check.
     /// Is `candidate` (an eviction target) protected? True when any
     /// registered active path IS the candidate, lives UNDER it, or the
     /// candidate lives under a registered dir — prefix containment both
@@ -857,9 +891,12 @@ impl ActiveArtifactSet {
             // treat everything as protected rather than migrate blind.
             return true;
         };
-        set.iter().any(|active| !active.is_absolute() || !candidate.is_absolute()
-            || crate::paths::has_path_prefix(active, candidate)
-            || crate::paths::has_path_prefix(candidate, active))
+        set.values().any(|physical| match physical {
+            None => true,
+            Some(active) => !active.is_absolute() || !candidate.is_absolute()
+                || crate::paths::has_path_prefix(active, candidate)
+                || crate::paths::has_path_prefix(candidate, active),
+        })
     }
 }
 
@@ -1097,7 +1134,8 @@ impl ResourcePool for NvmeServingTierPool {
                 break;
             }
             // Invariant 1: never the actively-paged artifact.
-            if self.active.protects(&path) {
+            let Ok(physical) = std::fs::canonicalize(&path) else { continue };
+            if self.active.protects(&physical) {
                 continue;
             }
             let Some(name) = path.file_name() else {
@@ -1348,8 +1386,9 @@ mod tests {
     // what this catches: the real broker must reach release incremental after
     // compiler custody ends, even when the pool uses a measured volume instead
     // of its fallback budget (3d4a push CI previously depended on global timing).
-    #[test]
-    fn broker_reclaims_release_incremental_only_after_profile_custody() {
+    #[tokio::test]
+    async fn broker_reclaims_release_incremental_only_after_profile_custody() {
+        super::super::disk_reporters::prepare_writer_fixture().await;
         use crate::paging::{BrokerConfig, PressureBroker};
         use continuum_cli_lifecycle::cargo_cache_custody as custody;
         let tmp = tempfile::tempdir().unwrap();
@@ -1391,6 +1430,8 @@ mod tests {
         tracked.set_bytes(dir_size_bytes(tmp.path()));
         let mut pool = CargoTargetPool::new(tracked.clone(), 1);
         pool.volume_sample = critical_fixture_volume;
+        let active = Arc::new(ActiveArtifactSet::default());
+        pool.active_artifacts = active.clone();
         assert_eq!(pool.pressure(), 1.0, "the fixture supplies measured critical-volume pressure");
         assert!(pool.capacity_bytes() > tracked.bytes(), "pressure comes from the volume, not the fallback budget");
         let pool = Arc::new(pool);
@@ -1405,8 +1446,10 @@ mod tests {
         #[cfg(unix)]
         let inode = { use std::os::unix::fs::MetadataExt; std::fs::metadata(&lock_path).unwrap().ino() };
         let before = tracked.bytes();
-        let active = serving_active_artifacts();
-        active.register(certified.join("build/input"));
+        let raw_pin = certified.join("build/input");
+        let physical_pin = ActiveArtifactSet::resolve(&raw_pin).await;
+        assert!(physical_pin.is_some(), "bounded owner resolves the real Windows short alias");
+        active.register_resolved(raw_pin, physical_pin);
         assert!(active.protects(&tracked.path().join("release")),
             "registered pin must protect the selected physical release: pin={:?}, pin_components={:?}, physical_pin={:?}, candidate={:?}, candidate_components={:?}",
             certified.join("build/input"), certified.join("build/input").components().collect::<Vec<_>>(),
@@ -1842,13 +1885,15 @@ mod tests {
         // artifact is NEVER migrated, even when eviction wants unlimited
         // bytes. Losing the resident model's GGUF mid-serve is the engine
         // reading from a deleted file.
-        #[test]
-        fn actively_paged_artifact_is_never_migrated() {
+        #[tokio::test]
+        async fn actively_paged_artifact_is_never_migrated() {
+            crate::system_resources::disk_reporters::prepare_writer_fixture().await;
             let hot = tempfile::tempdir().expect("tempdir");
             let cold = tempfile::tempdir().expect("tempdir");
             let tracked = seeded_hot_tier(hot.path());
             let active = Arc::new(ActiveArtifactSet::default());
-            active.register(hot.path().join("served-model"));
+            let raw = hot.path().join("served-model");
+            active.register_resolved(raw.clone(), ActiveArtifactSet::resolve(&raw).await);
             let pool = NvmeServingTierPool::new(
                 tracked,
                 1_000_000,
@@ -2174,8 +2219,9 @@ mod tests {
         // what this catches: ActiveArtifactSet prefix containment BOTH
         // directions — marking a model dir protects files inside it, and
         // marking a file protects its parent dir from wholesale migration.
-        #[test]
-        fn active_set_protects_prefix_both_directions() {
+        #[tokio::test]
+        async fn active_set_protects_prefix_both_directions() {
+            crate::system_resources::disk_reporters::prepare_writer_fixture().await;
             let set = ActiveArtifactSet::default();
             let root = tempfile::tempdir().unwrap();
             // Unix temporary roots may themselves be aliases (/var on macOS).
@@ -2188,13 +2234,15 @@ mod tests {
             std::fs::create_dir(&logical).unwrap();
             let physical = logical.canonicalize().unwrap();
             set.register(logical.clone());
+            assert!(set.protects(&root_path.join("other-model")), "unresolved pins fail closed without IO");
+            set.register_resolved(logical.clone(), ActiveArtifactSet::resolve(&logical).await);
             assert!(set.protects(&physical), "normal and canonical Windows spellings share custody");
             assert!(
                 set.protects(&physical.join("model.gguf")),
                 "candidate under active dir is protected"
             );
             assert!(
-                set.protects(&root_path),
+                set.protects(&root_path.canonicalize().unwrap()),
                 "parent of active is protected"
             );
             assert!(!set.protects(&root_path.join("other-model")));
@@ -2209,7 +2257,7 @@ mod tests {
             #[cfg(windows)]
             {
                 let unc = PathBuf::from(r"\\server\share\model");
-                set.register(unc.clone());
+                set.register_resolved(unc.clone(), Some(unc.clone()));
                 assert!(set.protects(Path::new(r"\\?\UNC\server\share\model\weights")));
                 assert!(!set.protects(Path::new(r"\\?\UNC\server\different\model")));
                 assert!(!set.protects(Path::new(r"\\?\UNC\server\share\model-other")));
