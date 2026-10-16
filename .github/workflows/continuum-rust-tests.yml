@@ -108,6 +108,10 @@ jobs:
           bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
           python3 -m unittest discover -s core/continuum-core/src/genome/fine_tuning -p cuda_train_test.py -v
+          export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
+          c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
+            core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
+          "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
           # `json` (not `json-render-diagnostics`): the warning ratchet below reads the
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
@@ -121,6 +125,11 @@ jobs:
           cat lib-test.env >> "$GITHUB_ENV"
           while IFS='=' read -r name value; do export "$name=$value"; done < lib-test.env
           cd core/continuum-core
+          interop_output=$(LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
+            model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
+            --exact --ignored --nocapture)
+          printf '%s\n' "$interop_output"
+          [[ "$interop_output" == *"1 passed;"* ]]
           LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
             --skip 'gpu::memory_manager::' \
             --skip 'modules::gpu::' \
@@ -287,6 +296,14 @@ jobs:
         run: |
           python tools/scripts/tests/test_ci_lib_test_artifact.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          . ./tools/scripts/lib/install-common.ps1
+          Enter-MsvcEnv
+          $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST = Join-Path $env:RUNNER_TEMP 'continuum-container-custody-test.exe'
+          $nativeObject = Join-Path $env:RUNNER_TEMP 'continuum-container-custody-test.obj'
+          & cl /nologo /std:c++17 /EHsc /O1 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /Icore/vendor/llama.cpp/ggml/src /Icore/vendor/llama.cpp/ggml/include core/vendor/llama.cpp/tests/test-moe-residency.cpp "/Fe:$env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST" "/Fo:$nativeObject"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Replace the lib-only type check with a runnable artifact. The existing
           # reduced-debug profile avoids the full-debug PDB size failure; compile
           # once and reuse it for these native custody tests, not a second lane.
@@ -302,6 +319,11 @@ jobs:
           $env:PATH = $env:CONTINUUM_LIB_TEST_LD_LIBRARY_PATH + ';' + $env:PATH
           $env:CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST = '1'
           Push-Location core/continuum-core
+          $interop = & $env:CONTINUUM_LIB_TEST 'model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes' --exact --ignored --nocapture 2>&1
+          $interopResult = $LASTEXITCODE
+          $interop | Write-Output
+          if ($interopResult -ne 0) { exit $interopResult }
+          if (($interop -join "`n") -notmatch '1 passed;') { throw 'Native/fs2 custody fixture did not execute' }
           foreach ($test in @('broker_reclaims_release_incremental_only_after_profile_custody', 'redirected_profile_or_incremental_child_never_reaches_external_data', 'ladder_frees_in_order_and_preserves_release_outputs')) {
             $output = & $env:CONTINUUM_LIB_TEST "system_resources::disk_eviction::tests::$test" --exact --nocapture 2>&1
             $result = $LASTEXITCODE

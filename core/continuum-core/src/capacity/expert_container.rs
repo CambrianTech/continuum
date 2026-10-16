@@ -370,6 +370,8 @@ pub struct ExpertContainer {
     tiers: Vec<TierSpec>,
     /// Lazily-opened banks, indexed `layer × n_tiers + tier`.
     banks: Vec<Option<ExpertBank>>,
+    /// Declared last so bank handles are dropped before reader custody ends.
+    _reader_lease: Option<File>,
 }
 
 impl ExpertContainer {
@@ -474,14 +476,16 @@ impl ExpertContainer {
     /// Open a container directory: parse + verify the manifest. No bank IO
     /// happens here.
     pub fn open(root: &Path) -> Result<Self, ContainerError> {
-        let resolved = crate::model_registry::artifacts::expert_placement::resolve_for_serving(
+        let (resolved, lease) = crate::model_registry::artifacts::expert_placement::reader_lease(
             root,
         )
         .map_err(|reason| ContainerError::WholeGeometry {
             path: root.to_path_buf(),
             reason,
         })?;
-        Self::open_physical(&resolved)
+        let mut container = Self::open_physical(&resolved)?;
+        container._reader_lease = Some(lease);
+        Ok(container)
     }
 
     fn open_physical(root: &Path) -> Result<Self, ContainerError> {
@@ -540,6 +544,7 @@ impl ExpertContainer {
             manifest_bytes: raw.into_bytes(),
             tiers,
             banks,
+            _reader_lease: None,
         })
     }
 

@@ -105,9 +105,29 @@ fn exclusive(path: &Path) -> Result<File, String> {
         .write(true)
         .open(path)
         .map_err(|e| e.to_string())?;
-    file.try_lock_exclusive()
+    FileExt::try_lock_exclusive(&file)
         .map_err(|e| format!("container placement already owned: {e}"))?;
     Ok(file)
+}
+
+/// Retained by a reader before interpreting the manifest or lazily opening
+/// banks. The native reader uses the same whole-file OS lock protocol.
+pub(crate) fn reader_lease(root: &Path) -> Result<(PathBuf, File), String> {
+    let root = crate::paths::cargo::physical_root(root)?;
+    let path = sibling(&root, ".container-placement.lock")?;
+    check_existing_plain_file(&path)?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(path)
+        .map_err(|e| e.to_string())?;
+    FileExt::try_lock_shared(&file).map_err(|e| format!("container writer owns placement: {e}"))?;
+    // Check after acquiring custody: a writer cannot publish between this
+    // refusal boundary and the caller's first manifest read.
+    resolve_for_serving(&root)?;
+    Ok((root, file))
 }
 
 fn entry_name(entry: &Entry) -> Result<PathBuf, String> {
@@ -575,6 +595,95 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    #[test]
+    fn actual_lazy_reader_excludes_freeze_until_its_lifetime_ends() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("hot");
+        let cold = temp.path().join("cold");
+        std::fs::create_dir(&source).unwrap();
+        write_container(&source, 1, 2);
+        let reader = ExpertContainer::open(&source).unwrap();
+        assert!(freeze_in(&source, &cold, &Custody { stop: None }, &|_| Ok(())).is_err());
+        assert!(read(&source).unwrap().is_none());
+        assert!(!cold.exists());
+        drop(reader);
+        assert!(freeze_in(&source, &cold, &Custody { stop: None }, &|_| Ok(())).unwrap() > 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "existing Unix/Windows CI runs this with the compiled native custody probe"]
+    async fn fs2_and_native_container_locks_interoperate_across_processes() {
+        use std::process::Stdio;
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        let native = std::env::var_os("CONTINUUM_NATIVE_CONTAINER_LEASE_TEST")
+            .expect("native custody fixture must be compiled by the owning CI step");
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("container");
+        std::fs::create_dir(&root).unwrap();
+        let probe = |mode: &'static str| {
+            let native = native.clone();
+            let root = root.clone();
+            async move {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(10),
+                    tokio::process::Command::new(native)
+                        .args(["--container-lease"])
+                        .arg(root)
+                        .arg(mode)
+                        .kill_on_drop(true)
+                        .status(),
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .code()
+                .unwrap()
+            }
+        };
+        let (_, shared) = reader_lease(&root).unwrap();
+        assert_eq!(probe("reader").await, 0);
+        assert_eq!(probe("writer").await, 3);
+        drop(shared);
+        let writer = exclusive(&sibling(&root, ".container-placement.lock").unwrap()).unwrap();
+        assert_eq!(probe("reader").await, 3);
+        assert_eq!(probe("writer").await, 3);
+        drop(writer);
+        assert_eq!(probe("writer").await, 0);
+        for mode in ["reader", "writer"] {
+            let mut child = tokio::process::Command::new(&native)
+                .arg("--container-lease")
+                .arg(&root)
+                .arg(mode)
+                .arg("hold")
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut output = BufReader::new(child.stdout.take().unwrap());
+            let mut ready = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                output.read_line(&mut ready),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(ready.trim(), "held");
+            assert!(exclusive(&sibling(&root, ".container-placement.lock").unwrap()).is_err());
+            assert_eq!(reader_lease(&root).is_ok(), mode == "reader");
+            child.stdin.take().unwrap().write_all(b"\n").await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success()
+            );
+            assert!(exclusive(&sibling(&root, ".container-placement.lock").unwrap()).is_ok());
         }
     }
 
