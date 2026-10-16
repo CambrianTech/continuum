@@ -1187,9 +1187,21 @@ mod tests {
         assert!(tmp.path().join("debug/lib.rlib").exists(), "the debug rung stood down whole");
         assert_eq!(freed, 6000, "only the two safe rungs");
         child.kill().expect("stop the sleeper");
-        let _ = child.wait();
+        let exited = child.wait();
+        // u8::MAX = no decline recorded, so the tag below is the SECOND call's alone.
+        pool.last_decline.store(u8::MAX, std::sync::atomic::Ordering::Relaxed);
         let freed_after = pool.evict_at_least(100_000);
-        assert!(!sleeper.exists() && freed_after > 0, "once nothing executes there, the rung cuts");
+        // The failure names its cause (Ubuntu CI run 38829445559 failed here with no
+        // reason, card e37a54db): what the wait reported, what the rung freed, which typed
+        // decline it last recorded, and what the process scan sees under debug/ now.
+        assert!(
+            !sleeper.exists() && freed_after > 0,
+            "once nothing executes there, the rung cuts: wait={exited:?} freed_after={freed_after} \
+             sleeper_exists={} last_decline_tag={} executing_now={:?}",
+            sleeper.exists(),
+            pool.last_decline.load(std::sync::atomic::Ordering::Relaxed),
+            process_executing_under(&tmp.path().join("debug")),
+        );
     }
 
     #[test]
