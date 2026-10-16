@@ -237,7 +237,11 @@ impl RagSource for ActiveWorkSource {
         }
         // ONE card is this turn's (`work_focus`); the rest are held, not worked now —
         // said in the line itself, so two held cards never read as two jobs at once.
-        let focus = crate::persona::work_focus::focus_card(claims.iter()).map(|c| c.card_id);
+        // The same precedence the turn binds with (`act_question`: actionable first): the
+        // state-blind `focus_card` told Benchy a django card in REVIEW was "THIS TURN"
+        // while her hands were on the InProgress card marked "held, not this turn", and
+        // she spent turns reconciling the two (M5, 2026-10-16, her own words).
+        let focus = crate::persona::work_focus::focus_workspace_card(claims.iter()).map(|c| c.card_id);
         for card in &claims {
             let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
             // Human-readable line; structured parts also ride in metadata so
@@ -401,6 +405,29 @@ mod tests {
                 results: Mutex::new(results),
             }),
         )
+    }
+
+    // what this catches: perception naming a card the turn is NOT bound to. The stance was
+    // computed by the state-blind `focus_card` (latest heartbeat wins), so a card in REVIEW
+    // with the newer heartbeat read "THIS TURN" while the InProgress card her hands were on
+    // (the turn binds actionable-first, `act_question`) read "held, not this turn" — Benchy
+    // spent turns reconciling the two (M5, 2026-10-16). Same precedence as the binding.
+    #[tokio::test]
+    async fn the_this_turn_stance_follows_the_turn_binding_not_the_latest_heartbeat() {
+        let persona = Uuid::new_v4();
+        let mut working = card("Source-hygiene ratchet");
+        working.state = CardState::InProgress;
+        working.last_heartbeat_at_ms = Some(1_000_000);
+        let mut in_review = card("[bench swe-bench-verified] django__django-16136");
+        in_review.state = CardState::Review;
+        in_review.last_heartbeat_at_ms = Some(2_000_000);
+        let src = source(persona, vec![Ok(vec![in_review, working]), Ok(vec![])]);
+        let delivery = src.deliver(&ctx(persona), 10_000, ResolutionPreference::Raw).await;
+        let line = |needle: &str| {
+            delivery.items.iter().map(|i| i.content.as_str()).find(|c| c.contains(needle)).unwrap_or_default().to_string()
+        };
+        assert!(line("Source-hygiene").contains("THIS TURN"), "{}", line("Source-hygiene"));
+        assert!(line("django").contains("held, not this turn"), "{}", line("django"));
     }
 
     // what this catches: the rejection-amnesia fix (the #159-family

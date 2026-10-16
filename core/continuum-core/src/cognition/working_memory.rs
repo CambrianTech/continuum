@@ -827,7 +827,15 @@ impl WorkingMemory {
         // the cap was then moved to settlement only. A coding turn is 100+ acts between
         // settlements: on the M5 (2026-10-16) the rings persisted at 213 results / 686k
         // chars, 155 / 1.09M, 123 / 442k, 49 / 138k, and fit_messages was the only bound.
-        self.collapse_results_over_cap();
+        // Only against a KNOWN window, as restore does: an unknown budget's results share is
+        // the MIN_SERVE_CTX floor (`recent_results_chars`), and a receipt CAN land with the
+        // window unknown: the act→observe seam pins it from the cycle's loadout, but a lane
+        // relaunching between the prompt and the tool's return answers no loadout and
+        // serving is not ready (Cormac on #5112). Folding against the floor would collapse
+        // results her real window holds; the next receipt or settlement collapses for real.
+        if self.budget().is_known() {
+            self.collapse_results_over_cap();
+        }
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
@@ -1657,22 +1665,22 @@ impl WorkingMemory {
     /// (identical call re-issued WITHIN one settling, before any answer) from a
     /// legitimate re-use of the same tool for a genuinely NEW concern after an answer.
     /// Blank is ignored. Oldest ages out past capacity, same rolling scratchpad.
-    /// Enforce the recent-results char cap by COLLAPSING oldest entries to
-    /// queryable pointers (spill handle when the body is on disk; identity
-    /// otherwise). Called at SETTLEMENT — never mid-settle, where a pop_front
-    /// rotates the prompt head and re-prefills everything after it on a
-    /// non-KV-shiftable model (the 2026-08-24 reuse collapse).
+    /// Enforce the recent-results char cap by COLLAPSING oldest entries to queryable
+    /// pointers (spill handle when the body is on disk; identity otherwise). Called at every
+    /// RECEIPT and at settlement, against a known window only. Hysteresis: nothing moves
+    /// until the share is exceeded, then the oldest collapse down to HALF the share, so the
+    /// prompt head is byte-stable between two bursts (a pop_front per act rotated the head
+    /// and re-prefilled everything after it on a KV that cannot shift, 2026-08-24; a
+    /// settlement-only cap let a coding turn hold 1.09M chars of results, 2026-10-16). The
+    /// newest result always stays; an unsaved result stays whole.
     ///
     /// COLLAPSE IN CHUNKS (2026-09-13, the KV divergence audit): over 55 consecutive
-    /// captured turns, the FIRST block to differ from the previous prompt was the
-    /// oldest surviving `[result #n]` in 28 of them — a full ledger evicting one
-    /// entry per settle rotates the prompt's head by one entry EVERY turn, and on a
-    /// model that cannot shift its cache everything after it re-prefills every
-    /// time. So when the ledger is over cap it collapses down to HALF the cap in one
-    /// jump: the surviving head then stays byte-identical for ~cap/2 chars of new
-    /// results (several settles), and the prefix reuse those settles get is worth
-    /// far more than the half-cap of oldest tails they briefly forgo (the pointers
-    /// keep them queryable). Same law as `fit_messages`' chunked window start.
+    /// captured turns, the FIRST block to differ from the previous prompt was the oldest
+    /// surviving `[result #n]` in 28 of them — evicting one entry per settle rotated the
+    /// prompt's head by one entry EVERY turn. Collapsing to HALF the cap in one jump keeps
+    /// the surviving head byte-identical for ~cap/2 chars of new results; the prefix reuse
+    /// those turns get is worth more than the half-cap of oldest tails they briefly forgo
+    /// (the pointers keep them queryable). Same law as `fit_messages`' chunked window start.
     fn collapse_results_over_cap(&self) {
         let cap = self.budget().recent_results_chars();
         let mut rr = self.recent_results.lock();
@@ -1687,7 +1695,10 @@ impl WorkingMemory {
         let mut survivors = VecDeque::with_capacity(rr.len());
         while let Some(entry) = rr.pop_front() {
             let (eseq, room, evicted, elabel, ehandle) = entry;
-            let newest = rr.is_empty() && survivors.is_empty();
+            // The newest result always stays: it is the result of the act she just took.
+            // (`&& survivors.is_empty()` here let it collapse whenever an older unsaved
+            // result had survived — rare at settlement, reachable on every receipt now.)
+            let newest = rr.is_empty();
             let Some(handle) = ehandle.as_deref().filter(|_| total > target && !newest) else {
                 survivors.push_back((eseq, room, evicted, elabel, ehandle));
                 continue;
@@ -2503,6 +2514,9 @@ mod tests {
     #[test]
     fn recent_results_survive_subsequent_acts_and_stay_bounded() {
         let wm = WorkingMemory::new(8);
+        // A known window: the receipt-time collapse folds nothing against an unknown one
+        // (the act→observe seam pins the served window before any receipt in production).
+        wm.set_served_window(16_384);
         record_saved(&wm, "[action] code/run(sol.rs) error[E0601]: `main` function not found");
         record_saved(&wm, "[action] code/list() sol.rs sol2.rs");
         record_saved(&wm, "[action] code/tree() workspace/");
