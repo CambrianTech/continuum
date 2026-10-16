@@ -203,6 +203,7 @@ impl Registry {
                     let path = path.to_path_buf();
                     let kind = match &work {
                         PathWork::Resolve => "resolve",
+                        PathWork::ResolveExisting => "resolve_existing",
                         PathWork::Observe => "observe",
                         PathWork::Empty => "empty",
                         PathWork::Validate(_) => "validate",
