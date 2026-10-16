@@ -30,6 +30,7 @@
 
 mod perception;
 mod recency;
+pub(crate) use recency::render_pointer_invocations;
 
 mod observation;
 pub use observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};

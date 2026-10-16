@@ -7,6 +7,44 @@
 
 use crate::cognition::context_budget::ContextBudget;
 
+/// Invocation-only provenance for a saved receipt's expansion handle. Uses the
+/// same argument folding as recency, but shares one existing older-result head
+/// allowance across the batch. It never reads intent or result text.
+pub(crate) fn render_pointer_invocations<'a>(
+    calls: impl IntoIterator<Item = &'a crate::ai::types::ToolCall>,
+    budget: &ContextBudget,
+) -> String {
+    let calls: Vec<_> = calls.into_iter().collect();
+    if calls.is_empty() { return "unrecorded".into(); }
+    let limit = budget.trail_head_chars();
+    let mut label = String::new();
+    for (index, call) in calls.iter().enumerate() {
+        let args = summarize_args_for_recency(&call.input, Some(budget.echoed_arg_chars()));
+        let invocation = format!("{}({args})", call.name);
+        // Keys/names can contain control characters too. Price AFTER escaping;
+        // neither a newline nor an escape expansion may bypass the shared bound.
+        let mut escaped = String::with_capacity(invocation.len());
+        for c in invocation.chars() {
+            if c.is_control() { escaped.extend(c.escape_default()); } else { escaped.push(c); }
+        }
+        let separator = if index == 0 { "" } else { "; " };
+        let suffix = format!("… [{} calls total; expand handle for receipt]", calls.len());
+        let candidate_len = label.chars().count() + separator.len() + escaped.chars().count();
+        let needs_room_for_more = index + 1 < calls.len();
+        if candidate_len.saturating_add(if needs_room_for_more { suffix.chars().count() } else { 0 }) > limit {
+            let available = limit.saturating_sub(suffix.chars().count());
+            label.push_str(separator);
+            label.push_str(&escaped);
+            label = label.chars().take(available).collect();
+            label.extend(suffix.chars().take(limit.saturating_sub(label.chars().count())));
+            return label;
+        }
+        label.push_str(separator);
+        label.push_str(&escaped);
+    }
+    label
+}
+
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -405,6 +443,36 @@ mod tests {
             kept.contains("refine_arg"),
             "an ordinary edit stays visible verbatim: {kept}"
         );
+
+        use crate::ai::types::ToolCall;
+        let call = |name: &str, input| ToolCall { id: name.into(), name: name.into(), input };
+        let budget = ContextBudget::from_window(16_384);
+        let read = call("code/read", serde_json::json!({
+            "file_path": "core/continuum-core/src/persona/rag_budget.rs",
+            "start_line": 475, "end_line": 620
+        }));
+        let search = call("code/search", serde_json::json!({"pattern":"ContinuationCursor", "path":"core"}));
+        let rendered = render_pointer_invocations([&read, &search], &budget);
+        assert!(rendered.contains("rag_budget.rs") && rendered.contains("475") && rendered.contains("620"));
+        assert!(rendered.contains("ContinuationCursor") && rendered.contains("code/search"));
+        let shell = call("code/shell", serde_json::json!({"command":"printf \"日本語\"\nrg 'a\\b' core", "odd\nkey":"value"}));
+        let escaped = render_pointer_invocations([&shell], &budget);
+        assert!(!escaped.chars().any(char::is_control));
+        assert!(escaped.contains("日本語") && escaped.contains("\\n") && escaped.contains("\\\""));
+        let large = call("code/write", args);
+        let folded = render_pointer_invocations([&large], &budget);
+        assert!(folded.contains("chars, #") && folded.contains("sympy/core/basic.py"));
+        assert!(!folded.contains("x = 1"));
+        let other_large = call("code/write", serde_json::json!({"content":"x = 2\n".repeat(4000), "file_path":"sympy/core/basic.py"}));
+        assert_ne!(folded, render_pointer_invocations([&other_large], &budget), "folded arguments retain distinct existing hashes");
+        let nested = call("code/edit", serde_json::json!({"mode":{"nested":["z".repeat(20_000)]}}));
+        let batch = vec![nested; 20];
+        let bounded = render_pointer_invocations(batch.iter(), &budget);
+        assert!(bounded.chars().count() <= budget.trail_head_chars());
+        assert!(bounded.contains("20 calls total") && bounded.contains("expand handle"));
+        // Only ToolCall is accepted: neither the observation result nor its
+        // separate intent/private response can enter this descriptor.
+        assert!(!rendered.contains("because"));
     }
 
     /// what this catches (Astra on #4352): the COLLAPSE branch saying "ok" for work
