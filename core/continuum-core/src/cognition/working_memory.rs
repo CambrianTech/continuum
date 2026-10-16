@@ -676,6 +676,24 @@ impl WorkingMemory {
         tally
     }
 
+    /// Current distribution of retained action fingerprints, not a lifetime total.
+    /// Replace the keyed status so old distributions do not compete as historical facts.
+    pub(crate) fn refresh_recent_action_status(&self) {
+        let tally = self.action_verb_tally();
+        let retained: usize = tally.iter().map(|(_, count)| count).sum();
+        if retained < 3 {
+            self.unpin_fact("recent-action-distribution");
+            return;
+        }
+        let distribution = tally.iter()
+            .map(|(name, count)| format!("{name} ×{count}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.pin_fact("recent-action-distribution", &format!(
+            "[investigation] Among my {retained} most recent retained calls: {distribution}. Older calls may have aged out."
+        ));
+    }
+
     /// Record the reasoning the persona just produced. Blank/empty is ignored
     /// (suppressed-thinking turns record nothing). Oldest ages out past capacity.
     pub fn record(&self, reasoning: &str) {
@@ -1750,6 +1768,7 @@ impl WorkingMemory {
         *self.last_action.lock() = None; // the full latest result is proprioception too
         self.dispatched.lock().clear(); // dispatched handles belong to the cleared concern
         self.action_fps.lock().clear(); // loop-awareness resets with the concern
+        self.unpin_fact("recent-action-distribution");
     }
 
     pub fn is_empty(&self) -> bool {
@@ -2562,6 +2581,31 @@ mod tests {
             "most-used first: {tally:?}"
         );
         assert_eq!(tally[1], ("code/read".to_string(), 1));
+    }
+
+    #[test]
+    fn recent_action_status_replaces_rolling_counts_without_replacing_history() {
+        let wm = WorkingMemory::new(3);
+        wm.record_fact("independent historical fact");
+        for call in ["code/search|a", "code/search|b", "code/read|c"] {
+            wm.note_action_fingerprint(call);
+        }
+        wm.refresh_recent_action_status();
+        assert!(wm.pinned_facts()[0].contains("code/search ×2"));
+        wm.note_action_fingerprint("code/read|d");
+        wm.refresh_recent_action_status();
+        wm.refresh_recent_action_status();
+        let notices = wm.pinned_facts();
+        assert_eq!(notices.len(), 1);
+        assert!(notices[0].contains("3 most recent retained calls"));
+        assert!(notices[0].contains("code/search ×1"));
+        assert!(notices[0].contains("code/read ×2"));
+        assert!(!notices[0].contains("so far"));
+        assert!(wm.snapshot().entries.iter().any(|entry| entry.text == "independent historical fact"));
+        wm.clear();
+        assert!(wm.pinned_facts().is_empty());
+        wm.refresh_recent_action_status();
+        assert!(wm.pinned_facts().is_empty());
     }
 
     // what this catches: the Memento fix's foundation — the volatile tier
