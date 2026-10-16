@@ -1674,7 +1674,19 @@ impl LlmDeliberationFaculty {
         &self,
         calls: Vec<crate::ai::types::ToolCall>,
         resp: &TextGenerationResponse,
+        activity_room: Uuid,
     ) -> Contribution {
+        if let Some(memory) = &self.working_memory {
+            let native = resp.tool_calls.as_deref().filter(|original| {
+                matches!(resp.finish_reason, FinishReason::ToolUse)
+                    && original.iter().map(|call| &call.id).eq(calls.iter().map(|call| &call.id))
+            }).unwrap_or_default();
+            // Every new action replaces pending provenance, including legacy/text
+            // decisions after an executor-wide failure produced no receipt.
+            memory.record_native_action_statement(
+                if native.is_empty() { "" } else { &resp.text }, activity_room, native,
+            );
+        }
         // The model's OWN stated reasoning (a `<think>` block) when present — so the
         // engram records WHY she acted. When ABSENT, leave it EMPTY, never fabricate
         // a reason. The old default — "{name} is acting on the current situation" —
@@ -5300,7 +5312,7 @@ impl LlmDeliberationFaculty {
                         .to_string(),
                     input: serde_json::json!({}),
                 };
-                return Some(self.act_verdict(vec![call], &resp));
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             let head: String = resp.text.chars().take(200).collect();
             return Some(Contribution::deliberation_fault(format!(
@@ -5326,10 +5338,7 @@ impl LlmDeliberationFaculty {
                     return Some(v);
                 }
                 if !calls.is_empty() {
-                    if let Some(memory) = &self.working_memory {
-                        memory.record_native_action_statement(&resp.text, ws.activity_room_id, resp.tool_calls.as_deref().unwrap_or_default());
-                    }
-                    return Some(self.act_verdict(calls, &resp));
+                    return Some(self.act_verdict(calls, &resp, ws.activity_room_id));
                 }
             }
             if let Some(mut call) = crate::ai::json_in_prompt_tools::parse_tool_call(&resp.text) {
@@ -5343,7 +5352,7 @@ impl LlmDeliberationFaculty {
                 // this, so narrated snake_case verbs died while the SAME name in a
                 // native tool_call worked. One mapping, both paths.
                 crate::cognition::tool_dialect::normalize_call(&mut call);
-                return Some(self.act_verdict(vec![call], &resp));
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             // #159 fail-loud: she emitted the native `[TOOL_CALLS]` marker but named no
             // valid tool — `[recall]`/`[action]` are receipt vocabulary she MIMICS as a
@@ -5362,7 +5371,7 @@ impl LlmDeliberationFaculty {
                     name: crate::cognition::tool_dialect::from_wire_name(&attempted).to_string(),
                     input: serde_json::json!({}),
                 };
-                return Some(self.act_verdict(vec![call], &resp));
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             // The sibling gap the block above cannot see (#159 follow-up): she fenced correct
             // ARGUMENTS and never named the tool, in any liftable position. `attempted_tool_name`
@@ -5385,7 +5394,7 @@ impl LlmDeliberationFaculty {
                         .to_string(),
                     input: serde_json::json!({ "emitted": snippet }),
                 };
-                return Some(self.act_verdict(vec![call], &resp));
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             // Reasoning-channel intent lift (#181 sibling, glass-boxed on the
             // deepseek4 eval battery 2026-08-03): a thinking model commits its act
@@ -5421,7 +5430,7 @@ impl LlmDeliberationFaculty {
                             .to_string(),
                         input: serde_json::json!({}),
                     };
-                    return Some(self.act_verdict(vec![call], &resp));
+                    return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
                 }
                 if let Some(reasoning) = resp.reasoning.as_deref() {
                     if let Some(mut call) =
@@ -5436,7 +5445,7 @@ impl LlmDeliberationFaculty {
                             tool = %call.name,
                             "content channel empty — lifted the final tool intention from the reasoning tail"
                         );
-                        return Some(self.act_verdict(vec![call], &resp));
+                        return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
                     }
                     // THINK-ONLY turn (#181 tail, glass-boxed on the 2026-08-15 bench
                     // round): she spent the ENTIRE generation inside the reasoning
@@ -5469,7 +5478,7 @@ impl LlmDeliberationFaculty {
                                 .to_string(),
                             input: serde_json::json!({}),
                         };
-                        return Some(self.act_verdict(vec![call], &resp));
+                        return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
                     }
                 }
             }

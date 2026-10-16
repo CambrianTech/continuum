@@ -379,7 +379,9 @@ pub async fn apply_act(
     // Every requested call needs its own truthful receipt, including background
     // calls in a mixed batch. Native continuation must never omit their IDs.
     append_dispatched_observations(&mut acts, &dispatched_calls);
-    acts.sort_by_key(|observation| calls.iter().position(|call| call.id == observation.call.id));
+    let call_order: std::collections::HashMap<_, _> = calls.iter()
+        .enumerate().map(|(ordinal, call)| (call.id.as_str(), ordinal)).collect();
+    acts.sort_by_key(|observation| call_order.get(observation.call.id.as_str()).copied());
     // #243 RECEIPT RADIATION: every executed act reaches the room's transcript
     // as a collapsed receipt ("Ran 4 commands ›", the Claude-iOS pattern) —
     // this is the ONE choke point every hand action passes through (live,

@@ -548,11 +548,13 @@ impl WorkingMemory {
     /// Preserve the public decision separately from private reasoning and tool output.
     /// It uses the existing bounded, checkpointed entry stream and acting-root scope.
     pub fn record_action_statement(&self, text: &str, room: Uuid) {
-        self.record_native_action_statement(text, room, &[]);
+        if !text.trim().is_empty() {
+            self.record_native_action_statement(text, room, &[]);
+        }
     }
 
     pub fn record_native_action_statement(&self, text: &str, room: Uuid, calls: &[crate::ai::types::ToolCall]) {
-        if (text.trim().is_empty() && calls.is_empty()) || room.is_nil() {
+        if room.is_nil() {
             return;
         }
         let scope = self.scope.lock().clone();
@@ -2794,6 +2796,11 @@ mod tests {
         restored.record_native_action_statement("", room, &original_calls);
         restored.record_receipt_typed(&[obs.clone()], "other activity", Some(Uuid::new_v4()), crate::ai::types::ResultCustody::Unsaved);
         assert!(restored.active_action_native_calls(restored.active_action_full().unwrap().0).is_empty());
+        restored.record_native_action_statement("", room, &original_calls);
+        restored.record_native_action_statement("", room, &[]); // next decision uses a legacy envelope
+        restored.record_receipt_typed(&[obs.clone()], "legacy after failed native action", Some(room), crate::ai::types::ResultCustody::Unsaved);
+        assert!(restored.active_action_native_calls(restored.active_action_full().unwrap().0).is_empty());
+        restored.record_native_action_statement("", room, &original_calls);
         restored.set_scope(Some("another-root".into()));
         restored.record_receipt_typed(&[obs.clone()], "other root", Some(room), crate::ai::types::ResultCustody::Unsaved);
         assert!(restored.active_action_native_calls(restored.active_action_full().unwrap().0).is_empty());
