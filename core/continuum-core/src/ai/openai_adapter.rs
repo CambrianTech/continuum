@@ -651,6 +651,9 @@ impl OpenAICompatibleAdapter {
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
         let pool = existing_pool.clone().unwrap_or_else(|| dir.ensure_pool(root, n_slots));
+        if pool.n_slots() != n_slots {
+            return None; // installed geometry and this props response must agree
+        }
         // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
         // so its confirmed saves come from the ledger it left, when that ledger names this
         // very process. A spawned engine already attached its own at readiness;
@@ -2945,9 +2948,12 @@ mod tests {
         let generate_log = Arc::clone(&operations);
         let generate_mode = Arc::clone(&generation_mode);
         let generate_release = Arc::clone(&release_stream);
+        let props_slots = Arc::new(AtomicU8::new(2));
+        let advertised_slots = Arc::clone(&props_slots);
         let app = Router::new()
-            .route("/props", get(|| async {
-                Json(json!({"total_slots": 1, "default_generation_settings": {"n_ctx": 8192}}))
+            .route("/props", get(move || {
+                let slots = advertised_slots.load(Ordering::SeqCst);
+                async move { Json(json!({"total_slots": slots, "default_generation_settings": {"n_ctx": 8192}})) }
             }))
             .route("/slots/{slot}", post(move |
                 Query(query): Query<std::collections::HashMap<String, String>>,
@@ -3026,6 +3032,12 @@ mod tests {
             engine: "fixture-engine".into(), revisions: None,
         }).expect("fixture owned engine readiness");
         drop(transition);
+        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_none(),
+            "props cannot authorize an already installed pool with different geometry");
+        assert!(!crate::inference::slots::directory().page_admission_known(&root));
+        props_slots.store(1, Ordering::SeqCst);
+        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_some());
+        assert!(crate::inference::slots::directory().page_admission_known(&root));
         let owned_geometry = endpoint.served_geometry().expect("fixture owned geometry");
         let observed_service = || crate::cognition::resource_admission::leased_in_sent_samples()
             .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
