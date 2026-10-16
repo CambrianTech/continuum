@@ -83,7 +83,6 @@ pub(crate) struct PromptQuote<'a> {
     pub client: &'a reqwest::Client,
     pub dedicated_lane: bool,
     pub caller: &'a str,
-    pub patience: std::time::Duration,
     pub reply: u32,
     pub request_id: &'a str,
 }
@@ -121,6 +120,12 @@ pub(crate) async fn send_with_lane_retry(
     // listening yet; 503 = listening but still loading). One counter, so the total
     // time this call can spend waiting on a relaunching lane stays bounded.
     let mut relaunch_retries: u32 = 0;
+    // Prompt counting is pre-stream wire work, governed by the same measured
+    // bound as headers. Queue admission and KV paging have already completed;
+    // closed-endpoint readiness patience must not debit those waits from a quote
+    // that has not started (fe7960bf: healthy paging left a zero quote timeout).
+    // Keep one cumulative quote allowance across retries and their backoff; do not
+    // rearm a fresh quote allowance for each replacement engine.
     let quote_started = Instant::now();
     let response = loop {
         if let Some(quote) = fill.prompt_quote {
@@ -134,7 +139,7 @@ pub(crate) async fn send_with_lane_retry(
             fill.prompt_tokens = super::serving_guard::quote_prompt(
                 quote.client,
                 &request_builder,
-                quote.patience.saturating_sub(quote_started.elapsed()),
+                header_bound.saturating_sub(quote_started.elapsed()),
             ).await?;
             let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
             super::serving_guard::guard_resident_model(

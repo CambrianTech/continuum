@@ -1878,7 +1878,6 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         client: &self.client,
                         dedicated_lane: self.dedicated_lane,
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
-                        patience: crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
                         reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
                         request_id: &request_id,
                     }),
@@ -2808,7 +2807,10 @@ mod tests {
                     .post(format!("http://{address}/v1/chat/completions"))
                     .header("Content-Type", "application/json"),
                 body.clone(),
-                None,
+                // fe7960bf: a short measured occupancy is not an expired end-to-end
+                // deadline. Even after admission spent it, quote + retry retain the
+                // existing wire floor; no readiness-patience value enters this API.
+                Some(std::time::Duration::ZERO),
                 crate::inference::lane_send::FillReceipt {
                     model: "fixture",
                     prompt_tokens: 4,
@@ -2816,7 +2818,6 @@ mod tests {
                         client: &adapter.client,
                         dedicated_lane: true,
                         caller: "fixture",
-                        patience: std::time::Duration::from_secs(5),
                         reply: 0,
                         request_id: "fixture",
                     }),
