@@ -115,7 +115,9 @@ fn ready_budget(base: Duration, loading_and_alive: bool) -> Duration {
 }
 
 /// Measured loading work for one owned child. Labels and repeated samples do not
-/// renew the existing quiet allowance; unmeasured context/warmup stays bounded.
+/// renew the existing quiet allowance. After the last measured advance (including
+/// a stage reaching 1.0), unmeasured context initialization and warmup must finish
+/// within that same quiet allowance; a future shorter allowance must cover that tail.
 #[derive(Default)]
 struct ReadyLoadProgress {
     stages: Vec<String>,
@@ -123,28 +125,27 @@ struct ReadyLoadProgress {
     last_advanced: Duration,
 }
 
+/// Existing native load callback snapshot carried by the health response.
+#[derive(serde::Deserialize)]
+struct LoadProgressSample {
+    pid: u32,
+    stages: Vec<String>,
+    current: String,
+    value: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct LoadingHealth {
+    load_progress: Option<LoadProgressSample>,
+}
+
 impl ReadyLoadProgress {
-    fn observe(&mut self, body: &serde_json::Value, pid: u32, elapsed: Duration) -> bool {
-        let Some(sample) = body.get("load_progress") else {
-            return false;
-        };
-        if sample.get("pid").and_then(serde_json::Value::as_u64) != Some(u64::from(pid)) {
+    fn observe(&mut self, sample: &LoadProgressSample, pid: u32, elapsed: Duration) -> bool {
+        if sample.pid != pid {
             return false;
         }
-        let Some(stages) = sample.get("stages").and_then(serde_json::Value::as_array) else {
-            return false;
-        };
-        let Some(stages) = stages
-            .iter()
-            .map(serde_json::Value::as_str)
-            .collect::<Option<Vec<_>>>()
-        else {
-            return false;
-        };
-        let Some(current) = sample.get("current").and_then(serde_json::Value::as_str) else {
-            return false;
-        };
-        let Some(stage) = stages.iter().position(|name| *name == current) else {
+        let stages = &sample.stages;
+        let Some(stage) = stages.iter().position(|name| name == &sample.current) else {
             return false;
         };
         if stages.iter().any(|name| name.is_empty())
@@ -157,19 +158,12 @@ impl ReadyLoadProgress {
             return false;
         }
         if self.stages.is_empty() {
-            self.stages = stages.iter().map(|name| (*name).to_owned()).collect();
+            self.stages = stages.clone();
             self.high = vec![0.0; stages.len()];
-        } else if !self
-            .stages
-            .iter()
-            .map(String::as_str)
-            .eq(stages.iter().copied())
-        {
+        } else if self.stages != *stages {
             return false;
         }
-        let Some(value) = sample.get("value").and_then(serde_json::Value::as_f64) else {
-            return false;
-        };
+        let value = sample.value;
         if !value.is_finite() || !(0.0..=1.0).contains(&value) || value <= self.high[stage] {
             return false;
         }
@@ -4407,15 +4401,19 @@ impl LlamaServerProcess {
                     last = format!("status {}", resp.status());
                     if loading {
                         if let Some((expected, pid)) = &owned_loading {
-                            if let Ok(body) = resp.json::<serde_json::Value>().await {
+                            if let Ok(LoadingHealth {
+                                load_progress: Some(sample),
+                            }) = resp.json::<LoadingHealth>().await
+                            {
                                 if self.owned_engine().as_ref() == Some(expected)
-                                    && progress.observe(&body, *pid, started.elapsed())
+                                    && progress.observe(&sample, *pid, started.elapsed())
                                 {
                                     crate::probe!(
                                         class = "serving.load.progress",
                                         pid = *pid,
                                         elapsed_ms = started.elapsed().as_millis() as u64,
-                                        sample = %body["load_progress"],
+                                        stage = %sample.current,
+                                        value = sample.value,
                                         "owned model loading made measured progress; retaining the existing stall allowance"
                                     );
                                 }
@@ -4450,7 +4448,11 @@ impl LlamaServerProcess {
                 // with the live 24B lane was jetsam-killed with 9.6 GB free.
                 return Err(LlamaServerError::NotReady(
                     started.elapsed(),
-                    format!("{last}; measured load progress quiet for {:?} (allowance {budget:?}) — last stderr:\n{}", started.elapsed().saturating_sub(progress.last_advanced), self.stderr_log_tail()),
+                    format!(
+                        "{last}; measured load progress quiet for {:?} (allowance {budget:?}) — last stderr:\n{}",
+                        started.elapsed().saturating_sub(progress.last_advanced),
+                        self.stderr_log_tail()
+                    ),
                 ));
             }
             tokio::time::sleep(READY_POLL).await;
@@ -4553,10 +4555,11 @@ pub enum LaneAdmission {
 /// `resident` is the verified-live ephemeral census at decision time — the authority
 /// never has to re-derive it, and cannot disagree with the caller about what is
 /// already running.
-pub type LaneAdmissionAuthority =
-    Arc<dyn Fn(&ServingTarget, &[crate::inference::lane_registry::LaneRecord]) -> LaneAdmission
+pub type LaneAdmissionAuthority = Arc<
+    dyn Fn(&ServingTarget, &[crate::inference::lane_registry::LaneRecord]) -> LaneAdmission
         + Send
-        + Sync>;
+        + Sync,
+>;
 
 static LANE_ADMISSION: OnceLock<LaneAdmissionAuthority> = OnceLock::new();
 
@@ -4962,7 +4965,10 @@ impl LlamaServerControl for LlamaServerProcess {
 
     async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
         let body = self.props_json().await?;
-        Ok(body.get("build_info").and_then(|v| v.as_str()).map(str::to_string))
+        Ok(body
+            .get("build_info")
+            .and_then(|v| v.as_str())
+            .map(str::to_string))
     }
 
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
@@ -8275,11 +8281,21 @@ mod tests {
         );
         // Regression: total cold load may exceed 240s while measured work advances.
         // Repeated 503, stage labels, wrong children and warmup silence earn no time.
+        assert!(
+            serde_json::from_str::<LoadingHealth>(r#"{"error":{"code":503}}"#)
+                .expect("older engine health shape")
+                .load_progress
+                .is_none()
+        );
+        assert!(
+            serde_json::from_str::<LoadingHealth>(r#"{"load_progress":{"pid":"wrong"}}"#).is_err()
+        );
         let mut progress = ReadyLoadProgress::default();
         let sample = |pid, current, value| {
-            serde_json::json!({"load_progress": {
+            serde_json::from_value::<LoadProgressSample>(serde_json::json!({
                 "pid": pid, "stages": ["weights", "vision"], "current": current, "value": value,
-            }})
+            }))
+            .expect("native snapshot shape")
         };
         let seconds = Duration::from_secs;
         assert!(!progress.observe(&sample(7, "weights", 0.0), 7, seconds(100)));
@@ -8292,7 +8308,7 @@ mod tests {
         assert!(!progress.observe(&sample(7, "vision", 0.0), 7, seconds(300)));
         assert!(!progress.observe(&sample(7, "vision", 1.1), 7, seconds(300)));
         let mut changed = sample(7, "vision", 0.5);
-        changed["load_progress"]["stages"] = serde_json::json!(["vision", "weights"]);
+        changed.stages.reverse();
         assert!(!progress.observe(&changed, 7, seconds(300)));
         assert_eq!(
             progress.last_advanced,
