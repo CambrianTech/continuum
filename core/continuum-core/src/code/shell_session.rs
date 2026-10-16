@@ -1626,7 +1626,8 @@ mod tests {
             assert_eq!(poll.execution_id, exec_id);
             all_stdout.extend(poll.new_stdout);
             if poll.finished {
-                assert_eq!(poll.exit_code, Some(0));
+                assert_eq!(poll.exit_code, Some(0),
+                    "terminal poll status={:?} stderr={:?}", poll.status, poll.new_stderr);
                 break;
             }
         }

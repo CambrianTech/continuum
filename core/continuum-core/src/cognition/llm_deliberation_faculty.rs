@@ -2914,9 +2914,11 @@ impl LlmDeliberationFaculty {
             grounding
                 .expand_within(after_framing.saturating_sub(Self::messages_cost(&fitted.messages)));
         }
+        let trailing_grounding = grounding.trailing_messages();
+        fitted.refit.grounding_len = trailing_grounding.len();
         fitted.messages.splice(
             fitted.grounding_at..fitted.grounding_at,
-            grounding.trailing_messages(),
+            trailing_grounding,
         );
         let messages = fitted.messages;
 
@@ -2995,6 +2997,7 @@ impl LlmDeliberationFaculty {
         });
         let segments = segment_map(&system, &messages);
         DeliberationPromptView {
+            refit: fitted.refit,
             system,
             input_identity,
             estimated_prompt_tokens,
@@ -3700,13 +3703,14 @@ impl LlmDeliberationFaculty {
         // never supply an alternative. Ordinary eviction still bounds this view.
         let mut history_tokens = Self::messages_cost(&prompt.history);
         for (index, pointer) in std::mem::take(&mut prompt.result_pointers) {
-            if history_tokens <= history_budget { break; }
             let Some(message) = prompt.history.get_mut(index) else { continue };
             let old_cost = Self::message_cost(message);
             let pointer_cost = Self::message_cost(&pointer);
-            if pointer_cost < old_cost {
+            if history_tokens > history_budget && pointer_cost < old_cost {
                 history_tokens = history_tokens.saturating_sub(old_cost - pointer_cost);
                 *message = pointer;
+            } else {
+                prompt.result_pointers.push((index, pointer));
             }
         }
         // Read BEFORE the history is borrowed for costing: what her own last move and its
@@ -3846,6 +3850,14 @@ impl LlmDeliberationFaculty {
         // Move the surviving messages; fitting never clones the entire prompt.
         prompt.history.drain(..start);
         let grounding_at = prompt.grounding_at.saturating_sub(start);
+        let refit = PromptRefit {
+            history_len: prompt.history.len(),
+            grounding_at,
+            grounding_len: 0,
+            result_pointers: prompt.result_pointers.into_iter()
+                .filter_map(|(index, pointer)| index.checked_sub(start).map(|i| (i, pointer)))
+                .collect(),
+        };
         // The steps ledger changes on every act (a new action at its tail, an old one aged
         // out at its head). In a multi-act turn it rides after everything append-only
         // across the acts and just before the pinned result, which stays last (card
@@ -3871,7 +3883,72 @@ impl LlmDeliberationFaculty {
             messages: prompt.history,
             grounding_at,
             receipt,
+            refit,
         })
+    }
+
+    /// Reduce only the already admitted optional snapshot after an exact quote.
+    /// The conversion proposes a reduction, not a tokenizer guarantee; the adapter
+    /// must quote the resulting request again. Each successful correction consumes
+    /// a whole optional message or its one saved-result representation.
+    fn refit_rejected_prompt(
+        &self,
+        mut view: DeliberationPromptView,
+        measured: u32,
+        available: u32,
+        reply: u32,
+    ) -> Result<DeliberationPromptView, PromptCapacityError> {
+        let old_estimate = view.estimated_prompt_tokens;
+        let old_reductions = view.refit.remaining_reductions();
+        let refusal = || PromptCapacityError {
+            required_tokens: (measured as usize).saturating_add(reply as usize),
+            budget_tokens: available as usize,
+        };
+        if measured == 0 || old_estimate == 0 || old_reductions == 0 {
+            return Err(refusal());
+        }
+        // Local admission requires prompt + reply < window (serving_guard).
+        // The additional token represents that strict boundary, not a safety fudge.
+        let deficit = (measured as usize).saturating_add(reply as usize)
+            .saturating_sub((available as usize).saturating_sub(1));
+        let reduction = ((deficit as u128 * old_estimate as u128)
+            .div_ceil(measured as u128)).min(usize::MAX as u128) as usize;
+        if reduction == 0 { return Err(refusal()); }
+        let input_budget = old_estimate.saturating_sub(reduction);
+        let fixed_tokens = old_estimate.saturating_sub(Self::messages_cost(&view.messages));
+        let grounding: Vec<_> = view.messages.drain(
+            view.refit.grounding_at..view.refit.grounding_at + view.refit.grounding_len
+        ).collect();
+        let required = view.messages.split_off(view.refit.history_len);
+        let frozen_grounding_tokens = Self::messages_cost(&grounding);
+        let prompt = PromptMessages {
+            input_identity: view.input_identity,
+            history: view.messages,
+            result_pointers: view.refit.result_pointers,
+            grounding_tokens: 0,
+            grounding_at: view.refit.grounding_at,
+            stimulus: None,
+            latest_result: required,
+            action_statement: None,
+            room_updates: Vec::new(),
+            ledger: None,
+            notices: Vec::new(),
+        };
+        let mut fitted = self.fit_messages(prompt, input_budget
+            .saturating_sub(fixed_tokens).saturating_sub(frozen_grounding_tokens))?;
+        if fitted.refit.remaining_reductions() >= old_reductions {
+            return Err(refusal());
+        }
+        fitted.refit.grounding_len = grounding.len();
+        fitted.messages.splice(fitted.grounding_at..fitted.grounding_at, grounding);
+        let estimate = fixed_tokens.saturating_add(Self::messages_cost(&fitted.messages));
+        if estimate >= old_estimate { return Err(refusal()); }
+        view.messages = fitted.messages;
+        view.refit = fitted.refit;
+        view.estimated_prompt_tokens = estimate;
+        view.segments = segment_map(&view.system, &view.messages);
+        view.capacity_error = None;
+        Ok(view)
     }
 
     /// Conservative token estimate of the ONE natively-offered tool spec
@@ -4237,8 +4314,25 @@ impl PromptMessages {
     }
 }
 
+/// Finite optional representations remaining in the admitted prompt. Grounding
+/// stays frozen at its original position; required messages remain one intact tail.
+#[derive(Debug, Clone, Default)]
+struct PromptRefit {
+    history_len: usize,
+    grounding_at: usize,
+    grounding_len: usize,
+    result_pointers: Vec<(usize, ChatMessage)>,
+}
+
+impl PromptRefit {
+    fn remaining_reductions(&self) -> usize {
+        self.history_len.saturating_add(self.result_pointers.len())
+    }
+}
+
 #[derive(Default)]
 struct FittedMessages {
+    refit: PromptRefit,
     messages: Vec<ChatMessage>,
     grounding_at: usize,
     /// What the fit did to her optional history (card d33e928a, Kimi's finding): the
@@ -4581,6 +4675,9 @@ impl std::fmt::Display for PromptCapacityError {
 /// glass box over the RAG/prompt. Print it, capture it, diff it across turns.
 #[derive(Debug, Clone)]
 pub struct DeliberationPromptView {
+    // Source-owned boundaries over this exact assembled snapshot, never re-inferred
+    // from prose or refreshed from working memory during corrective admission.
+    refit: PromptRefit,
     pub system: String,
     input_identity: [u8; 32],
     /// Cached pre-calibration cost, including selected schemas and framing.
@@ -4836,16 +4933,18 @@ impl LlmDeliberationFaculty {
             Err(error) => return Some(Contribution::deliberation_fault(error)),
         };
         let mut rejected_prompt_tokens = None;
+        let mut rejected_measured_tokens = None;
+        let mut request_template: Option<TextGenerationRequest> = None;
+        let mut view = self.prompt_view_with_visual_feedback(
+            ws, fit_window, calibration, visual.as_ref(), binding.model.as_deref(),
+        );
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
         let mut sent_allowance: Option<u32> = None;
-        // One corrective admission replay at most; no accepted cognition is
-        // repeated. Existing queue/header/stream deadlines still apply to each
-        // attempt. The immutable workspace and captured model route stay fixed.
+        // Correct only frozen admitted input, consuming a finite optional unit on
+        // every retry. Exact measured progress is required too. No accepted cognition
+        // is replayed, and no working-memory or RAG source is re-read or refilled.
         let (view, resp) = loop {
-            let view = self.prompt_view_with_visual_feedback(
-                ws, fit_window, calibration, visual.as_ref(), binding.model.as_deref(),
-            );
             if let Some(error) = &view.protocol_error {
                 return Some(Contribution::deliberation_fault(error.clone()));
             }
@@ -4894,8 +4993,8 @@ impl LlmDeliberationFaculty {
                 burst = %view.user_text(),
                 "deliberation prompt — what the model sees this turn"
             );
-            // SINGLE SHOT: one accepted generation → one verdict. At most one
-            // corrective admission replay follows a typed capacity refusal; no
+            // SINGLE SHOT: one accepted generation → one verdict. A strictly
+            // shrinking corrective admission replay follows a typed refusal; no
             // provider text or tool action has been accepted at that point.
             // This faculty does not run an internal agent loop. If the model chooses to act, that is a
             // `Decision::Act` verdict; the ORGANISM (the act→observe driver,
@@ -4940,55 +5039,62 @@ impl LlmDeliberationFaculty {
             // budget math in `prompt_view_within` reaches the SAME answer — those two
             // disagreed for the life of #3829, and the budget's copy priced the full
             // registry on turns that sent hands (card dec1a7ff).
-            let selected = self.select_tool_surface(ws, fit_window);
-            if selected.reason == SurfaceReason::HandsForBudget {
-                // Only the BUDGET path is a row: a work turn narrowing is routine and
-                // already understood, but a message turn narrowing means she cannot see
-                // verbs she would otherwise have been offered. Whoever later asks "why
-                // did she never call X" needs this line to exist.
-                //
-                // `surface_tokens` is what she was OFFERED and `withheld_tokens` what she
-                // did not get — reported apart because one field used to carry the full
-                // registry's cost beside a count of her hands, and reconciling the two
-                // gave a nonsense tokens-per-tool.
-                crate::probe!(
-                    class = "delib.tool_surface.withheld",
-                    persona = %self.persona_name,
-                    offered = self.hands_specs.len() as u64,
-                    full = self.native_specs.len() as u64,
-                    surface_tokens = selected.tokens as u64,
-                    withheld_tokens = self.describe_tool_tokens() as u64,
-                    budget_tokens = super::context_budget::ContextBudget::from_window(
-                        fit_window
-                    )
-                    .tool_surface_tokens() as u64,
-                    context_window = fit_window,
-                    "the full tool surface exceeds its share of the served window — \
-                     offering her hands; the discovery pair still reaches the rest"
+            if request_template.is_none() {
+                let selected = self.select_tool_surface(ws, fit_window);
+                if selected.reason == SurfaceReason::HandsForBudget {
+                    // Only the BUDGET path is a row: a work turn narrowing is routine and
+                    // already understood, but a message turn narrowing means she cannot see
+                    // verbs she would otherwise have been offered. Whoever later asks "why
+                    // did she never call X" needs this line to exist.
+                    //
+                    // `surface_tokens` is what she was OFFERED and `withheld_tokens` what she
+                    // did not get — reported apart because one field used to carry the full
+                    // registry's cost beside a count of her hands, and reconciling the two
+                    // gave a nonsense tokens-per-tool.
+                    crate::probe!(
+                        class = "delib.tool_surface.withheld",
+                        persona = %self.persona_name,
+                        offered = self.hands_specs.len() as u64,
+                        full = self.native_specs.len() as u64,
+                        surface_tokens = selected.tokens as u64,
+                        withheld_tokens = self.describe_tool_tokens() as u64,
+                        budget_tokens = super::context_budget::ContextBudget::from_window(
+                            fit_window
+                        )
+                        .tool_surface_tokens() as u64,
+                        context_window = fit_window,
+                        "the full tool surface exceeds its share of the served window — \
+                         offering her hands; the discovery pair still reaches the rest"
+                    );
+                }
+                // Selection and budget accounting borrow the cached schemas. Only the
+                // owned inference request needs a copy of the selected surface.
+                let tools = selected.specs.map(std::borrow::Cow::into_owned);
+
+                let request = self.build_request_within(
+                    &binding,
+                    view.completion_reserve,
+                    view.messages.clone(),
+                    tools,
+                    view.system.clone(),
+                    {
+                        // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
+                        // teammates) + reserved-marker stops (#158, don't fabricate
+                        // [action]/[recall] receipts). Combined into one stop list.
+                        let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
+                        stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
+                        (!stops.is_empty()).then_some(stops)
+                    },
+                    Some(ws.room_id),
+                    self.turn_kind(ws),
                 );
+
+                let mut template = request;
+                template.messages.clear();
+                request_template = Some(template);
             }
-            // Selection and budget accounting borrow the cached schemas. Only the
-            // owned inference request needs a copy of the selected surface.
-            let tools = selected.specs.map(std::borrow::Cow::into_owned);
-
-            let request = self.build_request_within(
-                &binding,
-                view.completion_reserve,
-                view.messages.clone(),
-                tools,
-                view.system.clone(),
-                {
-                    // Turn-boundary hygiene: peer-name stops (#150, don't speak AS
-                    // teammates) + reserved-marker stops (#158, don't fabricate
-                    // [action]/[recall] receipts). Combined into one stop list.
-                    let mut stops = super::deliberation_budget::peer_stop_sequences(&ws.turns);
-                    stops.extend(super::deliberation_budget::reserved_marker_stop_sequences());
-                    (!stops.is_empty()).then_some(stops)
-                },
-                Some(ws.room_id),
-                self.turn_kind(ws),
-            );
-
+            let mut request = request_template.as_ref().expect("initial request assembled").clone();
+            request.messages = view.messages.clone();
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
                 return Some(Contribution::deliberation_fault(
@@ -5041,13 +5147,19 @@ impl LlmDeliberationFaculty {
                         corrective_replay_used = rejected_prompt_tokens.is_some(),
                         "provider capacity refusal: retained measured token density for prompt fitting"
                     );
-                    if rejected_prompt_tokens.is_some() {
-                        return Some(Contribution::deliberation_fault(format!(
-                            "provider rejected the corrective request: {} tokens requested, {} available; capacity feedback retained for the next turn",
-                            requested, available,
-                        )));
+                    if rejected_measured_tokens.is_some_and(|previous| requested >= previous) {
+                        return Some(Contribution::deliberation_fault(
+                            "exact prompt correction made no measured progress; refusing further admission replay",
+                        ));
                     }
                     rejected_prompt_tokens = Some(estimated_prompt_tokens);
+                    rejected_measured_tokens = Some(requested);
+                    view = match self.refit_rejected_prompt(
+                        view, requested, available, sent_allowance.unwrap_or(0),
+                    ) {
+                        Ok(view) => view,
+                        Err(error) => return Some(Contribution::deliberation_fault(error.to_string())),
+                    };
                 }
                 Err(error) => {
                     return Some(Contribution::deliberation_fault(error.to_string()));
@@ -8629,6 +8741,23 @@ mod tests {
             // Fitting is a projection: a later roomy request still has the body.
             let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
             assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
+            // Exact-refusal correction reuses saved alternatives and keeps the
+            // entire required native batch, without re-reading working memory.
+            let estimate = LlmDeliberationFaculty::messages_cost(&roomy.messages);
+            let snapshot = DeliberationPromptView {
+                refit: roomy.refit, system: String::new(), input_identity: [0; 32],
+                estimated_prompt_tokens: estimate, completion_reserve: 0,
+                capacity_error: None, protocol_error: None, segments: Vec::new(),
+                messages: roomy.messages,
+            };
+            let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
+            assert!(corrected.estimated_prompt_tokens < estimate);
+            assert!(corrected.messages.iter().any(|m| m.content_text().contains(&handle)));
+            let corrected_wire = crate::inference::request_body::wire_messages(&corrected.messages, None, true, false, "llama-server");
+            let call_at = corrected_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
+            for (i, observation) in batch.iter().enumerate() {
+                assert_eq!(corrected_wire[call_at + 1 + i]["tool_call_id"], observation.call.id);
+            }
             wm.set_scope(Some("another-workspace".into()));
             let scoped = faculty.prompt_view_with_visual_feedback(
                 &ws,
@@ -10108,9 +10237,11 @@ mod tests {
             rejections: Mutex<VecDeque<crate::ai::inference_error::InferenceError>>,
             live_window: Option<u32>,
             on_window_read: Mutex<Option<WindowReadHook>>,
+            on_request: Mutex<Option<RequestHook>>,
         }
 
         type WindowReadHook = Box<dyn FnOnce() + Send>;
+        type RequestHook = Box<dyn FnMut(&TextGenerationRequest) -> Option<crate::ai::inference_error::InferenceError> + Send>;
 
         impl ScriptedAdapter {
             fn new(responses: Vec<TextGenerationResponse>) -> Self {
@@ -10120,6 +10251,7 @@ mod tests {
                     rejections: Mutex::new(VecDeque::new()),
                     live_window: None,
                     on_window_read: Mutex::new(None),
+                    on_request: Mutex::new(None),
                 }
             }
             fn call_count(&self) -> usize {
@@ -10157,6 +10289,12 @@ mod tests {
                 sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
             ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError>
             {
+                let injected = self.on_request.lock().expect("fixture request hook")
+                    .as_mut().and_then(|hook| hook(&request));
+                if let Some(error) = injected {
+                    self.seen.lock().expect("fixture request log").push(request);
+                    return Err(error);
+                }
                 let rejection = self
                     .rejections
                     .lock()
@@ -10362,11 +10500,11 @@ mod tests {
             use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
             use crate::cognition::workspace::Burst;
 
-            for failed_response in [false, true] {
+            for (failed_response, residual) in [(false, false), (true, false), (false, true)] {
                 let home = tempfile::tempdir().expect("isolated capture and demand storage");
                 let _native = crate::paths::NativeHomeOverride::install(home.path());
                 let persona = Uuid::new_v4();
-                let window = 29_440;
+                let window = if residual { 51_712 } else { 29_440 };
                 let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(
                     if failed_response {
                         FinishReason::Error
@@ -10380,9 +10518,26 @@ mod tests {
                     },
                     None,
                 )]));
-                adapter.rejections.lock().expect("fixture rejection queue").push_back(
+                if !residual { adapter.rejections.lock().expect("fixture rejection queue").push_back(
                     InferenceError::from_http(400, r#"{"error":{"type":"exceed_context_size_error","n_prompt_tokens":29722,"n_ctx":29440}}"#),
                 );
+                }
+                let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(8));
+                if residual {
+                    let changed_wm = wm.clone();
+                    let mut attempt = 0;
+                    *adapter.on_request.lock().unwrap() = Some(Box::new(move |request| {
+                        let excess = match attempt { 0 => 337, 1 => 43, _ => return None };
+                        if attempt == 0 {
+                            changed_wm.record_receipt("arrived_after_frozen_quote");
+                        }
+                        attempt += 1;
+                        Some(InferenceError::ContextExceeded {
+                            requested: window - request.max_tokens.expect("actual reserved output") + excess,
+                            available: window,
+                        })
+                    }));
+                }
                 let registry = crate::cognition::working_set::WorkingSetRegistry::new();
                 for tick in 0..3 {
                     registry.record_emission_in_memory(persona, 834, 0, crate::cognition::working_set::EmissionStop::Landed, tick);
@@ -10391,6 +10546,7 @@ mod tests {
                     LlmDeliberationFaculty::new(persona, "Ivar", "You are Ivar.", adapter.clone())
                         .with_context_window(window)
                         .with_tools(vec![read_tool()])
+                        .with_working_memory(wm.clone())
                         .with_working_set(registry)
                         .with_prompt_capture(Arc::new(
                             JsonlPromptCaptureSink::open(home.path(), persona)
@@ -10421,6 +10577,10 @@ mod tests {
                     )
                     .standing_grounding(),
                 );
+                ws.broadcast.push(Contribution::context(
+                    FacultyId::Custom("frozen-grounding".into()),
+                    "frozen_trailing_grounding", 1.0, "snapshot boundary",
+                ).standing_grounding().trailing());
                 let initial = faculty.prompt_view_within(&ws, window);
                 assert!(initial.capacity_error.is_none());
                 let unfitted = faculty.messages_unfitted(&ws, None);
@@ -10438,7 +10598,23 @@ mod tests {
                 assert_eq!(outcome.fault.is_some(), failed_response);
                 {
                     let seen = adapter.seen.lock().expect("actual requests");
-                    assert_eq!(seen.len(), 2);
+                    assert_eq!(seen.len(), if residual { 3 } else { 2 });
+                    assert!(seen.iter().all(|request| request.messages.iter()
+                        .all(|m| !m.content_text().contains("arrived_after_frozen_quote"))));
+                    for pair in seen.windows(2) {
+                        assert_ne!(pair[0].request_id, pair[1].request_id);
+                        let ground: Vec<_> = pair[1].messages.iter().enumerate()
+                            .filter(|(_, m)| m.content_text().contains("frozen_trailing_grounding"))
+                            .map(|(i, _)| i).collect();
+                        assert_eq!(ground.len(), 1);
+                        let ask = pair[1].messages.iter().position(|m| m.content_text().contains(stimulus)).unwrap();
+                        assert!(ground[0] < ask);
+                        assert_eq!(pair[0].system_prompt, pair[1].system_prompt);
+                        assert_eq!(pair[0].max_tokens, pair[1].max_tokens);
+                        assert_eq!(serde_json::to_value(&pair[0].tools).unwrap(), serde_json::to_value(&pair[1].tools).unwrap());
+                        assert!(LlmDeliberationFaculty::messages_cost(&pair[1].messages)
+                            < LlmDeliberationFaculty::messages_cost(&pair[0].messages));
+                    }
                     assert_eq!(outcome.receipts.len(), seen.len());
                     for (receipt, request) in outcome.receipts.iter().zip(seen.iter()) {
                         assert_eq!(
@@ -10456,13 +10632,13 @@ mod tests {
                     ));
                     assert_eq!(
                         matches!(
-                            outcome.receipts[1].outcome,
+                            outcome.receipts.last().unwrap().outcome,
                             crate::cognition::provenance::GenerationOutcome::Faulted { .. }
                         ),
                         failed_response
                     );
                     let first = &seen[0];
-                    let second = &seen[1];
+                    let second = seen.last().unwrap();
                     assert_ne!(first.request_id, second.request_id);
                     assert!(
                         LlmDeliberationFaculty::messages_cost(&second.messages)
@@ -10485,7 +10661,8 @@ mod tests {
                                 r.tools.as_deref().expect("selected tools"),
                             )
                     };
-                    let observed = PromptCalibration::observed(cost(first), 29_722, None)
+                    let measured_first = if residual { window - first.max_tokens.unwrap() + 337 } else { 29_722 };
+                    let observed = PromptCalibration::observed(cost(first), measured_first, None)
                         .expect("positive actual request observation");
                     assert!(
                         observed.charge(cost(second))
@@ -10500,14 +10677,14 @@ mod tests {
                     .iter()
                     .filter(|entry| !matches!(entry.status, CallStatus::Submitted))
                     .collect();
-                assert_eq!(terminals.len(), 2);
+                assert_eq!(terminals.len(), if residual { 3 } else { 2 });
                 assert!(matches!(terminals[0].status, CallStatus::Failed));
                 assert_eq!(
-                    matches!(terminals[1].status, CallStatus::Failed),
+                    matches!(terminals.last().unwrap().status, CallStatus::Failed),
                     failed_response
                 );
                 assert_eq!(
-                    matches!(terminals[1].status, CallStatus::Completed),
+                    matches!(terminals.last().unwrap().status, CallStatus::Completed),
                     !failed_response
                 );
                 assert_ne!(terminals[0].request_id, terminals[1].request_id);
@@ -10685,7 +10862,7 @@ mod tests {
             assert_eq!(
                 adapter.call_count(),
                 2,
-                "at most one corrective replay per turn"
+                "unchanged exact measurement terminates corrective replay"
             );
             let next = faculty.contribute(&ws).await.expect("next tick");
             assert!(next.fault.is_none(), "{:?}", next.fault);
