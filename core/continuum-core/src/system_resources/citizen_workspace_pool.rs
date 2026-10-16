@@ -199,7 +199,7 @@ pub fn residue_to_drop(
 /// Is `dir` a tree cargo wrote? The cachedir signature alone is a GENERIC cache marker any
 /// tool may write (Codex on #4528), so it must sit beside `.rustc_info.json`, the file cargo
 /// writes at the root of every target dir it owns.
-fn is_cargo_target(dir: &Path) -> bool {
+pub(crate) fn is_cargo_target(dir: &Path) -> bool {
     std::fs::read_to_string(dir.join("CACHEDIR.TAG")).is_ok_and(|t| t.starts_with(CARGO_CACHEDIR_SIGNATURE))
         && dir.join(".rustc_info.json").is_file()
 }
@@ -505,7 +505,7 @@ impl CitizenWorkspacePool {
 /// - no deploy in flight (`deploy_claim::in_flight(..).excludes_deploy()`);
 /// - no citizen turn in flight (`turn_ingress::in_flight()`).
 /// `Err` names the first gate that refuses.
-fn node_quiescence(home: &Path) -> Result<(), String> {
+pub(crate) fn node_quiescence(home: &Path) -> Result<(), String> {
     let turns = crate::cognition::turn_ingress::in_flight();
     if turns > 0 {
         return Err(format!("citizen_turn_in_flight: {turns}"));
@@ -930,6 +930,15 @@ impl ResourcePool for CitizenWorkspacePool {
         let mut freed = 0u64;
         let mut archived_total = 0usize;
         for ws in &drop {
+            let Some(_hands) = crate::modules::work::HandsLease::try_take(ws.peer_id) else {
+                continue;
+            };
+            // Discovery publishes child ownership under these same hands. A
+            // whole-workspace deletion cannot bypass the child's Cargo locks,
+            // active-image checks, or separately observed broker accounting.
+            if !matches!(super::disk_reporters::citizen_has_cargo_owner(ws.peer_id), Ok(false)) {
+                continue;
+            }
             let dropped_dir = ws
                 .workspace
                 .parent()

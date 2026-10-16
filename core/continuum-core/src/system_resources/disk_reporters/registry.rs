@@ -275,21 +275,29 @@ impl Registry {
             }
         };
         self.0.lock().permanent.insert(physical.clone());
-        Ok(self.register_resolved(physical))
+        self.register_resolved(physical, None)
     }
 
-    fn register_resolved(&self, physical: std::path::PathBuf) -> Arc<TrackedDir> {
+    fn register_resolved(&self, physical: std::path::PathBuf, citizen: Option<uuid::Uuid>) -> Result<Arc<TrackedDir>, String> {
         let mut state = self.0.lock();
         if let Some(dir) = state
             .dirs
             .iter()
             .find(|dir| CARGO_TARGET_CLASSES.contains(&dir.class()) && dir.path() == physical)
         {
-            return dir.clone();
+            if let Some(peer) = citizen {
+                dir.bind_citizen(peer)?;
+                if let Some(monitor) = state.consumers.as_ref().and_then(|consumers| consumers.monitor.upgrade()) {
+                    let reporter: Arc<dyn super::super::disk_pressure::DiskReporter> = dir.clone();
+                    monitor.remove_reporter(&reporter);
+                }
+            }
+            return Ok(dir.clone());
         }
         let dir = TrackedDir::new("cargo-target", physical);
+        if let Some(peer) = citizen { dir.bind_citizen(peer)?; }
         if let Some(consumers) = &state.consumers {
-            if let Some(monitor) = consumers.monitor.upgrade() {
+            if let Some(monitor) = consumers.monitor.upgrade().filter(|_| citizen.is_none()) {
                 monitor.add_reporter(dir.clone());
             }
             if let Some(broker) = consumers.broker.upgrade() {
@@ -297,7 +305,7 @@ impl Registry {
             }
         }
         state.dirs.push(dir.clone());
-        dir
+        Ok(dir)
     }
 
     async fn open_records(&self, adapter: Arc<dyn StorageAdapter>) -> Result<(), String> {
@@ -308,7 +316,7 @@ impl Registry {
         for dir in pending {
             if let Ok(physical) = self.resolve(dir.path()).await {
                 self.0.lock().permanent.insert(physical.clone());
-                self.register_resolved(physical);
+                self.register_resolved(physical, dir.citizen())?;
                 self.0
                     .lock()
                     .unresolved_boot
@@ -353,7 +361,7 @@ impl Registry {
             }
             // Stored paths already name physical roots. Offline volumes do not
             // need a filesystem probe to recover their durable ownership.
-            self.register_resolved(path.clone());
+            self.register_resolved(path.clone(), record.citizen)?;
             saved.insert(path, record);
         }
         let mut records = DurableRoots { store, saved };
@@ -381,8 +389,21 @@ impl Registry {
         records
             .remember("cargo-target", &physical, observation.volume)
             .await?;
-        self.register_resolved(physical);
+        self.register_resolved(physical, None)?;
         Ok(lease)
+    }
+
+    async fn observe_citizen_target(&self, path: &Path, peer: uuid::Uuid) -> Result<Arc<TrackedDir>, String> {
+        let observation = self.path_work(path, PathWork::Observe).await?;
+        let mut durable = self.1.lock().await;
+        let records = durable.as_mut().ok_or("disk root ownership has not restored yet")?;
+        let _hands = crate::modules::work::HandsLease::try_take(peer)
+            .ok_or("citizen hands are busy; Cargo observation deferred")?;
+        // Binding is conservative even if persistence fails: an already exposed
+        // generic pool must stop using generic custody before the durable write.
+        let dir = self.register_resolved(observation.path.clone(), Some(peer))?;
+        records.remember_owned("cargo-target", &observation.path, observation.volume, Some(peer)).await?;
+        Ok(dir)
     }
 
     async fn retire_empty(&self) -> Result<(), String> {
@@ -465,6 +486,10 @@ impl DurableRoots {
         path: &Path,
         volume_id: Option<u64>,
     ) -> Result<(), String> {
+        self.remember_owned(class, path, volume_id, None).await
+    }
+
+    async fn remember_owned(&mut self, class: &str, path: &Path, volume_id: Option<u64>, citizen: Option<uuid::Uuid>) -> Result<(), String> {
         // Boot/replay retain unavailable volumes as named ownership. New writes
         // already require successful physical resolution in admit().
         let physical = path.to_path_buf();
@@ -474,7 +499,7 @@ impl DurableRoots {
         if self
             .saved
             .get(&physical)
-            .is_some_and(|record| record.volume_id == volume_id)
+            .is_some_and(|record| record.volume_id == volume_id && (citizen.is_none() || record.citizen == citizen))
         {
             return Ok(());
         }
@@ -484,6 +509,12 @@ impl DurableRoots {
             .cloned()
             .unwrap_or_else(|| RootRecord::new(class, &physical));
         record.volume_id = volume_id;
+        if let Some(peer) = citizen {
+            if record.citizen.is_some_and(|prior| prior != peer) {
+                return Err("stored Cargo root belongs to another citizen".into());
+            }
+            record.citizen = Some(peer);
+        }
         let id = uuid::Uuid::parse_str(&record.base.id).map_err(|error| error.to_string())?;
         // save creates a row; a newly observed volume updates the existing owner
         // rather than trying to insert its stable identity a second time.
@@ -578,7 +609,10 @@ pub fn bind_cargo_owners(
         return Err("Cargo roots already belong to different monitor/broker owners".into());
     }
     for (index, dir) in state.dirs.iter().enumerate() {
-        if index >= state.boot_reporters {
+        if dir.citizen().is_some() {
+            let reporter: Arc<dyn super::super::disk_pressure::DiskReporter> = dir.clone();
+            monitor.remove_reporter(&reporter);
+        } else if index >= state.boot_reporters {
             monitor.add_reporter(dir.clone());
         }
         if CARGO_TARGET_CLASSES.contains(&dir.class()) {
@@ -600,6 +634,16 @@ pub async fn register_cargo_target(path: &Path) -> Result<(), String> {
         registry.register(path).await?;
     }
     Ok(())
+}
+
+pub(super) async fn observe_citizen_target(path: &Path, peer: uuid::Uuid) -> Result<Arc<TrackedDir>, String> {
+    writer_registry()?.observe_citizen_target(path, peer).await
+}
+
+/// Called while holding this citizen's hands, which also excludes discovery's
+/// ownership publication. A whole-workspace owner must not bypass child pools.
+pub(crate) fn citizen_has_cargo_owner(peer: uuid::Uuid) -> Result<bool, String> {
+    Ok(writer_registry()?.snapshot().iter().any(|dir| dir.citizen() == Some(peer)))
 }
 
 #[cfg(test)]
@@ -793,6 +837,22 @@ mod tests {
         first.open_records(adapter.clone()).await.unwrap();
         first.admit(later.path()).await.unwrap();
         first.admit(&later.path().join("unused/..")).await.unwrap();
+        let citizen = uuid::Uuid::new_v4();
+        let observed = first.observe_citizen_target(later.path(), citizen).await.unwrap();
+        assert_eq!(observed.citizen(), Some(citizen));
+        observed.set_bytes(4096);
+        assert_eq!(super::super::disk_pressure::DiskReporter::report(observed.as_ref()).bytes, 0,
+            "an already registered generic reporter stops double charging its inclusive parent");
+        let in_flight = observed.eviction_custody();
+        assert!(first.observe_citizen_target(later.path(), citizen).await.is_err(),
+            "a later scan can fail to publish while the restored child remains owned");
+        assert_eq!(super::super::disk_pressure::DiskReporter::report(observed.as_ref()).bytes, 0);
+        assert_eq!(observed.bytes(), 4096, "broker measurement survives publication failure");
+        drop(in_flight);
+        assert!(first.observe_citizen_target(later.path(), uuid::Uuid::new_v4()).await.is_err(),
+            "a historic target cannot be reassigned to different hands");
+        drop(first.admit(later.path()).await.unwrap());
+        assert_eq!(observed.citizen(), Some(citizen), "later writer admission preserves resident custody");
         // Cormac's 5058 P2: the actual bounded preparation path must refuse
         // sensitive roots before mkdir, even when lexically hidden behind '..'.
         let home = tempfile::tempdir().unwrap();
@@ -817,6 +877,8 @@ mod tests {
         drop(first);
         let restarted = Registry::new(boot()).await;
         restarted.open_records(adapter).await.unwrap();
+        assert_eq!(restarted.snapshot().iter().find(|dir| dir.path() == later.path().canonicalize().unwrap())
+            .unwrap().citizen(), Some(citizen), "restart retains the eviction's hands gate");
         assert_eq!(
             restarted.snapshot().len(),
             2,
