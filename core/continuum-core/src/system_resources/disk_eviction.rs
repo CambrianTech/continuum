@@ -1360,7 +1360,10 @@ mod tests {
         #[cfg(unix)]
         { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), inode); }
         for output in outputs { assert_eq!(std::fs::read(release.join(output)).unwrap(), b"preserve installed inputs"); }
-        assert!(try_exclusive_flock(&lock_path).is_some(), "custody is released with the original lock path intact");
+        let reacquired = try_exclusive_flock_detailed(&lock_path);
+        assert!(matches!(reacquired, LockAttempt::Acquired(_)),
+            "custody is released with the original lock path intact: path={}, result={reacquired:?}",
+            lock_path.display());
     }
 
     #[test]
