@@ -842,6 +842,88 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         try { Get-CorePreparedRelease -InstallRoot $resumeRoot -Selection Active | Out-Null } catch { $refused = $_ -match 'changed since preparation' }
         if (-not $refused) { throw 'Changed runtime DLL was accepted' }
         Copy-Item -LiteralPath $dll -Destination (Join-Path $secondSlot 'fixture-runtime.dll') -Force
+        # 23938f81: independent engine rollback leaves current=c, Active=b and
+        # Previous=a. Reusing inactive service-a must retire only its exact,
+        # verified receipt before engine-a can be staged, retaining evidence.
+        & {
+            $previousPath = Join-Path $resumeRoot 'install-previous.json'
+            $savedActive = [IO.File]::ReadAllBytes($activePath)
+            $savedPrevious = [IO.File]::ReadAllBytes($previousPath)
+            $evidenceWriter = ${function:Save-CoreRecoveryEvidence}
+            $candidate = $second | ConvertTo-Json | ConvertFrom-Json
+            $otherEngine = Join-Path $payload 'bin\engine-b\llama-server.exe'
+            New-Item -ItemType Directory -Force -Path (Split-Path $otherEngine -Parent) | Out-Null
+            Set-Content -LiteralPath $otherEngine -Value 'independent active engine'
+            $candidate.engine = $otherEngine
+            function Get-CoreEngineIdleSlot { $engineSlot }
+            function Get-CimInstance { @() }
+            try {
+                Save-CorePreparedRelease -Release $candidate -InstallRoot $resumeRoot -Selection Active
+                [IO.File]::WriteAllBytes($previousPath, $savedPrevious)
+                $committed = [IO.File]::ReadAllBytes($activePath)
+                function Save-CoreRecoveryEvidence { throw 'fixture archive failure' }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $candidate -Cli 'fixture' }
+                catch { $refused = $_ -match 'fixture archive failure' }
+                if (-not $refused -or [Convert]::ToBase64String([IO.File]::ReadAllBytes($previousPath)) -cne [Convert]::ToBase64String($savedPrevious)) { throw 'Archive failure lost Previous custody' }
+                function Save-CoreRecoveryEvidence {
+                    param($Snapshot,$InstallRoot,$Disposition)
+                    & $evidenceWriter -Snapshot $Snapshot -InstallRoot $InstallRoot -Disposition $Disposition
+                    [IO.File]::AppendAllText($activePath, ' ')
+                }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $candidate -Cli 'fixture' }
+                catch { $refused = $_ -match 'receipts changed' }
+                if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Changed Active did not preserve Previous custody' }
+                [IO.File]::WriteAllBytes($activePath, $committed)
+                function Save-CoreRecoveryEvidence {
+                    param($Snapshot,$InstallRoot,$Disposition)
+                    & $evidenceWriter -Snapshot $Snapshot -InstallRoot $InstallRoot -Disposition $Disposition
+                    [IO.File]::AppendAllText($previousPath, ' ')
+                }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $candidate -Cli 'fixture' }
+                catch { $refused = $_ -match 'receipts changed' }
+                if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Changed Previous was retired' }
+                [IO.File]::WriteAllBytes($previousPath, $savedPrevious)
+                function Save-CoreRecoveryEvidence {
+                    param($Snapshot,$InstallRoot,$Disposition)
+                    & $evidenceWriter -Snapshot $Snapshot -InstallRoot $InstallRoot -Disposition $Disposition
+                    $script:resumeTask.Description += ' '
+                }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $candidate -Cli 'fixture' }
+                catch { $refused = $_ -match 'registration changed' }
+                if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Changed registration lost Previous custody' }
+                $script:resumeTask.Description = $fixedDescription
+                Set-Item Function:Save-CoreRecoveryEvidence -Value $evidenceWriter
+                $script:retirementIdleRead = 0
+                function Get-CoreEngineIdleSlot {
+                    $script:retirementIdleRead++
+                    if ($script:retirementIdleRead -eq 1) { $engineSlot } else { Split-Path $otherEngine -Parent }
+                }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $candidate -Cli 'fixture' }
+                catch { $refused = $_ -match 'Engine custody changed' }
+                if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Reacquired engine slot lost Previous custody' }
+                function Get-CoreEngineIdleSlot { $engineSlot }
+                function Get-CimInstance { @([pscustomobject]@{ExecutablePath=$release.engine}) }
+                $refused = $false
+                try { Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $candidate -Cli 'fixture' }
+                catch { $refused = $_ -match 'live image' }
+                if (-not $refused -or -not (Test-Path -LiteralPath $previousPath)) { throw 'Live previous engine lost custody' }
+                function Get-CimInstance { @() }
+                Retire-CorePreviousSelectionForSlot -InstallRoot $resumeRoot -Slot $serviceSlot -Descriptor $candidate -Cli 'fixture'
+                if (Test-Path -LiteralPath $previousPath) { throw 'Verified inactive Previous was not retired' }
+                if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($activePath)) -cne [Convert]::ToBase64String($committed)) { throw 'Supersession modified Active' }
+                $archive = @(Get-ChildItem -LiteralPath $resumeRoot -Filter 'install-previous.superseded-*.json')
+                if ($archive.Count -ne 1 -or [Convert]::ToBase64String([IO.File]::ReadAllBytes($archive[0].FullName)) -cne [Convert]::ToBase64String($savedPrevious)) { throw 'Supersession did not retain exact Previous evidence' }
+                Write-Output 'PASS: inactive previous supersession preserves exact evidence and refuses archival, snapshot, registration, live-image and idle-custody failures'
+            } finally {
+                [IO.File]::WriteAllBytes($activePath, $savedActive)
+                [IO.File]::WriteAllBytes($previousPath, $savedPrevious)
+            }
+        }
         $refused = $false
         try { Restore-CoreActiveRelease -ExpectedDescription '{}' -InstallRoot $resumeRoot | Out-Null } catch { $refused = $_ -match 'newer selection' }
         if (-not $refused) { throw 'Rollback overwrote a different active selection' }
@@ -1496,6 +1578,15 @@ public static class RegisteredGsudoFixture {
     function Get-CimInstance { param($ClassName, $ErrorAction) $script:liveProcesses }
     function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) $script:registeredTask }
     $first = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
+    & {
+        # Incoming publication refusal must precede retirement, even when the
+        # selected inactive slot would otherwise qualify for supersession.
+        function Retire-CorePreviousSelectionForSlot { throw 'retirement ran before incoming validation' }
+        $refused = $false
+        try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -ArtifactDirectory (Join-Path $scratch 'missing publication') | Out-Null }
+        catch { $refused = $_ -match 'Incoming release artifact is missing' }
+        if (-not $refused) { throw 'Missing publication reached release retirement' }
+    }
     # Prebuilt handoff bypasses start-server: media must travel with the slot.
     $mediaSlot = Split-Path -Parent $first.artifact
     if ((Get-FileHash -LiteralPath (Join-Path $mediaSlot 'fixture-runtime.dll')).Hash -ne
