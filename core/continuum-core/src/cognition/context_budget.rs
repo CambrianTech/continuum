@@ -60,6 +60,9 @@ use super::deliberation_budget::GUARD_CHARS_PER_TOKEN;
 
 /// Per-step size of the rolling trail: `1/64` of the window (the calibrated trail-head
 /// fraction from the table above). Named so the COUNT below cannot drift from the SIZE.
+/// The one-result share's floor as a fraction of the served window (see
+/// [`ContextBudget::latest_action_chars`]).
+const RESULT_FLOOR_DENOM: usize = 8;
 const TRAIL_HEAD_DENOM: usize = 64;
 
 /// The trail's TOTAL share of the window: `1/4` — the same allotment
@@ -77,6 +80,9 @@ pub struct ContextBudget {
     /// Total prompt chars this window can hold, conservatively estimated. `None` when the
     /// live window is unknown, which means every bound below is "no bound".
     total_chars: Option<usize>,
+    /// The served window itself in chars, unbounded by prefill affordability: the floor the
+    /// one-result share stands on (see [`Self::latest_action_chars`]).
+    served_chars: Option<usize>,
 }
 
 impl ContextBudget {
@@ -98,16 +104,16 @@ impl ContextBudget {
         Self {
             total_chars: (affordable > 0)
                 .then(|| (affordable as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
+            served_chars: (context_window > 0)
+                .then(|| (context_window as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
         }
     }
 
     /// The served window only — the KV-capacity reading, for seams that must not be
     /// prefill-bounded (a test fixture, a capacity report).
     pub fn from_window_unbounded(context_window: u32) -> Self {
-        Self {
-            total_chars: (context_window > 0)
-                .then(|| (context_window as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
-        }
+        let chars = (context_window > 0).then(|| (context_window as usize).saturating_mul(GUARD_CHARS_PER_TOKEN));
+        Self { total_chars: chars, served_chars: chars }
     }
 
     /// Bounds from the window the local lane is serving RIGHT NOW — for seams that have no
@@ -148,7 +154,7 @@ impl ContextBudget {
     /// The honest "I don't know the window" budget: nothing is folded. See the module doc's
     /// unknown-window contract — the deliberation guard is the real backstop.
     pub fn unknown() -> Self {
-        Self { total_chars: None }
+        Self { total_chars: None, served_chars: None }
     }
 
 /// PURE: the prompt a turn may cost at `rate`, for a lane serving `served` tokens.
@@ -315,7 +321,15 @@ const RECALL_DENOM: usize = 10;
     /// prompt — a quarter of the window is the balance between "she can work with what her
     /// hands just fetched" and "one `code/tree` dump costs 30s of re-prefill per turn".
     pub fn latest_action_chars(&self) -> usize {
-        self.fraction(4)
+        // Never below an eighth of the SERVED window. The affordable total is prefill-bounded
+        // (TTFT x measured prefill t/s): on a box prefilling at 110 tok/s that is 6,600
+        // tokens, a quarter of which is ~1,100 tokens for the result of the act she just
+        // took, so a 250-line file read spilled every time and she re-read it in slices for
+        // hours (the M5, 2026-10-16). The result of her own act is what an act is for; the
+        // optional prompt (history, pointers) is where affordability should bite. An eighth
+        // of the window at 104k is ~10k tokens: one whole source file, ~90 s of prefill
+        // at that rate, once, instead of the loop.
+        self.fraction(4).max(self.served_chars.map_or(0, |c| c / RESULT_FLOOR_DENOM))
     }
 
     /// A dispatched command's result (a compile log, a sentinel's report) folded back in.
