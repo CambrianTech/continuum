@@ -482,6 +482,7 @@ mod tests {
     async fn checkout_observation_does_not_replace_allocation_intent() {
         let mut world = layout(&["core"]);
         world.repository = Some(RepositoryEvidence {
+            origin_repo: Some(airc_work::RepoId::new("observed/project").expect("repo")),
             checkout: parse_checkout(&format!("true\n{}\nrefs/heads/main\n", "b".repeat(40))),
             allocation: Ok(Some(airc_lib::work_worktree::AllocationEvidence {
                 repo: airc_work::RepoId::new("acme/project").expect("repo"),
@@ -503,6 +504,7 @@ mod tests {
         let body = &delivery.items[0].content;
         for fact in [
             "repo acme/project",
+            "Observed origin repository: observed/project",
             "requested branch task/implementation",
             "integration base integration",
             "branch refs/heads/main",
@@ -835,6 +837,63 @@ mod tests {
             .await
             .expect("anchor");
         let reader = LayoutReader::default();
+        // Regression 2be63714: legacy allocation absence must not hide the real
+        // checkout identity or expose credentials when grounding that identity.
+        run_git(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://user:secret@example.test/acme/actual.git?token=secret",
+            ],
+        )
+        .await
+        .expect("origin");
+        let legacy = reader
+            .read_layout(root.to_path_buf())
+            .await
+            .expect("layout");
+        let repository = legacy.repository.expect("repository");
+        assert_eq!(
+            repository.origin_repo.as_ref().map(|repo| repo.as_str()),
+            Some("acme/actual")
+        );
+        let rendered = layout_reader::render_repository(&repository);
+        assert!(rendered.contains("Allocation evidence is unavailable"));
+        assert!(rendered.contains("Observed origin repository: acme/actual"));
+        assert!(!rendered.contains("secret"));
+        run_git(
+            root,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "git@example.test:other/project.git",
+            ],
+        )
+        .await
+        .expect("changed origin");
+        let changed = reader
+            .read_layout(root.to_path_buf())
+            .await
+            .expect("changed layout");
+        assert_eq!(
+            changed
+                .repository
+                .expect("repository")
+                .origin_repo
+                .expect("origin")
+                .as_str(),
+            "other/project"
+        );
+        run_git(root, &["remote", "set-url", "origin", "../local/project.git"])
+            .await.expect("local origin");
+        assert!(reader.read_layout(root.to_path_buf()).await.expect("local layout")
+            .repository.expect("repository").origin_repo.is_none());
+        run_git(root, &["remote", "remove", "origin"]).await.expect("remove origin");
+        assert!(reader.read_layout(root.to_path_buf()).await.expect("no origin layout")
+            .repository.expect("repository").origin_repo.is_none());
         assert!(reader
             .read_allocation(root)
             .await
