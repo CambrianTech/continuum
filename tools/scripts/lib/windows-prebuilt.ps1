@@ -131,5 +131,9 @@ function Copy-CorePublishedEngine {
     if ($kept -and (ConvertTo-CoreImagePath $kept) -ieq (ConvertTo-CoreImagePath $InstallDirectory)) { return }
     $idle = Select-CoreEngineSlot -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe')
     if ((ConvertTo-CoreImagePath $idle) -ine (ConvertTo-CoreImagePath $InstallDirectory)) { throw 'Selected engine slot is no longer idle.' }
+    $engineSources = @($receipt.files.PSObject.Properties | ForEach-Object { Join-Path $source $_.Name })
+    $receiptBytes = [Text.Encoding]::UTF8.GetByteCount(($receipt | ConvertTo-Json -Depth 5))
+    $pendingBytes = [Text.Encoding]::UTF8.GetByteCount('pending')
+    Assert-CoreArtifactCapacity -ArtifactDirectory $ArtifactDirectory -Destination $InstallDirectory -Sources $engineSources -AdditionalBytes ($receiptBytes + $pendingBytes)
     Copy-CoreEnginePublication -SourceDirectory $source -Directory $InstallDirectory
 }

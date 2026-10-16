@@ -22,6 +22,7 @@
 
 pub mod docker;
 pub mod cargo;
+pub mod artifacts;
 
 /// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
 /// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the

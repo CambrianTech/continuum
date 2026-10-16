@@ -1522,10 +1522,11 @@ mod tests {
                  NvmeServingTierPool's migrate rule with the container as one artifact; \
                  protected by serving_active_artifacts while served; never deleted in place",
             ),
+            ("core-artifacts-configured", "139c651d: shared configured staging root; writer projected-byte admission and post-success retention, no migration/deletion of legacy cache"),
             (
                 "core-artifacts",
                 "50ca737e: bounded by its writer — the deploy consumer keeps the newest 3 \
-                 CI-built cores (~200 MB each) and removes older ones on every download; all \
+                 CI-built cores and removes older ones only after successful preparation; all \
                  re-downloadable from the canary releases. Owner when built: a capped pool \
                  like cargo-target, if pressure ever needs more than three",
             ),

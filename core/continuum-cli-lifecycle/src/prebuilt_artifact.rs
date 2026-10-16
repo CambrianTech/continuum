@@ -16,6 +16,9 @@ use serde::Deserialize;
 
 use crate::deploy_provenance::sha_matches;
 
+/// Cooperating consumers hold the shared ledger lease for their entire command.
+pub const CONSUMER_LEASE_PROTOCOL: u32 = 1;
+
 /// Where CI publishes canary builds.
 pub const RELEASE_DOWNLOAD_BASE: &str =
     "https://github.com/CambrianTech/continuum/releases/download";
@@ -179,6 +182,30 @@ pub fn archive_members_verdict(names: &str, details: &str, platform: &str) -> Re
         return Err("Archive contains a link or unsupported member type".into());
     }
     Ok(())
+}
+
+/// Declared regular-file payload from the already validated GNU/BSD tar listing.
+/// Unknown layouts refuse admission; compressed length is never an expansion estimate.
+pub fn archive_expanded_bytes(details: &str) -> Result<u64, String> {
+    let mut total = 0u64;
+    for line in details.lines() {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        let mode = fields.first().ok_or("empty archive member detail")?;
+        if !mode.starts_with(['-', 'd']) { return Err("unsupported archive member type".into()); }
+        // GNU: mode owner/group bytes ISO-date time path.
+        // BSD: mode links owner group bytes month day time-or-year path.
+        let size = if fields.len() >= 6 && fields[1].contains('/') {
+            fields[2]
+        } else if fields.len() >= 9 && fields[1].parse::<u64>().is_ok() {
+            fields[4]
+        } else { return Err("unrecognized archive member size layout".into()); };
+        let size = size.parse::<u64>().map_err(|_| "invalid archive member size")?;
+        if mode.starts_with('-') {
+            total = total.checked_add(size).ok_or("archive expanded size overflow")?;
+        }
+    }
+    if details.lines().next().is_none() { return Err("empty archive member details".into()); }
+    Ok(total)
 }
 
 /// What this node's NVIDIA driver and GPUs can run, read from `nvidia-smi`. `None` fields
@@ -345,24 +372,97 @@ pub fn candidate_keys_log_args(running: &str, tip: &str) -> Vec<String> {
     args
 }
 
+/// A measured resource condition, not evidence that a published artifact is bad.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceCondition {
+    #[default]
+    VolumeCapacity,
+    /// The filesystem refused space/quota while volume admission passed. Only an
+    /// explicit evidence-bound retry can clear this; a free-space sample cannot.
+    UnmeasuredFilesystem,
+    /// Installer observation or receipt uncertainty; only explicit retry clears it.
+    OperationalUncertainty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ResourceDeferral {
+    pub condition: ResourceCondition,
+    pub path: std::path::PathBuf,
+    /// Additional bytes required once the failed invocation has cleaned its staging.
+    pub projected_bytes: u64,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PublishedCoreError {
+    Artifact(String),
+    CapabilityDeferred(String),
+    OperationalBlocked(String),
+    ResourceDeferred(ResourceDeferral),
+}
+impl From<String> for PublishedCoreError {
+    fn from(reason: String) -> Self { Self::Artifact(reason) }
+}
+impl From<&str> for PublishedCoreError {
+    fn from(reason: &str) -> Self { Self::Artifact(reason.into()) }
+}
+impl std::fmt::Display for PublishedCoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Artifact(reason) | Self::CapabilityDeferred(reason) | Self::OperationalBlocked(reason) => f.write_str(reason),
+            Self::ResourceDeferred(deferred) => write!(f, "resource admission deferred at {} for {} bytes: {}", deferred.path.display(), deferred.projected_bytes, deferred.reason),
+        }
+    }
+}
+impl std::error::Error for PublishedCoreError {}
+
+/// Recheck a deferred candidate before any fetch or extraction. The existing consumer
+/// tick owns cadence and request supersession; a still-refused resource spends no attempt.
+pub fn recheck_resource_deferral(
+    pending: &mut Option<(String, ResourceDeferral)>,
+    measured: Result<(), PublishedCoreError>,
+) -> Option<MissingArtifact> {
+    let (key, condition) = pending.as_mut()?;
+    if condition.condition != ResourceCondition::VolumeCapacity {
+        return Some(MissingArtifact::Wait(format!(
+            "published build {key} awaits explicit resource retry: {}", condition.reason
+        )));
+    }
+    match measured {
+        Ok(()) => { *pending = None; None }
+        Err(PublishedCoreError::ResourceDeferred(next)) => {
+            let why = format!("published build {key} awaits resource admission: {}", next.reason);
+            *condition = next;
+            Some(MissingArtifact::Wait(why))
+        }
+        Err(PublishedCoreError::Artifact(reason)) => Some(MissingArtifact::Refuse(reason)),
+        Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => Some(MissingArtifact::Wait(reason)),
+    }
+}
+
 /// The existing consumer's IO boundary. Selection owns the order: publication,
 /// exact-revision authorization, then fetch. A source failure never reaches fetch.
 #[async_trait::async_trait]
 pub trait PublishedCoreSource: Sync {
     type Artifact: Send;
+    fn deferred(&self, _key: &str) -> Option<ResourceDeferral> { None }
     async fn published(&self, key: &str) -> Result<bool, String>;
     async fn checks(&self, key: &str) -> Result<crate::deploy_tracker::Checks, String>;
-    async fn fetch(&self, key: &str) -> Result<Option<Self::Artifact>, String>;
+    async fn fetch(&self, key: &str) -> Result<Option<Self::Artifact>, PublishedCoreError>;
 }
 
 pub async fn select_published_core<S: PublishedCoreSource>(candidates: &[String], source: &S)
-    -> Option<(String, Result<Option<S::Artifact>, String>)>
+    -> Option<(String, Result<Option<S::Artifact>, PublishedCoreError>)>
 {
     use crate::deploy_tracker::Checks;
     for key in candidates {
         if source.published(key).await != Ok(true) { continue; }
         let checks = source.checks(key).await.unwrap_or(Checks::Unknown); // unreadable CI is never authorization
         if matches!(checks, Checks::Green) {
+            if let Some(deferred) = source.deferred(key) {
+                return Some((key.clone(), Err(PublishedCoreError::ResourceDeferred(deferred))));
+            }
             return Some((key.clone(), source.fetch(key).await));
         }
     }
@@ -575,6 +675,14 @@ mod tests {
             "windows-x86_64"
         )
         .is_ok());
+        let gnu = "drwxr-xr-x user/group 0 2026-10-16 10:00 root/\n-rw-r--r-- user/group 123 2026-10-16 10:00 root/a name\n";
+        let bsd = "drwxr-xr-x 0 user group 0 Oct 16 10:00 root/\n-rw-r--r-- 0 user group 456 Oct 16 10:00 root/b\n";
+        assert_eq!(archive_expanded_bytes(gnu).unwrap(), 123);
+        assert_eq!(archive_expanded_bytes(bsd).unwrap(), 456);
+        for bad in ["", "-rw file", "lrwxr-xr-x user/group 1 2026-10-16 10:00 link", "-rw-r--r-- user/group nope 2026-10-16 10:00 file"] {
+            assert!(archive_expanded_bytes(bad).is_err());
+        }
+        assert!(archive_expanded_bytes(&format!("-rw-r--r-- user/group {} 2026-10-16 10:00 a\n-rw-r--r-- user/group 1 2026-10-16 10:00 b\n", u64::MAX)).is_err());
         for names in [
             "../escape",
             "continuum-core-windows-x86_64/../escape",
@@ -694,7 +802,7 @@ mod tests {
                     // None exercises a failed read; Some(Unknown) tests an explicit unknown verdict.
                     verdict.ok_or_else(|| "CI source unavailable".into())
                 }
-                async fn fetch(&self, key: &str) -> Result<Option<String>, String> {
+                async fn fetch(&self, key: &str) -> Result<Option<String>, PublishedCoreError> {
                     self.fetched.lock().unwrap().push(key.to_string());
                     Ok(Some(key.to_string()))
                 }
@@ -736,6 +844,42 @@ mod tests {
             assert_eq!(newest_published(&candidates, &[false, true, false], &[Some(Checks::Green), refused, Some(Checks::Unknown)]).await.as_deref(),
                 None, "without a published green candidate the running core stands");
         }
+        // A published ancestor under resource pressure remains published and authorized,
+        // but may not redownload until the same measured condition clears.
+        struct DeferredSource { pending: Option<(String, ResourceDeferral)>, fetches: std::sync::atomic::AtomicUsize }
+        #[async_trait::async_trait]
+        impl PublishedCoreSource for DeferredSource {
+            type Artifact = String;
+            fn deferred(&self, key: &str) -> Option<ResourceDeferral> {
+                self.pending.as_ref().filter(|(waiting, _)| waiting == key).map(|(_, d)| d.clone())
+            }
+            async fn published(&self, _: &str) -> Result<bool, String> { Ok(true) }
+            async fn checks(&self, _: &str) -> Result<Checks, String> { Ok(Checks::Green) }
+            async fn fetch(&self, key: &str) -> Result<Option<String>, PublishedCoreError> {
+                self.fetches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(Some(key.into()))
+            }
+        }
+        let condition = ResourceDeferral { condition: ResourceCondition::VolumeCapacity, path: "/artifact-cache".into(), projected_bytes: 579, reason: "measured capacity refusal".into() };
+        let mut source = DeferredSource { pending: Some(("older".into(), condition.clone())), fetches: Default::default() };
+        for _ in 0..3 {
+            assert!(matches!(recheck_resource_deferral(&mut source.pending, Err(PublishedCoreError::ResourceDeferred(condition.clone()))), Some(MissingArtifact::Wait(_))));
+            assert!(matches!(select_published_core(&["older".into()], &source).await, Some((_, Err(PublishedCoreError::ResourceDeferred(_))))));
+        }
+        assert_eq!(source.fetches.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert!(select_published_core(&["newer".into(), "older".into()], &source).await.unwrap().1.is_ok(), "different published candidate remains eligible");
+        assert!(recheck_resource_deferral(&mut source.pending, Ok(())).is_none());
+        assert!(source.pending.is_none());
+        assert!(select_published_core(&["older".into()], &source).await.unwrap().1.is_ok());
+        assert_eq!(source.fetches.load(std::sync::atomic::Ordering::SeqCst), 2);
+        for kind in [ResourceCondition::UnmeasuredFilesystem, ResourceCondition::OperationalUncertainty] {
+            let mut blocked = condition.clone(); blocked.condition = kind;
+            source.pending = Some(("older".into(), blocked.clone()));
+            assert!(matches!(recheck_resource_deferral(&mut source.pending, Ok(())), Some(MissingArtifact::Wait(_))));
+            assert_eq!(source.pending.as_ref().unwrap().1, blocked);
+            assert!(matches!(select_published_core(&["older".into()], &source).await, Some((_, Err(PublishedCoreError::ResourceDeferred(_))))));
+        }
+        assert_eq!(source.fetches.load(std::sync::atomic::Ordering::SeqCst), 2, "operational uncertainty cannot refill by automatic fetch");
         let args = candidate_keys_log_args("5b496e307", "e428cbd50");
         assert!(
             args.contains(&"5b496e307..e428cbd50".to_string()),
