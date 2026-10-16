@@ -8484,7 +8484,7 @@ mod tests {
             // traversal must not substitute RAG's chars/4 pricing policy.
             let guard_text = format!("{grep_result}日本語訳");
             assert_eq!(
-                LlmDeliberationFaculty::message_cost(&ChatMessage::user(&guard_text)),
+                LlmDeliberationFaculty::message_cost(&ChatMessage::text("user", &guard_text)),
                 est_tokens(&guard_text) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS,
             );
             assert!(required >= est_tokens(&grep_result));
