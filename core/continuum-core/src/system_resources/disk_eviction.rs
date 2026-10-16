@@ -26,7 +26,8 @@
 //! 3. **Derived artifacts only.** The ladder deletes incremental state,
 //!    test binaries, then the debug tree — all reproducible by the next
 //!    `cargo build`. Standard release incremental state is also reclaimable;
-//!    release binaries, deps and build outputs remain untouched. Custom profiles
+//!    inactive release intermediates are reclaimed as one closure. Top-level
+//!    release outputs remain installer inputs and are reported as retained. Custom profiles
 //!    and target-triple subtrees are not inferred from arbitrary directory names.
 
 use std::collections::HashSet;
@@ -277,13 +278,15 @@ pub enum DeclinedEviction {
     BuildHoldsReleaseLock,
     /// The deletion owner cannot establish an unredirected path inside its root.
     UnsafePath(String),
-    /// A process is EXECUTING an image under `debug/` (a test binary, a tool cargo built
+    /// A process is EXECUTING an image under a profile (a test binary, a tool cargo built
     /// and ran). Cargo releases its locks at "Finished" and then runs what it built, so
     /// the locks say nothing about that window, and deleting a running image is a
     /// SIGKILL when its next page faults in (the M5, 2026-10-05: three test runs killed
-    /// at launch while the pool sat 14 GB over budget). The debug rung is declined while
+    /// at launch while the pool sat 14 GB over budget). The profile rung is declined while
     /// it is in use; the earlier rungs still cut.
-    DebugProfileInUse { pid: u32, exe: String },
+    ProfileInUse { pid: u32, exe: String },
+    ActiveArtifact { path: PathBuf },
+    ReleaseInputsRetained { bytes: u64 },
     /// The lock could not be opened or queried — permissions, a vanished path, a
     /// filesystem that cannot lock. @Astra, #3910 review: the first version folded
     /// this into the two above, so an IO failure was reported as "a live build holds
@@ -302,9 +305,11 @@ impl DeclinedEviction {
             Self::BuildHoldsRootLock => 1,
             Self::BuildHoldsDebugLock => 2,
             Self::LockUnavailable(_) => 3,
-            Self::DebugProfileInUse { .. } => 4,
+            Self::ProfileInUse { .. } => 4,
             Self::BuildHoldsReleaseLock => 5,
             Self::UnsafePath(_) => 6,
+            Self::ActiveArtifact { .. } => 7,
+            Self::ReleaseInputsRetained { .. } => 8,
         }
     }
 
@@ -325,10 +330,11 @@ impl DeclinedEviction {
             }
             Self::BuildHoldsReleaseLock => "a live cargo build holds release/.cargo-lock — standing down",
             Self::UnsafePath(_) => "a cache path is redirected or unverifiable — refusing reclamation",
-            Self::DebugProfileInUse { .. } => {
-                "a process is executing an image under debug/ (a test binary cargo just \
-                 built) — the debug rung stands down; deleting a running image kills it"
+            Self::ProfileInUse { .. } => {
+                "a process is executing an image under this Cargo profile — its output closure stands down"
             }
+            Self::ActiveArtifact { .. } => "serving retains an artifact under this output closure — refusing reclamation",
+            Self::ReleaseInputsRetained { .. } => "release installation inputs or unclassified outputs remain; reclamation needs their producer custody, not Cargo's build lock alone",
             Self::LockUnavailable(_) => {
                 "the lock could not be opened or queried — NOT evidence a build was                  protected, and NOT evidence the guard ran; the cache was left alone                  because we could not establish it was safe to touch"
             }
@@ -538,14 +544,15 @@ impl CargoTargetPool {
         );
     }
 
-    /// The rungs, freed in order. The last one is `debug` ITSELF, which is why it
-    /// is not a plain `remove_dir_all` — see [`Self::free_rung`].
-    fn ladder(root: &Path) -> [PathBuf; 4] {
+    /// The rungs, freed in order. Profile rungs preserve their custody and
+    /// installation inputs — see [`Self::free_rung`].
+    fn ladder(root: &Path) -> [PathBuf; 5] {
         [
             root.join("debug/incremental"),
             root.join("release/incremental"),
             root.join("tests"),
             root.join("debug"),
+            root.join("release"),
         ]
     }
 
@@ -625,6 +632,14 @@ impl CargoTargetPool {
     /// survives the reclaim. `debug/.cargo-lock` is a zero-length lock file — the
     /// bytes we decline to free by keeping it are not bytes.
     fn free_rung(rung: &Path, root: &Path) -> u64 {
+        if rung == root.join("release") {
+            // One Cargo intermediate closure: never leave a fingerprint claiming
+            // its removed deps/build output is current. Root binaries/companions
+            // can already be named by a warm-build handoff receipt after Cargo exits.
+            return [".fingerprint", "deps", "build"].iter()
+                .map(|name| Self::free_owned_tree(&rung.join(name), root, None))
+                .fold(0u64, u64::saturating_add);
+        }
         let debug = root.join("debug");
         let lock = debug.join(".cargo-lock");
         Self::free_owned_tree(rung, root, (rung == debug).then_some(lock.as_path()))
@@ -714,17 +729,25 @@ impl ResourcePool for CargoTargetPool {
                 self.declined(DeclinedEviction::UnsafePath(error));
                 continue;
             }
-            // THE WINDOW THE LOCKS DO NOT COVER: cargo has finished and is RUNNING what it
-            // built. The debug rung is the one that deletes those images; it is declined
-            // while any process executes one, and the pool stays over budget until the
-            // run ends (the next tick cuts it).
-            if rung == debug {
-                if let Some((pid, exe)) = process_executing_under(&debug) {
-                    self.declined(DeclinedEviction::DebugProfileInUse { pid, exe });
-                    break;
+            // Cargo releases its locks before running the produced image. Protect
+            // the whole profile, including native build outputs/dependencies, while
+            // any image from it executes; the same rule applies to both profiles.
+            let release = root.join("release");
+            if rung == debug || rung == release {
+                if let Some((pid, exe)) = process_executing_under(&rung) {
+                    self.declined(DeclinedEviction::ProfileInUse { pid, exe });
+                    continue;
                 }
             }
+            if serving_active_artifacts().protects(&rung) {
+                self.declined(DeclinedEviction::ActiveArtifact { path: rung });
+                continue;
+            }
             freed = freed.saturating_add(Self::free_rung(&rung, &root));
+            if rung == release && freed < want_bytes.max(1) {
+                let bytes = dir_size_bytes(&release);
+                if bytes > 0 { self.declined(DeclinedEviction::ReleaseInputsRetained { bytes }); }
+            }
         }
         if freed > 0 {
             self.tracked.record_freed(freed);
@@ -1170,10 +1193,11 @@ mod tests {
     // still cut and the debug rung stands down with the pid; once it exits, the rung cuts.
     #[cfg(unix)]
     #[test]
-    fn the_debug_rung_stands_down_while_a_process_executes_under_it() {
+    fn profile_outputs_stand_down_while_a_process_executes_under_them() {
+        for profile in ["debug", "release"] {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
-        let deps = tmp.path().join("debug/deps");
+        let deps = tmp.path().join(profile).join("deps");
         std::fs::create_dir_all(&deps).expect("mkdir");
         let sleeper = deps.join("continuum_core-test");
         std::fs::copy("/bin/sleep", &sleeper).expect("a sleeper to run from debug/deps");
@@ -1184,8 +1208,8 @@ mod tests {
         assert!(!tmp.path().join("debug/incremental").exists(), "the first rung still cuts");
         assert!(!tmp.path().join("tests").exists(), "the second rung still cuts");
         assert!(sleeper.exists(), "the executing image survives");
-        assert!(tmp.path().join("debug/lib.rlib").exists(), "the debug rung stood down whole");
-        assert_eq!(freed, 6000, "only the two safe rungs");
+        assert_eq!(tmp.path().join("debug/lib.rlib").exists(), profile == "debug", "only the active profile stands down");
+        assert_eq!(freed, if profile == "debug" { 6000 } else { 9000 }, "only safe rungs");
         child.kill().expect("stop the sleeper");
         let exited = child.wait();
         // u8::MAX = no decline recorded, so the tag below is the SECOND call's alone.
@@ -1200,8 +1224,9 @@ mod tests {
              sleeper_exists={} last_decline_tag={} executing_now={:?}",
             sleeper.exists(),
             pool.last_decline.load(std::sync::atomic::Ordering::Relaxed),
-            process_executing_under(&tmp.path().join("debug")),
+            process_executing_under(&tmp.path().join(profile)),
         );
+      }
     }
 
     #[test]
@@ -1279,15 +1304,16 @@ mod tests {
     // compiler custody ends, even when the pool uses a measured volume instead
     // of its fallback budget (3d4a push CI previously depended on global timing).
     #[test]
-    fn broker_reclaims_release_incremental_only_after_profile_custody() {
+    fn broker_reclaims_release_intermediates_only_after_profile_and_artifact_custody() {
         use crate::paging::{BrokerConfig, PressureBroker};
         let tmp = tempfile::tempdir().unwrap();
         let release = tmp.path().join("release");
         std::fs::create_dir_all(release.join("incremental/unit")).unwrap();
         std::fs::create_dir_all(release.join("deps")).unwrap();
         std::fs::create_dir_all(release.join("build")).unwrap();
+        std::fs::create_dir_all(release.join(".fingerprint")).unwrap();
         std::fs::write(release.join("incremental/unit/derived.o"), vec![0u8; 4096]).unwrap();
-        let outputs = ["continuum", "deps/library.rlib", "build/output"];
+        let outputs = ["continuum", "deps/library.rlib", "build/output", ".fingerprint/unit"];
         for output in outputs { std::fs::write(release.join(output), b"preserve installed inputs").unwrap(); }
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
         tracked.set_bytes(dir_size_bytes(tmp.path()));
@@ -1307,6 +1333,8 @@ mod tests {
         #[cfg(unix)]
         let inode = { use std::os::unix::fs::MetadataExt; std::fs::metadata(&lock_path).unwrap().ino() };
         let before = tracked.bytes();
+        let active = serving_active_artifacts();
+        active.register(release.join("build/output"));
         assert_eq!(broker.relieve().bytes_freed, 4096, "the existing broker reaches release-only incremental pressure");
         assert_eq!(tracked.bytes(), before - 4096);
         assert!(!release.join("incremental").exists());
@@ -1314,6 +1342,16 @@ mod tests {
         #[cfg(unix)]
         { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), inode); }
         for output in outputs { assert_eq!(std::fs::read(release.join(output)).unwrap(), b"preserve installed inputs"); }
+        active.release(&release.join("build/output"));
+        let remaining = tracked.bytes();
+        let closure_bytes = 3 * b"preserve installed inputs".len() as u64;
+        assert_eq!(broker.relieve().bytes_freed, closure_bytes, "release-only intermediate pressure has a real eviction owner");
+        assert_eq!(tracked.bytes(), remaining - closure_bytes);
+        for directory in ["deps", "build", ".fingerprint"] { assert!(!release.join(directory).exists()); }
+        assert_eq!(std::fs::read(release.join("continuum")).unwrap(), b"preserve installed inputs", "a completed warm-build receipt can still name the root binary");
+        assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), DeclinedEviction::ReleaseInputsRetained { bytes: 1 }.discriminant());
+        #[cfg(unix)]
+        { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), inode); }
         assert!(try_exclusive_flock(&lock_path).is_some(), "custody is released with the original lock path intact");
     }
 
