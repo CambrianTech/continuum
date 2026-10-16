@@ -115,6 +115,11 @@ pub fn collapse_thought(text: &str, keep: usize) -> String {
 /// this many sentinels/compiles/debuggers in flight is unusual; past the cap the
 /// oldest-updated finished handle is evicted first (a still-running one is never dropped).
 const MAX_DISPATCHED: usize = 16;
+/// Results of her own recent acts rendered as messages of their own; older ones are pointer
+/// lines in the one collapsed index (see `recent_results_with_pointers`).
+const RENDERED_RESULTS: usize = 16;
+/// The head kept for an index line of a result that has no spill handle to point at.
+const INDEX_HEAD_CHARS: usize = 120;
 
 /// Borrowed provenance already carried by the result ring. Displaying a result
 /// in another activity must not erase where it came from or which operation ran.
@@ -1521,7 +1526,15 @@ impl WorkingMemory {
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(), None,
         ));
-        out.extend(rr.iter().filter(|(seq, ..)| Some(*seq) != active).map(|(seq, room, tail, operation, handle)| {
+        // Only the newest RENDERED_RESULTS ride as messages of their own; every older entry
+        // is one pointer line in the index below. Measured on the M5 (Benchy, 2026-10-16):
+        // 200 entries rendered one message each were ~30k of a 60k-char prompt, and the
+        // ring's head rotated between acts (a settlement collapse), so 80% of every act's
+        // prompt re-prefilled (delib.prompt.common_prefix share 0.18-0.19).
+        let live: Vec<_> = rr.iter().filter(|(seq, ..)| Some(*seq) != active).collect();
+        let folded = live.len().saturating_sub(RENDERED_RESULTS);
+        let mut index_lines: Vec<String> = Vec::new();
+        for (i, (seq, room, tail, operation, handle)) in live.into_iter().enumerate() {
             let attribution = ResultAttribution {
                 seq: *seq,
                 room: *room,
@@ -1529,18 +1542,26 @@ impl WorkingMemory {
                 spill_handle: handle.as_deref(),
             };
             let pointer = handle.as_ref().map(|_| format!("[result {attribution} — collapsed; query tool/output to expand]"));
-            (format!("[result {attribution}] {tail}"), pointer)
-        }));
+            if i < folded {
+                index_lines.push(pointer.unwrap_or_else(|| {
+                    let head: String = tail.chars().take(INDEX_HEAD_CHARS).collect();
+                    format!("[result {attribution}] {head}")
+                }));
+            } else {
+                out.push((format!("[result {attribution}] {tail}"), pointer));
+            }
+        }
         // Collapsed-results index LAST — it CHANGES on every eviction, and
         // message order is MONOTONE IN STABILITY (the KV law this same night
         // established): the banner + surviving entries ahead of it stay a
         // byte-stable prefix; only this one small message re-prefills.
         {
             let ptrs = self.evicted_pointers.lock();
-            if !ptrs.is_empty() {
+            index_lines.splice(0..0, ptrs.iter().map(|(pointer, _)| pointer.clone()));
+            if !index_lines.is_empty() {
                 out.push((format!(
                     "Older results, collapsed to pointers (query to expand):\n{}",
-                    ptrs.iter().map(|(pointer, _)| pointer.as_str()).collect::<Vec<_>>().join("\n")
+                    index_lines.join("\n")
                 ), None));
             }
         }

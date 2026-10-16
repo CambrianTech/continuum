@@ -481,6 +481,33 @@ fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid,
     }
 }
 
+/// The text a tool result goes on as. A result object whose bytes are mostly ONE string field
+/// (a file's `content`, a shell's `stdout`) is rendered as its scalar fields on one line, then
+/// that field's text raw, with its real newlines: what the mind reads, counts and pages by
+/// lines is the text itself, not its JSON escape. Any other shape goes on as compact JSON.
+pub fn result_text(value: &serde_json::Value) -> String {
+    let compact = value.to_string();
+    let Some(object) = value.as_object() else { return compact };
+    let Some((body_key, body)) = object
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k, s)))
+        .max_by_key(|(_, s)| s.len())
+    else {
+        return compact;
+    };
+    if body.len() * 2 < compact.len() || !body.contains('\n') {
+        return compact;
+    }
+    let mut head = serde_json::Map::new();
+    for (k, v) in object {
+        if k != body_key {
+            head.insert(k.clone(), v.clone());
+        }
+    }
+    head.insert(body_key.clone(), serde_json::Value::String(format!("<{} lines below>", body.lines().count())));
+    format!("{}\n{body}", serde_json::Value::Object(head))
+}
+
 /// A spilled result's shown head takes this fraction of the one-result share: the share
 /// itself is what the mind's view holds for a result, and the pointer plus a quarter of it
 /// leaves the view room for the next result beside it.
