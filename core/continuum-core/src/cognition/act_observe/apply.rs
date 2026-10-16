@@ -558,29 +558,6 @@ pub async fn apply_act(
         );
     }
 
-    // Investigation-shape perception: once a concern has accumulated a few acts,
-    // render the mind's own act DISTRIBUTION as a standing structural fact. The
-    // fingerprint note above catches exact repeats; this catches the wider
-    // pattern a mind can't otherwise see about itself — e.g. "9 acts so far,
-    // all code/search" (glass-boxed on SWE flask-4045: distinct-but-all-search
-    // acts never tripped the exact-repeat note, and the imbalance itself was
-    // invisible). A tally of her own hands is truth, not steering: it names
-    // what happened, never what to do next.
-    let tally = body.working_memory.action_verb_tally();
-    let tally_total: usize = tally.iter().map(|(_, c)| c).sum();
-    // Recorded as its own FACT entry below (never folded into the receipt):
-    // the tally is truth ABOUT the acts, not an act — folding it in gave a
-    // Fact receipt-numbering (found in Asha's volatile.json, the exact type
-    // confusion WmKind exists to kill).
-    let tally_fact = (tally_total >= 3).then(|| {
-        let dist = tally
-            .iter()
-            .map(|(n, c)| format!("{n} ×{c}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("[investigation] my acts this concern so far: {dist}.")
-    });
-
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the
     // result-as-memory choice: next tick, recall can surface "I ran X → got Y" the
@@ -691,9 +668,7 @@ pub async fn apply_act(
     // Recorded and published: working memory now names every handle this batch saved, its
     // receipt's and each call's, so the pin that held them since before they were written can go.
     drop(pin);
-    if let Some(f) = &tally_fact {
-        body.working_memory.record_fact(f);
-    }
+    body.working_memory.refresh_recent_action_status();
 
     // WHICH verbs ran — not just how many. Measured 2026-08-06: this probe carried
     // `tools=1` and a char count and NOTHING ELSE, so the substrate could not answer
