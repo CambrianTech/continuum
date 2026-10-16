@@ -988,7 +988,10 @@ mod tests {
         else {
             panic!("an over-share result is saved")
         };
-        assert!(!shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "no fragment: {shown}");
+        // the head rides along, LABELLED as lines 1-N of M; the tail does not, and the pointer
+        // names the unseen range, so a head is never passed off as the whole
+        assert!(shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "a labelled head, no tail: {shown}");
+        assert!(shown.contains("lines 1-") && shown.contains("are not shown"), "the head is named and the unseen range is named: {shown}");
         assert!(shown.contains(&handle) && shown.contains("tool/output"), "names the way in: {shown}");
         assert!(shown.contains("\"filter\":\"errors\""), "points at the failure filter: {shown}");
         let path = resolve_in(&tmp, persona, &handle).expect("resolve");
@@ -1011,9 +1014,11 @@ mod tests {
         };
         assert!(shown.contains("cannot be reopened") && shown.ends_with("ok"), "{shown}");
 
-        // Multibyte bodies measure in chars, the unit the share is in, and never split.
+        // Multibyte bodies measure in chars, the unit the share is in, and never split: the
+        // head of a one-line body is cut at a CHAR boundary, at most a quarter of the share.
         let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona, &LivePin::new()).into_parts();
-        assert!(!shown.contains('α'));
+        let greek = shown.chars().filter(|c| "αβγδε".contains(*c)).count();
+        assert!(greek > 0 && greek <= 64 / HEAD_SHARE_DENOM, "a char-bounded head: {greek} chars in {shown}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
