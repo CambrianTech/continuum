@@ -1949,6 +1949,7 @@ impl LlmDeliberationFaculty {
             ctx_floor,
             after_framing,
             tool_tokens,
+            surface_reason,
         } = composition;
         // Offered trailing content before fitting, not an additional claimant.
         // Its retained portion is already included in conversation_tokens; list
@@ -1959,6 +1960,23 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && c.trailing)
             .map(|c| est_tokens(&c.content))
             .sum();
+        // The prompt this lane affords (served window bounded by prefill t/s x TTFT), read
+        // beside what the tool surface and framing cost. Observation only: nothing here
+        // changes what is sent (card 3026b83e, step 1).
+        let affordable_tokens =
+            super::context_budget::ContextBudget::from_window(context_window).affordable_tokens();
+        if let Some(affordable) = affordable_tokens.filter(|a| framing_tokens + tool_tokens > *a) {
+            crate::probe!(
+                class = "delib.tool_surface.over_affordable",
+                persona = %self.persona_name,
+                surface_reason = ?surface_reason,
+                tool_tokens,
+                framing_tokens,
+                affordable_tokens = affordable,
+                context_window,
+                "the tool surface and framing alone cost more than the prompt this lane can prefill inside its TTFT budget"
+            );
+        }
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
             // whose entire context vanished must say so, not render silently empty
@@ -1977,6 +1995,8 @@ impl LlmDeliberationFaculty {
                 after_framing,
                 tool_tokens,
                 registry_tool_tokens = self.describe_tool_tokens(),
+                surface_reason = ?surface_reason,
+                affordable_tokens = ?affordable_tokens,
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
                 dropped = %ws
@@ -2092,6 +2112,10 @@ impl LlmDeliberationFaculty {
             // Actual selected schemas, not the full registry's withheld cost.
             tool_tokens,
             registry_tool_tokens = self.describe_tool_tokens(),
+            // Which arm selected that surface, and the prompt the lane affords: the two
+            // numbers a 10k-token surface on a 2.8k-affordable lane is read against.
+            surface_reason = ?surface_reason,
+            affordable_tokens = ?affordable_tokens,
             // The pool the budget is subtracted FROM, read from the local that
             // actually holds it. First written as
             // `framing + conversation + budget` — a RECONSTRUCTION from the
@@ -2955,6 +2979,7 @@ impl LlmDeliberationFaculty {
                 ctx_floor,
                 after_framing,
                 tool_tokens: selected.tokens,
+                surface_reason: selected.reason,
             },
         );
 
@@ -4376,6 +4401,9 @@ struct ContextComposition {
     ctx_floor: usize,
     after_framing: usize,
     tool_tokens: usize,
+    /// WHY the surface priced in `tool_tokens` is the one sent: the receipt that says which
+    /// arm put a 38-tool surface on a CPU lane (card 3026b83e).
+    surface_reason: SurfaceReason,
 }
 
 /// A borrowed selection of whole source content or its declared atomic prefix.
