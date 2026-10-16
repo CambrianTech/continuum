@@ -795,13 +795,10 @@ impl WorkingMemory {
             return;
         }
         let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
-        if let Some(scope) = self.scope.lock().clone() {
-            self.result_scopes.lock().insert(seq, scope);
-        }
+        let scope = self.scope.lock().clone();
         // Keep the LATEST result in FULL so the mind can work with it next turn (count a
         // file, read a screenshot description, scan a log). Overwrites the prior latest —
         // older acts survive only as heads in the trail below.
-        *self.last_action.lock() = Some((seq, a.to_string()));
         // Recent-results feedback channel: keep this result WHOLE past the next act and
         // the next turn (the overwrite above and the settlement gate both destroy it
         // exactly when a multi-turn task still needs it — the Anwen regression). Never a
@@ -833,6 +830,13 @@ impl WorkingMemory {
                 self.receipt_children.lock().insert(receipt_key(seq, handle.as_deref()), children);
             }
             let mut rr = self.recent_results.lock();
+            // The ring owns receipt publication, scope pruning and snapshots.
+            // Publish attribution and the active slot together so a concurrent
+            // publisher cannot prune a not-yet-visible receipt into legacy scope.
+            if let Some(scope) = &scope {
+                self.result_scopes.lock().insert(seq, scope.clone());
+            }
+            *self.last_action.lock() = Some((seq, a.to_string()));
             rr.push_back((seq, room, tail, label, handle));
             // NO mid-settle eviction (2026-08-24, the third head-rotation): evicting
             // here pop_fronted the ring on every act past ~3, and on a model whose KV
@@ -876,7 +880,6 @@ impl WorkingMemory {
             format!("[action #{seq}] {}", calls.join("; "))
         };
         self.push_receipt_head(room, archive_head);
-        let scope = self.scope.lock().clone();
         let mut e = self.entries.lock();
         // Transfer provenance before bounded entry eviction. Match this scope,
         // activity. Consume it once; mismatched IDs remain an explicit protocol
@@ -1105,18 +1108,19 @@ impl WorkingMemory {
         };
         // Capture each result with its attribution under the same custody locks.
         // A concurrent collapse must not shift pointer indexes between these reads.
-        let (recent_results, result_scopes, evicted_pointers, evicted_pointer_scopes) = {
+        let (recent_results, result_scopes, evicted_pointers, evicted_pointer_scopes, last_action) = {
             let results = self.recent_results.lock();
             let scopes = self.result_scopes.lock();
             let pointers = self.evicted_pointers.lock();
             let pointer_scopes = self.evicted_pointer_scopes.lock();
             (results.iter().cloned().collect(), scopes.clone(),
-                pointers.iter().cloned().collect(), pointer_scopes.iter().cloned().collect())
+                pointers.iter().cloned().collect(), pointer_scopes.iter().cloned().collect(),
+                self.last_action.lock().clone())
         };
         VolatileSnapshot {
             entries,
             action_statements,
-            last_action: self.last_action.lock().clone(),
+            last_action,
             action_fps: self.action_fps.lock().iter().cloned().collect(),
             receipt_heads,
             receipt_head_rooms,
@@ -1436,6 +1440,7 @@ impl WorkingMemory {
     /// replay). `last_action_full` stays the ungated accessor for callers that want the
     /// raw slot regardless of settlement (snapshotting, tests).
     pub fn active_action_full(&self) -> Option<(u64, String)> {
+        let _results = self.recent_results.lock();
         let action = self.last_action.lock().clone()?;
         let active_from = self.active_from_seq.load(Ordering::Relaxed);
         let scope = self.scope.lock().clone();
@@ -1670,6 +1675,7 @@ impl WorkingMemory {
     /// The whole set, replaced, so nothing can drift.
     fn publish_live_handles(&self) {
         let rr = self.recent_results.lock();
+        let mut scopes = self.result_scopes.lock();
         let ptrs = self.evicted_pointers.lock();
         let mut children = self.receipt_children.lock();
         // Dependencies live exactly as long as their receipt: drop those of receipts that
@@ -1682,10 +1688,10 @@ impl WorkingMemory {
         children.retain(|key, _| receipts.contains(key));
         let latest = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
         let retained_sequences: HashSet<u64> = rr.iter().map(|(seq, ..)| *seq).collect();
-        self.result_scopes.lock().retain(|seq, _|
+        scopes.retain(|seq, _|
             Some(*seq) == latest || retained_sequences.contains(seq));
         let handles = reachable_handles(rr.iter(), ptrs.iter(), &children);
-        drop((rr, ptrs, children));
+        drop((rr, scopes, ptrs, children));
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
     }
 
@@ -2299,7 +2305,23 @@ mod tests {
         legacy.restore(serde_json::from_value(encoded).expect("legacy snapshot"));
         legacy.set_scope(Some("task-b".into()));
         assert!(legacy.recent_results_messages().join("\n").contains("scope-a-output"));
-
+        // Receipt publication, pruning and snapshots share custody: a concurrent
+        // checkpoint must never downgrade a known-root result to legacy unknown.
+        let concurrent = WorkingMemory::new(2);
+        concurrent.set_scope(Some("writer-root".into()));
+        std::thread::scope(|threads| {
+            threads.spawn(|| {
+                for _ in 0..128 { concurrent.record_receipt("saved observation"); }
+            });
+            for _ in 0..128 {
+                concurrent.publish_live_handles();
+                let snapshot = concurrent.snapshot();
+                for seq in snapshot.recent_results.iter().map(|r| r.0)
+                    .chain(snapshot.last_action.iter().map(|r| r.0)) {
+                    assert_eq!(snapshot.result_scopes.get(&seq).map(String::as_str), Some("writer-root"));
+                }
+            }
+        });
     }
 
     // what this catches: eviction deleting a saved result a mind still points at (card
