@@ -1262,6 +1262,7 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         let executable = std::env::current_exe().map_err(|e|e.to_string())?;
         let envelope = installed_release::Envelope { schema:2, active_release:args[1].clone(), bootstrap:executable.to_string_lossy().into_owned() };
         envelope.validate(&home,&program_files,&sid)?;
+        let startup = supervisor_install::maintenance::StartupPermit::acquire(&home)?;
         let path = Path::new(&envelope.active_release);
         let text = installed_release::read_receipt(path)?;
         let payload = continuum_core::paths::payload_root(&home)?;
@@ -1291,6 +1292,7 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         // selected generation remains valid. The installing parent checks its SHA.
         if installed_release::read_receipt(path)? != text { return Err("active release changed during supervisor selection".into()); }
         let tree = continuum_cli_lifecycle::windows_launch::spawn_owned_logged(&command,&log,&log,0x0800_0000).map_err(|e|e.to_string())?;
+        drop(startup); // Maintenance must drain this already-created child.
         let status = tree.wait().await.map_err(|e|e.to_string())?;
         drop(selected);
         Ok(status.code().unwrap_or(1)) // No normal exit code means the supervised child failed.

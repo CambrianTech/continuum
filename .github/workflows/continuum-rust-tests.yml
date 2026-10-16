@@ -324,6 +324,11 @@ jobs:
           $interop | Write-Output
           if ($interopResult -ne 0) { exit $interopResult }
           if (($interop -join "`n") -notmatch '1 passed;') { throw 'Native/fs2 custody fixture did not execute' }
+          $preparation = & $env:CONTINUUM_LIB_TEST 'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion' --exact --nocapture 2>&1
+          $preparationResult = $LASTEXITCODE
+          $preparation | Write-Output
+          if ($preparationResult -ne 0) { exit $preparationResult }
+          if (($preparation -join "`n") -notmatch '1 passed;') { throw 'Windows online preparation fixture did not execute' }
           foreach ($test in @('broker_reclaims_release_incremental_only_after_profile_custody', 'redirected_profile_or_incremental_child_never_reaches_external_data', 'ladder_frees_in_order_and_preserves_release_outputs')) {
             $output = & $env:CONTINUUM_LIB_TEST "system_resources::disk_eviction::tests::$test" --exact --nocapture 2>&1
             $result = $LASTEXITCODE

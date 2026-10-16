@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const MAX_RECEIPT_BYTES: u64 = 65536;
-pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 3;
+pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 4;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Envelope {

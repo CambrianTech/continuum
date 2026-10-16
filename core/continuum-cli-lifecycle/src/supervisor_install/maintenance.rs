@@ -100,6 +100,51 @@ mod windows {
         path::{Path, PathBuf},
     };
 
+    const LAUNCH_GATE: &str = "supervisor-maintenance-launch.lock";
+
+    fn launch_gate(root: &Path, exclusive: bool) -> Result<File, String> {
+        crate::installed_release::unredirected(root)?;
+        let path = root.join(LAUNCH_GATE);
+        if path.symlink_metadata().is_ok() {
+            crate::installed_release::unredirected(&path)?;
+        }
+        // All cooperating openers deny deletion. Windows symmetric sharing
+        // admits concurrent startup readers or one maintenance owner, never both.
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(if exclusive { 0 } else { 3 })
+            .open(&path)
+            .map_err(|e| format!("cannot acquire maintenance launch custody: {e}"))?;
+        crate::installed_release::unredirected(&path)?;
+        if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+            return Err("maintenance launch gate is not a regular file".into());
+        }
+        Ok(file)
+    }
+
+    /// Held only from startup admission through child creation, not child exit.
+    /// This is distinct from install.lock, which the installing parent retains
+    /// while waiting for the newly started core to become ready.
+    pub struct StartupPermit {
+        _gate: File,
+    }
+
+    impl StartupPermit {
+        pub fn acquire(root: &Path) -> Result<Self, String> {
+            let gate = launch_gate(root, false)?;
+            match root.join(JOURNAL).symlink_metadata() {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self { _gate: gate }),
+                Ok(_) => Err("scheduler maintenance recovery is pending; startup refused".into()),
+                Err(e) => Err(format!(
+                    "cannot establish maintenance state before startup: {e}"
+                )),
+            }
+        }
+    }
+
     // Reuse the existing scheduler probe deadline; this is not a drain timeout.
     const PROBE: std::time::Duration = std::time::Duration::from_secs(30);
     const JOURNAL: &str = "supervisor-maintenance.json";
@@ -174,22 +219,144 @@ foreach ($entry in $saved.tasks) {{
         Ok(script)
     }
 
+    // Reuse the installer's exact protected-loader policy, compiled into this
+    // reader. Never dot-source a mutable checkout or probe an unchecked command.
+    fn bootstrap_policy_script() -> Result<String, String> {
+        let source = include_str!("../../../../tools/scripts/lib/windows-prepared.ps1");
+        let mut script = String::from("$ErrorActionPreference='Stop';\n");
+        for name in [
+            "ConvertTo-CoreImagePath",
+            "Assert-CorePreparedPath",
+            "Get-CoreSupervisorBootstrap",
+            "Assert-CoreSupervisorLocation",
+            "Assert-CoreSupervisorBootstrap",
+            "Assert-CoreBootstrapAccess",
+        ] {
+            let marker = format!("function {name} {{");
+            let start = source
+                .find(&marker)
+                .ok_or_else(|| format!("missing bootstrap policy {name}"))?;
+            let rest = &source[start..];
+            let end = rest.find("\nfunction ").unwrap_or(rest.len());
+            script.push_str(&rest[..end]);
+            script.push('\n');
+        }
+        Ok(script)
+    }
+
+    fn registered_action_matches(
+        task: &super::super::TaskReport,
+        envelope: &crate::installed_release::Envelope,
+        mode: &str,
+        sid: &str,
+    ) -> bool {
+        task.present
+            && task.actions == 1
+            && task.user_sid == sid
+            && task.command.eq_ignore_ascii_case(&envelope.bootstrap)
+            && task.arguments == envelope.arguments(mode)
+            && Path::new(&task.working_directory)
+                == Path::new(&envelope.bootstrap)
+                    .parent()
+                    .unwrap_or(Path::new(""))
+    }
+
+    async fn pin_cooperating_bootstrap(root: &Path) -> Result<Vec<File>, String> {
+        use crate::installed_release;
+        let core = super::super::task_report(super::super::CORE_TASK).await?;
+        let deploy = super::super::task_report(super::super::DEPLOY_TASK).await?;
+        let sid = super::super::caller_sid().await?;
+        let envelope = installed_release::envelope(&core.description)?
+            .ok_or("maintenance requires a protected supervisor; finish the supported installer transition first")?;
+        let program_files =
+            PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);
+        envelope.validate(root, &program_files, &sid)?;
+        if !registered_action_matches(&core, &envelope, "core", &sid)
+            || !registered_action_matches(&deploy, &envelope, "deploy", &sid)
+        {
+            return Err("registered supervisor actions differ from protected authority; no task was disabled".into());
+        }
+        let directory = Path::new(&envelope.bootstrap)
+            .parent()
+            .ok_or("bootstrap directory absent")?;
+        let pin = |path: &Path| -> Result<File, String> {
+            installed_release::unredirected(path)?;
+            let file = OpenOptions::new()
+                .read(true)
+                .share_mode(1)
+                .open(path)
+                .map_err(|e| e.to_string())?;
+            if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+                return Err("bootstrap input is not regular".into());
+            }
+            Ok(file)
+        };
+        let mut manifest = pin(&directory.join("bootstrap-hashes.json"))?;
+        let mut bytes = Vec::new();
+        (&mut manifest)
+            .take(installed_release::MAX_RECEIPT_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() as u64 > installed_release::MAX_RECEIPT_BYTES {
+            return Err("bootstrap manifest exceeds installed receipt bound".into());
+        }
+        let hashes: std::collections::BTreeMap<String, String> =
+            serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+        if !hashes.contains_key("continuum.exe") {
+            return Err("bootstrap manifest lacks executable".into());
+        }
+        let mut pins = vec![manifest];
+        for name in hashes.keys() {
+            if name != "continuum.exe"
+                && name != "runtime-libs.txt"
+                && !(name.ends_with(".dll")
+                    && name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b"_.-".contains(&b)))
+            {
+                return Err("unsafe bootstrap manifest member".into());
+            }
+            pins.push(pin(&directory.join(name))?);
+        }
+        let mut script = bootstrap_policy_script()?;
+        let executable = envelope.bootstrap.replace('\'', "''");
+        script.push_str(&format!("\nAssert-CoreSupervisorBootstrap -Path '{executable}' -UserSid '{sid}'\n$protocol = (& '{executable}' installed-service --protocol | Out-String).Trim()\nif ($LASTEXITCODE -ne 0 -or $protocol -cne '4') {{ throw 'Maintenance requires supervisor protocol 4; finish the supported installer transition before disabling tasks.' }}\n'cooperating'"));
+        if super::super::powershell(&script, PROBE).await? != "cooperating" {
+            return Err("protected supervisor capability was not established".into());
+        }
+        // Recheck actual registrations after the capability probe. The caller's
+        // snapshot identity check also binds these observations to mutation.
+        if super::super::task_report(super::super::CORE_TASK).await? != core
+            || super::super::task_report(super::super::DEPLOY_TASK).await? != deploy
+        {
+            return Err("supervisor registration changed during capability verification".into());
+        }
+        Ok(pins)
+    }
+
     async fn set_enabled(
         snapshot: &RecoverySnapshot,
         restore: bool,
         lease: &File,
         journal: &Path,
         journal_pin: &File,
+        bootstrap_pins: &[File],
     ) -> Result<(), String> {
         let script = mutation_script(snapshot, restore, journal)?;
         // A probe timeout/kill-on-drop is not mutation custody. The existing
         // foreground installer runner waits for child exit; its worker retains
         // the actual lease even if this async caller is cancelled.
         let pins = mutation_pins(lease, journal_pin)?;
+        let images = bootstrap_pins
+            .iter()
+            .map(File::try_clone)
+            .collect::<std::io::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
         let shell = PathBuf::from(std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?)
             .join("System32/WindowsPowerShell/v1.0/powershell.exe");
         tokio::task::spawn_blocking(move || {
             let _pins = pins;
+            let _images = images;
             super::super::run_installer_script(&shell, &script)
         })
         .await
@@ -221,16 +388,21 @@ foreach ($entry in $saved.tasks) {{
         journal: PathBuf,
         journal_pin: File,
         _lease: File,
+        _launch_gate: File,
+        _bootstrap_pins: Vec<File>,
     }
 
     impl SchedulerCustody {
         pub async fn disable(root: &Path) -> Result<Self, String> {
             let lease = take_install_lease(root)?;
+            let launch_gate = launch_gate(root, true)?;
             let snapshot = RecoverySnapshot {
                 version: 1,
                 tasks: read_tasks().await?,
             };
             snapshot.validate()?;
+            let bootstrap_pins = pin_cooperating_bootstrap(root).await?;
+            snapshot.check_identity(&read_tasks().await?)?;
             let journal = root.join(JOURNAL);
             crate::installed_release::unredirected(root)?;
             let bytes = serde_json::to_vec(&snapshot).map_err(|e| e.to_string())?; // Durable maintenance recovery file boundary.
@@ -257,12 +429,14 @@ foreach ($entry in $saved.tasks) {{
                 .map_err(|e| format!("cannot pin durable maintenance evidence: {e}"))?;
             // The mutation child hashes these pinned bytes against the original
             // snapshot before its first task mutation.
-            set_enabled(&snapshot, false, &lease, &journal, &file).await?;
+            set_enabled(&snapshot, false, &lease, &journal, &file, &bootstrap_pins).await?;
             Ok(Self {
                 snapshot,
                 journal,
                 journal_pin: file,
                 _lease: lease,
+                _launch_gate: launch_gate,
+                _bootstrap_pins: bootstrap_pins,
             })
         }
 
@@ -282,6 +456,7 @@ foreach ($entry in $saved.tasks) {{
                 &self._lease,
                 &self.journal,
                 &self.journal_pin,
+                &self._bootstrap_pins,
             )
             .await?;
             // Exact original XML/security/enabled state has been observed. Failure
@@ -297,6 +472,7 @@ foreach ($entry in $saved.tasks) {{
         /// re-enabling old launchers is safe for a partially retired artifact.
         pub async fn recover(root: &Path) -> Result<(), String> {
             let lease = take_install_lease(root)?;
+            let launch_gate = launch_gate(root, true)?;
             let journal = root.join(JOURNAL);
             crate::installed_release::unredirected(&journal)?;
             let mut file = OpenOptions::new()
@@ -318,11 +494,15 @@ foreach ($entry in $saved.tasks) {{
             let snapshot: RecoverySnapshot = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("corrupt maintenance evidence retained: {e}"))?;
             snapshot.validate()?;
+            let bootstrap_pins = pin_cooperating_bootstrap(root).await?;
+            snapshot.check_identity(&read_tasks().await?)?;
             Self {
                 snapshot,
                 journal,
                 journal_pin: file,
                 _lease: lease,
+                _launch_gate: launch_gate,
+                _bootstrap_pins: bootstrap_pins,
             }
             .restore()
             .await
@@ -333,9 +513,61 @@ foreach ($entry in $saved.tasks) {{
     mod tests {
         use super::*;
 
+        #[test]
+        fn bootstrap_policy_and_registered_actions_remain_bound() {
+            let script = bootstrap_policy_script().unwrap();
+            assert!(!script.contains("$PSScriptRoot"));
+            assert!(script.contains("function Assert-CoreSupervisorBootstrap {"));
+            assert!(script.contains("function Assert-CoreBootstrapAccess {"));
+            assert!(!script.contains("function Install-CoreSupervisorBootstrap {"));
+            let envelope = crate::installed_release::Envelope {
+                schema: 2,
+                active_release: r"C:\home\install-active.json".into(),
+                bootstrap: r"C:\protected\continuum.exe".into(),
+            };
+            let mut task = super::super::super::TaskReport {
+                present: true,
+                actions: 1,
+                user_sid: "S-1-5-21-1".into(),
+                command: envelope.bootstrap.clone(),
+                working_directory: r"C:\protected".into(),
+                arguments: envelope.arguments("deploy"),
+                ..Default::default()
+            };
+            assert!(registered_action_matches(
+                &task,
+                &envelope,
+                "deploy",
+                "S-1-5-21-1"
+            ));
+            task.command = r"C:\untrusted\continuum.exe".into();
+            assert!(!registered_action_matches(
+                &task,
+                &envelope,
+                "deploy",
+                "S-1-5-21-1"
+            ));
+            task.command = envelope.bootstrap.clone();
+            task.arguments = envelope.arguments("core");
+            assert!(!registered_action_matches(
+                &task,
+                &envelope,
+                "deploy",
+                "S-1-5-21-1"
+            ));
+        }
+
         #[tokio::test]
         async fn cancelled_waiter_retains_install_and_evidence_custody_until_worker_exit() {
             let temp = tempfile::tempdir().unwrap();
+            let startup = StartupPermit::acquire(temp.path()).unwrap();
+            let second_startup = StartupPermit::acquire(temp.path()).unwrap();
+            assert!(launch_gate(temp.path(), true).is_err());
+            drop(startup);
+            drop(second_startup);
+            let maintenance = launch_gate(temp.path(), true).unwrap();
+            assert!(StartupPermit::acquire(temp.path()).is_err());
+            drop(maintenance);
             let lease = take_install_lease(temp.path()).unwrap();
             let journal = temp.path().join(JOURNAL);
             std::fs::write(&journal, b"preserved evidence").unwrap();
@@ -419,6 +651,10 @@ $folder | Add-Member ScriptMethod GetTask { param($name) $script:tasks[$name] }
             serde_json::to_writer(&mut file, &snapshot).unwrap();
             file.sync_all().unwrap();
             drop(file);
+            assert!(
+                StartupPermit::acquire(temp.path()).is_err(),
+                "durable journal blocks startup even without a live maintenance handle"
+            );
             let journal_pin = OpenOptions::new()
                 .read(true)
                 .share_mode(1)
@@ -484,4 +720,4 @@ $finalJson=@((Read-TaskSnapshot 'ContinuumCore'),(Read-TaskSnapshot 'ContinuumDe
 }
 
 #[cfg(windows)]
-pub use windows::SchedulerCustody;
+pub use windows::{SchedulerCustody, StartupPermit};

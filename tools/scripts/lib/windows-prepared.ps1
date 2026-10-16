@@ -479,7 +479,7 @@ function Install-CoreSupervisorBootstrap {
         # Repairing task drift must not replace DLLs under its running image.
         Assert-CoreSupervisorBootstrap -Path $expected -UserSid $Plan.userSid
         $protocol = (Invoke-InstallerProcess $expected @('installed-service', '--protocol') | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Existing protected bootstrap has an incompatible protocol.' }
+        if ($LASTEXITCODE -ne 0 -or $protocol -cne '4') { throw 'Existing protected bootstrap has an incompatible protocol.' }
         return
     }
     if ($expected -cne (Get-CoreSupervisorBootstrap -UserSid $Plan.userSid -Generation ([string]$Plan.bootstrapHashes.cli).ToLowerInvariant())) { throw 'New bootstrap generation differs from candidate identity.' }
