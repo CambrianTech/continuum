@@ -770,6 +770,49 @@ mod tests {
             );
             assert!(exclusive(&sibling(&root, ".container-placement.lock").unwrap()).is_ok());
         }
+        #[cfg(windows)]
+        {
+            let member = root.join("mapped-member");
+            std::fs::write(&member, b"fixture bytes").unwrap();
+            let mut child = tokio::process::Command::new(&native)
+                .arg("--container-write-map")
+                .arg(&member)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let mut output = BufReader::new(child.stdout.take().unwrap());
+            let mut ready = String::new();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                output.read_line(&mut ready),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(
+                ready.trim(),
+                "held",
+                "native mapping must exist after its file handle closes"
+            );
+            assert!(
+                open_source(&member).is_err(),
+                "pre-existing writable mapping must exclude immutable preparation"
+            );
+            child.stdin.take().unwrap().write_all(b"\n").await.unwrap();
+            assert!(
+                tokio::time::timeout(std::time::Duration::from_secs(10), child.wait())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .success()
+            );
+            assert!(
+                open_source(&member).is_ok(),
+                "mapping release restores preparation admission"
+            );
+        }
     }
 
     #[test]
