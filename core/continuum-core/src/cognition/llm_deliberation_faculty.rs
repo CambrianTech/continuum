@@ -1674,7 +1674,19 @@ impl LlmDeliberationFaculty {
         &self,
         calls: Vec<crate::ai::types::ToolCall>,
         resp: &TextGenerationResponse,
+        activity_room: Uuid,
     ) -> Contribution {
+        if let Some(memory) = &self.working_memory {
+            let native = resp.tool_calls.as_deref().filter(|original| {
+                matches!(resp.finish_reason, FinishReason::ToolUse)
+                    && original.iter().map(|call| &call.id).eq(calls.iter().map(|call| &call.id))
+            }).unwrap_or_default();
+            // Every new action replaces pending provenance, including legacy/text
+            // decisions after an executor-wide failure produced no receipt.
+            memory.record_native_action_statement(
+                if native.is_empty() { "" } else { &resp.text }, activity_room, native,
+            );
+        }
         // The model's OWN stated reasoning (a `<think>` block) when present — so the
         // engram records WHY she acted. When ABSENT, leave it EMPTY, never fabricate
         // a reason. The old default — "{name} is acting on the current situation" —
@@ -2814,6 +2826,7 @@ impl LlmDeliberationFaculty {
             "turn demand vs served window"
         );
 
+        let protocol_error = all_messages.active_protocol_error();
         let (mut fitted, capacity_error) = match self.fit_messages(all_messages, msg_budget) {
             Ok(fitted) => (fitted, None),
             Err(error) => (FittedMessages::default(), Some(error)),
@@ -2987,6 +3000,7 @@ impl LlmDeliberationFaculty {
             estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
             capacity_error,
+            protocol_error,
             messages,
             segments,
         }
@@ -3310,38 +3324,63 @@ impl LlmDeliberationFaculty {
         // existing spill/tool-output producer, never to a generic byte reducer.
         input.update(b"active_result");
         let (latest_result, demoted_result) = match self.working_memory.as_ref() {
-            None => (None, None),
+            None => (Vec::new(), None),
             Some(wm) => match wm.active_action_full() {
-                None => (None, None),
+                None => (Vec::new(), None),
                 Some((seq, full)) => {
                     let message = wm.full_result_message(seq, &full);
-                    // Provenance is required input too. Hash the rendered allocation
-                    // once, then move it into the request without a second encoding.
+                    // Provenance remains part of request identity. Typed calls and
+                    // producer payloads below additionally identify the native exchange.
                     field(&mut input, message.as_bytes());
-                    let (mut head, tail) = self.split_action_result(message);
-                    if let Some(visual) = visual.filter(|visual| {
-                        visual.seq == seq && !wm.active_action_observations(seq).is_empty()
-                    }) {
-                        // Pixels are part of the required result BEFORE fitting, never
-                        // a post-fit append or an evictable history entry. The selected
-                        // engine's finalized-body quote supplies their actual token cost
-                        // to the existing capacity-feedback/refit path.
-                        let mut parts = vec![crate::ai::types::ContentPart::Text {
-                            text: head.content_text(),
-                        }];
-                        for (hash, part) in &visual.parts {
-                            field(&mut input, hash.as_bytes());
-                            match part {
-                                crate::ai::types::ContentPart::Text { text } => {
-                                    field(&mut input, text.as_bytes())
-                                }
-                                _ => field(&mut input, b"native-image"),
-                            }
-                            parts.push(part.clone());
+                    let observations = wm.active_action_observations(seq);
+                    let calls = wm.active_action_native_calls(seq);
+                    let (mut group, tail) = if calls.is_empty() {
+                        // Legacy receipts have no native IDs to echo.
+                        let (head, tail) = self.split_action_result(message);
+                        (vec![head], tail)
+                    } else {
+                        let results: Vec<_> = observations.iter().map(|o| o.output.result.clone()).collect();
+                        for observation in &observations {
+                            field(&mut input, observation.output.result.tool_use_id.as_bytes());
+                            field(&mut input, observation.output.result.content.as_bytes());
+                            input.update([match observation.output.result.is_error { None => 0, Some(false) => 1, Some(true) => 2 }]);
                         }
-                        head.content = crate::ai::types::MessageContent::Parts(parts);
+                        for call in &calls {
+                            field(&mut input, call.id.as_bytes());
+                            field(&mut input, call.name.as_bytes());
+                            field(&mut input, call.input.to_string().as_bytes());
+                        }
+                        let calls = ChatMessage::assistant_tool_use(&calls);
+                        let mut results = ChatMessage::tool_results(&results);
+                        // Preserve producer-owned whole-or-pointer payloads, never expand
+                        // spill handles or reconstruct native protocol from receipt prose.
+                        if let crate::ai::types::MessageContent::Parts(parts) = &mut results.content {
+                            parts.push(crate::ai::types::ContentPart::Text { text: wm.full_result_message(seq, "") });
+
+                        }
+                        // This entire required group survives fitting or faults together.
+                        (vec![calls, results], None)
+                    };
+                    if let Some(visual) = visual.filter(|v| v.seq == seq && !observations.is_empty()) {
+                        // Legacy checkpoints can still own pixels without original
+                        // native call provenance. Preserve either representation.
+                        if let Some(result) = group.last_mut() {
+                            let mut parts = match std::mem::replace(&mut result.content, crate::ai::types::MessageContent::Parts(Vec::new())) {
+                                crate::ai::types::MessageContent::Text(text) => vec![crate::ai::types::ContentPart::Text { text }],
+                                crate::ai::types::MessageContent::Parts(parts) => parts,
+                            };
+                            for (hash, part) in &visual.parts {
+                                field(&mut input, hash.as_bytes());
+                                match part {
+                                    crate::ai::types::ContentPart::Text { text } => field(&mut input, text.as_bytes()),
+                                    _ => field(&mut input, b"native-image"),
+                                }
+                                parts.push(part.clone());
+                            }
+                            result.content = crate::ai::types::MessageContent::Parts(parts);
+                        }
                     }
-                    (Some(head), tail)
+                    (group, tail)
                 }
             },
         };
@@ -3353,11 +3392,11 @@ impl LlmDeliberationFaculty {
         // single-message shape the faculty sent before this refactor. NOT a fallback
         // hiding a defect ([[fallbacks-are-illegal-fail-loud]]): zero turns is a
         // real, valid input, and this is its faithful representation.
-        if messages.is_empty() && stimulus.is_none() && latest_result.is_none() {
+        if messages.is_empty() && stimulus.is_none() && latest_result.is_empty() {
             field(&mut input, ws.world_state.as_bytes());
             stimulus = Some(ChatMessage::text("user", ws.world_state.clone()));
         }
-        input.update([latest_result.is_some() as u8]);
+        input.update([(!latest_result.is_empty()) as u8]);
         // Demoted room updates ride in ordinary history: still shown when the window
         // has room, trimmed by the existing front-drop only under pressure. They are
         // chronologically newer than prior history, so they append to its end.
@@ -3593,10 +3632,7 @@ impl LlmDeliberationFaculty {
         // Text-only lower bound, calibrated by the provider's measured prompt
         // count. Never count base64 characters as image tokens. Native images
         // require the finalized-body image quote before local generation.
-        let tokens = match &message.content {
-            crate::ai::types::MessageContent::Text(text) => est_tokens(text),
-            crate::ai::types::MessageContent::Parts(_) => est_tokens(&message.content_text()),
-        };
+        let tokens = super::token_budget::estimate_message_content_tokens(&message.content, est_tokens);
         tokens + Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
@@ -3796,7 +3832,7 @@ impl LlmDeliberationFaculty {
         // were byte-identical between acts, and forfeited all of them). With no pinned
         // result it keeps its place ahead of the ask: bracketed meta after the ask gets
         // answered and parroted in its place (the 2026-07-20 humaneval fix).
-        if prompt.latest_result.is_some() {
+        if !prompt.latest_result.is_empty() {
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
             prompt.history.extend(prompt.ledger);
@@ -3933,7 +3969,8 @@ struct PromptMessages {
     grounding_tokens: usize,
     grounding_at: usize,
     stimulus: Option<ChatMessage>,
-    latest_result: Option<ChatMessage>,
+    /// Atomic required native call/result group (one prose message for legacy receipts).
+    latest_result: Vec<ChatMessage>,
     /// Public action text retains assistant provenance and required-input pricing.
     action_statement: Option<ChatMessage>,
     room_updates: Vec<ChatMessage>,
@@ -4135,6 +4172,28 @@ impl PromptMessages {
             }
         }
         out
+    }
+
+    /// Native active batches must preserve exact one-to-one correlation. Legacy
+    /// prose has no native calls; it is not reconstructed or silently substituted.
+    fn active_protocol_error(&self) -> Option<String> {
+        use crate::ai::types::{ContentPart, MessageContent};
+        let mut calls = Vec::new();
+        let mut results = Vec::new();
+        for message in &self.latest_result {
+            if let MessageContent::Parts(parts) = &message.content {
+                for part in parts {
+                    match part {
+                        ContentPart::ToolUse { id, .. } => calls.push(id.as_str()),
+                        ContentPart::ToolResult { tool_use_id, .. } => results.push(tool_use_id.as_str()),
+                        _ => {}
+                    }
+                }
+            }
+        }
+        let unique: std::collections::HashSet<_> = calls.iter().copied().collect();
+        (calls != results || unique.len() != calls.len() || calls.iter().any(|id| id.is_empty()))
+            .then(|| "active tool receipt has missing, duplicate, or mismatched native call/result IDs; refusing an invalid continuation".to_string())
     }
 
     fn required_tokens(&self) -> usize {
@@ -4506,6 +4565,7 @@ pub struct DeliberationPromptView {
     /// Exactly the reserve charged by this plan, also used by the wire request.
     pub completion_reserve: u32,
     pub capacity_error: Option<PromptCapacityError>,
+    pub protocol_error: Option<String>,
     /// The role-attributed conversation thread sent to the model — the persona's
     /// OWN posts as `assistant`, peers' as `user` (PERSONA-COGNITION-PIPELINE §7.5).
     /// Replaces the single flat `user` string that collapsed her own turns into the
@@ -4763,6 +4823,9 @@ impl LlmDeliberationFaculty {
             let view = self.prompt_view_with_visual_feedback(
                 ws, fit_window, calibration, visual.as_ref(), binding.model.as_deref(),
             );
+            if let Some(error) = &view.protocol_error {
+                return Some(Contribution::deliberation_fault(error.clone()));
+            }
             if let Some(error) = view.capacity_error {
                 crate::probe!(
                     class = "delib.prompt.capacity",
@@ -5260,7 +5323,7 @@ impl LlmDeliberationFaculty {
                         .to_string(),
                     input: serde_json::json!({}),
                 };
-                return Some(self.act_verdict(vec![call], &resp));
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             let head: String = resp.text.chars().take(200).collect();
             return Some(Contribution::deliberation_fault(format!(
@@ -5286,10 +5349,7 @@ impl LlmDeliberationFaculty {
                     return Some(v);
                 }
                 if !calls.is_empty() {
-                    if let Some(memory) = &self.working_memory {
-                        memory.record_action_statement(&resp.text, ws.activity_room_id);
-                    }
-                    return Some(self.act_verdict(calls, &resp));
+                    return Some(self.act_verdict(calls, &resp, ws.activity_room_id));
                 }
             }
             if let Some(mut call) = crate::ai::json_in_prompt_tools::parse_tool_call(&resp.text) {
@@ -5303,7 +5363,7 @@ impl LlmDeliberationFaculty {
                 // this, so narrated snake_case verbs died while the SAME name in a
                 // native tool_call worked. One mapping, both paths.
                 crate::cognition::tool_dialect::normalize_call(&mut call);
-                return Some(self.act_verdict(vec![call], &resp));
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             // #159 fail-loud: she emitted the native `[TOOL_CALLS]` marker but named no
             // valid tool — `[recall]`/`[action]` are receipt vocabulary she MIMICS as a
@@ -5322,7 +5382,7 @@ impl LlmDeliberationFaculty {
                     name: crate::cognition::tool_dialect::from_wire_name(&attempted).to_string(),
                     input: serde_json::json!({}),
                 };
-                return Some(self.act_verdict(vec![call], &resp));
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             // The sibling gap the block above cannot see (#159 follow-up): she fenced correct
             // ARGUMENTS and never named the tool, in any liftable position. `attempted_tool_name`
@@ -5345,7 +5405,7 @@ impl LlmDeliberationFaculty {
                         .to_string(),
                     input: serde_json::json!({ "emitted": snippet }),
                 };
-                return Some(self.act_verdict(vec![call], &resp));
+                return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
             }
             // Reasoning-channel intent lift (#181 sibling, glass-boxed on the
             // deepseek4 eval battery 2026-08-03): a thinking model commits its act
@@ -5381,7 +5441,7 @@ impl LlmDeliberationFaculty {
                             .to_string(),
                         input: serde_json::json!({}),
                     };
-                    return Some(self.act_verdict(vec![call], &resp));
+                    return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
                 }
                 if let Some(reasoning) = resp.reasoning.as_deref() {
                     if let Some(mut call) =
@@ -5396,7 +5456,7 @@ impl LlmDeliberationFaculty {
                             tool = %call.name,
                             "content channel empty — lifted the final tool intention from the reasoning tail"
                         );
-                        return Some(self.act_verdict(vec![call], &resp));
+                        return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
                     }
                     // THINK-ONLY turn (#181 tail, glass-boxed on the 2026-08-15 bench
                     // round): she spent the ENTIRE generation inside the reasoning
@@ -5429,7 +5489,7 @@ impl LlmDeliberationFaculty {
                                 .to_string(),
                             input: serde_json::json!({}),
                         };
-                        return Some(self.act_verdict(vec![call], &resp));
+                        return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
                     }
                 }
             }
@@ -6601,7 +6661,7 @@ mod tests {
                 let history: Vec<_> = request
                     .messages
                     .iter()
-                    .filter(|message| message.role == "assistant")
+                    .filter(|message| message.role == "assistant" && matches!(&message.content, crate::ai::types::MessageContent::Text(_)))
                     .map(|message| message.content_text())
                     .collect();
                 let expected: Vec<_> = own_reports[..=step]
@@ -8306,6 +8366,8 @@ mod tests {
                 &airc_blobs::FsStore::new(home.path().join("images")).unwrap(),
                 other_png.get_ref(),
             ).unwrap();
+            let ws = Workspace::new("fix the __eq__ comparison in sympy Expr");
+            wm.record_native_action_statement("", ws.activity_room_id, &[ToolCall { id: "capture".into(), name: "perception/observe".into(), input: json!({}) }]);
             wm.record_receipt_typed(
                 &[Observation {
                     call: ToolCall {
@@ -8329,7 +8391,7 @@ mod tests {
                     status: ActStatus::Executed,
                 }],
                 &grep_result,
-                None,
+                Some(ws.activity_room_id),
                 crate::ai::types::ResultCustody::Unsaved,
             );
 
@@ -8340,7 +8402,6 @@ mod tests {
             // The deliberate failure condition: NOTHING in the broadcast. No working-memory
             // faculty bid survived attention — the exact state that dropped the grep result
             // to a 0-byte patch. The ask is still present.
-            let ws = Workspace::new("fix the __eq__ comparison in sympy Expr");
             assert!(
                 ws.broadcast.is_empty(),
                 "the harness must reproduce the empty-broadcast eviction"
@@ -8354,7 +8415,7 @@ mod tests {
             let in_tail = view
                 .messages
                 .iter()
-                .any(|m| matches!(&m.content, MessageContent::Text(t) if t.contains(needle)));
+                .any(|m| matches!(&m.content, MessageContent::Parts(parts) if parts.iter().any(|p| matches!(p, ContentPart::ToolResult {content, ..} if content.contains(needle)))));
             assert!(
                 in_tail,
                 "the just-fetched result must reach the prompt independent of any faculty bid \
@@ -8402,7 +8463,7 @@ mod tests {
             assert!(seen.capacity_error.is_none());
             assert_ne!(seen.input_identity, view.input_identity);
             assert!(seen.messages.iter().any(|m| matches!(&m.content, MessageContent::Parts(parts) if parts.iter().any(|p| matches!(p, ContentPart::Image { .. })))));
-            assert!(seen.user_text().contains(needle));
+            assert!(seen.protocol_error.is_none());
             // Follow the same message through request construction AND the
             // final provider serializer. A Parts value alone is not wire proof.
             let request = faculty.build_request_within(
@@ -8412,6 +8473,24 @@ mod tests {
             let wire = crate::inference::request_body::wire_messages(
                 &request.messages, request.system_prompt.as_deref(), true, false, "llama-server",
             );
+            let call_at = wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
+            assert_eq!(wire[call_at]["role"], "assistant");
+            assert_eq!(wire[call_at + 1]["role"], "tool");
+            assert_eq!(wire[call_at + 1]["tool_call_id"], "capture");
+            assert!(wire[call_at + 1]["content"].as_str().unwrap().contains(needle));
+            let prompt = faculty.messages_unfitted(&ws, None);
+            let required = prompt.required_tokens();
+            // Preserve the conservative guard, including UTF-8 bytes: structured
+            // traversal must not substitute RAG's chars/4 pricing policy.
+            let guard_text = format!("{grep_result}日本語訳");
+            assert_eq!(
+                LlmDeliberationFaculty::message_cost(&ChatMessage::text("user", &guard_text)),
+                est_tokens(&guard_text) + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS,
+            );
+            assert!(required >= est_tokens(&grep_result));
+            assert!(faculty.fit_messages(prompt, required - 1).is_err(), "native pair cannot be split under pressure");
+            let fitted = faculty.fit_messages(faculty.messages_unfitted(&ws, None), required).unwrap();
+            assert!(fitted.messages.iter().any(|m| matches!(&m.content, MessageContent::Parts(parts) if parts.iter().any(|p| matches!(p, ContentPart::ToolUse {id, ..} if id == "capture")))));
             let urls: Vec<_> = wire.iter()
                 .filter_map(|m| m["content"].as_array()).flatten()
                 .filter_map(|p| p["image_url"]["url"].as_str()).collect();
@@ -8425,12 +8504,74 @@ mod tests {
             let (_, encoded) = urls[1].split_once(',').unwrap();
             let other_wire = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
             assert_eq!(format!("{:x}", sha2::Sha256::digest(&other_wire)), other_image.hash);
+            // Pre-upgrade checkpoints have typed pixels but no original native
+            // call provenance. Keep their visual evidence without guessing calls.
+            let mut legacy_snapshot = wm.snapshot();
+            for entry in &mut legacy_snapshot.entries { entry.native_calls.clear(); }
+            let legacy_memory = Arc::new(WorkingMemory::new(8));
+            legacy_memory.restore(legacy_snapshot);
+            let legacy_faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", Arc::new(HeuristicInferenceAdapter::new()))
+                .with_context_window(8192).with_working_memory(legacy_memory);
+            let legacy_view = legacy_faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&visual), binding.model.as_deref());
+            assert!(legacy_view.protocol_error.is_none());
+            let legacy_wire = crate::inference::request_body::wire_messages(&legacy_view.messages, None, true, false, "llama-server");
+            assert!(legacy_wire.iter().all(|m| m.get("tool_calls").is_none()));
+            assert_eq!(legacy_wire.iter().filter_map(|m| m["content"].as_array()).flatten().filter(|p| p.get("image_url").is_some()).count(), 2);
             let missing = faculty.active_visual_feedback_at(&binding, home.path().join("absent-images"))
                 .await.unwrap().unwrap();
             assert!(matches!(&missing.parts[0].1, ContentPart::Text { text } if text.contains("No pixels attached")));
             let failed = faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&missing), binding.model.as_deref());
             assert_ne!(failed.input_identity, seen.input_identity);
             assert!(failed.user_text().contains("capture or inspect the image again"));
+            // Preserve a real batch including error and historical skipped receipts.
+            // Result content is producer-owned, including bounded spill pointers.
+            let seq = wm.active_action_full().unwrap().0;
+            let mut batch = wm.active_action_observations(seq);
+            let mut error = batch[0].clone();
+            error.call.id = "failed-call".into();
+            error.call.name = "bash".into();
+            error.call.input = json!({"command": "cat missing.rs"});
+            let original_error_call = error.call.clone();
+            crate::cognition::tool_dialect::normalize_call(&mut error.call);
+            assert_eq!(error.call.name, "code/shell");
+            error.output.image = None;
+            error.output.additional_images = None;
+            error.output.result.tool_use_id = error.call.id.clone();
+            error.output.result.content = "file does not exist".into();
+            error.output.result.is_error = Some(true);
+            error.status = ActStatus::Errored { message: "file does not exist".into() };
+            let mut skipped = error.clone();
+            skipped.call.id = "skipped-call".into();
+            skipped.output.result.tool_use_id = skipped.call.id.clone();
+            skipped.output.result.content = "not executed; prior output available via tool/output saved-result".into();
+            skipped.output.result.custody = crate::ai::types::ResultCustody::Pointer { handle: "saved-result".into() };
+            skipped.status = ActStatus::AlreadySatisfied { repeat: 2 };
+            batch.extend([error, skipped]);
+            let mut native_calls: Vec<_> = batch.iter().map(|o| o.call.clone()).collect();
+            native_calls[1] = original_error_call;
+            wm.record_native_action_statement("", ws.activity_room_id, &native_calls);
+            wm.record_receipt_typed(&batch, "batch receipt", Some(ws.activity_room_id), crate::ai::types::ResultCustody::Unsaved);
+            let batch_prompt = faculty.messages_unfitted(&ws, None);
+            assert!(batch_prompt.active_protocol_error().is_none());
+            let required = batch_prompt.required_tokens();
+            let fitted = faculty.fit_messages(batch_prompt, required).unwrap();
+            let wire_batch = crate::inference::request_body::wire_messages(&fitted.messages, None, true, false, "llama-server");
+            let at = wire_batch.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
+            for (i, observation) in batch.iter().enumerate() {
+                assert_eq!(wire_batch[at]["tool_calls"][i]["id"], native_calls[i].id);
+                assert_eq!(wire_batch[at]["tool_calls"][i]["function"]["name"], native_calls[i].name);
+                let arguments: serde_json::Value = serde_json::from_str(wire_batch[at]["tool_calls"][i]["function"]["arguments"].as_str().unwrap()).unwrap();
+                assert_eq!(arguments, native_calls[i].input);
+                assert_eq!(wire_batch[at + 1 + i]["tool_call_id"], observation.call.id);
+                assert_eq!(wire_batch[at + 1 + i]["content"], observation.output.result.content);
+            }
+            let mut invalid = faculty.messages_unfitted(&ws, None);
+            if let MessageContent::Parts(parts) = &mut invalid.latest_result[1].content {
+                if let ContentPart::ToolResult { tool_use_id, .. } = &mut parts[0] {
+                    *tool_use_id = "unmatched".into();
+                }
+            }
+            assert!(invalid.active_protocol_error().is_some());
             wm.set_scope(Some("another-workspace".into()));
             let scoped = faculty.prompt_view_with_visual_feedback(
                 &ws,
@@ -9027,7 +9168,7 @@ mod tests {
                 grounding_at: 0,
                 history,
                 stimulus: Some(stimulus.clone()),
-                latest_result: None, action_statement: None,
+                latest_result: Vec::new(), action_statement: None,
                 room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
             let required = prompt(Vec::new()).required_tokens();
@@ -9088,7 +9229,7 @@ mod tests {
                             grounding_at: 0,
                             history: msgs[..n].to_vec(),
                             stimulus: None,
-                            latest_result: None, action_statement: None,
+                            latest_result: Vec::new(), action_statement: None,
                             room_updates: Vec::new(), ledger: None, notices: Vec::new(),
                         },
                         budget,
@@ -9138,7 +9279,7 @@ mod tests {
                         grounding_at: 0,
                         history: clustered,
                         stimulus: None,
-                        latest_result: None, action_statement: None,
+                        latest_result: Vec::new(), action_statement: None,
                         room_updates: Vec::new(), ledger: None, notices: Vec::new(),
                     },
                     budget,
@@ -9167,7 +9308,7 @@ mod tests {
                     ChatMessage::text("user", "current situation ".repeat(20)),
                 ],
                 stimulus: None,
-                latest_result: None, action_statement: None,
+                latest_result: Vec::new(), action_statement: None,
                 room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
             let ambient_cost =
@@ -9193,7 +9334,7 @@ mod tests {
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
                 stimulus: Some(ChatMessage::text("user", "the ask")),
-                latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")), action_statement: None,
+                latest_result: result.then(|| ChatMessage::text("user", "Full result of your most recent action")).into_iter().collect(), action_statement: None,
                 room_updates: vec![ChatMessage::text("user", "[Room message received during this turn] hi")],
                 notices: Vec::new(),
                 ledger: Some(ChatMessage::text("user", "[steps taken this session]\n[action #1832] code/read")),
@@ -9224,7 +9365,7 @@ mod tests {
             let expected = LlmDeliberationFaculty::messages_cost(&history);
             let prompt = PromptMessages {
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
-                history, stimulus: None, latest_result: None, action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+                history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
             assert!(prompt.recent_move_evidence().tokens >= expected,
                 "a new follow-up cannot make the preceding action and result disposable");
@@ -9242,7 +9383,7 @@ mod tests {
                     ChatMessage::text("assistant", "calling code/write: completed.py ".repeat(30)),
                     ChatMessage::text("user", "Full result of code/write: file written successfully."),
                 ],
-                stimulus: None, latest_result: None, action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+                stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
             let insufficient = prompt.recent_move_evidence().tokens - 1;
             assert!(faculty.fit_messages(prompt, insufficient).is_err(),
@@ -9290,7 +9431,7 @@ mod tests {
                 grounding_at: 0,
                 history: history.clone(),
                 stimulus: None,
-                latest_result: None, action_statement: None,
+                latest_result: Vec::new(), action_statement: None,
                 room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
 
@@ -9373,7 +9514,7 @@ mod tests {
                 grounding_at: 0,
                 history,
                 stimulus: None,
-                latest_result: None, action_statement: None,
+                latest_result: Vec::new(), action_statement: None,
                 room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
 

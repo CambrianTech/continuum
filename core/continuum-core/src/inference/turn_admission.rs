@@ -534,6 +534,7 @@ pub(crate) async fn kv_page_action(
 ) -> PageOutcome {
     let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
     let filename = crate::inference::slots::page_filename(key);
+    let operation = (action == "restore").then(uuid::Uuid::new_v4);
     let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
     let bound = kv_page_wedge_bound(p90_ms);
     let started = std::time::Instant::now();
@@ -547,14 +548,23 @@ pub(crate) async fn kv_page_action(
     // queue this switch sits in is moving and the switch keeps waiting. A queue that
     // stops moving, or an engine that stops answering, turns the switch uncertain at
     // that checkpoint, and a dead engine ends it sooner when its socket drops.
+    let mut payload = json!({ "filename": filename });
+    if let Some(operation) = operation {
+        payload["operation_id"] = json!(operation);
+    }
     let send = client
         .post(&url)
-        .json(&json!({ "filename": filename }))
+        .json(&payload)
         .send();
     let resp = wait_while_engine_progresses(
         send,
         bound,
-        || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
+        || async {
+            match operation {
+                Some(operation) => crate::inference::llama_server::restore_probe(root.trim_end_matches('/'), client, operation, slot).await,
+                None => crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client).await,
+            }
+        },
         |busy_checkpoints| {
             crate::probe!(
                 class = "inference.kv_page.busy_not_dead",

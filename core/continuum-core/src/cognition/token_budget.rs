@@ -30,6 +30,37 @@ pub fn estimate_prompt_tokens(content: &str) -> u32 {
     ((content.chars().count() / 4) as u32).saturating_add(1)
 }
 
+/// Traverse structured textual payloads using the caller's existing pricing policy.
+/// Deliberation's conservative guard and RAG's relative estimate have different
+/// units; preserving that policy avoids silently recalibrating existing text.
+/// Media bytes are excluded; the finalized provider quote owns media/template cost.
+pub fn estimate_message_content_tokens(
+    content: &crate::ai::types::MessageContent,
+    estimate: impl Fn(&str) -> usize,
+) -> usize {
+    use crate::ai::types::{ContentPart, MessageContent};
+    match content {
+        MessageContent::Text(text) => estimate(text),
+        MessageContent::Parts(parts) => parts.iter().fold(0usize, |total, part| {
+            let tokens = match part {
+                ContentPart::Text { text } => estimate(text),
+                ContentPart::ToolUse { id, name, input } => estimate(id)
+                    .saturating_add(estimate(name))
+                    .saturating_add(estimate(&input.to_string())),
+                ContentPart::ToolResult {
+                    tool_use_id,
+                    content,
+                    ..
+                } => estimate(tool_use_id).saturating_add(estimate(content)),
+                ContentPart::Image { .. }
+                | ContentPart::Audio { .. }
+                | ContentPart::Video { .. } => 0,
+            };
+            total.saturating_add(tokens)
+        }),
+    }
+}
+
 /// Keep the HEAD of `content` up to ~`budget_tokens` (same chars/4 unit as
 /// [`estimate_prompt_tokens`]), cutting on a char boundary and preferring the
 /// last newline inside the kept slice so the cut lands between lines, not
@@ -152,6 +183,35 @@ mod tests {
         assert_eq!(estimate_prompt_tokens("abcdefgh"), 3);
         // multibyte counted by chars, not bytes: 4 chars / 4 + 1 = 2.
         assert_eq!(estimate_prompt_tokens("日本語訳"), 2);
+        use crate::ai::types::{ContentPart, ImageInput, MessageContent};
+        let parts = MessageContent::Parts(vec![
+            ContentPart::ToolUse {
+                id: "call".into(),
+                name: "code/read".into(),
+                input: serde_json::json!({"path": "日本語訳.rs"}),
+            },
+            ContentPart::ToolResult {
+                tool_use_id: "call".into(),
+                content: "payload".repeat(100),
+                is_error: Some(true),
+            },
+        ]);
+        assert!(
+            estimate_message_content_tokens(&parts, |text| estimate_prompt_tokens(text) as usize)
+                > estimate_prompt_tokens(&"payload".repeat(100)) as usize
+        );
+        let pixels = MessageContent::Parts(vec![ContentPart::Image {
+            image: ImageInput {
+                url: None,
+                base64: Some("a".repeat(10_000)),
+                mime_type: Some("image/png".into()),
+            },
+        }]);
+        assert_eq!(
+            estimate_message_content_tokens(&pixels, |text| estimate_prompt_tokens(text) as usize),
+            0,
+            "base64 is not text; finalized provider quote prices pixels"
+        );
         // monotonic: more content never costs fewer tokens.
         assert!(estimate_prompt_tokens("a".repeat(400).as_str()) > estimate_prompt_tokens("a"));
     }

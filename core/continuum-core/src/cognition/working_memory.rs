@@ -528,6 +528,10 @@ pub struct WmEntry {
     pub text: String,
     #[serde(default)]
     pub acts: Vec<Observation>,
+    /// Original offered tool dialect, before execution normalization. Kept with
+    /// its existing decision/receipt entry; old checkpoints have no such evidence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub native_calls: Vec<crate::ai::types::ToolCall>,
     /// Measured checkout change for this whole receipt batch, never attributed to one call.
     #[serde(default)]
     pub(crate) disk_change: crate::cognition::act_observe::disk_change::DiskChange,
@@ -544,7 +548,13 @@ impl WorkingMemory {
     /// Preserve the public decision separately from private reasoning and tool output.
     /// It uses the existing bounded, checkpointed entry stream and acting-root scope.
     pub fn record_action_statement(&self, text: &str, room: Uuid) {
-        if text.trim().is_empty() || room.is_nil() {
+        if !text.trim().is_empty() {
+            self.record_native_action_statement(text, room, &[]);
+        }
+    }
+
+    pub fn record_native_action_statement(&self, text: &str, room: Uuid, calls: &[crate::ai::types::ToolCall]) {
+        if room.is_nil() {
             return;
         }
         let scope = self.scope.lock().clone();
@@ -554,6 +564,7 @@ impl WorkingMemory {
             kind: WmKind::ActionStatement { room },
             text: text.to_owned(),
             acts: Vec::new(),
+            native_calls: calls.to_vec(),
             scope,
         });
         while entries.len() > self.capacity {
@@ -574,12 +585,8 @@ impl WorkingMemory {
             .iter()
             .rev()
             .filter(|entry| entry.scope == scope)
-            .find_map(|entry| match entry.kind {
-                WmKind::ActionStatement { room: authored_room } if authored_room == room => {
-                    Some(entry.text.clone())
-                }
-                _ => None,
-            })
+            .find(|entry| matches!(entry.kind, WmKind::ActionStatement { room: authored_room } if authored_room == room))
+            .and_then(|entry| (!entry.text.trim().is_empty()).then(|| entry.text.clone()))
     }
 
     pub fn new(capacity: usize) -> Self {
@@ -682,6 +689,7 @@ impl WorkingMemory {
             kind: WmKind::Thought,
             text: r.to_string(),
             acts: Vec::new(),
+            native_calls: Vec::new(),
             scope: None,
         });
         while e.len() > self.capacity {
@@ -832,11 +840,18 @@ impl WorkingMemory {
         self.push_receipt_head(room, archive_head);
         let scope = self.scope.lock().clone();
         let mut e = self.entries.lock();
+        // Transfer provenance before bounded entry eviction. Match this scope,
+        // activity. Consume it once; mismatched IDs remain an explicit protocol
+        // fault in assembly, never permission to reuse an older statement or infer aliases.
+        let native_calls = e.iter_mut().rev()
+            .find(|entry| entry.scope == scope && matches!(entry.kind, WmKind::ActionStatement { room: r } if Some(r) == room))
+            .map(|entry| std::mem::take(&mut entry.native_calls)).unwrap_or_default();
         e.push_back(WmEntry {
             disk_change,
             kind: WmKind::Receipt { n: seq },
             text,
             acts,
+            native_calls,
             scope,
         });
         while e.len() > self.capacity {
@@ -1010,6 +1025,7 @@ impl WorkingMemory {
             kind: WmKind::Fact,
             text: f.to_string(),
             acts: Vec::new(),
+            native_calls: Vec::new(),
             scope: None,
         });
         while e.len() > self.capacity {
@@ -1392,6 +1408,17 @@ impl WorkingMemory {
             .unwrap_or_default() // No matching scoped receipt means no typed observations are eligible.
     }
 
+    /// Original native batch for this exact active receipt, if captured. An empty
+    /// result is legacy evidence, never permission to reverse-guess tool aliases.
+    pub fn active_action_native_calls(&self, seq: u64) -> Vec<crate::ai::types::ToolCall> {
+        if self.last_action.lock().as_ref().map(|(n, _)| *n) != Some(seq)
+            || seq < self.active_from_seq.load(Ordering::Relaxed) { return Vec::new(); }
+        let scope = self.scope.lock().clone();
+        self.entries.lock().iter().rev()
+            .find(|entry| entry.scope == scope && matches!(entry.kind, WmKind::Receipt { n } if n == seq))
+            .map(|entry| entry.native_calls.clone()).unwrap_or_default()
+    }
+
     /// Render the complete active payload with its recorded provenance. The
     /// caller retains the same raw bytes for request identity; this introduces
     /// no second payload clone, serialization, or inferred current-room label.
@@ -1680,6 +1707,7 @@ impl WorkingMemory {
             },
             scope: None,
             acts: Vec::new(),
+            native_calls: Vec::new(),
         });
         while e.len() > self.capacity {
             e.pop_front();
@@ -2747,15 +2775,39 @@ mod tests {
         let mut second = obs.clone();
         second.call.id = "call-43".into();
         second.output.result.tool_use_id = second.call.id.clone();
-        typed.record_receipt_typed(&[obs.clone(), second], "two results", None, crate::ai::types::ResultCustody::Unsaved);
+        let room = Uuid::new_v4();
+        let original_calls = vec![obs.call.clone(), second.call.clone()];
+        typed.record_native_action_statement("", room, &original_calls);
+        assert!(typed.action_statement(room).is_none(), "tool-only turns do not inherit old public speech");
+        typed.record_receipt_typed(&[obs.clone(), second], "two results", Some(room), crate::ai::types::ResultCustody::Unsaved);
         let (seq, _) = typed.active_action_full().unwrap();
         let batch = typed.active_action_observations(seq);
         assert_eq!(batch.len(), 2);
         assert_eq!(batch[0].call.id, "call-42");
         assert_eq!(batch[1].call.id, "call-43");
+        assert_eq!(typed.active_action_native_calls(seq).len(), 2);
+        let restored = WorkingMemory::new(8);
+        restored.restore(serde_json::from_slice(&serde_json::to_vec(&typed.snapshot()).unwrap()).unwrap());
+        assert_eq!(restored.active_action_native_calls(seq)[1].id, "call-43");
+        // A receipt consumes its decision once, even if later calls reuse an ID.
+        restored.record_receipt_typed(&[obs.clone()], "later unrecorded call", Some(room), crate::ai::types::ResultCustody::Unsaved);
+        let next = restored.active_action_full().unwrap().0;
+        assert!(restored.active_action_native_calls(next).is_empty());
+        restored.record_native_action_statement("", room, &original_calls);
+        restored.record_receipt_typed(&[obs.clone()], "other activity", Some(Uuid::new_v4()), crate::ai::types::ResultCustody::Unsaved);
+        assert!(restored.active_action_native_calls(restored.active_action_full().unwrap().0).is_empty());
+        restored.record_native_action_statement("", room, &original_calls);
+        restored.record_native_action_statement("", room, &[]); // next decision uses a legacy envelope
+        restored.record_receipt_typed(&[obs.clone()], "legacy after failed native action", Some(room), crate::ai::types::ResultCustody::Unsaved);
+        assert!(restored.active_action_native_calls(restored.active_action_full().unwrap().0).is_empty());
+        restored.record_native_action_statement("", room, &original_calls);
+        restored.set_scope(Some("another-root".into()));
+        restored.record_receipt_typed(&[obs.clone()], "other root", Some(room), crate::ai::types::ResultCustody::Unsaved);
+        assert!(restored.active_action_native_calls(restored.active_action_full().unwrap().0).is_empty());
         assert!(typed.active_action_observations(seq - 1).is_empty());
         typed.set_scope(Some("another-workspace".into()));
         assert!(typed.active_action_observations(seq).is_empty());
+        assert!(typed.active_action_native_calls(seq).is_empty());
         typed.set_scope(None);
         typed.record_settlement("observed", None);
         assert!(typed.active_action_observations(seq).is_empty());
