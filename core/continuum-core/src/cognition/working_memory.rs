@@ -227,6 +227,8 @@ pub struct WorkingMemory {
     /// The acting root her receipts are stamped with (set at the work-turn
     /// rooting seam, cleared on restore). See [`WmEntry::scope`].
     scope: Mutex<Option<String>>,
+    /// Unmet measured reply demand belongs to a concern, not a permanent persona peak.
+    pending_emissions: Mutex<Vec<ConcernEmission>>,
     /// The FULL result of the most recent act, kept whole (bounded upstream by the
     /// executor's fold cap) so the mind can work with what its hands just fetched — a
     /// file to count, a screenshot description to read, a log to scan. Only the latest is
@@ -378,8 +380,19 @@ pub enum ClaimGone {
     Unknown,
 }
 
+/// A truncated answer's measured peak, retained until its existing concern settles.
+/// This is budgeting evidence only; no answer or private reasoning is stored.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConcernEmission {
+    room: Uuid,
+    scope: Option<String>,
+    peak_tokens: u32,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VolatileSnapshot {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_emissions: Vec<ConcernEmission>,
     pub entries: Vec<WmEntry>,
     /// Authored entries and their original ring positions. Kept outside legacy
     /// `entries` so rollback readers retain prior memory without decoding a new
@@ -627,6 +640,7 @@ impl WorkingMemory {
             served_window: AtomicU32::new(0),
             entries: Mutex::new(VecDeque::new()),
             scope: Mutex::new(None),
+            pending_emissions: Mutex::new(Vec::new()),
             last_action: Mutex::new(None),
             dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
@@ -640,6 +654,25 @@ impl WorkingMemory {
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
         }
+    }
+
+    /// Keep the existing measured truncation peak across intermediate Act replies.
+    /// Switching activity/root does not transfer this evidence to another concern.
+    pub(crate) fn retain_truncated_emission(&self, room: Uuid, peak_tokens: u32) {
+        let scope = self.scope.lock().clone();
+        let mut pending = self.pending_emissions.lock();
+        if let Some(prior) = pending.iter_mut().find(|e| e.room == room && e.scope == scope) {
+            prior.peak_tokens = prior.peak_tokens.max(peak_tokens);
+        } else {
+            pending.push(ConcernEmission { room, scope, peak_tokens });
+        }
+    }
+
+    pub(crate) fn pending_emission_peak(&self, room: Uuid) -> u32 {
+        let scope = self.scope.lock().clone();
+        self.pending_emissions.lock().iter()
+            .filter(|e| e.room == room && e.scope == scope)
+            .map(|e| e.peak_tokens).max().unwrap_or(0)
     }
 
     /// Adopt the LIVE served context window (tokens) as the basis for every re-injection
@@ -1131,6 +1164,7 @@ impl WorkingMemory {
                 self.last_action.lock().clone())
         };
         VolatileSnapshot {
+            pending_emissions: self.pending_emissions.lock().clone(),
             entries,
             action_statements,
             last_action,
@@ -1168,6 +1202,7 @@ impl WorkingMemory {
     /// happened, whether those operations completed, or what side effects they
     /// produced. The persona decides what to do with that uncertainty.
     pub fn restore(&self, mut snap: VolatileSnapshot) {
+        *self.pending_emissions.lock() = snap.pending_emissions;
         // Reconstitute the same ring before applying its existing capacity and
         // notice filtering. Older readers ignore the additive authored field.
         for (index, entry) in snap.action_statements {
@@ -1788,6 +1823,9 @@ impl WorkingMemory {
         self.collapse_results_over_cap();
         let a = answer_head.trim();
         let scope = self.scope.lock().clone();
+        // Existing authored-settlement boundary, not proof the task was completed.
+        // An unknown or different activity cannot discharge this concern's evidence.
+        self.pending_emissions.lock().retain(|e| Some(e.room) != room || e.scope != scope);
         let mut e = self.entries.lock();
         // End only the authored decision for this activity and exact root. An
         // unknown room cannot establish that boundary. The existing unscoped
@@ -1838,6 +1876,7 @@ impl WorkingMemory {
     /// act). The live heartbeat never calls this — there, concerns flow
     /// continuously and old traces age out naturally past `capacity`.
     pub fn clear(&self) {
+        self.pending_emissions.lock().clear();
         self.entries.lock().clear();
         *self.last_action.lock() = None; // the full latest result is proprioception too
         self.dispatched.lock().clear(); // dispatched handles belong to the cleared concern
@@ -2855,6 +2894,7 @@ mod tests {
         // An empty list describes this checkpoint, not everything that was running.
         let quiet = WorkingMemory::new(8);
         quiet.restore(VolatileSnapshot {
+            pending_emissions: Vec::new(),
             entries: Vec::new(),
             action_statements: Vec::new(),
             last_action: None,
@@ -3551,6 +3591,31 @@ mod tests {
     // any answer) from legitimate re-use of the same tool after answering.
     #[test]
     fn record_settlement_marks_a_boundary_in_the_buffer() {
+        let room = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let scoped = WorkingMemory::new(8);
+        scoped.set_scope(Some("root-a".into()));
+        scoped.retain_truncated_emission(room, 3587);
+        scoped.retain_truncated_emission(room, 4000);
+        scoped.retain_truncated_emission(room, 3000);
+        assert_eq!(scoped.pending_emission_peak(room), 4000);
+        assert_eq!(scoped.pending_emission_peak(other), 0);
+        scoped.record_settlement("another activity answered", Some(other));
+        assert_eq!(scoped.pending_emission_peak(room), 4000);
+        scoped.set_scope(Some("root-b".into()));
+        assert_eq!(scoped.pending_emission_peak(room), 0);
+        scoped.record_settlement("another workspace answered", Some(room));
+        scoped.set_scope(Some("root-a".into()));
+        assert_eq!(scoped.pending_emission_peak(room), 4000);
+        let encoded = serde_json::to_vec(&scoped.snapshot()).unwrap();
+        let restored = WorkingMemory::new(8);
+        restored.restore(serde_json::from_slice(&encoded).unwrap());
+        restored.set_scope(Some("root-a".into()));
+        assert_eq!(restored.pending_emission_peak(room), 4000, "restart retains the same concern evidence");
+        restored.record_settlement("authored answer", Some(room));
+        assert_eq!(restored.pending_emission_peak(room), 0, "existing settlement releases, not proof of task completion");
+        scoped.clear();
+        assert_eq!(scoped.pending_emission_peak(room), 0);
         let wm = WorkingMemory::new(4);
         wm.record_receipt("I ran commands/list({}) -> 100 commands");
         wm.record_settlement("there are 100 commands", None);

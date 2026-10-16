@@ -1019,6 +1019,10 @@ impl LlmDeliberationFaculty {
     /// bound that WARNS about a too-small window and the reserve that LIVES within one can
     /// never disagree about what "mandatory" means.
     fn completion_reserve_within(&self, context_window: u32) -> u32 {
+        self.completion_reserve_for_peak(context_window, 0)
+    }
+
+    fn completion_reserve_for_peak(&self, context_window: u32, pending_peak: u32) -> u32 {
         let mandatory = self.mandatory_prompt_floor();
         let share = context_window / Self::COMPLETION_SHARE_DENOM;
         // THE MEASURED RESERVE (the "output-p95 riding the working-set registry"
@@ -1057,6 +1061,7 @@ impl LlmDeliberationFaculty {
         // (`window_for` floors at MIN_SERVE_CTX) but the ordering should not depend on it.
         measured
             .unwrap_or(Self::COMPLETION_COLD_PRIOR_TOKENS) // JUSTIFIED unwrap_or: no measurement yet = a REPLY-sized prior, never a window fraction; the honest absence has a named owner above
+            .max(pending_peak.saturating_mul(2))
             .min(share)
             .min(context_window.saturating_sub(mandatory))
             .max(Self::COMPLETION_FLOOR_TOKENS)
@@ -2520,7 +2525,9 @@ impl LlmDeliberationFaculty {
         // Desired reply room from the existing measured-reserve policy. Below,
         // it yields to the current payload's measured floor; that planned value
         // travels with the view into `build_request_within` as `max_tokens`.
-        let completion_reserve = self.completion_reserve_within(context_window) as usize;
+        let pending_peak = self.working_memory.as_ref()
+            .map_or(0, |wm| wm.pending_emission_peak(ws.activity_room_id));
+        let completion_reserve = self.completion_reserve_for_peak(context_window, pending_peak) as usize;
 
         // The NATIVE tool schemas ride the served window too: the gateway injects
         // each function spec (name + description + schema) via the chat template,
@@ -5246,13 +5253,18 @@ impl LlmDeliberationFaculty {
                     "think-only cut at the allowance — the peak holds, the need ring does not take it"
                 );
             }
-            reg.record_emission(
+            let measured = reg.record_emission(
                 self.persona_id,
                 resp.usage.output_tokens,
                 reasoning_tokens,
                 stop,
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
             );
+            if stop == super::working_set::EmissionStop::CutMidAnswer {
+                if let (Some(wm), Some(measured)) = (&self.working_memory, measured) {
+                    wm.retain_truncated_emission(ws.activity_room_id, measured.peak_tokens);
+                }
+            }
         }
 
         // SEGMENT ATTRIBUTION (the rent ledger, compression-ladder rung 2):
@@ -7544,6 +7556,32 @@ mod tests {
             // share (the prior is a starting point, the share is the wall).
             reg.record_emission_in_memory(persona, 5_000, 0, crate::cognition::working_set::EmissionStop::CutMidAnswer, 4);
             assert_eq!(faculty.completion_reserve_within(window), share);
+
+            // cf9e: a 2,276-token cut followed by short successful read replies.
+            // The existing channel split measured peak 3,587; the concern keeps
+            // that evidence while the ordinary persona statistic still adapts.
+            let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(8));
+            let quiet_faculty = quiet_faculty.with_working_memory(Arc::clone(&wm));
+            let mut concern = Workspace::new("continue the current implementation");
+            let room = Uuid::new_v4();
+            concern.activity_room_id = room;
+            wm.set_scope(Some("owned-workspace".into()));
+            let cut = reg.record_emission_in_memory(
+                quiet, 2276, 965, crate::cognition::working_set::EmissionStop::CutMidAnswer, 10);
+            assert_eq!(cut.peak_tokens, 3587);
+            wm.retain_truncated_emission(room, cut.peak_tokens);
+            for (tick, tokens) in [871, 1120, 400, 300, 300, 300, 300, 300, 300].into_iter().enumerate() {
+                reg.record_emission_in_memory(quiet, tokens, 0,
+                    crate::cognition::working_set::EmissionStop::Landed, 11 + tick as u64);
+                assert_eq!(quiet_faculty.prompt_view_within(&concern, window).completion_reserve, 7174,
+                    "actual prompt construction retains measured need through intermediate reads");
+            }
+            assert!(quiet_faculty.completion_reserve_within(window) < 7174, "ordinary measurements still decay");
+            assert!(quiet_faculty.completion_reserve_for_peak(4096, wm.pending_emission_peak(room)) <= 2048,
+                "retained need never bypasses the physical share/input clamps");
+            wm.record_settlement("answered this concern", Some(room));
+            assert_eq!(quiet_faculty.completion_reserve_for_peak(window, wm.pending_emission_peak(room)),
+                quiet_faculty.completion_reserve_within(window));
         }
 
         // Capture 932f6b81:37 ended at 16,384 tokens with no answer or tool call.

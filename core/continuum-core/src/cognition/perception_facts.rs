@@ -607,6 +607,7 @@ mod tests {
         // (#414); this pins the honest form so a future edit can't restore it.
         let pre_archive = Arc::new(WorkingMemory::new(2));
         pre_archive.restore(crate::cognition::working_memory::VolatileSnapshot {
+            pending_emissions: Vec::new(),
             entries: Vec::new(),
             action_statements: Vec::new(),
             last_action: None,
