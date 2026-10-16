@@ -27,6 +27,15 @@ pub struct ReplayRequestParams {
     #[serde(default)]
     #[ts(optional)]
     pub max_tokens: Option<u32>,
+    /// Diagnostic only: explicit zero-based standalone collapsed receipt messages to omit.
+    /// Requires expected_request_sha256; native protocol messages cannot be omitted.
+    #[serde(default)]
+    pub omit_message_indices: Vec<u32>,
+    /// SHA-256 of the decoded captured request's compact, recursively key-sorted JSON,
+    /// before replay identity/model overrides. Returned by every exact replay.
+    #[serde(default)]
+    #[ts(optional)]
+    pub expected_request_sha256: Option<String>,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -78,6 +87,59 @@ pub struct ReplayRequestResult {
     pub replay: ReplayOutcome,
     /// Always false: proposed model calls are recorded, never dispatched by replay.
     pub tools_executed: bool,
+    pub input_comparison: InputComparison,
+}
+
+use super::super::prompt_capture::InputComparison;
+
+fn request_hash(request: &TextGenerationRequest) -> Result<String, CommandError> {
+    use sha2::{Digest, Sha256};
+    let mut value = serde_json::to_value(request) // boundary: canonical request digest shared with diagnostic caller
+        .map_err(|e| CommandError::Internal(format!("replay request hash: {e}")))?;
+    value.sort_all_objects();
+    let bytes = serde_json::to_vec(&value) // boundary serialization: canonical captured-request integrity digest
+        .map_err(|e| CommandError::Internal(format!("replay request hash: {e}")))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -> Result<InputComparison, CommandError> {
+    let before = request_hash(request)?;
+    if let Some(expected) = &p.expected_request_sha256 {
+        if expected != &before {
+            return Err(CommandError::Invalid(format!("captured request hash mismatch; actual {before}")));
+        }
+    } else if !p.omit_message_indices.is_empty() {
+        return Err(CommandError::Invalid("message omission requires expected_request_sha256".into()));
+    }
+    if !p.omit_message_indices.is_empty() && p.max_tokens.is_some() {
+        return Err(CommandError::Invalid("message omission cannot also change output allowance".into()));
+    }
+    let mut indices = std::collections::BTreeSet::new();
+    for &index in &p.omit_message_indices {
+        if !indices.insert(index) {
+            return Err(CommandError::Invalid(format!("duplicate omitted message index {index}")));
+        }
+        let message = request.messages.get(index as usize)
+            .ok_or_else(|| CommandError::Invalid(format!("omitted message index {index} is out of range")))?;
+        let allowed = message.role == "user" && message.name.is_none()
+            && matches!(&message.content, crate::ai::MessageContent::Text(text)
+                if crate::cognition::working_memory::is_collapsed_result_pointer(text));
+        if !allowed {
+            return Err(CommandError::Invalid(format!("message {index} is not a standalone collapsed historical receipt")));
+        }
+    }
+    // Validate every index before changing anything. Protocol Parts are never eligible.
+    let mut index = 0u32;
+    request.messages.retain(|_| {
+        let keep = !indices.contains(&index);
+        index += 1;
+        keep
+    });
+    Ok(InputComparison {
+        omitted_message_indices: indices.into_iter().collect(),
+        captured_request_sha256: before,
+        comparison_request_sha256: request_hash(request)?,
+    })
 }
 
 struct Prepared {
@@ -108,6 +170,7 @@ fn prepare(
         mut request,
         response,
     } = prompt_capture::decode(detail).map_err(CommandError::Invalid)?;
+    let input_comparison = compare_input(&mut request, p)?;
     let original = response.as_ref().map(ReplayOutcome::from);
     // An implicit provider default is only reproducible when the terminal receipt
     // identifies what actually served it. Never substitute today's default.
@@ -151,6 +214,7 @@ fn prepare(
             cause: "captured-request-replay",
             cause_root: None,
             replay_of: Some(ReplaySource {
+                input_comparison,
                 model_from_response,
                 persona_id: persona,
                 cursor: p.selected.clone(),
@@ -165,7 +229,7 @@ fn prepare(
 impl ActionCommand for CognitionReplayRequest {
     const NAME: &'static str = "cognition/replay-request";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
-    const DESCRIPTION: &'static str = "Rerun a captured model request with optional max_tokens override, using an explicit provider and isolated cache identity. Records original provenance and new lifecycle; returns outcome comparison. Never dispatches tool calls or changes live persona memory. Fresh inference, not deterministic full-mind replay.";
+    const DESCRIPTION: &'static str = "Rerun a captured model request with optional max_tokens override or hash-bound collapsed-receipt omission, using an explicit provider and isolated cache identity. Records original provenance and new lifecycle; returns outcome comparison. Never dispatches tool calls or changes live persona memory. Fresh inference, not deterministic full-mind replay.";
     type Params = ReplayRequestParams;
     type Output = ReplayRequestResult;
 
@@ -266,6 +330,7 @@ async fn execute(
                 original,
                 replay: ReplayOutcome::from(&response),
                 tools_executed: false,
+                input_comparison: source.input_comparison,
             })
         }
         Err(error) => {
@@ -325,6 +390,8 @@ mod tests {
             selected: cursor.clone(),
             provider: "explicit-provider".into(),
             max_tokens: Some(41_053),
+            omit_message_indices: Vec::new(),
+            expected_request_sha256: None,
         };
         let read =
             || prompt_capture::detail(dir.path(), persona, &cursor).expect("original capture");
@@ -350,6 +417,48 @@ mod tests {
             "all prompt/model/genome/sampling fields stay captured"
         );
         assert_eq!(prepared.original_max_tokens, Some(16_384));
+        // A diagnostic changes only named historical pointers, never tool protocol or settings.
+        let mut diagnostic = request.clone();
+        diagnostic.messages.push(ChatMessage::text("user", format!(
+            "[result #9; room {room}; operation code/read; output handle: tool/output 0123abcd — collapsed; query tool/output to expand]")));
+        diagnostic.messages.push(serde_json::from_value(serde_json::json!({
+            "role":"assistant", "content":[{"type":"tool_use", "id":"native-call", "name":"read_file", "input":{"path":"task.rs"}}]
+        })).unwrap());
+        diagnostic.messages.push(serde_json::from_value(serde_json::json!({
+            "role":"user", "content":[{"type":"tool_result", "tool_use_id":"native-call", "content":"current result"}]
+        })).unwrap());
+        let full = serde_json::to_value(&diagnostic).unwrap();
+        let mut omission = p.clone();
+        omission.max_tokens = None;
+        omission.expected_request_sha256 = Some(request_hash(&diagnostic).unwrap());
+        omission.omit_message_indices = vec![1];
+        let audit = compare_input(&mut diagnostic, &omission).unwrap();
+        let mut wanted = full.clone();
+        wanted["messages"].as_array_mut().unwrap().remove(1);
+        assert_eq!(serde_json::to_value(&diagnostic).unwrap(), wanted);
+        assert_eq!(audit.omitted_message_indices, vec![1]);
+        assert_ne!(audit.captured_request_sha256, audit.comparison_request_sha256);
+        for bad in [vec![0], vec![2], vec![3], vec![99], vec![1, 1]] {
+            let mut copy: TextGenerationRequest = serde_json::from_value(full.clone()).unwrap();
+            omission.omit_message_indices = bad;
+            assert!(compare_input(&mut copy, &omission).is_err());
+            assert_eq!(serde_json::to_value(copy).unwrap(), full, "refusal is non-mutating");
+        }
+        omission.omit_message_indices = vec![1];
+        for role in ["system", "assistant", "tool"] {
+            let mut copy: TextGenerationRequest = serde_json::from_value(full.clone()).unwrap();
+            copy.messages[1].role = role.into();
+            omission.expected_request_sha256 = Some(request_hash(&copy).unwrap());
+            assert!(compare_input(&mut copy, &omission).is_err(), "protected role {role}");
+        }
+        omission.expected_request_sha256 = Some("stale".into());
+        assert!(compare_input(&mut request.clone(), &omission).is_err());
+        omission.expected_request_sha256 = None;
+        assert!(compare_input(&mut request.clone(), &omission).is_err());
+        let exact = compare_input(&mut request.clone(), &p).unwrap();
+        assert!(exact.omitted_message_indices.is_empty());
+        assert_eq!(exact.captured_request_sha256, exact.comparison_request_sha256);
+
         // The provenance rides the existing capture format, not an unrelated log.
         let replay_id = prepared.call.persona_id;
         let replay_sink = JsonlPromptCaptureSink::open(dir.path(), replay_id).expect("replay sink");

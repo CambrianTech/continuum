@@ -143,6 +143,19 @@ impl std::fmt::Display for ResultAttribution<'_> {
     }
 }
 
+/// Recognize ONLY the standalone pointer representation emitted by this owner.
+/// Diagnostic replay uses this to refuse removal of source bodies or native protocol.
+pub(super) fn is_collapsed_result_pointer(text: &str) -> bool {
+    let Some(body) = text.strip_prefix("[result #").and_then(|s| s.strip_suffix(" � collapsed; query tool/output to expand]")) else { return false };
+    let Some((seq, rest)) = body.split_once("; room ") else { return false };
+    if seq.parse::<u64>().is_err() { return false; }
+    let Some((room, rest)) = rest.split_once("; operation ") else { return false };
+    if room != "unrecorded" && Uuid::parse_str(room).is_err() { return false; }
+    let Some((operation, handle)) = rest.rsplit_once("; output handle: tool/output ") else { return false };
+    !operation.is_empty() && !handle.is_empty()
+        && !text.contains(['\n', '\r']) && !handle.chars().any(char::is_whitespace)
+}
+
 /// Lifecycle of a dispatched (background) command the persona sent away — a sentinel,
 /// a compile, a debugger. Streams continuously: `Running` updates arrive in place, then a
 /// terminal `Done`/`Failed`. The handle (a UUID) is reusable — the mind can pass it to

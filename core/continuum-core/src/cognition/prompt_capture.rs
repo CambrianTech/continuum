@@ -32,8 +32,17 @@ pub struct PromptCall {
     pub replay_of: Option<ReplaySource>,
 }
 
+/// Input-only diagnostic provenance; hashes precede normal replay identity overrides.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct InputComparison {
+    pub omitted_message_indices: Vec<u32>,
+    pub captured_request_sha256: String,
+    pub comparison_request_sha256: String,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ReplaySource {
+    pub input_comparison: InputComparison,
     /// Whether replay pinned an implicit model using its recorded terminal response.
     pub model_from_response: bool,
     pub persona_id: Uuid,
