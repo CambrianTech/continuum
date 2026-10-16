@@ -112,7 +112,7 @@ jobs:
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          cargo test -p continuum-core --lib --profile dev-fast --no-run --message-format=json > lib-artifacts.jsonl
+          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --no-run --timings --message-format=json
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
           bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
@@ -126,6 +126,17 @@ jobs:
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
+
+      - name: Retain Unix build evidence
+        if: always() && needs.changes.outputs.rust != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unix-lib-build-evidence
+          path: |
+            lib-artifacts.jsonl
+            ${{ env.CONTINUUM_CARGO_TIMINGS }}
+          if-no-files-found: ignore
+          retention-days: 1
 
       # --lib never runs the CLI's handoff admission tests, nor the deploy consumer's
       # verdict and per-build attempt ledger (card f7826d97). Use this existing
@@ -279,7 +290,8 @@ jobs:
           # Replace the lib-only type check with a runnable artifact. The existing
           # reduced-debug profile avoids the full-debug PDB size failure; compile
           # once and reuse it for these native custody tests, not a second lane.
-          cargo test -p continuum-core --lib --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures --no-run --message-format=json > windows-lib-artifacts.jsonl
+          # Shared streaming capture keeps compiler errors visible before failure or cancellation.
+          python tools/scripts/ci-lib-test-artifact.py --capture windows-lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures --no-run --timings --message-format=json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $testEnv = python tools/scripts/ci-lib-test-artifact.py windows-lib-artifacts.jsonl core/continuum-core (rustc --print target-libdir)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -298,6 +310,16 @@ jobs:
             if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
           }
           Pop-Location
+      - name: Retain Windows build evidence
+        if: always() && needs.changes.outputs.rust != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-lib-build-evidence
+          path: |
+            windows-lib-artifacts.jsonl
+            ${{ env.CONTINUUM_CARGO_TIMINGS }}
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Type-check integration targets using the same headless profile
         if: needs.changes.outputs.rust != 'false'
         run: cargo check -p continuum-core --test '*' --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures
