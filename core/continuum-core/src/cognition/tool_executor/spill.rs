@@ -447,29 +447,66 @@ fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid,
             handle: r.handle,
         },
         Ok(r) => {
+            // The head rides with the pointer, named as a head. A pointer alone sent a citizen
+            // back to re-read the same file in slices for hours (Benchy, the M5, 2026-10-16: a
+            // 578-line lib.rs read at 27,454 chars against a 26,176-char share came back as
+            // "a single 27454-character line (or the result has been truncated)", 121 acts
+            // without a write). What a person gets from `head` she gets here: the first lines,
+            // the line count, and the handle for the rest. Never passed off as the whole.
+            let (head, head_lines) = head_of(&full, share / HEAD_SHARE_DENOM);
             crate::probe!(
                 class = "tool.output.spilled",
                 handle = %r.handle,
                 chars = %chars,
                 share = %share,
+                head_lines = %head_lines,
                 "a tool result was larger than the window's share for one result: saved \
-                 whole and handed to the mind as its handle"
+                 whole and handed to the mind as its head and handle"
             );
             Fitted::Stored {
                 shown: format!(
                     "[this result is {} lines ({chars} chars), more than this window's \
-                     {share}-char share for one result, so it is not shown in part. The whole \
-                     result is saved as output `{}`: open what you need with `tool/output`. \
-                     Jump straight to what broke with `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` \
-                     (or `warnings`/`failures`/`summary`), hunt with `\"pattern\":\"<regex>\"`, or \
-                     read a line range with `startLine`/`endLine`]",
-                    r.lines, r.handle, r.handle,
+                     {share}-char share for one result: lines 1-{head_lines} are shown below and \
+                     the WHOLE result is saved as output `{}`. Open the rest with `tool/output`: \
+                     a line range with `startLine`/`endLine`, a `\"pattern\":\"<regex>\"` hunt, or \
+                     `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/`summary`). \
+                     For a file, a `code/read` with `start_line`/`end_line` reads a range directly]\n{head}\n\
+                     [lines {}-{} of {} are not shown: open them as above]",
+                    r.lines, r.handle, r.handle, head_lines + 1, r.lines, r.lines,
                 ),
                 handle: r.handle,
             }
         }
         Err(e) => unsaved_whole(full, share, &e),
     }
+}
+
+/// A spilled result's shown head takes this fraction of the one-result share: the share
+/// itself is what the mind's view holds for a result, and the pointer plus a quarter of it
+/// leaves the view room for the next result beside it.
+const HEAD_SHARE_DENOM: usize = 4;
+
+/// The first whole lines of `full` that fit in `max_chars`, and how many lines that is
+/// (at least one line, cut at `max_chars` if even the first line is longer).
+fn head_of(full: &str, max_chars: usize) -> (String, usize) {
+    let mut out = String::new();
+    let mut lines = 0usize;
+    for line in full.lines() {
+        if lines > 0 && out.len() + line.len() + 1 > max_chars {
+            break;
+        }
+        if lines > 0 {
+            out.push('\n');
+        }
+        if lines == 0 && line.len() > max_chars {
+            out.push_str(&line.chars().take(max_chars).collect::<String>());
+            lines = 1;
+            break;
+        }
+        out.push_str(line);
+        lines += 1;
+    }
+    (out, lines)
 }
 
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
