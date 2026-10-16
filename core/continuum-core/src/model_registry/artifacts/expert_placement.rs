@@ -501,6 +501,9 @@ fn freeze_in(
             let name = entry_name(entry)?;
             let path = copy_root.join(&name);
             if !path.try_exists().map_err(|e| e.to_string())? {
+                if copy_root == &destination {
+                    return Err("published container changed after verification".into());
+                }
                 let source = source_handles
                     .get_mut(&name)
                     .ok_or("source handle missing")?;
