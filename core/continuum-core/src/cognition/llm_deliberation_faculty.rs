@@ -3294,10 +3294,14 @@ impl LlmDeliberationFaculty {
             }
         };
         render_trailing(&mut messages, false);
+        let mut result_pointers = Vec::new();
         if let Some(wm) = &self.working_memory {
             // The append-only results ring — its appends land at the growth
             // frontier of the stable region, displacing nothing.
-            for block in wm.recent_results_messages() {
+            for (block, pointer) in wm.recent_results_with_pointers() {
+                if let Some(pointer) = pointer {
+                    result_pointers.push((messages.len(), ChatMessage::text("user", pointer)));
+                }
                 messages.push(ChatMessage::text("user", block));
             }
         }
@@ -3419,6 +3423,7 @@ impl LlmDeliberationFaculty {
         PromptMessages {
             input_identity: input.finalize().into(),
             history: messages,
+            result_pointers,
             grounding_tokens: 0,
             grounding_at,
             stimulus,
@@ -3688,6 +3693,22 @@ impl LlmDeliberationFaculty {
             });
         }
         let history_budget = budget_tokens - required_tokens;
+        // 82416bb1: during an ongoing concern WM's ring only appends. Before
+        // dropping a result AND its expansion handle, price the source's compact
+        // alternative. No second store or mutation of WM: custody stays with the
+        // existing saved result, and only the fitted view changes. Unsaved results
+        // never supply an alternative. Ordinary eviction still bounds this view.
+        let mut history_tokens = Self::messages_cost(&prompt.history);
+        for (index, pointer) in std::mem::take(&mut prompt.result_pointers) {
+            if history_tokens <= history_budget { break; }
+            let Some(message) = prompt.history.get_mut(index) else { continue };
+            let old_cost = Self::message_cost(message);
+            let pointer_cost = Self::message_cost(&pointer);
+            if pointer_cost < old_cost {
+                history_tokens = history_tokens.saturating_sub(old_cost - pointer_cost);
+                *message = pointer;
+            }
+        }
         // Read BEFORE the history is borrowed for costing: what her own last move and its
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
@@ -3965,6 +3986,8 @@ impl SelectedSurface<'_> {
 struct PromptMessages {
     input_identity: [u8; 32],
     history: Vec<ChatMessage>,
+    /// Source-owned compact alternatives, indexed into history; never inferred from prose.
+    result_pointers: Vec<(usize, ChatMessage)>,
     /// Kept before the append-only result ring even when older history yields.
     grounding_tokens: usize,
     grounding_at: usize,
@@ -8572,6 +8595,36 @@ mod tests {
                 }
             }
             assert!(invalid.active_protocol_error().is_some());
+            // Reproduce the mid-concern inventory loss: the result still has live
+            // custody, but its body no longer fits beside the next native batch.
+            let inventory = format!("inventory-13010\n{}", "source/location.rs:42 matched reference\n".repeat(400));
+            let pin = crate::cognition::tool_executor::spill::LivePin::new();
+            let custody = pin.retain(persona, &inventory);
+            let handle = custody.handle().expect("saved inventory").to_owned();
+            wm.record_receipt_typed(&[], &inventory, Some(ws.activity_room_id), custody);
+            wm.record_native_action_statement("", ws.activity_room_id, &native_calls);
+            wm.record_receipt_typed(&batch, "next native batch", Some(ws.activity_room_id), crate::ai::types::ResultCustody::Unsaved);
+            let roomy = faculty.messages_unfitted(&ws, None);
+            let full_cost = roomy.required_tokens() + LlmDeliberationFaculty::messages_cost(&roomy.history);
+            let (index, pointer) = roomy.result_pointers.iter().find(|(_, message)| message.content_text().contains(&handle)).unwrap();
+            let savings = LlmDeliberationFaculty::message_cost(&roomy.history[*index])
+                - LlmDeliberationFaculty::message_cost(pointer);
+            assert!(savings > 0);
+            let tight_budget = full_cost - savings;
+            let tight = faculty.fit_messages(roomy, tight_budget).unwrap();
+            assert!(LlmDeliberationFaculty::messages_cost(&tight.messages) <= tight_budget);
+            assert!(tight.messages.iter().any(|m| m.content_text().contains(&handle)));
+            assert!(!tight.messages.iter().any(|m| m.content_text().contains("inventory-13010")));
+            let tight_wire = crate::inference::request_body::wire_messages(&tight.messages, None, true, false, "llama-server");
+            let call_at = tight_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
+            for (i, observation) in batch.iter().enumerate() {
+                assert_eq!(tight_wire[call_at + 1 + i]["tool_call_id"], observation.call.id);
+            }
+            let saved = crate::cognition::tool_executor::spill::resolve(persona, &handle).unwrap();
+            assert_eq!(std::fs::read_to_string(saved).unwrap(), inventory);
+            // Fitting is a projection: a later roomy request still has the body.
+            let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
+            assert!(roomy.messages.iter().any(|m| m.content_text().contains("inventory-13010")));
             wm.set_scope(Some("another-workspace".into()));
             let scoped = faculty.prompt_view_with_visual_feedback(
                 &ws,
@@ -9163,6 +9216,7 @@ mod tests {
                 .collect();
             let stimulus = ChatMessage::text("user", "operator: do the thing ".repeat(40));
             let prompt = |history: Vec<ChatMessage>| PromptMessages {
+                result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
                 grounding_at: 0,
@@ -9224,6 +9278,7 @@ mod tests {
                 let fit = faculty
                     .fit_messages(
                         PromptMessages {
+                            result_pointers: Vec::new(),
                             input_identity: [0; 32],
                             grounding_tokens: 0,
                             grounding_at: 0,
@@ -9274,6 +9329,7 @@ mod tests {
             let fit = faculty
                 .fit_messages(
                     PromptMessages {
+                        result_pointers: Vec::new(),
                         input_identity: [0; 32],
                         grounding_tokens: 0,
                         grounding_at: 0,
@@ -9300,6 +9356,7 @@ mod tests {
             // A quantum larger than the optional history must not evict every
             // message on a quiet self-tick with no external stimulus or result.
             let ambient = || PromptMessages {
+                result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
                 grounding_at: 0,
@@ -9331,6 +9388,7 @@ mod tests {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let prompt = |result: bool| PromptMessages {
+                result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
                 stimulus: Some(ChatMessage::text("user", "the ask")),
@@ -9364,6 +9422,7 @@ mod tests {
             ];
             let expected = LlmDeliberationFaculty::messages_cost(&history);
             let prompt = PromptMessages {
+                result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
@@ -9377,6 +9436,7 @@ mod tests {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let prompt = PromptMessages {
+                result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history: vec![
                     ChatMessage::text("user", "Write the requested file. ".repeat(30)),
@@ -9426,6 +9486,7 @@ mod tests {
             history.push(ChatMessage::text("assistant", format!("calling code/write {}", "word ".repeat(40))));
             history.push(ChatMessage::text("user", format!("Full result of code/write {}", "word ".repeat(60))));
             let prompt = || PromptMessages {
+                result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
                 grounding_at: 0,
@@ -9509,6 +9570,7 @@ mod tests {
         fn the_recent_move_protection_states_its_own_limits() {
             let msg = |role: &str, body: &str| ChatMessage::text(role, body.to_string());
             let of = |history: Vec<ChatMessage>| PromptMessages {
+                result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
                 grounding_at: 0,
