@@ -3334,7 +3334,7 @@ impl LlmDeliberationFaculty {
                     field(&mut input, message.as_bytes());
                     let observations = wm.active_action_observations(seq);
                     let calls = wm.active_action_native_calls(seq);
-                    if calls.is_empty() {
+                    let (mut group, tail) = if calls.is_empty() {
                         // Legacy receipts have no native IDs to echo.
                         let (head, tail) = self.split_action_result(message);
                         (vec![head], tail)
@@ -3356,20 +3356,31 @@ impl LlmDeliberationFaculty {
                         // spill handles or reconstruct native protocol from receipt prose.
                         if let crate::ai::types::MessageContent::Parts(parts) = &mut results.content {
                             parts.push(crate::ai::types::ContentPart::Text { text: wm.full_result_message(seq, "") });
-                            if let Some(visual) = visual.filter(|v| v.seq == seq) {
-                                for (hash, part) in &visual.parts {
-                                    field(&mut input, hash.as_bytes());
-                                    match part {
-                                        crate::ai::types::ContentPart::Text { text } => field(&mut input, text.as_bytes()),
-                                        _ => field(&mut input, b"native-image"),
-                                    }
-                                    parts.push(part.clone());
-                                }
-                            }
+
                         }
                         // This entire required group survives fitting or faults together.
                         (vec![calls, results], None)
+                    };
+                    if let Some(visual) = visual.filter(|v| v.seq == seq && !observations.is_empty()) {
+                        // Legacy checkpoints can still own pixels without original
+                        // native call provenance. Preserve either representation.
+                        if let Some(result) = group.last_mut() {
+                            let mut parts = match std::mem::replace(&mut result.content, crate::ai::types::MessageContent::Parts(Vec::new())) {
+                                crate::ai::types::MessageContent::Text(text) => vec![crate::ai::types::ContentPart::Text { text }],
+                                crate::ai::types::MessageContent::Parts(parts) => parts,
+                            };
+                            for (hash, part) in &visual.parts {
+                                field(&mut input, hash.as_bytes());
+                                match part {
+                                    crate::ai::types::ContentPart::Text { text } => field(&mut input, text.as_bytes()),
+                                    _ => field(&mut input, b"native-image"),
+                                }
+                                parts.push(part.clone());
+                            }
+                            result.content = crate::ai::types::MessageContent::Parts(parts);
+                        }
                     }
+                    (group, tail)
                 }
             },
         };
@@ -8486,6 +8497,19 @@ mod tests {
             let (_, encoded) = urls[1].split_once(',').unwrap();
             let other_wire = base64::engine::general_purpose::STANDARD.decode(encoded).unwrap();
             assert_eq!(format!("{:x}", sha2::Sha256::digest(&other_wire)), other_image.hash);
+            // Pre-upgrade checkpoints have typed pixels but no original native
+            // call provenance. Keep their visual evidence without guessing calls.
+            let mut legacy_snapshot = wm.snapshot();
+            for entry in &mut legacy_snapshot.entries { entry.native_calls.clear(); }
+            let legacy_memory = Arc::new(WorkingMemory::new(8));
+            legacy_memory.restore(legacy_snapshot);
+            let legacy_faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", Arc::new(HeuristicInferenceAdapter::new()))
+                .with_context_window(8192).with_working_memory(legacy_memory);
+            let legacy_view = legacy_faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&visual), binding.model.as_deref());
+            assert!(legacy_view.protocol_error.is_none());
+            let legacy_wire = crate::inference::request_body::wire_messages(&legacy_view.messages, None, true, false, "llama-server");
+            assert!(legacy_wire.iter().all(|m| m.get("tool_calls").is_none()));
+            assert_eq!(legacy_wire.iter().filter_map(|m| m["content"].as_array()).flatten().filter(|p| p.get("image_url").is_some()).count(), 2);
             let missing = faculty.active_visual_feedback_at(&binding, home.path().join("absent-images"))
                 .await.unwrap().unwrap();
             assert!(matches!(&missing.parts[0].1, ContentPart::Text { text } if text.contains("No pixels attached")));
