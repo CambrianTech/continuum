@@ -280,20 +280,8 @@ pub(crate) async fn send_with_lane_retry(
                 continue;
             }
             Err(e) => {
-                // reqwest::Error's top-level Display often collapses the
-                // real cause (timeout vs connect vs body-write) into a
-                // generic "error sending request" string. Walk the error
-                // source chain so the log shows the actual terminal
-                // reason — critical for debugging stalls where the
-                // outer message alone is useless.
-                let mut chain: Vec<String> = vec![e.to_string()];
-                let mut cur: &dyn std::error::Error = &e;
-                while let Some(src) = cur.source() {
-                    chain.push(src.to_string());
-                    cur = src;
-                }
                 return Err(InferenceError::Unavailable(format!(
-                    "{} POST failed after {}ms{}: {} (kind: timeout={}, connect={}, request={}, body={})",
+                    "{} POST failed after {}ms{}: {}",
                     cfg.name,
                     send_start.elapsed().as_millis(),
                     if relaunch_retries > 0 {
@@ -303,11 +291,7 @@ pub(crate) async fn send_with_lane_retry(
                     } else {
                         String::new()
                     },
-                    chain.join(" -> "),
-                    e.is_timeout(),
-                    e.is_connect(),
-                    e.is_request(),
-                    e.is_body()
+                    crate::ai::inference_error::transport_diagnostic(&e)
                 )));
             }
         }
