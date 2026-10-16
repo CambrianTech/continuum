@@ -857,7 +857,8 @@ impl ActiveArtifactSet {
             // treat everything as protected rather than migrate blind.
             return true;
         };
-        set.iter().any(|active| crate::paths::has_path_prefix(active, candidate)
+        set.iter().any(|active| !active.is_absolute() || !candidate.is_absolute()
+            || crate::paths::has_path_prefix(active, candidate)
             || crate::paths::has_path_prefix(candidate, active))
     }
 }
@@ -2196,6 +2197,10 @@ mod tests {
             assert!(set.protects(&physical), "missing leaf retains registered custody");
             set.release(&logical);
             assert!(!set.protects(&physical));
+            let unresolved = PathBuf::from("relative-model");
+            set.register(unresolved.clone());
+            assert!(set.protects(&physical), "relative custody cannot grant reclamation permission");
+            set.release(&unresolved);
             #[cfg(windows)]
             {
                 let unc = PathBuf::from(r"\\server\share\model");
