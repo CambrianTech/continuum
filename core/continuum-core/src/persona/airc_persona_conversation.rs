@@ -202,7 +202,7 @@ impl AttentionEvent {
         // Decode faults remain observable at the consumer. Known non-perception
         // belongs to its existing durable/telemetry owner, not a citizen's queue.
         match perception {
-            Err("non_chat_schema" | "no_continuum_body_hint" | "work_presence") => None,
+            Err("non_chat_schema" | "no_continuum_body_hint" | "work_presence" | "work_lease_renewal") => None,
             _ => Some(Self { event, perception }),
         }
     }
@@ -1298,6 +1298,39 @@ mod tests {
         let presence = event("⚙ code/read fixture.rs ✓");
         assert!(matches!(perceptual_from_event(&presence), Err("work_presence")));
         frames.push(Ok(Arc::new(presence)));
+        // 2dcaacc1: typed claim renewals retain their durable board owner, but
+        // must not flood either the one feed or the live/catch-up attention
+        // classifier. A released claim is still a meaningful work fact.
+        let card_id = airc_work::WorkCardId::new();
+        let claim_id = airc_work::ClaimId::new();
+        for index in 0..CATCH_UP_PAGE * 2 {
+            let renewal = airc_work::WorkEvent::ClaimHeartbeat(airc_work::ClaimHeartbeat {
+                card_id, claim_id, owner: airc_core::PeerId::from_uuid(peer),
+                ttl_ms: 60_000, heartbeat_at_ms: index as u64,
+            });
+            let mut renewed = event("");
+            let (mut headers, body) = airc_work::encode_work_event(&renewal).unwrap();
+            // A routing hint cannot turn a decoded renewal into a task change.
+            headers.insert(airc_work::HEADER_FORGE_WORK_EVENT_KIND.into(), "card_state_changed".into());
+            renewed.headers = headers;
+            renewed.body = Some(body);
+            assert!(matches!(crate::persona::perception_feed::classify(&renewed),
+                crate::persona::perception_feed::Fed::NotPerception("work_lease_renewal")));
+            assert!(AttentionEvent::classify(Arc::new(renewed.clone())).is_none());
+            frames.push(Ok(Arc::new(renewed)));
+        }
+        let release = airc_work::WorkEvent::ClaimReleased(airc_work::ClaimReleased {
+            card_id, claim_id, owner: airc_core::PeerId::from_uuid(peer),
+            reason: Some("work remains available".into()), released_at_ms: 1,
+            taken_over_from: Some(airc_core::PeerId::from_uuid(own)),
+        });
+        let mut released = event("");
+        let (headers, body) = airc_work::encode_work_event(&release).unwrap();
+        released.headers = headers;
+        released.body = Some(body);
+        assert!(matches!(crate::persona::perception_feed::classify(&released),
+            crate::persona::perception_feed::Fed::OtherWork(_)));
+        assert!(AttentionEvent::classify(Arc::new(released)).is_some());
         let mut work = event("");
         work.kind = airc_core::TranscriptKind::System;
         let (headers, body) = airc_work::encode_work_event(

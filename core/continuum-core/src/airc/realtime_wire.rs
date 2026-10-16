@@ -196,7 +196,8 @@ pub enum RoomWork {
 }
 
 /// Decode a typed work event from the room, if the event is one. `Ok(None)` = not a
-/// work event (the chat path applies). Headers decide; the body is decoded once.
+/// work event (the chat path applies). Pure lease renewals remain board state,
+/// not new attention input. Headers decide; the body is decoded once.
 pub fn room_work_from_event(event: &TranscriptEvent) -> Result<Option<RoomWork>, &'static str> {
     // The body hint is authoritative in the shared work codec. The kind header
     // is optional routing metadata; requiring it would hide valid bridge events.
@@ -209,6 +210,12 @@ pub fn room_work_from_event(event: &TranscriptEvent) -> Result<Option<RoomWork>,
     let work = airc_work::decode_work_event(&event.headers, event.body.as_ref()).map_err(|_| "work_event_decode_error")?;
     use airc_work::WorkEvent as W;
     Ok(Some(match &work {
+        // 2dcaacc1: a lease extension changes the durable board's expiry, not
+        // the citizen's task. Both the one-feed classifier and catch-up pump
+        // use this decoder, so renewal traffic cannot bypass source perception
+        // and accumulate as required mid-action messages. The original event
+        // remains in the board projection and its work/get expansion surface.
+        W::ClaimHeartbeat(_) => return Err("work_lease_renewal"),
         W::WorkSubmissionReviewed(r) => RoomWork::Reviewed {
             card_id: r.card_id.as_uuid(),
             review: r.review_id.as_uuid(),
