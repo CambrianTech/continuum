@@ -2762,6 +2762,9 @@ mod tests {
         }))
         .route("/bad/chat/completions/input_tokens", post(|| async {
             (StatusCode::OK, r#"{"input_tokens":"unknown"}"#)
+        }))
+        .route("/silent/chat/completions/input_tokens", post(|| async {
+            std::future::pending::<StatusCode>().await
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -2867,8 +2870,30 @@ mod tests {
                 Err(message) => assert!(quoted.unwrap_err().contains(message)),
             }
         }
+        // Card 2617c7f2: the same HTTP fixture distinguishes an unanswered quote
+        // from a failed connection without leaking URL, auth, or prompt data.
+        // The short patience is fixture input, not a production timeout policy.
+        let secret = "quote-fixture-secret";
+        let quote_failure = |path: &str| adapter.client
+            .post(format!("http://{address}/{path}?credential={secret}"))
+            .bearer_auth(secret).body(secret);
+        let timeout = crate::inference::serving_guard::quote_prompt(
+            &adapter.client, &quote_failure("silent/chat/completions"),
+            std::time::Duration::from_millis(50),
+        ).await.unwrap_err();
+        assert!(timeout.contains("timeout=true"), "{timeout}");
+        assert!(!timeout.contains(secret) && !timeout.contains(&address.to_string()), "{timeout}");
         server.abort();
         let _ = server.await;
+        // Do not reuse a keep-alive connection accepted before listener shutdown.
+        let disconnected_client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let disconnected = crate::inference::serving_guard::quote_prompt(
+            &disconnected_client, &quote_failure("v1/chat/completions"),
+            std::time::Duration::from_secs(5),
+        ).await.unwrap_err();
+        assert!(disconnected.contains("connect=true"), "{disconnected}");
+        assert!(disconnected.contains("io_source=Some"), "{disconnected}");
+        assert!(!disconnected.contains(secret) && !disconnected.contains(&address.to_string()), "{disconnected}");
         let received = received.lock().expect("actual wire requests");
         assert_eq!(received.len(), 3);
         assert_eq!(received[1], body);

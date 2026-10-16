@@ -6,7 +6,7 @@
 //! for the concern, never the wire format). Behaviour-identical to the inline block.
 
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
-use crate::ai::inference_error::InferenceError;
+use crate::ai::inference_error::{transport_diagnostic, InferenceError};
 
 /// Only engine measurements may calibrate the persona's next prompt fit.
 #[derive(Clone, Copy)]
@@ -55,7 +55,7 @@ fn prompt_quote_request(
 ) -> Result<reqwest::Request, String> {
     let mut request = builder.try_clone()
         .ok_or("prompt token quote requires a replayable request")?
-        .build().map_err(|e| format!("prompt token quote request: {e}"))?;
+        .build().map_err(|e| format!("prompt token quote request: {}", transport_diagnostic(&e)))?;
     // Reuse the actual selected endpoint and authorization, including dedicated
     // vision lanes. Never consult a different lane or load a second projector.
     let path = format!("{}/input_tokens", request.url().path().trim_end_matches('/'));
@@ -80,12 +80,12 @@ pub(crate) async fn quote_prompt(
 ) -> Result<usize, String> {
     let request = prompt_quote_request(builder, patience)?;
     let response = client.execute(request).await
-        .map_err(|e| format!("prompt token quote failed: {e}"))?;
+        .map_err(|e| format!("prompt token quote failed: {}", transport_diagnostic(&e)))?;
     if !response.status().is_success() {
         return Err(format!("prompt token quote refused with HTTP {}; prompt cost is unknown", response.status()));
     }
     let value = response.json::<serde_json::Value>().await
-        .map_err(|e| format!("invalid prompt token quote: {e}"))?;
+        .map_err(|e| format!("invalid prompt token quote: {}", transport_diagnostic(&e)))?;
     quoted_input_tokens(&value)
 }
 
