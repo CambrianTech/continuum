@@ -250,6 +250,7 @@ _cold_export() {
   local config_env="$HOME/.continuum/config.env"
   mkdir -p "$HOME/.continuum"
   _cold_write_config "$config_env" "$cold_root" || return 1
+  _provision_github_token "$config_env"
   mkdir -p "$cold_root/tmp" || return 1
   # Downloads/extraction use the selected disk during setup, like Windows TEMP.
   export TMPDIR="$cold_root/tmp"
@@ -258,6 +259,29 @@ _cold_export() {
 
 # Change only the two storage keys. Preserve unrelated configuration (including
 # secrets/comments/UTF-8), file permissions, and literal shell metacharacters.
+# The node's GitHub identity for the CORE's own git and gh (a citizen's act-end push, a PR it
+# opens): GH_TOKEN in config.env, which the core applies to its environment at startup. The
+# core runs as a system launchd daemon (macOS) or a service, with no user login keychain, so
+# `gh`'s keyring token is unreachable from it: measured 2026-10-16 on the M5, every citizen's
+# push for a day failed "could not read Username for 'https://github.com'", while the same
+# push from a user shell worked. A citizen's own shell strips GH_TOKEN (shell_session.rs):
+# the token is the node's, never hers. Provisioned from the operator's `gh auth token` when
+# gh is logged in; otherwise named, so the node knows its pushes cannot reach GitHub.
+_provision_github_token() {
+  local config_env="$1" token
+  if grep -qE "^[[:space:]]*GH_TOKEN[[:space:]]*=" "$config_env" 2>/dev/null; then return 0; fi
+  if ! command -v gh >/dev/null 2>&1; then
+    echo "GH_TOKEN: gh is not installed; the core cannot push or open PRs until GH_TOKEN is set in $config_env" >&2
+    return 0
+  fi
+  token="$(gh auth token 2>/dev/null)" || token=""
+  case "$token" in
+    ''|*"'"*|*$'\n'*) echo "GH_TOKEN: gh is not logged in (gh auth login); the core cannot push or open PRs until GH_TOKEN is set in $config_env" >&2; return 0 ;;
+  esac
+  printf "GH_TOKEN='%s'\n" "$token" >> "$config_env" && chmod 600 "$config_env"
+  echo "GH_TOKEN: provisioned from gh for the core's own git and gh" >&2
+}
+
 _cold_write_config() (
   local config_env="$1" cold_root="$2" line key storage_seen=0 hf_seen=0 temporary
   case "$cold_root" in
