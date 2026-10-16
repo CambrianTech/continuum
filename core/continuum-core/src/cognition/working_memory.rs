@@ -115,14 +115,6 @@ pub fn collapse_thought(text: &str, keep: usize) -> String {
 /// this many sentinels/compiles/debuggers in flight is unusual; past the cap the
 /// oldest-updated finished handle is evicted first (a still-running one is never dropped).
 const MAX_DISPATCHED: usize = 16;
-/// Results of her own recent acts rendered as messages of their own; older ones are pointer
-/// lines in the one collapsed index (see `recent_results_with_pointers`).
-const RENDERED_RESULTS: usize = 16;
-/// The head kept for an index line of a result that has no spill handle to point at.
-// context-budget-exempt: a phrase length for one index line, the same at any window
-const INDEX_HEAD_CHARS: usize = 120;
-/// Pointer lines the collapsed index lists; older results are counted, not listed.
-const INDEX_LINES: usize = 24;
 
 /// Borrowed provenance already carried by the result ring. Displaying a result
 /// in another activity must not erase where it came from or which operation ran.
@@ -621,8 +613,9 @@ impl WorkingMemory {
     }
 
     /// Adopt the LIVE served context window (tokens) as the basis for every re-injection
-    /// bound. Called from the act→observe seam, which reads it off the workspace cycle's
-    /// model binding — the same served-truth pin the supervisor reconciles. Idempotent.
+    /// bound. Pushed from the act→observe seam (`act_observe/apply.rs`) off the workspace
+    /// cycle's model binding, every act. Before the first act, or when the cycle carries
+    /// no loadout, [`Self::budget`] reads the serving truth instead of answering "no bound".
     pub fn set_served_window(&self, tokens: u32) {
         self.served_window.store(tokens, Ordering::Relaxed);
     }
@@ -630,7 +623,9 @@ impl WorkingMemory {
     /// The re-injection budget for this mind right now. Unknown window ⇒ no bounds.
     pub fn budget(&self) -> ContextBudget {
         match self.served_window.load(Ordering::Relaxed) {
-            0 => ContextBudget::unknown(),
+            // No pin yet (before the first act, or a cycle with no loadout): the serving
+            // truth, never "no bound". This arm was `ContextBudget::unknown()`.
+            0 => ContextBudget::live(),
             w => ContextBudget::from_window(w),
         }
     }
@@ -822,17 +817,17 @@ impl WorkingMemory {
             }
             let mut rr = self.recent_results.lock();
             rr.push_back((seq, room, tail, label, handle));
-            // NO mid-settle eviction (2026-08-24, the third head-rotation): evicting
-            // here pop_fronted the ring on every act past ~3, and on a model whose KV
-            // cannot shift (`ModelServingPrefs::kv_shiftable = Some(false)` — llama:
-            // "cache_reuse is not supported by this context") every byte after the
-            // rotation re-prefilled, pinning reuse at the system head for the whole
-            // act loop. Within one settle the ring only APPENDS — the served window
-            // (via fit_messages) is the real mid-settle bound, and the eval budget
-            // dwarfs any task's ring. The cap is enforced at SETTLEMENT
-            // ([`Self::record_settlement`] → `collapse_results_over_cap`), the
-            // boundary where the prompt re-prefills anyway.
         }
+        // The ring's share is enforced HERE, at every receipt, with hysteresis: nothing
+        // moves until the share is exceeded, then the oldest collapse to pointers down to
+        // half of it, so the prefix ahead of the newest entries is byte-stable for the whole
+        // run between two bursts. History: eviction on every act past ~3 (2026-08-24) rotated
+        // the head each act, and on a KV that cannot shift (`kv_shiftable = Some(false)`,
+        // "cache_reuse is not supported by this context") re-prefilled everything after it;
+        // the cap was then moved to settlement only. A coding turn is 100+ acts between
+        // settlements: on the M5 (2026-10-16) the rings persisted at 213 results / 686k
+        // chars, 155 / 1.09M, 123 / 442k, 49 / 138k, and fit_messages was the only bound.
+        self.collapse_results_over_cap();
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
@@ -1177,11 +1172,11 @@ impl WorkingMemory {
             ptrs.extend(snap.evicted_pointers);
         }
         *self.receipt_children.lock() = snap.receipt_children;
-        // Collapse only against the REAL window. Before set_served_window the budget is the
-        // floor (cap 1,536 measured at restore on the 5090), which would fold results the
-        // served window holds; the next settlement collapses against the window she is
-        // actually served with (card df0035bf).
-        if self.served_window.load(Ordering::Relaxed) != 0 {
+        // Collapse only against the REAL window. Before serving is ready the budget is
+        // unknown, and an unknown budget folds nothing (a floor here folded results the
+        // served window holds: cap 1,536 measured at restore on the 5090, card df0035bf);
+        // the next settlement collapses against the window she is actually served with.
+        if self.budget().is_known() {
             self.collapse_results_over_cap();
         }
         self.publish_live_handles();
@@ -1529,15 +1524,12 @@ impl WorkingMemory {
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(), None,
         ));
-        // Only the newest RENDERED_RESULTS ride as messages of their own; every older entry
-        // is one pointer line in the index below. Measured on the M5 (Benchy, 2026-10-16):
-        // 200 entries rendered one message each were ~30k of a 60k-char prompt, and the
-        // ring's head rotated between acts (a settlement collapse), so 80% of every act's
-        // prompt re-prefilled (delib.prompt.common_prefix share 0.18-0.19).
-        let live: Vec<_> = rr.iter().filter(|(seq, ..)| Some(*seq) != active).collect();
-        let folded = live.len().saturating_sub(RENDERED_RESULTS);
-        let mut index_lines: Vec<String> = Vec::new();
-        for (i, (seq, room, tail, operation, handle)) in live.into_iter().enumerate() {
+        // Every live entry rides as a message of its own: the ring's SIZE is bounded at
+        // receipt by the window share (`collapse_results_over_cap`), never by a count here.
+        // A count fold ("newest 16 as messages, the rest as index lines", 2026-10-16) rotated
+        // the head on EVERY act, which on a KV that cannot shift re-prefilled everything
+        // after it; the chars cap with hysteresis rotates once per burst.
+        for (seq, room, tail, operation, handle) in rr.iter().filter(|(seq, ..)| Some(*seq) != active) {
             let attribution = ResultAttribution {
                 seq: *seq,
                 room: *room,
@@ -1545,34 +1537,18 @@ impl WorkingMemory {
                 spill_handle: handle.as_deref(),
             };
             let pointer = handle.as_ref().map(|_| format!("[result {attribution} — collapsed; query tool/output to expand]"));
-            if i < folded {
-                index_lines.push(pointer.unwrap_or_else(|| {
-                    let head: String = tail.chars().take(INDEX_HEAD_CHARS).collect();
-                    format!("[result {attribution}] {head}")
-                }));
-            } else {
-                out.push((format!("[result {attribution}] {tail}"), pointer));
-            }
+            out.push((format!("[result {attribution}] {tail}"), pointer));
         }
         // Collapsed-results index LAST — it CHANGES on every eviction, and
         // message order is MONOTONE IN STABILITY (the KV law this same night
         // established): the banner + surviving entries ahead of it stay a
         // byte-stable prefix; only this one small message re-prefills.
         {
+            // The pointer ring is bounded (`collapse_results_over_cap` keeps its newest 12);
+            // every older result stays reachable by its #seq through the steps ledger and
+            // `tool/output`.
             let ptrs = self.evicted_pointers.lock();
-            index_lines.splice(0..0, ptrs.iter().map(|(pointer, _)| pointer.clone()));
-            // The index is bounded too: the newest INDEX_LINES pointers, and one line that
-            // counts the rest (each stays reachable by its #seq through the steps ledger and
-            // `tool/output`). Unbounded, 184 pointer lines were a 38k-char message, 62% of
-            // a 62k-char prompt, re-prefilled on every settlement (the M5, 2026-10-16).
-            let unlisted = index_lines.len().saturating_sub(INDEX_LINES);
-            if unlisted > 0 {
-                index_lines.drain(..unlisted);
-                index_lines.insert(0, format!(
-                    "[{unlisted} older results are not listed; each is reachable by its #seq in \
-                     the steps ledger and through tool/output]"
-                ));
-            }
+            let index_lines: Vec<String> = ptrs.iter().map(|(pointer, _)| pointer.clone()).collect();
             if !index_lines.is_empty() {
                 out.push((format!(
                     "Older results, collapsed to pointers (query to expand):\n{}",
@@ -2209,6 +2185,20 @@ mod tests {
     // the decision (Kimi, 2026-10-04: "keep the end"). The decision survives, the
     // marker still names the collapse for the framing-echo detector, short thoughts
     // are untouched.
+
+    /// what this catches: a mind with no pin yet answering "no bound" on its own. `budget()`
+    /// fell to `ContextBudget::unknown()` whenever `set_served_window` had not run (before
+    /// the first act after a restore, or a cycle with no loadout), and an unknown budget is
+    /// usize::MAX on every bound. A fresh mind answers what the serving truth answers.
+    #[test]
+    fn a_fresh_mind_budgets_against_the_serving_truth_not_an_unset_pin() {
+        let wm = WorkingMemory::new(8);
+        let live = ContextBudget::live();
+        assert_eq!(wm.budget().is_known(), live.is_known());
+        assert_eq!(wm.budget().recent_results_chars(), live.recent_results_chars());
+        wm.set_served_window(16_384);
+        assert!(wm.budget().is_known(), "a pinned window is a known budget");
+    }
     #[test]
     fn a_collapsed_thought_keeps_its_end() {
         let thought = format!("Let me organize my state as Kimi. {} Decision: re-claim after the core redeploys.", "x".repeat(400));
@@ -2443,6 +2433,39 @@ mod tests {
         assert!(entries(&known) < held, "a known smaller window collapses on restore");
     }
 
+    // what this catches: the ring growing without bound between settlements. The share was
+    // enforced at settlement only, and a coding turn is 100+ acts between settlements (the M5,
+    // 2026-10-16: 1.09M chars of results persisted for one mind). At every receipt the ring is
+    // within its share, the newest result is whole, and eviction is a BURST with hysteresis:
+    // between bursts the ring only appends, so the prefix ahead of it stays byte-stable.
+    #[test]
+    fn the_ring_holds_its_share_at_every_receipt_and_evicts_in_bursts() {
+        let wm = WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        let share = wm.budget().recent_results_chars();
+        let chunk = share / 5;
+        let rendered = |wm: &WorkingMemory| -> Vec<String> {
+            wm.recent_results_messages().into_iter().filter(|m| m.starts_with("[result ")).collect()
+        };
+        let mut bursts = 0;
+        let mut head: Option<String> = None;
+        for i in 0..40 {
+            wm.record_receipt_typed(&[], &format!("r{i} {}", "w".repeat(chunk)), None, saved(&format!("burst-{i}")));
+            let ring = rendered(&wm);
+            let chars: usize = ring.iter().map(|m| m.chars().count()).sum();
+            assert!(chars <= share + 2_048, "receipt {i}: {chars} rendered chars over the {share} share");
+            let now = ring.first().cloned();
+            if head.is_some() && now != head {
+                bursts += 1;
+            }
+            head = now;
+        }
+        assert!(bursts >= 1, "the share was exceeded, so at least one burst evicted");
+        assert!(bursts < 20, "a burst with hysteresis, not a rotation on every act: {bursts} bursts in 40 receipts");
+        let newest = wm.snapshot().recent_results.last().map(|r| r.2.clone()).unwrap_or_default();
+        assert!(newest.starts_with("r39 ") && newest.len() > chunk, "the newest result is held whole");
+    }
+
     // what this catches: an unsaved result dropped at collapse (Astra on #4963 at 4840af859:
     // a pointer saying "never saved" documents the loss instead of preventing it). Its save
     // failed, so nothing else holds its bytes: it stays WHOLE through settlement and restore
@@ -2488,24 +2511,17 @@ mod tests {
             block.contains("E0601"),
             "the compile error must survive later trivial acts: {block}"
         );
-        // PREMISE CHANGED (2026-08-24, the third head-rotation): mid-settle the
-        // ring only APPENDS — per-act eviction pop_fronted the prompt's head and
-        // re-prefilled everything after it on a non-KV-shiftable model. The bound
-        // is enforced at SETTLEMENT (the boundary where the prompt re-prefills
-        // anyway). So: flooding mid-settle keeps everything visible…
+        // PREMISE (2026-10-16, the third premise): the share is enforced at EVERY receipt,
+        // in a BURST with hysteresis. 2026-08-24 moved it to settlement because per-act
+        // eviction rotated the head on every act; a coding turn then held 100+ results
+        // between settlements (the M5: 1.09M chars persisted for one mind). So: flooding
+        // past the share collapses the OLDEST to pointers once, down to half the share…
         let cap = wm.budget().recent_results_chars();
         // Whole results an eighth of the share each, so several fit and the collapse is visible.
         let unit = (cap / 8).max(1);
         for _ in 0..8 {
             record_saved(&wm, &"x".repeat(unit));
         }
-        assert!(
-            wm.recent_results_messages().join("\n").contains("E0601"),
-            "mid-settle the ring is append-only — no head rotation before settlement"
-        );
-        // …and SETTLEMENT collapses over-cap results to pointers, restoring the bound. The
-        // results that stay are WHOLE (never a tail); the rest are one-line pointers.
-        wm.record_settlement("done", None);
         let messages = wm.recent_results_messages();
         let kept: Vec<&String> = messages.iter().filter(|m| m.starts_with("[result ")).collect();
         assert!(!kept.is_empty(), "the newest results stay");
@@ -2514,9 +2530,13 @@ mod tests {
             "every result still shown is shown WHOLE, never a tail"
         );
         assert!(messages.iter().any(|m| m.contains("collapsed")), "the rest are pointers");
+        assert!(
+            !messages.join("\n").contains("E0601"),
+            "the oldest collapse to pointers once the share is exceeded — bounded, not immortal"
+        );
         // …in ONE CHUNK: the collapse lands at half the cap so the surviving head
-        // stays byte-identical across the next settles (the KV divergence audit,
-        // 2026-09-13: the oldest surviving result was the first differing block in
+        // stays byte-identical across the next receipts and settles (the KV divergence
+        // audit, 2026-09-13: the oldest surviving result was the first differing block in
         // 28 of 55 consecutive turns under one-entry-per-settle eviction).
         let total: usize = kept.len() * unit;
         assert!(
@@ -2532,11 +2552,7 @@ mod tests {
         assert_eq!(
             wm.recent_results_messages().get(1).cloned(),
             head_after_collapse,
-            "the ledger head is byte-stable across settles that fit under the cap"
-        );
-        assert!(
-            !wm.recent_results_messages().join("\n").contains("E0601"),
-            "oldest tails collapse to pointers at settlement — bounded, not immortal"
+            "the ledger head is byte-stable across receipts and settles that fit under the cap"
         );
     }
 

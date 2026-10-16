@@ -422,7 +422,7 @@ pub(crate) async fn ask_the_act_question(
                     // The turn's work is synced to its card's branch; her hands stay where
                     // they are, because nothing moved them (card fc9e9fd7).
                     if let Some(hands) = work_hands {
-                        crate::cognition::persona_workspace::end_card_turn(hands).await;
+                        crate::cognition::persona_workspace::end_card_turn(hands, work.acts).await;
                     }
                     if let Some(body) = cycle.acting() {
                         // One turn ended: 1-turn pins ([hands], [env]) leave now; the
