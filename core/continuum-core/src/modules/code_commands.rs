@@ -1277,52 +1277,10 @@ impl ActionCommand for CodeSearch {
         matches.dedup_by(|a, b| a.file_path == b.file_path && a.line_number == b.line_number);
         matches.truncate(max as usize);
 
-        // OVERFLOW SUMMARY: a wall of matches is not an answer. Glass-boxed on
-        // SWE flask-4045 (2026-07-11): `pattern:"blueprint"` returned
-        // total_matches:101 as a truncated line-by-line dump, and the solver —
-        // told the truth but given no next step — re-issued the identical
-        // search 9× instead of advancing to read/edit. No mind, human or model,
-        // picks a next action from 101 raw hits; a human running grep eyeballs
-        // the FILE distribution and opens the hottest file. So above the
-        // threshold the result becomes that eyeball: one representative match
-        // per file (concrete, carryable paths — the next-step affordance), plus
-        // per-file counts and the narrow-or-read guidance in the note field.
-        // Counts stay truthful; only the rendering compresses.
-        // [[px-persona-experience-tools-as-good-ux]] (overflow → filter
-        // suggestions), same forgiveness family as the glob-shaped-pattern and
-        // empty-glob notes above.
-        const OVERFLOW_MATCHES: usize = 25;
+        // Preserve the caller-bounded result. The shared tool executor owns
+        // window-aware whole-or-handle delivery and durable expansion; compressing
+        // matches here would discard rows before that custody boundary sees them.
         let mut error = None;
-        if matches.len() > OVERFLOW_MATCHES {
-            let mut per_file: Vec<(String, u32, SearchMatch)> = Vec::new();
-            for m in matches.drain(..) {
-                match per_file.iter_mut().find(|(f, _, _)| *f == m.file_path) {
-                    Some((_, n, _)) => *n += 1,
-                    None => per_file.push((m.file_path.clone(), 1, m)),
-                }
-            }
-            per_file.sort_by(|a, b| b.1.cmp(&a.1));
-            let top: Vec<String> = per_file
-                .iter()
-                .take(10)
-                .map(|(f, n, _)| format!("{f} ({n})"))
-                .collect();
-            let files_total = per_file.len();
-            matches = per_file
-                .into_iter()
-                .take(10)
-                .map(|(_, _, first)| first)
-                .collect();
-            error = Some(format!(
-                "{total_matches} matches across {files_total} file(s) — too many to list \
-                 line-by-line, so this shows ONE representative match per file for the top \
-                 {} file(s) by match count: [{}]. Next: read the hottest file listed first above \
-                 (code/read file_path=...) or narrow the search (more specific `pattern`, \
-                 or `file_glob` limiting which files).",
-                matches.len(),
-                top.join(", "),
-            ));
-        }
 
         // Grounding for an empty search: a glob that matched ZERO files almost
         // always means the caller guessed a wrong path prefix (observed live —
@@ -2544,19 +2502,14 @@ mod tests {
         }
     }
 
-    // what this catches: the overflow summary (glass-boxed on SWE flask-4045 —
-    // pattern:"blueprint" → 101 raw hits → the solver re-searched 9× instead of
-    // advancing). Above OVERFLOW_MATCHES the result must compress to ONE
-    // representative match per file (concrete carryable paths), name the top
-    // files BY COUNT in the note with read/narrow guidance, and keep
-    // total_matches truthful; a small result stays untouched (no false
-    // compression on ordinary searches). // regression for SWE cell one
+    // Caller limits bound search work; the executor, not a private row-count
+    // threshold, owns window-aware delivery. Every admitted row must reach it.
     #[tokio::test]
-    async fn search_overflow_compresses_to_per_file_summary_with_guidance() {
+    async fn search_preserves_caller_bounded_matches_for_shared_delivery() {
         let dir = std::env::temp_dir().join(format!("search-overflow-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        // hot.py: 30 hits; warm.py: 5; cold.py: 2 — 37 total, uneven on purpose.
-        std::fs::write(dir.join("hot.py"), "needle\n".repeat(30)).unwrap();
+        // hot.py: 47 hits; warm.py: 5; cold.py: 2 — 54 total, uneven on purpose.
+        std::fs::write(dir.join("hot.py"), "needle\n".repeat(47)).unwrap();
         std::fs::write(dir.join("warm.py"), "needle\n".repeat(5)).unwrap();
         std::fs::write(dir.join("cold.py"), "needle\n".repeat(2)).unwrap();
 
@@ -2584,28 +2537,19 @@ mod tests {
             .await
             .expect("search runs");
 
-        assert_eq!(out.total_matches, 37, "counts stay truthful");
-        assert!(
-            out.matches.len() <= 10,
-            "overflow compresses to per-file representatives: {}",
-            out.matches.len()
-        );
-        let files: Vec<&str> = out.matches.iter().map(|m| m.file_path.as_str()).collect();
-        assert_eq!(
-            files.iter().filter(|f| f.contains("hot.py")).count(),
-            1,
-            "one representative per file: {files:?}"
-        );
-        let note = out.error.expect("overflow note present");
-        assert!(
-            note.contains("too many to list") && note.contains("code/read"),
-            "note carries the read/narrow guidance: {note}"
-        );
-        assert!(
-            note.find("hot.py (30)").unwrap_or(usize::MAX)
-                < note.find("warm.py (5)").unwrap_or(usize::MAX),
-            "top files ordered by match count: {note}"
-        );
+        assert_eq!(out.total_matches, 54);
+        assert_eq!(out.matches.len(), 54, "no hidden per-file compression");
+        assert_eq!(out.matches.iter().filter(|m| m.file_path.contains("hot.py")).count(), 47);
+        assert!(out.error.is_none(), "successful results contain no behavioral directions");
+        for limit in [1, 25, 26, 100] {
+            let bounded = cmd.run(&Ctx::default(), CodeSearchParams {
+                pattern: "needle".into(),
+                file_glob: Some("hot.py".into()),
+                max_results: Some(limit),
+            }).await.expect("bounded search runs");
+            assert_eq!(bounded.matches.len(), (limit as usize).min(47));
+            assert!(bounded.error.is_none());
+        }
 
         // Small search stays raw — no false compression.
         let small = cmd
