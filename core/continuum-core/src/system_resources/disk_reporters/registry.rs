@@ -841,12 +841,12 @@ mod tests {
         let observed = first.observe_citizen_target(later.path(), citizen).await.unwrap();
         assert_eq!(observed.citizen(), Some(citizen));
         observed.set_bytes(4096);
-        assert_eq!(super::super::disk_pressure::DiskReporter::report(observed.as_ref()).bytes, 0,
+        assert_eq!(crate::system_resources::DiskReporter::report(observed.as_ref()).bytes, 0,
             "an already registered generic reporter stops double charging its inclusive parent");
         let in_flight = observed.eviction_custody();
         assert!(first.observe_citizen_target(later.path(), citizen).await.is_err(),
             "a later scan can fail to publish while the restored child remains owned");
-        assert_eq!(super::super::disk_pressure::DiskReporter::report(observed.as_ref()).bytes, 0);
+        assert_eq!(crate::system_resources::DiskReporter::report(observed.as_ref()).bytes, 0);
         assert_eq!(observed.bytes(), 4096, "broker measurement survives publication failure");
         drop(in_flight);
         assert!(first.observe_citizen_target(later.path(), uuid::Uuid::new_v4()).await.is_err(),
@@ -883,7 +883,7 @@ mod tests {
         restored_child.set_bytes(4096);
         let eviction = restored_child.eviction_custody();
         assert!(restarted.observe_citizen_target(later.path(), citizen).await.is_err());
-        assert_eq!(super::super::disk_pressure::DiskReporter::report(restored_child.as_ref()).bytes, 0,
+        assert_eq!(crate::system_resources::DiskReporter::report(restored_child.as_ref()).bytes, 0,
             "a failed update of an already restored child cannot double charge the inclusive parent");
         assert_eq!(restored_child.bytes(), 4096);
         drop(eviction);
