@@ -14,6 +14,10 @@ def capture(path, command, output=sys.stdout):
     No retry or second build: the child's exit status remains authoritative.
     Flushed event breadcrumbs survive even when cancellation prevents final upload.
     """
+    # A redirected console may use a legacy encoding. Diagnostics must never
+    # replace the compiler's exit status because a source snippet has Unicode.
+    if hasattr(output, "reconfigure"):
+        output.reconfigure(errors="backslashreplace")
     malformed = False
     with open(path, "w", encoding="utf-8") as raw:
         with subprocess.Popen(command, stdout=subprocess.PIPE, text=True, encoding="utf-8") as child:

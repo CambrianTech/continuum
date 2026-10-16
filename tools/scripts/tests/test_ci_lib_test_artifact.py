@@ -56,7 +56,7 @@ class ArtifactReuseTest(unittest.TestCase):
             # c1280057: compilation fails before artifact selection/warning checks.
             # Preserve the original failure and raw stream, but expose its error now.
             events = [message, {"reason": "compiler-message", "message": {
-                "level": "error", "message": "bad constructor", "rendered": "error: bad constructor\n",
+                "level": "error", "message": "bad constructor", "rendered": "error: bad constructor 日本語 →\n",
             }}, {"reason": "build-finished", "success": False}]
             payload = "".join(json.dumps(event) + "\n" for event in events)
             log = io.StringIO()
@@ -67,6 +67,12 @@ class ArtifactReuseTest(unittest.TestCase):
             self.assertIn("error: bad constructor", log.getvalue())
             self.assertIn("target=continuum_core", log.getvalue())
             self.assertIn("success=False", log.getvalue())
+            encoded = io.BytesIO()
+            constrained = io.TextIOWrapper(encoded, encoding="cp1252", errors="strict")
+            self.assertEqual(artifact.capture(raw, [sys.executable, "-c", code, payload], constrained), 7)
+            constrained.flush()
+            self.assertIn(b"error: bad constructor \\u65e5", encoded.getvalue())
+            self.assertEqual(raw.read_text(encoding="utf-8"), payload)
             self.assertEqual(artifact.capture(raw, [sys.executable, "-c", "print('invalid')"], io.StringIO()), 1)
             self.assertEqual(artifact.capture(raw, [sys.executable, "-c", "print('[]')"], io.StringIO()), 1)
 
