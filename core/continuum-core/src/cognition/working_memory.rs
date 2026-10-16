@@ -827,15 +827,7 @@ impl WorkingMemory {
         // the cap was then moved to settlement only. A coding turn is 100+ acts between
         // settlements: on the M5 (2026-10-16) the rings persisted at 213 results / 686k
         // chars, 155 / 1.09M, 123 / 442k, 49 / 138k, and fit_messages was the only bound.
-        // Only against a KNOWN window, as restore does: an unknown budget's results share is
-        // the MIN_SERVE_CTX floor (`recent_results_chars`), and a receipt CAN land with the
-        // window unknown: the act→observe seam pins it from the cycle's loadout, but a lane
-        // relaunching between the prompt and the tool's return answers no loadout and
-        // serving is not ready (Cormac on #5112). Folding against the floor would collapse
-        // results her real window holds; the next receipt or settlement collapses for real.
-        if self.budget().is_known() {
-            self.collapse_results_over_cap();
-        }
+        self.collapse_results_over_cap();
         // Head into the rolling recency trail: proprioception ("I did #n X") + the
         // repeat-break signal. Truncation lives HERE now (one place), so callers pass the
         // full result and never pre-truncate. Append-only + `#seq`-stamped keeps the
@@ -1180,13 +1172,10 @@ impl WorkingMemory {
             ptrs.extend(snap.evicted_pointers);
         }
         *self.receipt_children.lock() = snap.receipt_children;
-        // Collapse only against the REAL window. Before serving is ready the budget is
-        // unknown, and an unknown budget folds nothing (a floor here folded results the
-        // served window holds: cap 1,536 measured at restore on the 5090, card df0035bf);
-        // the next settlement collapses against the window she is actually served with.
-        if self.budget().is_known() {
-            self.collapse_results_over_cap();
-        }
+        // Against the REAL window only; an unknown one folds nothing (the rule lives in
+        // `collapse_results_over_cap`): a floor here folded results the served window holds,
+        // cap 1,536 measured at restore on the 5090, card df0035bf.
+        self.collapse_results_over_cap();
         self.publish_live_handles();
         {
             let mut f = self.action_fps.lock();
@@ -1682,7 +1671,17 @@ impl WorkingMemory {
     /// those turns get is worth more than the half-cap of oldest tails they briefly forgo
     /// (the pointers keep them queryable). Same law as `fit_messages`' chunked window start.
     fn collapse_results_over_cap(&self) {
-        let cap = self.budget().recent_results_chars();
+        // Against a KNOWN window only, for every caller (receipt, settlement, restore): an
+        // unknown budget's results share is the MIN_SERVE_CTX floor (`recent_results_chars`),
+        // and the window can be unknown at any of them — before serving is ready at restore,
+        // or when a lane relaunches between the prompt and the tool's return (no loadout to
+        // pin). Folding against the floor collapses results her real window holds; the next
+        // call with a known window collapses for real (Cormac on #5112).
+        let budget = self.budget();
+        if !budget.is_known() {
+            return;
+        }
+        let cap = budget.recent_results_chars();
         let mut rr = self.recent_results.lock();
         let mut total: usize = rr.iter().map(|(_, _, t, _, _)| t.chars().count() + 1).sum();
         if total <= cap {
