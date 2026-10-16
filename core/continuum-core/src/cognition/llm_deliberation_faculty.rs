@@ -8684,6 +8684,7 @@ mod tests {
             batch.extend([error, skipped]);
             let mut native_calls: Vec<_> = batch.iter().map(|o| o.call.clone()).collect();
             native_calls[1] = original_error_call;
+            wm.set_scope(Some("native-workspace".into()));
             wm.record_native_action_statement("", ws.activity_room_id, &native_calls);
             wm.record_receipt_typed(&batch, "batch receipt", Some(ws.activity_room_id), crate::ai::types::ResultCustody::Unsaved);
             let batch_prompt = faculty.messages_unfitted(&ws, None);
@@ -8759,6 +8760,7 @@ mod tests {
                 assert_eq!(corrected_wire[call_at + 1 + i]["tool_call_id"], observation.call.id);
             }
             wm.set_scope(Some("another-workspace".into()));
+            assert!(wm.active_action_full().is_none(), "native result cannot demote to foreign-root prose");
             let scoped = faculty.prompt_view_with_visual_feedback(
                 &ws,
                 8192,
@@ -8770,6 +8772,16 @@ mod tests {
                 .messages
                 .iter()
                 .all(|m| !matches!(&m.content, MessageContent::Parts(_))));
+            wm.set_scope(Some("native-workspace".into()));
+            let returned = faculty.prompt_view_with_visual_feedback(
+                &ws, 8192, PromptCalibration::default(), Some(&visual), binding.model.as_deref(),
+            );
+            let returned_wire = crate::inference::request_body::wire_messages(&returned.messages, None, true, false, "llama-server");
+            let at = returned_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
+            for (index, call) in native_calls.iter().enumerate() {
+                assert_eq!(returned_wire[at]["tool_calls"][index]["id"], call.id);
+                assert_eq!(returned_wire[at + 1 + index]["tool_call_id"], call.id);
+            }
             wm.set_scope(None);
             wm.record_settlement("observed", None);
             assert!(faculty

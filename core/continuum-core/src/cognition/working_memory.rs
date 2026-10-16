@@ -290,12 +290,16 @@ pub struct WorkingMemory {
     /// a tail of a code read is broken code (2026-10-12). What no longer fits
     /// collapses to a pointer at settlement.
     recent_results: Mutex<VecDeque<(u64, Option<Uuid>, String, String, Option<String>)>>,
+    /// Root attribution outlives the bounded entry trail; keyed by the receipt sequence.
+    result_scopes: Mutex<BTreeMap<u64, String>>,
     /// One-line pointers for results EVICTED from the channel above — collapse,
     /// never delete (2026-08-24): "[result #N (verb, Nk chars) — evicted; …]".
     /// Bounded ring; when IT overflows, the oldest pointer drops silently (a
     /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
     /// message ahead of the recent-results banner.
     evicted_pointers: Mutex<VecDeque<(String, String)>>,
+    /// Index-aligned with the existing pointer ring; unknown legacy roots remain None.
+    evicted_pointer_scopes: Mutex<VecDeque<Option<String>>>,
     /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
     /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
     /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
@@ -429,6 +433,10 @@ pub struct VolatileSnapshot {
     /// restore then starts the buffer fresh.
     #[serde(default)]
     pub recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)>,
+    /// Additive attribution preserves the existing receipt tuple wire format. Missing
+    /// legacy attribution is unknown, never inferred from a room or the current root.
+    #[serde(default)]
+    pub result_scopes: BTreeMap<u64, String>,
     /// Her state at the seam — the whole held card, her ledger, what was staged, what tore
     /// the life (card 49b5e806, Kimi 2026-09-26). Stamped by `save_volatile`, which knows
     /// whose memory this is and why it is being written; rendered FIRST on wake. `None` on
@@ -441,6 +449,8 @@ pub struct VolatileSnapshot {
     /// lost its only handle on restart). Empty on snapshots written before this field.
     #[serde(default)]
     pub evicted_pointers: Vec<(String, String)>,
+    #[serde(default)]
+    pub evicted_pointer_scopes: Vec<Option<String>>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.
@@ -477,6 +487,11 @@ impl VolatileSnapshot {
             }
         }
     }
+}
+
+/// Unknown provenance remains visible, matching the existing entry projection.
+fn scope_visible(recorded: Option<&str>, current: Option<&str>) -> bool {
+    recorded.is_none() || recorded == current
 }
 
 /// The key a receipt's dependencies are filed under: its saved handle, or `seq:N` for a
@@ -606,7 +621,9 @@ impl WorkingMemory {
             action_fp_counts: Mutex::new(HashMap::new()),
             receipt_heads: Mutex::new(VecDeque::new()),
             recent_results: Mutex::new(VecDeque::new()),
+            result_scopes: Mutex::new(BTreeMap::new()),
             evicted_pointers: Mutex::new(VecDeque::new()),
+            evicted_pointer_scopes: Mutex::new(VecDeque::new()),
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
         }
@@ -778,6 +795,9 @@ impl WorkingMemory {
             return;
         }
         let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
+        if let Some(scope) = self.scope.lock().clone() {
+            self.result_scopes.lock().insert(seq, scope);
+        }
         // Keep the LATEST result in FULL so the mind can work with it next turn (count a
         // file, read a screenshot description, scan a log). Overwrites the prior latest —
         // older acts survive only as heads in the trail below.
@@ -1083,6 +1103,16 @@ impl WorkingMemory {
             }
             (entries, authored)
         };
+        // Capture each result with its attribution under the same custody locks.
+        // A concurrent collapse must not shift pointer indexes between these reads.
+        let (recent_results, result_scopes, evicted_pointers, evicted_pointer_scopes) = {
+            let results = self.recent_results.lock();
+            let scopes = self.result_scopes.lock();
+            let pointers = self.evicted_pointers.lock();
+            let pointer_scopes = self.evicted_pointer_scopes.lock();
+            (results.iter().cloned().collect(), scopes.clone(),
+                pointers.iter().cloned().collect(), pointer_scopes.iter().cloned().collect())
+        };
         VolatileSnapshot {
             entries,
             action_statements,
@@ -1090,7 +1120,8 @@ impl WorkingMemory {
             action_fps: self.action_fps.lock().iter().cloned().collect(),
             receipt_heads,
             receipt_head_rooms,
-            recent_results: self.recent_results.lock().iter().cloned().collect(),
+            recent_results,
+            result_scopes,
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
             saved_at_ms: crate::time::EpochMs::now().millis(),
             build_sha: env!("CONTINUUM_BUILD_GIT_SHA").to_string(),
@@ -1105,7 +1136,8 @@ impl WorkingMemory {
                 .filter(|d| d.status == DispatchStatus::Running)
                 .map(|d| d.label.clone())
                 .collect(),
-            evicted_pointers: self.evicted_pointers.lock().iter().cloned().collect(),
+            evicted_pointers,
+            evicted_pointer_scopes,
             receipt_children: self.receipt_children.lock().clone(),
         }
     }
@@ -1155,6 +1187,7 @@ impl WorkingMemory {
             }
         }
         *self.last_action.lock() = snap.last_action;
+        *self.result_scopes.lock() = snap.result_scopes;
         {
             // Restore the feedback channel, then bound it by the SAME collapse the live
             // writer's settlement applies (re-clamp contract): a snapshot from a bigger
@@ -1167,6 +1200,10 @@ impl WorkingMemory {
             let mut ptrs = self.evicted_pointers.lock();
             ptrs.clear();
             ptrs.extend(snap.evicted_pointers);
+            let mut scopes = self.evicted_pointer_scopes.lock();
+            scopes.clear();
+            scopes.extend(snap.evicted_pointer_scopes);
+            scopes.resize(ptrs.len(), None);
         }
         *self.receipt_children.lock() = snap.receipt_children;
         // Collapse only against the REAL window. Before set_served_window the budget is the
@@ -1350,7 +1387,7 @@ impl WorkingMemory {
         self.entries
             .lock()
             .iter()
-            .filter(|e| e.scope.is_none() || e.scope == scope)
+            .filter(|e| scope_visible(e.scope.as_deref(), scope.as_deref()))
             .cloned()
             .collect()
     }
@@ -1401,7 +1438,9 @@ impl WorkingMemory {
     pub fn active_action_full(&self) -> Option<(u64, String)> {
         let action = self.last_action.lock().clone()?;
         let active_from = self.active_from_seq.load(Ordering::Relaxed);
-        (action.0 >= active_from).then_some(action)
+        let scope = self.scope.lock().clone();
+        let visible = scope_visible(self.result_scopes.lock().get(&action.0).map(String::as_str), scope.as_deref());
+        (action.0 >= active_from && visible).then_some(action)
     }
 
     /// Typed results for the exact active batch whose text the caller is rendering.
@@ -1509,8 +1548,17 @@ impl WorkingMemory {
         // tail when the next act replaces it: an append at the frontier, so the prefix
         // ahead of it stays byte-stable.
         let active = self.active_action_full().map(|(seq, _)| seq);
+        let scope = self.scope.lock().clone();
         let rr = self.recent_results.lock();
-        if rr.iter().all(|(seq, ..)| Some(*seq) == active) && self.evicted_pointers.lock().is_empty() {
+        let scopes = self.result_scopes.lock();
+        let eligible = |seq: &u64| Some(*seq) != active
+            && scope_visible(scopes.get(seq).map(String::as_str), scope.as_deref());
+        let pointers = self.evicted_pointers.lock();
+        let pointer_scopes = self.evicted_pointer_scopes.lock();
+        let visible_pointers: Vec<_> = pointers.iter().enumerate()
+            .filter(|(index, _)| scope_visible(pointer_scopes.get(*index).and_then(|s| s.as_deref()), scope.as_deref()))
+            .map(|(_, (pointer, _))| pointer.as_str()).collect();
+        if !rr.iter().any(|(seq, ..)| eligible(seq)) && visible_pointers.is_empty() {
             return Vec::new();
         }
         // Banner as its OWN byte-stable message (never an rr entry, so eviction
@@ -1521,7 +1569,7 @@ impl WorkingMemory {
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(), None,
         ));
-        out.extend(rr.iter().filter(|(seq, ..)| Some(*seq) != active).map(|(seq, room, tail, operation, handle)| {
+        out.extend(rr.iter().filter(|(seq, ..)| eligible(seq)).map(|(seq, room, tail, operation, handle)| {
             let attribution = ResultAttribution {
                 seq: *seq,
                 room: *room,
@@ -1536,11 +1584,10 @@ impl WorkingMemory {
         // established): the banner + surviving entries ahead of it stay a
         // byte-stable prefix; only this one small message re-prefills.
         {
-            let ptrs = self.evicted_pointers.lock();
-            if !ptrs.is_empty() {
+            if !visible_pointers.is_empty() {
                 out.push((format!(
                     "Older results, collapsed to pointers (query to expand):\n{}",
-                    ptrs.iter().map(|(pointer, _)| pointer.as_str()).collect::<Vec<_>>().join("\n")
+                    visible_pointers.join("\n")
                 ), None));
             }
         }
@@ -1633,6 +1680,10 @@ impl WorkingMemory {
             .chain(ptrs.iter().map(|(_, handle)| handle.clone()))
             .collect();
         children.retain(|key, _| receipts.contains(key));
+        let latest = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
+        let retained_sequences: HashSet<u64> = rr.iter().map(|(seq, ..)| *seq).collect();
+        self.result_scopes.lock().retain(|seq, _|
+            Some(*seq) == latest || retained_sequences.contains(seq));
         let handles = reachable_handles(rr.iter(), ptrs.iter(), &children);
         drop((rr, ptrs, children));
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
@@ -1689,10 +1740,14 @@ impl WorkingMemory {
                 operation: Some(&elabel),
                 spill_handle: Some(handle),
             };
+            let result_scope = self.result_scopes.lock().get(&eseq).cloned();
             let mut ptrs = self.evicted_pointers.lock();
+            let mut pointer_scopes = self.evicted_pointer_scopes.lock();
+            pointer_scopes.push_back(result_scope);
             ptrs.push_back((format!("[result {attribution} — collapsed]"), handle.to_owned()));
             while ptrs.len() > 12 {
                 ptrs.pop_front();
+                pointer_scopes.pop_front();
             }
         }
         *rr = survivors;
@@ -2205,6 +2260,46 @@ mod tests {
             back.iter().any(|t| t.contains("tests/ordering")),
             "{back:?}"
         );
+        // Result custody must obey the same scope even after entry-trail eviction,
+        // settlement collapse and checkpoint restoration. Storage remains intact.
+        let results = WorkingMemory::new(2);
+        results.set_served_window(16_384);
+        results.set_scope(Some("task-a".into()));
+        let body_a = format!("task-a-only {}", "a".repeat(results.budget().recent_results_chars()));
+        results.record_receipt_typed(&[], &body_a, None, saved("scope-a-output"));
+        let original = results.last_action_full();
+        results.set_scope(Some("task-b".into()));
+        assert!(results.active_action_full().is_none(), "wrong-root full result must not become legacy prose");
+        assert_eq!(results.last_action_full(), original, "projection does not discard custody");
+        results.record_receipt_typed(&[], "task-b-only", None, saved("scope-b-output"));
+        for _ in 0..4 { results.record_fact("unrelated notice"); }
+        assert!(!results.recent_results_messages().join("\n").contains("task-a-only"));
+        results.set_scope(Some("task-a".into()));
+        assert!(results.recent_results_messages().join("\n").contains(&body_a));
+        assert!(results.active_action_full().is_none(), "B stays stored but inactive in A");
+        results.set_scope(Some("task-b".into()));
+        results.record_settlement("reported", None);
+        let snapshot = results.snapshot();
+        assert!(!snapshot.evicted_pointers.is_empty(), "fixture exercises the collapsed ring");
+        let mut encoded = serde_json::to_value(&snapshot).expect("snapshot serializes");
+        let restored = WorkingMemory::new(2);
+        restored.restore(serde_json::from_value(encoded.clone()).expect("snapshot round trip"));
+        restored.set_scope(Some("task-b".into()));
+        assert!(!restored.recent_results_messages().join("\n").contains("scope-a-output"));
+        restored.set_scope(Some("task-a".into()));
+        let shown = restored.recent_results_messages().join("\n");
+        assert!(shown.contains("scope-a-output"), "returning restores expansion visibility");
+        assert!(!shown.contains("scope-b-output"));
+        assert_eq!(restored.snapshot().evicted_pointers, snapshot.evicted_pointers, "hidden pointers retain custody");
+        // Pre-attribution snapshots stay explicitly unknown, not falsely assigned
+        // to the restoring root or hidden based on missing bounded entry metadata.
+        encoded.as_object_mut().unwrap().remove("result_scopes");
+        encoded.as_object_mut().unwrap().remove("evicted_pointer_scopes");
+        let legacy = WorkingMemory::new(2);
+        legacy.restore(serde_json::from_value(encoded).expect("legacy snapshot"));
+        legacy.set_scope(Some("task-b".into()));
+        assert!(legacy.recent_results_messages().join("\n").contains("scope-a-output"));
+
     }
 
     // what this catches: eviction deleting a saved result a mind still points at (card
@@ -2737,8 +2832,10 @@ mod tests {
             receipt_heads: Vec::new(),
             receipt_head_rooms: Vec::new(), // pre-archive snapshot: ledger's counter-only arm covers it
             recent_results: Vec::new(),
+            result_scopes: Default::default(),
             handoff: None,
             evicted_pointers: Vec::new(),
+            evicted_pointer_scopes: Vec::new(),
             receipt_children: Default::default(),
         });
         assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
