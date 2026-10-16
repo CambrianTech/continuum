@@ -458,7 +458,10 @@ fn freeze_in(
                 }
                 interrupted_members(copy_root, &placement.files)?
             } else {
-                verify_tree(copy_root, &placement.files, true, false)?;
+                // A published content address may be shared by another source.
+                // It is immutable: missing or corrupt members refuse, never
+                // turn this placement into an in-place repair writer.
+                verify_tree(copy_root, &placement.files, false, true)?;
                 Vec::new()
             }
         } else {
@@ -616,6 +619,37 @@ mod tests {
             std::fs::read(source.join("experts-L0.bin")).unwrap()
         );
         assert_eq!(read(&source).unwrap().unwrap().state, State::Frozen);
+    }
+
+    #[test]
+    fn missing_published_member_refuses_without_repairing_shared_destination() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("hot");
+        let cold = temp.path().join("cold");
+        std::fs::create_dir(&source).unwrap();
+        write_container(&source, 1, 2);
+        assert!(freeze_in(
+            &source,
+            &cold,
+            &Custody {
+                stop: Some(MigrationStage::Publish)
+            },
+            &|_| Ok(())
+        )
+        .is_err());
+        let saved = read(&source).unwrap().unwrap();
+        let destination = saved.destination.decode().unwrap();
+        let missing = destination.join("experts-L0.bin");
+        std::fs::remove_file(&missing).unwrap();
+        let manifest = std::fs::read(destination.join("manifest.json")).unwrap();
+        assert!(freeze_in(&source, &cold, &Custody { stop: None }, &|_| Ok(())).is_err());
+        assert!(!missing.exists());
+        assert!(source.join("experts-L0.bin").exists());
+        assert_eq!(
+            std::fs::read(destination.join("manifest.json")).unwrap(),
+            manifest
+        );
+        assert_eq!(read(&source).unwrap().unwrap().state, State::Copying);
     }
 
     #[test]
