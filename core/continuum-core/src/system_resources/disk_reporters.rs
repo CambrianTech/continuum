@@ -140,6 +140,7 @@ impl TrackedDir {
 /// writers all use the same TrackedDir instances and scanner.
 mod registry;
 pub use registry::{admit_cargo_target, bind_cargo_owners, register_cargo_target, restore_cargo_roots};
+pub(crate) use registry::resolve_existing_storage_path;
 #[cfg(test)]
 pub(crate) use registry::prepare_writer_fixture;
 use registry::TRACKED_DIRS;

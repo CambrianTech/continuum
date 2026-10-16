@@ -282,6 +282,19 @@ mod tests {
             let home = Path::new("C:\\Users\\someone\\.continuum");
             assert_eq!(drive_holding(&win, home).map(|d| d.total_bytes), Some(2_000));
             assert_eq!(drive_holding(&win, Path::new(r"\\?\c:\Users\someone\cache")).map(|d| d.total_bytes), Some(2_000), "canonical roots retain their owning volume");
+            // The paging owner supplies a real canonical directory while the
+            // monitor's mount sample uses ordinary Windows spelling.
+            let page_dir = tempfile::tempdir().unwrap();
+            let physical = page_dir.path().canonicalize().unwrap();
+            let ordinary = mount_comparison_path(&physical);
+            let mount: PathBuf = ordinary.components().take(2).collect();
+            let observed = [DriveInfo { mount, total_bytes: 8_000,
+                available_bytes: 4_000, role: DriveRole::System }];
+            assert_eq!(drive_holding(&observed, &physical).map(|d| d.total_bytes), Some(8_000),
+                "actual canonical page directory resolves through the monitor's volume selector");
+            let unc = [drive(r"\\server\share\", 9_000)];
+            assert_eq!(drive_holding(&unc, Path::new(r"\\?\UNC\server\share\pages")).map(|d| d.total_bytes), Some(9_000));
+            assert!(drive_holding(&unc, Path::new(r"\\?\UNC\server\share-other\pages")).is_none());
             assert!(
                 drive_holding(&win, Path::new("Z:\\nowhere")).is_none(),
                 "no drive = None, never (0, 0)"
