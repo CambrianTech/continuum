@@ -719,13 +719,18 @@ mod tests {
         assert_eq!(register(root, "engine-b"), Ok(true), "the next Windows release moves current");
         assert_eq!((current_slot(root), previous_slot(root)), (Some("engine-b"), Some("engine-a")));
         assert_eq!(resolve(root, None, Some("engine-c")), Resolved::Slot("engine-c"), "an empty current slot fails loud at spawn, never the legacy engine");
-        assert_eq!(slot_of(root, Path::new(&format!(r"\\?\{a}"))), Some("engine-a"), "a verbatim-prefixed path is the same slot");
-        let verbatim_root = PathBuf::from(format!(r"\\?\{}", root.display()));
-        assert_eq!(
-            slot_of(&verbatim_root, Path::new(&format!(r"\\?\{a}"))),
-            Some("engine-a"),
-            "a verbatim descriptor gives a verbatim root: the service-host's own derivation"
-        );
+        assert_eq!(slot_of(root, Path::new(&a)), Some("engine-a"));
+        // Verbatim prefixes are Windows path syntax, not Unix filename aliases.
+        #[cfg(windows)]
+        {
+            assert_eq!(slot_of(root, Path::new(&format!(r"\\?\{a}"))), Some("engine-a"), "a verbatim-prefixed path is the same slot");
+            let verbatim_root = PathBuf::from(format!(r"\\?\{}", root.display()));
+            assert_eq!(
+                slot_of(&verbatim_root, Path::new(&format!(r"\\?\{a}"))),
+                Some("engine-a"),
+                "a verbatim descriptor gives a verbatim root: the service-host's own derivation"
+            );
+        }
     }
 
     // what this catches (Fable on #4491): a promoted engine that verifies and then fails at
