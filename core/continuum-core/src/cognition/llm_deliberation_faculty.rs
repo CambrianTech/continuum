@@ -8610,11 +8610,15 @@ mod tests {
             let savings = LlmDeliberationFaculty::message_cost(&roomy.history[*index])
                 - LlmDeliberationFaculty::message_cost(pointer);
             assert!(savings > 0);
+            let expected_pointer = pointer.content_text();
             let tight_budget = full_cost - savings;
             let tight = faculty.fit_messages(roomy, tight_budget).unwrap();
             assert!(LlmDeliberationFaculty::messages_cost(&tight.messages) <= tight_budget);
-            assert!(tight.messages.iter().any(|m| m.content_text().contains(&handle)));
-            assert!(!tight.messages.iter().any(|m| m.content_text().contains("inventory-13010")));
+            assert!(tight.messages.iter().any(|m| m.content_text() == expected_pointer));
+            // The action ledger legitimately keeps the title/head. It is the
+            // complete historical body, not its provenance, that must collapse.
+            assert!(!tight.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
+            assert!(tight.messages.iter().any(|m| m.content_text().contains("inventory-13010")));
             let tight_wire = crate::inference::request_body::wire_messages(&tight.messages, None, true, false, "llama-server");
             let call_at = tight_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
             for (i, observation) in batch.iter().enumerate() {
@@ -8624,7 +8628,7 @@ mod tests {
             assert_eq!(std::fs::read_to_string(saved).unwrap(), inventory);
             // Fitting is a projection: a later roomy request still has the body.
             let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
-            assert!(roomy.messages.iter().any(|m| m.content_text().contains("inventory-13010")));
+            assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
             wm.set_scope(Some("another-workspace".into()));
             let scoped = faculty.prompt_view_with_visual_feedback(
                 &ws,
