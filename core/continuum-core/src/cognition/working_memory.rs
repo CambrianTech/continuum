@@ -227,7 +227,8 @@ pub struct WorkingMemory {
     /// The acting root her receipts are stamped with (set at the work-turn
     /// rooting seam, cleared on restore). See [`WmEntry::scope`].
     scope: Mutex<Option<String>>,
-    /// Unmet measured reply demand belongs to a concern, not a permanent persona peak.
+    /// Unmet reply demand uses this memory's existing capacity for abandoned concerns.
+    /// Intermediate reads do not age the current concern's evidence.
     pending_emissions: Mutex<Vec<ConcernEmission>>,
     /// The FULL result of the most recent act, kept whole (bounded upstream by the
     /// executor's fold cap) so the mind can work with what its hands just fetched — a
@@ -661,10 +662,13 @@ impl WorkingMemory {
     pub(crate) fn retain_truncated_emission(&self, room: Uuid, peak_tokens: u32) {
         let scope = self.scope.lock().clone();
         let mut pending = self.pending_emissions.lock();
-        if let Some(prior) = pending.iter_mut().find(|e| e.room == room && e.scope == scope) {
-            prior.peak_tokens = prior.peak_tokens.max(peak_tokens);
-        } else {
-            pending.push(ConcernEmission { room, scope, peak_tokens });
+        let peak_tokens = if let Some(index) = pending.iter().position(|e| e.room == room && e.scope == scope) {
+            pending.remove(index).peak_tokens.max(peak_tokens)
+        } else { peak_tokens };
+        pending.push(ConcernEmission { room, scope, peak_tokens });
+        if pending.len() > self.capacity {
+            let discarded = pending.len() - self.capacity;
+            drop(pending.drain(..discarded));
         }
     }
 
@@ -1202,7 +1206,17 @@ impl WorkingMemory {
     /// happened, whether those operations completed, or what side effects they
     /// produced. The persona decides what to do with that uncertainty.
     pub fn restore(&self, mut snap: VolatileSnapshot) {
-        *self.pending_emissions.lock() = snap.pending_emissions;
+        // A restored mind keeps only the newest concern evidence its existing
+        // WM capacity admits. Older abandoned concerns cannot become eternal peaks.
+        let mut pending = Vec::<ConcernEmission>::new();
+        for mut emission in snap.pending_emissions {
+            if let Some(index) = pending.iter().position(|e| e.room == emission.room && e.scope == emission.scope) {
+                emission.peak_tokens = emission.peak_tokens.max(pending.remove(index).peak_tokens);
+            }
+            pending.push(emission);
+            if pending.len() > self.capacity { pending.remove(0); }
+        }
+        *self.pending_emissions.lock() = pending;
         // Reconstitute the same ring before applying its existing capacity and
         // notice filtering. Older readers ignore the additive authored field.
         for (index, entry) in snap.action_statements {
@@ -3616,6 +3630,25 @@ mod tests {
         assert_eq!(restored.pending_emission_peak(room), 0, "existing settlement releases, not proof of task completion");
         scoped.clear();
         assert_eq!(scoped.pending_emission_peak(room), 0);
+        // Abandoned concerns share the existing WM capacity, not an immortal map.
+        let bounded = WorkingMemory::new(2);
+        for index in 0..12 {
+            bounded.set_scope(Some(format!("abandoned-{index}")));
+            bounded.retain_truncated_emission(room, 3587);
+            assert!(bounded.snapshot().pending_emissions.len() <= 2);
+        }
+        bounded.set_scope(Some("abandoned-0".into()));
+        assert_eq!(bounded.pending_emission_peak(room), 0, "discarded concern cannot resurrect its old peak");
+        bounded.set_scope(Some("abandoned-11".into()));
+        for _ in 0..12 { bounded.record("intermediate read observation"); }
+        assert_eq!(bounded.pending_emission_peak(room), 3587, "reads do not discharge active truncated demand");
+        let smaller = WorkingMemory::new(1);
+        smaller.restore(bounded.snapshot());
+        smaller.set_scope(Some("abandoned-11".into()));
+        assert_eq!(smaller.pending_emission_peak(room), 3587);
+        assert_eq!(smaller.snapshot().pending_emissions.len(), 1);
+        smaller.set_scope(Some("abandoned-10".into()));
+        assert_eq!(smaller.pending_emission_peak(room), 0, "restore honors current WM capacity");
         let wm = WorkingMemory::new(4);
         wm.record_receipt("I ran commands/list({}) -> 100 commands");
         wm.record_settlement("there are 100 commands", None);
