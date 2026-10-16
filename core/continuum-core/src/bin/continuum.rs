@@ -3089,21 +3089,7 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
 /// The installer's existing Windows exclusion, held through the reboot handoff.
 #[cfg(windows)]
 fn take_install_lease(root: &Path) -> Result<std::fs::File, String> {
-    use std::os::windows::fs::OpenOptionsExt;
-    std::fs::create_dir_all(root)
-        .map_err(|e| format!("cannot create install lease directory: {e}"))?;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .share_mode(0)
-        .open(root.join("install.lock"))
-        .map_err(|e| {
-            format!(
-                "another installer/reboot holds the install lease, or it cannot be acquired: {e}"
-            )
-        })
+    continuum_cli_lifecycle::supervisor_install::maintenance::take_install_lease(root)
 }
 
 /// RAII deploy claim: published for the length of a swap, released on EVERY exit path
