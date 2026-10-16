@@ -6253,14 +6253,13 @@ fn derived_prompt_cache_mib(
         .map(|(_, d)| (d.last_seen_ms, d.prev_seen_ms))
         .collect();
     let active = rotating_minds(&seen, EpochMs::now().millis(), rotation_window_ms(&seen)).max(warm_floor);
-    let demands = with_measured_state(
-        active_cache_states(&population, served_ctx, active),
-        fp.map(|f| f.kv_per_token),
-        // the served model's own page dir: the same key the spawn writes its pages under
-        crate::inference::slots::measured_state_bytes(&crate::inference::llama_server::kv_page_dir(model_id, served_ctx)),
-    );
+    // the served model's own page dir: the same key the spawn writes its pages under
+    let measured_state =
+        crate::inference::slots::measured_state_bytes(&crate::inference::llama_server::kv_page_dir(model_id, served_ctx));
+    let estimated = active_cache_states(&population, served_ctx, active);
+    let demands = with_measured_state(estimated.clone(), fp.map(|f| f.kv_per_token), measured_state);
     let serve_host_bytes = serve_host_bytes(fp, served_ctx, lanes, memory_mode);
-    let decision = prompt_cache_decision(
+    let mut decision = prompt_cache_decision(
         fp,
         &demands,
         planned.len(),
@@ -6270,6 +6269,12 @@ fn derived_prompt_cache_mib(
         serve_host_bytes,
         available_bytes,
     );
+    // Say which evidence sized it. A measured saved state that raised a demand above the KV
+    // estimate makes this a measured sizing; the estimate's reason would read the same both ways,
+    // and a fresh core's first sizing could not be told from the defect card 37eb1925 fixed
+    // (Kimi's node, 8eaed76f3: one_conversation 4,816 MiB from a 5,050,734,260-byte page, under
+    // reason resident_demand_kv_estimate).
+    decision.reason = sized_by(&estimated, &demands, decision.reason);
     // Deduplicate the decision, not just its MiB: a different model or a prior
     // becoming measured can yield the same limit and still needs a receipt.
     static LAST_SPOKEN: parking_lot::Mutex<Option<(String, PromptCacheDecision)>> =
@@ -6314,7 +6319,7 @@ fn derived_prompt_cache_mib(
             affordable_bytes = ?decision.affordable_bytes,
             serve_host_bytes = decision.serve_host_bytes,
             available_bytes = decision.available_bytes,
-            serialized_state_bytes = "unobserved",
+            serialized_state_bytes = ?measured_state,
             "prompt-cache sizing decision, not engine readback; KV estimate excludes draft state and checkpoints"
         );
     }
@@ -6433,6 +6438,16 @@ pub fn rotating_minds(seen: &[(u64, u64)], now_ms: u64, window_ms: Option<u64>) 
 /// state also holds its recurrent state and context checkpoints: the 5090's 27B saved
 /// 4.3-5.8 GB states that the KV estimate sized at 4,288 MiB. Each demand is raised to at
 /// least the measured state; nothing measured, or no KV rate, leaves the demands as they are.
+/// PURE: the reason a sizing reports. A measured saved state that raised any demand above its
+/// KV estimate made it a measured sizing; every other reason (a prior, no demand) stands.
+pub fn sized_by(estimated: &[u32], demands: &[u32], reason: &'static str) -> &'static str {
+    if reason == "resident_demand_kv_estimate" && demands != estimated {
+        "resident_demand_measured_state"
+    } else {
+        reason
+    }
+}
+
 pub fn with_measured_state(demands: Vec<u32>, kv_per_token: Option<u64>, measured_state: Option<u64>) -> Vec<u32> {
     let (Some(kv), Some(state)) = (kv_per_token.filter(|k| *k > 0), measured_state) else {
         return demands;
@@ -7646,6 +7661,12 @@ pub(crate) mod tests {
         assert_ne!(measured, missing);
         assert_eq!(measured.estimated_kv_bytes, Some(4 << 30));
         assert_eq!(measured.reason, "resident_demand_kv_estimate");
+        // what this catches (card 37eb1925, Kimi's node 8eaed76f3): a sizing raised by a measured
+        // saved state reported the estimate's reason, so the probe could not show the fix working.
+        let raised = with_measured_state(vec![1_000, 2_000], Some(32_768), Some(5_050_734_260));
+        assert_eq!(sized_by(&[1_000, 2_000], &raised, "resident_demand_kv_estimate"), "resident_demand_measured_state");
+        assert_eq!(sized_by(&[1_000, 2_000], &[1_000, 2_000], "resident_demand_kv_estimate"), "resident_demand_kv_estimate", "no measured state, no claim");
+        assert_eq!(sized_by(&[], &raised, "prior_missing_footprint"), "prior_missing_footprint", "a prior is never relabeled");
         let above_floor =
             (32u64 << 30) - fp.peak_resident_bytes(65536, 1) - host_os_floor_bytes(32 << 30);
         // The grant leaves the planner's co-consumer headroom — a cache fills to its
