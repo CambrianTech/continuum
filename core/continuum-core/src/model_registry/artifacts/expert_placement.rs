@@ -15,6 +15,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
+mod preparation;
+pub use preparation::{prepare_online, OnlinePreparation, ProducerCustody};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MigrationStage {
     Observe,
@@ -143,6 +146,10 @@ fn read(root: &Path) -> Result<Option<Placement>, String> {
     let physical = crate::paths::cargo::physical_root(root)?;
     let root = physical.as_path();
     let path = receipt_path(root)?;
+    read_at(root, &path)
+}
+
+fn read_at(root: &Path, path: &Path) -> Result<Option<Placement>, String> {
     match std::fs::symlink_metadata(&path) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.to_string()),
@@ -200,9 +207,20 @@ fn validate_manifest_provenance(placement: &Placement) -> Result<(), String> {
 }
 
 fn publish(root: &Path, placement: &Placement) -> Result<(), String> {
+    publish_to(
+        &receipt_path(root)?,
+        &sibling(root, ".container-placement.tmp")?,
+        placement,
+    )
+}
+
+fn publish_at(path: &Path, placement: &Placement) -> Result<(), String> {
+    let temporary = sibling(path, ".tmp")?;
+    publish_to(path, &temporary, placement)
+}
+
+fn publish_to(path: &Path, temporary: &Path, placement: &Placement) -> Result<(), String> {
     validate_manifest_provenance(placement)?;
-    let path = receipt_path(root)?;
-    let temporary = sibling(root, ".container-placement.tmp")?;
     let bytes = serde_json::to_vec(placement).map_err(|e| e.to_string())?; // Disk boundary: placement protocol consumed by later resolver/migration processes.
     if bytes.len() as u64 > MAX_RECEIPT_BYTES {
         return Err("placement closure exceeds lifecycle receipt bound".into());
@@ -215,7 +233,7 @@ fn publish(root: &Path, placement: &Placement) -> Result<(), String> {
         .and_then(|_| file.sync_all())
         .map_err(|e| e.to_string())?;
     drop(file);
-    crate::fs_portable::durable_rename(&temporary, &path).map_err(|e| e.to_string())
+    crate::fs_portable::durable_rename(&temporary, path).map_err(|e| e.to_string())
 }
 
 /// Blocking artifact-resolution boundary. Frozen and interrupted placement
@@ -390,6 +408,39 @@ pub fn freeze(root: &Path, custody: &dyn ContainerMigrationCustody) -> Result<u6
     )
 }
 
+fn copy_members(
+    root: &Path,
+    files: &[Entry],
+    sources: &mut std::collections::HashMap<PathBuf, File>,
+    allow_create: bool,
+) -> Result<(), String> {
+    for entry in files {
+        let name = entry_name(entry)?;
+        let path = root.join(&name);
+        if !path.try_exists().map_err(|e| e.to_string())? {
+            if !allow_create {
+                return Err("published container changed after verification".into());
+            }
+            let source = sources.get_mut(&name).ok_or("source handle missing")?;
+            source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+            let mut target = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .map_err(|e| e.to_string())?;
+            let copied = std::io::copy(&mut *source, &mut target).map_err(|e| e.to_string())?;
+            if copied != entry.bytes {
+                return Err("source length changed during copy".into());
+            }
+            target
+                .set_permissions(source.metadata().map_err(|e| e.to_string())?.permissions())
+                .map_err(|e| e.to_string())?;
+            crate::fs_portable::sync_publication(&target, &path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 fn freeze_in(
     root: &Path,
     cold: &Path,
@@ -517,32 +568,12 @@ fn freeze_in(
             }
             std::fs::remove_file(path).map_err(|e| e.to_string())?;
         }
-        for entry in &placement.files {
-            let name = entry_name(entry)?;
-            let path = copy_root.join(&name);
-            if !path.try_exists().map_err(|e| e.to_string())? {
-                if copy_root == &destination {
-                    return Err("published container changed after verification".into());
-                }
-                let source = source_handles
-                    .get_mut(&name)
-                    .ok_or("source handle missing")?;
-                source.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-                let mut target = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .map_err(|e| e.to_string())?;
-                let copied = std::io::copy(&mut *source, &mut target).map_err(|e| e.to_string())?;
-                if copied != entry.bytes {
-                    return Err("source length changed during copy".into());
-                }
-                target
-                    .set_permissions(source.metadata().map_err(|e| e.to_string())?.permissions())
-                    .map_err(|e| e.to_string())?;
-                crate::fs_portable::sync_publication(&target, &path).map_err(|e| e.to_string())?;
-            }
-        }
+        copy_members(
+            copy_root,
+            &placement.files,
+            &mut source_handles,
+            copy_root != &destination,
+        )?;
         verify_tree(copy_root, &placement.files, false, true)?;
         if copy_root != &destination {
             // Directory publication fences the destination name before a
@@ -563,14 +594,18 @@ fn freeze_in(
     // external lifetime/spawn lease remains held across this release and the
     // exact-entry retirement below; an advisory placement lock alone is not it.
     drop(source_handles);
+    retire_recorded(root, &placement.files, !newly_frozen)
+}
+
+fn retire_recorded(root: &Path, files: &[Entry], verify_contents: bool) -> Result<u64, String> {
     if !root.try_exists().map_err(|e| e.to_string())? {
         return Ok(0);
     }
     // A Frozen receipt makes interrupted retirement resumable. Only its exact
     // remaining entries may be removed, never a recursively discovered tree.
-    verify_tree(root, &placement.files, true, !newly_frozen)?;
+    verify_tree(root, files, true, verify_contents)?;
     let mut freed = 0u64;
-    for entry in &placement.files {
+    for entry in files {
         let path = root.join(entry_name(entry)?);
         if path.try_exists().map_err(|e| e.to_string())? {
             std::fs::remove_file(&path).map_err(|e| e.to_string())?;
@@ -596,6 +631,56 @@ mod tests {
                 Ok(())
             }
         }
+    }
+
+    impl ProducerCustody for Custody {
+        fn revalidate(&self, _: &Path) -> Result<(), String> {
+            if self.stop == Some(MigrationStage::Copy) {
+                Err("producer custody lost".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn online_preparation_preserves_readers_until_explicit_final_exclusion() {
+        // Regression: the long copy must neither publish resolver refusal nor
+        // obtain an exclusive lease that rejects new readers.
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("hot");
+        let cold = temp.path().join("cold");
+        std::fs::create_dir(&source).unwrap();
+        write_container(&source, 1, 2);
+        let custody = Custody { stop: None };
+        let reader = ExpertContainer::open(&source).unwrap();
+        let prepared = preparation::prepare_in(&source, &cold, &custody, &|_| Ok(())).unwrap();
+        assert!(read(&source).unwrap().is_none());
+        assert!(ExpertContainer::open(&source).is_ok());
+        #[cfg(windows)]
+        assert!(OpenOptions::new()
+            .write(true)
+            .open(source.join("manifest.json"))
+            .is_err());
+        // The maintained legacy-reader contract is not replaced by the trait
+        // assertion: an actual cooperating reader still prevents the upgrade.
+        assert!(prepared.freeze(&custody).is_err());
+        assert!(read(&source).unwrap().is_none());
+        assert!(source.join("manifest.json").exists());
+        drop(reader);
+        // Restart reacquires and re-hashes; a prior cold copy is not a saved
+        // live-handle authorization. Failed final custody preserves serving.
+        let prepared = preparation::prepare_in(&source, &cold, &custody, &|_| Ok(())).unwrap();
+        assert!(prepared
+            .freeze(&Custody {
+                stop: Some(MigrationStage::Publish)
+            })
+            .is_err());
+        assert!(read(&source).unwrap().is_none());
+        let prepared = preparation::prepare_in(&source, &cold, &custody, &|_| Ok(())).unwrap();
+        assert!(prepared.freeze(&custody).unwrap() > 0);
+        assert!(!source.exists());
+        assert!(resolve_for_serving(&source).is_err());
     }
 
     #[test]
