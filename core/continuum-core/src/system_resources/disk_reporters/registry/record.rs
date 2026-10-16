@@ -69,6 +69,8 @@ pub(super) struct RootRecord {
     pub path: NativePath,
     #[serde(default)]
     pub volume_id: Option<u64>,
+    #[serde(default)]
+    pub citizen: Option<uuid::Uuid>,
 }
 
 inventory::submit! {
@@ -85,6 +87,7 @@ impl RootRecord {
             class: class.into(),
             path: NativePath::encode(path),
             volume_id: None,
+            citizen: None,
         }
     }
 }

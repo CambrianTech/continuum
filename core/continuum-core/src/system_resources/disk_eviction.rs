@@ -278,6 +278,7 @@ pub enum DeclinedEviction {
     BuildHoldsReleaseLock,
     /// The deletion owner cannot establish an unredirected path inside its root.
     UnsafePath(String),
+    CitizenBusy(String),
     /// A process is EXECUTING an image under a profile (a test binary, a tool cargo built
     /// and ran). Cargo releases its locks at "Finished" and then runs what it built, so
     /// the locks say nothing about that window, and deleting a running image is a
@@ -312,6 +313,7 @@ impl DeclinedEviction {
             Self::ActiveArtifact { .. } => 7,
             Self::ReleaseInputsRetained { .. } => 8,
             Self::AwaitingReleaseMeasurement => 9,
+            Self::CitizenBusy(_) => 10,
         }
     }
 
@@ -332,6 +334,7 @@ impl DeclinedEviction {
             }
             Self::BuildHoldsReleaseLock => "a live cargo build holds release/.cargo-lock — standing down",
             Self::UnsafePath(_) => "a cache path is redirected or unverifiable — refusing reclamation",
+            Self::CitizenBusy(_) => "citizen-owned build residue waits for hands and node quiescence",
             Self::ProfileInUse { .. } => {
                 "a process is executing an image under this Cargo profile — its output closure stands down"
             }
@@ -363,6 +366,7 @@ pub struct CargoTargetPool {
     active_artifacts: Arc<ActiveArtifactSet>,
     /// Read the owning volume's already-published sample; never probe here.
     volume_sample: fn(&Path) -> Option<crate::capacity::system_profile::DriveInfo>,
+    citizen_quiescence: fn(&Path) -> Result<(), String>,
     /// The last decline reason (as a discriminant) and how many times it has
     /// repeated unchanged — so a persistent condition is reported once and then
     /// rarely, instead of once per broker tick (@Astra, #3910 review).
@@ -449,6 +453,7 @@ impl CargoTargetPool {
             tracked,
             budget_bytes: budget_bytes.max(1),
             volume_sample: super::DiskPressureMonitor::volume_for,
+            citizen_quiescence: super::citizen_workspace_pool::node_quiescence,
             active_artifacts: serving_active_artifacts(),
         }
     }
@@ -706,6 +711,20 @@ impl ResourcePool for CargoTargetPool {
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
         let root = self.tracked.path().to_path_buf();
+        let citizen_custody = self.tracked.eviction_custody();
+        let _hands = if let Some(peer) = *citizen_custody {
+            let Some(hands) = crate::modules::work::HandsLease::try_take(peer) else {
+                return self.declined(DeclinedEviction::CitizenBusy("hands are in use".into()));
+            };
+            let home = match crate::paths::continuum_home() {
+                Ok(home) => home,
+                Err(error) => return self.declined(DeclinedEviction::CitizenBusy(error.to_string())),
+            };
+            if let Err(error) = (self.citizen_quiescence)(&home) {
+                return self.declined(DeclinedEviction::CitizenBusy(error));
+            }
+            Some((hands, home))
+        } else { None };
         if !root.exists() {
             return self.declined(DeclinedEviction::NoSuchDirectory);
         }
@@ -751,6 +770,12 @@ impl ResourcePool for CargoTargetPool {
         let debug = root.join("debug");
         let release = root.join("release");
         for rung in Self::ladder(&root) {
+            if let Some((_, home)) = &_hands {
+                if let Err(error) = (self.citizen_quiescence)(home) {
+                    self.declined(DeclinedEviction::CitizenBusy(error));
+                    break;
+                }
+            }
             if freed >= want_bytes.max(1) {
                 break;
             }
@@ -1375,12 +1400,33 @@ mod tests {
     fn held_cargo_lock_blocks_eviction_entirely() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
-        let pool = CargoTargetPool::new(tracked, 1);
+        let mut pool = CargoTargetPool::new(tracked, 1);
 
-        let _build_holds_lock = try_exclusive_flock(&tmp.path().join(".cargo-lock"))
+        let build_holds_lock = try_exclusive_flock(&tmp.path().join(".cargo-lock"))
             .expect("test takes the lock first");
         assert_eq!(pool.evict_at_least(u64::MAX), 0, "locked ⇒ untouched");
         assert!(tmp.path().join("debug/incremental").exists());
+        let peer = uuid::Uuid::new_v4();
+        let in_flight = pool.tracked.eviction_custody();
+        assert!(pool.tracked.bind_citizen(peer).is_err(),
+            "discovery cannot change ownership during a generic eviction");
+        assert_eq!(*in_flight, None);
+        drop(in_flight);
+        pool.tracked.bind_citizen(peer).unwrap();
+        let hands = crate::modules::work::HandsLease::try_take(peer).unwrap();
+        assert_eq!(pool.evict_at_least(u64::MAX), 0, "resident hands keep all derived rungs");
+        assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed),
+            DeclinedEviction::CitizenBusy(String::new()).discriminant());
+        assert!(tmp.path().join("debug/incremental").exists());
+        drop(hands);
+        drop(build_holds_lock);
+        // Drive the existing owner observation, not the host running Cargo tests.
+        pool.citizen_quiescence = |_| Err("citizen turn is in flight".into());
+        assert_eq!(pool.evict_at_least(u64::MAX), 0);
+        assert!(tmp.path().join("debug/incremental").exists());
+        pool.citizen_quiescence = |_| Ok(());
+        assert!(pool.evict_at_least(1) > 0, "a later idle broker attempt reaches the existing derived rung");
+        assert!(tmp.path().join(".cargo-lock").exists(), "lock inode retained");
     }
 
     // what this catches: the real broker must reach release incremental after
@@ -1485,7 +1531,10 @@ mod tests {
         assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), DeclinedEviction::ReleaseInputsRetained { bytes: 1 }.discriminant());
         #[cfg(unix)]
         { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), inode); }
-        assert!(try_exclusive_flock(&lock_path).is_some(), "custody is released with the original lock path intact");
+        let reacquired = try_exclusive_flock_detailed(&lock_path);
+        assert!(matches!(reacquired, LockAttempt::Acquired(_)),
+            "custody is released with the original lock path intact: path={}, result={reacquired:?}",
+            lock_path.display());
     }
 
     #[test]
