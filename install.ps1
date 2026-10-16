@@ -319,6 +319,8 @@ try {
     if (-not $PrepareOnly) {
     # Select storage before prerequisite downloads and extraction, not just cargo.
     Mod-ColdStorage
+    # The node's GitHub identity for the core's own git and gh (a citizen's act-end push).
+    Mod-GitHubToken
     $payloadRoot = Initialize-ManagedPayloadRoot -ColdRoot $env:CONTINUUM_STORAGE_PATH
     Write-Ok "installed payloads -> $payloadRoot"
     Test-WingetAvailable

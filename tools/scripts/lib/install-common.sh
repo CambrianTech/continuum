@@ -250,7 +250,6 @@ _cold_export() {
   local config_env="$HOME/.continuum/config.env"
   mkdir -p "$HOME/.continuum"
   _cold_write_config "$config_env" "$cold_root" || return 1
-  _provision_github_token "$config_env"
   mkdir -p "$cold_root/tmp" || return 1
   # Downloads/extraction use the selected disk during setup, like Windows TEMP.
   export TMPDIR="$cold_root/tmp"
@@ -280,6 +279,14 @@ _provision_github_token() {
   esac
   printf "GH_TOKEN='%s'\n" "$token" >> "$config_env" && chmod 600 "$config_env"
   echo "GH_TOKEN: provisioned from gh for the core's own git and gh" >&2
+}
+
+# ── mod_github_token ────────────────────────────────────────
+# Always runs (not only when cold storage is routed: Cormac's review of #5112, the IntelMac has
+# no CONTINUUM_STORAGE_PATH and would never have been provisioned). Windows twin:
+# Mod-GitHubToken in win-modules.ps1.
+mod_github_token() {
+  _provision_github_token "${CONTINUUM_HOME:-$HOME/.continuum}/config.env"
 }
 
 _cold_write_config() (

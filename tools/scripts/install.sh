@@ -88,6 +88,9 @@ mod_docker_wsl_integration
 # relocated CARGO_TARGET_DIR. No-op on single-drive machines. Reconfigurable via
 # ~/.continuum/config.env. (Windows twin: Mod-ColdStorage in win-modules.ps1.)
 mod_cold_storage
+# The node's GitHub identity for the core's own git and gh (a citizen's act-end push, the PRs
+# it opens): provisioned from `gh auth token` when gh is logged in, else named.
+mod_github_token
 payload_root="$(initialize_managed_payload_root "${CONTINUUM_HOME:-$HOME/.continuum}" "${CONTINUUM_STORAGE_PATH:-}")" || exit 1
 ok "installed payloads -> $payload_root"
 

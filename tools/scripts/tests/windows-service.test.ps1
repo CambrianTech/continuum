@@ -139,6 +139,31 @@ try {
         } finally { $env:USERPROFILE = $savedProfile }
         Write-Output 'PASS: interrupted cold migration resumes its owned drive, preserves data/config and refuses unrelated paths'
     }
+    # what this catches: the node's GitHub identity never reaching the core on Windows
+    # (the bash twin is tested in install-modules.test.sh). With a logged-in gh the module
+    # appends GH_TOKEN once (a re-run skips), single-quoted, keeping the file's other lines.
+    & {
+        . (Join-Path $repo 'tools\scripts\lib\win-modules.ps1')
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = Join-Path $scratch 'token-profile'
+            $config = Join-Path $env:USERPROFILE '.continuum\config.env'
+            New-Item -ItemType Directory -Force (Split-Path -Parent $config) | Out-Null
+            [IO.File]::WriteAllText($config, "HF_TOKEN='x'`n")
+            function gh { param([Parameter(ValueFromRemainingArguments)]$a) if ("$a" -eq 'auth token') { 'gho_stubbedtoken000000000000000000000000' } }
+            function Module-Skip { $script:tokenSkips++ }
+            function Write-Ok { }
+            function Write-Warn2 { throw "unexpected warning: $args" }
+            $script:tokenSkips = 0
+            Mod-GitHubToken
+            Mod-GitHubToken
+            $lines = @(Get-Content -LiteralPath $config)
+            if (@($lines -match '^GH_TOKEN=').Count -ne 1 -or $lines[0] -cne "HF_TOKEN='x'" -or $lines[1] -cne "GH_TOKEN='gho_stubbedtoken000000000000000000000000'" -or $script:tokenSkips -ne 1) {
+                throw 'GH_TOKEN was not provisioned exactly once beside the existing config lines'
+            }
+        } finally { $env:USERPROFILE = $savedProfile }
+        Write-Output 'PASS: Mod-GitHubToken provisions GH_TOKEN once from gh beside the existing config lines'
+    }
     # what this catches: the real public entry must persist payload placement
     # BEFORE any prerequisite acquisition. Stop at that boundary, not at a
     # replacement installer, and keep all state in the isolated profile.
