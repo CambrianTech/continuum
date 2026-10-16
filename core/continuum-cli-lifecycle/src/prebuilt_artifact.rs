@@ -389,9 +389,11 @@ pub struct ResourceDeferral {
     pub reason: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PublishedCoreError {
     Artifact(String),
+    CapabilityDeferred(String),
+    OperationalBlocked(String),
     ResourceDeferred(ResourceDeferral),
 }
 impl From<String> for PublishedCoreError {
@@ -403,7 +405,7 @@ impl From<&str> for PublishedCoreError {
 impl std::fmt::Display for PublishedCoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Artifact(reason) => f.write_str(reason),
+            Self::Artifact(reason) | Self::CapabilityDeferred(reason) | Self::OperationalBlocked(reason) => f.write_str(reason),
             Self::ResourceDeferred(deferred) => write!(f, "resource admission deferred at {} for {} bytes: {}", deferred.path.display(), deferred.projected_bytes, deferred.reason),
         }
     }
@@ -430,6 +432,7 @@ pub fn recheck_resource_deferral(
             Some(MissingArtifact::Wait(why))
         }
         Err(PublishedCoreError::Artifact(reason)) => Some(MissingArtifact::Refuse(reason)),
+        Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => Some(MissingArtifact::Wait(reason)),
     }
 }
 

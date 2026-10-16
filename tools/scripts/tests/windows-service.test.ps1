@@ -511,6 +511,12 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
         function git { $global:LASTEXITCODE = 0; 'a' * 40 }
         function Get-ScheduledTask { $null }
         function Select-CoreEngineSlot { $engineCopy }
+        $script:engineCapacity = $null
+        function Invoke-InstallerProcess {
+            param($FilePath, $ArgumentList)
+            if ($ArgumentList[1] -eq '--protocol') { $global:LASTEXITCODE = 0; '1' }
+            else { $script:engineCapacity = @($ArgumentList); $global:LASTEXITCODE = 0 }
+        }
         $artifact = Join-Path $scratch 'published engine artifact'
         New-Item -ItemType Directory -Path $artifact | Out-Null
         Microsoft.PowerShell.Management\Copy-Item -LiteralPath $engineFixture -Destination (Join-Path $artifact 'engine') -Recurse
@@ -518,6 +524,10 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
         try { Copy-CorePublishedEngine -RepoRoot $repo -ArtifactDirectory $artifact -InstallDirectory (Join-Path $scratch 'wrong slot') } catch { $refused = $_ -match 'no longer idle' }
         if (-not $refused -or (Test-Path -LiteralPath (Join-Path $scratch 'wrong slot'))) { throw 'Public engine copy ignored a changed idle-slot selection.' }
         Copy-CorePublishedEngine -RepoRoot $repo -ArtifactDirectory $artifact -InstallDirectory $engineCopy
+        $engineReceipt = Get-CoreEngineReceipt -Directory (Join-Path $artifact 'engine')
+        [uint64]$engineBytes = [Text.Encoding]::UTF8.GetByteCount(($engineReceipt | ConvertTo-Json -Depth 5)) + [Text.Encoding]::UTF8.GetByteCount('pending')
+        foreach ($entry in $engineReceipt.files.PSObject.Properties) { $engineBytes += (Get-Item -LiteralPath (Join-Path (Join-Path $artifact 'engine') $entry.Name)).Length }
+        if ($script:engineCapacity[1] -ne $engineCopy -or [uint64]$script:engineCapacity[2] -ne $engineBytes) { throw 'Published engine capacity used the wrong destination or omitted payload/receipt bytes' }
         Get-CoreEngineReceipt -Directory $engineCopy | Out-Null
         # What this catches: a deploy that ships the engine already installed needing an idle slot to
         # stage a copy of it (5090, 2026-10-13: the core's pointers and the installer's receipts each
@@ -1577,6 +1587,12 @@ public static class RegisteredGsudoFixture {
     $script:registeredTask = $null
     function Get-CimInstance { param($ClassName, $ErrorAction) $script:liveProcesses }
     function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) $script:registeredTask }
+    foreach ($ioFailure in @([IO.IOException]::new('destination full'), [UnauthorizedAccessException]::new('destination denied'))) {
+        $record = [Management.Automation.ErrorRecord]::new($ioFailure, 'fixture', [Management.Automation.ErrorCategory]::WriteError, $null)
+        if (-not (Get-CoreDeploymentFailure $record).OperationalBlocked) { throw 'Destination IO failure charged artifact after admission' }
+    }
+    $artifactFailure = [Management.Automation.ErrorRecord]::new([InvalidOperationException]::new('hash mismatch'), 'fixture', [Management.Automation.ErrorCategory]::InvalidData, $null)
+    if ((Get-CoreDeploymentFailure $artifactFailure).Artifact -ne 'hash mismatch') { throw 'Known artifact validation failure was swallowed' }
     $script:capacityCalls = @()
     function Invoke-InstallerProcess {
         param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
@@ -1591,16 +1607,16 @@ public static class RegisteredGsudoFixture {
         function Retire-CorePreviousSelectionForSlot { throw 'unsupported capacity protocol reached retirement' }
         $failure = $null
         try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null }
-        catch { $failure = $_.Exception.Message }
+        catch { if (-not $_.Exception.Data['ContinuumDeploymentFailure'].CapabilityDeferred) { throw 'Capability refusal lost typed custody' }; $failure = $_.Exception.Message }
         if ($failure -notmatch 'lacks service capacity admission protocol 1; preparation deferred') { throw "Unsupported ancestor was not deferred truthfully: $failure" }
     }
     # A destination-volume refusal must precede receipt retirement and all copying.
     & {
-        function Invoke-InstallerProcess { param($FilePath, $ArgumentList) if ($ArgumentList[1] -eq '--protocol') { $global:LASTEXITCODE = 0; '1' } else { $global:LASTEXITCODE = 4 } }
+        function Invoke-InstallerProcess { param($FilePath, $ArgumentList) if ($ArgumentList[1] -eq '--protocol') { $global:LASTEXITCODE = 0; '1' } else { $global:LASTEXITCODE = 4; @{ResourceDeferred=@{condition='volume_capacity';path=$ArgumentList[1];projected_bytes=[uint64]$ArgumentList[2];reason='fixture full'}} | ConvertTo-Json -Compress } }
         function Retire-CorePreviousSelectionForSlot { throw 'capacity refusal reached retirement' }
         $failure = $null
         try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null }
-        catch { $failure = $_.Exception.Message }
+        catch { if (-not $_.Exception.Data['ContinuumDeploymentFailure'].ResourceDeferred) { throw 'Resource refusal lost typed custody' }; $failure = $_.Exception.Message }
         if ($failure -notmatch 'Service-slot capacity admission refused') { throw "Wrong capacity refusal: $failure" }
         if (Test-Path -LiteralPath (Join-Path $installedPayload 'bin\service-a\continuum.exe')) { throw 'Capacity refusal copied service payload' }
     }

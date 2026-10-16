@@ -40,6 +40,7 @@ use continuum_cli_lifecycle::deploy_provenance::{
 use serde_json::Value;
 
 use continuum_cli_lifecycle::owned_engines;
+use continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError;
 use owned_engines::owned_engine_candidate;
 
 #[cfg(windows)]
@@ -203,8 +204,11 @@ async fn run() -> Result<(), CliError> {
             return Err(CliError::Command("artifact-capacity requires <destination> <projected-bytes>".into()));
         }
         let bytes = values[1].parse::<u64>().map_err(|error| CliError::Command(error.to_string()))?;
-        continuum_core::paths::artifacts::check_capacity(Path::new(&values[0]), bytes)
-            .await.map_err(|error| CliError::Command(error.to_string()))?;
+        if let Err(error) = continuum_core::paths::artifacts::check_capacity(Path::new(&values[0]), bytes).await {
+            // boundary: selected-artifact installer capacity protocol, not a diagnostic parser.
+            println!("{}", serde_json::to_string(&error).map_err(|error| CliError::Command(error.to_string()))?);
+            std::process::exit(4);
+        }
         return Ok(());
     }
     if first == "prepare-prebuilt" {
@@ -236,7 +240,7 @@ async fn run() -> Result<(), CliError> {
             }
             start(flags.iter().any(|a| a == "--force")).await
         }
-        "reboot" | "restart" => reboot(RebootOptions::parse(args)?).await,
+        "reboot" | "restart" => reboot(RebootOptions::parse(args)?).await.map_err(|error| error.to_string()),
         // The typed boot plan (BOOT-IS-A-TYPED-PLAN.md, slice 1): deterministic
         // runtime bring-up of an ALREADY-BUILT binary — lane adopt-or-reap,
         // transport, core launch + #194 verify, optional Beside rails — one
@@ -1722,11 +1726,11 @@ impl PreparedCoreService {
     /// `--prebuilt <slot>` — the old files move aside as `.prev.exe` (a running exe can
     /// be renamed, never overwritten), the new ones copy in, and the slot's CLI follows
     /// the core so the two never drift (#422's STALE CLI). Nothing here stops the core.
-    async fn stage(built: &PrebuiltCore, socket: &str) -> Result<PrebuiltCore, String> {
+    async fn stage(built: &PrebuiltCore, socket: &str) -> Result<PrebuiltCore, PublishedCoreError> {
         #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = (built, socket);
-            Err("reboot --service is supported only on Windows and macOS".to_string())
+            Err("reboot --service is supported only on Windows and macOS".into())
         }
         #[cfg(target_os = "macos")]
         {
@@ -1744,10 +1748,10 @@ impl PreparedCoreService {
                 return Err(format!(
                     "staged artifact reports build {sha}, the warm build was {} — refusing the handoff",
                     built.build_sha
-                ));
+                ).into());
             }
             println!("✓ staged build {} into the launchd slot: {}", built.build_sha, staged.display());
-            PrebuiltCore::from_report(staged, sha, None)
+            PrebuiltCore::from_report(staged, sha, None).map_err(Into::into)
         }
         #[cfg(windows)]
         {
@@ -1756,7 +1760,7 @@ impl PreparedCoreService {
             let repo = tracked_repo_dir()?;
             let source = built.path.parent().ok_or("prebuilt artifact has no directory")?;
             let existing = Self::query().await?.runtime_paths_resolve()?;
-            let receipt = WarmBuildReceipt::create()?;
+            let receipt = WarmBuildReceipt::create().map_err(PublishedCoreError::OperationalBlocked)?;
             let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
             let engine_stage = if source.join("engine/engine-install.json").is_file() {
                 format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}'; Copy-CorePublishedEngine -RepoRoot '{repo}' -ArtifactDirectory '{source}' -InstallDirectory (Split-Path $r.engine)", repo=quote(&repo), source=quote(source))
@@ -1764,14 +1768,16 @@ impl PreparedCoreService {
                 format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}' -EnginePath '{engine}'", repo=quote(&repo), source=quote(source), engine=quote(Path::new(&existing.engine)))
             };
             let script = format!(
-                "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; . '{repo}/tools/scripts/lib/windows-prebuilt.ps1'; $env:CONTINUUM_CORE_SOCKET='{socket}'; {engine_stage}; Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' -WorkingDirectory (Split-Path $r.artifact); [IO.File]::WriteAllText('{receipt}', $r.artifact)",
+                "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; . '{repo}/tools/scripts/lib/windows-prebuilt.ps1'; $env:CONTINUUM_CORE_SOCKET='{socket}'; try {{ {engine_stage}; Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' -WorkingDirectory (Split-Path $r.artifact); [IO.File]::WriteAllText('{receipt}', $r.artifact) }} catch {{ $failure = Get-CoreDeploymentFailure -ErrorRecord $_; [IO.File]::WriteAllText('{receipt}', ($failure | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding $false)); throw }}",
                 repo=quote(&repo), socket=socket.replace('\'', "''"), receipt=quote(&receipt.0),
             );
-            Self::run_installer_script(&script)?;
-            let staged_path=resolve_service_path(receipt.artifact()?)?;
+            if let Err(reason) = Self::run_installer_script(&script) {
+                return Err(receipt.classify_deployment_failure(reason));
+            }
+            let staged_path=resolve_service_path(receipt.artifact().map_err(PublishedCoreError::OperationalBlocked)?)?;
             let sha=binary_build_sha(&staged_path).await?;
             if !sha_matches(&sha,&built.build_sha) { return Err("staged core revision differs from validated prebuilt".into()); }
-            PrebuiltCore::from_report(staged_path,sha,None)
+            PrebuiltCore::from_report(staged_path,sha,None).map_err(Into::into)
         }
     }
 
@@ -2069,16 +2075,38 @@ impl WarmBuildReceipt {
         Ok(report.strip_prefix("SKIP: ").map(|reason| reason.trim().to_string()))
     }
 
-    fn artifact(&self) -> Result<PathBuf, String> {
+    fn read_report(&self) -> Result<String, String> {
         use std::io::Read;
         const MAX_RECEIPT_BYTES: u64 = 16 * 1024;
         let mut report = String::new();
         std::fs::File::open(&self.0)
             .and_then(|file| file.take(MAX_RECEIPT_BYTES + 1).read_to_string(&mut report))
             .map_err(|e| format!("cannot read warm-build receipt: {e}"))?;
+        if report.len() > MAX_RECEIPT_BYTES as usize { return Err("warm build receipt exceeds its existing boundary".into()); }
+        Ok(report)
+    }
+
+    #[cfg(any(windows, test))]
+    fn deployment_failure(&self) -> Result<Option<PublishedCoreError>, String> {
+        let report = self.read_report()?;
+        if report.is_empty() { return Ok(None); }
+        // boundary: this invocation's installer writes the typed failure only on error.
+        serde_json::from_str(&report).map(Some).map_err(|error| format!("invalid installer failure receipt: {error}"))
+    }
+
+    #[cfg(any(windows, test))]
+    fn classify_deployment_failure(&self, original: String) -> PublishedCoreError {
+        match self.deployment_failure() {
+            Ok(Some(failure)) => failure,
+            Ok(None) => PublishedCoreError::OperationalBlocked(format!("{original}; installer failure classification receipt is empty; no build failure charged")),
+            Err(error) => PublishedCoreError::OperationalBlocked(format!("{original}; {error}; installer failure classification unavailable; no build failure charged")),
+        }
+    }
+
+    fn artifact(&self) -> Result<PathBuf, String> {
+        let report = self.read_report()?;
         let path = report.strip_suffix('\n').unwrap_or(&report); // No optional framing newline means the entire report is the path.
-        if report.len() > MAX_RECEIPT_BYTES as usize
-            || path.is_empty()
+        if path.is_empty()
             || path.contains(['\n', '\r', '\0'])
             || !Path::new(path).is_absolute()
         {
@@ -2199,7 +2227,7 @@ async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCo
 
 /// Rebuild source by default, or hand off to an explicitly validated prebuilt
 /// core. Both use the same leases, selective teardown and deploy verification.
-async fn reboot(options: RebootOptions) -> Result<(), String> {
+async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreError> {
     // macOS: a registered launchd job owns the launch (a1bd8b58). `--service` is implied
     // by its presence, so a bare `continuum reboot` stages + kickstarts instead of
     // spawning an orphan beside the supervisor. `CONTINUUM_FROM_SOURCE` opts out.
@@ -2290,7 +2318,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 .map(|p| p.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
-        ));
+        ).into());
     }
     // Benchmark guard — the same lease, one level up. A detached `benchmark/swe-solve` is a
     // tokio task inside the core, so a swap kills it with no child process to notice and no
@@ -2310,7 +2338,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 .map(|(run, inst)| format!("{run} on {inst}"))
                 .collect::<Vec<_>>()
                 .join(", ")
-        ));
+        ).into());
     }
     // Eval-run guard — the third lease, same shape. cognition/eval runs had NO
     // on-disk in-flight signal until 2026-08-23 (the marker in each eval world),
@@ -2327,7 +2355,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             "eval run(s) in flight ({}) — a reboot would kill them mid-exam. Wait for them, \
              or rerun with `continuum reboot --force` if losing the runs is acceptable.",
             evals.join(", ")
-        ));
+        ).into());
     }
     if !evals.is_empty() {
         println!(
@@ -2487,7 +2515,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                     // (82af11f5) exists to end. Say so and leave the running core standing.
                     return Err(format!(
                         "reboot --service: no artifact to hand the supervisor — {why}; the running core stands"
-                    ));
+                    ).into());
                 }
                 println!("▶ no warm build: {why} — stopping first, then building")
             }
@@ -2510,7 +2538,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo_arg}')"
         )).await?;
         if !drift.is_empty() {
-            return Err(format!("prepared engine changed before stop: {drift}"));
+            return Err(format!("prepared engine changed before stop: {drift}").into());
         }
         let candidate = prebuilt
             .as_ref()
@@ -2574,12 +2602,12 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 None => selection.confirm_preserved(),
             }
         }.await;
-        if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await); }
+        if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await.into()); }
     }
     if let Err(failed) = stop_with_authority(true, options.operator_present).await {
         #[cfg(windows)]
-        if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await); }
-        return Err(failed);
+        if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await.into()); }
+        return Err(failed.into());
     }
     // macOS retains its existing post-stop slot replacement contract.
     #[cfg(not(windows))]
@@ -2629,7 +2657,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         locate_start_script().is_ok(),
         matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild),
     );
-    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await
+    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await.map_err(Into::into)
 }
 
 /// Prove the running core is built from the source this deploy shipped — the honest half of
@@ -3280,11 +3308,22 @@ fn record_repo_checkout() {
 // Unix as a new process group — unless the bash tracker's agent still owns the node.
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct DeployConsumeOptions {}
+struct DeployConsumeOptions {
+    retry_resource: Option<(String, String)>,
+}
 
 impl DeployConsumeOptions {
-    fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
-        for arg in args {
+    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
+        if let Some(arg) = args.next() {
+            if arg == "--retry-resource" {
+                let build = args.next().ok_or("--retry-resource requires exact build and saved-condition sha256")?;
+                let digest = args.next().ok_or("--retry-resource requires saved-condition sha256")?;
+                if args.next().is_some() || build.len() != 40 || !build.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err("--retry-resource requires exactly one full build SHA and condition SHA256".into());
+                }
+                return Ok(Self { retry_resource: Some((build, digest)) });
+            }
             if matches!(arg.as_str(), "--install" | "--uninstall") {
                 // ONE registrar for the consumer's task: `continuum install --supervisor`
                 // registers it S4U beside ContinuumCore. The unelevated `--install` of
@@ -3385,6 +3424,40 @@ struct ConsumeLedger {
 }
 
 impl ConsumeLedger {
+    /// The existing consumer owns its ledger for the command's lifetime. The OS
+    /// releases this nonblocking lease on crash; a retry cannot race its writer.
+    fn take_lease(path: &Path) -> Result<std::fs::File, String> {
+        use fs2::FileExt;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("create consumer ledger directory: {error}"))?;
+        }
+        let lease = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            .open(path.with_extension("lock")).map_err(|error| format!("open consumer lease: {error}"))?;
+        lease.try_lock_exclusive().map_err(|error| format!("another deploy consumer/retry owns the ledger, or its lease is unavailable: {error}"))?;
+        Ok(lease)
+    }
+
+    fn condition_digest(condition: &continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let bytes = serde_json::to_vec(condition).map_err(|error| format!("encode resource condition: {error}"))?; // boundary: exact retry receipt digest
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    /// Caller holds the consumer lease and has refused any older live deploy owner.
+    /// Compare against a fresh disk read, then atomically preserve every other entry.
+    fn retry_resource(path: &Path, build: &str, expected: &str, owner_active: bool) -> Result<(), String> {
+        if owner_active { return Err("a deploy owner is active; resource retry refused".into()); }
+        let mut ledger = Self::read(path)?;
+        let condition = ledger.resource_deferrals.get(build).ok_or("this exact build has no saved resource condition")?;
+        if Self::condition_digest(condition)? != expected {
+            return Err("saved resource condition changed; retry digest does not match".into());
+        }
+        ledger.resource_deferrals.remove(build);
+        // Keep an explicit empty receipt rather than a remove: compare-and-clear is
+        // one durable replacement even when this was the final resource condition.
+        ledger.write(path)
+    }
+
     fn read(path: &Path) -> Result<Self, String> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
@@ -3863,7 +3936,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         require_engine_receipt: true,
         ..options
     };
-    reboot(options).await?;
+    reboot(options).await.map_err(|error| error.to_string())?;
     #[cfg(windows)]
     {
         let drift = PreparedCoreService::engine_drift(&repo).await?;
@@ -4395,7 +4468,19 @@ fn consumer_uses_service(os: &str) -> bool {
 /// will never exist held the M5 at a stale core for two hours on 2026-10-04 while three
 /// built tips went by. A pass that finds its request superseded starts over on the new one.
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
-    let DeployConsumeOptions {} = options;
+    let attempts_path = consume_attempts_path()?;
+    let _consumer_lease = ConsumeLedger::take_lease(&attempts_path)?;
+    if let Some((build, digest)) = options.retry_resource {
+        let root = continuum_root()?;
+        let claim_path = continuum_cli_lifecycle::deploy_claim::claim_path(&root);
+        if claim_path.exists() && continuum_cli_lifecycle::deploy_claim::read(&root).is_none() {
+            return Err("deploy claim is unreadable; preserve it and resolve ownership before resource retry".into());
+        }
+        let owner_active = continuum_cli_lifecycle::deploy_claim::in_flight(&root, continuum_core::time::EpochMs::now().millis()).excludes_deploy();
+        ConsumeLedger::retry_resource(&attempts_path, &build, &digest, owner_active)?;
+        println!("resource retry authorized for exact build {build}; other conditions and failure counts preserved; normal consumer will recheck admission");
+        return Ok(());
+    }
     loop {
         match deploy_consume_pass().await? {
             PassEnd::Superseded(new_tip) => {
@@ -4579,7 +4664,21 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 let stage_prebuilt = true;
                 // install_ci_companions above already put this core's CLI on PATH.
                 let cli_installed = true;
-                reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await?;
+                match reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await {
+                    Ok(()) => {}
+                    Err(PublishedCoreError::ResourceDeferred(condition)) => {
+                        let digest = match ConsumeLedger::condition_digest(&condition) {
+                            Ok(digest) => digest,
+                            Err(reason) => return Ok(PassEnd::ResourceBlocked(reason)),
+                        };
+                        let reason = format!("prepared build {deployed} awaits destination resource admission: {}; explicit retry: continuum deploy-consume --retry-resource {deployed} {digest}", condition.reason);
+                        ledger.resource_deferrals.insert(deployed.clone(), condition);
+                        if let Err(reason) = ledger.save(&attempts_path) { return Ok(PassEnd::ResourceBlocked(reason)); }
+                        return Ok(PassEnd::ResourceBlocked(reason));
+                    }
+                    Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
+                    Err(PublishedCoreError::Artifact(reason)) => return Err(reason),
+                }
                 Ok(PassEnd::Done)
             }
             .await;
@@ -4661,13 +4760,25 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                         // published a moment ago and gone now: the next tick asks again
                         Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
                         Err(PublishedCoreError::ResourceDeferred(deferred)) => {
-                            let why = format!("published build {key} awaits resource admission: {}", deferred.reason);
+                            let digest = match ConsumeLedger::condition_digest(&deferred) {
+                                Ok(digest) => digest,
+                                Err(why) => return CiCore::ResourceBlocked(why),
+                            };
+                            let why = format!("published build {key} awaits resource admission: {}; condition_sha256={digest}; explicit retry: continuum deploy-consume --retry-resource {key} {digest}", deferred.reason);
+                            let explicit_retry = deferred.condition == continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::UnmeasuredFilesystem;
                             if ledger.resource_deferrals.get(&key) != Some(&deferred) {
                                 ledger.resource_deferrals.insert(key, deferred);
                                 if let Err(why) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(why); }
                             }
+                            if explicit_retry {
+                                // Release consumer custody so the explicit compare-and-clear
+                                // command can acquire it. A later automatic pass reads the
+                                // same durable condition and still cannot fetch this build.
+                                return CiCore::ResourceBlocked(why);
+                            }
                             MissingArtifact::Wait(why)
                         }
+                        Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why)) => return CiCore::ResourceBlocked(why),
                         Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
                             "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
                         )),
@@ -7411,6 +7522,7 @@ fn usage() -> String {
        continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
        continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
        continuum engine attempt <slot>       inspect admitted artifact and failure disposition\n  \
+       continuum deploy-consume --retry-resource <build-sha> <condition-sha256>\n                                       authorize one exact saved resource retry\n  \
        continuum engine retry <slot> <commit:backend> <artifact-identity>\n                                       explicitly retry exactly that artifact\n  \
        continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\
      \n\
@@ -7657,9 +7769,33 @@ mod tests {
         let mut pending = Some(("published-build".into(), condition.clone()));
         assert!(matches!(continuum_cli_lifecycle::prebuilt_artifact::recheck_resource_deferral(&mut pending, Ok(())), Some(continuum_cli_lifecycle::prebuilt_artifact::MissingArtifact::Wait(_))));
         assert_eq!(pending.as_ref().map(|(_, value)| value), Some(&condition), "a volume-only success cannot clear quota uncertainty");
+        let lease = super::ConsumeLedger::take_lease(&path).unwrap();
+        assert!(super::ConsumeLedger::take_lease(&path).is_err(), "a concurrent consumer/retry cannot own the ledger");
+        let digest = super::ConsumeLedger::condition_digest(&condition).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert!(super::ConsumeLedger::retry_resource(&path, "published-build", &digest, true).is_err(), "older live deploy claim refuses retry");
+        assert!(super::ConsumeLedger::retry_resource(&path, "different-build", &digest, false).is_err());
+        assert!(super::ConsumeLedger::retry_resource(&path, "published-build", &"0".repeat(64), false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original, "mismatch and active owner preserve exact receipt");
+        let mut changed = super::ConsumeLedger::read(&path).unwrap();
+        changed.resource_deferrals.get_mut("published-build").unwrap().projected_bytes += 1;
+        changed.write(&path).unwrap();
+        assert!(super::ConsumeLedger::retry_resource(&path, "published-build", &digest, false).is_err(), "stale digest cannot clear changed condition");
+        changed.resource_deferrals.insert("another-build".into(), condition.clone());
+        changed.record_failure("published-build");
+        changed.write(&path).unwrap();
+        let current_digest = super::ConsumeLedger::condition_digest(changed.resource_deferrals.get("published-build").unwrap()).unwrap();
+        super::ConsumeLedger::retry_resource(&path, "published-build", &current_digest, false).unwrap();
+        let retried = super::ConsumeLedger::read(&path).unwrap();
+        assert!(!retried.resource_deferrals.contains_key("published-build"));
+        assert_eq!(retried.resource_deferrals.get("another-build"), Some(&condition));
+        assert_eq!(retried.failures("published-build"), 1, "explicit resource retry never clears engineering failures");
+        drop(lease);
+        drop(super::ConsumeLedger::take_lease(&path).unwrap());
         for corrupt in ["{", "{}", r#"{"resource_deferrals":{"build":{"condition":"invented","path":"x","projected_bytes":1,"reason":"unknown"}}}"#] {
             std::fs::write(&path, corrupt).unwrap();
             assert!(super::ConsumeLedger::read(&path).is_err(), "corrupt custody must not silently authorize retry");
+            assert!(super::ConsumeLedger::retry_resource(&path, "published-build", &digest, false).is_err());
             assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
         }
         assert!(blocked.write(&dir.join("missing-parent").join("ledger.json")).is_err(), "persistence failure is visible");
@@ -7667,6 +7803,9 @@ mod tests {
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
         assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
+        assert!(DeployConsumeOptions::parse(["--retry-resource".into(), "a".repeat(40), "b".repeat(64)].into_iter()).is_ok());
+        assert!(DeployConsumeOptions::parse(["--retry-resource".into(), "a".repeat(40)].into_iter()).is_err());
+        assert!(DeployConsumeOptions::parse(["--retry-resource".into(), "short".into(), "b".repeat(64)].into_iter()).is_err());
         // The consumer runs on every platform now (the core's actuator launches it); only
         // Windows needs `--service` — macOS promotes a bare reboot to launchd itself, and
         // `reboot` refuses the flag on Linux.
@@ -8571,6 +8710,23 @@ mod tests {
         let artifact = std::env::temp_dir().join("build cache 雪").join("core.exe");
         std::fs::write(&receipt.0, format!("{}\n", artifact.display())).unwrap();
         assert_eq!(receipt.artifact().unwrap(), artifact);
+        for failure in [
+            PublishedCoreError::Artifact("verified payload hash mismatch".into()),
+            PublishedCoreError::CapabilityDeferred("selected artifact lacks capacity protocol".into()),
+            PublishedCoreError::ResourceDeferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
+                condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::UnmeasuredFilesystem,
+                path: artifact.parent().unwrap().into(), projected_bytes: 123, reason: "quota refusal".into(),
+            }),
+        ] {
+            std::fs::write(&receipt.0, serde_json::to_vec(&failure).unwrap()).unwrap(); // boundary: fixture installer receipt
+            assert_eq!(receipt.deployment_failure().unwrap(), Some(failure));
+            assert!(receipt.artifact().is_err(), "resource refusal cannot become a selected artifact path");
+        }
+        std::fs::write(&receipt.0, "{broken").unwrap();
+        assert!(receipt.deployment_failure().is_err());
+        assert!(matches!(receipt.classify_deployment_failure("installer failed".into()), PublishedCoreError::OperationalBlocked(_)));
+        std::fs::write(&receipt.0, "").unwrap();
+        assert!(matches!(receipt.classify_deployment_failure("installer failed".into()), PublishedCoreError::OperationalBlocked(_)));
         drop(receipt);
         assert!(!receipt_path.exists());
 
