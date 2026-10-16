@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Deserialize, serde::Serialize)]
+#[derive(Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 struct InstallReceipt {
     schema: u32,
@@ -121,16 +121,15 @@ fn platform_system_directory() -> Result<PathBuf, String> {
 impl EngineInstallReceipt {
     #[cfg(windows)]
     pub(crate) fn maintenance_identity(&self) -> Result<String, String> {
-        // Boundary: stable identity of the already verified engine receipt,
-        // including its complete file hash closure and source revision.
-        let bytes = serde_json::to_vec(&self.receipt).map_err(|e| e.to_string())?;
-        Ok(format!("{:x}", Sha256::digest(bytes)))
+        self.artifact_identity()
     }
 
     #[cfg(windows)]
     pub(crate) fn maintenance_snapshot(program: &Path) -> Result<Self, String> {
-        let mut receipt = Self::load(program.to_str().ok_or("engine path is not UTF-8")?, &|| false)?
-            .ok_or("maintenance requires a complete engine install receipt")?;
+        let mut receipt = Self::load(program.to_str().ok_or("engine path is not UTF-8")?, &|| {
+            false
+        })?
+        .ok_or("maintenance requires a complete engine install receipt")?;
         // Snapshot is not exclusion. Final acquisition rechecks the same receipt
         // and complete namespace under the shared no-sharing file owner.
         receipt._files.clear();
@@ -144,13 +143,16 @@ impl EngineInstallReceipt {
     ) -> Result<(), String> {
         let mut manifest = pins.pin(&self.directory.join("engine-install.json"))?;
         let mut bytes = Vec::new();
-        (&mut manifest).take(1048577).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
-        if bytes.len() > 1048576 { return Err("oversized engine receipt".into()); }
+        (&mut manifest)
+            .take(1048577)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
+        if bytes.len() > 1048576 {
+            return Err("oversized engine receipt".into());
+        }
         let current: InstallReceipt = serde_json::from_slice(&bytes)
             .map_err(|e| format!("engine maintenance receipt: {e}"))?;
-        // Boundary: compare the same canonical engine artifact identity used by promotion.
-        if serde_json::to_vec(&current).map_err(|e| e.to_string())?
-            != serde_json::to_vec(&self.receipt).map_err(|e| e.to_string())? {
+        if current != self.receipt {
             return Err("engine receipt changed after maintenance snapshot".into());
         }
         let mut remaining = 4_u64 * 1024 * 1024 * 1024;
@@ -158,7 +160,9 @@ impl EngineInstallReceipt {
         let check = || {
             if std::time::Instant::now() >= deadline {
                 Err("engine receipt verification exceeded 30 s".to_string())
-            } else { Ok(()) }
+            } else {
+                Ok(())
+            }
         };
         for (name, path) in self.namespace(&|| false)? {
             let (digest, _) = hash_open_file(pins.pin(&path)?, &check, &mut remaining)?;
@@ -599,10 +603,15 @@ mod tests {
             let mut pins = continuum_cli_lifecycle::installed_release::ExclusiveFiles::default();
             snapshot.exclude_for_maintenance(&mut pins).unwrap();
             snapshot.exclude_for_maintenance(&mut pins).unwrap();
-            assert!(std::fs::OpenOptions::new().write(true).open(relocated.join("llama-server.exe")).is_err());
+            assert!(std::fs::OpenOptions::new()
+                .write(true)
+                .open(relocated.join("llama-server.exe"))
+                .is_err());
             drop(pins);
             std::fs::write(relocated.join("cublas64_12.dll"), b"changed").unwrap();
-            assert!(snapshot.exclude_for_maintenance(&mut Default::default()).is_err());
+            assert!(snapshot
+                .exclude_for_maintenance(&mut Default::default())
+                .is_err());
         }
         drop(replacement);
         std::fs::remove_file(&dll).unwrap();

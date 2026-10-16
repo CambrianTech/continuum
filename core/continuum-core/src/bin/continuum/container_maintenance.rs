@@ -44,7 +44,7 @@ impl ServingExpectation {
     fn saved(home: &Path, source: &Path) -> Result<Self, String> {
         // Boundary: caller-owned typed projection carried by the existing journal.
         let saved: Self =
-            serde_json::from_value(LegacySchedulerWindow::recovery_expectation(home, source)?)
+            serde_json::from_value(LegacySchedulerWindow::recovery_expectation(home, source)?) // Disk boundary: decode caller-owned expectation from the durable maintenance journal.
                 .map_err(|e| format!("saved serving expectation: {e}"))?;
         saved.validate()?;
         Ok(saved)
@@ -54,12 +54,11 @@ impl ServingExpectation {
         let core_before = running_core_build_sha("maintenance serving expectation")
             .await?
             .ok_or("core revision unavailable")?;
+        let response =
+            running_core_provenance("serving/status", "maintenance serving expectation").await?;
         let snapshot: continuum_core::inference::llama_server::ServingSnapshot =
-            serde_json::from_value(
-                running_core_provenance("serving/status", "maintenance serving expectation")
-                    .await?,
-            )
-            .map_err(|e| format!("serving snapshot: {e}"))?;
+            serde_json::from_value(response) // IPC boundary: decode the running core serving/status response.
+                .map_err(|e| format!("serving snapshot: {e}"))?;
         if !snapshot.ready || snapshot.degraded_reason.is_some() {
             return Err("original serving readiness is unavailable; no maintenance begun".into());
         }
@@ -109,11 +108,11 @@ impl ServingExpectation {
             tokio::task::spawn_blocking(move || MaintenanceEngines::verified_identity(&program))
                 .await
                 .map_err(|e| e.to_string())??;
+        let response =
+            running_core_provenance("serving/status", "maintenance serving recheck").await?;
         let after: continuum_core::inference::llama_server::ServingSnapshot =
-            serde_json::from_value(
-                running_core_provenance("serving/status", "maintenance serving recheck").await?,
-            )
-            .map_err(|e| e.to_string())?;
+            serde_json::from_value(response) // IPC boundary: decode the running core serving/status response.
+                .map_err(|e| e.to_string())?;
         let lane_after = continuum_core::inference::lane_registry::live_lane()
             .ok_or("serving generation disappeared during observation")?;
         if lane_after.pid != lane.pid
@@ -174,7 +173,7 @@ impl ServingExpectation {
 
     fn check_value(&self, value: &Value) -> Result<(), String> {
         // Boundary: discovery must agree with the operation journal held under custody.
-        let pinned: Self = serde_json::from_value(value.clone())
+        let pinned: Self = serde_json::from_value(value.clone()) // Disk boundary: validate expectation decoded from the pinned maintenance journal.
             .map_err(|e| format!("pinned serving expectation: {e}"))?;
         pinned.validate()?;
         if &pinned != self {
@@ -261,6 +260,20 @@ impl ContainerMigrationCustody for Custody {
     }
 }
 
+async fn launch_restored_once(
+    service: &PreparedCoreService,
+    outgoing: &[i32],
+) -> Result<(), String> {
+    if core_is_up().await {
+        return Ok(());
+    }
+    if PreparedCoreService::query().await?.state == "Running" {
+        return Err("restoration acceptance pending: original task is starting; journal retained, no second launch".into());
+    }
+    service.launch_windows_once(outgoing).await?;
+    Ok(())
+}
+
 pub(super) async fn run(args: Vec<String>) -> Result<(), String> {
     let abort = args.first().is_some_and(|arg| arg == "abort");
     let recovery = abort || args.first().is_some_and(|arg| arg == "recover");
@@ -308,12 +321,7 @@ pub(super) async fn run(args: Vec<String>) -> Result<(), String> {
         .map_err(|e| format!("restoration reconciliation worker: {e}"))??;
         let pending = LegacyRestoration::resume(&home, &payload, &digest, &source).await?;
         expectation.check_value(pending.serving_expectation())?;
-        if !core_is_up().await {
-            if PreparedCoreService::query().await?.state == "Running" {
-                return Err("restoration acceptance pending: original task is starting; journal retained, no second launch".into());
-            }
-            service.launch_windows_once(&[]).await?;
-        }
+        launch_restored_once(&service, &[]).await?;
         expectation.verify().await?;
         pending.finish().await?;
         println!("original serving expectation verified; restoration journal completed without repeating migration");
@@ -340,9 +348,7 @@ pub(super) async fn run(args: Vec<String>) -> Result<(), String> {
         }
         let pending = window.restore().await?;
         expectation.check_value(pending.serving_expectation())?;
-        if !core_is_up().await {
-            service.launch_windows_once(&[]).await?;
-        }
+        launch_restored_once(&service, &[]).await?;
         expectation.verify().await?;
         pending.finish().await?;
         println!("placement never began; original scheduler restored without copying or retiring source data");
@@ -384,7 +390,7 @@ pub(super) async fn run(args: Vec<String>) -> Result<(), String> {
             &payload,
             &digest,
             &source,
-            serde_json::to_value(&expectation).map_err(|e| e.to_string())?,
+            serde_json::to_value(&expectation).map_err(|e| e.to_string())?, // Disk boundary: persist the typed original serving expectation in the maintenance journal.
         )
         .await?
     };
@@ -430,11 +436,11 @@ pub(super) async fn run(args: Vec<String>) -> Result<(), String> {
     })?;
     let pending = custody.images.restore().await?;
     expectation.check_value(pending.serving_expectation())?;
-    service.launch_windows_once(&outgoing).await?;
+    launch_restored_once(&service, &outgoing).await?;
     expectation.verify().await?;
     pending.finish().await?;
     println!(
-        "retired {bytes} verified source bytes; original model, native identity, adapters and geometry verified"
+        "retired {bytes} verified source bytes; original model, native identity, adapter path bindings and geometry verified"
     );
     Ok(())
 }

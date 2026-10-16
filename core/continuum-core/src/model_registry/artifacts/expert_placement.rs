@@ -69,7 +69,7 @@ fn operation_digest(placement: &Placement) -> Result<String, String> {
     identity.state = State::Frozen;
     // Boundary: bind the existing placement protocol to maintenance recovery;
     // normalize only its phase, retaining source, destination and exact manifest.
-    let bytes = serde_json::to_vec(&identity).map_err(|error| error.to_string())?;
+    let bytes = serde_json::to_vec(&identity).map_err(|error| error.to_string())?; // Disk boundary: hash the phase-normalized durable placement protocol for recovery binding.
     Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
