@@ -658,18 +658,31 @@ mod tests {
 
     // what this catches: an admission refused on the reporter budget. The shell's cargo-root
     // grant went through the 100 ms pressure-reporter bound, and on a box at 91% swap one
-    // canonicalize took longer than that: three of Benchy's commands failed outright with
+    // resolution took longer than that: three of Benchy's commands failed outright with
     // "Cargo root resolution is still pending" (M5, 2026-10-16), none of them touching cargo.
-    // The bound is the only difference between the refusal and the grant.
+    // Deterministic (Cormac on #5112: a zero bound races the first poll): the shared worker
+    // is held on a gate the test releases; the reporter bound sees "still pending", and the
+    // admission bound, once the gate opens, gets the answer from that same worker.
     #[tokio::test]
     async fn an_admission_waits_its_own_bound_not_the_reporters() {
         let registry = Registry::new(Vec::new()).await;
         let root = tempfile::tempdir().unwrap();
-        let pending = registry.path_work_within(root.path(), PathWork::Resolve, std::time::Duration::ZERO).await;
-        assert!(pending.unwrap_err().contains("still pending"), "a zero bound is the refusal");
+        let key = (root.path().to_path_buf(), PathWork::Resolve);
+        let (release, gate) = tokio::sync::oneshot::channel::<Observation>();
+        let held = async move { gate.await.map_err(|error| error.to_string()) }.boxed().shared();
+        registry.2.lock().insert(key.clone(), (Arc::new(()), held));
+        let pending = registry
+            .path_work_within(root.path(), PathWork::Resolve, super::super::disk_pressure::REPORTER_TIMEOUT)
+            .await;
+        assert!(pending.unwrap_err().contains("still pending"), "the reporter bound is the refusal while the worker is held");
+        assert!(registry.2.lock().contains_key(&key), "the held worker is kept, never duplicated");
+        let physical = root.path().canonicalize().unwrap();
+        release
+            .send(Observation { path: physical.clone(), volume: None, empty_custody: None })
+            .unwrap();
         let resolved = registry.path_work_within(root.path(), PathWork::Resolve, ADMISSION_BOUND).await.unwrap();
-        assert_eq!(resolved.path, root.path().canonicalize().unwrap(), "the same shared worker answers inside the admission bound");
-        assert!(registry.2.lock().is_empty(), "nothing stays quarantined once it answered");
+        assert_eq!(resolved.path, physical, "the admission bound gets the same worker's answer once it is free");
+        assert!(!registry.2.lock().contains_key(&key), "nothing stays quarantined once it answered");
     }
 
     // d86: an offline root must neither multiply blocking workers nor hold the
