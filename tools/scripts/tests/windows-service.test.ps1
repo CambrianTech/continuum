@@ -182,6 +182,7 @@ try {
         Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\generated\manifest.windows.ps1') -Destination $entryGenerated
         $modules = @'
 function Mod-ColdStorage { $env:CONTINUUM_STORAGE_PATH = '__COLD__' }
+function Mod-GitHubToken { }
 function Test-WingetAvailable {
     $selected = Get-ManagedPayloadRoot
     if (-not $selected.StartsWith($env:CONTINUUM_STORAGE_PATH + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'payload entry selected the wrong root' }
@@ -2093,6 +2094,7 @@ function Invoke-InstallerProcess {
             Set-Content -LiteralPath (Join-Path $prepareLib 'windows-service.ps1')
         $modules = @'
 . '__MODULES__'
+function Mod-GitHubToken { }
 function Get-Command { param($Name) if ($Name -ne 'cmake') { [pscustomobject]@{Source=$Name} } }
 function Invoke-WebRequest { throw 'Unexpected download' }
 function Invoke-RestMethod { throw 'Unexpected download' }
