@@ -191,6 +191,22 @@ async fn run() -> Result<(), CliError> {
         let code = installed_service(args.collect()).await?;
         std::process::exit(code);
     }
+    // The selected release's installer uses the same capacity authority as its
+    // download/extraction path, including when the destination is another volume.
+    if first == "artifact-capacity" {
+        let values: Vec<String> = args.collect();
+        if values.len() == 1 && values[0] == "--protocol" {
+            println!("1");
+            return Ok(());
+        }
+        if values.len() != 2 {
+            return Err(CliError::Command("artifact-capacity requires <destination> <projected-bytes>".into()));
+        }
+        let bytes = values[1].parse::<u64>().map_err(|error| CliError::Command(error.to_string()))?;
+        continuum_core::paths::artifacts::check_capacity(Path::new(&values[0]), bytes)
+            .await.map_err(|error| CliError::Command(error.to_string()))?;
+        return Ok(());
+    }
     if first == "prepare-prebuilt" {
         return prepare_prebuilt(args.collect()).await.map_err(CliError::Command);
     }
@@ -3360,26 +3376,46 @@ fn consume_attempts_path() -> Result<PathBuf, String> {
 ///
 /// A ledger in the old per-request shape (`{tip, failures}`) names the request, not the
 /// build that failed, so its failures cannot be attributed: it reads as none.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 struct ConsumeLedger {
+    #[serde(default, rename = "failures_by_build")]
     failures: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    resource_deferrals: std::collections::BTreeMap<String, continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral>,
 }
 
 impl ConsumeLedger {
-    fn read(path: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else { return Self::default() };
-        let failures = v
-            .get("failures_by_build")
-            .and_then(|m| m.as_object())
-            .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()? as u32))).collect())
-            .unwrap_or_default(); // unwrap_or_default: an old-shape or malformed ledger counts as no failures, never as give-up
-        Self { failures }
+    fn read(path: &Path) -> Result<Self, String> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(format!("cannot read deploy resource/failure ledger {}: {error}; preserved", path.display())),
+        };
+        let invalid = |error| format!("invalid deploy resource/failure ledger {}: {error}; preserve evidence and repair before retry", path.display());
+        let value: Value = serde_json::from_str(&text).map_err(|error| invalid(format!("{error}")))?; // boundary: durable lifecycle receipt
+        if value.get("failures_by_build").is_none() && value.get("resource_deferrals").is_none() {
+            if value.get("tip").is_some_and(Value::is_string) && value.get("failures").and_then(Value::as_u64).is_some() {
+                return Ok(Self::default()); // The documented old per-request shape attributes no build.
+            }
+            return Err(invalid("unrecognized receipt shape".into()));
+        }
+        serde_json::from_value(value).map_err(|error| invalid(format!("{error}"))) // boundary: validated lifecycle receipt
     }
 
-    fn write(&self, path: &Path) {
-        let body = serde_json::json!({ "failures_by_build": self.failures });
-        let _ = std::fs::write(path, body.to_string());
+    fn write(&self, path: &Path) -> Result<(), String> {
+        use std::io::Write;
+        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<(), String> {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)
+                .map_err(|error| format!("create deploy ledger replacement: {error}"))?;
+            serde_json::to_writer(&mut file, self).map_err(|error| format!("encode deploy ledger: {error}"))?; // boundary: durable lifecycle receipt
+            file.flush().and_then(|_| file.sync_all()).map_err(|error| format!("sync deploy ledger: {error}"))?;
+            drop(file);
+            continuum_core::fs_portable::durable_rename(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
+            Ok(())
+        })();
+        if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+        result
     }
 
     fn failures(&self, build: &str) -> u32 {
@@ -3406,14 +3442,19 @@ impl ConsumeLedger {
     /// an older one deployed, Astra review of #5011).
     fn landed(&mut self, build: &str) {
         self.failures.remove(build);
+        self.resource_deferrals.remove(build); // Actual successful handoff supersedes only this build's condition.
     }
 
     /// Persist, or remove the file when nothing is left to remember.
-    fn save(&self, path: &Path) {
-        if self.failures.is_empty() {
-            let _ = std::fs::remove_file(path);
+    fn save(&self, path: &Path) -> Result<(), String> {
+        if self.failures.is_empty() && self.resource_deferrals.is_empty() {
+            match std::fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("remove empty deploy ledger: {error}")),
+            }
         } else {
-            self.write(path);
+            self.write(path)
         }
     }
 
@@ -4362,6 +4403,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 continue;
             }
             PassEnd::Done => return Ok(()),
+            PassEnd::ResourceBlocked(why) => return Err(why),
         }
     }
 }
@@ -4370,6 +4412,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
 /// (Cormac's condition on #4750): a superseded pass charges no attempt to the old tip.
 enum PassEnd {
     Done,
+    ResourceBlocked(String),
     Superseded(String),
 }
 
@@ -4409,7 +4452,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     }
     let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
-    let mut ledger = ConsumeLedger::read(&attempts_path);
+    let mut ledger = ConsumeLedger::read(&attempts_path)?;
     // The tip's build key, read from the same checkout the tracker fetched into.
     let tip_build_key = tip.as_deref().and_then(|t| build_key_in(&repo, t));
     // Give-up is judged on the TIP's own build only: an older core that would not land
@@ -4493,7 +4536,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // while an older one is out, and waiting only on the tip never deployed.
                 let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
                 let candidates = ledger.admissible(deploy_candidates(&repo, running.as_deref(), &tip, &newest_key), &newest_key);
-                let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip).await;
+                let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip, &mut ledger, &attempts_path).await;
                 if let CiCore::Built { key, .. } = &ci_core {
                     selected = Some(key.clone());
                     deployed = key.clone();
@@ -4521,6 +4564,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         // commit's core serving a docs-only tip (card 9080ffb0).
                         core
                     }
+                    CiCore::ResourceBlocked(why) => return Ok(PassEnd::ResourceBlocked(why)),
                     CiCore::Refused(why) => return Err(why),
                     CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
                 };
@@ -4544,17 +4588,18 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                     if let Some(build) = &selected {
                         ledger.landed(build); // a pass that handed off selected a build
                     }
-                    ledger.save(&attempts_path);
+                    ledger.save(&attempts_path)?;
                     let request = if deployed == tip { String::new() } else { format!(" (request {tip})") };
                     deploy_note(&format!("✓ deploy-consume: {deployed} handed off{request}"));
                 }
+                Ok(PassEnd::ResourceBlocked(why)) => deploy_note(&format!("deploy resource custody refused: {why}; no build failure charged")),
                 Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
                     // Charged to the build this pass tried: the tip's, or the older published
                     // core it fell back to. A failure before any build was chosen is the tip's.
                     let tip_build = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
                     let (tried, failures) = ledger.charge_failure(selected.as_deref(), &tip_build);
-                    ledger.save(&attempts_path);
+                    ledger.save(&attempts_path)?;
                     deploy_note(&format!(
                         "deploy-consume: attempt {failures} of {CONSUME_MAX_ATTEMPTS} for build {tried} (request {tip}) failed: {why}"
                     ));
@@ -4575,11 +4620,10 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
 /// invalid artifact never authorizes a source build. `Superseded` = the request
 /// (`request_path`) no longer names `requested_tip`:
 /// the caller lists candidates again against the new tip.
-async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
+async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str, ledger: &mut ConsumeLedger, ledger_path: &Path) -> CiCore {
     use continuum_cli_lifecycle::prebuilt_artifact::{select_published_core, platform_key, when_artifact_missing, MissingArtifact, PublishedCoreError, recheck_resource_deferral};
     let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
     let newest = &candidates[0]; // deploy_candidates always puts the tip's key first
-    let mut resource_wait: Option<(String, continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral)> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(60));
     loop {
         tick.tick().await;
@@ -4589,16 +4633,27 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
         ) {
             return CiCore::Superseded(new_tip);
         }
-        if let Some((_, deferred)) = &resource_wait {
+        let previous_conditions = ledger.resource_deferrals.clone();
+        for key in candidates {
+            let Some(deferred) = ledger.resource_deferrals.get(key).cloned() else { continue };
+            if deferred.condition == continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::UnmeasuredFilesystem {
+                continue; // A volume sample cannot authorize retry of an unmeasured filesystem refusal.
+            }
             let measured = continuum_core::paths::artifacts::check_capacity(&deferred.path, deferred.projected_bytes).await;
-            if let Some(MissingArtifact::Refuse(why)) = recheck_resource_deferral(&mut resource_wait, measured) {
+            let mut pending = Some((key.clone(), deferred));
+            if let Some(MissingArtifact::Refuse(why)) = recheck_resource_deferral(&mut pending, measured) {
                 return CiCore::Refused(why);
             }
+            if let Some((_, updated)) = pending { ledger.resource_deferrals.insert(key.clone(), updated); }
+            else { ledger.resource_deferrals.remove(key); }
+        }
+        if ledger.resource_deferrals != previous_conditions {
+            if let Err(why) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(why); }
         }
         let missing = match platform {
             None => when_artifact_missing(None, 0),
             Some(p) => {
-                let source = CiPublishedCore { repo, platform: p, deferred: resource_wait.as_ref() };
+                let source = CiPublishedCore { repo, platform: p, deferred: &ledger.resource_deferrals };
                 match select_published_core(candidates, &source).await {
                     None => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
                     Some((key, artifact)) => match artifact {
@@ -4607,7 +4662,10 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                         Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
                         Err(PublishedCoreError::ResourceDeferred(deferred)) => {
                             let why = format!("published build {key} awaits resource admission: {}", deferred.reason);
-                            resource_wait = Some((key, deferred));
+                            if ledger.resource_deferrals.get(&key) != Some(&deferred) {
+                                ledger.resource_deferrals.insert(key, deferred);
+                                if let Err(why) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(why); }
+                            }
                             MissingArtifact::Wait(why)
                         }
                         Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
@@ -4697,14 +4755,14 @@ async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
 struct CiPublishedCore<'a> {
     repo: &'a Path,
     platform: &'a str,
-    deferred: Option<&'a (String, continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral)>,
+    deferred: &'a std::collections::BTreeMap<String, continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral>,
 }
 
 #[async_trait::async_trait]
 impl continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreSource for CiPublishedCore<'_> {
     type Artifact = PathBuf;
     fn deferred(&self, key: &str) -> Option<continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral> {
-        self.deferred.filter(|(waiting, _)| waiting == key).map(|(_, condition)| condition.clone())
+        self.deferred.get(key).cloned()
     }
     async fn published(&self, key: &str) -> Result<bool, String> {
         let result = ci_core_published(key, self.platform).await;
@@ -4730,6 +4788,7 @@ impl continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreSource for CiPubli
 enum CiCore {
     /// The extracted core, and the build key it is (the tip's, or an older published one).
     Built { core: PathBuf, key: String },
+    ResourceBlocked(String),
     Refused(String),
     Superseded(String),
 }
@@ -4802,7 +4861,7 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
     use continuum_cli_lifecycle::prebuilt_artifact::{gpu_verdict, manifest_url, manifest_verdict, ArtifactManifest};
     use sha2::{Digest, Sha256};
     use std::io::Write;
-    use continuum_core::paths::artifacts::check_capacity;
+    use continuum_core::paths::artifacts::{check_capacity, WriteAdmission, write_failure};
     use continuum_cli_lifecycle::prebuilt_artifact::{PublishedCoreError, archive_expanded_bytes};
     let url = manifest_url(tip, platform).ok_or_else(|| format!("{tip} is not a full commit sha"))?;
     let client = reqwest::Client::builder()
@@ -4850,68 +4909,57 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
     let root = continuum_core::paths::artifacts::root(Path::new(&home_dir()?))?;
     check_capacity(&root, 0).await?;
     let dir = root.join(format!("{}-{}", &tip[..12], uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
-    std::fs::create_dir(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    if let Err(error) = std::fs::create_dir_all(&root) { return Err(write_failure(&root, 0, error).await); }
+    if let Err(error) = std::fs::create_dir(&dir) { return Err(write_failure(&root, 0, error).await); }
     let mut preparation = CiArtifactPreparation { directory: dir.clone(), complete: false };
-    // Stream to disk while hashing: the archive is ~200 MB, and the weak nodes are the ones
-    // that need this path most.
+    // Stream to disk while hashing; actual response/source lengths, never a
+    // historical archive-size estimate, drive capacity admission.
     let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
     let archive = dir.join(&manifest.archive);
-    let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    let mut file = match std::fs::File::create(&archive) { Ok(file) => file, Err(error) => return Err(write_failure(&root, 0, error).await) };
     let mut hasher = Sha256::new();
     let mut compressed_bytes = 0u64;
+    let mut admission = WriteAdmission::observe(&root).await?;
     if let Some(source) = downloaded {
         use std::io::Read;
         let mut input = std::fs::File::open(source.join(&manifest.archive)).map_err(|e| format!("reading downloaded archive: {e}"))?;
         let expected = input.metadata().map_err(|e| format!("measuring archive: {e}"))?.len();
-        check_capacity(&root, expected).await?;
+        admission.check(expected)?;
         let mut buffer = [0u8; 65536];
         loop {
             let count = input.read(&mut buffer).map_err(|e| format!("reading downloaded archive: {e}"))?;
             if count == 0 { break; }
             compressed_bytes = compressed_bytes.checked_add(count as u64).ok_or("archive size overflow")?;
-            if compressed_bytes > expected {
-                check_capacity(&root, count as u64).await.map_err(|error| match error {
-                    PublishedCoreError::ResourceDeferred(mut deferred) => { deferred.projected_bytes = compressed_bytes; PublishedCoreError::ResourceDeferred(deferred) },
-                    error => error,
-                })?;
-            }
+            admission.before_write(count as u64).await.map_err(|error| match error {
+                PublishedCoreError::ResourceDeferred(mut condition) => { condition.projected_bytes = expected.max(compressed_bytes); PublishedCoreError::ResourceDeferred(condition) },
+                error => error,
+            })?;
             hasher.update(&buffer[..count]);
             if let Err(error) = file.write_all(&buffer[..count]) {
-                check_capacity(&root, expected.saturating_sub(compressed_bytes).saturating_add(count as u64)).await.map_err(|failure| match failure {
-                    PublishedCoreError::ResourceDeferred(mut deferred) => { deferred.projected_bytes = expected.max(compressed_bytes); PublishedCoreError::ResourceDeferred(deferred) },
-                    failure => failure,
-                })?;
-                return Err(format!("staging archive: {error}").into());
+                let mut failure = write_failure(&root, expected.saturating_sub(compressed_bytes).saturating_add(count as u64), error).await;
+                if let PublishedCoreError::ResourceDeferred(condition) = &mut failure { condition.projected_bytes = expected.max(compressed_bytes); }
+                return Err(failure);
             }
         }
     } else {
-    let mut resp = client
-        .get(&archive_url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("fetching {archive_url}: {e}"))?;
-    let announced = resp.content_length();
-    if let Some(bytes) = announced { check_capacity(&root, bytes).await?; }
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
-        compressed_bytes = compressed_bytes.checked_add(chunk.len() as u64).ok_or("archive size overflow")?;
-        if announced.is_none_or(|bytes| compressed_bytes > bytes) {
-            check_capacity(&root, chunk.len() as u64).await.map_err(|error| match error {
-                PublishedCoreError::ResourceDeferred(mut deferred) => { deferred.projected_bytes = compressed_bytes; PublishedCoreError::ResourceDeferred(deferred) },
+        let mut resp = client.get(&archive_url).send().await.and_then(|r| r.error_for_status())
+            .map_err(|e| format!("fetching {archive_url}: {e}"))?;
+        let announced = resp.content_length();
+        if let Some(bytes) = announced { admission.check(bytes)?; }
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
+            compressed_bytes = compressed_bytes.checked_add(chunk.len() as u64).ok_or("archive size overflow")?;
+            let retry_bytes = announced.unwrap_or(compressed_bytes).max(compressed_bytes);
+            admission.before_write(chunk.len() as u64).await.map_err(|error| match error {
+                PublishedCoreError::ResourceDeferred(mut condition) => { condition.projected_bytes = retry_bytes; PublishedCoreError::ResourceDeferred(condition) },
                 error => error,
             })?;
+            hasher.update(&chunk);
+            if let Err(error) = file.write_all(&chunk) {
+                let mut failure = write_failure(&root, retry_bytes.saturating_sub(compressed_bytes).saturating_add(chunk.len() as u64), error).await;
+                if let PublishedCoreError::ResourceDeferred(condition) = &mut failure { condition.projected_bytes = retry_bytes; }
+                return Err(failure);
+            }
         }
-        hasher.update(&chunk);
-        if let Err(error) = file.write_all(&chunk) {
-            let retry_bytes = announced.unwrap_or(compressed_bytes).max(compressed_bytes);
-            check_capacity(&root, retry_bytes.saturating_sub(compressed_bytes).saturating_add(chunk.len() as u64)).await.map_err(|failure| match failure {
-                PublishedCoreError::ResourceDeferred(mut deferred) => { deferred.projected_bytes = retry_bytes; PublishedCoreError::ResourceDeferred(deferred) },
-                failure => failure,
-            })?;
-            return Err(format!("cannot write {}: {error}", archive.display()).into());
-        }
-    }
     }
     drop(file);
     let digest = format!("{:x}", hasher.finalize());
@@ -4963,8 +5011,18 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
                 return Err(format!("the archive lists runtime library {lib} but does not carry it").into());
             }
         }
-        std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), manifest.runtime_libs.join("\n"))
-            .map_err(|e| format!("cannot record the runtime libraries beside {}: {e}", core.display()))?;
+        let runtime_manifest = manifest.runtime_libs.join("\n");
+        check_capacity(&root, runtime_manifest.len() as u64).await.map_err(|mut error| {
+            if let PublishedCoreError::ResourceDeferred(condition) = &mut error {
+                condition.projected_bytes = compressed_bytes.saturating_add(expanded).saturating_add(runtime_manifest.len() as u64);
+            }
+            error
+        })?;
+        if let Err(error) = std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), &runtime_manifest) {
+            let mut failure = write_failure(&root, runtime_manifest.len() as u64, error).await;
+            if let PublishedCoreError::ResourceDeferred(condition) = &mut failure { condition.projected_bytes = compressed_bytes.saturating_add(expanded).saturating_add(runtime_manifest.len() as u64); }
+            return Err(failure);
+        }
     }
     note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
     preparation.complete = true;
@@ -7535,8 +7593,8 @@ mod tests {
         for _ in 0..3 {
             ledger.record_failure("254d11e1c");
         }
-        ledger.write(&path);
-        let ledger = super::ConsumeLedger::read(&path);
+        ledger.write(&path).unwrap();
+        let ledger = super::ConsumeLedger::read(&path).unwrap();
         assert_eq!(ledger.failures("254d11e1c"), 3);
         assert_eq!(ledger.failures("34e8db15d"), 0, "the older build's failures are not the tip's");
         assert_eq!(
@@ -7566,8 +7624,8 @@ mod tests {
         }
         after.record_failure("254d11e1c");
         after.landed("254d11e1c");
-        after.save(&path);
-        let after = super::ConsumeLedger::read(&path);
+        after.save(&path).unwrap();
+        let after = super::ConsumeLedger::read(&path).unwrap();
         assert_eq!(after.failures("34e8db15d"), 3, "an exhausted build is not made eligible by another landing");
         assert_eq!(after.failures("254d11e1c"), 0);
         assert_eq!(
@@ -7578,10 +7636,33 @@ mod tests {
         let mut emptied = super::ConsumeLedger::default();
         emptied.record_failure("254d11e1c");
         emptied.landed("254d11e1c");
-        emptied.save(&path);
+        emptied.save(&path).unwrap();
         assert!(!path.exists(), "nothing left to remember removes the file");
         std::fs::write(&path, r#"{"failures":3,"tip":"34e8db15db2d543a5bb72ee599b74feef39ae7f8"}"#).unwrap(); // unwrap: test fixture write
-        assert_eq!(super::ConsumeLedger::read(&path), super::ConsumeLedger::default(), "an old per-request ledger names no build");
+        assert_eq!(super::ConsumeLedger::read(&path).unwrap(), super::ConsumeLedger::default(), "an old per-request ledger names no build");
+        // Resource refusal belongs to the exact artifact, not the changing tracker request.
+        let mut blocked = super::ConsumeLedger::default();
+        let condition = continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
+            condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::UnmeasuredFilesystem,
+            path: dir.clone(), projected_bytes: 123, reason: "filesystem quota refused while volume admission passed".into(),
+        };
+        blocked.resource_deferrals.insert("published-build".into(), condition.clone());
+        blocked.save(&path).unwrap();
+        let mut restarted = super::ConsumeLedger::read(&path).unwrap();
+        assert_eq!(restarted.resource_deferrals.get("published-build"), Some(&condition));
+        assert_eq!(restarted.failures("published-build"), 0, "resource deferral does not condemn the build");
+        restarted.landed("different-build");
+        restarted.save(&path).unwrap();
+        assert_eq!(super::ConsumeLedger::read(&path).unwrap().resource_deferrals.get("published-build"), Some(&condition), "another build landing and a new process preserve the condition");
+        let mut pending = Some(("published-build".into(), condition.clone()));
+        assert!(matches!(continuum_cli_lifecycle::prebuilt_artifact::recheck_resource_deferral(&mut pending, Ok(())), Some(continuum_cli_lifecycle::prebuilt_artifact::MissingArtifact::Wait(_))));
+        assert_eq!(pending.as_ref().map(|(_, value)| value), Some(&condition), "a volume-only success cannot clear quota uncertainty");
+        for corrupt in ["{", "{}", r#"{"resource_deferrals":{"build":{"condition":"invented","path":"x","projected_bytes":1,"reason":"unknown"}}}"#] {
+            std::fs::write(&path, corrupt).unwrap();
+            assert!(super::ConsumeLedger::read(&path).is_err(), "corrupt custody must not silently authorize retry");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+        }
+        assert!(blocked.write(&dir.join("missing-parent").join("ledger.json")).is_err(), "persistence failure is visible");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
         assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());

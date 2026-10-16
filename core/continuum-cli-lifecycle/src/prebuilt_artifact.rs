@@ -370,8 +370,19 @@ pub fn candidate_keys_log_args(running: &str, tip: &str) -> Vec<String> {
 }
 
 /// A measured resource condition, not evidence that a published artifact is bad.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResourceCondition {
+    #[default]
+    VolumeCapacity,
+    /// The filesystem refused space/quota while volume admission passed. Only an
+    /// explicit evidence-bound retry can clear this; a free-space sample cannot.
+    UnmeasuredFilesystem,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceDeferral {
+    pub condition: ResourceCondition,
     pub path: std::path::PathBuf,
     /// Additional bytes required once the failed invocation has cleaned its staging.
     pub projected_bytes: u64,
@@ -406,6 +417,11 @@ pub fn recheck_resource_deferral(
     measured: Result<(), PublishedCoreError>,
 ) -> Option<MissingArtifact> {
     let (key, condition) = pending.as_mut()?;
+    if condition.condition == ResourceCondition::UnmeasuredFilesystem {
+        return Some(MissingArtifact::Wait(format!(
+            "published build {key} awaits explicit resource retry: {}", condition.reason
+        )));
+    }
     match measured {
         Ok(()) => { *pending = None; None }
         Err(PublishedCoreError::ResourceDeferred(next)) => {
@@ -836,7 +852,7 @@ mod tests {
                 Ok(Some(key.into()))
             }
         }
-        let condition = ResourceDeferral { path: "/artifact-cache".into(), projected_bytes: 579, reason: "measured capacity refusal".into() };
+        let condition = ResourceDeferral { condition: ResourceCondition::VolumeCapacity, path: "/artifact-cache".into(), projected_bytes: 579, reason: "measured capacity refusal".into() };
         let mut source = DeferredSource { pending: Some(("older".into(), condition.clone())), fetches: Default::default() };
         for _ in 0..3 {
             assert!(matches!(recheck_resource_deferral(&mut source.pending, Err(PublishedCoreError::ResourceDeferred(condition.clone()))), Some(MissingArtifact::Wait(_))));

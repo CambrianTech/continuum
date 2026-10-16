@@ -518,6 +518,22 @@ function New-CoreServiceRelease {
             throw "Incoming release artifact is missing: $name"
         }
     }
+    # Older published ancestors may still be selected while a newer release builds.
+    # Refuse an unsupported boundary truthfully before any custody mutation.
+    $capacityProtocol = @(Invoke-InstallerProcess (Join-Path $ArtifactDirectory 'continuum.exe') @('artifact-capacity', '--protocol'))
+    if ($LASTEXITCODE -ne 0 -or ($capacityProtocol -join '').Trim() -ne '1') {
+        throw 'Selected published artifact lacks service capacity admission protocol 1; preparation deferred, installed release receipts and files preserved.'
+    }
+    # Count the complete remaining copy while old slot files and the downloaded
+    # release still coexist. Do not credit overwritten bytes before they are freed.
+    # Admission is a measured check, not a reservation against concurrent writers.
+    $copySources = @(@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames | ForEach-Object { Join-Path $ArtifactDirectory $_ })
+    $copySources += @((Join-Path $RepoRoot 'tools\scripts\run-service-hidden.ps1'), (Join-Path $RepoRoot 'tools\scripts\start-livekit-windows.ps1'))
+    [decimal]$copyBytes = 0
+    foreach ($source in $copySources) { $copyBytes += (Get-Item -LiteralPath $source -ErrorAction Stop).Length }
+    if ($copyBytes -gt [uint64]::MaxValue) { throw 'Service payload size exceeds the capacity accounting range.' }
+    Invoke-InstallerProcess (Join-Path $ArtifactDirectory 'continuum.exe') @('artifact-capacity', $slot, ([uint64]$copyBytes).ToString([Globalization.CultureInfo]::InvariantCulture))
+    if ($LASTEXITCODE -ne 0) { throw 'Service-slot capacity admission refused; installed release receipts and files were preserved.' }
     $publishedEngine = Join-Path $ArtifactDirectory 'engine'
     if (Test-Path -LiteralPath (Join-Path $publishedEngine 'engine-install.json') -PathType Leaf) {
         Get-CoreEngineReceipt -Directory $publishedEngine | Out-Null

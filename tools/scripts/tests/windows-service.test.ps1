@@ -1577,6 +1577,33 @@ public static class RegisteredGsudoFixture {
     $script:registeredTask = $null
     function Get-CimInstance { param($ClassName, $ErrorAction) $script:liveProcesses }
     function Get-ScheduledTask { param($TaskName, $TaskPath, $ErrorAction) $script:registeredTask }
+    $script:capacityCalls = @()
+    function Invoke-InstallerProcess {
+        param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
+        if ($ArgumentList[0] -eq 'artifact-capacity' -and $ArgumentList[1] -eq '--protocol') { $global:LASTEXITCODE = 0; '1' }
+        elseif ($ArgumentList[0] -eq 'artifact-capacity') {
+            $script:capacityCalls += ,@($FilePath, $ArgumentList[1], $ArgumentList[2])
+            $global:LASTEXITCODE = 0
+        } else { & $nativeInstallerProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
+    }
+    & {
+        function Invoke-InstallerProcess { param($FilePath, $ArgumentList) $global:LASTEXITCODE = 64; 'unknown command' }
+        function Retire-CorePreviousSelectionForSlot { throw 'unsupported capacity protocol reached retirement' }
+        $failure = $null
+        try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null }
+        catch { $failure = $_.Exception.Message }
+        if ($failure -notmatch 'lacks service capacity admission protocol 1; preparation deferred') { throw "Unsupported ancestor was not deferred truthfully: $failure" }
+    }
+    # A destination-volume refusal must precede receipt retirement and all copying.
+    & {
+        function Invoke-InstallerProcess { param($FilePath, $ArgumentList) if ($ArgumentList[1] -eq '--protocol') { $global:LASTEXITCODE = 0; '1' } else { $global:LASTEXITCODE = 4 } }
+        function Retire-CorePreviousSelectionForSlot { throw 'capacity refusal reached retirement' }
+        $failure = $null
+        try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null }
+        catch { $failure = $_.Exception.Message }
+        if ($failure -notmatch 'Service-slot capacity admission refused') { throw "Wrong capacity refusal: $failure" }
+        if (Test-Path -LiteralPath (Join-Path $installedPayload 'bin\service-a\continuum.exe')) { throw 'Capacity refusal copied service payload' }
+    }
     $first = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     & {
         # Incoming publication refusal must precede retirement, even when the
@@ -1586,6 +1613,16 @@ public static class RegisteredGsudoFixture {
         try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -ArtifactDirectory (Join-Path $scratch 'missing publication') | Out-Null }
         catch { $refused = $_ -match 'Incoming release artifact is missing' }
         if (-not $refused) { throw 'Missing publication reached release retirement' }
+    }
+    [uint64]$expectedCopyBytes = 0
+    foreach ($name in @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'runtime-libs.txt', 'fixture-runtime.dll')) {
+        $expectedCopyBytes += (Get-Item -LiteralPath (Join-Path $target "release\$name")).Length
+    }
+    foreach ($name in @('run-service-hidden.ps1', 'start-livekit-windows.ps1')) { $expectedCopyBytes += (Get-Item -LiteralPath (Join-Path $repo "tools\scripts\$name")).Length }
+    $capacityCall = $script:capacityCalls[0]
+    if ($capacityCall[0] -ne (Join-Path $target 'release\continuum.exe') -or
+        $capacityCall[1] -ne (Split-Path -Parent $first.artifact) -or [uint64]$capacityCall[2] -ne $expectedCopyBytes) {
+        throw 'Service admission did not measure the selected destination and complete payload coexistence'
     }
     # Prebuilt handoff bypasses start-server: media must travel with the slot.
     $mediaSlot = Split-Path -Parent $first.artifact
@@ -1991,6 +2028,7 @@ $fixtureNativeProcess = ${function:Invoke-InstallerProcess}
 function Invoke-InstallerProcess {
     param($FilePath, $ArgumentList, [switch]$OwnProcessTree, [switch]$PreserveChildrenOnSuccess)
     if ($FilePath -eq 'git') { $global:LASTEXITCODE = 0 }
+    elseif ($ArgumentList[0] -eq 'artifact-capacity') { $global:LASTEXITCODE = 0; if ($ArgumentList[1] -eq '--protocol') { '1' } }
     else { & $fixtureNativeProcess $FilePath $ArgumentList -OwnProcessTree:$OwnProcessTree -PreserveChildrenOnSuccess:$PreserveChildrenOnSuccess }
 }
 '@
