@@ -23,6 +23,13 @@
 pub mod docker;
 pub mod cargo;
 pub mod artifacts;
+pub mod native;
+
+/// Configured storage tier, without inventing a machine-specific destination.
+/// Writers still resolve its physical volume and perform capacity admission.
+pub fn configured_storage_root() -> Option<std::path::PathBuf> {
+    configured("CONTINUUM_STORAGE_PATH")
+}
 
 /// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
 /// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the
