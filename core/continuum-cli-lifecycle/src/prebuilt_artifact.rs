@@ -16,6 +16,9 @@ use serde::Deserialize;
 
 use crate::deploy_provenance::sha_matches;
 
+/// Cooperating consumers hold the shared ledger lease for their entire command.
+pub const CONSUMER_LEASE_PROTOCOL: u32 = 1;
+
 /// Where CI publishes canary builds.
 pub const RELEASE_DOWNLOAD_BASE: &str =
     "https://github.com/CambrianTech/continuum/releases/download";

@@ -206,7 +206,7 @@ async fn run() -> Result<(), CliError> {
         let bytes = values[1].parse::<u64>().map_err(|error| CliError::Command(error.to_string()))?;
         if let Err(error) = continuum_core::paths::artifacts::check_capacity(Path::new(&values[0]), bytes).await {
             // boundary: selected-artifact installer capacity protocol, not a diagnostic parser.
-            println!("{}", serde_json::to_string(&error).map_err(|error| CliError::Command(error.to_string()))?);
+            println!("{}", serde_json::to_string(&error).map_err(|error| CliError::Command(error.to_string()))?); // boundary: CLI stdout wire consumed by installer capacity admission
             std::process::exit(4);
         }
         return Ok(());
@@ -2701,22 +2701,27 @@ async fn restored_build_identity(slot: &Path) -> Result<String, String> {
 /// for good (IntelMac, 50 min, 2026-09-05). `what` names the caller in the error. The one
 /// read both the deploy receipt and the rollback's identity check use.
 async fn running_core_build_sha(what: &str) -> Result<Option<String>, String> {
+    let reply = running_core_provenance("ping", what).await?;
+    Ok(reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string))
+}
+
+async fn running_core_provenance(command: &str, what: &str) -> Result<Value, String> {
     let socket = socket_path();
     let reply = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         connection()
             .commands()
-            .execute_value("ping", Value::Object(Default::default())),
+            .execute_value(command, Value::Object(Default::default())),
     )
     .await
     .map_err(|_| {
         format!(
-            "{what}: the core on {socket} accepted the socket but did not answer `ping` \
+            "{what}: the core on {socket} accepted the socket but did not answer `{command}` \
              within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
         )
     })?
     .map_err(|e| format!("{what}: no core answering on {socket}: {e}"))?;
-    Ok(reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string))
+    Ok(reply)
 }
 
 /// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
@@ -3310,11 +3315,15 @@ fn record_repo_checkout() {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct DeployConsumeOptions {
     retry_resource: Option<(String, String)>,
+    protocol: bool,
 }
 
 impl DeployConsumeOptions {
     fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
         if let Some(arg) = args.next() {
+            if arg == "--protocol" && args.next().is_none() {
+                return Ok(Self { protocol: true, ..Self::default() });
+            }
             if arg == "--retry-resource" {
                 let build = args.next().ok_or("--retry-resource requires exact build and saved-condition sha256")?;
                 let digest = args.next().ok_or("--retry-resource requires saved-condition sha256")?;
@@ -3322,7 +3331,7 @@ impl DeployConsumeOptions {
                     || digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
                     return Err("--retry-resource requires exactly one full build SHA and condition SHA256".into());
                 }
-                return Ok(Self { retry_resource: Some((build, digest)) });
+                return Ok(Self { retry_resource: Some((build, digest)), ..Self::default() });
             }
             if matches!(arg.as_str(), "--install" | "--uninstall") {
                 // ONE registrar for the consumer's task: `continuum install --supervisor`
@@ -3425,7 +3434,8 @@ struct ConsumeLedger {
 
 impl ConsumeLedger {
     /// The existing consumer owns its ledger for the command's lifetime. The OS
-    /// releases this nonblocking lease on crash; a retry cannot race its writer.
+    /// releases this nonblocking lease on crash; cooperating retries cannot race
+    /// its writer. Older binaries require the explicit rollout/quiescence guard.
     fn take_lease(path: &Path) -> Result<std::fs::File, String> {
         use fs2::FileExt;
         if let Some(parent) = path.parent() {
@@ -4461,6 +4471,70 @@ fn consumer_uses_service(os: &str) -> bool {
     os == "windows"
 }
 
+/// Missing capability is a rollout refusal, never permission to clear a condition.
+fn retry_launcher(ping: &Value) -> Result<PathBuf, String> {
+    use continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL;
+    if ping.get("deployConsumerProtocol").and_then(Value::as_u64) != Some(u64::from(CONSUMER_LEASE_PROTOCOL)) {
+        return Err("resource retry requires a running core with the cooperating consumer lease protocol; finish the supported rollout and quiesce older consumers first".into());
+    }
+    ping.get("deployConsumerCli").and_then(Value::as_str).map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| "resource retry cannot prove the active launcher CLI (external, legacy or unreadable ownership)".into())
+}
+
+async fn verify_consumer_protocol(cli: &Path) -> Result<(), String> {
+    let mut command = supervisor_install::quiet_command(cli);
+    command.args(["deploy-consume", "--protocol"]).stdin(Stdio::null());
+    let mut command = tokio::process::Command::from(command);
+    command.kill_on_drop(true);
+    // Same bounded startup diagnostic as the existing live-core provenance probe.
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+        .await.map_err(|_| "consumer protocol probe exceeded the existing 30s provenance bound".to_string())?
+        .map_err(|e| format!("cannot verify consumer protocol at {}: {e}", cli.display()))?;
+    let expected = continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL.to_string();
+    if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim() != expected {
+        return Err(format!("registered consumer {} does not declare the cooperating lease protocol; finish its supported rollout before retry", cli.display()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn retry_task_matches(report: &supervisor_install::TaskReport, envelope: &continuum_cli_lifecycle::installed_release::Envelope, mode: &str, sid: &str) -> bool {
+    report.present && report.enabled && report.actions == 1
+        && report.command.eq_ignore_ascii_case(&envelope.bootstrap)
+        && report.arguments == envelope.arguments(mode) && report.user_sid == sid
+}
+
+#[cfg(windows)]
+async fn verify_registered_consumer(root: &Path) -> Result<continuum_cli_lifecycle::installed_release::ValidatedRelease, String> {
+    use continuum_cli_lifecycle::installed_release;
+    let sid = supervisor_install::caller_sid().await?;
+    let program_files = PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);
+    let mut selected = None;
+    let mut selected_text = None;
+    for (task, mode) in [(supervisor_install::CORE_TASK, "core"), (supervisor_install::DEPLOY_TASK, "deploy")] {
+        let report = supervisor_install::task_report(task).await?;
+        let envelope = installed_release::envelope(&report.description)?
+            .ok_or_else(|| format!("{task} has a legacy/unreadable launcher; complete supervisor rollout before retry"))?;
+        envelope.validate(root, &program_files, &sid)?;
+        if !retry_task_matches(&report, &envelope, mode, &sid) {
+            return Err(format!("{task} does not match its registered supervisor authority; preserve resource conditions"));
+        }
+        let text = installed_release::read_receipt(Path::new(&envelope.active_release))?;
+        if selected_text.as_ref().is_some_and(|previous| previous != &text) {
+            return Err("registered release changed while verifying consumer rollout".into());
+        }
+        if selected.is_none() {
+            let payload = continuum_core::paths::payload_root(root)?;
+            let release = installed_release::validate_receipt(&text, root, &payload, &sid)?;
+            verify_consumer_protocol(Path::new(&release.release.cli)).await?;
+            selected = Some(release); // retain sealed payload pins through compare-and-clear
+            selected_text = Some(text);
+        }
+    }
+    selected.ok_or_else(|| "registered consumer release is absent".into())
+}
+
 /// The consumer follows the REQUEST, not a tip it once read: while it waits on CI for one
 /// tip the tracker keeps writing newer requests beside it, and on canary GitHub keeps the
 /// running build and only the newest QUEUED push (older queued pushes are dropped and show
@@ -4468,15 +4542,28 @@ fn consumer_uses_service(os: &str) -> bool {
 /// will never exist held the M5 at a stale core for two hours on 2026-10-04 while three
 /// built tips went by. A pass that finds its request superseded starts over on the new one.
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
+    if options.protocol {
+        println!("{}", continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL); // boundary: read-only CLI capability wire for retry rollout admission
+        return Ok(());
+    }
     let attempts_path = consume_attempts_path()?;
     let _consumer_lease = ConsumeLedger::take_lease(&attempts_path)?;
     if let Some((build, digest)) = options.retry_resource {
         let root = continuum_root()?;
+        #[cfg(windows)]
+        let _install_lease = take_install_lease(&root)?;
+        // Supported launchers must have completed the cooperating-protocol rollout.
+        // Previously launched old consumers must be quiesced by their lifecycle owner;
+        // this lease cannot exclude arbitrary manually launched noncooperating binaries.
+        let cli = retry_launcher(&running_core_provenance("deploy/consumer-capability", "resource retry rollout").await?)?;
+        verify_consumer_protocol(&cli).await?;
+        #[cfg(windows)]
+        let _registered_release = verify_registered_consumer(&root).await?;
         let claim_path = continuum_cli_lifecycle::deploy_claim::claim_path(&root);
         if claim_path.exists() && continuum_cli_lifecycle::deploy_claim::read(&root).is_none() {
             return Err("deploy claim is unreadable; preserve it and resolve ownership before resource retry".into());
         }
-        let owner_active = continuum_cli_lifecycle::deploy_claim::in_flight(&root, continuum_core::time::EpochMs::now().millis()).excludes_deploy();
+        let owner_active = continuum_cli_lifecycle::deploy_claim::read(&root).is_some_and(|claim| pid_alive(claim.pid));
         ConsumeLedger::retry_resource(&attempts_path, &build, &digest, owner_active)?;
         println!("resource retry authorized for exact build {build}; other conditions and failure counts preserved; normal consumer will recheck admission");
         return Ok(());
@@ -7816,6 +7903,27 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
         assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
+        assert!(DeployConsumeOptions::parse(["--protocol".into()].into_iter()).unwrap().protocol);
+        assert!(DeployConsumeOptions::parse(["--protocol".into(), "extra".into()].into_iter()).is_err());
+        // Mixed-version rollout must fail closed before the saved condition is cleared.
+        assert!(super::retry_launcher(&serde_json::json!({"buildSha":"old"})).is_err());
+        assert!(super::retry_launcher(&serde_json::json!({"deployConsumerProtocol":0,"deployConsumerCli":path})).is_err());
+        assert!(super::retry_launcher(&serde_json::json!({"deployConsumerProtocol":1,"deployConsumerCli":null})).is_err());
+        assert!(super::retry_launcher(&serde_json::json!({"deployConsumerProtocol":1,"deployConsumerCli":"continuum"})).is_err());
+        assert_eq!(super::retry_launcher(&serde_json::json!({"deployConsumerProtocol":1,"deployConsumerCli":path})).unwrap(), path);
+        #[cfg(windows)]
+        {
+            let envelope = continuum_cli_lifecycle::installed_release::Envelope { schema: 2, active_release: "receipt".into(), bootstrap: "bootstrap.exe".into() };
+            let mut report = super::supervisor_install::TaskReport { present: true, enabled: true, actions: 1, command: envelope.bootstrap.clone(), arguments: envelope.arguments("deploy"), user_sid: "S-1-5-21".into(), ..Default::default() };
+            assert!(super::retry_task_matches(&report, &envelope, "deploy", "S-1-5-21"));
+            report.arguments = "deploy-consume".into();
+            assert!(!super::retry_task_matches(&report, &envelope, "deploy", "S-1-5-21"), "legacy direct task cannot satisfy the receipt guard");
+            report.arguments = envelope.arguments("deploy");
+            report.command = "other.exe".into();
+            assert!(!super::retry_task_matches(&report, &envelope, "deploy", "S-1-5-21"), "changed registration refuses");
+        }
+
+
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
         assert!(DeployConsumeOptions::parse(["--retry-resource".into(), "a".repeat(40), "b".repeat(64)].into_iter()).is_ok());
         assert!(DeployConsumeOptions::parse(["--retry-resource".into(), "a".repeat(40)].into_iter()).is_err());
