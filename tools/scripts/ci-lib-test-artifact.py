@@ -4,6 +4,39 @@ import json
 import os
 from pathlib import Path
 import sys
+import subprocess
+from datetime import datetime, timezone
+
+
+def capture(path, command, output=sys.stdout):
+    """Keep Cargo JSON intact while surfacing errors before a failed/cancelled build.
+
+    No retry or second build: the child's exit status remains authoritative.
+    Flushed event breadcrumbs survive even when cancellation prevents final upload.
+    """
+    malformed = False
+    with open(path, "w", encoding="utf-8") as raw:
+        with subprocess.Popen(command, stdout=subprocess.PIPE, text=True, encoding="utf-8") as child:
+            for line in child.stdout:
+                raw.write(line)
+                raw.flush()
+                try:
+                    event = json.loads(line)
+                    if not isinstance(event, dict):
+                        raise ValueError("Cargo event must be an object")
+                except ValueError:
+                    malformed = True
+                    print("Invalid Cargo JSON event; retained in artifact", file=output, flush=True)
+                    continue
+                reason = event.get("reason")
+                diagnostic = event.get("message", {})
+                if reason == "compiler-message" and diagnostic.get("level") == "error":
+                    print(diagnostic.get("rendered") or diagnostic.get("message", "Compiler error"), file=output, flush=True)
+                target = event.get("target", {}).get("name")
+                if reason == "build-finished" or (reason == "compiler-artifact" and target in ("llama", "continuum_core")):
+                    print(f"{datetime.now(timezone.utc).isoformat()} cargo-event reason={reason} target={target} fresh={event.get('fresh')} success={event.get('success')}", file=output, flush=True)
+            status = child.wait()
+    return status if status else int(malformed)
 
 
 def environment(messages, manifest_dir, rust_libdir, inherited_library_path):
@@ -55,6 +88,20 @@ def environment(messages, manifest_dir, rust_libdir, inherited_library_path):
 
 if __name__ == "__main__":
     try:
+        if len(sys.argv) > 4 and sys.argv[1] == "--capture" and sys.argv[3] == "--":
+            # Ask the same Cargo executable for its configured output root; CI
+            # and developer shells may override it. Metadata does not compile.
+            metadata = subprocess.run(
+                [sys.argv[4], "metadata", "--no-deps", "--format-version", "1"],
+                check=True, capture_output=True, text=True, encoding="utf-8",
+            )
+            timings = str(Path(json.loads(metadata.stdout)["target_directory"]) / "cargo-timings")
+            if "\n" in timings or "\r" in timings:
+                raise ValueError("Cargo timing directory contains a newline")
+            if os.environ.get("GITHUB_ENV"):
+                with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as env:
+                    env.write(f"CONTINUUM_CARGO_TIMINGS={timings}\n")
+            sys.exit(capture(sys.argv[2], sys.argv[4:]))
         artifacts_file, manifest_dir, rust_libdir = sys.argv[1:]
         with open(artifacts_file, encoding="utf-8-sig") as stream:
             messages = [json.loads(line) for line in stream if line.strip()]
