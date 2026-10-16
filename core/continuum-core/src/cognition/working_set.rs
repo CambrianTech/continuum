@@ -629,6 +629,8 @@ impl WorkingSetRegistry {
     /// channels; a cut inside the think records the peak verbatim and is not a need
     /// sample. Zero-token completions
     /// are the empty-completion fault's territory, not a data point to drag the peak with.
+    /// Returns this exact measurement even when persistence fails, so concern-owned
+    /// demand can retain its evidence without racing a later registry observation.
     pub(crate) fn record_emission(
         &self,
         persona: Uuid,
@@ -636,9 +638,9 @@ impl WorkingSetRegistry {
         reasoning_tokens: u32,
         stop: EmissionStop,
         now_ms: u64,
-    ) {
+    ) -> Option<PersonaEmission> {
         if output_tokens == 0 {
-            return;
+            return None;
         }
         let updated =
             self.record_emission_in_memory(persona, output_tokens, reasoning_tokens, stop, now_ms);
@@ -648,7 +650,7 @@ impl WorkingSetRegistry {
             Ok(path) => path,
             Err(error) => {
                 tracing::warn!(persona_id = %persona, %error, "emission root unavailable — measurement remains in memory");
-                return;
+                return Some(updated);
             }
         };
         let write = || -> std::io::Result<()> {
@@ -665,6 +667,7 @@ impl WorkingSetRegistry {
                 "emission not persisted — this mind re-measures its reply size after the next restart"
             );
         }
+        Some(updated)
     }
 
     /// How much of a past peak survives each new observation (7/8).
@@ -1246,7 +1249,7 @@ mod tests {
         let persona = p(9);
         let before = WorkingSetRegistry::new();
         before.record(persona, 24_126, 1_000);
-        before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
+        let _ = before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
         // A fresh process: new registry, nothing in memory.
