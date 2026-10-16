@@ -1518,7 +1518,7 @@ async fn serve_persona_loop_inner(
                 // The turn's work is synced to its card's branch; her hands stay where they
                 // are, because nothing moved them (card fc9e9fd7).
                 if let Some(hands) = &held_card.hands {
-                    crate::cognition::persona_workspace::end_card_turn(hands).await;
+                    crate::cognition::persona_workspace::end_card_turn(hands, turn_act_count).await;
                 }
                 cycle.set_token_sink(None);
                 let _ = forwarder.await;

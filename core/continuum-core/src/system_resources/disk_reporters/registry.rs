@@ -35,6 +35,11 @@ pub(crate) async fn prepare_writer_fixture() {
         .await;
 }
 
+/// How long an ADMISSION (a shell's cargo-root grant, a configured root at startup) waits for
+/// one filesystem resolution before it is refused with a named outcome: the one launch-path
+/// filesystem bound ([`crate::runtime::daemon::LAUNCH_PATH_FS_BOUND`], measured there).
+pub(crate) const ADMISSION_BOUND: std::time::Duration = crate::runtime::daemon::LAUNCH_PATH_FS_BOUND;
+
 fn writer_registry() -> Result<&'static Registry, String> {
     if let Some(registry) = TRACKED_DIRS.get() {
         return Ok(registry);
@@ -167,11 +172,27 @@ impl Registry {
         registry
     }
 
+    /// A reporter's read of a root: the pressure-reporter budget, never a launch path's.
     async fn resolve(&self, path: &Path) -> Result<std::path::PathBuf, String> {
-        Ok(self.path_work(path, PathWork::Resolve).await?.path)
+        self.resolve_within(path, super::super::disk_pressure::REPORTER_TIMEOUT).await
     }
-
+    async fn resolve_within(&self, path: &Path, bound: std::time::Duration) -> Result<std::path::PathBuf, String> {
+        Ok(self.path_work_within(path, PathWork::Resolve, bound).await?.path)
+    }
+    /// Reporter-bounded, see [`Self::path_work_within`].
     async fn path_work(&self, path: &Path, work: PathWork) -> Result<Observation, String> {
+        self.path_work_within(path, work, super::super::disk_pressure::REPORTER_TIMEOUT).await
+    }
+    /// One filesystem resolution of `path`, shared with every other request for the same
+    /// work while it is in flight, waited for at most `bound`. A reporter tick waits the
+    /// 100 ms reporter budget and reads "still pending" as its named outcome; an ADMISSION
+    /// (a citizen's shell, a configured root at startup) waits [`ADMISSION_BOUND`]: on the
+    /// M5 at 91% swap (2026-10-16) the reporter budget on a shell's cargo-root grant refused
+    /// three of Benchy's commands outright, none of which touched cargo, with "Cargo cache
+    /// ownership: Cargo root resolution is still pending" (shell_session.rs fails the whole
+    /// command before any child exists).
+
+    async fn path_work_within(&self, path: &Path, work: PathWork, bound: std::time::Duration) -> Result<Observation, String> {
         use crate::runtime::daemon::{guarded, Guarded};
         let key = (path.to_path_buf(), work.clone());
         let (identity, request) = {
@@ -180,8 +201,22 @@ impl Registry {
                 .entry(key.clone())
                 .or_insert_with(|| {
                     let path = path.to_path_buf();
+                    let kind = match &work {
+                        PathWork::Resolve => "resolve",
+                        PathWork::ResolveExisting => "resolve_existing",
+                        PathWork::Observe => "observe",
+                        PathWork::Empty => "empty",
+                        PathWork::Validate(_) => "validate",
+                        PathWork::Prepare(_) => "prepare",
+                    };
                     let request = async move {
-                        tokio::task::spawn_blocking(move || {
+                        // Queue vs work: a refusal at the bound says which was slow, so the
+                        // bound can be checked against a number (Cormac on #5112).
+                        let queued = std::time::Instant::now();
+                        let probe_path = path.clone();
+                        let outcome = tokio::task::spawn_blocking(move || {
+                            let started = std::time::Instant::now();
+                            let result = (|| {
                             if let PathWork::Prepare(policy) = &work {
                                 policy.validate_cargo_target(&path)?;
                             }
@@ -225,9 +260,22 @@ impl Registry {
                                 volume,
                                 empty_custody,
                             })
+                            })();
+                            (result, started.elapsed())
                         })
                         .await
-                        .map_err(|error| format!("Cargo root resolution worker failed: {error}"))?
+                        .map_err(|error| format!("Cargo root resolution worker failed: {error}"))?;
+                        let (result, worked) = outcome;
+                        crate::probe!(
+                            class = "disk.root.resolution",
+                            path = %probe_path.display(),
+                            kind = %kind,
+                            queue_ms = (queued.elapsed().saturating_sub(worked)).as_millis() as u64,
+                            work_ms = worked.as_millis() as u64,
+                            ok = result.is_ok(),
+                            "one filesystem resolution of a tracked root: how long it queued, how long it worked"
+                        );
+                        result
                     }
                     .boxed()
                     .shared();
@@ -235,7 +283,7 @@ impl Registry {
                 })
                 .clone()
         };
-        match guarded(super::super::disk_pressure::REPORTER_TIMEOUT, request).await {
+        match guarded(bound, request).await {
             Guarded::Completed(result) => {
                 let mut pending = self.2.lock();
                 if pending
@@ -252,17 +300,25 @@ impl Registry {
             )),
             // Keep the shared in-flight worker: another request must not create
             // another stuck filesystem thread for the same unavailable root.
-            Guarded::TimedOut => Err(format!(
-                "Cargo root resolution is still pending: {}",
-                path.display()
-            )),
+            Guarded::TimedOut => {
+                crate::probe!(
+                    class = "disk.root.resolution.pending",
+                    path = %path.display(),
+                    bound_ms = bound.as_millis() as u64,
+                    "a tracked root did not resolve inside this caller's bound; the shared worker stays"
+                );
+                Err(format!(
+                    "Cargo root resolution is still pending: {}",
+                    path.display()
+                ))
+            }
         }
     }
     pub(super) fn snapshot(&self) -> Vec<Arc<TrackedDir>> {
         self.0.lock().dirs.clone()
     }
     async fn register(&self, path: &Path) -> Result<Arc<TrackedDir>, String> {
-        let physical = match self.resolve(path).await {
+        let physical = match self.resolve_within(path, ADMISSION_BOUND).await {
             Ok(physical) => physical,
             Err(error) => {
                 let mut state = self.0.lock();
@@ -374,8 +430,12 @@ impl Registry {
         Ok(())
     }
 
+    /// Reporter-bounded, see [`Self::admit_within`].
     async fn admit(&self, path: &Path) -> Result<Arc<RootLease>, String> {
-        let observation = self.path_work(path, PathWork::Observe).await?;
+        self.admit_within(path, super::super::disk_pressure::REPORTER_TIMEOUT).await
+    }
+    async fn admit_within(&self, path: &Path, bound: std::time::Duration) -> Result<Arc<RootLease>, String> {
+        let observation = self.path_work_within(path, PathWork::Observe, bound).await?;
         let physical = observation.path;
         let mut durable = self.1.lock().await;
         let records = durable
@@ -562,15 +622,15 @@ pub async fn admit_cargo_target(
         ),
     };
     registry
-        .path_work(path, PathWork::Validate(policy.clone()))
+        .path_work_within(path, PathWork::Validate(policy.clone()), ADMISSION_BOUND)
         .await?;
-    let lease = registry.admit(path).await?;
+    let lease = registry.admit_within(path, ADMISSION_BOUND).await?;
     // Only operator configuration grants creation outside a citizen workspace.
     // Session overrides acquire ownership but gain no filesystem privileges.
     let configured = crate::paths::cargo::target_dir(cwd)?;
-    if registry.resolve(path).await? == registry.resolve(&configured).await? {
+    if registry.resolve_within(path, ADMISSION_BOUND).await? == registry.resolve_within(&configured, ADMISSION_BOUND).await? {
         let prepared = registry
-            .path_work(path, PathWork::Prepare(policy.clone()))
+            .path_work_within(path, PathWork::Prepare(policy.clone()), ADMISSION_BOUND)
             .await?;
         return Ok(CargoAdmission {
             grant: Some(crate::code::confinement::CargoTargetGrant::admitted(
@@ -649,6 +709,35 @@ pub(crate) fn citizen_has_cargo_owner(peer: uuid::Uuid) -> Result<bool, String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: an admission refused on the reporter budget. The shell's cargo-root
+    // grant went through the 100 ms pressure-reporter bound, and on a box at 91% swap one
+    // resolution took longer than that: three of Benchy's commands failed outright with
+    // "Cargo root resolution is still pending" (M5, 2026-10-16), none of them touching cargo.
+    // Deterministic (Cormac on #5112: a zero bound races the first poll): the shared worker
+    // is held on a gate the test releases; the reporter bound sees "still pending", and the
+    // admission bound, once the gate opens, gets the answer from that same worker.
+    #[tokio::test]
+    async fn an_admission_waits_its_own_bound_not_the_reporters() {
+        let registry = Registry::new(Vec::new()).await;
+        let root = tempfile::tempdir().unwrap();
+        let key = (root.path().to_path_buf(), PathWork::Resolve);
+        let (release, gate) = tokio::sync::oneshot::channel::<Observation>();
+        let held = async move { gate.await.map_err(|error| error.to_string()) }.boxed().shared();
+        registry.2.lock().insert(key.clone(), (Arc::new(()), held));
+        let pending = registry
+            .path_work_within(root.path(), PathWork::Resolve, crate::system_resources::disk_pressure::REPORTER_TIMEOUT)
+            .await;
+        assert!(pending.unwrap_err().contains("still pending"), "the reporter bound is the refusal while the worker is held");
+        assert!(registry.2.lock().contains_key(&key), "the held worker is kept, never duplicated");
+        let physical = root.path().canonicalize().unwrap();
+        release
+            .send(Observation { path: physical.clone(), volume: None, empty_custody: None })
+            .unwrap();
+        let resolved = registry.path_work_within(root.path(), PathWork::Resolve, ADMISSION_BOUND).await.unwrap();
+        assert_eq!(resolved.path, physical, "the admission bound gets the same worker's answer once it is free");
+        assert!(!registry.2.lock().contains_key(&key), "nothing stays quarantined once it answered");
+    }
 
     // d86: an offline root must neither multiply blocking workers nor hold the
     // registry/durable lock while another volume admits a writer.

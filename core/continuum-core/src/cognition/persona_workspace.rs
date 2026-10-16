@@ -1356,8 +1356,20 @@ impl CardHands {
 /// The end of one turn on a card: the act's work is WIP-committed on the card's branch and
 /// pushed (card 73eefbbb), so a node she is next staged on fetches it and a seat change waits
 /// on it. Her hands stay where they are; nothing is restored, because nothing moved.
-pub(crate) async fn end_card_turn(card: &CardHands) {
+pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
     let hands = &card.hands;
+    // A turn that took no act changed nothing in the checkout: nothing to commit, nothing to
+    // carry. Measured on the M5 (2026-10-16, lane gated at 6,144): every resident's turn
+    // ended without reaching the model and the carry still ran git on each one, 374 ms
+    // a time, 33 times per resident per 5 min, committed=false pushed=false throughout.
+    if acts == 0 {
+        crate::probe!(
+            class = "workspace.push.skipped_no_act",
+            persona = %hands.persona_name,
+            "turn took no act: the card's checkout is as it was, nothing to carry"
+        );
+        return;
+    }
     if let (Some(root), Some(card_id)) = (acting_root_in(hands.persona_id, hands.context), acting_card_in(hands.persona_id, hands.context)) {
         // under the turn's own admission (see sync_after_act_for)
         crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::clone(&card.lease), hands.persona_id, &hands.persona_name, root, card_id).await;

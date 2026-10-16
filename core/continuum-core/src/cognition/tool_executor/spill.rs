@@ -447,29 +447,108 @@ fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid,
             handle: r.handle,
         },
         Ok(r) => {
+            // The head rides with the pointer, named as a head. A pointer alone sent a citizen
+            // back to re-read the same file in slices for hours (Benchy, the M5, 2026-10-16: a
+            // 578-line lib.rs read at 27,454 chars against a 26,176-char share came back as
+            // "a single 27454-character line (or the result has been truncated)", 121 acts
+            // without a write). What a person gets from `head` she gets here: the first lines,
+            // the line count, and the handle for the rest. Never passed off as the whole.
+            let (head, head_lines) = head_of(&full, share / HEAD_SHARE_DENOM);
             crate::probe!(
                 class = "tool.output.spilled",
                 handle = %r.handle,
                 chars = %chars,
                 share = %share,
+                head_lines = %head_lines,
                 "a tool result was larger than the window's share for one result: saved \
-                 whole and handed to the mind as its handle"
+                 whole and handed to the mind as its head and handle"
             );
             Fitted::Stored {
                 shown: format!(
                     "[this result is {} lines ({chars} chars), more than this window's \
-                     {share}-char share for one result, so it is not shown in part. The whole \
-                     result is saved as output `{}`: open what you need with `tool/output`. \
-                     Jump straight to what broke with `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` \
-                     (or `warnings`/`failures`/`summary`), hunt with `\"pattern\":\"<regex>\"`, or \
-                     read a line range with `startLine`/`endLine`]",
-                    r.lines, r.handle, r.handle,
+                     {share}-char share for one result: lines 1-{head_lines} are shown below and \
+                     the WHOLE result is saved as output `{}`. Open the rest with `tool/output`: \
+                     a line range with `startLine`/`endLine`, a `\"pattern\":\"<regex>\"` hunt, or \
+                     `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/`summary`). \
+                     For a file, a `code/read` with `start_line`/`end_line` reads a range directly]\n{head}\n\
+                     [lines {}-{} of {} are not shown: open them as above]",
+                    r.lines, r.handle, r.handle, head_lines + 1, r.lines, r.lines,
                 ),
                 handle: r.handle,
             }
         }
         Err(e) => unsaved_whole(full, share, &e),
     }
+}
+
+/// The text a tool result goes on as. A result object whose bytes are mostly ONE string field
+/// (a file's `content`, a shell's `stdout`) is rendered as its scalar fields on one line, then
+/// that field's text raw, with its real newlines: what the mind reads, counts and pages by
+/// lines is the text itself, not its JSON escape. Any other shape goes on as compact JSON.
+pub fn result_text(value: &serde_json::Value) -> String {
+    let compact = value.to_string();
+    // A long result with no text body (an array of cards, of matches) goes on pretty-printed:
+    // one element per lines, so its head shows the first elements and the rest pages by line.
+    // Compact, a board of 776 cards was ONE 198k-char line (the M5, 2026-10-16).
+    let pretty_when_long = |v: &serde_json::Value, compact: String| {
+        if compact.len() > PRETTY_JSON_OVER_CHARS {
+            serde_json::to_string_pretty(v).unwrap_or(compact) // unwrap_or: a value that serialized compact serializes pretty; the compact form is the fallback
+        } else {
+            compact
+        }
+    };
+    let Some(object) = value.as_object() else { return pretty_when_long(value, compact) };
+    let Some((body_key, body)) = object
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k, s)))
+        .max_by_key(|(_, s)| s.len())
+    else {
+        return compact;
+    };
+    if body.len() * 2 < compact.len() || !body.contains('\n') {
+        return pretty_when_long(value, compact);
+    }
+    let mut head = serde_json::Map::new();
+    for (k, v) in object {
+        if k != body_key {
+            head.insert(k.clone(), v.clone());
+        }
+    }
+    head.insert(body_key.clone(), serde_json::Value::String(format!("<{} lines below>", body.lines().count())));
+    format!("{}\n{body}", serde_json::Value::Object(head))
+}
+
+/// A result with no text body longer than this goes on pretty-printed (see [`result_text`]).
+// context-budget-exempt: a readability threshold, not a window bound: compact JSON past a
+// couple of thousand chars is one unreadable line at any window
+const PRETTY_JSON_OVER_CHARS: usize = 2_000;
+
+/// A spilled result's shown head takes this fraction of the one-result share: the share
+/// itself is what the mind's view holds for a result, and the pointer plus a quarter of it
+/// leaves the view room for the next result beside it.
+const HEAD_SHARE_DENOM: usize = 4;
+
+/// The first whole lines of `full` that fit in `max_chars`, and how many lines that is
+/// (at least one line, cut at `max_chars` if even the first line is longer).
+fn head_of(full: &str, max_chars: usize) -> (String, usize) {
+    let mut out = String::new();
+    let mut lines = 0usize;
+    for line in full.lines() {
+        if lines > 0 && out.len() + line.len() + 1 > max_chars {
+            break;
+        }
+        if lines > 0 {
+            out.push('\n');
+        }
+        if lines == 0 && line.len() > max_chars {
+            out.push_str(&line.chars().take(max_chars).collect::<String>());
+            lines = 1;
+            break;
+        }
+        out.push_str(line);
+        lines += 1;
+    }
+    (out, lines)
 }
 
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
@@ -924,7 +1003,10 @@ mod tests {
         else {
             panic!("an over-share result is saved")
         };
-        assert!(!shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "no fragment: {shown}");
+        // the head rides along, LABELLED as lines 1-N of M; the tail does not, and the pointer
+        // names the unseen range, so a head is never passed off as the whole
+        assert!(shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "a labelled head, no tail: {shown}");
+        assert!(shown.contains("lines 1-") && shown.contains("are not shown"), "the head is named and the unseen range is named: {shown}");
         assert!(shown.contains(&handle) && shown.contains("tool/output"), "names the way in: {shown}");
         assert!(shown.contains("\"filter\":\"errors\""), "points at the failure filter: {shown}");
         let path = resolve_in(&tmp, persona, &handle).expect("resolve");
@@ -947,9 +1029,11 @@ mod tests {
         };
         assert!(shown.contains("cannot be reopened") && shown.ends_with("ok"), "{shown}");
 
-        // Multibyte bodies measure in chars, the unit the share is in, and never split.
+        // Multibyte bodies measure in chars, the unit the share is in, and never split: the
+        // head of a one-line body is cut at a CHAR boundary, at most a quarter of the share.
         let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona, &LivePin::new()).into_parts();
-        assert!(!shown.contains('α'));
+        let greek = shown.chars().filter(|c| "αβγδε".contains(*c)).count();
+        assert!(greek > 0 && greek <= 64 / HEAD_SHARE_DENOM, "a char-bounded head: {greek} chars in {shown}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 

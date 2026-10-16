@@ -2908,7 +2908,17 @@ pub struct WorkListParams {
     /// day reporting they had no work, and they were reading their tool correctly.
     #[serde(default)]
     pub claimable: Option<bool>,
+    /// At most this many cards (default 40): claimable first, then priority, then newest.
+    // Not a doc comment: this struct's docs are the tool surface a citizen pays tokens for.
+    // Measured 2026-10-16 on the M5: an unbounded list answered with all 776 cards as 198k
+    // chars of JSON, past her window's share, and she could read none of it (card ee003c55).
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<usize>,
 }
+
+/// `work/list`'s default bound on listed cards (see [`WorkListParams::limit`]).
+pub const WORK_LIST_DEFAULT_LIMIT: usize = 40;
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkListCard {
@@ -3089,19 +3099,35 @@ impl ActionCommand for WorkList {
         let total_on_board = rendered.len();
         let claimable_now = rendered.iter().filter(|(r, _)| r.claimable).count();
 
-        let cards: Vec<WorkListCard> = rendered
+        let mut cards: Vec<WorkListCard> = rendered
             .into_iter()
             .filter(|(_, state)| filter.map_or(true, |f| *state == f))
             .filter(|(r, _)| p.claimable.map_or(true, |want| r.claimable == want))
             .map(|(r, _)| r)
             .collect();
+        let matched = cards.len();
+        // claimable first, then priority (p0 before p3), then newest: the board's own order
+        // is arrival, the one order a citizen looking for work never wants
+        cards.sort_by(|a, b| {
+            b.claimable
+                .cmp(&a.claimable)
+                .then_with(|| a.priority.cmp(&b.priority))
+                .then_with(|| a.age_hours.cmp(&b.age_hours))
+        });
+        cards.truncate(p.limit.unwrap_or(WORK_LIST_DEFAULT_LIMIT).max(1));
 
         // A zero that explains itself. `{"cards":[]}` on a full board is the receipt
         // that cost the residents a day: it is indistinguishable from an empty board,
         // and they read it the only way it can be read. The filter's answer stays
         // honest — we do not quietly widen it — but the result says what it left out
         // and which query asks the question she meant. [[observability-as-substrate]]
-        let note = if cards.is_empty() && total_on_board > 0 {
+        let note = if matched > cards.len() {
+            Some(format!(
+                "{} of the {matched} matching cards are listed (claimable first, then priority, then \
+                 newest); pass limit for more, or narrow with state / claimable",
+                cards.len()
+            ))
+        } else if cards.is_empty() && total_on_board > 0 {
             Some(if claimable_now > 0 {
                 format!(
                     "Your filter matched 0 of {total_on_board} cards — the board is NOT empty. \

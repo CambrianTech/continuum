@@ -72,6 +72,34 @@ else
   bad "mod_continuum_bin_link placed nothing" "no continuum on any tier after a clean run"
 fi
 
+# what this catches: the node's GitHub identity never reaching the core (Cormac's review of
+# #5112: the first version ran only on the cold-storage path). With a logged-in `gh` on PATH
+# the module appends GH_TOKEN once (a re-run appends nothing), single-quoted, and the file is
+# mode 600; with no gh it names the gap and leaves the file alone.
+if with_scratch_home '
+  mkdir -p "$HOME/bin" "$CONTINUUM_HOME"; printf "HF_TOKEN=x\n" > "$CONTINUUM_HOME/config.env"
+  printf "#!/bin/sh\n[ \"\$1 \$2\" = \"auth token\" ] && echo gho_stubbedtoken000000000000000000000000\n" > "$HOME/bin/gh"; chmod +x "$HOME/bin/gh"
+  PATH="$HOME/bin:$PATH" mod_github_token >/dev/null 2>&1
+  PATH="$HOME/bin:$PATH" mod_github_token >/dev/null 2>&1
+  [ "$(grep -c "^GH_TOKEN=" "$CONTINUUM_HOME/config.env")" = 1 ] &&
+    grep -q "^GH_TOKEN=.gho_stubbedtoken" "$CONTINUUM_HOME/config.env" &&
+    grep -q "^HF_TOKEN=x$" "$CONTINUUM_HOME/config.env" &&
+    [ "$(stat -f %Lp "$CONTINUUM_HOME/config.env" 2>/dev/null || stat -c %a "$CONTINUUM_HOME/config.env")" = 600 ]
+'; then
+  ok "mod_github_token provisions GH_TOKEN once from gh, single-quoted, mode 600"
+else
+  bad "mod_github_token did not provision the token as specified" "see the case body"
+fi
+if with_scratch_home '
+  mkdir -p "$HOME/bin" "$CONTINUUM_HOME"; printf "HF_TOKEN=x\n" > "$CONTINUUM_HOME/config.env"
+  out="$(PATH="$HOME/bin" mod_github_token 2>&1)"
+  ! grep -q "^GH_TOKEN=" "$CONTINUUM_HOME/config.env" && printf "%s" "$out" | grep -q "gh is not installed"
+'; then
+  ok "mod_github_token without gh names the gap and leaves config.env alone"
+else
+  bad "mod_github_token without gh wrote or stayed silent" "see the case body"
+fi
+
 # what this catches: a non-idempotent installer. Re-running install is the
 # documented UPDATE path ("re-run = update"), so a second run must skip, not
 # redo or fail.

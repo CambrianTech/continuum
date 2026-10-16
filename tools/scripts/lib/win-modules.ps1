@@ -309,6 +309,37 @@ function Mod-ColdStorage {
 
 #  Modules
 
+# ── Mod-GitHubToken ──────────────────────────────────────────
+# The node's GitHub identity for the core's own git and gh (a citizen's act-end push, the PRs
+# it opens). The core runs as a service whose children cannot reach gh's per-user credential
+# store, so the token is provisioned into config.env, which the core applies to its own
+# environment at startup and a citizen's shell strips. Always runs, whether or not cold
+# storage is routed (bash twin: mod_github_token in install-common.sh).
+function Mod-GitHubToken {
+    $configEnv = Join-Path $env:USERPROFILE '.continuum\config.env'
+    if ((Test-Path -LiteralPath $configEnv) -and
+        ((Get-Content -LiteralPath $configEnv -Encoding UTF8) -match '^\s*GH_TOKEN\s*=')) {
+        Module-Skip 'github-token' 'GH_TOKEN already in ~/.continuum/config.env'; return
+    }
+    if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
+        Write-Warn2 'GH_TOKEN: gh is not installed; the core cannot push or open PRs until GH_TOKEN is set in ~/.continuum/config.env'
+        return
+    }
+    $token = (& gh auth token 2>$null | Select-Object -First 1)
+    if (-not $token -or $token -match "['`r`n]") {
+        Write-Warn2 'GH_TOKEN: gh is not logged in (gh auth login); the core cannot push or open PRs until GH_TOKEN is set in ~/.continuum/config.env'
+        return
+    }
+    New-Item -ItemType Directory -Force (Split-Path -Parent $configEnv) | Out-Null
+    # config.env is read both as dotenv and as shell source: single-quoted, one line, the
+    # file's own newline convention (same rules as Update-ColdStorageConfig).
+    $text = if (Test-Path -LiteralPath $configEnv) { [IO.File]::ReadAllText($configEnv) } else { '' }
+    $newline = if ($text.Contains("`r`n")) { "`r`n" } else { "`n" }
+    if ($text -and -not $text.EndsWith("`n")) { $text += $newline }
+    [IO.File]::WriteAllText($configEnv, $text + "GH_TOKEN='$token'" + $newline)
+    Write-Ok 'GH_TOKEN -> ~/.continuum/config.env (from gh auth token)'
+}
+
 function Mod-Rust {
     # Per-user: rustup installs to %USERPROFILE%\.cargo / .rustup so the build
     # (and later `npm start`) run as the user, not admin.

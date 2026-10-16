@@ -8749,6 +8749,12 @@ mod tests {
             // Reproduce the mid-concern inventory loss: the result still has live
             // custody, but its body no longer fits beside the next native batch.
             let inventory = format!("inventory-13010\n{}", "source/location.rs:42 matched reference\n".repeat(400));
+            // The claim here is FIT-TIME substitution: the ring must still hold the inventory
+            // when the prompt is fitted. The ring's share is enforced at every receipt now
+            // (a burst to pointers once the share is exceeded), so the window is sized to
+            // hold this 16.8k-char inventory beside the next batch; a smaller window would
+            // collapse it at the batch's receipt, which is the other mechanism, not this one.
+            wm.set_served_window(65_536);
             let pin = crate::cognition::tool_executor::spill::LivePin::new();
             let custody = pin.retain(persona, &inventory);
             let handle = custody.handle().expect("saved inventory").to_owned();
@@ -9230,7 +9236,10 @@ mod tests {
             // run 38738554029 on 6aa0cbe21 measured 17238; deleting duplicate legacy
             // fallback fields first saved 280 tokens from 17518. Retain the remaining
             // 88 for the callable contract, with no slack or production budget change.
-            const AGENTIC_SURFACE_CEILING: u32 = 17238;
+            // 17238 -> 17298 (PR #5112, 2026-10-16): work/list gains `limit` (default 40,
+            // claimable first) so a board of 776 cards is never one 198k-char line again;
+            // one optional field and its one-line doc, measured locally at 17298.
+            const AGENTIC_SURFACE_CEILING: u32 = 17298;
             let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
             println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
             assert!(
