@@ -4576,9 +4576,10 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
 /// (`request_path`) no longer names `requested_tip`:
 /// the caller lists candidates again against the new tip.
 async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
-    use continuum_cli_lifecycle::prebuilt_artifact::{select_published_core, platform_key, when_artifact_missing, MissingArtifact};
+    use continuum_cli_lifecycle::prebuilt_artifact::{select_published_core, platform_key, when_artifact_missing, MissingArtifact, PublishedCoreError, recheck_resource_deferral};
     let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
     let newest = &candidates[0]; // deploy_candidates always puts the tip's key first
+    let mut resource_wait: Option<(String, continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral)> = None;
     let mut tick = tokio::time::interval(Duration::from_secs(60));
     loop {
         tick.tick().await;
@@ -4588,21 +4589,32 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
         ) {
             return CiCore::Superseded(new_tip);
         }
+        if let Some((_, deferred)) = &resource_wait {
+            let measured = continuum_core::paths::artifacts::check_capacity(&deferred.path, deferred.projected_bytes).await;
+            if let Some(MissingArtifact::Refuse(why)) = recheck_resource_deferral(&mut resource_wait, measured) {
+                return CiCore::Refused(why);
+            }
+        }
         let missing = match platform {
             None => when_artifact_missing(None, 0),
             Some(p) => {
-                let source = CiPublishedCore { repo, platform: p };
+                let source = CiPublishedCore { repo, platform: p, deferred: resource_wait.as_ref() };
                 match select_published_core(candidates, &source).await {
                     None => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
                     Some((key, artifact)) => match artifact {
                         Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
                         // published a moment ago and gone now: the next tick asks again
                         Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
-                        Err(why) if key == newest.as_str() => MissingArtifact::Refuse(format!(
+                        Err(PublishedCoreError::ResourceDeferred(deferred)) => {
+                            let why = format!("published build {key} awaits resource admission: {}", deferred.reason);
+                            resource_wait = Some((key, deferred));
+                            MissingArtifact::Wait(why)
+                        }
+                        Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
                             "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
                         )),
                         // an older core refused: keep waiting for the tip's, within its budget
-                        Err(why) => {
+                        Err(PublishedCoreError::Artifact(why)) => {
                             deploy_note(&format!("deploy-consume: the CI build for {key} was refused: {why}"));
                             when_artifact_missing(Some(p), tip_age_secs(repo, newest))
                         }
@@ -4685,11 +4697,15 @@ async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
 struct CiPublishedCore<'a> {
     repo: &'a Path,
     platform: &'a str,
+    deferred: Option<&'a (String, continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral)>,
 }
 
 #[async_trait::async_trait]
 impl continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreSource for CiPublishedCore<'_> {
     type Artifact = PathBuf;
+    fn deferred(&self, key: &str) -> Option<continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral> {
+        self.deferred.filter(|(waiting, _)| waiting == key).map(|(_, condition)| condition.clone())
+    }
     async fn published(&self, key: &str) -> Result<bool, String> {
         let result = ci_core_published(key, self.platform).await;
         if let Err(why) = &result { deploy_note(&format!("deploy-consume: could not ask CI whether {key} is out: {why}")); }
@@ -4706,7 +4722,7 @@ impl continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreSource for CiPubli
         }
         result
     }
-    async fn fetch(&self, key: &str) -> Result<Option<PathBuf>, String> {
+    async fn fetch(&self, key: &str) -> Result<Option<PathBuf>, continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError> {
         fetch_ci_core(self.repo, key, self.platform).await
     }
 }
@@ -4746,7 +4762,7 @@ async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
 
 /// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
 /// published is not THE build for this node, or does not match its checksum.
-async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
+async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError> {
     prepare_ci_core(repo, tip, platform, None, deploy_note).await
 }
 
@@ -4777,15 +4793,17 @@ async fn prepare_prebuilt(args: Vec<String>) -> Result<(), String> {
     let platform = continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH)
         .ok_or("No compatible prebuilt is published for this platform")?;
     let core = prepare_ci_core(repo, &tip, platform, Some(Path::new(&args[1])), prepare_note)
-        .await?.ok_or("The requested prebuilt is not published")?;
+        .await.map_err(|error| error.to_string())?.ok_or("The requested prebuilt is not published")?;
     println!("{}", serde_json::json!({"core": core, "git_sha": tip}));
     Ok(())
 }
 
-async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Option<&Path>, note: fn(&str)) -> Result<Option<PathBuf>, String> {
+async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Option<&Path>, note: fn(&str)) -> Result<Option<PathBuf>, continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError> {
     use continuum_cli_lifecycle::prebuilt_artifact::{gpu_verdict, manifest_url, manifest_verdict, ArtifactManifest};
     use sha2::{Digest, Sha256};
     use std::io::Write;
+    use continuum_core::paths::artifacts::check_capacity;
+    use continuum_cli_lifecycle::prebuilt_artifact::{PublishedCoreError, archive_expanded_bytes};
     let url = manifest_url(tip, platform).ok_or_else(|| format!("{tip} is not a full commit sha"))?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -4820,16 +4838,17 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
         .iter()
         .find(|lib| lib.contains(['/', '\\']) || lib.contains("..") || lib.is_empty())
     {
-        return Err(format!("runtime library name `{bad}` is not a plain file name"));
+        return Err(format!("runtime library name `{bad}` is not a plain file name").into());
     }
     if manifest.archive.contains(['/', '\\']) || manifest.archive.contains("..") {
-        return Err(format!("archive name `{}` is not a plain file name", manifest.archive));
+        return Err(format!("archive name `{}` is not a plain file name", manifest.archive).into());
     }
     if downloaded.is_some() {
         let expected = git_in(repo, &["rev-parse", "HEAD:core/vendor/llama.cpp"])?;
         continuum_cli_lifecycle::prebuilt_artifact::fresh_engine_verdict(&manifest, expected.trim())?;
     }
-    let root = PathBuf::from(home_dir()?).join(".continuum/cache/artifacts");
+    let root = continuum_core::paths::artifacts::root(Path::new(&home_dir()?))?;
+    check_capacity(&root, 0).await?;
     let dir = root.join(format!("{}-{}", &tip[..12], uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
     std::fs::create_dir(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
@@ -4840,15 +4859,31 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
     let archive = dir.join(&manifest.archive);
     let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
     let mut hasher = Sha256::new();
+    let mut compressed_bytes = 0u64;
     if let Some(source) = downloaded {
         use std::io::Read;
         let mut input = std::fs::File::open(source.join(&manifest.archive)).map_err(|e| format!("reading downloaded archive: {e}"))?;
+        let expected = input.metadata().map_err(|e| format!("measuring archive: {e}"))?.len();
+        check_capacity(&root, expected).await?;
         let mut buffer = [0u8; 65536];
         loop {
             let count = input.read(&mut buffer).map_err(|e| format!("reading downloaded archive: {e}"))?;
             if count == 0 { break; }
+            compressed_bytes = compressed_bytes.checked_add(count as u64).ok_or("archive size overflow")?;
+            if compressed_bytes > expected {
+                check_capacity(&root, count as u64).await.map_err(|error| match error {
+                    PublishedCoreError::ResourceDeferred(mut deferred) => { deferred.projected_bytes = compressed_bytes; PublishedCoreError::ResourceDeferred(deferred) },
+                    error => error,
+                })?;
+            }
             hasher.update(&buffer[..count]);
-            file.write_all(&buffer[..count]).map_err(|e| format!("staging archive: {e}"))?;
+            if let Err(error) = file.write_all(&buffer[..count]) {
+                check_capacity(&root, expected.saturating_sub(compressed_bytes).saturating_add(count as u64)).await.map_err(|failure| match failure {
+                    PublishedCoreError::ResourceDeferred(mut deferred) => { deferred.projected_bytes = expected.max(compressed_bytes); PublishedCoreError::ResourceDeferred(deferred) },
+                    failure => failure,
+                })?;
+                return Err(format!("staging archive: {error}").into());
+            }
         }
     } else {
     let mut resp = client
@@ -4857,15 +4892,31 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
         .await
         .and_then(|r| r.error_for_status())
         .map_err(|e| format!("fetching {archive_url}: {e}"))?;
+    let announced = resp.content_length();
+    if let Some(bytes) = announced { check_capacity(&root, bytes).await?; }
     while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
+        compressed_bytes = compressed_bytes.checked_add(chunk.len() as u64).ok_or("archive size overflow")?;
+        if announced.is_none_or(|bytes| compressed_bytes > bytes) {
+            check_capacity(&root, chunk.len() as u64).await.map_err(|error| match error {
+                PublishedCoreError::ResourceDeferred(mut deferred) => { deferred.projected_bytes = compressed_bytes; PublishedCoreError::ResourceDeferred(deferred) },
+                error => error,
+            })?;
+        }
         hasher.update(&chunk);
-        file.write_all(&chunk).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+        if let Err(error) = file.write_all(&chunk) {
+            let retry_bytes = announced.unwrap_or(compressed_bytes).max(compressed_bytes);
+            check_capacity(&root, retry_bytes.saturating_sub(compressed_bytes).saturating_add(chunk.len() as u64)).await.map_err(|failure| match failure {
+                PublishedCoreError::ResourceDeferred(mut deferred) => { deferred.projected_bytes = retry_bytes; PublishedCoreError::ResourceDeferred(deferred) },
+                failure => failure,
+            })?;
+            return Err(format!("cannot write {}: {error}", archive.display()).into());
+        }
     }
     }
     drop(file);
     let digest = format!("{:x}", hasher.finalize());
     if digest != manifest.sha256.to_ascii_lowercase() {
-        return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256));
+        return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256).into());
     }
     // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
     // GNU tar never reads the drive letter as a host (Fable on #4834).
@@ -4873,23 +4924,43 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
     let details = continuum_core::shell_portable::tar_on(&archive, "-tvzf")?.output().map_err(|e| format!("listing archive types: {e}"))?;
     if !members.status.success() || !details.status.success() { return Err("Cannot inspect published archive before extraction".into()); }
     continuum_cli_lifecycle::prebuilt_artifact::archive_members_verdict(&String::from_utf8_lossy(&members.stdout), &String::from_utf8_lossy(&details.stdout), platform)?;
+    let expanded = archive_expanded_bytes(&String::from_utf8_lossy(&details.stdout))?;
+    // Archive already occupies this volume; extraction is additional. On failure
+    // RAII removes it, so the next attempt must admit both coexisting payloads.
+    check_capacity(&root, expanded).await.map_err(|error| match error {
+        PublishedCoreError::ResourceDeferred(mut deferred) => {
+            deferred.projected_bytes = compressed_bytes.saturating_add(expanded);
+            PublishedCoreError::ResourceDeferred(deferred)
+        }
+        error => error,
+    })?;
     let status = continuum_core::shell_portable::tar_on(&archive, "-xzf")?
         .status()
         .map_err(|e| format!("tar: {e}"))?;
     if !status.success() {
-        return Err(format!("tar could not extract {}", archive.display()));
+        // External writers may consume space after admission. Re-sample through
+        // the same policy; capacity shortage is not a corrupt published build.
+        check_capacity(&root, expanded).await.map_err(|error| match error {
+            PublishedCoreError::ResourceDeferred(mut deferred) => {
+                deferred.projected_bytes = compressed_bytes.saturating_add(expanded);
+                deferred.reason = format!("tar exited {status}; subsequent conservative capacity check: {}", deferred.reason);
+                PublishedCoreError::ResourceDeferred(deferred)
+            }
+            error => error,
+        })?;
+        return Err(format!("tar could not extract {} (exit {status})", archive.display()).into());
     }
     let _ = std::fs::remove_file(&archive);
     let core = dir.join(format!("continuum-core-{platform}")).join(install_cli::cli_file_name("continuum-core-server"));
     if !core.is_file() {
-        return Err(format!("the archive has no {}", core.display()));
+        return Err(format!("the archive has no {}", core.display()).into());
     }
     // The bundled runtime travels with the core: staging copies what this file lists beside
     // the staged exe (`PreparedCoreService::stage`). A warm local build has no such file.
     if !manifest.runtime_libs.is_empty() {
         for lib in &manifest.runtime_libs {
             if !core.with_file_name(lib).is_file() {
-                return Err(format!("the archive lists runtime library {lib} but does not carry it"));
+                return Err(format!("the archive lists runtime library {lib} but does not carry it").into());
             }
         }
         std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), manifest.runtime_libs.join("\n"))
