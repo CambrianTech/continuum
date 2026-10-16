@@ -10577,6 +10577,10 @@ mod tests {
                     )
                     .standing_grounding(),
                 );
+                ws.broadcast.push(Contribution::context(
+                    FacultyId::Custom("frozen-grounding".into()),
+                    "frozen_trailing_grounding", 1.0, "snapshot boundary",
+                ).standing_grounding().trailing());
                 let initial = faculty.prompt_view_within(&ws, window);
                 assert!(initial.capacity_error.is_none());
                 let unfitted = faculty.messages_unfitted(&ws, None);
@@ -10598,6 +10602,13 @@ mod tests {
                     assert!(seen.iter().all(|request| request.messages.iter()
                         .all(|m| !m.content_text().contains("arrived_after_frozen_quote"))));
                     for pair in seen.windows(2) {
+                        assert_ne!(pair[0].request_id, pair[1].request_id);
+                        let ground: Vec<_> = pair[1].messages.iter().enumerate()
+                            .filter(|(_, m)| m.content_text().contains("frozen_trailing_grounding"))
+                            .map(|(i, _)| i).collect();
+                        assert_eq!(ground.len(), 1);
+                        let ask = pair[1].messages.iter().position(|m| m.content_text().contains(stimulus)).unwrap();
+                        assert!(ground[0] < ask);
                         assert_eq!(pair[0].system_prompt, pair[1].system_prompt);
                         assert_eq!(pair[0].max_tokens, pair[1].max_tokens);
                         assert_eq!(serde_json::to_value(&pair[0].tools).unwrap(), serde_json::to_value(&pair[1].tools).unwrap());
