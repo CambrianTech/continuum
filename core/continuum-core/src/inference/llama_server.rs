@@ -96,6 +96,42 @@ pub const READY_TIMEOUT: Duration = Duration::from_secs(90);
 /// lane's tighter fail-loud budget is untouched.
 const EPHEMERAL_READY_TIMEOUT: Duration = Duration::from_secs(240);
 
+/// One model-load progress sample from an engine's 503 `/health` body (fork 6b25db7b4, card
+/// 011d1b4e): the loader's stage and 0..1 value, a per-report `seq`, `blind` once the stage's
+/// counter is done (the work after it reports nothing), and the reporting process's pid.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+struct LoadProgress {
+    seq: u64,
+    current: String,
+    value: f64,
+    blind: bool,
+    generation: LoadGeneration,
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+struct LoadGeneration {
+    pid: u32,
+}
+
+/// The load progress a 503 body carries, if any. An engine older than the fork change answers a
+/// bare 503 and yields `None`, leaving readiness exactly as it was.
+fn load_progress(body: &str) -> Option<LoadProgress> {
+    #[derive(serde::Deserialize)]
+    struct Body {
+        loading: Option<LoadProgress>,
+    }
+    serde_json::from_str::<Body>(body).ok()?.loading
+}
+
+/// `sample` if it is new evidence about OUR engine: reported by the child this lane spawned and
+/// later than the last sample kept. A sample from another process (an adopted lane, a previous
+/// launch on the same port) or a repeat of an old report grants nothing.
+fn advanced(previous: Option<&LoadProgress>, sample: LoadProgress, child_pid: Option<u32>) -> Option<LoadProgress> {
+    let ours = child_pid == Some(sample.generation.pid);
+    let newer = previous.is_none_or(|p| sample.seq > p.seq);
+    (ours && newer).then_some(sample)
+}
+
 /// The bring-up budget in force on this poll. A server answering 503 is UP and loading
 /// (llama-server serves `/health` 503 "Loading model" from the moment it listens), and a
 /// child of ours that is still running is not dead, so that pair earns the cold-load
@@ -4247,6 +4283,12 @@ impl LlamaServerProcess {
         self.child.lock().unwrap().is_some() // JUSTIFIED unwrap: poison means a prior panic while mutating this owned child.
     }
 
+    /// The pid of the engine THIS lane spawned — what a load-progress sample must name to
+    /// count (card 011d1b4e): progress from any other process grants nothing.
+    fn child_pid(&self) -> Option<u32> {
+        self.child.lock().unwrap().as_ref().map(|owned| owned.child.id()) // JUSTIFIED unwrap: poison means a prior panic while mutating this owned child.
+    }
+
     fn child_exit_status(&self) -> Option<std::process::ExitStatus> {
         let mut child = self.child.lock().unwrap(); // JUSTIFIED unwrap: poison means a prior panic while mutating this owned child.
         child.as_mut().and_then(|owned| {
@@ -4306,6 +4348,10 @@ impl LlamaServerProcess {
         // Sticky: once the server has said it is loading, the finish of that load (the 200
         // and the decode probe's first graph) belongs to the same allowance.
         let mut seen_loading = false;
+        // The engine's own load progress (fork 6b25db7b4, card 011d1b4e): recorded and
+        // reported, NOT yet acted on — the stall window it will drive needs measured gaps
+        // between samples on the slow tiers, which these probes now collect.
+        let mut progress: Option<LoadProgress> = None;
         loop {
             match self.client.get(&health).timeout(PROBE_TIMEOUT).send().await {
                 Ok(resp) if resp.status().is_success() => {
@@ -4318,8 +4364,33 @@ impl LlamaServerProcess {
                     last = String::from("/health 200 but decode smoke-probe failed");
                 }
                 Ok(resp) => {
-                    seen_loading |= resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE;
-                    last = format!("status {}", resp.status());
+                    let status = resp.status();
+                    seen_loading |= status == reqwest::StatusCode::SERVICE_UNAVAILABLE;
+                    last = format!("status {status}");
+                    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+                        let sample = resp.text().await.ok().as_deref().and_then(load_progress);
+                        if let Some(p) = sample.and_then(|p| advanced(progress.as_ref(), p, self.child_pid())) {
+                            crate::probe!(
+                                class = "inference.ready.load_progress",
+                                seq = p.seq,
+                                stage = %p.current,
+                                value = p.value,
+                                blind = p.blind,
+                                elapsed_ms = started.elapsed().as_millis() as u64,
+                                "engine reported load progress while /health is 503",
+                            );
+                            progress = Some(p);
+                        }
+                        if let Some(p) = &progress {
+                            last = format!(
+                                "status {status}, last load progress {} {:.3}{} (seq {})",
+                                p.current,
+                                p.value,
+                                if p.blind { " then no counter" } else { "" },
+                                p.seq
+                            );
+                        }
+                    }
                 }
                 Err(e) => last = e.to_string(),
             }
@@ -8164,6 +8235,26 @@ mod tests {
             EPHEMERAL_READY_TIMEOUT,
             "never shorter than the caller's own budget"
         );
+    }
+
+    // what this catches (card 011d1b4e, the 5090 2026-10-16): a cold start that was still
+    // advancing was rolled back at a fixed 240 s because readiness read only the status. The
+    // engine's 503 body now carries load progress; the core keeps a sample only when it is
+    // from the child it spawned and newer than the last, and a bare 503 (an older engine)
+    // yields nothing, so readiness there is unchanged.
+    #[test]
+    fn load_progress_counts_only_newer_samples_from_our_own_child() {
+        let body = |seq: u64, pid: u32| format!(
+            r#"{{"error":{{"code":503}},"loading":{{"stages":["text_model"],"current":"text_model","value":0.5,"seq":{seq},"blind":false,"generation":{{"pid":{pid},"started_ms":1}}}}}}"#
+        );
+        assert_eq!(load_progress(r#"{"error":{"message":"Loading model","code":503}}"#), None, "an older engine's bare 503");
+        let first = load_progress(&body(3, 77)).expect("the fork's 503 parses");
+        assert_eq!((first.seq, first.current.as_str(), first.value, first.blind), (3, "text_model", 0.5, false));
+        let kept = advanced(None, first.clone(), Some(77)).expect("our child's first sample counts");
+        assert_eq!(advanced(Some(&kept), load_progress(&body(3, 77)).unwrap(), Some(77)), None, "a repeated report is not progress");
+        assert_eq!(advanced(Some(&kept), load_progress(&body(9, 78)).unwrap(), Some(77)), None, "another process's progress grants nothing");
+        assert_eq!(advanced(None, first, None), None, "an adopted lane (no child of ours) grants nothing");
+        assert!(advanced(Some(&kept), load_progress(&body(4, 77)).unwrap(), Some(77)).is_some(), "a newer report from our child counts");
     }
 
     #[test]
