@@ -62,6 +62,9 @@ use super::deliberation_budget::GUARD_CHARS_PER_TOKEN;
 /// fraction from the table above). Named so the COUNT below cannot drift from the SIZE.
 /// The one-result share's floor as a fraction of the served window (see
 /// [`ContextBudget::latest_action_chars`]).
+// derived-or-floor: derived — the quantity is the SERVED window (live, per lane); only the
+// share is chosen, an eighth, so one whole source file (~10k tokens at 104k) fits where the
+// prefill-affordable quarter did not (the M5, 2026-10-16: a 250-line read spilled every time).
 const RESULT_FLOOR_DENOM: usize = 8;
 const TRAIL_HEAD_DENOM: usize = 64;
 
