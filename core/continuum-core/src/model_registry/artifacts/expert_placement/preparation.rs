@@ -5,8 +5,7 @@ use std::collections::HashMap;
 
 /// Retained producer exclusion for the complete closure. Readers may continue.
 /// On POSIX this must exclude legacy writers too: flock is only advisory.
-/// Windows retained handles additionally deny write/delete access, but do not
-/// replace custody of producer jobs or writable mappings established earlier.
+/// Windows can instead acquire kernel custody through `prepare_online_windows`.
 pub trait ProducerCustody {
     fn revalidate(&self, root: &Path) -> Result<(), String>;
 }
@@ -21,7 +20,32 @@ pub struct OnlinePreparation<'a> {
     destination_directory: File,
     source_lease: File,
     _destination_lease: File,
-    producer: &'a dyn ProducerCustody,
+    producer: ProducerAuthority<'a>,
+}
+
+// Acquisition intent is private. Windows custody is not established until every
+// source member and its directory have been opened and the closure revalidated.
+enum ProducerAuthority<'a> {
+    External(&'a dyn ProducerCustody),
+    #[cfg(windows)]
+    WindowsHandles,
+}
+
+impl ProducerAuthority<'_> {
+    fn revalidate(
+        &self,
+        root: &Path,
+        directory: &File,
+        files: &[Entry],
+        held: &HashMap<PathBuf, File>,
+    ) -> Result<(), String> {
+        still_retained(root, directory, files, held)?;
+        match self {
+            Self::External(owner) => owner.revalidate(root),
+            #[cfg(windows)]
+            Self::WindowsHandles => Ok(()),
+        }
+    }
 }
 
 fn directory_handle(path: &Path) -> Result<File, String> {
@@ -109,6 +133,21 @@ pub fn prepare_online<'a>(
     root: &Path,
     producer: &'a dyn ProducerCustody,
 ) -> Result<OnlinePreparation<'a>, String> {
+    prepare_configured(root, ProducerAuthority::External(producer))
+}
+
+/// Acquire Windows kernel producer exclusion while permitting existing readers.
+/// Every exact member and directory remains open without write/delete sharing.
+/// The returned owner cannot authorize final reader/spawn exclusion by itself.
+#[cfg(windows)]
+pub fn prepare_online_windows(root: &Path) -> Result<OnlinePreparation<'static>, String> {
+    prepare_configured(root, ProducerAuthority::WindowsHandles)
+}
+
+fn prepare_configured<'a>(
+    root: &Path,
+    producer: ProducerAuthority<'a>,
+) -> Result<OnlinePreparation<'a>, String> {
     let storage =
         crate::paths::configured_storage_root().ok_or("cold storage is not configured")?;
     if !storage.is_absolute() || !storage.is_dir() {
@@ -121,7 +160,7 @@ pub fn prepare_online<'a>(
     if source_volume == cold_volume {
         return Err("cold placement would not relieve source volume".into());
     }
-    prepare_in(
+    prepare_owned(
         &root,
         &cold.join("models/expert-containers"),
         producer,
@@ -143,14 +182,37 @@ pub fn prepare_online<'a>(
     )
 }
 
+#[cfg(test)]
 pub(super) fn prepare_in<'a>(
     root: &Path,
     cold: &Path,
     producer: &'a dyn ProducerCustody,
     admit: &dyn Fn(u64) -> Result<(), String>,
 ) -> Result<OnlinePreparation<'a>, String> {
+    prepare_owned(root, cold, ProducerAuthority::External(producer), admit)
+}
+
+#[cfg(all(test, windows))]
+pub(super) fn prepare_windows_in(
+    root: &Path,
+    cold: &Path,
+    admit: &dyn Fn(u64) -> Result<(), String>,
+) -> Result<OnlinePreparation<'static>, String> {
+    prepare_owned(root, cold, ProducerAuthority::WindowsHandles, admit)
+}
+
+fn prepare_owned<'a>(
+    root: &Path,
+    cold: &Path,
+    producer: ProducerAuthority<'a>,
+    admit: &dyn Fn(u64) -> Result<(), String>,
+) -> Result<OnlinePreparation<'a>, String> {
     let (root, source_lease) = reader_lease(root)?;
-    producer.revalidate(&root)?;
+    match &producer {
+        ProducerAuthority::External(owner) => owner.revalidate(&root)?,
+        #[cfg(windows)]
+        ProducerAuthority::WindowsHandles => {}
+    }
     let source_directory = directory_handle(&root)?;
     let observed = ExpertContainer::observe_complete(&root).map_err(|e| e.to_string())?;
     let mut source = HashMap::new();
@@ -183,8 +245,7 @@ pub(super) fn prepare_in<'a>(
         state: State::Copying,
     };
     validate_manifest_provenance(&placement)?;
-    still_retained(&root, &source_directory, &placement.files, &source)?;
-    producer.revalidate(&root)?;
+    producer.revalidate(&root, &source_directory, &placement.files, &source)?;
     admit(0)?;
     std::fs::create_dir_all(&cold).map_err(|e| e.to_string())?;
     if std::fs::canonicalize(&cold).map_err(|e| e.to_string())? != cold {
@@ -226,7 +287,7 @@ pub(super) fn prepare_in<'a>(
             }
         }
         admit(missing)?;
-        producer.revalidate(&root)?;
+        producer.revalidate(&root, &source_directory, &placement.files, &source)?;
         publish_at(&preparation_receipt, &placement)?;
         std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
         if std::fs::canonicalize(&staging).map_err(|e| e.to_string())? != staging {
@@ -242,8 +303,7 @@ pub(super) fn prepare_in<'a>(
     // Existing published destinations are verified completely and never repaired.
     let destination_directory = directory_handle(&destination)?;
     let destination_handles = retain_verified(&destination, &placement.files)?;
-    producer.revalidate(&root)?;
-    still_retained(&root, &source_directory, &placement.files, &source)?;
+    producer.revalidate(&root, &source_directory, &placement.files, &source)?;
     Ok(OnlinePreparation {
         placement,
         source,
@@ -274,7 +334,7 @@ impl OnlinePreparation<'_> {
         let root = placement.source.decode()?;
         let cold = placement.destination.decode()?;
         custody.revalidate(&root, MigrationStage::Observe)?;
-        producer.revalidate(&root)?;
+        producer.revalidate(&root, &source_directory, &placement.files, &source)?;
         drop(source_lease);
         // No blocking upgrade: a remaining reader causes refusal, not deadlock.
         let _exclusive = exclusive(&sibling(&root, ".container-placement.lock")?)?;
@@ -288,7 +348,7 @@ impl OnlinePreparation<'_> {
             &placement.files,
             &destination,
         )?;
-        producer.revalidate(&root)?;
+        producer.revalidate(&root, &source_directory, &placement.files, &source)?;
         custody.revalidate(&root, MigrationStage::Publish)?;
         placement.state = State::Frozen;
         publish(&root, &placement)?;

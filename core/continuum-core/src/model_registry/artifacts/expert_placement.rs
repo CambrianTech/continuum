@@ -16,6 +16,8 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 
 mod preparation;
+#[cfg(windows)]
+pub use preparation::prepare_online_windows;
 pub use preparation::{prepare_online, OnlinePreparation, ProducerCustody};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -654,6 +656,20 @@ mod tests {
         write_container(&source, 1, 2);
         let custody = Custody { stop: None };
         let reader = ExpertContainer::open(&source).unwrap();
+        #[cfg(windows)]
+        let prepared = {
+            // Kernel custody must reject an already-open writer before any cold
+            // publication, then permit readers after the writer releases.
+            let writer = OpenOptions::new()
+                .write(true)
+                .open(source.join("manifest.json"))
+                .unwrap();
+            assert!(preparation::prepare_windows_in(&source, &cold, &|_| Ok(())).is_err());
+            assert!(!cold.exists());
+            drop(writer);
+            preparation::prepare_windows_in(&source, &cold, &|_| Ok(())).unwrap()
+        };
+        #[cfg(not(windows))]
         let prepared = preparation::prepare_in(&source, &cold, &custody, &|_| Ok(())).unwrap();
         assert!(read(&source).unwrap().is_none());
         assert!(ExpertContainer::open(&source).is_ok());
