@@ -376,36 +376,10 @@ pub async fn apply_act(
         // longer parses. See CommandToolExecutor::execute_native_batch.)
         acts.push(obs);
     }
-    // A pure-background batch (every call was long-running → dispatched, `fg_calls`
-    // empty) still counts as an act — one typed Observation per dispatch so
-    // `produced_an_act()` stays true, matching the old `Some(bg_notes)` return.
-    if acts.is_empty() && !dispatched_calls.is_empty() {
-        for call in &dispatched_calls {
-            acts.push(Observation {
-                call: call.clone(),
-                output: ToolOutput {
-                    image: None,
-                    additional_images: None,
-                    result: ToolResult {
-                        tool_use_id: call.id.clone(),
-                        content: "dispatched — running in background".to_string(),
-                        custody: crate::ai::types::ResultCustody::Unsaved,
-                        is_error: None,
-                    },
-                    verb: ToolVerb::classify(&call.name),
-                    paths: extract_paths(&call.input),
-                    // A dispatched background call is RUNNING by construction —
-                    // that is what "dispatched" means. Saying so here is what stops
-                    // the receipt rendering a tick for work that has not started
-                    // producing anything yet.
-                    verdict: crate::sdk_codegen::ActVerdict::Declared(
-                        crate::sdk_codegen::ToolVerdict::Running,
-                    ),
-                },
-                status: ActStatus::Executed,
-            });
-        }
-    }
+    // Every requested call needs its own truthful receipt, including background
+    // calls in a mixed batch. Native continuation must never omit their IDs.
+    append_dispatched_observations(&mut acts, &dispatched_calls);
+    acts.sort_by_key(|observation| calls.iter().position(|call| call.id == observation.call.id));
     // #243 RECEIPT RADIATION: every executed act reaches the room's transcript
     // as a collapsed receipt ("Ran 4 commands ›", the Claude-iOS pattern) —
     // this is the ONE choke point every hand action passes through (live,
@@ -761,6 +735,34 @@ pub async fn apply_act(
     ActOutcome::Acted { acts }
 }
 
+fn append_dispatched_observations(acts: &mut Vec<Observation>, dispatched_calls: &[ToolCall]) {
+        for call in dispatched_calls {
+            acts.push(Observation {
+                call: call.clone(),
+                output: ToolOutput {
+                    image: None,
+                    additional_images: None,
+                    result: ToolResult {
+                        tool_use_id: call.id.clone(),
+                        content: "dispatched — running in background".to_string(),
+                        custody: crate::ai::types::ResultCustody::Unsaved,
+                        is_error: None,
+                    },
+                    verb: ToolVerb::classify(&call.name),
+                    paths: extract_paths(&call.input),
+                    // A dispatched background call is RUNNING by construction —
+                    // that is what "dispatched" means. Saying so here is what stops
+                    // the receipt rendering a tick for work that has not started
+                    // producing anything yet.
+                    verdict: crate::sdk_codegen::ActVerdict::Declared(
+                        crate::sdk_codegen::ToolVerdict::Running,
+                    ),
+                },
+                status: ActStatus::Executed,
+            });
+        }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -770,6 +772,14 @@ mod tests {
     // backgrounded — so a `code/read` still returns synchronously in the same turn.
     #[test]
     fn long_running_set_matches_real_command_names() {
+        let call = |id: &str| ToolCall { id: id.into(), name: "code/cargo/test".into(), input: serde_json::json!({}) };
+        let mut receipts = Vec::new();
+        append_dispatched_observations(&mut receipts, &[call("existing")]);
+        append_dispatched_observations(&mut receipts, &[call("new-dispatch")]);
+        assert_eq!(receipts.len(), 2, "a nonempty batch must not suppress dispatched replies");
+        assert_eq!(receipts[1].output.result.tool_use_id, "new-dispatch");
+        assert!(receipts[1].output.verdict.running());
+        assert!(!receipts[1].completed_successfully());
         assert!(is_long_running("code/cargo/test"));
         assert!(is_long_running("code/cargo/check"));
         assert!(is_long_running("cognition/full-evaluate"));

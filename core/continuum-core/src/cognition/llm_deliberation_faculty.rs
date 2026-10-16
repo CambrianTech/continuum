@@ -3321,20 +3321,22 @@ impl LlmDeliberationFaculty {
                     // producer payloads below additionally identify the native exchange.
                     field(&mut input, message.as_bytes());
                     let observations = wm.active_action_observations(seq);
-                    if observations.is_empty() {
+                    let calls = wm.active_action_native_calls(seq);
+                    if calls.is_empty() {
                         // Legacy receipts have no native IDs to echo.
                         let (head, tail) = self.split_action_result(message);
                         (vec![head], tail)
                     } else {
-                        let calls: Vec<_> = observations.iter().map(|o| o.call.clone()).collect();
                         let results: Vec<_> = observations.iter().map(|o| o.output.result.clone()).collect();
                         for observation in &observations {
-                            field(&mut input, observation.call.id.as_bytes());
-                            field(&mut input, observation.call.name.as_bytes());
-                            field(&mut input, observation.call.input.to_string().as_bytes());
                             field(&mut input, observation.output.result.tool_use_id.as_bytes());
                             field(&mut input, observation.output.result.content.as_bytes());
-                            input.update([observation.output.result.is_error.unwrap_or(false) as u8]);
+                            input.update([match observation.output.result.is_error { None => 0, Some(false) => 1, Some(true) => 2 }]);
+                        }
+                        for call in &calls {
+                            field(&mut input, call.id.as_bytes());
+                            field(&mut input, call.name.as_bytes());
+                            field(&mut input, call.input.to_string().as_bytes());
                         }
                         let calls = ChatMessage::assistant_tool_use(&calls);
                         let mut results = ChatMessage::tool_results(&results);
@@ -5325,7 +5327,7 @@ impl LlmDeliberationFaculty {
                 }
                 if !calls.is_empty() {
                     if let Some(memory) = &self.working_memory {
-                        memory.record_action_statement(&resp.text, ws.activity_room_id);
+                        memory.record_native_action_statement(&resp.text, ws.activity_room_id, resp.tool_calls.as_deref().unwrap_or_default());
                     }
                     return Some(self.act_verdict(calls, &resp));
                 }
@@ -8344,6 +8346,8 @@ mod tests {
                 &airc_blobs::FsStore::new(home.path().join("images")).unwrap(),
                 other_png.get_ref(),
             ).unwrap();
+            let ws = Workspace::new("fix the __eq__ comparison in sympy Expr");
+            wm.record_native_action_statement("", ws.activity_room_id, &[ToolCall { id: "capture".into(), name: "perception/observe".into(), input: json!({}) }]);
             wm.record_receipt_typed(
                 &[Observation {
                     call: ToolCall {
@@ -8367,7 +8371,7 @@ mod tests {
                     status: ActStatus::Executed,
                 }],
                 &grep_result,
-                None,
+                Some(ws.activity_room_id),
                 crate::ai::types::ResultCustody::Unsaved,
             );
 
@@ -8378,7 +8382,6 @@ mod tests {
             // The deliberate failure condition: NOTHING in the broadcast. No working-memory
             // faculty bid survived attention — the exact state that dropped the grep result
             // to a 0-byte patch. The ask is still present.
-            let ws = Workspace::new("fix the __eq__ comparison in sympy Expr");
             assert!(
                 ws.broadcast.is_empty(),
                 "the harness must reproduce the empty-broadcast eviction"
@@ -8486,7 +8489,11 @@ mod tests {
             let mut batch = wm.active_action_observations(seq);
             let mut error = batch[0].clone();
             error.call.id = "failed-call".into();
-            error.call.input = json!({"path": "missing.rs"});
+            error.call.name = "bash".into();
+            error.call.input = json!({"command": "cat missing.rs"});
+            let original_error_call = error.call.clone();
+            crate::cognition::tool_dialect::normalize_call(&mut error.call);
+            assert_eq!(error.call.name, "code/shell");
             error.output.image = None;
             error.output.additional_images = None;
             error.output.result.tool_use_id = error.call.id.clone();
@@ -8500,7 +8507,10 @@ mod tests {
             skipped.output.result.custody = crate::ai::types::ResultCustody::Pointer { handle: "saved-result".into() };
             skipped.status = ActStatus::AlreadySatisfied { repeat: 2 };
             batch.extend([error, skipped]);
-            wm.record_receipt_typed(&batch, "batch receipt", None, crate::ai::types::ResultCustody::Unsaved);
+            let mut native_calls: Vec<_> = batch.iter().map(|o| o.call.clone()).collect();
+            native_calls[1] = original_error_call;
+            wm.record_native_action_statement("", ws.activity_room_id, &native_calls);
+            wm.record_receipt_typed(&batch, "batch receipt", Some(ws.activity_room_id), crate::ai::types::ResultCustody::Unsaved);
             let batch_prompt = faculty.messages_unfitted(&ws, None);
             assert!(batch_prompt.active_protocol_error().is_none());
             let required = batch_prompt.required_tokens();
@@ -8508,7 +8518,10 @@ mod tests {
             let wire_batch = crate::inference::request_body::wire_messages(&fitted.messages, None, true, false, "llama-server");
             let at = wire_batch.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
             for (i, observation) in batch.iter().enumerate() {
-                assert_eq!(wire_batch[at]["tool_calls"][i]["id"], observation.call.id);
+                assert_eq!(wire_batch[at]["tool_calls"][i]["id"], native_calls[i].id);
+                assert_eq!(wire_batch[at]["tool_calls"][i]["function"]["name"], native_calls[i].name);
+                let arguments: serde_json::Value = serde_json::from_str(wire_batch[at]["tool_calls"][i]["function"]["arguments"].as_str().unwrap()).unwrap();
+                assert_eq!(arguments, native_calls[i].input);
                 assert_eq!(wire_batch[at + 1 + i]["tool_call_id"], observation.call.id);
                 assert_eq!(wire_batch[at + 1 + i]["content"], observation.output.result.content);
             }
