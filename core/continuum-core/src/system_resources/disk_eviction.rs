@@ -1407,6 +1407,11 @@ mod tests {
         let before = tracked.bytes();
         let active = serving_active_artifacts();
         active.register(certified.join("build/input"));
+        assert!(active.protects(&tracked.path().join("release")),
+            "registered pin must protect the selected physical release: pin={:?}, pin_components={:?}, physical_pin={:?}, candidate={:?}, candidate_components={:?}",
+            certified.join("build/input"), certified.join("build/input").components().collect::<Vec<_>>(),
+            certified.join("build/input").canonicalize(), tracked.path().join("release"),
+            tracked.path().join("release").components().collect::<Vec<_>>());
         assert_eq!(broker.relieve().bytes_freed, 4096, "the existing broker reaches release-only incremental pressure");
         assert_eq!(tracked.bytes(), before - 4096);
         assert!(!release.join("incremental").exists());
