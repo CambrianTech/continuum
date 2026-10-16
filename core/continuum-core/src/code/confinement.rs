@@ -376,15 +376,36 @@ impl Enforcement {
 /// same pair.
 const SEATBELT_OPS: [&str; 2] = ["file-read*", "file-write*"];
 
+/// The device files a shell writes to on nearly every command (`> /dev/null`, the tty,
+/// `/dev/fd/N` behind `/dev/stderr`, dyld's dtrace helper), granted as writes after the
+/// host-wide write deny. Measured with the real `sandbox-exec` on IntelMac (macOS 15.7.7,
+/// 2026-10-15, card 0e941074): without them `echo hi > /dev/null` is "Operation not
+/// permitted"; with them `git`, `xcrun`, `cc` (compile and run in the workspace), Python's
+/// `tempfile.mkstemp` and `mktemp -d` all pass, while writes to `/Users/Shared`,
+/// `/usr/local` and `/Volumes` are refused. `literal` is the exact file, `subpath` its tree.
+const SEATBELT_WRITABLE_DEVICES: [(&str, &str); 5] = [
+    ("literal", "/dev/null"),
+    ("literal", "/dev/zero"),
+    ("literal", "/dev/tty"),
+    ("literal", "/dev/dtracehelper"),
+    ("subpath", "/dev/fd"),
+];
+
 /// Render the seatbelt profile (macOS `sandbox-exec -p`) for an allow-list. Within an
 /// operation, rules are evaluated last-match-wins, so the order is: allow the host, deny
-/// the home, grant every root, deny the carve-outs last. The carve-outs are already
+/// WRITES host-wide (outside the home only the write roots are writable: the policy above,
+/// and what landlock already enforced; `(allow default)` alone left every path outside the
+/// home writable, `/Users/Shared` and `/usr/local` included, card 0e941074), re-grant the
+/// devices a shell writes to, deny the home, grant every root, deny the carve-outs last. The carve-outs are already
 /// absent from the granted roots ([`carve`]); writing them again is the belt to that
 /// brace. Nothing is ever granted beneath a deny, so order never cuts against a root of
 /// hers (Cormac on #4882: a first draft denied `~/.airc` and re-granted only her citizen
 /// dir after it, refusing her own card worktree under `~/.airc/worktrees`).
 pub fn seatbelt_profile(home: &Path, list: &AllowList) -> String {
-    let mut out = String::from("(version 1)\n(allow default)\n");
+    let mut out = String::from("(version 1)\n(allow default)\n(deny file-write* (subpath \"/\"))\n");
+    for (filter, device) in SEATBELT_WRITABLE_DEVICES {
+        out.push_str(&format!("(allow file-write* ({filter} \"{device}\"))\n"));
+    }
     let rule = |out: &mut String, verdict: &str, ops: &[&str], root: &Path| {
         for op in ops {
             out.push_str(&format!("({verdict} {op} (subpath \"{}\"))\n", sbpl_string(root)));
@@ -708,8 +729,9 @@ mod tests {
         let grant_hub = at(&format!("(allow file-write* (subpath \"{}\"))", h.join(".cache/huggingface/hub").display()));
         let grant_ws = at(&format!("(allow file-write* (subpath \"{}\"))", ws.display()));
         let deny_token = at(&format!("(deny file-read* (subpath \"{}\"))", h.join(".cache/huggingface/token").display()));
-        assert!(p.starts_with("(version 1)\n(allow default)\n"));
-        assert!(deny_home < read_zshrc && read_zshrc < grant_ws && grant_hub < deny_token, "{p}");
+        assert!(p.starts_with("(version 1)\n(allow default)\n(deny file-write* (subpath \"/\"))\n"), "writes are denied host-wide before anything is granted:\n{p}");
+        let devnull = at("(allow file-write* (literal \"/dev/null\"))");
+        assert!(devnull < deny_home && deny_home < read_zshrc && read_zshrc < grant_ws && grant_hub < deny_token, "{p}");
         assert!(!p.contains(&format!("(subpath \"{}\"))", h.join(".cache/huggingface").display())), "the root holding a carve-out is granted by its children, never whole:\n{p}");
         assert!(!list.write.iter().chain(list.read.iter()).any(|r| r.ends_with("huggingface")), "same on the allow-only side");
         assert!(!p.contains("file* "), "never the wildcard class: a deny in it loses to an earlier specific allow\n{p}");
@@ -750,14 +772,24 @@ mod tests {
             g = leak(".config/gh/hosts.yml", "GH-TOKEN"),
             t = leak(".cache/huggingface/token", "HF-TOKEN"),
         );
+        // card 0e941074: outside the home only the write roots are writable. A host path she
+        // has no root in is refused, while her workspace and /dev/null stay writable.
+        let shared = std::path::PathBuf::from("/Users/Shared").join(format!("continuum-confinement-{}", uuid::Uuid::new_v4()));
+        let script = format!(
+            "{script}; (echo x > '{shared}' && echo LEAK-HOST-WRITE); echo ok > '{ws}/written' && echo hi > /dev/null && echo WROTE",
+            shared = shared.display(),
+            ws = ws.display(),
+        );
         let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()], None, None);
         assert!(receipt.is_enforced(), "{receipt:?}");
         let out = cmd.output().await.expect("test: spawn");
+        let _ = std::fs::remove_file(&shared); // only present if the deny failed; the assertion below names it
         let stdout = String::from_utf8_lossy(&out.stdout);
         let stderr = String::from_utf8_lossy(&out.stderr);
         assert!(stdout.contains("done"), "stdout={stdout} stderr={stderr}");
         assert!(stdout.starts_with("xxxx"), "her worktree, her rc file, the model cache and her citizen dir read: stdout={stdout} stderr={stderr}");
-        for tag in ["PICTURES", "SSH", "AIRC-IDENTITY", "GH-TOKEN", "HF-TOKEN", "HOME"] {
+        assert!(stdout.contains("WROTE"), "her workspace and /dev/null stay writable: stdout={stdout} stderr={stderr}");
+        for tag in ["PICTURES", "SSH", "AIRC-IDENTITY", "GH-TOKEN", "HF-TOKEN", "HOME", "HOST-WRITE"] {
             assert!(!stdout.contains(&format!("LEAK-{tag}")), "{tag} leaked: stdout={stdout}");
         }
         assert!(stderr.contains("Operation not permitted"), "the refusal is the OS's: stderr={stderr}");
