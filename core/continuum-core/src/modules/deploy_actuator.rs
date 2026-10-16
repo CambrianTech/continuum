@@ -437,6 +437,14 @@ impl DeployActuator {
         }
     }
 
+    /// Capability of THIS actuator, using the same stored switch and live external
+    /// owner check as actuation, never a reread of mutable startup configuration.
+    pub(crate) fn consumer_cli(&self) -> Option<PathBuf> {
+        if external_owner(&self.user_home, self.switch.as_deref()).is_some() { return None; }
+        let cli = locate_cli(&self.user_home);
+        cli.is_absolute().then_some(cli)
+    }
+
     fn receipt_path(&self) -> PathBuf {
         self.state_dir.join(ACTUATION_FILE)
     }
@@ -643,6 +651,7 @@ mod tests {
         std::fs::write(&plist, "<plist/>").unwrap(); // unwrap: the test's own file
         assert!(matches!(act.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Deferred(ExternalOwner::LaunchdTracker(_))));
         assert!(spawner.plans.lock().is_empty(), "an external owner means no spawn");
+        assert!(act.consumer_cli().is_none(), "capability uses the same external owner");
         assert!(act.receipt().is_none(), "a deferral writes no receipt");
         std::fs::remove_file(&plist).unwrap(); // unwrap: the test's own file
         // The systemd timer is the same owner on Linux.
@@ -655,11 +664,13 @@ mod tests {
         let (off, off_spawner) = actuator(dir.path(), Some("off"), Some(4242));
         assert!(matches!(off.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Deferred(ExternalOwner::OperatorSwitch)));
         assert!(off_spawner.plans.lock().is_empty());
+        assert!(off.consumer_cli().is_none(), "stored off switch cannot be bypassed by rereading current configuration");
         assert_eq!(external_owner(&dir.path().join("home"), Some("on")), None, "any other value is not a switch position");
         // No owner → the actuator acts.
         assert!(matches!(act.on_deploy_wanted(&req, false, NOW), ActuateOutcome::Spawned { attempt: 1, pid: Some(4242), .. }));
         let plans = spawner.plans.lock();
         assert_eq!(plans.len(), 1);
+        assert_eq!(act.consumer_cli(), plans[0].cli.is_absolute().then(|| plans[0].cli.clone()), "capability names the same launcher as actual actuation");
         assert_eq!(plans[0].args, vec![CONSUMER_VERB.to_string()], "the consumer verb, not a bare reboot: the request names a tip, reboot builds HEAD");
         assert_eq!(plans[0].log, dir.path().join("home").join(".continuum").join("logs").join(ACTUATION_LOG));
     }

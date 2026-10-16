@@ -386,7 +386,7 @@ impl ServiceModule for DeployTrackerModule {
         ModuleConfig {
             name: "deploy_tracker",
             priority: ModulePriority::Background,
-            command_prefixes: &[],
+            command_prefixes: &["deploy/consumer-capability"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 1,
@@ -626,7 +626,13 @@ impl ServiceModule for DeployTrackerModule {
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
-        Err(format!("deploy-tracker has no command surface; '{command}' is unknown"))
+        if command == "deploy/consumer-capability" {
+            return Ok(CommandResult::Json(serde_json::json!({
+                "deployConsumerProtocol": continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL,
+                "deployConsumerCli": self.actuator.consumer_cli(),
+            })));
+        }
+        Err(format!("deploy-tracker command '{command}' is unknown"))
     }
 
     fn as_any(&self) -> &dyn Any {

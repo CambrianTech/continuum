@@ -22,6 +22,7 @@
 
 pub mod docker;
 pub mod cargo;
+pub mod artifacts;
 
 /// Component-prefix comparison without filesystem IO. Windows normal and
 /// verbatim drive/UNC prefixes name the same spelling; other components remain

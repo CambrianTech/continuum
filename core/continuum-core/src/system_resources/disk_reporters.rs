@@ -149,6 +149,7 @@ impl TrackedDir {
 /// writers all use the same TrackedDir instances and scanner.
 mod registry;
 pub use registry::{admit_cargo_target, bind_cargo_owners, register_cargo_target, restore_cargo_roots};
+pub(crate) use registry::resolve_existing_storage_path;
 #[cfg(test)]
 pub(crate) use registry::prepare_writer_fixture;
 use registry::TRACKED_DIRS;
@@ -299,7 +300,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // under our own cache root is one the monitor can weigh and the reaper can clear.
         TrackedDir::new("eye-profiles", home.join(".continuum/cache/eye-profiles")),
         // CI-built cores the deploy consumer downloads instead of compiling (card 50ca737e):
-        // ~200 MB per build, bounded by its writer to the newest three.
+        // Legacy placement remains observable after configured storage redirects future writes.
         TrackedDir::new("core-artifacts", home.join(".continuum/cache/artifacts")),
         // The served-weights store. UNTRACKED until 2026-09-06 — the largest class on the
         // volume (360 GB on the M5 that day: Flash-Next 123, Kimi-Linear 95, DeepSeek-V4-Flash
@@ -396,6 +397,14 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class
     // gets "tracked" at a location nothing writes to, which reads as an empty
     // cache forever.
+    // Preserve the historical cache; relocation changes future writes only.
+    match crate::paths::artifacts::root(home) {
+        Ok(root) if root != home.join(".continuum/cache/artifacts") => {
+            dirs.push(TrackedDir::new("core-artifacts-configured", root));
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(probe_class = "disk.tracked_dirs", %error, "configured artifact root unavailable"),
+    }
     if let Some(root) = hf_root {
         dirs.push(TrackedDir::new("hf-hub", root));
     }

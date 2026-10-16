@@ -407,6 +407,57 @@ function Update-CoreBrowserRelease {
     }
 }
 
+# Preserve typed admission refusals. A filesystem failure after admission is
+# operational uncertainty (admission is not a reservation), not a bad artifact.
+function Get-CoreDeploymentFailure {
+    param([Parameter(Mandatory = $true)][Management.Automation.ErrorRecord]$ErrorRecord)
+    $exception = $ErrorRecord.Exception
+    while ($null -ne $exception) {
+        if ($exception.Data.Contains('ContinuumDeploymentFailure')) {
+            return $exception.Data['ContinuumDeploymentFailure']
+        }
+        if ($exception -is [IO.IOException] -or $exception -is [UnauthorizedAccessException]) {
+            return @{ OperationalBlocked = $ErrorRecord.Exception.Message }
+        }
+        $exception = $exception.InnerException
+    }
+    return @{ Artifact = $ErrorRecord.Exception.Message }
+}
+
+function Assert-CoreArtifactCapacity {
+    param([Parameter(Mandatory = $true)][string]$ArtifactDirectory,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string[]]$Sources, [uint64]$AdditionalBytes = 0)
+    $cli = Join-Path $ArtifactDirectory 'continuum.exe'
+    $protocol = @(Invoke-InstallerProcess $cli @('artifact-capacity', '--protocol'))
+    if ($LASTEXITCODE -ne 0 -or ($protocol -join '').Trim() -ne '1') {
+        $reason = 'Selected published artifact lacks service capacity admission protocol 1; preparation deferred, installed release receipts and files preserved.'
+        $failure = [InvalidOperationException]::new($reason)
+        $failure.Data['ContinuumDeploymentFailure'] = @{ CapabilityDeferred = $reason }
+        throw $failure
+    }
+    # Current used bytes include the old destination and downloaded source. Count
+    # every remaining byte without crediting overwrite before it actually happens.
+    [decimal]$copyBytes = $AdditionalBytes
+    foreach ($source in $Sources) { $copyBytes += (Get-Item -LiteralPath $source -ErrorAction Stop).Length }
+    if ($copyBytes -gt [uint64]::MaxValue) { throw 'Service payload size exceeds the capacity accounting range.' }
+    try {
+        $result = @(Invoke-InstallerProcess $cli @('artifact-capacity', $Destination, ([uint64]$copyBytes).ToString([Globalization.CultureInfo]::InvariantCulture)))
+        if ($LASTEXITCODE -eq 4) {
+            $condition = ($result -join "`n") | ConvertFrom-Json -ErrorAction Stop
+            if (-not $condition.ResourceDeferred) { throw 'Capacity protocol returned an invalid resource refusal.' }
+        } elseif ($LASTEXITCODE -ne 0) { throw "Capacity observation failed: $($result -join ' ')" }
+        else { return }
+    } catch {
+        $failure = [InvalidOperationException]::new($_.Exception.Message)
+        $failure.Data['ContinuumDeploymentFailure'] = @{ OperationalBlocked = $_.Exception.Message }
+        throw $failure
+    }
+    $failure = [InvalidOperationException]::new('Service-slot capacity admission refused; installed release receipts and files were preserved.')
+    $failure.Data['ContinuumDeploymentFailure'] = $condition
+    throw $failure
+}
+
 function New-CoreServiceRelease {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -518,6 +569,9 @@ function New-CoreServiceRelease {
             throw "Incoming release artifact is missing: $name"
         }
     }
+    $copySources = @(@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames | ForEach-Object { Join-Path $ArtifactDirectory $_ })
+    $copySources += @((Join-Path $RepoRoot 'tools\scripts\run-service-hidden.ps1'), (Join-Path $RepoRoot 'tools\scripts\start-livekit-windows.ps1'))
+    Assert-CoreArtifactCapacity -ArtifactDirectory $ArtifactDirectory -Destination $slot -Sources $copySources
     $publishedEngine = Join-Path $ArtifactDirectory 'engine'
     if (Test-Path -LiteralPath (Join-Path $publishedEngine 'engine-install.json') -PathType Leaf) {
         Get-CoreEngineReceipt -Directory $publishedEngine | Out-Null
@@ -642,6 +696,19 @@ function Register-CoreServiceRelease {
     # the prior installed release, and the first update has a real rollback.
     # A recognized damaged selection remains launch-invalid throughout bootstrap
     # migration. Do not reseal it or promise that it is a usable rollback.
+    # Capacity observation runs as the ordinary installer caller. Never execute
+    # a caller-writable candidate CLI from the elevated bootstrap writer.
+    if (-not (Test-Path -LiteralPath $bootstrap -PathType Leaf)) {
+        $bootstrapHashes = Get-CoreReleaseHashes -Release $Release
+        $bootstrapFiles = @{ 'continuum.exe' = $bootstrapHashes.cli }
+        foreach ($property in $bootstrapHashes.PSObject.Properties) {
+            if ($property.Name -eq 'runtime-manifest') { $bootstrapFiles['runtime-libs.txt'] = $property.Value }
+            elseif ($property.Name.StartsWith('runtime:')) { $bootstrapFiles[$property.Name.Substring(8)] = $property.Value }
+        }
+        $bootstrapSources = @($bootstrapFiles.Keys | ForEach-Object { Join-Path (Split-Path $Release.cli) $_ })
+        $manifestBytes = [Text.Encoding]::UTF8.GetByteCount(($bootstrapFiles | ConvertTo-Json -Compress))
+        Assert-CoreArtifactCapacity -ArtifactDirectory (Split-Path $Release.cli) -Destination (Split-Path $bootstrap) -Sources $bootstrapSources -AdditionalBytes $manifestBytes
+    }
     $seededFirstInstall = $false
     if (-not $selectionRecovery) { $seededFirstInstall = Initialize-CoreActiveSelection -Task $task -Release $Release }
     New-Item -ItemType Directory -Force -Path $Release.logDirectory | Out-Null
