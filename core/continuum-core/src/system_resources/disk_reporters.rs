@@ -37,6 +37,9 @@ pub struct TrackedDir {
     bytes: AtomicU64,
     /// Historical targets discovered beneath a citizen retain their hands owner.
     citizen: parking_lot::RwLock<Option<uuid::Uuid>>,
+    /// Advances on a fresh measurement, not eviction write-through. Expensive
+    /// negative custody checks may wait for this existing scanner cadence.
+    observation: AtomicU64,
     /// Whether the scanner has completed at least one walk — before that,
     /// the reporter labels the value as pending instead of claiming "0 B"
     /// (an honest void, never a false zero).
@@ -58,6 +61,7 @@ impl TrackedDir {
             path,
             bytes: AtomicU64::new(0),
             citizen: parking_lot::RwLock::new(None),
+            observation: AtomicU64::new(0),
             scanned: std::sync::atomic::AtomicBool::new(false),
             entries: AtomicU64::new(0),
             walk_ms: AtomicU64::new(0),
@@ -113,12 +117,17 @@ impl TrackedDir {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn observation(&self) -> u64 {
+        self.observation.load(Ordering::Relaxed)
+    }
+
     /// The scanner's write seam (also the test seam for pools built on
     /// this measurement). Marks the dir scanned — a set value is a real
     /// value, never "pending".
     pub(crate) fn set_bytes(&self, bytes: u64) {
         self.bytes.store(bytes, Ordering::Relaxed);
         self.scanned.store(true, Ordering::Relaxed);
+        self.observation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The scanner's write seam proper: the walk's yield AND its cost. The cost

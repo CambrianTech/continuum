@@ -26,7 +26,8 @@
 //! 3. **Derived artifacts only.** The ladder deletes incremental state,
 //!    test binaries, then the debug tree — all reproducible by the next
 //!    `cargo build`. Standard release incremental state is also reclaimable;
-//!    release binaries, deps and build outputs remain untouched. Custom profiles
+//!    release build inputs require an explicit producer static-input declaration.
+//!    Generic deps/build and top-level installer inputs remain retained and reported. Custom profiles
 //!    and target-triple subtrees are not inferred from arbitrary directory names.
 
 use std::collections::HashSet;
@@ -278,13 +279,16 @@ pub enum DeclinedEviction {
     /// The deletion owner cannot establish an unredirected path inside its root.
     UnsafePath(String),
     CitizenBusy(String),
-    /// A process is EXECUTING an image under `debug/` (a test binary, a tool cargo built
+    /// A process is EXECUTING an image under a profile (a test binary, a tool cargo built
     /// and ran). Cargo releases its locks at "Finished" and then runs what it built, so
     /// the locks say nothing about that window, and deleting a running image is a
     /// SIGKILL when its next page faults in (the M5, 2026-10-05: three test runs killed
-    /// at launch while the pool sat 14 GB over budget). The debug rung is declined while
+    /// at launch while the pool sat 14 GB over budget). The profile rung is declined while
     /// it is in use; the earlier rungs still cut.
-    DebugProfileInUse { pid: u32, exe: String },
+    ProfileInUse { pid: u32, exe: String },
+    ActiveArtifact { path: PathBuf },
+    ReleaseInputsRetained { bytes: u64 },
+    AwaitingReleaseMeasurement,
     /// The lock could not be opened or queried — permissions, a vanished path, a
     /// filesystem that cannot lock. @Astra, #3910 review: the first version folded
     /// this into the two above, so an IO failure was reported as "a live build holds
@@ -303,10 +307,13 @@ impl DeclinedEviction {
             Self::BuildHoldsRootLock => 1,
             Self::BuildHoldsDebugLock => 2,
             Self::LockUnavailable(_) => 3,
-            Self::DebugProfileInUse { .. } => 4,
+            Self::ProfileInUse { .. } => 4,
             Self::BuildHoldsReleaseLock => 5,
             Self::UnsafePath(_) => 6,
-            Self::CitizenBusy(_) => 7,
+            Self::ActiveArtifact { .. } => 7,
+            Self::ReleaseInputsRetained { .. } => 8,
+            Self::AwaitingReleaseMeasurement => 9,
+            Self::CitizenBusy(_) => 10,
         }
     }
 
@@ -328,10 +335,12 @@ impl DeclinedEviction {
             Self::BuildHoldsReleaseLock => "a live cargo build holds release/.cargo-lock — standing down",
             Self::UnsafePath(_) => "a cache path is redirected or unverifiable — refusing reclamation",
             Self::CitizenBusy(_) => "citizen-owned build residue waits for hands and node quiescence",
-            Self::DebugProfileInUse { .. } => {
-                "a process is executing an image under debug/ (a test binary cargo just \
-                 built) — the debug rung stands down; deleting a running image kills it"
+            Self::ProfileInUse { .. } => {
+                "a process is executing an image under this Cargo profile — its output closure stands down"
             }
+            Self::ActiveArtifact { .. } => "serving retains an artifact under this output closure — refusing reclamation",
+            Self::ReleaseInputsRetained { .. } => "release installation inputs or undeclared outputs remain; reclamation needs their producer custody, not Cargo's build lock alone",
+            Self::AwaitingReleaseMeasurement => "release custody was already checked for this measurement; await the existing scanner before repeating its content reads",
             Self::LockUnavailable(_) => {
                 "the lock could not be opened or queried — NOT evidence a build was                  protected, and NOT evidence the guard ran; the cache was left alone                  because we could not establish it was safe to touch"
             }
@@ -354,6 +363,7 @@ pub struct CargoTargetPool {
     tier: String,
     tracked: Arc<TrackedDir>,
     budget_bytes: u64,
+    active_artifacts: Arc<ActiveArtifactSet>,
     /// Read the owning volume's already-published sample; never probe here.
     volume_sample: fn(&Path) -> Option<crate::capacity::system_profile::DriveInfo>,
     citizen_quiescence: fn(&Path) -> Result<(), String>,
@@ -367,6 +377,9 @@ pub struct CargoTargetPool {
     /// see [`CargoTargetPool::note_eviction`] for why the count was wrong.
     last_eviction_ms: std::sync::atomic::AtomicU64,
     fast_gaps: std::sync::atomic::AtomicU32,
+    /// Never a cached permission: only defers another release proof attempt
+    /// until the existing measurement owner observes the root again.
+    release_observation: std::sync::atomic::AtomicU64,
 }
 
 impl CargoTargetPool {
@@ -436,10 +449,12 @@ impl CargoTargetPool {
             decline_repeats: std::sync::atomic::AtomicU32::new(0),
             last_eviction_ms: std::sync::atomic::AtomicU64::new(0),
             fast_gaps: std::sync::atomic::AtomicU32::new(0),
+            release_observation: std::sync::atomic::AtomicU64::new(u64::MAX),
             tracked,
             budget_bytes: budget_bytes.max(1),
             volume_sample: super::DiskPressureMonitor::volume_for,
             citizen_quiescence: super::citizen_workspace_pool::node_quiescence,
+            active_artifacts: serving_active_artifacts(),
         }
     }
 
@@ -543,14 +558,15 @@ impl CargoTargetPool {
         );
     }
 
-    /// The rungs, freed in order. The last one is `debug` ITSELF, which is why it
-    /// is not a plain `remove_dir_all` — see [`Self::free_rung`].
-    fn ladder(root: &Path) -> [PathBuf; 4] {
+    /// The rungs, freed in order. Profile rungs preserve their custody and
+    /// installation inputs — see [`Self::free_rung`].
+    fn ladder(root: &Path) -> [PathBuf; 5] {
         [
             root.join("debug/incremental"),
             root.join("release/incremental"),
             root.join("tests"),
             root.join("debug"),
+            root.join("release"),
         ]
     }
 
@@ -630,6 +646,36 @@ impl CargoTargetPool {
     /// survives the reclaim. `debug/.cargo-lock` is a zero-length lock file — the
     /// bytes we decline to free by keeping it are not bytes.
     fn free_rung(rung: &Path, root: &Path) -> u64 {
+        if rung == root.join("release") {
+            use continuum_cli_lifecycle::cargo_cache_custody as custody;
+            // Cargo's build/<unit>/out layout locates declarations; unit names
+            // grant no ownership. Each producer must explicitly certify its
+            // static-only children. Generic OUT_DIR data and deps may be runtime
+            // inputs of programs outside this profile and remain untouched.
+            let Ok(units) = std::fs::read_dir(rung.join("build")) else { return 0; };
+            let mut freed = 0u64;
+            for unit in units.flatten() {
+                let out = unit.path().join("out");
+                let receipt = out.join(custody::RECEIPT);
+                if Self::validate_tree(&out, root).is_err() || !custody::declared_static_inputs(&out) {
+                    continue;
+                }
+                // Cargo's own captured producer output is its freshness input.
+                // Invalidate it FIRST: removing only an OUT_DIR file does not
+                // rerun build.rs, while watching a self-written receipt loops.
+                let output = unit.path().join("output");
+                let output_bytes = Self::free_owned_tree(&output, root, None);
+                if output.exists() || output_bytes == 0 { continue; }
+                freed = freed.saturating_add(output_bytes);
+                let receipt_bytes = Self::free_owned_tree(&receipt, root, None);
+                if receipt.exists() || receipt_bytes == 0 { continue; }
+                freed = freed.saturating_add(receipt_bytes);
+                for child in custody::CHILDREN {
+                    freed = freed.saturating_add(Self::free_owned_tree(&out.join(child), root, None));
+                }
+            }
+            return freed;
+        }
         let debug = root.join("debug");
         let lock = debug.join(".cargo-lock");
         Self::free_owned_tree(rung, root, (rung == debug).then_some(lock.as_path()))
@@ -722,6 +768,7 @@ impl ResourcePool for CargoTargetPool {
 
         let mut freed = 0u64;
         let debug = root.join("debug");
+        let release = root.join("release");
         for rung in Self::ladder(&root) {
             if let Some((_, home)) = &_hands {
                 if let Err(error) = (self.citizen_quiescence)(home) {
@@ -735,21 +782,36 @@ impl ResourcePool for CargoTargetPool {
             if !rung.exists() {
                 continue;
             }
+            let observation = self.tracked.observation();
+            if rung == release && self.release_observation.load(std::sync::atomic::Ordering::Relaxed) == observation {
+                self.declined(DeclinedEviction::AwaitingReleaseMeasurement);
+                continue;
+            }
             if let Err(error) = Self::validate_tree(&rung, &root) {
                 self.declined(DeclinedEviction::UnsafePath(error));
                 continue;
             }
-            // THE WINDOW THE LOCKS DO NOT COVER: cargo has finished and is RUNNING what it
-            // built. The debug rung is the one that deletes those images; it is declined
-            // while any process executes one, and the pool stays over budget until the
-            // run ends (the next tick cuts it).
-            if rung == debug {
-                if let Some((pid, exe)) = process_executing_under(&debug) {
-                    self.declined(DeclinedEviction::DebugProfileInUse { pid, exe });
-                    break;
+            // Cargo releases its locks before running the produced image. Protect
+            // the whole profile, including native build outputs/dependencies, while
+            // any image from it executes; the same rule applies to both profiles.
+            if rung == debug || rung == release {
+                if let Some((pid, exe)) = process_executing_under(&rung) {
+                    self.declined(DeclinedEviction::ProfileInUse { pid, exe });
+                    continue;
                 }
             }
+            if self.active_artifacts.protects(&rung) {
+                self.declined(DeclinedEviction::ActiveArtifact { path: rung });
+                continue;
+            }
+            if rung == release {
+                self.release_observation.store(observation, std::sync::atomic::Ordering::Relaxed);
+            }
             freed = freed.saturating_add(Self::free_rung(&rung, &root));
+            if rung == release && freed < want_bytes.max(1) {
+                let bytes = dir_size_bytes(&release);
+                if bytes > 0 { self.declined(DeclinedEviction::ReleaseInputsRetained { bytes }); }
+            }
         }
         if freed > 0 {
             self.tracked.record_freed(freed);
@@ -795,13 +857,44 @@ pub fn serving_tier_capacity_bytes(volume_total_bytes: u64) -> u64 {
 /// protects everything inside it.
 #[derive(Default)]
 pub struct ActiveArtifactSet {
-    paths: RwLock<HashSet<PathBuf>>,
+    paths: RwLock<std::collections::HashMap<PathBuf, Option<PathBuf>>>,
 }
 
 impl ActiveArtifactSet {
+    /// Raw identities without physical proof cannot authorize any reclamation.
     pub fn register(&self, path: PathBuf) {
         if let Ok(mut set) = self.paths.write() {
-            set.insert(path);
+            set.insert(path, None);
+        }
+    }
+
+    /// Resolve before the synchronous serving admission, through the shared bounded
+    /// path worker. Failed resolution is published as unresolved custody, never guessed.
+    pub async fn resolve(path: &Path) -> Option<PathBuf> {
+        if !path.is_absolute() { return None; }
+        match super::disk_reporters::resolve_existing_storage_path(path).await {
+            Ok(physical) => Some(physical),
+            Err(error) => {
+                crate::clog_warn!("active artifact identity unresolved: {}", error);
+                None
+            }
+        }
+    }
+
+    pub fn register_resolved(&self, path: PathBuf, physical: Option<PathBuf>) {
+        if let Ok(mut set) = self.paths.write() {
+            let physical = physical.filter(|resolved| path.is_absolute() && resolved.is_absolute());
+            set.insert(path, physical);
+        }
+    }
+
+    pub fn replace(&self, old: Option<&Path>, new: Option<(PathBuf, Option<PathBuf>)>) {
+        if let Ok(mut set) = self.paths.write() {
+            if let Some(old) = old { set.remove(old); }
+            if let Some((raw, physical)) = new {
+                let physical = physical.filter(|resolved| raw.is_absolute() && resolved.is_absolute());
+                set.insert(raw, physical);
+            }
         }
     }
 
@@ -811,6 +904,7 @@ impl ActiveArtifactSet {
         }
     }
 
+    /// `candidate` must be resolved by its eviction owner before this lock-only check.
     /// Is `candidate` (an eviction target) protected? True when any
     /// registered active path IS the candidate, lives UNDER it, or the
     /// candidate lives under a registered dir — prefix containment both
@@ -822,8 +916,12 @@ impl ActiveArtifactSet {
             // treat everything as protected rather than migrate blind.
             return true;
         };
-        set.iter()
-            .any(|active| active.starts_with(candidate) || candidate.starts_with(active))
+        set.values().any(|physical| match physical {
+            None => true,
+            Some(active) => !active.is_absolute() || !candidate.is_absolute()
+                || crate::paths::has_path_prefix(active, candidate)
+                || crate::paths::has_path_prefix(candidate, active),
+        })
     }
 }
 
@@ -1061,7 +1159,8 @@ impl ResourcePool for NvmeServingTierPool {
                 break;
             }
             // Invariant 1: never the actively-paged artifact.
-            if self.active.protects(&path) {
+            let Ok(physical) = std::fs::canonicalize(&path) else { continue };
+            if self.active.protects(&physical) {
                 continue;
             }
             let Some(name) = path.file_name() else {
@@ -1195,13 +1294,21 @@ mod tests {
     // still cut and the debug rung stands down with the pid; once it exits, the rung cuts.
     #[cfg(unix)]
     #[test]
-    fn the_debug_rung_stands_down_while_a_process_executes_under_it() {
+    fn profile_outputs_stand_down_while_a_process_executes_under_them() {
+        for profile in ["debug", "release"] {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
-        let deps = tmp.path().join("debug/deps");
+        let deps = tmp.path().join(profile).join(if profile == "release" { "build/unit/out/build" } else { "deps" });
         std::fs::create_dir_all(&deps).expect("mkdir");
         let sleeper = deps.join("continuum_core-test");
         std::fs::copy("/bin/sleep", &sleeper).expect("a sleeper to run from debug/deps");
+        if profile == "release" {
+            use continuum_cli_lifecycle::cargo_cache_custody as custody;
+            let out = deps.parent().unwrap();
+            std::fs::create_dir_all(out.join("lib")).unwrap();
+            let generation = custody::publish_static_inputs(out).unwrap();
+            std::fs::write(out.parent().unwrap().join("output"), format!("{}{generation}\n", custody::METADATA)).unwrap();
+        }
         let mut child = std::process::Command::new(&sleeper).arg("30").spawn().expect("spawn the sleeper");
         let pool = CargoTargetPool::new(tracked.clone(), 1);
         // Ask for more than the first two rungs hold, so the ladder reaches debug/.
@@ -1209,8 +1316,8 @@ mod tests {
         assert!(!tmp.path().join("debug/incremental").exists(), "the first rung still cuts");
         assert!(!tmp.path().join("tests").exists(), "the second rung still cuts");
         assert!(sleeper.exists(), "the executing image survives");
-        assert!(tmp.path().join("debug/lib.rlib").exists(), "the debug rung stood down whole");
-        assert_eq!(freed, 6000, "only the two safe rungs");
+        assert_eq!(tmp.path().join("debug/lib.rlib").exists(), profile == "debug", "only the active profile stands down");
+        assert_eq!(freed, if profile == "debug" { 6000 } else { 9000 }, "only safe rungs");
         child.kill().expect("stop the sleeper");
         let exited = child.wait();
         // u8::MAX = no decline recorded, so the tag below is the SECOND call's alone.
@@ -1225,8 +1332,9 @@ mod tests {
              sleeper_exists={} last_decline_tag={} executing_now={:?}",
             sleeper.exists(),
             pool.last_decline.load(std::sync::atomic::Ordering::Relaxed),
-            process_executing_under(&tmp.path().join("debug")),
+            process_executing_under(&tmp.path().join(profile)),
         );
+      }
     }
 
     #[test]
@@ -1324,21 +1432,52 @@ mod tests {
     // what this catches: the real broker must reach release incremental after
     // compiler custody ends, even when the pool uses a measured volume instead
     // of its fallback budget (3d4a push CI previously depended on global timing).
-    #[test]
-    fn broker_reclaims_release_incremental_only_after_profile_custody() {
+    #[tokio::test]
+    async fn broker_reclaims_release_incremental_only_after_profile_custody() {
+        super::super::disk_reporters::prepare_writer_fixture().await;
         use crate::paging::{BrokerConfig, PressureBroker};
+        use continuum_cli_lifecycle::cargo_cache_custody as custody;
         let tmp = tempfile::tempdir().unwrap();
         let release = tmp.path().join("release");
         std::fs::create_dir_all(release.join("incremental/unit")).unwrap();
         std::fs::create_dir_all(release.join("deps")).unwrap();
         std::fs::create_dir_all(release.join("build")).unwrap();
+        std::fs::create_dir_all(release.join(".fingerprint")).unwrap();
         std::fs::write(release.join("incremental/unit/derived.o"), vec![0u8; 4096]).unwrap();
-        let outputs = ["continuum", "deps/library.rlib", "build/output"];
+        let outputs = ["continuum", "deps/library.rlib", "build/output", ".fingerprint/unit"];
         for output in outputs { std::fs::write(release.join(output), b"preserve installed inputs").unwrap(); }
+        let certified = release.join("build/producer/out");
+        let unknown = release.join("build/foreign/out");
+        for out in [&certified, &unknown] {
+            for child in custody::CHILDREN {
+                std::fs::create_dir_all(out.join(child)).unwrap();
+                std::fs::write(out.join(child).join("input"), b"producer input").unwrap();
+            }
+        }
+        let generation = custody::publish_static_inputs(&certified).unwrap();
+        let cargo_output = certified.parent().unwrap().join("output");
+        let declaration = format!("{}{generation}\n", custody::METADATA);
+        assert!(!custody::declared_static_inputs(&certified), "receipt alone is not current producer provenance");
+        std::fs::write(&cargo_output, &declaration).unwrap();
+        assert!(custody::declared_static_inputs(&certified));
+        std::fs::write(certified.join("build/input"), b"changed input!").unwrap();
+        assert!(!custody::declared_static_inputs(&certified), "same-size changed contents invalidate generation custody");
+        std::fs::write(certified.join("build/input"), b"producer input").unwrap();
+        std::fs::write(certified.join("build/new-runtime-asset"), b"changed by legacy producer").unwrap();
+        assert!(!custody::declared_static_inputs(&certified), "failed legacy build cannot leave stale output custody");
+        std::fs::remove_file(certified.join("build/new-runtime-asset")).unwrap();
+        std::fs::write(&cargo_output, b"cargo:rerun-if-changed=legacy.rs\n").unwrap();
+        assert!(!custody::declared_static_inputs(&certified), "successful legacy producer supersedes declaration");
+        std::fs::write(&cargo_output, &declaration).unwrap();
+        // A malformed/partial receipt never grants inferred runtime ownership.
+        std::fs::write(unknown.join(custody::RECEIPT), b"cargo-static-link-inputs-v1\n").unwrap();
+        let closure_bytes = dir_size_bytes(&certified) + std::fs::metadata(&cargo_output).unwrap().len();
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
         tracked.set_bytes(dir_size_bytes(tmp.path()));
         let mut pool = CargoTargetPool::new(tracked.clone(), 1);
         pool.volume_sample = critical_fixture_volume;
+        let active = Arc::new(ActiveArtifactSet::default());
+        pool.active_artifacts = active.clone();
         assert_eq!(pool.pressure(), 1.0, "the fixture supplies measured critical-volume pressure");
         assert!(pool.capacity_bytes() > tracked.bytes(), "pressure comes from the volume, not the fallback budget");
         let pool = Arc::new(pool);
@@ -1353,6 +1492,15 @@ mod tests {
         #[cfg(unix)]
         let inode = { use std::os::unix::fs::MetadataExt; std::fs::metadata(&lock_path).unwrap().ino() };
         let before = tracked.bytes();
+        let raw_pin = certified.join("build/input");
+        let physical_pin = ActiveArtifactSet::resolve(&raw_pin).await;
+        assert!(physical_pin.is_some(), "bounded owner resolves the real Windows short alias");
+        active.register_resolved(raw_pin, physical_pin);
+        assert!(active.protects(&tracked.path().join("release")),
+            "registered pin must protect the selected physical release: pin={:?}, pin_components={:?}, physical_pin={:?}, candidate={:?}, candidate_components={:?}",
+            certified.join("build/input"), certified.join("build/input").components().collect::<Vec<_>>(),
+            certified.join("build/input").canonicalize(), tracked.path().join("release"),
+            tracked.path().join("release").components().collect::<Vec<_>>());
         assert_eq!(broker.relieve().bytes_freed, 4096, "the existing broker reaches release-only incremental pressure");
         assert_eq!(tracked.bytes(), before - 4096);
         assert!(!release.join("incremental").exists());
@@ -1360,6 +1508,29 @@ mod tests {
         #[cfg(unix)]
         { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), inode); }
         for output in outputs { assert_eq!(std::fs::read(release.join(output)).unwrap(), b"preserve installed inputs"); }
+        active.release(&certified.join("build/input"));
+        let remaining = tracked.bytes();
+        assert_eq!(broker.relieve().bytes_freed, closure_bytes, "release-only intermediate pressure has a real eviction owner");
+        assert_eq!(tracked.bytes(), remaining - closure_bytes);
+        for child in custody::CHILDREN { assert!(!certified.join(child).exists()); assert!(unknown.join(child).join("input").exists()); }
+        assert!(!cargo_output.exists(), "withdraw Cargo's captured output so missing inputs regenerate");
+        assert!(!certified.join(custody::RECEIPT).exists());
+        for output in outputs { assert_eq!(std::fs::read(release.join(output)).unwrap(), b"preserve installed inputs"); }
+        assert_eq!(broker.relieve().bytes_freed, 0, "unknown outputs cannot be certified by an unrelated producer");
+        custody::invalidate(&unknown).unwrap();
+        let generation = custody::publish_static_inputs(&unknown).unwrap();
+        std::fs::write(unknown.parent().unwrap().join("output"), format!("{}{generation}\n", custody::METADATA)).unwrap();
+        assert_eq!(broker.relieve().bytes_freed, 0, "new custody waits for the existing scanner; pressure ticks do not repeat tree hashing");
+        assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), DeclinedEviction::AwaitingReleaseMeasurement.discriminant());
+        assert!(unknown.join("build/input").exists());
+        tracked.set_bytes(dir_size_bytes(tmp.path()));
+        let declared_bytes = dir_size_bytes(&unknown) + std::fs::metadata(unknown.parent().unwrap().join("output")).unwrap().len();
+        assert_eq!(broker.relieve().bytes_freed, declared_bytes, "only that producer's explicit declaration releases its own inputs");
+        assert!(!custody::declared_static_inputs(&unknown));
+        assert_eq!(std::fs::read(release.join("continuum")).unwrap(), b"preserve installed inputs", "a completed warm-build receipt can still name the root binary");
+        assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), DeclinedEviction::ReleaseInputsRetained { bytes: 1 }.discriminant());
+        #[cfg(unix)]
+        { use std::os::unix::fs::MetadataExt; assert_eq!(std::fs::metadata(&lock_path).unwrap().ino(), inode); }
         let reacquired = try_exclusive_flock_detailed(&lock_path);
         assert!(matches!(reacquired, LockAttempt::Acquired(_)),
             "custody is released with the original lock path intact: path={}, result={reacquired:?}",
@@ -1764,13 +1935,15 @@ mod tests {
         // artifact is NEVER migrated, even when eviction wants unlimited
         // bytes. Losing the resident model's GGUF mid-serve is the engine
         // reading from a deleted file.
-        #[test]
-        fn actively_paged_artifact_is_never_migrated() {
+        #[tokio::test]
+        async fn actively_paged_artifact_is_never_migrated() {
+            crate::system_resources::disk_reporters::prepare_writer_fixture().await;
             let hot = tempfile::tempdir().expect("tempdir");
             let cold = tempfile::tempdir().expect("tempdir");
             let tracked = seeded_hot_tier(hot.path());
             let active = Arc::new(ActiveArtifactSet::default());
-            active.register(hot.path().join("served-model"));
+            let raw = hot.path().join("served-model");
+            active.register_resolved(raw.clone(), ActiveArtifactSet::resolve(&raw).await);
             let pool = NvmeServingTierPool::new(
                 tracked,
                 1_000_000,
@@ -2096,22 +2269,51 @@ mod tests {
         // what this catches: ActiveArtifactSet prefix containment BOTH
         // directions — marking a model dir protects files inside it, and
         // marking a file protects its parent dir from wholesale migration.
-        #[test]
-        fn active_set_protects_prefix_both_directions() {
+        #[tokio::test]
+        async fn active_set_protects_prefix_both_directions() {
+            crate::system_resources::disk_reporters::prepare_writer_fixture().await;
             let set = ActiveArtifactSet::default();
-            set.register(PathBuf::from("/hot/served-model"));
-            assert!(set.protects(Path::new("/hot/served-model")));
+            let root = tempfile::tempdir().unwrap();
+            // Unix temporary roots may themselves be aliases (/var on macOS).
+            // This fixture tests Windows prefix spelling, not alias resolution.
+            #[cfg(windows)]
+            let root_path = root.path().to_path_buf();
+            #[cfg(not(windows))]
+            let root_path = root.path().canonicalize().unwrap();
+            let logical = root_path.join("served-model");
+            std::fs::create_dir(&logical).unwrap();
+            let physical = logical.canonicalize().unwrap();
+            set.register(logical.clone());
+            assert!(set.protects(&root_path.join("other-model")), "unresolved pins fail closed without IO");
+            set.register_resolved(logical.clone(), ActiveArtifactSet::resolve(&logical).await);
+            assert!(set.protects(&physical), "normal and canonical Windows spellings share custody");
             assert!(
-                set.protects(Path::new("/hot/served-model/model.gguf")),
+                set.protects(&physical.join("model.gguf")),
                 "candidate under active dir is protected"
             );
             assert!(
-                set.protects(Path::new("/hot")),
+                set.protects(&root_path.canonicalize().unwrap()),
                 "parent of active is protected"
             );
-            assert!(!set.protects(Path::new("/hot/other-model")));
-            set.release(Path::new("/hot/served-model"));
-            assert!(!set.protects(Path::new("/hot/served-model")));
+            assert!(!set.protects(&root_path.join("other-model")));
+            std::fs::remove_dir(&logical).unwrap();
+            assert!(set.protects(&physical), "missing leaf retains registered custody");
+            set.release(&logical);
+            assert!(!set.protects(&physical));
+            let unresolved = PathBuf::from("relative-model");
+            set.register(unresolved.clone());
+            assert!(set.protects(&physical), "relative custody cannot grant reclamation permission");
+            set.release(&unresolved);
+            #[cfg(windows)]
+            {
+                let unc = PathBuf::from(r"\\server\share\model");
+                set.register_resolved(unc.clone(), Some(unc.clone()));
+                assert!(set.protects(Path::new(r"\\?\UNC\server\share\model\weights")));
+                assert!(!set.protects(Path::new(r"\\?\UNC\server\different\model")));
+                assert!(!set.protects(Path::new(r"\\?\UNC\server\share\model-other")));
+                set.release(&unc);
+                assert!(!set.protects(Path::new(r"\\?\UNC\server\share\model")));
+            }
         }
     }
 }

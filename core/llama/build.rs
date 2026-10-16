@@ -14,8 +14,12 @@ use std::path::PathBuf;
 
 mod cpu_target;
 mod msvc_cache;
+#[path = "../continuum-cli-lifecycle/src/cargo_cache_custody.rs"]
+mod cargo_cache_custody;
 
 fn main() {
+    let producer_out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
+    cargo_cache_custody::invalidate(&producer_out).expect("cannot withdraw native cache custody");
     // Resolve the manifest dir AT RUNTIME, not compile time. `env!(...)
     // expands when build.rs itself is compiled and bakes ONE checkout's
     // absolute path into the cached build-script binary — with our shared
@@ -432,4 +436,17 @@ fn main() {
     bindings
         .write_to_file(&out_path)
         .expect("Failed to write bindings");
+    // These children supply static link inputs only; Metal's library is embedded
+    // above. System runtime libraries remain outside this output. The generation
+    // is also recorded in Cargo's captured producer output for legacy rollback.
+    match std::fs::read_to_string(producer_out.join("build/CMakeCache.txt")) {
+        Ok(resolved) if msvc_cache::static_inputs_only(&resolved) => {
+            match cargo_cache_custody::publish_static_inputs(&producer_out) {
+                Ok(generation) => println!("{}{generation}", cargo_cache_custody::METADATA),
+                Err(error) => println!("cargo:warning=native cache remains unreclaimable: cannot certify static inputs: {error}"),
+            }
+        }
+        Ok(_) => println!("cargo:warning=native cache remains unreclaimable: runtime input closure is not static and embedded"),
+        Err(error) => println!("cargo:warning=native cache remains unreclaimable: resolved configuration unavailable: {error}"),
+    }
 }
