@@ -6377,6 +6377,7 @@ version = "0.1.0"
 dependencies = [
  "bindgen",
  "cmake",
+ "sha2",
 ]
 
 [[package]]
