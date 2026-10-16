@@ -419,8 +419,14 @@ mod tests {
         assert_eq!(prepared.original_max_tokens, Some(16_384));
         // A diagnostic changes only named historical pointers, never tool protocol or settings.
         let mut diagnostic = request.clone();
-        diagnostic.messages.push(ChatMessage::text("user", format!(
-            "[result #9; room {room}; operation code/read; output handle: tool/output 0123abcd — collapsed; query tool/output to expand]")));
+        let wm = crate::cognition::working_memory::WorkingMemory::new(8);
+        wm.set_served_window(16_384);
+        wm.record_receipt_typed(&[], "historical result", Some(room),
+            crate::ai::types::ResultCustody::Whole { handle: "0123abcd".into() });
+        wm.record_receipt("current result");
+        let pointer = wm.recent_results_with_pointers().into_iter()
+            .find_map(|(_, pointer)| pointer).expect("the production WM projection emits a pointer");
+        diagnostic.messages.push(ChatMessage::text("user", pointer));
         diagnostic.messages.push(serde_json::from_value(serde_json::json!({
             "role":"assistant", "content":[{"type":"tool_use", "id":"native-call", "name":"read_file", "input":{"path":"task.rs"}}]
         })).unwrap());

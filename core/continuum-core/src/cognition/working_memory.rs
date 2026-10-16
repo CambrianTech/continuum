@@ -146,7 +146,7 @@ impl std::fmt::Display for ResultAttribution<'_> {
 /// Recognize ONLY the standalone pointer representation emitted by this owner.
 /// Diagnostic replay uses this to refuse removal of source bodies or native protocol.
 pub(super) fn is_collapsed_result_pointer(text: &str) -> bool {
-    let Some(body) = text.strip_prefix("[result #").and_then(|s| s.strip_suffix(" — collapsed; query tool/output to expand]")) else { return false };
+    let Some(body) = text.strip_prefix("[result #").and_then(|s| s.strip_suffix(" â€” collapsed; query tool/output to expand]")) else { return false };
     let Some((seq, rest)) = body.split_once("; room ") else { return false };
     if seq.parse::<u64>().is_err() { return false; }
     let Some((room, rest)) = rest.split_once("; operation ") else { return false };
