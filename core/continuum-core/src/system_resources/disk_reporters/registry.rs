@@ -68,7 +68,6 @@ type Resolution =
     futures::future::Shared<futures::future::BoxFuture<'static, Result<Observation, String>>>;
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum PathWork {
-    ResolveExisting,
     Resolve,
     ResolveExisting,
     Validate(crate::code::confinement::Confinement),
