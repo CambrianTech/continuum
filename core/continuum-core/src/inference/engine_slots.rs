@@ -90,12 +90,7 @@ pub fn slot_of(root: &Path, bin: &Path) -> Option<&'static str> {
     // normalized: the service-host derives `root` from the descriptor's own engine path, so a
     // verbatim descriptor gives a verbatim root, and stripping only `bin` refused the slot and
     // kept the core from starting.
-    let plain = |p: &Path| {
-        let text = p.to_string_lossy().into_owned();
-        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)) // unwrap_or: a path with no verbatim prefix is already plain
-    };
-    let (root, bin) = (plain(root), plain(bin));
-    SLOTS.into_iter().find(|slot| bin.starts_with(root.join(slot)))
+    SLOTS.into_iter().find(|slot| crate::paths::has_path_prefix(bin, &root.join(slot)))
 }
 
 /// Why no slot is idle.

@@ -30,7 +30,7 @@
 //!    Generic deps/build and top-level installer inputs remain retained and reported. Custom profiles
 //!    and target-triple subtrees are not inferred from arbitrary directory names.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
@@ -830,16 +830,13 @@ pub fn serving_tier_capacity_bytes(volume_total_bytes: u64) -> u64 {
 /// protects everything inside it.
 #[derive(Default)]
 pub struct ActiveArtifactSet {
-    // Keep the caller's key for exact release, and capture physical custody at
-    // registration. A later alias change must not move an existing pin.
-    paths: RwLock<HashMap<PathBuf, Option<PathBuf>>>,
+    paths: RwLock<HashSet<PathBuf>>,
 }
 
 impl ActiveArtifactSet {
     pub fn register(&self, path: PathBuf) {
         if let Ok(mut set) = self.paths.write() {
-            let physical = crate::paths::cargo::physical_root(&path).ok();
-            set.insert(path, physical);
+            set.insert(path);
         }
     }
 
@@ -860,14 +857,8 @@ impl ActiveArtifactSet {
             // treat everything as protected rather than migrate blind.
             return true;
         };
-        if set.is_empty() { return false; }
-        let Ok(candidate) = crate::paths::cargo::physical_root(candidate) else {
-            return true; // Unresolved custody is never permission to reclaim.
-        };
-        set.values().any(|active| match active {
-            Some(active) => active.starts_with(&candidate) || candidate.starts_with(active),
-            None => true,
-        })
+        set.iter().any(|active| crate::paths::has_path_prefix(active, candidate)
+            || crate::paths::has_path_prefix(candidate, active))
     }
 }
 
@@ -2181,7 +2172,13 @@ mod tests {
         fn active_set_protects_prefix_both_directions() {
             let set = ActiveArtifactSet::default();
             let root = tempfile::tempdir().unwrap();
-            let logical = root.path().join("served-model");
+            // Unix temporary roots may themselves be aliases (/var on macOS).
+            // This fixture tests Windows prefix spelling, not alias resolution.
+            #[cfg(windows)]
+            let root_path = root.path().to_path_buf();
+            #[cfg(not(windows))]
+            let root_path = root.path().canonicalize().unwrap();
+            let logical = root_path.join("served-model");
             std::fs::create_dir(&logical).unwrap();
             let physical = logical.canonicalize().unwrap();
             set.register(logical.clone());
@@ -2191,14 +2188,24 @@ mod tests {
                 "candidate under active dir is protected"
             );
             assert!(
-                set.protects(root.path()),
+                set.protects(&root_path),
                 "parent of active is protected"
             );
-            assert!(!set.protects(&root.path().join("other-model")));
+            assert!(!set.protects(&root_path.join("other-model")));
             std::fs::remove_dir(&logical).unwrap();
             assert!(set.protects(&physical), "missing leaf retains registered custody");
             set.release(&logical);
             assert!(!set.protects(&physical));
+            #[cfg(windows)]
+            {
+                let unc = PathBuf::from(r"\\server\share\model");
+                set.register(unc.clone());
+                assert!(set.protects(Path::new(r"\\?\UNC\server\share\model\weights")));
+                assert!(!set.protects(Path::new(r"\\?\UNC\server\different\model")));
+                assert!(!set.protects(Path::new(r"\\?\UNC\server\share\model-other")));
+                set.release(&unc);
+                assert!(!set.protects(Path::new(r"\\?\UNC\server\share\model")));
+            }
         }
     }
 }
