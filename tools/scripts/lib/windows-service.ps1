@@ -500,12 +500,6 @@ function New-CoreServiceRelease {
         $slot = $candidate
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
-    # The CLI this release installs is the one that knows the lane records' contract.
-    $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent }
-        elseif ($kept = Get-CoreKeptEngineSlot -ArtifactDirectory $ArtifactDirectory -Descriptor $descriptor) { $kept }
-        else { Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe') }
-    Clear-CorePreparedSelectionForSlot -InstallRoot $InstallRoot -Slot $slot
-    New-Item -ItemType Directory -Force -Path $slot | Out-Null
     # CI cores carry declared runtime DLLs beside the binaries. The native deploy
     # stage honors this same manifest; installer/prepared rollback must do so too.
     $runtimeNames = @()
@@ -519,6 +513,24 @@ function New-CoreServiceRelease {
         }
         $runtimeNames += 'runtime-libs.txt'
     }
+    foreach ($name in (@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $ArtifactDirectory $name) -PathType Leaf)) {
+            throw "Incoming release artifact is missing: $name"
+        }
+    }
+    $publishedEngine = Join-Path $ArtifactDirectory 'engine'
+    if (Test-Path -LiteralPath (Join-Path $publishedEngine 'engine-install.json') -PathType Leaf) {
+        Get-CoreEngineReceipt -Directory $publishedEngine | Out-Null
+    }
+    # The CLI this release installs is the one that knows the lane records' contract.
+    $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent }
+        elseif ($kept = Get-CoreKeptEngineSlot -ArtifactDirectory $ArtifactDirectory -Descriptor $descriptor) { $kept }
+        else {
+            Retire-CorePreviousSelectionForSlot -InstallRoot $InstallRoot -Slot $slot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe')
+            Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe')
+        }
+    Clear-CorePreparedSelectionForSlot -InstallRoot $InstallRoot -Slot $slot
+    New-Item -ItemType Directory -Force -Path $slot | Out-Null
     foreach ($name in (@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames)) {
         $source = Join-Path $ArtifactDirectory $name
         $destination = Join-Path $slot $name
