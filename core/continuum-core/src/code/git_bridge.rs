@@ -136,21 +136,37 @@ pub fn repo_slug_from_remote_url(url: &str) -> Option<String> {
     if url.is_empty() {
         return None;
     }
-    // Strip scheme, then any `user@host` prefix, leaving a host-relative path. The
-    // scp-style form uses `:` where the others use `/`, so normalize that first.
-    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
-    let after_host = match after_scheme.split_once(':') {
-        // scp-style `git@host:owner/name` — everything after the colon is the path.
-        Some((_, path)) if !path.starts_with("//") => path,
-        _ => after_scheme.split_once('/').map_or("", |(_, path)| path),
+    // Only the repository path may become a board key or model-facing fact.
+    // URL parsing separates credentials, ports, query and fragment from that path.
+    // Local paths are not hosted repository identities, even if they have two parts.
+    let parsed;
+    let path = if url.contains("://") {
+        parsed = reqwest::Url::parse(url).ok()?;
+        if parsed.scheme() == "file" || parsed.host_str().is_none() {
+            return None;
+        }
+        parsed.path()
+    } else {
+        let (host, path) = url.split_once(':')?;
+        if host.len() == 1 || host.contains(['/', '\\']) || host.is_empty() {
+            return None;
+        }
+        // SCP syntax has no query/fragment; refuse ambiguous suffixes rather than
+        // displaying a credential-looking parameter as part of the repository.
+        if path.contains(['?', '#', '@', ':', '\\']) {
+            return None;
+        }
+        path
     };
-    let path = after_host.trim_matches('/');
+    let path = path.trim_matches('/');
     let path = path.strip_suffix(".git").unwrap_or(path);
 
     let mut segments = path.rsplit('/').filter(|s| !s.is_empty());
     let name = segments.next()?;
     let owner = segments.next()?;
-    if name.is_empty() || owner.is_empty() {
+    if [name, owner].iter().any(|part| {
+        part.is_empty() || matches!(*part, "." | "..") || part.chars().any(char::is_whitespace)
+    }) {
         return None;
     }
     Some(format!("{owner}/{name}"))
@@ -613,14 +629,31 @@ mod tests {
     #[tokio::test]
     async fn a_remote_url_yields_the_owner_slash_name_board_key() {
         for (url, want) in [
-            ("https://github.com/CambrianTech/continuum.git", "CambrianTech/continuum"),
-            ("https://github.com/CambrianTech/continuum", "CambrianTech/continuum"),
-            ("git@github.com:CambrianTech/continuum.git", "CambrianTech/continuum"),
-            ("ssh://git@github.com/CambrianTech/continuum.git", "CambrianTech/continuum"),
+            (
+                "https://github.com/CambrianTech/continuum.git",
+                "CambrianTech/continuum",
+            ),
+            (
+                "https://github.com/CambrianTech/continuum",
+                "CambrianTech/continuum",
+            ),
+            (
+                "git@github.com:CambrianTech/continuum.git",
+                "CambrianTech/continuum",
+            ),
+            (
+                "ssh://git@github.com/CambrianTech/continuum.git",
+                "CambrianTech/continuum",
+            ),
             // Host-agnostic: a non-GitHub remote is just as valid a board key.
             ("https://gitlab.com/acme/widget.git", "acme/widget"),
             // GitLab subgroups nest deeper — take the project's own group/name.
             ("https://gitlab.com/acme/team/widget.git", "team/widget"),
+            (
+                "https://user:secret@example.test:8443/acme/widget.git?token=secret#secret",
+                "acme/widget",
+            ),
+            ("ssh://git@example.test:2222/acme/widget.git", "acme/widget"),
         ] {
             assert_eq!(
                 repo_slug_from_remote_url(url).as_deref(),
@@ -630,7 +663,17 @@ mod tests {
         }
         // Nothing to key on → None, so the caller is ASKED for `repo` rather than
         // handed a fabricated key.
-        for junk in ["", "   ", "https://github.com/", "not-a-url"] {
+        for junk in [
+            "",
+            "   ",
+            "https://github.com/",
+            "not-a-url",
+            "/tmp/acme/widget.git",
+            "../acme/widget.git",
+            "C:/acme/widget.git",
+            "file:///tmp/acme/widget.git",
+            "git@host:acme/widget?token=secret",
+        ] {
             assert_eq!(repo_slug_from_remote_url(junk), None, "junk {junk:?}");
         }
     }
