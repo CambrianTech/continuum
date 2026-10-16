@@ -672,7 +672,7 @@ mod tests {
         let held = async move { gate.await.map_err(|error| error.to_string()) }.boxed().shared();
         registry.2.lock().insert(key.clone(), (Arc::new(()), held));
         let pending = registry
-            .path_work_within(root.path(), PathWork::Resolve, super::super::disk_pressure::REPORTER_TIMEOUT)
+            .path_work_within(root.path(), PathWork::Resolve, crate::system_resources::disk_pressure::REPORTER_TIMEOUT)
             .await;
         assert!(pending.unwrap_err().contains("still pending"), "the reporter bound is the refusal while the worker is held");
         assert!(registry.2.lock().contains_key(&key), "the held worker is kept, never duplicated");
