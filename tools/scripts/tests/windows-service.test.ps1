@@ -1620,6 +1620,22 @@ public static class RegisteredGsudoFixture {
         if ($failure -notmatch 'Service-slot capacity admission refused') { throw "Wrong capacity refusal: $failure" }
         if (Test-Path -LiteralPath (Join-Path $installedPayload 'bin\service-a\continuum.exe')) { throw 'Capacity refusal copied service payload' }
     }
+    foreach ($protocolCase in @('invalid-json', 'invalid-condition', 'observation-error')) {
+        & {
+            function Invoke-InstallerProcess {
+                param($FilePath, $ArgumentList)
+                if ($ArgumentList[1] -eq '--protocol') { $global:LASTEXITCODE = 0; '1' }
+                elseif ($protocolCase -eq 'observation-error') { $global:LASTEXITCODE = 2; 'observer unavailable' }
+                elseif ($protocolCase -eq 'invalid-json') { $global:LASTEXITCODE = 4; '{' }
+                else { $global:LASTEXITCODE = 4; '{}' }
+            }
+            function Retire-CorePreviousSelectionForSlot { throw 'uncertain protocol reached retirement' }
+            $blocked = $false
+            try { New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target | Out-Null }
+            catch { $blocked = [bool]$_.Exception.Data['ContinuumDeploymentFailure'].OperationalBlocked }
+            if (-not $blocked) { throw "Protocol uncertainty charged artifact: $protocolCase" }
+        }
+    }
     $first = New-CoreServiceRelease -RepoRoot $repo -InstallRoot $installed -TargetDirectory $target
     & {
         # Incoming publication refusal must precede retirement, even when the

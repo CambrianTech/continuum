@@ -441,15 +441,21 @@ function Assert-CoreArtifactCapacity {
     [decimal]$copyBytes = $AdditionalBytes
     foreach ($source in $Sources) { $copyBytes += (Get-Item -LiteralPath $source -ErrorAction Stop).Length }
     if ($copyBytes -gt [uint64]::MaxValue) { throw 'Service payload size exceeds the capacity accounting range.' }
-    $result = @(Invoke-InstallerProcess $cli @('artifact-capacity', $Destination, ([uint64]$copyBytes).ToString([Globalization.CultureInfo]::InvariantCulture)))
-    if ($LASTEXITCODE -eq 4) {
-        $condition = ($result -join "`n") | ConvertFrom-Json -ErrorAction Stop
-        if (-not $condition.ResourceDeferred) { throw 'Capacity protocol returned an invalid resource refusal.' }
-        $failure = [InvalidOperationException]::new('Service-slot capacity admission refused; installed release receipts and files were preserved.')
-        $failure.Data['ContinuumDeploymentFailure'] = $condition
+    try {
+        $result = @(Invoke-InstallerProcess $cli @('artifact-capacity', $Destination, ([uint64]$copyBytes).ToString([Globalization.CultureInfo]::InvariantCulture)))
+        if ($LASTEXITCODE -eq 4) {
+            $condition = ($result -join "`n") | ConvertFrom-Json -ErrorAction Stop
+            if (-not $condition.ResourceDeferred) { throw 'Capacity protocol returned an invalid resource refusal.' }
+        } elseif ($LASTEXITCODE -ne 0) { throw "Capacity observation failed: $($result -join ' ')" }
+        else { return }
+    } catch {
+        $failure = [InvalidOperationException]::new($_.Exception.Message)
+        $failure.Data['ContinuumDeploymentFailure'] = @{ OperationalBlocked = $_.Exception.Message }
         throw $failure
     }
-    if ($LASTEXITCODE -ne 0) { throw "Capacity observation failed: $($result -join ' ')" }
+    $failure = [InvalidOperationException]::new('Service-slot capacity admission refused; installed release receipts and files were preserved.')
+    $failure.Data['ContinuumDeploymentFailure'] = $condition
+    throw $failure
 }
 
 function New-CoreServiceRelease {

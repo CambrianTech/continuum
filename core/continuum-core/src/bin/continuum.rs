@@ -4653,7 +4653,8 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                     CiCore::Refused(why) => return Err(why),
                     CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
                 };
-                install_ci_companions(&repo, &prebuilt)?;
+                let preparation_path = prebuilt.clone();
+                let companion_result = install_ci_companions(&repo, &prebuilt).await;
                 deploy_note(&format!(
                     "▶ deploy-consume: {} — reboot into {deployed}{} --prebuilt (the CI build)",
                     repo.display(),
@@ -4664,7 +4665,18 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 let stage_prebuilt = true;
                 // install_ci_companions above already put this core's CLI on PATH.
                 let cli_installed = true;
-                match reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await {
+                let preparation = match companion_result {
+                    Ok(()) => reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await,
+                    Err(error) => Err(error),
+                };
+                let preparation = preparation.map_err(|error| match error {
+                    PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::CapabilityDeferred(reason) => PublishedCoreError::ResourceDeferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
+                        condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::OperationalUncertainty,
+                        path: preparation_path, projected_bytes: 0, reason,
+                    }),
+                    other => other,
+                });
+                match preparation {
                     Ok(()) => {}
                     Err(PublishedCoreError::ResourceDeferred(condition)) => {
                         let digest = match ConsumeLedger::condition_digest(&condition) {
@@ -4735,7 +4747,7 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
         let previous_conditions = ledger.resource_deferrals.clone();
         for key in candidates {
             let Some(deferred) = ledger.resource_deferrals.get(key).cloned() else { continue };
-            if deferred.condition == continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::UnmeasuredFilesystem {
+            if deferred.condition != continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::VolumeCapacity {
                 continue; // A volume sample cannot authorize retry of an unmeasured filesystem refusal.
             }
             let measured = continuum_core::paths::artifacts::check_capacity(&deferred.path, deferred.projected_bytes).await;
@@ -4765,7 +4777,7 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                                 Err(why) => return CiCore::ResourceBlocked(why),
                             };
                             let why = format!("published build {key} awaits resource admission: {}; condition_sha256={digest}; explicit retry: continuum deploy-consume --retry-resource {key} {digest}", deferred.reason);
-                            let explicit_retry = deferred.condition == continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::UnmeasuredFilesystem;
+                            let explicit_retry = deferred.condition != continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::VolumeCapacity;
                             if ledger.resource_deferrals.get(&key) != Some(&deferred) {
                                 ledger.resource_deferrals.insert(key, deferred);
                                 if let Err(why) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(why); }
@@ -5144,14 +5156,16 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
 /// What the warm build did besides the core, done for a CI core: the CLI on PATH follows the
 /// core, and the engine is rebuilt only when its stamp says the vendored fork moved
 /// (`install-llama-server.sh` is a no-op otherwise).
-fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
+async fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), PublishedCoreError> {
     #[cfg(windows)]
     if !core.parent().is_some_and(|dir| dir.join("engine/engine-install.json").is_file()) {
         return Err("Published Windows release lacks its engine companion; no source build will be attempted".into());
     }
     let built_cli = core.with_file_name(install_cli::cli_file_name("continuum"));
     let cli = install_cli::cli_dir(Path::new(&home_dir()?)).join(install_cli::cli_file_name("continuum"));
-    install_cli::copy_with_retry(&built_cli, &cli, Duration::from_secs(10))?;
+    let bytes = std::fs::metadata(&built_cli).map_err(|e| PublishedCoreError::OperationalBlocked(format!("cannot measure CLI companion: {e}")))?.len();
+    continuum_core::paths::artifacts::check_capacity(&cli, bytes).await?;
+    install_cli::copy_with_retry(&built_cli, &cli, Duration::from_secs(10)).map_err(PublishedCoreError::OperationalBlocked)?;
     #[cfg(windows)]
     { let _ = repo; Ok(()) }
     #[cfg(not(windows))]

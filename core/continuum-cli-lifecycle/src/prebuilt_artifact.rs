@@ -378,6 +378,8 @@ pub enum ResourceCondition {
     /// The filesystem refused space/quota while volume admission passed. Only an
     /// explicit evidence-bound retry can clear this; a free-space sample cannot.
     UnmeasuredFilesystem,
+    /// Installer observation or receipt uncertainty; only explicit retry clears it.
+    OperationalUncertainty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -419,7 +421,7 @@ pub fn recheck_resource_deferral(
     measured: Result<(), PublishedCoreError>,
 ) -> Option<MissingArtifact> {
     let (key, condition) = pending.as_mut()?;
-    if condition.condition == ResourceCondition::UnmeasuredFilesystem {
+    if condition.condition != ResourceCondition::VolumeCapacity {
         return Some(MissingArtifact::Wait(format!(
             "published build {key} awaits explicit resource retry: {}", condition.reason
         )));
@@ -867,6 +869,14 @@ mod tests {
         assert!(source.pending.is_none());
         assert!(select_published_core(&["older".into()], &source).await.unwrap().1.is_ok());
         assert_eq!(source.fetches.load(std::sync::atomic::Ordering::SeqCst), 2);
+        for kind in [ResourceCondition::UnmeasuredFilesystem, ResourceCondition::OperationalUncertainty] {
+            let mut blocked = condition.clone(); blocked.condition = kind;
+            source.pending = Some(("older".into(), blocked.clone()));
+            assert!(matches!(recheck_resource_deferral(&mut source.pending, Ok(())), Some(MissingArtifact::Wait(_))));
+            assert_eq!(source.pending.as_ref().unwrap().1, blocked);
+            assert!(matches!(select_published_core(&["older".into()], &source).await, Some((_, Err(PublishedCoreError::ResourceDeferred(_))))));
+        }
+        assert_eq!(source.fetches.load(std::sync::atomic::Ordering::SeqCst), 2, "operational uncertainty cannot refill by automatic fetch");
         let args = candidate_keys_log_args("5b496e307", "e428cbd50");
         assert!(
             args.contains(&"5b496e307..e428cbd50".to_string()),
