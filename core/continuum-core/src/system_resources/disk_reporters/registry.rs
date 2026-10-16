@@ -626,8 +626,10 @@ mod tests {
             .insert(key.clone(), (identity.clone(), request.clone()));
         registry.2.lock().insert(
             (unavailable.path().to_path_buf(), PathWork::Observe),
-            (identity.clone(), request),
+            (identity.clone(), request.clone()),
         );
+        let existing_key = (unavailable.path().to_path_buf(), PathWork::ResolveExisting);
+        registry.2.lock().insert(existing_key.clone(), (identity.clone(), request));
         registry.0.lock().unresolved_boot.push(TrackedDir::new(
             "cargo-target",
             unavailable.path().to_path_buf(),
@@ -647,13 +649,16 @@ mod tests {
                 &registry.2.lock().get(&key).unwrap().0,
                 &identity
             ));
+            assert!(registry.path_work(unavailable.path(), PathWork::ResolveExisting)
+                .await.unwrap_err().contains("still pending"));
+            assert!(Arc::ptr_eq(&registry.2.lock().get(&existing_key).unwrap().0, &identity));
         }
         registry.admit(available.path()).await.unwrap();
         assert_eq!(registry.snapshot().len(), 1);
         assert_eq!(
             registry.2.lock().len(),
-            2,
-            "the original unresolved request remains quarantined"
+            3,
+            "the original unresolved requests remain quarantined"
         );
         // Simulate the original filesystem operation becoming available. The
         // existing restore tick consumes the pending configuration and persists it.
