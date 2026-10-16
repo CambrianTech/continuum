@@ -1483,7 +1483,7 @@ fn server_bin() -> Result<String, LlamaServerError> {
 }
 
 /// `LLAMA_SERVER_BIN` (launch environment, then config): an operator's own engine.
-fn engine_override() -> Option<String> {
+pub(crate) fn engine_override() -> Option<String> {
     std::env::var("LLAMA_SERVER_BIN")
         .ok()
         .filter(|value| !value.trim().is_empty())

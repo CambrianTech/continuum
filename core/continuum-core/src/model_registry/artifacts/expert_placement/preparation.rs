@@ -3,10 +3,55 @@
 use super::*;
 use std::collections::HashMap;
 
+/// Read-only restart reconciliation. A lost preparation cannot reuse its prior
+/// positive hash observation: Frozen cold bytes are verified again and retained.
+pub struct RestorationPlacement {
+    _source_lease: File,
+    _destination_lease: Option<File>,
+    _directory: Option<File>,
+    _files: HashMap<PathBuf, File>,
+}
+
+pub fn hold_restoration(root: &Path, expected: &str) -> Result<RestorationPlacement, String> {
+    let (root, source_lease) = shared_lease(root)?;
+    let Some(placement) = read(&root)? else {
+        return Ok(RestorationPlacement {
+            _source_lease: source_lease,
+            _destination_lease: None,
+            _directory: None,
+            _files: HashMap::new(),
+        });
+    };
+    if placement.state != State::Frozen || operation_digest(&placement)? != expected {
+        return Err("placement is not this operation's reconciled Frozen state".into());
+    }
+    match std::fs::symlink_metadata(&root) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.to_string()),
+        Ok(_) => {
+            return Err(
+                "source retirement remains incomplete; exact recovery required before restoration"
+                    .into(),
+            )
+        }
+    }
+    let destination = placement.destination.decode()?;
+    let destination_lease = exclusive(&sibling(&destination, ".placement.lock")?)?;
+    let directory = directory_handle(&destination)?;
+    let files = retain_verified(&destination, &placement.files)?;
+    still_retained(&destination, &directory, &placement.files, &files)?;
+    Ok(RestorationPlacement {
+        _source_lease: source_lease,
+        _destination_lease: Some(destination_lease),
+        _directory: Some(directory),
+        _files: files,
+    })
+}
+
 /// Retained producer exclusion for the complete closure. Readers may continue.
 /// On POSIX this must exclude legacy writers too: flock is only advisory.
 /// Windows can instead acquire kernel custody through `prepare_online_windows`.
-pub trait ProducerCustody {
+pub trait ProducerCustody: Sync {
     fn revalidate(&self, root: &Path) -> Result<(), String>;
 }
 
@@ -317,6 +362,16 @@ fn prepare_owned<'a>(
 }
 
 impl OnlinePreparation<'_> {
+    /// Bind maintenance recovery to this exact source, destination and immutable
+    /// closure. The digest grants no custody and survives the Frozen transition.
+    pub fn operation_digest(&self) -> Result<String, String> {
+        super::operation_digest(&self.placement)
+    }
+
+    pub fn source_root(&self) -> Result<PathBuf, String> {
+        self.placement.source.decode()
+    }
+
     /// Called only after the existing maintenance owner drains readers and
     /// excludes all current/rollback/manual legacy launches. No long copy or
     /// content hash occurs while this final exclusion is held.

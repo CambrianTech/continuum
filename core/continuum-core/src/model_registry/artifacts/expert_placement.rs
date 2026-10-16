@@ -18,7 +18,7 @@ use std::path::{Component, Path, PathBuf};
 mod preparation;
 #[cfg(windows)]
 pub use preparation::prepare_online_windows;
-pub use preparation::{prepare_online, OnlinePreparation, ProducerCustody};
+pub use preparation::{hold_restoration, prepare_online, OnlinePreparation, ProducerCustody, RestorationPlacement};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MigrationStage {
@@ -62,6 +62,32 @@ struct Placement {
     manifest: Vec<u8>,
     files: Vec<Entry>,
     state: State,
+}
+
+fn operation_digest(placement: &Placement) -> Result<String, String> {
+    let mut identity = placement.clone();
+    identity.state = State::Frozen;
+    // Boundary: bind the existing placement protocol to maintenance recovery;
+    // normalize only its phase, retaining source, destination and exact manifest.
+    let bytes = serde_json::to_vec(&identity).map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+/// A saved placement identifies the operation but never proves reader exclusion.
+pub fn saved_operation_digest(root: &Path) -> Result<Option<String>, String> {
+    read(root)?.as_ref().map(operation_digest).transpose()
+}
+
+/// Keeps the existing transaction writer excluded while an unstarted maintenance
+/// operation restores its scheduler. Readers remain allowed; no source mutation.
+pub struct UnstartedPlacement {
+    _lease: File,
+}
+
+pub fn hold_unstarted(root: &Path) -> Result<UnstartedPlacement, String> {
+    let (_, lease) = reader_lease(root)?;
+    // reader_lease already refuses any source receipt under the same OS lease.
+    Ok(UnstartedPlacement { _lease: lease })
 }
 
 fn sibling(root: &Path, suffix: &str) -> Result<PathBuf, String> {
@@ -118,6 +144,14 @@ fn exclusive(path: &Path) -> Result<File, String> {
 /// Retained by a reader before interpreting the manifest or lazily opening
 /// banks. The native reader uses the same whole-file OS lock protocol.
 pub(crate) fn reader_lease(root: &Path) -> Result<(PathBuf, File), String> {
+    let (root, file) = shared_lease(root)?;
+    // Check after acquiring custody: a writer cannot publish between this
+    // refusal boundary and the caller's first manifest read.
+    resolve_for_serving(&root)?;
+    Ok((root, file))
+}
+
+fn shared_lease(root: &Path) -> Result<(PathBuf, File), String> {
     let root = crate::paths::cargo::physical_root(root)?;
     let path = sibling(&root, ".container-placement.lock")?;
     check_existing_plain_file(&path)?;
@@ -129,9 +163,6 @@ pub(crate) fn reader_lease(root: &Path) -> Result<(PathBuf, File), String> {
         .open(path)
         .map_err(|e| e.to_string())?;
     FileExt::try_lock_shared(&file).map_err(|e| format!("container writer owns placement: {e}"))?;
-    // Check after acquiring custody: a writer cannot publish between this
-    // refusal boundary and the caller's first manifest read.
-    resolve_for_serving(&root)?;
     Ok((root, file))
 }
 
@@ -694,7 +725,10 @@ mod tests {
             .is_err());
         assert!(read(&source).unwrap().is_none());
         let prepared = preparation::prepare_in(&source, &cold, &custody, &|_| Ok(())).unwrap();
+        let operation = prepared.operation_digest().unwrap();
+        assert_eq!(prepared.source_root().unwrap(), std::fs::canonicalize(&source).unwrap());
         assert!(prepared.freeze(&custody).unwrap() > 0);
+        assert_eq!(saved_operation_digest(&source).unwrap().as_deref(), Some(operation.as_str()));
         assert!(!source.exists());
         assert!(resolve_for_serving(&source).is_err());
     }
@@ -711,7 +745,30 @@ mod tests {
         assert!(read(&source).unwrap().is_none());
         assert!(!cold.exists());
         drop(reader);
+        let abort = hold_unstarted(&source).unwrap();
+        assert!(ExpertContainer::open(&source).is_ok(), "abort custody does not block unchanged readers");
+        assert!(freeze_in(&source, &cold, &Custody { stop: None }, &|_| Ok(())).is_err(), "abort restoration excludes placement publication");
+        drop(abort);
         assert!(freeze_in(&source, &cold, &Custody { stop: None }, &|_| Ok(())).unwrap() > 0);
+        assert!(hold_unstarted(&source).is_err(), "Frozen placement requires reconciliation, not abort");
+        let saved = read(&source).unwrap().unwrap();
+        let digest = operation_digest(&saved).unwrap();
+        let restored = hold_restoration(&source, &digest).unwrap();
+        assert!(!source.exists(), "restart verification never recreates the source");
+        assert!(freeze_in(&source, &cold, &Custody { stop: None }, &|_| Ok(())).is_err(), "restart verification retains transaction custody");
+        drop(restored);
+        assert!(hold_restoration(&source, &"f".repeat(64)).is_err());
+        let mut copying = saved.clone();
+        copying.state = State::Copying;
+        publish(&source, &copying).unwrap();
+        assert!(hold_restoration(&source, &digest).is_err(), "an unfinished placement cannot restart legacy readers");
+        publish(&source, &saved).unwrap();
+        let destination = saved.destination.decode().unwrap();
+        let member = destination.join(entry_name(&saved.files[0]).unwrap());
+        std::fs::write(&member, b"changed").unwrap();
+        assert!(hold_restoration(&source, &digest).is_err(), "lost in-memory hashes must not authorize changed cold bytes");
+        std::fs::write(receipt_path(&source).unwrap(), b"corrupt").unwrap();
+        assert!(hold_unstarted(&source).is_err(), "unknown placement is never an unstarted operation");
     }
 
     #[tokio::test]

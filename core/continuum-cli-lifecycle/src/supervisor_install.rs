@@ -785,6 +785,7 @@ mod tests {
         use maintenance::{RecoverySnapshot, TaskSnapshot};
         let snapshot = RecoverySnapshot {
             version: 1,
+            legacy: None,
             tasks: [CORE_TASK, DEPLOY_TASK].into_iter().map(|name| TaskSnapshot {
                 name: name.into(), xml: "original scheduler document".into(),
                 identity_xml: "normalized scheduler document".into(),

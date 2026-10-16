@@ -324,13 +324,15 @@ jobs:
           $interop | Write-Output
           if ($interopResult -ne 0) { exit $interopResult }
           if (($interop -join "`n") -notmatch '1 passed;') { throw 'Native/fs2 custody fixture did not execute' }
-          $preparation = & $env:CONTINUUM_LIB_TEST 'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion' --exact --nocapture 2>&1
-          $preparationResult = $LASTEXITCODE
-          $preparation | Write-Output
-          if ($preparationResult -ne 0) { exit $preparationResult }
-          if (($preparation -join "`n") -notmatch '1 passed;') { throw 'Windows online preparation fixture did not execute' }
-          foreach ($test in @('broker_reclaims_release_incremental_only_after_profile_custody', 'redirected_profile_or_incremental_child_never_reaches_external_data', 'ladder_frees_in_order_and_preserves_release_outputs')) {
-            $output = & $env:CONTINUUM_LIB_TEST "system_resources::disk_eviction::tests::$test" --exact --nocapture 2>&1
+          foreach ($test in @(
+            'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion',
+            'model_registry::artifacts::expert_placement::tests::actual_lazy_reader_excludes_freeze_until_its_lifetime_ends',
+            'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership',
+            'system_resources::disk_eviction::tests::broker_reclaims_release_incremental_only_after_profile_custody',
+            'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
+            'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'
+          )) {
+            $output = & $env:CONTINUUM_LIB_TEST $test --exact --nocapture 2>&1
             $result = $LASTEXITCODE
             $output | Write-Output
             if ($result -ne 0) { exit $result }
@@ -350,6 +352,18 @@ jobs:
       - name: Type-check integration targets using the same headless profile
         if: needs.changes.outputs.rust != 'false'
         run: cargo check -p continuum-core --test '*' --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures
+      - name: Windows maintenance durable-stop regression
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          foreach ($test in @(
+            'tests::legacy_core_requires_explicit_recovery_before_reboot_teardown'
+          )) {
+            $output = & cargo test -p continuum-core --bin continuum --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures $test -- --exact 2>&1
+            $result = $LASTEXITCODE
+            $output | Write-Output
+            if ($result -ne 0) { exit $result }
+            if (($output -join "`n") -notmatch '1 passed;') { throw "Maintenance CLI fixture did not execute: $test" }
+          }
       - name: Windows installed release and supervisor regressions
         if: needs.changes.outputs.installer != 'false'
         shell: powershell
