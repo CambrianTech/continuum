@@ -619,8 +619,10 @@ mod tests {
             receipt_heads: Vec::new(),
             receipt_head_rooms: Vec::new(), // written before the archive existed
             recent_results: Vec::new(),
+            result_scopes: Default::default(),
             handoff: None,
             evicted_pointers: Vec::new(),
+            evicted_pointer_scopes: Vec::new(),
             receipt_children: Default::default(),
         });
         let cx2 = FactContext {
