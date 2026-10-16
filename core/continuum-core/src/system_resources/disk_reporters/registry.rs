@@ -36,12 +36,9 @@ pub(crate) async fn prepare_writer_fixture() {
 }
 
 /// How long an ADMISSION (a shell's cargo-root grant, a configured root at startup) waits for
-/// one filesystem resolution before it is refused with a named outcome. Same basis as
-/// `act_observe::disk_change::READ_BOUND`: one filesystem call on a launch path answers well
-/// inside it on a cold disk, and a hang is refused, never waited out. The 100 ms reporter
-/// budget is for pressure reporters, whose "still pending" costs a tick, not a command.
-// derived-or-floor: a floor — the bound on one launch-path filesystem call, the same at any window
-pub(crate) const ADMISSION_BOUND: std::time::Duration = std::time::Duration::from_secs(5);
+/// one filesystem resolution before it is refused with a named outcome: the one launch-path
+/// filesystem bound ([`crate::runtime::daemon::LAUNCH_PATH_FS_BOUND`], measured there).
+pub(crate) const ADMISSION_BOUND: std::time::Duration = crate::runtime::daemon::LAUNCH_PATH_FS_BOUND;
 
 fn writer_registry() -> Result<&'static Registry, String> {
     if let Some(registry) = TRACKED_DIRS.get() {
@@ -203,8 +200,21 @@ impl Registry {
                 .entry(key.clone())
                 .or_insert_with(|| {
                     let path = path.to_path_buf();
+                    let kind = match &work {
+                        PathWork::Resolve => "resolve",
+                        PathWork::Observe => "observe",
+                        PathWork::Empty => "empty",
+                        PathWork::Validate(_) => "validate",
+                        PathWork::Prepare(_) => "prepare",
+                    };
                     let request = async move {
-                        tokio::task::spawn_blocking(move || {
+                        // Queue vs work: a refusal at the bound says which was slow, so the
+                        // bound can be checked against a number (Cormac on #5112).
+                        let queued = std::time::Instant::now();
+                        let probe_path = path.clone();
+                        let outcome = tokio::task::spawn_blocking(move || {
+                            let started = std::time::Instant::now();
+                            let result = (|| {
                             if let PathWork::Prepare(policy) = &work {
                                 policy.validate_cargo_target(&path)?;
                             }
@@ -246,9 +256,22 @@ impl Registry {
                                 volume,
                                 empty_custody,
                             })
+                            })();
+                            (result, started.elapsed())
                         })
                         .await
-                        .map_err(|error| format!("Cargo root resolution worker failed: {error}"))?
+                        .map_err(|error| format!("Cargo root resolution worker failed: {error}"))?;
+                        let (result, worked) = outcome;
+                        crate::probe!(
+                            class = "disk.root.resolution",
+                            path = %probe_path.display(),
+                            kind = %kind,
+                            queue_ms = (queued.elapsed().saturating_sub(worked)).as_millis() as u64,
+                            work_ms = worked.as_millis() as u64,
+                            ok = result.is_ok(),
+                            "one filesystem resolution of a tracked root: how long it queued, how long it worked"
+                        );
+                        result
                     }
                     .boxed()
                     .shared();
@@ -273,10 +296,18 @@ impl Registry {
             )),
             // Keep the shared in-flight worker: another request must not create
             // another stuck filesystem thread for the same unavailable root.
-            Guarded::TimedOut => Err(format!(
-                "Cargo root resolution is still pending: {}",
-                path.display()
-            )),
+            Guarded::TimedOut => {
+                crate::probe!(
+                    class = "disk.root.resolution.pending",
+                    path = %path.display(),
+                    bound_ms = bound.as_millis() as u64,
+                    "a tracked root did not resolve inside this caller's bound; the shared worker stays"
+                );
+                Err(format!(
+                    "Cargo root resolution is still pending: {}",
+                    path.display()
+                ))
+            }
         }
     }
     pub(super) fn snapshot(&self) -> Vec<Arc<TrackedDir>> {
