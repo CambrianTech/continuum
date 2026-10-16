@@ -2908,11 +2908,10 @@ pub struct WorkListParams {
     /// day reporting they had no work, and they were reading their tool correctly.
     #[serde(default)]
     pub claimable: Option<bool>,
-    /// At most this many cards in `cards` (default 40), claimable first, then by priority,
-    /// then newest. The totals say what the board holds; a result says how many it listed.
-    /// Measured 2026-10-16 on the M5: a resident's unbounded `work/list` answered with all
-    /// 776 cards as 198k chars of JSON, spilled past her window's share, and she could read
-    /// none of it (card ee003c55).
+    /// At most this many cards (default 40): claimable first, then priority, then newest.
+    // Not a doc comment: this struct's docs are the tool surface a citizen pays tokens for.
+    // Measured 2026-10-16 on the M5: an unbounded list answered with all 776 cards as 198k
+    // chars of JSON, past her window's share, and she could read none of it (card ee003c55).
     #[serde(default)]
     #[ts(optional)]
     pub limit: Option<usize>,
