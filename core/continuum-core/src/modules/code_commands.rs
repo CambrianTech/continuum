@@ -545,11 +545,17 @@ async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String, CommandErr
 }
 
 /// The confinement this caller's children and reads are held to: `None` for the
-/// operator (the core runs as the operator; the operator's hands are unconfined),
-/// `Some` for every citizen and peer, rooted at `workspace` (her engine root).
+/// operator and for this node's own resident minds, `Some` for a caller from outside
+/// this node (an airc peer, a socket), rooted at `workspace`.
+///
+/// This node's residents are not sandboxed (Joel 2026-10-17: "Don't restrict them. If she
+/// wants to write to my documents folder for no apparent reason so be it"). Their shell
+/// still never inherits the core's secrets (`strip_secret_env`): that hands out no keys,
+/// it restricts nothing she chooses to do.
 pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::code::confinement::Confinement> {
+    let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
     let trust = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref());
-    if trust == crate::modules::grid::node::TrustLevel::Owner {
+    if resident || trust == crate::modules::grid::node::TrustLevel::Owner {
         return None;
     }
     let home = crate::paths::home_dir()?;
@@ -2222,24 +2228,24 @@ mod tests {
         assert_eq!(std::fs::canonicalize(root).unwrap(), std::fs::canonicalize(bound.path()).unwrap(), "still where they were bound");
     }
 
-    // what this catches (card d598c806): the operator's hands confined (the core runs
-    // as the operator; confining him would break every operator tool), or a citizen's
-    // NOT confined. The decision is the gate's trust, never a params field.
+    // what this catches: this node's own residents sandboxed (Joel 2026-10-17: "Don't restrict
+    // them"), or a caller from OUTSIDE this node (an airc peer) left unconfined. The operator
+    // is never confined. The decision is the caller's identity, never a params field.
     #[test]
-    fn a_citizen_is_confined_to_her_workspace_and_the_operator_is_not() {
+    fn a_resident_and_the_operator_are_unconfined_and_an_outside_peer_is_confined() {
         let ws = tempfile::tempdir().expect("test: ws");
         assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
-        let persona = uuid::Uuid::from_u128(0xC1);
-        let ctx = Ctx {
-            caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+        let resident = Ctx {
+            caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
             ..Ctx::default()
         };
-        let confined = confinement_of(&ctx, ws.path()).expect("a citizen is confined");
+        assert!(confinement_of(&resident, ws.path()).is_none(), "this node's resident is not restricted");
+        let outside = Ctx {
+            caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
+            ..Ctx::default()
+        };
+        let confined = confinement_of(&outside, ws.path()).expect("a peer from outside this node is confined");
         assert_eq!(confined.workspace(), ws.path());
-        let list = confined.materialize();
-        assert!(list.write.contains(&ws.path().canonicalize().expect("test: canonical")), "her workspace is hers to write");
-        let home = crate::paths::home_dir().expect("test: home");
-        assert!(list.write.iter().any(|w| w.ends_with(format!(".continuum/citizens/peers/{persona}")) || !home.join(".continuum/citizens/peers").join(persona.to_string()).exists()), "her citizen dir, when it exists");
     }
 
     // what this catches (Kimi, 2026-10-05): a write outside her workspace, a missing file
