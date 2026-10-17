@@ -57,12 +57,22 @@ silently change deliberate source deployments.
 ## Source correction under review
 
 Windows explicit `--prebuilt` now retains distinct caller intent from a warm
-source build. Before draining, it validates and pins the installed release
-closure and obtains the existing startup permit. The shared installed command
+source build. Before draining, it applies the existing token-integrity policy:
+only a confirmed normal-user token proceeds. Elevated or unknown callers
+refuse without recursively relaunching under the held install lease. This
+check precedes media startup, rather than relying on the service host's later
+privilege drop.
+
+It validates and pins the existing receipt-declared core, CLI, launcher,
+engine, and runtime DLL files and obtains the existing startup permit.
+The shared installed command
 constructor invokes that release's media launcher and service host with only
 the validated core path substituted. It does not register a task, copy a slot,
 promote an engine, or inspect an inherited source script. The runtime pins and
-startup permit remain held through readiness verification.
+startup permit remain held through readiness verification. The existing
+validator does not hash or pin the media script, bridge, or browser assets;
+this change reuses their installed startup owner and does not claim additional
+companion-content attestation.
 
 A genuinely uninstalled node retains the existing direct artifact path.
 An existing or unreadable active receipt without its task is refused before

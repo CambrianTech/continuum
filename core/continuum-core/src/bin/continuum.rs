@@ -1252,6 +1252,17 @@ async fn require_service_medium() -> Result<Option<i32>, String> {
     Ok(Some(code))
 }
 
+/// The runtime launcher starts media before service-host can lower privileges.
+/// A prebuilt reboot already owns the install lease: refuse here instead of
+/// recursively relaunching the CLI and deadlocking on that same lease.
+#[cfg(any(windows, test))]
+fn require_prebuilt_runtime_medium(integrity: Result<u32, String>, marker: bool) -> Result<(), String> {
+    if continuum_cli_lifecycle::installed_release::needs_medium_relaunch(integrity, marker)? {
+        return Err("explicit prebuilt reboot must run from a normal-user terminal; no shutdown or media launch was performed".into());
+    }
+    Ok(())
+}
+
 /// Fixed protected task action: verify normal-user integrity BEFORE reading the
 /// caller-owned selection. Core and deploy share this boundary and receipt owner.
 async fn installed_service(args: Vec<String>) -> Result<i32, String> {
@@ -2614,6 +2625,7 @@ async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreError> {
     // to run source builders after the current core has stopped.
     #[cfg(windows)]
     let prebuilt_runtime = if !requested_source_build && !options.service {
+        require_prebuilt_runtime_medium(unelevated_service::token_integrity(), std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some())?;
         if let Some(task) = PreparedCoreService::query_optional().await? {
             let envelope = task.installed.as_ref().ok_or("core-only prebuilt launch requires a sealed installed runtime; update the legacy installer before stopping the core")?;
             let home = continuum_core::paths::continuum_home()?;
@@ -8672,6 +8684,14 @@ mod tests {
     // Assert the production Command's path/argv/cwd, not a duplicate launch model.
     #[test]
     fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
+        // The launcher starts media before its service-host child runs. The
+        // pre-drain policy must therefore reject elevated/unknown callers,
+        // including a stale marker, without attempting recursive relaunch.
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x2000), false).is_ok());
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x2000), true).is_ok());
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), false).unwrap_err().contains("normal-user terminal"));
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), true).is_err());
+        assert!(super::require_prebuilt_runtime_medium(Err("token unavailable".into()), false).is_err());
         let candidate = super::PrebuiltCore::from_report(
             std::path::PathBuf::from("verified release/core.exe"),
             "abc123f".into(),
