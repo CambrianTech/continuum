@@ -235,12 +235,9 @@ impl RagSource for ActiveWorkSource {
         if claims.is_empty() && items.is_empty() {
             return Self::empty();
         }
-        // ONE card is this turn's (`work_focus`); the rest are held, not worked now —
-        // said in the line itself, so two held cards never read as two jobs at once.
-        // The same precedence the turn binds with (`act_question`: actionable first): the
-        // state-blind `focus_card` told Benchy a django card in REVIEW was "THIS TURN"
-        // while her hands were on the InProgress card marked "held, not this turn", and
-        // she spent turns reconciling the two (M5, 2026-10-16, her own words).
+        // Claim selection is not a receipt that this running turn rebound its hands.
+        // WorkClaim may select/stage another card during a burst, while that burst
+        // retains its admitted workspace. Describe the shared selector's result only.
         let focus = crate::persona::work_focus::focus_workspace_card(claims.iter()).map(|c| c.card_id);
         for card in &claims {
             let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
@@ -248,9 +245,9 @@ impl RagSource for ActiveWorkSource {
             // prompt-assembly / verifiers can render without re-parsing.
             let stance = if claims.len() > 1 {
                 if focus == Some(card.card_id) {
-                    " — THIS TURN"
+                    " \u{2014} selected claim"
                 } else {
-                    " — held, not this turn"
+                    " \u{2014} held"
                 }
             } else {
                 ""
@@ -407,13 +404,10 @@ mod tests {
         )
     }
 
-    // what this catches: perception naming a card the turn is NOT bound to. The stance was
-    // computed by the state-blind `focus_card` (latest heartbeat wins), so a card in REVIEW
-    // with the newer heartbeat read "THIS TURN" while the InProgress card her hands were on
-    // (the turn binds actionable-first, `act_question`) read "held, not this turn" — Benchy
-    // spent turns reconciling the two (M5, 2026-10-16). Same precedence as the binding.
+    // what this catches: a newer review heartbeat must not change selection, and
+    // a new explicit claim must not be advertised as an already-rebound turn.
     #[tokio::test]
-    async fn the_this_turn_stance_follows_the_turn_binding_not_the_latest_heartbeat() {
+    async fn selected_claim_stance_does_not_assert_turn_binding() {
         let persona = Uuid::new_v4();
         let mut working = card("Source-hygiene ratchet");
         working.state = CardState::InProgress;
@@ -421,13 +415,28 @@ mod tests {
         let mut in_review = card("[bench swe-bench-verified] django__django-16136");
         in_review.state = CardState::Review;
         in_review.last_heartbeat_at_ms = Some(2_000_000);
-        let src = source(persona, vec![Ok(vec![in_review, working]), Ok(vec![])]);
-        let delivery = src.deliver(&ctx(persona), 10_000, ResolutionPreference::Raw).await;
-        let line = |needle: &str| {
-            delivery.items.iter().map(|i| i.content.as_str()).find(|c| c.contains(needle)).unwrap_or_default().to_string()
-        };
-        assert!(line("Source-hygiene").contains("THIS TURN"), "{}", line("Source-hygiene"));
-        assert!(line("django").contains("held, not this turn"), "{}", line("django"));
+        let mut selected = card("New explicit task");
+        selected.claim_provenance = Some(airc_work::model::ClaimProvenance {
+            origin: airc_work::ClaimOrigin::Explicit,
+            selected_at_ms: 3_000_000,
+        });
+        let src = source(persona, vec![
+            Ok(vec![in_review.clone(), working.clone()]),
+            Ok(vec![in_review, working, selected]),
+        ]);
+        for selected_title in ["Source-hygiene", "New explicit task"] {
+            let delivery = src.deliver(&ctx(persona), 10_000, ResolutionPreference::Raw).await;
+            let selected_lines: Vec<_> = delivery.items.iter()
+                .filter(|item| item.content.contains(" \u{2014} selected claim"))
+                .collect();
+            assert_eq!(selected_lines.len(), 1);
+            assert!(selected_lines[0].content.contains(selected_title));
+            assert!(delivery.items.iter().all(|item|
+                !item.content.contains("THIS TURN") && !item.content.contains("not this turn")));
+            let review = delivery.items.iter().find(|item| item.content.contains("django")).expect("review remains held");
+            assert!(review.content.ends_with(" \u{2014} held"));
+            assert!(delivery.tokens_used <= 10_000);
+        }
     }
 
     // what this catches: the rejection-amnesia fix (the #159-family
