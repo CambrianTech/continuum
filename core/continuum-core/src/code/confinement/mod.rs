@@ -368,52 +368,19 @@ impl Enforcement {
     }
 }
 
-/// The two operation classes every rule is written in. NEVER the `file*` wildcard:
-/// measured on macOS 26.5, a `(deny file* …)` written AFTER an `(allow file-read* …)`
-/// on the same subpath does not win — an operation-specific rule beats the wildcard
-/// class regardless of order, and `~/.ssh/id` read through. Last-match-wins holds only
-/// between rules of the SAME operation, so deny and allow are always written as the
-/// same pair.
-const SEATBELT_OPS: [&str; 2] = ["file-read*", "file-write*"];
-
-/// Render the seatbelt profile (macOS `sandbox-exec -p`) for an allow-list. Within an
-/// operation, rules are evaluated last-match-wins, so the order is: allow the host, deny
-/// the home, grant every root, deny the carve-outs last. The carve-outs are already
-/// absent from the granted roots ([`carve`]); writing them again is the belt to that
-/// brace. Nothing is ever granted beneath a deny, so order never cuts against a root of
-/// hers (Cormac on #4882: a first draft denied `~/.airc` and re-granted only her citizen
-/// dir after it, refusing her own card worktree under `~/.airc/worktrees`).
-pub fn seatbelt_profile(home: &Path, list: &AllowList) -> String {
-    let mut out = String::from("(version 1)\n(allow default)\n");
-    let rule = |out: &mut String, verdict: &str, ops: &[&str], root: &Path| {
-        for op in ops {
-            out.push_str(&format!("({verdict} {op} (subpath \"{}\"))\n", sbpl_string(root)));
-        }
-    };
-    rule(&mut out, "deny", &SEATBELT_OPS, home);
-    out.push_str(&format!("(allow file-read-metadata (literal \"{}\"))\n", sbpl_string(home)));
-    // Path lookup needs the ancestors of a granted root; subpath grants cover
-    // descendants, the ancestors get metadata only.
-    for root in list.read.iter().chain(list.write.iter()) {
-        for ancestor in root.ancestors().skip(1).take_while(|a| a.starts_with(home) && *a != home) {
-            out.push_str(&format!("(allow file-read-metadata (literal \"{}\"))\n", sbpl_string(ancestor)));
-        }
-    }
-    for root in &list.read {
-        rule(&mut out, "allow", &SEATBELT_OPS[..1], root);
-    }
-    for root in &list.write {
-        rule(&mut out, "allow", &SEATBELT_OPS, root);
-    }
-    for root in &list.deny {
-        rule(&mut out, "deny", &SEATBELT_OPS, root);
-    }
-    out
-}
-
-fn sbpl_string(p: &Path) -> String {
-    p.display().to_string().replace('\\', "\\\\").replace('"', "\\\"")
-}
+// One module per OS difference; everything above is the shared contract.
+mod seatbelt;
+pub use seatbelt::seatbelt_profile;
+#[cfg(target_os = "linux")]
+mod landlock;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+mod unconfined;
+#[cfg(target_os = "macos")]
+use seatbelt::confined_command_with;
+#[cfg(target_os = "linux")]
+use landlock::confined_command_with;
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+use unconfined::confined_command_with;
 
 /// THE one way a child is spawned for a caller: confined when `confinement` is hers,
 /// the operator's own process when `None`. Every confined spawn carries its receipt as
@@ -474,81 +441,6 @@ pub fn confined_command(
         cmd.current_dir(cwd);
     }
     (cmd, receipt)
-}
-
-#[cfg(target_os = "macos")]
-fn confined_command_with(
-    confinement: &Confinement,
-    list: &AllowList,
-    program: &Path,
-    args: &[std::ffi::OsString],
-) -> (tokio::process::Command, Enforcement) {
-    let profile = seatbelt_profile(&confinement.home, list);
-    let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
-    cmd.arg("-p").arg(profile).arg(program).args(args);
-    (cmd, Enforcement::Enforced { mechanism: "seatbelt" })
-}
-
-#[cfg(target_os = "linux")]
-fn confined_command_with(
-    _confinement: &Confinement,
-    list: &AllowList,
-    program: &Path,
-    args: &[std::ffi::OsString],
-) -> (tokio::process::Command, Enforcement) {
-    use landlock::{Access, AccessFs, Ruleset, RulesetAttr, RulesetCreatedAttr, ABI};
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args);
-    let abi = ABI::V2;
-    let read: Vec<PathBuf> = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt", "/proc", "/dev", "/sys", "/var", "/run", "/nix"]
-        .iter()
-        .map(PathBuf::from)
-        .filter(|p| p.exists())
-        .chain(list.read.iter().cloned())
-        .collect();
-    let write: Vec<PathBuf> = list.write.clone();
-    // landlock is allow-only: the deny roots are simply never granted (the read roots
-    // were enumerated beneath them), so nothing here reads `list.deny`.
-    let compatible = Ruleset::default().handle_access(AccessFs::from_all(abi)).is_ok();
-    if !compatible {
-        return (cmd, Enforcement::Unavailable { reason: "landlock: this kernel does not offer the filesystem ABI (needs 5.13+)".into() });
-    }
-    // SAFETY: the closure runs in the forked child before exec; it only builds and
-    // applies a landlock ruleset (no allocation-sensitive state shared with the parent
-    // is touched after fork beyond what landlock's own calls do).
-    unsafe {
-        cmd.pre_exec(move || {
-            let ruleset = Ruleset::default()
-                .handle_access(AccessFs::from_all(abi))
-                .map_err(std::io::Error::other)?
-                .create()
-                .map_err(std::io::Error::other)?
-                .add_rules(landlock::path_beneath_rules(&read, AccessFs::from_read(abi)))
-                .map_err(std::io::Error::other)?
-                .add_rules(landlock::path_beneath_rules(&write, AccessFs::from_all(abi)))
-                .map_err(std::io::Error::other)?;
-            ruleset.restrict_self().map_err(std::io::Error::other)?;
-            Ok(())
-        });
-    }
-    (cmd, Enforcement::Enforced { mechanism: "landlock" })
-}
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn confined_command_with(
-    _confinement: &Confinement,
-    _list: &AllowList,
-    program: &Path,
-    args: &[std::ffi::OsString],
-) -> (tokio::process::Command, Enforcement) {
-    let mut cmd = tokio::process::Command::new(program);
-    cmd.args(args);
-    (
-        cmd,
-        Enforcement::Unavailable {
-            reason: "no per-process filesystem sandbox on this platform: the child runs as the operator (a citizen OS account with ACLs is the Windows mechanism, carded)".into(),
-        },
-    )
 }
 
 #[cfg(test)]
