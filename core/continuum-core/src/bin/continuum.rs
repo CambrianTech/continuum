@@ -5029,6 +5029,18 @@ async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
 /// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
 /// published is not THE build for this node, or does not match its checksum.
 async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError> {
+    // A destination already below the shared free-space floor cannot accept any
+    // service payload. Refuse before archive I/O; this is only a lower bound,
+    // not a replacement for the installer's measured payload admission.
+    // Keep offline prepare-prebuilt independent: recovery artifacts can still
+    // be prepared on configured cold storage while the service volume is full.
+    #[cfg(windows)]
+    {
+        let home = continuum_core::paths::continuum_home()
+            .map_err(PublishedCoreError::OperationalBlocked)?;
+        let destination = continuum_core::paths::artifacts::service_destination(&home)?;
+        continuum_core::paths::artifacts::check_capacity(&destination, 0).await?;
+    }
     prepare_ci_core(repo, tip, platform, None, deploy_note).await
 }
 
