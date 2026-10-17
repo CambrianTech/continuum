@@ -2534,6 +2534,8 @@ pub fn start_server(
         // lane grants and settles beside residency and lanes, judged and said in the
         // org room by the core itself — never a hand read again.
         runtime.register(Arc::new(crate::modules::citizen_health::CitizenHealthModule::new()));
+        // CARD CARRY: one owner keeps residents' committed card work on origin (2026-10-17).
+        runtime.register(Arc::new(crate::modules::card_carry::CardCarryModule::new()));
         // The STANDING ROUND — benchmarks dispatch themselves when none is
         // working (the last hand-managed act, retired 2026-09-02). Off until
         // `benchmark/standing --enabled true`; ticks on the runtime cadence.

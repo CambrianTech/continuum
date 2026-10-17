@@ -645,6 +645,21 @@ async fn sync_by(deadline: tokio::time::Instant, root: &Path, sync: impl std::fu
     }
 }
 
+/// Carry COMMITTED work in `root` to origin, under `lease` (an admission to the claim's
+/// hands), by the same bounded, per-checkout-locked sync the turn uses. A dirty tree is
+/// left alone (`None`): uncommitted work belongs to the turn writing it, whose own end
+/// commits and carries it; this never commits on a resident's behalf mid-edit.
+pub async fn carry_committed(lease: std::sync::Arc<crate::code::hands::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> Option<PushOutcome> {
+    match is_dirty(&root).await {
+        Ok(false) => {}
+        _ => return None,
+    }
+    if !has_unpushed_work(&root).await {
+        return None;
+    }
+    Some(sync_after_act_for(lease, persona, persona_name, root, card).await)
+}
+
 /// [`move_blocker`] within [`BLOCKER_BOUND`]; unanswered in time = a blocker (fail
 /// closed).
 pub async fn move_blocker_bounded(persona: Uuid) -> Option<String> {
@@ -1302,5 +1317,30 @@ mod tests {
         assert!(!REMOTE_UNKNOWN.contains(&m.a), "the read settled it");
         drop(lock);
         forget_checkout(&m.a);
+    }
+
+    /// what this catches: the carry owner (modules::card_carry) committing a resident's
+    /// work-in-progress mid-edit. It sweeps checkouts outside her turn, so it may only carry
+    /// what she has already committed; a dirty tree is her turn's to commit (2026-10-17).
+    #[tokio::test]
+    async fn the_carry_owner_never_commits_a_residents_uncommitted_work() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("card");
+        git(tmp.path(), &["init", "-q", "-b", "main", &root.to_string_lossy()]).await;
+        identity(&root).await;
+        std::fs::write(root.join("seed.txt"), "seed\n").unwrap();
+        git(&root, &["add", "seed.txt"]).await;
+        git(&root, &["commit", "-q", "-m", "workspace: initial state"]).await;
+        git(&root, &["remote", "add", "origin", "https://github.com/CambrianTech/continuum.git"]).await;
+        std::fs::write(root.join("half-written.rs"), "fn her_edit(\n").unwrap();
+        let head = git(&root, &["rev-parse", "HEAD"]).await;
+
+        let (persona, card, claim) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let lease = std::sync::Arc::new(
+            crate::code::hands::admit(crate::code::hands::HandsContext::for_claim(persona, card, claim)).expect("open hands admit"),
+        );
+        assert_eq!(carry_committed(lease, persona, "Benchy", root.clone(), card).await, None, "a dirty tree is not the carry's");
+        assert_eq!(git(&root, &["rev-parse", "HEAD"]).await, head, "no commit was made for her");
+        assert_eq!(git(&root, &["status", "--porcelain"]).await.trim(), "?? half-written.rs", "her edit is exactly as she left it");
     }
 }

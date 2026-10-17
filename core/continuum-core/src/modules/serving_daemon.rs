@@ -253,6 +253,13 @@ const HEALTH_PROBE_EVERY_TICKS: u64 = 12; // 12 × 5s ≈ 60s
 /// a wake burst), and reaping a healthy-but-busy lane is the exact thrash that got the
 /// prior watchdog reverted (commit 93753d812). Two consecutive failures ≈ 2 minutes of
 /// sustained no-decode = genuinely poisoned, not transiently loaded.
+/// How long work may stop advancing on a slot the engine still reports as processing before
+/// the lane is condemned as frozen. derived-or-floor: floor — measured on the M5 2026-10-17
+/// the engine logs a prefill or decode advance every ~3 s while working, and the longest
+/// cold prefill seen that day (23,612 tokens at 105 t/s) still advanced continuously; a
+/// frozen engine advanced nothing for 34 min. Three minutes is 60x the healthy gap.
+const FROZEN_ENGINE_MS: u64 = 180_000;
+
 const HEALTH_FAILS_TO_RELAUNCH: u8 = 2;
 
 /// Bus topic the live [`ServingSnapshot`] is emitted on whenever it changes.
@@ -4589,6 +4596,41 @@ impl ServingDaemonModule {
                      smoke probe rather than contend for a slot with the work that proves it",
                 );
                 return None;
+            }
+        }
+        // A FROZEN ENGINE IS NOT A QUIET ONE (card c5a2fcda, the M5 2026-10-17). A client
+        // cancelling a task mid-generation can leave the engine's speculative (MTP) draft step
+        // waiting forever on a Metal command buffer: 0 % CPU, a slot still `is_processing`, no
+        // token or prefill advance. Every arm here missed it: real work had lapsed, the smoke
+        // probe below is skipped when a resident is seated (always), and her turn never FAILS,
+        // it waits — 34 min on 10/17 before a hand killed it, four times that day. So: work
+        // that stopped advancing past FROZEN_ENGINE_MS while the engine says a slot is
+        // processing condemns the lane, read straight off `/slots`, no decode needed.
+        if let Some(since) = (self.decode_age)() {
+            if since >= FROZEN_ENGINE_MS && !self.reconciling.load(Ordering::Acquire) {
+                let server = self.server.clone();
+                let serving_tx = self.serving_tx.clone();
+                let force_relaunch = self.force_relaunch.clone();
+                let bus = self.bus.get().cloned();
+                return Some(tokio::spawn(async move {
+                    let processing = server.slots_body().await.and_then(|v| {
+                        v.as_array().map(|slots| {
+                            slots.iter().filter(|s| s.get("is_processing").and_then(serde_json::Value::as_bool) == Some(true)).count()
+                        })
+                    });
+                    if processing.unwrap_or(0) > 0 {
+                        crate::probe!(
+                            class = "serving.health",
+                            ok = false,
+                            via = "frozen_processing_slot",
+                            ms_since_work = since,
+                            processing_slots = processing.unwrap_or(0) as u64,
+                            "a slot says it is processing but nothing has advanced — the engine is frozen, \
+                             not quiet; relaunching it (card c5a2fcda)",
+                        );
+                        Self::declare_lane_wedged(&force_relaunch, &serving_tx, bus.as_ref(), "frozen: a processing slot with no decode or prefill advance");
+                    }
+                }));
             }
         }
         // NEVER DECODE ON A RESIDENT'S ONLY SLOT (card 9e3350bd, the 5090 2026-10-11): with no
