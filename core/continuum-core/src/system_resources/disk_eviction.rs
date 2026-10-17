@@ -1521,7 +1521,10 @@ mod tests {
         for output in outputs { assert_eq!(std::fs::read(release.join(output)).unwrap(), b"preserve installed inputs"); }
         active.release(&certified.join("build/input"));
         let remaining = tracked.bytes();
-        assert_eq!(broker.relieve().bytes_freed, closure_bytes, "release-only intermediate pressure has a real eviction owner");
+        assert_eq!(broker.relieve().bytes_freed, closure_bytes,
+            "release-only intermediate pressure has a real eviction owner: decline={}, observation={}, release_observation={}, active_pin={}",
+            pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), tracked.observation(),
+            pool.release_observation.load(std::sync::atomic::Ordering::Relaxed), active.protects(&release));
         assert_eq!(tracked.bytes(), remaining - closure_bytes);
         for child in custody::CHILDREN { assert!(!certified.join(child).exists()); assert!(unknown.join(child).join("input").exists()); }
         assert!(!cargo_output.exists(), "withdraw Cargo's captured output so missing inputs regenerate");
