@@ -250,27 +250,17 @@ jobs:
               ;;
           esac
 
-  cargo-check-windows:
-    name: cargo check windows-msvc (lib + tests)
+  windows-core-contract:
+    name: Windows core compilation and custody
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: windows-latest
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.installer != 'false'
+        if: needs.changes.outputs.rust != 'false'
         with:
-          submodules: ${{ needs.changes.outputs.rust != 'false' && 'recursive' || 'false' }}
-      - name: Windows hidden installer process regression
-        if: needs.changes.outputs.installer != 'false'
-        shell: powershell
-        run: |
-          ./tools/scripts/sync-windows-bootstrap.ps1 -Check
-          ./tools/scripts/tests/windows-process.test.ps1 -CheckDescendants
-      - name: Windows bounded AIRC entry download
-        if: needs.changes.outputs.installer != 'false'
-        shell: powershell
-        run: ./tools/scripts/tests/windows-airc-download.test.ps1
+          submodules: recursive
       - name: Install Rust toolchain from rust-toolchain.toml
         if: needs.changes.outputs.rust != 'false'
         run: |
@@ -364,6 +354,34 @@ jobs:
             if ($result -ne 0) { exit $result }
             if (($output -join "`n") -notmatch '1 passed;') { throw "Maintenance CLI fixture did not execute: $test" }
           }
+
+  # Standalone installer/lifecycle checks do not link continuum-core. Keep their
+  # contract independent of the measured core build + integration + CLI link,
+  # which consumed the previous shared job's 45-minute budget before these ran.
+  windows-lifecycle-contract:
+    name: Windows standalone installer and lifecycle
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.installer != 'false' || needs.changes.outputs.rust != 'false'
+      - name: Install Rust toolchain from rust-toolchain.toml
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          rustup show active-toolchain
+          rustc --version
+      - name: Windows hidden installer process regression
+        if: needs.changes.outputs.installer != 'false'
+        shell: powershell
+        run: |
+          ./tools/scripts/sync-windows-bootstrap.ps1 -Check
+          ./tools/scripts/tests/windows-process.test.ps1 -CheckDescendants
+      - name: Windows bounded AIRC entry download
+        if: needs.changes.outputs.installer != 'false'
+        shell: powershell
+        run: ./tools/scripts/tests/windows-airc-download.test.ps1
       - name: Windows installed release and supervisor regressions
         if: needs.changes.outputs.installer != 'false'
         shell: powershell
@@ -409,3 +427,18 @@ jobs:
       - name: continuum-cli-lifecycle tests (the CLI's platform lifecycle, no core link)
         if: needs.changes.outputs.rust != 'false'
         run: cargo test -p continuum-cli-lifecycle
+
+  # Preserve the required Windows context; neither child can silently disappear.
+  cargo-check-windows:
+    name: cargo check windows-msvc (lib + tests)
+    needs: [windows-core-contract, windows-lifecycle-contract]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both Windows contracts
+        env:
+          CORE_RESULT: ${{ needs.windows-core-contract.result }}
+          LIFECYCLE_RESULT: ${{ needs.windows-lifecycle-contract.result }}
+        run: |
+          test "$CORE_RESULT" = success && test "$LIFECYCLE_RESULT" = success
