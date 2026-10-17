@@ -34,6 +34,54 @@ try {
         . (Join-Path $repo 'tools/scripts/lib/win-modules.ps1')
         function Module-Fail { param($Name,$Fix) throw "$Name $Fix" }
         $tip = '0123456789012345678901234567890123456789'
+        foreach ($case in $script:DiskCapacityParityCases) {
+            if ((Test-CoreProjectedDiskCapacity $case[0] $case[1] $case[2] $case[3]) -ne $case[4]) { throw 'Installer projection differs from Rust disk admission.' }
+        }
+        $observed = Get-CoreBootstrapVolume $scratch
+        if ($observed.Count -ne 2 -or $observed[1] -eq 0 -or $observed[0] -gt $observed[1]) { throw 'Physical bootstrap volume observation failed.' }
+        $oldStorage = $env:CONTINUUM_STORAGE_PATH; $oldHome = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = Join-Path $scratch 'bootstrap-home'
+            New-Item -ItemType Directory -Path (Join-Path $env:USERPROFILE '.continuum') -Force | Out-Null
+            $env:CONTINUUM_STORAGE_PATH = $null
+            $fallback = Get-CoreBootstrapRoot
+            if ($fallback -ne (Join-Path $env:USERPROFILE '.continuum/cache/artifacts/bootstrap')) { throw 'Default artifact root diverged.' }
+            [IO.File]::WriteAllText((Join-Path $env:USERPROFILE '.continuum/config.env'), (
+                "CONTINUUM_STORAGE_PATH='missing-old-assignment'`n" +
+                'CONTINUUM_STORAGE_PATH="' + $scratch + "`"`n" +
+                "continuum_storage_path='missing-wrong-case'`n"))
+            if ((Get-CoreBootstrapRoot) -ne (Join-Path $scratch 'artifacts/bootstrap')) { throw 'Persisted configured artifact root ignored.' }
+            $env:CONTINUUM_STORAGE_PATH = Join-Path $scratch 'missing-storage'
+            $refused = $false
+            try { Get-CoreBootstrapRoot | Out-Null } catch { $refused = $true }
+            if (-not $refused) { throw 'Unavailable configured storage silently fell back.' }
+        } finally { $env:CONTINUUM_STORAGE_PATH = $oldStorage; $env:USERPROFILE = $oldHome }
+        # Inject the same physical-volume observation boundary; no HTTP or real capacity changes.
+        $script:bootstrapVolume = [uint64[]]@(0,10000000)
+        $streamPath = Join-Path $scratch 'bootstrap-stream'
+        function Get-CoreBootstrapVolume {
+            param($Directory)
+            $written = if (Test-Path -LiteralPath $streamPath) { (Get-Item -LiteralPath $streamPath).Length } else { 0 }
+            return ,([uint64[]]@(($script:bootstrapVolume[0] + $written), $script:bootstrapVolume[1]))
+        }
+        $inputBytes = New-Object byte[] 65537
+        foreach ($length in @([long]65537, $null)) {
+            $stream = [IO.MemoryStream]::new($inputBytes)
+            $script:bootstrapVolume = [uint64[]]@(0,10000000)
+            try { Write-CoreBootstrapStream $stream $streamPath $length 65537 ([Threading.CancellationToken]::None) } finally { $stream.Dispose() }
+            if ((Get-Item -LiteralPath $streamPath).Length -ne 65537) { throw 'Admitted stream lost bytes.' }
+            Remove-Item -LiteralPath $streamPath
+        }
+        $script:bootstrapVolume = [uint64[]]@(0,68986) # 65536 bytes admitted; next byte refused.
+        $stream = [IO.MemoryStream]::new($inputBytes); $refused = $false
+        try { Write-CoreBootstrapStream $stream $streamPath $null 65537 ([Threading.CancellationToken]::None) } catch { $refused = $true } finally { $stream.Dispose() }
+        if (-not $refused -or (Get-Item -LiteralPath $streamPath).Length -ne 65536) { throw 'Unknown-length stream wrote beyond measured capacity.' }
+        if (Test-Path -LiteralPath $streamPath) { Remove-Item -LiteralPath $streamPath }
+        $script:bootstrapVolume = [uint64[]]@(950,1000)
+        $stream = [IO.MemoryStream]::new($inputBytes); $refused = $false
+        try { Write-CoreBootstrapStream $stream $streamPath 65537 65537 ([Threading.CancellationToken]::None) } catch { $refused = $true } finally { $stream.Dispose() }
+        if (-not $refused -or (Test-Path -LiteralPath $streamPath)) { throw 'Known-length capacity refusal wrote an output.' }
+        $script:bootstrapVolume = [uint64[]]@(0,10000000)
         $manifest = [pscustomobject]@{ git_sha=$tip; platform='windows-x86_64'; archive='continuum-core-windows-x86_64.tar.gz'; sha256=('a' * 64); runtime_libs=@('VCOMP140.DLL'); bootstrap_runtime_libs=@('VCOMP140.DLL') }
         Assert-CoreBootstrapManifest $manifest $tip 'windows-x86_64'
         foreach ($case in @(@('git_sha','ffffffffffffffffffffffffffffffffffffffff'), @('platform','macos-arm64'), @('archive','../escape.tar.gz'), @('sha256','short'))) {
@@ -53,6 +101,11 @@ try {
         if ($LASTEXITCODE -ne 0) { throw 'Cannot package bootstrap adapter fixture.' }
         $manifest.sha256 = (Get-FileHash -LiteralPath $archive).Hash
         $bootstrap = Join-Path $transportRoot 'selected'
+        $script:bootstrapVolume = [uint64[]]@(950,1000)
+        $refused = $false
+        try { Expand-CoreBootstrap $archive $manifest $bootstrap | Out-Null } catch { $refused = $true }
+        if (-not $refused -or (Test-Path -LiteralPath $bootstrap)) { throw 'Expanded closure capacity refusal created destination.' }
+        $script:bootstrapVolume = [uint64[]]@(0,10000000)
         $selected = Expand-CoreBootstrap $archive $manifest $bootstrap
         if ([IO.File]::ReadAllText($selected) -cne 'fixture CLI bytes' -or [IO.File]::ReadAllText((Join-Path $bootstrap 'VCOMP140.DLL')) -cne 'fixture OpenMP runtime') { throw 'Bootstrap did not stage its exact declared runtime.' }
         $manifest.bootstrap_runtime_libs = @('VCOMP140.DLL','vcomp140.dll')

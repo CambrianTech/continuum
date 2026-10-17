@@ -16,6 +16,7 @@
 //! See: docs/architecture/UNIFIED-PAGING.md
 
 pub mod broker;
+pub(crate) mod disk_capacity;
 pub mod filesystem_tier_pool;
 pub mod lease_revocation;
 pub mod pool;
