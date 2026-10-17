@@ -1270,6 +1270,8 @@ foreach ($entry in $saved.tasks) {{
         fn legacy_claim_and_operation_refuse_ambiguous_recovery() {
             let temp = tempfile::tempdir().unwrap();
             require_idle_claim(temp.path()).unwrap();
+            // The real deploy-claim writer creates this parent before publication.
+            std::fs::create_dir_all(temp.path().join("run")).unwrap();
             std::fs::write(crate::deploy_claim::claim_path(temp.path()), b"corrupt").unwrap();
             assert!(require_idle_claim(temp.path()).is_err());
             std::fs::write(
