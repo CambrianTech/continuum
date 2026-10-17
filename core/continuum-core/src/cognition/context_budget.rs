@@ -103,7 +103,17 @@ impl ContextBudget {
     /// tier gets the prompt it can afford. No trusted rate for the served model = the
     /// served window rules, as before.
     pub fn from_window(context_window: u32) -> Self {
-        let affordable = Self::prefill_affordable_window(context_window);
+        Self::from_window_for(context_window, crate::cognition::audience::current())
+    }
+
+    /// [`Self::from_window`] for a named audience instead of the running turn's. For STATE
+    /// that outlives a turn (a mind's results ring): budgeted against the turn that happens
+    /// to be running, it shrank 3x on every Interactive turn and regrew on the next
+    /// Unattended one, rewriting its collapsed-pointer block each swing and re-prefilling
+    /// everything after it (M5 2026-10-17: affordable 17-19k vs ~6k tokens alternating; the
+    /// pointer block was the first divergence on 40 of 62 turns, ~9k fresh tokens each).
+    pub fn from_window_for(context_window: u32, audience: crate::inference::prefill_rate::Audience) -> Self {
+        let affordable = Self::prefill_affordable_window_for(context_window, audience);
         Self {
             total_chars: (affordable > 0)
                 .then(|| (affordable as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
@@ -162,7 +172,7 @@ impl ContextBudget {
 
 /// PURE: the prompt a turn may cost at `rate`, for a lane serving `served` tokens.
 ///
-/// Split out from [`Self::prefill_affordable_window`] so the DECISION is pinned by a test
+/// Split out from [`Self::prefill_affordable_window_for`] so the DECISION is pinned by a test
 /// rather than by a probe nobody reads until it fires — the caller is all process globals
 /// (the serving snapshot, the audience seam, the rates map) and cannot be exercised
 /// without them.
@@ -204,14 +214,13 @@ fn affordable_for_rate(
 /// cannot be right when nothing is known (card a2578811). `served` is still returned when
 /// there is no served MODEL to have a rate for: an absent subject, not an absent
 /// measurement. One row when the clamp binds, lifts, or changes rung; never per call.
-fn prefill_affordable_window(served: u32) -> u32 {
+fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefill_rate::Audience) -> u32 {
     if served == 0 {
         return 0;
     }
     let Some(model) = crate::inference::llama_server::current_serving().active_model else {
         return served;
     };
-    let audience = crate::cognition::audience::current();
     // AN UNKNOWN RATE IS NOT PERMISSION FOR THE WHOLE WINDOW (card a2578811). This read
     // was `rate_for` — fresh-only — and its `None` fell through to `served`: the LARGEST
     // prompt the box can be asked for, handed out in exactly the state where nothing is
