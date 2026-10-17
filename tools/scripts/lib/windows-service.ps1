@@ -503,7 +503,7 @@ function New-CoreServiceRelease {
     $registeredReleaseSnapshot = $descriptor | ConvertTo-Json -Compress
     $slot = $null
     $mediaBlocked = @()
-    $serviceFiles = @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1')
+    $serviceFiles = @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1', 'payload-paths.ps1')
     foreach ($name in @('service-a', 'service-b')) {
         $candidate = Join-Path $root $name
         $occupied = @($liveImages | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) })
@@ -570,7 +570,7 @@ function New-CoreServiceRelease {
         }
     }
     $copySources = @(@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames | ForEach-Object { Join-Path $ArtifactDirectory $_ })
-    $copySources += @((Join-Path $RepoRoot 'tools\scripts\run-service-hidden.ps1'), (Join-Path $RepoRoot 'tools\scripts\start-livekit-windows.ps1'))
+    $copySources += @((Join-Path $RepoRoot 'tools\scripts\run-service-hidden.ps1'), (Join-Path $RepoRoot 'tools\scripts\start-livekit-windows.ps1'), (Join-Path $RepoRoot 'tools\scripts\lib\payload-paths.ps1'))
     Assert-CoreArtifactCapacity -ArtifactDirectory $ArtifactDirectory -Destination $slot -Sources $copySources
     $publishedEngine = Join-Path $ArtifactDirectory 'engine'
     if (Test-Path -LiteralPath (Join-Path $publishedEngine 'engine-install.json') -PathType Leaf) {
@@ -596,6 +596,7 @@ function New-CoreServiceRelease {
     $launcher = Join-Path $slot 'run-service-hidden.ps1'
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tools\scripts\run-service-hidden.ps1') -Destination $launcher -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tools\scripts\start-livekit-windows.ps1') -Destination (Join-Path $slot 'start-livekit-windows.ps1') -Force -ErrorAction Stop
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tools\scripts\lib\payload-paths.ps1') -Destination (Join-Path $slot 'payload-paths.ps1') -Force -ErrorAction Stop
     $socket = $env:CONTINUUM_CORE_SOCKET
     if (-not $socket) { $socket = Join-Path ([IO.Path]::GetTempPath()) 'continuum-core.sock' }
     return [pscustomobject]@{
