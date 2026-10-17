@@ -495,9 +495,10 @@ async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -
 /// the artifact was 177 KB of other people's merged commits (and she had written nothing
 /// yet). What is hers is what no remote carries: the base is the newest merge-base of her
 /// HEAD with any remote-tracking ref that still descends from the creation base. A worktree
-/// that merged nothing upstream keeps its creation base; a git failure keeps it too (the
-/// artifact is then the wider diff, never a narrower one that hides her work).
-fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
+/// that merged nothing upstream keeps its creation base. Unproven ancestry or an unreadable
+/// remote-ref inventory refuses automatic derivation: a wider fallback can publish unrelated
+/// upstream work as her candidate. An explicitly supplied base remains caller-owned.
+fn past_upstream(checkout: &std::path::Path, created: &str) -> Result<String, CommandError> {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
@@ -507,10 +508,21 @@ fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
+    // A shallow boundary can retain the creation object but hide its relation to HEAD.
+    // Reproduced in Kimi's checkout after c82b5f9c (179 upstream files): every candidate
+    // was skipped and the old base silently won. Do not turn missing proof into authorship.
+    if git(&["merge-base", "--is-ancestor", created, "HEAD"]).is_none() {
+        return Err(CommandError::Invalid(format!(
+            "cannot derive submission base: creation anchor {created} is not a proven ancestor of HEAD \
+             (history may be shallow or rewritten); restore the relevant history or pass a verified base_sha"
+        )));
+    }
     // Full ref names: `%(refname:short)` abbreviates refs/remotes/origin/HEAD to "origin",
     // so a HEAD alias could not be recognised by its suffix (Cormac on #4442).
     let Some(refs) = git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]) else {
-        return created.to_string();
+        return Err(CommandError::Invalid(
+            "cannot derive submission base: remote refs could not be read; repair Git access or pass a verified base_sha".into()
+        ));
     };
     // Her OWN branch on a remote is not upstream (Cormac on #4442): the runtime pushes her
     // branch after each act, so refs/remotes/<remote>/<her branch> is her own tip, the ref
@@ -549,9 +561,9 @@ fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
                 "the worktree merged upstream history since it was created — the submission \
                  diffs from the newest upstream commit she holds, so only her change is published"
             );
-            mb
+            Ok(mb)
         }
-        _ => created.to_string(),
+        _ => Ok(created.to_string()),
     }
 }
 
@@ -575,7 +587,7 @@ async fn derive_submission(
             if is_swe {
                 created
             } else {
-                past_upstream(checkout, &created)
+                past_upstream(checkout, &created)?
             }
         }
     };
@@ -1837,21 +1849,35 @@ mod tests {
         assert!(run(&["init", "-q"]).status.success());
         let created = commit("created here");
         // nothing merged from upstream yet: the creation base stands
-        assert_eq!(super::past_upstream(dir.path(), &created), created);
+        assert_eq!(super::past_upstream(dir.path(), &created).expect("proven history"), created);
         let upstream = commit("someone else's merged work");
         assert!(run(&["update-ref", "refs/remotes/origin/canary", &upstream]).status.success());
         std::fs::write(dir.path().join("hers.rs"), "fn hers() {}\n").expect("write");
         assert!(run(&["add", "hers.rs"]).status.success());
         let _mine = commit("her change");
-        assert_eq!(super::past_upstream(dir.path(), &created), upstream, "the base moves past what upstream carries");
+        assert_eq!(super::past_upstream(dir.path(), &created).expect("proven history"), upstream, "the base moves past what upstream carries");
         // her own branch pushed to the remote is NOT upstream (Cormac on #4442): the runtime
         // pushes after each act, and that ref sits at her own tip
         let branch = String::from_utf8(run(&["symbolic-ref", "--short", "HEAD"]).stdout).expect("branch").trim().to_string();
         assert!(run(&["update-ref", &format!("refs/remotes/origin/{branch}"), "HEAD"]).status.success());
-        assert_eq!(super::past_upstream(dir.path(), &created), upstream, "her own pushed tip never becomes the base");
+        assert_eq!(super::past_upstream(dir.path(), &created).expect("proven history"), upstream, "her own pushed tip never becomes the base");
         // a remote that does not descend from the creation base is ignored
         assert!(run(&["update-ref", "refs/remotes/origin/stale", &created]).status.success());
-        assert_eq!(super::past_upstream(dir.path(), &created), upstream);
+        assert_eq!(super::past_upstream(dir.path(), &created).expect("proven history"), upstream);
+
+        // The creation object still exists, but a real Git shallow boundary hides its
+        // ancestry. Refuse instead of silently publishing the whole upstream delta.
+        let head_before = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("head");
+        let status_before = run(&["status", "--porcelain"]).stdout;
+        let shallow = dir.path().join(".git/shallow");
+        std::fs::write(&shallow, format!("{upstream}\n")).expect("shallow boundary");
+        assert!(!run(&["merge-base", "--is-ancestor", &created, "HEAD"]).status.success());
+        let refused = super::past_upstream(dir.path(), &created).expect_err("unproven automatic base");
+        assert!(refused.to_string().contains("pass a verified base_sha"), "{refused}");
+        assert_eq!(String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("head"), head_before);
+        assert_eq!(run(&["status", "--porcelain"]).stdout, status_before);
+        std::fs::remove_file(shallow).expect("restore fixture history");
+        assert_eq!(super::past_upstream(dir.path(), &created).expect("restored ancestry"), upstream);
     }
 
     #[tokio::test]
