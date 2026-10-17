@@ -1517,7 +1517,11 @@ mod tests {
             certified.join("build/input"), certified.join("build/input").components().collect::<Vec<_>>(),
             certified.join("build/input").canonicalize(), tracked.path().join("release"),
             tracked.path().join("release").components().collect::<Vec<_>>());
-        assert_eq!(broker.relieve().bytes_freed, 4096, "the existing broker reaches release-only incremental pressure");
+        assert_eq!(broker.relieve().bytes_freed, 4096,
+            "the existing broker reaches release-only incremental pressure: decline={}, pressure={}, incremental_exists={}, incremental_pinned={}, release_pinned={}",
+            pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), pool.pressure(),
+            release.join("incremental").exists(), active.protects(&tracked.path().join("release/incremental")),
+            active.protects(&tracked.path().join("release")));
         assert_eq!(tracked.bytes(), before - 4096);
         assert!(!release.join("incremental").exists());
         assert!(lock_path.exists());
