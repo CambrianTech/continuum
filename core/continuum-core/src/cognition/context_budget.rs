@@ -275,12 +275,20 @@ fn prefill_affordable_window(served: u32) -> u32 {
 /// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
 const RECALL_DENOM: usize = 10;
 
-    /// `1/denom` of the window in chars; `usize::MAX` (no bound) when the window is unknown.
     /// Whether a window is known: every bound below is a real number, not "no bound".
     pub fn is_known(&self) -> bool {
         self.total_chars.is_some()
     }
 
+    /// The whole prompt this window affords, in tokens: the served window bounded by what
+    /// the lane can prefill inside the turn's TTFT budget ([`Self::from_window`]). `None`
+    /// when the window is unknown. The receipt a turn's tool and framing cost is read
+    /// against (card 3026b83e).
+    pub fn affordable_tokens(&self) -> Option<usize> {
+        self.total_chars.map(|total| total / GUARD_CHARS_PER_TOKEN)
+    }
+
+    /// `1/denom` of the window in chars; `usize::MAX` (no bound) when the window is unknown.
     fn fraction(&self, denom: usize) -> usize {
         match self.total_chars {
             Some(total) => total / denom.max(1),
