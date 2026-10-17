@@ -178,6 +178,7 @@ fn affordable_for_rate(
     rate: crate::inference::prefill_rate::MeasuredRate,
     served: u32,
     audience: crate::inference::prefill_rate::Audience,
+    cache_fraction: Option<f64>,
 ) -> u32 {
     let affordable = match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
         Some(tps) => crate::inference::prefill_rate::affordable_prompt_tokens(
@@ -193,11 +194,27 @@ fn affordable_for_rate(
             .unwrap_or(served) // unwrap_or: a floor that cannot be a u32 is not a floor; the window is the only other truth
             .min(served),
     };
+    // THE TIME BUDGET IS SPENT ON FRESH TOKENS. The rate above prices every token of the
+    // prompt as if the lane had to read it; a warm lane serves most of it from its KV
+    // cache. Measured on the M5 2026-10-17: prefix reuse 55-75%, a ~18k-token bound on a
+    // 34,560-token lane, so a resident's results ring (a quarter of the bound) could not
+    // hold one 320-line read and she re-read the same file every turn. The measured cached
+    // fraction scales the bound up, counted at most MAX_CACHE_CREDIT so a turn that does
+    // lose its cache stays within a few multiples of its budget.
+    let credited = cache_fraction.filter(|f| f.is_finite() && *f > 0.0).map(|f| f.min(Self::MAX_CACHE_CREDIT)).unwrap_or(0.0);
+    let affordable = ((affordable as f64) / (1.0 - credited)).min(u32::MAX as f64) as u32;
     // The planning helper may raise a proposed lane to MIN_SERVE_CTX. This
     // owner budgets an already-resolved window: a serving floor cannot enlarge
     // its capacity, including small explicit evaluation windows.
     affordable.min(served)
 }
+
+/// The most of the measured cache fraction the bound credits: at 0.75 the bound grows at
+/// most 4x, so a turn that misses its cache entirely costs at most four times its
+/// time-to-first-token budget. Above it the bound would buy a whole-window cold prefill.
+// derived-or-floor: floor — measured prefix reuse on the M5 2026-10-17 ran 0.55-0.75; the
+// cap sits at the top of that range so the credit never exceeds what was observed.
+const MAX_CACHE_CREDIT: f64 = 0.75;
 
 /// The served window clamped to what the served lane can prefill inside the turn's
 /// time-to-first-token budget.
@@ -248,7 +265,7 @@ fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefil
     // so each cancel shrinks the next prompt until one completes and re-measures for real.
     // The failure becomes the evidence. Card a2578811; not in this change.
     let rate = crate::inference::prefill_rate::measured_rate_for(&model);
-    let affordable = Self::affordable_for_rate(rate, served, audience);
+    let affordable = Self::affordable_for_rate(rate, served, audience, crate::modules::citizen_health::prompt_cache_fraction());
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
     let shape = ((served as u64) << 32)
         | (affordable as u64) << 3
@@ -532,11 +549,27 @@ mod tests {
     //
     // The rungs that matter, at the numbers that were measured. If any absence resolves to
     // `served` again, the cancel loop comes back.
+    // what this catches: the prefill time bound charging cached tokens as if they had to
+    // be read (the M5 2026-10-17: ~100 t/s x 180 s = ~18k on a 34,560 lane with 57% reuse,
+    // so a resident's ring could not hold one 320-line read). The measured cache fraction
+    // scales the bound, credited at most MAX_CACHE_CREDIT, never past the window.
+    #[test]
+    fn the_prefill_bound_credits_the_measured_cache() {
+        use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
+        let rate = MeasuredRate { tps: Some(100.0), source: RateSource::Fresh };
+        let cold = ContextBudget::affordable_for_rate(rate, 34_560, Audience::Unattended, None);
+        let half = ContextBudget::affordable_for_rate(rate, 200_000, Audience::Unattended, Some(0.5));
+        assert_eq!(half, cold * 2, "half the prompt cached: twice the prompt fits the same fresh-token budget");
+        let all = ContextBudget::affordable_for_rate(rate, 200_000, Audience::Unattended, Some(0.99));
+        assert_eq!(all, cold * 4, "credited at most MAX_CACHE_CREDIT (4x), whatever the measured fraction");
+        assert_eq!(ContextBudget::affordable_for_rate(rate, 34_560, Audience::Unattended, Some(0.9)), 34_560, "never past the served window");
+    }
+
     #[test]
     fn an_unmeasured_prefill_rate_never_buys_the_whole_window() {
         use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
         let served = 26_000;
-        let afford = |r| ContextBudget::affordable_for_rate(r, served, Audience::Interactive);
+        let afford = |r| ContextBudget::affordable_for_rate(r, served, Audience::Interactive, None);
 
         // A rung with a number governs — even a STALE one: 12.5 t/s x 60 s = 750, under
         // MIN_SERVE_CTX, so the serve floor carries the prompt instead of the window.
@@ -575,7 +608,7 @@ mod tests {
         // A window SMALLER than the unmeasured floor clamps to the window: the floor is a
         // floor on the prompt, never a licence to exceed the lane.
         assert_eq!(
-            ContextBudget::affordable_for_rate(MeasuredRate::UNKNOWN, 1_024, Audience::Interactive),
+            ContextBudget::affordable_for_rate(MeasuredRate::UNKNOWN, 1_024, Audience::Interactive, None),
             1_024
         );
 
@@ -591,7 +624,7 @@ mod tests {
             (256, MeasuredRate { tps: Some(12.5), source: RateSource::Stale }, 64),
             (0, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 0),
         ] {
-            let affordable = ContextBudget::affordable_for_rate(rate, window, Audience::Interactive);
+            let affordable = ContextBudget::affordable_for_rate(rate, window, Audience::Interactive, None);
             assert!(affordable <= window);
             if window > 0 {
                 let budget = ContextBudget::from_window_unbounded(affordable);
