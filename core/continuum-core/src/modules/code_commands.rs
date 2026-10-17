@@ -2308,6 +2308,20 @@ mod tests {
         );
     }
 
+    // what this catches: the edit tool advertised as `edit_mode: {allOf: [{$ref}], ...}`,
+    // a shape llama.cpp's grammar converter cannot match a valid value against, so a
+    // constrained model can never complete a code/edit call (from #5059, 2026-10-15; zero
+    // resident edit calls after it on the M5).
+    #[test]
+    fn the_advertised_edit_schema_has_no_single_entry_all_of() {
+        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>();
+        let text = schema.to_string();
+        assert!(!text.contains("\"allOf\""), "no allOf anywhere in the advertised edit schema: {text}");
+        let edit_mode = &schema["properties"]["edit_mode"];
+        assert_eq!(edit_mode["$ref"], "#/definitions/EditMode", "the operation is the EditMode ref itself: {edit_mode}");
+        assert_eq!(edit_mode["description"], "Operation to apply.", "its doc survives the fold");
+    }
+
     #[test]
     fn generated_edit_recovery_contains_a_normalizable_operation() {
         let schema = serde_json::to_value(schemars::schema_for!(CodeEditParams)).unwrap();
