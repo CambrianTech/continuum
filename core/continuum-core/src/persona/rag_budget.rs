@@ -475,13 +475,16 @@ pub struct RagDelivery {
     pub items: Vec<RagItem>,
     /// Actual tokens consumed across all items.
     pub tokens_used: u32,
-    /// Some(cursor) → the source has more than it delivered. The remainder
-    /// reaches the reader as a HANDLE: the workspace marks the block
-    /// `source_truncated` and its notice names the source's `expand_command`
-    /// (whole-or-handle). No production allocator resumes a cursor today
-    /// (card e049aa82). None → the source delivered everything it had, or
-    /// doesn't support pagination.
-    pub continuation: Option<ContinuationCursor>,
+    /// True when this delivery is a PREFIX of what the source had —
+    /// content held back because it didn't fit `budget`. Nothing
+    /// resumes from here: every compose re-derives fresh, and the way
+    /// to see the rest is the source's `expand_command` verb. Two
+    /// readers: the cache layer (refetch when a later budget could
+    /// afford more — `cached_source`) and rag/inspect (tells a citizen
+    /// there is more). Ruling a (0e0bbf21): the old
+    /// `Option<ContinuationCursor>` resume mechanism is deleted — its
+    /// positional offset into a re-computed list could skip one row.
+    pub truncated: bool,
     /// What resolution the source actually used. May differ from
     /// the requested resolution if the source's content can't fit
     /// at the requested resolution.
@@ -592,16 +595,6 @@ pub trait RagSource: Send + Sync {
         resolution: ResolutionPreference,
     ) -> RagDelivery;
 
-    /// Resume delivery from a prior cursor. Returns None if the
-    /// cursor is stale, the source doesn't support pagination, the
-    /// cursor was issued for a different persona / source, or the
-    /// source has no more content.
-    async fn deliver_continuation(
-        &self,
-        ctx: &RagContext,
-        cursor: ContinuationCursor,
-        budget: u32,
-    ) -> Option<RagDelivery>;
 }
 
 //=============================================================================
