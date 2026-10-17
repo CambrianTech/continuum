@@ -122,6 +122,33 @@ pub fn repo_id_from_remote(url: &str) -> Option<String> {
     }
 }
 
+/// GitHub's `owner/name` identity for an authority decision. The broader registry
+/// parser above also accepts local paths and other hosts; those are not evidence
+/// that a remote belongs to the GitHub repository named by an AIRC card.
+pub(crate) fn github_repo_id_from_remote(remote: &str) -> Option<String> {
+    let remote = remote.trim();
+    let normalized;
+    let remote = if !remote.contains("://") {
+        let (host, path) = remote.split_once(':')?;
+        normalized = format!("ssh://{host}/{path}");
+        normalized.as_str()
+    } else {
+        remote
+    };
+    let url = reqwest::Url::parse(remote).ok()?;
+    if !matches!(url.scheme(), "https" | "ssh") || url.host_str() != Some("github.com")
+        || url.query().is_some() || url.fragment().is_some()
+        || url.port().is_some_and(|port| port != if url.scheme() == "ssh" { 22 } else { 443 }) {
+        return None;
+    }
+    let path = url.path().strip_prefix('/')?.trim_end_matches('/').trim_end_matches(".git");
+    let (owner, name) = path.split_once('/')?;
+    if owner.is_empty() || name.is_empty() || name.contains('/') {
+        return None;
+    }
+    airc_work::RepoId::new(path).ok().map(|repo| repo.to_string())
+}
+
 /// Record the clone this test binary was built from as this node's own checkout, in the
 /// CURRENT home's registry (callers hold `test_env::HomeGuard`): the fixture for code that
 /// resolves `own_checkout`. The clone root comes from git's common dir, so a linked worktree
@@ -194,6 +221,12 @@ mod tests {
         assert_eq!(repo_id_from_remote("git@github.com:CambrianTech/airc.git").as_deref(), Some("CambrianTech/airc"));
         assert_eq!(repo_id_from_remote("https://github.com/CambrianTech/continuum/").as_deref(), Some("CambrianTech/continuum"));
         assert!(repo_id_from_remote("nonsense").is_none());
+        for remote in ["https://github.com/CambrianTech/continuum.git", "ssh://git@github.com/CambrianTech/continuum.git", "git@github.com:CambrianTech/continuum.git"] {
+            assert_eq!(github_repo_id_from_remote(remote).as_deref(), Some("CambrianTech/continuum"));
+        }
+        for remote in ["https://foreign.example/CambrianTech/continuum.git", "git@foreign.example:CambrianTech/continuum.git", "file:///CambrianTech/continuum", "https://github.com/extra/CambrianTech/continuum", "https://github.com:444/CambrianTech/continuum", "https://github.com/CambrianTech/continuum?other=1"] {
+            assert!(github_repo_id_from_remote(remote).is_none(), "{remote}");
+        }
     }
 
     // what this catches: recording a card WORKTREE as the clone (deleted on merge,

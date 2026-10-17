@@ -558,8 +558,7 @@ fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_w
             && remote_branch.is_some_and(|(remote, b)| {
                 integration.as_deref() == Some(b) && repo.is_some_and(|repo| {
                     git(&["remote", "get-url", remote]).is_some_and(|url| {
-                        crate::persona::workspace_transfer::is_transfer_target(&url)
-                            && crate::modules::repo_registry::repo_id_from_remote(&url).as_deref() == Some(repo.as_str())
+                        crate::modules::repo_registry::github_repo_id_from_remote(&url).as_deref() == Some(repo.as_str())
                     })
                 })
             });
@@ -1915,6 +1914,14 @@ mod tests {
         assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("tracked integration"), upstream);
         let diff = run(&["diff", &upstream, "HEAD", "--", "hers.rs"]);
         assert!(String::from_utf8(diff.stdout).expect("own diff").contains("fn hers()"), "committed own work remains in the candidate");
+        for remote in ["https://foreign.example/CambrianTech/continuum.git", "ssh://git@foreign.example/CambrianTech/continuum.git", "git@foreign.example:CambrianTech/continuum.git"] {
+            assert!(run(&["remote", "set-url", "origin", remote]).status.success());
+            assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("foreign host excluded"), created);
+        }
+        for remote in ["git@github.com:CambrianTech/continuum.git", "ssh://git@github.com/CambrianTech/continuum.git"] {
+            assert!(run(&["remote", "set-url", "origin", remote]).status.success());
+            assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("same GitHub repository"), upstream);
+        }
         assert!(run(&["remote", "set-url", "origin", "https://github.com/Foreign/fork.git"]).status.success());
         assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("foreign tracked ref excluded"), created);
         assert!(run(&["remote", "set-url", "origin", "https://github.com/CambrianTech/continuum.git"]).status.success());
