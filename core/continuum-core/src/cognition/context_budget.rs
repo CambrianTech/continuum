@@ -60,12 +60,6 @@ use super::deliberation_budget::GUARD_CHARS_PER_TOKEN;
 
 /// Per-step size of the rolling trail: `1/64` of the window (the calibrated trail-head
 /// fraction from the table above). Named so the COUNT below cannot drift from the SIZE.
-/// The one-result share's floor as a fraction of the served window (see
-/// [`ContextBudget::latest_action_chars`]).
-// derived-or-floor: derived — the quantity is the SERVED window (live, per lane); only the
-// share is chosen, an eighth, so one whole source file (~10k tokens at 104k) fits where the
-// prefill-affordable quarter did not (the M5, 2026-10-16: a 250-line read spilled every time).
-const RESULT_FLOOR_DENOM: usize = 8;
 const TRAIL_HEAD_DENOM: usize = 64;
 
 /// The trail's TOTAL share of the window: `1/4` — the same allotment
@@ -333,20 +327,15 @@ const RECALL_DENOM: usize = 10;
         (TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM).max(1)
     }
 
-    /// The FULL most-recent-action block. This one rides in the volatile prompt tail and
-    /// re-prefills every turn it is present, so it is the biggest latency lever in the
-    /// prompt — a quarter of the window is the balance between "she can work with what her
-    /// hands just fetched" and "one `code/tree` dump costs 30s of re-prefill per turn".
+    /// The result of her most recent act: WHOLE, up to the window she is served. It used to be
+    /// a quarter of a prefill-bounded total (later floored at an eighth of the window), so her
+    /// own file reads came back cut and she re-read them in slices for hours (Benchy, the M5,
+    /// 2026-10-16 and 10-17, "more than this window's 12960-char share"). Joel 2026-10-17:
+    /// "Stop coding in shit to stop them from choosing what to do." A result larger than the
+    /// whole window cannot fit and is still saved whole behind its handle (spill); nothing
+    /// smaller is cut.
     pub fn latest_action_chars(&self) -> usize {
-        // Never below an eighth of the SERVED window. The affordable total is prefill-bounded
-        // (TTFT x measured prefill t/s): on a box prefilling at 110 tok/s that is 6,600
-        // tokens, a quarter of which is ~1,100 tokens for the result of the act she just
-        // took, so a 250-line file read spilled every time and she re-read it in slices for
-        // hours (the M5, 2026-10-16). The result of her own act is what an act is for; the
-        // optional prompt (history, pointers) is where affordability should bite. An eighth
-        // of the window at 104k is ~10k tokens: one whole source file, ~90 s of prefill
-        // at that rate, once, instead of the loop.
-        self.fraction(4).max(self.served_chars.map_or(0, |c| c / RESULT_FLOOR_DENOM))
+        self.served_chars.or(self.total_chars).unwrap_or(usize::MAX)
     }
 
     /// A dispatched command's result (a compile log, a sentinel's report) folded back in.
@@ -521,11 +510,11 @@ const RECALL_DENOM: usize = 10;
     /// the latest action gets, because a working mind's own results ARE its work.
     /// Storage bound (same leak-honesty contract as [`Self::receipt_archive_chars`]).
     pub fn recent_results_chars(&self) -> usize {
-        match self.total_chars {
-            Some(_) => self.fraction(4),
-            None => {
-                Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(4)
-            }
+        // Her results stay until her WINDOW is full (Joel 2026-10-17: no machinery choosing
+        // for her). The prompt's own fit drops the oldest history when a turn does not fit.
+        match self.served_chars.or(self.total_chars) {
+            Some(chars) => chars,
+            None => Self::from_window(crate::inference::planning::MIN_SERVE_CTX).served_chars.unwrap_or(0),
         }
     }
 }
@@ -627,7 +616,9 @@ mod tests {
             );
         };
         near(b.trail_head_chars(), 800); // WM_ACTION_HEAD_CHARS
-        near(b.latest_action_chars(), 12_000); // WM_ACTION_FULL_MAX_CHARS
+        // Her own act's result is no longer a tuned share: it is the whole served window
+        // (Joel 2026-10-17), so it is pinned to the window, not to the old 12,000.
+        assert_eq!(b.latest_action_chars(), 16_384 * GUARD_CHARS_PER_TOKEN);
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
         near(b.catalog_summary_chars(), 96); // SUMMARY_MAX_CHARS
