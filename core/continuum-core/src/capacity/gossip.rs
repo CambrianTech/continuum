@@ -123,6 +123,59 @@ pub struct CapacityOffer {
     /// integer, like the other numbers here, so the offer stays `Eq`.
     #[serde(default)]
     pub decode_tps_milli: u32,
+    /// THE AFFIRMATIVE CAPABILITY LIST (card 8bd75362, doctrine #3941): what this core
+    /// knows how to do, named by the beacon itself. A gate that needs capability C checks
+    /// membership here and REFUSES on absence — there is no "probably new enough" fallback:
+    /// a core predating this field advertises nothing (serde default), so typed absence IS
+    /// safe by construction, and an older core never has to be guessed at. This replaces the
+    /// shape #3940 caught in the wild — deciding which class of peer you are talking to by
+    /// whether a rendered error string matched a phrase, where an unmatched phrasing PASSED.
+    /// `build_number` is NOT here for nothing: it orders beacons and renders fleet drift,
+    /// but it never authorizes a capability (the registry.rs pin comment marks its only
+    /// comparison site).
+    #[serde(default)]
+    pub capabilities: Vec<CapabilityId>,
+}
+
+/// What a core knows how to do — the names a beacon may advertise in
+/// [`CapacityOffer::capabilities`] and a gate checks for affirmatively. A CLOSED set on
+/// each build (the emission is `this_build_capabilities()`, one source); the wire form is
+/// snake_case, so a name travels as e.g. `"lane_wait_reporting"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityId {
+    /// The beacon carries `served_context_window` and it is measured from the seat's actual
+    /// admission (card beea5a7a: a 1×2048 seat refusing every prompt because nothing said how
+    /// wide its window was). A gate that must not place a turn wider than a seat's window
+    /// requires this.
+    ServedWindowStamp,
+    /// The beacon carries `lane_wait_p50_ms` + `lane_wait_samples`, measured at the seat —
+    /// the queue delay of generates it serves for other nodes (#4198). A gate that orders or
+    /// refuses by wait time requires this; absence reads as UNMEASURED, never as fast.
+    LaneWaitReporting,
+    /// The seat GRANTS spill slots to peers before they arrive (`persona/placement/reserve`,
+    /// #4199) and `free_slots_live` nets those grants out. A gate that trusts a peer's
+    /// granted-slot arithmetic requires this; absence means the number is lanes-residents,
+    /// which overcounts what a second node would see.
+    PlacementReservationGrant,
+    /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
+    /// predate). It never grants — `has_capability` matches by exact name — but its presence
+    /// must not drop the rest of the beacon, so forward compatibility stays fail-safe in BOTH
+    /// directions: an old core reads a new name as unknown rather than refusing to parse.
+    #[serde(other)]
+    Unknown,
+}
+
+/// What THIS build advertises — the one emission source (every beacon builder calls it), so
+/// the list cannot drift between sites and every addition is a single auditable line: name the
+/// capability only when the code that makes it true lives in this tree. A build with none of
+/// these names would advertise an empty list, which gates read as "nothing", never as "all".
+pub fn this_build_capabilities() -> Vec<CapabilityId> {
+    vec![
+        CapabilityId::ServedWindowStamp,
+        CapabilityId::LaneWaitReporting,
+        CapabilityId::PlacementReservationGrant,
+    ]
 }
 
 /// The beacon's form of this seat's measured decode rate: this model's OWN curve only, fresh
