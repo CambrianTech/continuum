@@ -4031,9 +4031,13 @@ impl LlmDeliberationFaculty {
 /// Carried alongside the cost because the cost alone cannot be interpreted: see
 /// [`SelectedSurface::demand_tokens`], where two of these arms want different
 /// numbers from the same selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// `Default` is [`Self::NoTools`] so a default [`ContextComposition`] is coherent: zero
+/// `tool_tokens` because no tools were offered, not a reason that disagrees with its cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SurfaceReason {
     /// She has no native specs at all — nothing to offer, nothing to price.
+    #[default]
     NoTools,
     /// The whole registry fit its share of the served window and was offered.
     Full,
