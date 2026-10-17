@@ -645,6 +645,21 @@ async fn sync_by(deadline: tokio::time::Instant, root: &Path, sync: impl std::fu
     }
 }
 
+/// Carry COMMITTED work in `root` to origin, under `lease` (an admission to the claim's
+/// hands), by the same bounded, per-checkout-locked sync the turn uses. A dirty tree is
+/// left alone (`None`): uncommitted work belongs to the turn writing it, whose own end
+/// commits and carries it; this never commits on a resident's behalf mid-edit.
+pub async fn carry_committed(lease: std::sync::Arc<crate::code::hands::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> Option<PushOutcome> {
+    match is_dirty(&root).await {
+        Ok(false) => {}
+        _ => return None,
+    }
+    if !has_unpushed_work(&root).await {
+        return None;
+    }
+    Some(sync_after_act_for(lease, persona, persona_name, root, card).await)
+}
+
 /// [`move_blocker`] within [`BLOCKER_BOUND`]; unanswered in time = a blocker (fail
 /// closed).
 pub async fn move_blocker_bounded(persona: Uuid) -> Option<String> {

@@ -1038,42 +1038,6 @@ pub(crate) async fn root_at_held_card(
     turn
 }
 
-/// Carry every held claim's checkout that holds unpushed work, in the background, by the
-/// same owner a turn's end uses. The turn-end carry pushes only the card the turn was bound
-/// to, so work committed on a card her focus has since left sat local: Benchy committed her
-/// probe card on the M5 (bfbad4ace, 2026-10-17 11:52Z), her focus moved to another card, and
-/// the commit never left the node. A checkout whose hands are closing, or that is clean and
-/// published, is left alone.
-fn carry_unfocused_checkouts(peer_id: uuid::Uuid, persona_name: String, held: &[airc_lib::WorkCard]) {
-    for card in held {
-        let Some(claim) = card.claim_id else { continue };
-        // The same authority that staged the card at claim time and that `bind_card` roots at.
-        let Some(root) = crate::modules::card_staging::checkout_path_for(&peer_id, card) else {
-            continue;
-        };
-        let context = crate::code::hands::HandsContext::for_claim(peer_id, card.card_id.as_uuid(), claim.as_uuid());
-        let card_id = card.card_id.as_uuid();
-        let persona_name = persona_name.clone();
-        tokio::spawn(async move {
-            if !root.exists() || !crate::persona::workspace_transfer::has_unpushed_work(&root).await {
-                return;
-            }
-            match crate::code::hands::admit(context) {
-                Ok(lease) => {
-                    crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::new(lease), peer_id, &persona_name, root, card_id).await;
-                }
-                Err(why) => crate::probe!(
-                    class = "workspace.push.not_carried",
-                    persona = %persona_name,
-                    card = %card_id,
-                    admission = %why,
-                    "a held card's checkout holds unpushed work but its hands are closing"
-                ),
-            }
-        });
-    }
-}
-
 async fn bind_held_card(
     cycle: &WorkspaceCycle,
     peer_id: uuid::Uuid,
@@ -1145,7 +1109,6 @@ async fn bind_held_card(
             .filter_map(|c| c.claim_id.map(|claim| crate::code::hands::HandsContext::for_claim(peer_id, c.card_id.as_uuid(), claim.as_uuid())))
             .collect();
         close_ended_claims(&live, &held_contexts);
-        carry_unfocused_checkouts(peer_id, live.persona_name.clone(), &held);
     }
     if held.is_empty() {
         return HeldCardTurn::unheld();
@@ -1411,6 +1374,8 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
         // under the turn's own admission (see sync_after_act_for)
         crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::clone(&card.lease), hands.persona_id, &hands.persona_name, root, card_id).await;
     }
+    // Her other held cards' committed work rides the carry owner, not this card's turn.
+    crate::modules::card_carry::request();
 }
 
 /// Close the hands of every card claim she no longer holds: their claims ended (released,

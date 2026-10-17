@@ -709,31 +709,10 @@ pub async fn apply_act(
     crate::modules::citizen_health::note_act(wrote);
     crate::modules::citizen_health::note_act_of(body.persona_id, wrote);
 
-    // An act that changed her card's checkout is carried to origin NOW, by the same owner
-    // the turn's end uses. A turn has no act cap (LIVE_MAX_ACTS), so "at the turn's end" can
-    // be never: on the M5 2026-10-17 Benchy committed her probe card at 11:52Z inside one
-    // directed turn that was still running at act 14 an hour later, and her commit sat
-    // local the whole time (her shell has no credentials, by design).
+    // An act that changed a checkout wakes the one carry owner (modules::card_carry), which
+    // carries every resident's committed card work; a turn's end is no longer the only push.
     if disk == super::disk_change::DiskChange::Changed {
-        let context = executor.hands_context();
-        let root = crate::cognition::persona_workspace::acting_root_in(body.persona_id, context);
-        let card = crate::cognition::persona_workspace::acting_card_in(body.persona_id, context);
-        // Admitted to her hands the way every dispatched command is; hands that are closing
-        // refuse, and the refusal is said.
-        let admission = context.map(crate::code::hands::admit);
-        match (root, card, admission) {
-            (Some(root), Some(card), Some(Ok(lease))) => {
-                crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::new(lease), body.persona_id, &body.persona_name, root, card).await;
-            }
-            (root, card, admission) => crate::probe!(
-                class = "workspace.push.not_carried",
-                persona = %body.persona_name,
-                has_root = root.is_some(),
-                has_card = card.is_some(),
-                admission = %match &admission { None => "no hands".to_string(), Some(Ok(_)) => "admitted".to_string(), Some(Err(e)) => e.clone() },
-                "a write changed her checkout but this act holds no card hands to carry it; the turn's end will try"
-            ),
-        }
+        crate::modules::card_carry::request();
     }
 
     ActOutcome::Acted { acts }
