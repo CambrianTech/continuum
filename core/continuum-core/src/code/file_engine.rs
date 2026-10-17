@@ -296,9 +296,21 @@ impl FileEngine {
         content: &str,
         description: Option<&str>,
     ) -> Result<WriteResult, FileEngineError> {
+        self.write_in(relative_path, content, description, &crate::code::path_security::ReadScope::Sandbox)
+    }
+
+    /// [`Self::write`] under the caller's scope: an unconfined caller may write an absolute
+    /// path outside the workspace ([`PathSecurity::validate_write_in`]).
+    pub fn write_in(
+        &self,
+        relative_path: &str,
+        content: &str,
+        description: Option<&str>,
+        scope: &crate::code::path_security::ReadScope,
+    ) -> Result<WriteResult, FileEngineError> {
         let cleaned = self.path_arg(relative_path)?;
         let relative_path = cleaned.path.as_str();
-        let abs_path = self.security.validate_write(relative_path)?;
+        let abs_path = self.security.validate_write_in(relative_path, scope)?;
         self.security
             .validate_size(relative_path, content.len() as u64)?;
 
@@ -377,9 +389,20 @@ impl FileEngine {
         edit_mode: &EditMode,
         description: Option<&str>,
     ) -> Result<WriteResult, FileEngineError> {
+        self.edit_in(relative_path, edit_mode, description, &crate::code::path_security::ReadScope::Sandbox)
+    }
+
+    /// [`Self::edit`] under the caller's scope (see [`Self::write_in`]).
+    pub fn edit_in(
+        &self,
+        relative_path: &str,
+        edit_mode: &EditMode,
+        description: Option<&str>,
+        scope: &crate::code::path_security::ReadScope,
+    ) -> Result<WriteResult, FileEngineError> {
         let cleaned = self.path_arg(relative_path)?;
         let relative_path = cleaned.path.as_str();
-        let abs_path = self.security.validate_write(relative_path)?;
+        let abs_path = self.security.validate_write_in(relative_path, scope)?;
 
         if !abs_path.exists() {
             return Err(self.not_found(relative_path));
