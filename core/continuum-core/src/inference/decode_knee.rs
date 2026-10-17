@@ -58,6 +58,9 @@ use std::sync::LazyLock;
 pub const DECODE_FLOOR_TPS: f64 = 10.0;
 /// The knee never clamps a seated roster below this: one lane serialises the next
 /// turn's prefill behind the current decode and idles the box between turns.
+/// Judge any change to it by each resident's wait between her own acts at a 3-6 roster,
+/// never by per-stream t/s (docs/architecture/INFERENCE-LANES-REALISTIC.md, "How a lane
+/// change is judged"; a lower per-stream rate at two lanes is the price of concurrency).
 pub const MIN_KNEE_LANES: u32 = 2;
 /// Samples at a concurrency before its EMA is trusted — one decode is noise, a handful
 /// is a curve.
