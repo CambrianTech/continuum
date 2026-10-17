@@ -36,6 +36,20 @@ pub struct ReplayRequestParams {
     #[serde(default)]
     #[ts(optional)]
     pub expected_request_sha256: Option<String>,
+    /// Diagnostic only: replace one existing tool's input schema. Requires the
+    /// captured request hash and cannot be combined with another experiment.
+    #[serde(default)]
+    #[ts(optional)]
+    pub tool_schema_override: Option<ToolSchemaOverride>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ToolSchemaOverride {
+    pub tool_name: String,
+    /// JSON Schema object; equivalence to the original is the experimenter's claim,
+    /// not inferred or certified by replay.
+    pub input_schema: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, TS)]
@@ -90,12 +104,16 @@ pub struct ReplayRequestResult {
     pub input_comparison: InputComparison,
 }
 
-use super::super::prompt_capture::InputComparison;
+use super::super::prompt_capture::{InputComparison, ToolSchemaComparison};
 
 fn request_hash(request: &TextGenerationRequest) -> Result<String, CommandError> {
-    use sha2::{Digest, Sha256};
-    let mut value = serde_json::to_value(request) // boundary: canonical request digest shared with diagnostic caller
+    let value = serde_json::to_value(request) // boundary: canonical request digest shared with diagnostic caller
         .map_err(|e| CommandError::Internal(format!("replay request hash: {e}")))?;
+    value_hash(value)
+}
+
+fn value_hash(mut value: serde_json::Value) -> Result<String, CommandError> {
+    use sha2::{Digest, Sha256};
     value.sort_all_objects();
     let bytes = serde_json::to_vec(&value) // boundary serialization: canonical captured-request integrity digest
         .map_err(|e| CommandError::Internal(format!("replay request hash: {e}")))?;
@@ -108,9 +126,37 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
         if expected != &before {
             return Err(CommandError::Invalid(format!("captured request hash mismatch; actual {before}")));
         }
-    } else if !p.omit_message_indices.is_empty() {
-        return Err(CommandError::Invalid("message omission requires expected_request_sha256".into()));
+    } else if !p.omit_message_indices.is_empty() || p.tool_schema_override.is_some() {
+        return Err(CommandError::Invalid("input comparison requires expected_request_sha256".into()));
     }
+    if p.tool_schema_override.is_some() && (p.max_tokens.is_some() || !p.omit_message_indices.is_empty()) {
+        return Err(CommandError::Invalid("tool schema override cannot be combined with another experiment".into()));
+    }
+    // Resolve and validate before mutation; never add, remove or rename tools.
+    let schema_change = if let Some(change) = &p.tool_schema_override {
+        if change.tool_name.trim().is_empty() || !change.input_schema.is_object() {
+            return Err(CommandError::Invalid("tool schema override requires a nonempty tool name and schema object".into()));
+        }
+        let replacement: crate::ai::ToolInputSchema = serde_json::from_value(change.input_schema.clone()) // boundary: diagnostic schema enters the existing native tool protocol
+            .map_err(|e| CommandError::Invalid(format!("invalid tool input schema: {e}")))?;
+        let encoded = serde_json::to_value(&replacement) // boundary: refuse unsupported fields rather than silently dropping schema constraints
+            .map_err(|e| CommandError::Internal(format!("tool input schema: {e}")))?;
+        if replacement.schema_type != "object" || !replacement.properties.is_object() || encoded != change.input_schema {
+            return Err(CommandError::Invalid("tool schema must round-trip exactly through the native object schema".into()));
+        }
+        let matches: Vec<_> = request.tools.as_deref().unwrap_or_default().iter().enumerate()
+            .filter(|(_, tool)| tool.name == change.tool_name).collect();
+        if matches.len() != 1 {
+            return Err(CommandError::Invalid(format!("tool schema override must match exactly one captured tool: {}", change.tool_name)));
+        }
+        let (index, tool) = matches[0];
+        Some((index, replacement, ToolSchemaComparison {
+            tool_name: change.tool_name.clone(),
+            captured_schema_sha256: value_hash(serde_json::to_value(&tool.input_schema) // boundary: canonical original tool schema provenance
+                .map_err(|e| CommandError::Internal(format!("tool input schema: {e}")))?)?,
+            comparison_schema_sha256: value_hash(change.input_schema.clone())?,
+        }))
+    } else { None };
     if !p.omit_message_indices.is_empty() && p.max_tokens.is_some() {
         return Err(CommandError::Invalid("message omission cannot also change output allowance".into()));
     }
@@ -135,7 +181,14 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
         index += 1;
         keep
     });
+    let tool_schema = if let Some((index, replacement, audit)) = schema_change {
+        // The index and both containers were validated above, before any mutation.
+        request.tools.as_mut().expect("validated tool set")[index].input_schema =
+            replacement;
+        Some(audit)
+    } else { None };
     Ok(InputComparison {
+        tool_schema,
         omitted_message_indices: indices.into_iter().collect(),
         captured_request_sha256: before,
         comparison_request_sha256: request_hash(request)?,
@@ -229,7 +282,7 @@ fn prepare(
 impl ActionCommand for CognitionReplayRequest {
     const NAME: &'static str = "cognition/replay-request";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
-    const DESCRIPTION: &'static str = "Rerun a captured model request with optional max_tokens override or hash-bound collapsed-receipt omission, using an explicit provider and isolated cache identity. Records original provenance and new lifecycle; returns outcome comparison. Never dispatches tool calls or changes live persona memory. Fresh inference, not deterministic full-mind replay.";
+    const DESCRIPTION: &'static str = "Rerun a captured model request with optional max_tokens override, hash-bound collapsed-receipt omission, or one named tool schema override, using an explicit provider and isolated cache identity. Records original provenance and new lifecycle; returns outcome comparison. Never dispatches tool calls or changes live persona memory. Fresh inference, not deterministic full-mind replay.";
     type Params = ReplayRequestParams;
     type Output = ReplayRequestResult;
 
@@ -369,6 +422,16 @@ mod tests {
             temperature: Some(0.35),
             stop_sequences: Some(vec!["original-stop".into()]),
             turn_bound: Some(std::time::Duration::from_secs(675)),
+            active_adapters: Some(vec![crate::ai::ActiveAdapterRequest {
+                name: "captured-adapter".into(), path: "captured.gguf".into(), domain: "coding".into(), scale: 0.75,
+            }]),
+            tools: Some(vec![crate::ai::NativeToolSpec {
+                name: "edit_file".into(), description: "Captured editing contract".into(),
+                input_schema: serde_json::from_value(serde_json::json!({
+                    "type":"object", "properties":{"mode":{"$ref":"#/definitions/Mode"}},
+                    "required":["mode"], "definitions":{"Mode":{"type":"string","enum":["append"]}}
+                })).unwrap(),
+            }]),
             ..Default::default()
         };
         let call = PromptCall {
@@ -392,6 +455,7 @@ mod tests {
             max_tokens: Some(41_053),
             omit_message_indices: Vec::new(),
             expected_request_sha256: None,
+            tool_schema_override: None,
         };
         let read =
             || prompt_capture::detail(dir.path(), persona, &cursor).expect("original capture");
@@ -465,6 +529,49 @@ mod tests {
         assert!(exact.omitted_message_indices.is_empty());
         assert_eq!(exact.captured_request_sha256, exact.comparison_request_sha256);
 
+        // Regression: the named-schema experiment changes no tool identity, request,
+        // adapter or protocol field, and all invalid variants refuse before mutation.
+        let mut schema_params = p.clone();
+        schema_params.max_tokens = None;
+        schema_params.expected_request_sha256 = Some(request_hash(&request).unwrap());
+        let inline = serde_json::json!({"type":"object", "properties":{"mode":{"type":"string","enum":["append"]}}, "required":["mode"]});
+        schema_params.tool_schema_override = Some(ToolSchemaOverride {
+            tool_name: "edit_file".into(), input_schema: inline.clone(),
+        });
+        let schema_prepared = prepare(read(), &schema_params, persona).unwrap();
+        let mut changed = request.clone();
+        let audit = compare_input(&mut changed, &schema_params).unwrap();
+        let mut expected_schema = serde_json::to_value(&request).unwrap();
+        expected_schema["tools"][0]["input_schema"] = inline.clone();
+        assert_eq!(serde_json::to_value(&changed).unwrap(), expected_schema);
+        let schema_audit = audit.tool_schema.as_ref().unwrap();
+        assert_eq!(schema_audit.tool_name, "edit_file");
+        assert_ne!(schema_audit.captured_schema_sha256, schema_audit.comparison_schema_sha256);
+        assert_eq!(schema_audit.comparison_schema_sha256, value_hash(inline).unwrap());
+        assert_ne!(audit.captured_request_sha256, audit.comparison_request_sha256);
+        for bad in 0..7 {
+            let mut params = schema_params.clone();
+            match bad {
+                0 => params.expected_request_sha256 = None,
+                1 => params.expected_request_sha256 = Some("stale".into()),
+                2 => params.max_tokens = Some(42),
+                3 => params.omit_message_indices = vec![0],
+                4 => params.tool_schema_override.as_mut().unwrap().tool_name = "absent".into(),
+                5 => params.tool_schema_override.as_mut().unwrap().input_schema = serde_json::json!([]),
+                _ => params.tool_schema_override.as_mut().unwrap().input_schema["additionalProperties"] = serde_json::json!(false),
+            }
+            let mut copy = request.clone();
+            assert!(compare_input(&mut copy, &params).is_err());
+            assert_eq!(serde_json::to_value(&copy).unwrap(), serde_json::to_value(&request).unwrap());
+        }
+        let mut duplicate = request.clone();
+        let repeated_tool = duplicate.tools.as_ref().unwrap()[0].clone();
+        duplicate.tools.as_mut().unwrap().push(repeated_tool);
+        let mut duplicate_params = schema_params.clone();
+        duplicate_params.expected_request_sha256 = Some(request_hash(&duplicate).unwrap());
+        assert!(compare_input(&mut duplicate, &duplicate_params).is_err());
+        assert_eq!(read().submitted.unwrap()["request"], serde_json::to_value(&request).unwrap());
+
         // The provenance rides the existing capture format, not an unrelated log.
         let replay_id = prepared.call.persona_id;
         let replay_sink = JsonlPromptCaptureSink::open(dir.path(), replay_id).expect("replay sink");
@@ -487,7 +594,7 @@ mod tests {
         missing_model.submitted.as_mut().expect("submitted")["request"]["model"] =
             serde_json::Value::Null;
         assert!(prepare(missing_model, &p, persona).is_err());
-        let prepared = prepare(read(), &p, persona).expect("fresh replay");
+        let prepared = schema_prepared;
         let replay_id = prepared.call.persona_id;
         let sink = JsonlPromptCaptureSink::open(dir.path(), replay_id).expect("execution sink");
         let target = dir.path().join("must-not-be-written.txt");
@@ -581,7 +688,10 @@ mod tests {
             !target.exists(),
             "replay must never execute proposed writes"
         );
-        assert_eq!(seen.lock().expect("recorded calls").len(), 1);
+        let seen = seen.lock().expect("recorded calls");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(serde_json::to_value(&seen[0].tools).unwrap(), expected_schema["tools"]);
+        assert!(result.input_comparison.tool_schema.is_some());
         let page =
             prompt_capture::page(dir.path(), replay_id, None, false, 10).expect("replay lifecycle");
         let terminal = page.entries.last().expect("terminal event");
