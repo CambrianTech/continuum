@@ -69,7 +69,9 @@ jobs:
   build:
     name: core binaries (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 150
+    # Run 38995887152: Windows core 85m17 + engine 58m32 + package 2m28
+    # exhausted 150m during upload. Allow 30m for publication and runner variation.
+    timeout-minutes: ${{ matrix.platform == 'windows-x86_64' && 180 || 150 }}
     strategy:
       # Every leg runs even when one fails: a broken Intel leg must not hide a good arm64 one.
       fail-fast: false
