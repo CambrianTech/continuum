@@ -1252,6 +1252,17 @@ async fn require_service_medium() -> Result<Option<i32>, String> {
     Ok(Some(code))
 }
 
+/// The runtime launcher starts media before service-host can lower privileges.
+/// A prebuilt reboot already owns the install lease: refuse here instead of
+/// recursively relaunching the CLI and deadlocking on that same lease.
+#[cfg(any(windows, test))]
+fn require_prebuilt_runtime_medium(integrity: Result<u32, String>, marker: bool) -> Result<(), String> {
+    if continuum_cli_lifecycle::installed_release::needs_medium_relaunch(integrity, marker)? {
+        return Err("explicit prebuilt reboot must run from a normal-user terminal; no shutdown or media launch was performed".into());
+    }
+    Ok(())
+}
+
 /// Fixed protected task action: verify normal-user integrity BEFORE reading the
 /// caller-owned selection. Core and deploy share this boundary and receipt owner.
 async fn installed_service(args: Vec<String>) -> Result<i32, String> {
@@ -1280,13 +1291,7 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         let mut command = if args[0] == "core" {
             // The validated launcher owns media startup as well as the core host.
             // Select it only after the shared Medium gate and receipt validation.
-            let mut command = std::process::Command::new(PreparedCoreService::shell()?);
-            command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "RemoteSigned", "-File", &release.launcher,
-                "-ExecutablePath", &release.cli, "-CorePath", &release.artifact,
-                "-SocketPath", &release.socket, "-EnginePath", &release.engine,
-                "-LogDirectory", &release.log_directory]);
-            if let Some(root) = &release.eye_root { command.args(["-EyeRoot", root]); }
-            command
+            installed_runtime_command(&PreparedCoreService::shell()?, release, Path::new(&release.artifact), &release.socket)
         } else {
             let mut command = std::process::Command::new(&release.cli);
             command.arg("deploy-consume");
@@ -2615,6 +2620,35 @@ async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreError> {
         }.await;
         if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await.into()); }
     }
+    // Explicit core-only prebuilt runs borrow the installed runtime closure.
+    // Resolve and pin it BEFORE drain: a missing companion is not permission
+    // to run source builders after the current core has stopped.
+    #[cfg(windows)]
+    let prebuilt_runtime = if !requested_source_build && !options.service {
+        require_prebuilt_runtime_medium(unelevated_service::token_integrity(), std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some())?;
+        if let Some(task) = PreparedCoreService::query_optional().await? {
+            let envelope = task.installed.as_ref().ok_or("core-only prebuilt launch requires a sealed installed runtime; update the legacy installer before stopping the core")?;
+            let home = continuum_core::paths::continuum_home()?;
+            let payload = continuum_core::paths::payload_root(&home)?;
+            let sid = supervisor_install::caller_sid().await?;
+            let text = continuum_cli_lifecycle::installed_release::read_receipt(Path::new(&envelope.active_release))?;
+            let selected = continuum_cli_lifecycle::installed_release::validate_receipt(&text, &home, &payload, &sid)?;
+            if selected.release.socket != socket { return Err("installed runtime socket differs from the requested prebuilt handoff".into()); }
+            PreparedCoreService::shell()?;
+            Some(selected)
+        } else {
+            let home = continuum_core::paths::continuum_home()?;
+            match std::fs::symlink_metadata(home.join("install-active.json")) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Ok(_) => return Err("an installed runtime receipt exists without its registered task; refusing bare prebuilt fallback".into()),
+                Err(error) => return Err(format!("cannot inspect installed runtime receipt before prebuilt launch: {error}").into()),
+            }
+        }
+    } else { None };
+    #[cfg(windows)]
+    let _prebuilt_startup = if !requested_source_build && !options.service {
+        Some(supervisor_install::maintenance::StartupPermit::acquire(&continuum_core::paths::continuum_home()?).await?)
+    } else { None };
     if let Err(failed) = stop_with_authority(true, options.operator_present).await {
         #[cfg(windows)]
         if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await.into()); }
@@ -2643,6 +2677,10 @@ async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreError> {
     let source = prebuilt
         .as_ref()
         .map_or(LaunchSource::FromSource, LaunchSource::Prebuilt);
+    #[cfg(windows)]
+    let source = if !requested_source_build && !options.service {
+        LaunchSource::ExplicitPrebuilt(prebuilt.as_ref().ok_or("explicit prebuilt artifact was lost before launch")?, prebuilt_runtime.as_ref().map(|runtime| &runtime.release))
+    } else { source };
     let secs = match service {
         Some(service) => service.launch(&old).await?,
         None => launch_core(&old, source).await?,
@@ -2987,6 +3025,38 @@ fn direct_core_command(artifact: &Path, socket: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(artifact);
     cmd.arg(socket);
     cmd
+}
+
+/// One installed runtime launch contract: the sealed launcher starts media and
+/// service-host owns the browser. A developer core override changes only the
+/// already-validated core executable, not the companion or engine selection.
+#[cfg(any(windows, test))]
+fn installed_runtime_command(
+    shell: &Path,
+    release: &continuum_cli_lifecycle::installed_release::Release,
+    artifact: &Path,
+    socket: &str,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(shell);
+    command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "RemoteSigned", "-File", &release.launcher,
+        "-ExecutablePath", &release.cli, "-CorePath"]);
+    command.arg(artifact).args(["-SocketPath", socket, "-EnginePath", &release.engine,
+        "-LogDirectory", &release.log_directory]);
+    if let Some(root) = &release.eye_root { command.args(["-EyeRoot", root]); }
+    command
+}
+
+#[cfg(any(windows, test))]
+fn explicit_prebuilt_command(
+    candidate: &PrebuiltCore,
+    socket: &str,
+    runtime: Option<&continuum_cli_lifecycle::installed_release::Release>,
+    shell: &Path,
+) -> std::process::Command {
+    match runtime {
+        Some(release) => installed_runtime_command(shell, release, &candidate.path, socket),
+        None => direct_core_command(&candidate.path, socket),
+    }
 }
 
 /// Read the child's effective environment, including config.env assignments and
@@ -6222,6 +6292,10 @@ enum LaunchSource<'a> {
     FromSource,
     /// A caller-selected artifact, validated before reboot's teardown.
     Prebuilt(&'a PrebuiltCore),
+    /// An explicitly supplied Windows core uses the installed runtime closure,
+    /// never the developer preparation script. The caller retains its file pins.
+    #[cfg(any(windows, test))]
+    ExplicitPrebuilt(&'a PrebuiltCore, Option<&'a continuum_cli_lifecycle::installed_release::Release>),
 }
 
 /// The resolved launch, given the policy and what actually exists on this machine.
@@ -6250,6 +6324,10 @@ fn plan_launch(
     have_script: bool,
     have_installed: bool,
 ) -> LaunchPlan {
+    #[cfg(any(windows, test))]
+    if matches!(policy, LaunchSource::ExplicitPrebuilt(..)) {
+        return LaunchPlan::Prebuilt;
+    }
     if matches!(policy, LaunchSource::Prebuilt(_)) {
         // The explicit command-line intent wins over inherited source/build env.
         return LaunchPlan::Prebuilt;
@@ -6301,7 +6379,13 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
     // default — the two callers want opposite things and neither should have to
     // infer the other's intent.
     let env_from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
-    let (script, server_bin) = if matches!(policy, LaunchSource::Prebuilt(_)) {
+    #[cfg(any(windows, test))]
+    let explicit_prebuilt = matches!(policy, LaunchSource::ExplicitPrebuilt(..));
+    #[cfg(not(any(windows, test)))]
+    let explicit_prebuilt = false;
+    let (script, server_bin) = if explicit_prebuilt {
+        (None, None)
+    } else if matches!(policy, LaunchSource::Prebuilt(_)) {
         // Already prepared: an installed override may not redirect this explicit
         // artifact — but the source script, in PREBUILT MODE, is how the artifact
         // gets its launch environment (desktop dist, power assertion, airc daemon,
@@ -6318,10 +6402,15 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
     );
 
     let mut cmd = match plan {
-        LaunchPlan::Prebuilt => {
-            let LaunchSource::Prebuilt(candidate) = policy else {
-                unreachable!("only a validated prebuilt source selects this plan")
-            };
+        LaunchPlan::Prebuilt => match policy {
+            #[cfg(windows)]
+            LaunchSource::ExplicitPrebuilt(candidate, runtime) => {
+                eprintln!("▶ starting explicit prebuilt core: {} (build {}, no source builders; log: {logfile})", candidate.path.display(), candidate.build_sha);
+                explicit_prebuilt_command(candidate, &socket, runtime, &PreparedCoreService::shell()?)
+            }
+            #[cfg(all(test, not(windows)))]
+            LaunchSource::ExplicitPrebuilt(..) => unreachable!("Windows launch policy is exercised through command fixtures on this platform"),
+            LaunchSource::Prebuilt(candidate) => {
             match script.as_ref() {
                 // ONE start path (2026-09-16): the verified artifact launches THROUGH
                 // start-server.sh in prebuilt mode — every cargo build skipped, every
@@ -6350,7 +6439,9 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
                     direct_core_command(&candidate.path, &socket)
                 }
             }
-        }
+            }
+            _ => unreachable!("only a validated prebuilt source selects this plan"),
+        },
         LaunchPlan::Script => {
             let script = script.expect("plan_launch only picks Script when one was found");
             if env_from_source || policy == LaunchSource::FromSource {
@@ -8593,15 +8684,43 @@ mod tests {
     // Assert the production Command's path/argv/cwd, not a duplicate launch model.
     #[test]
     fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
+        // The launcher starts media before its service-host child runs. The
+        // pre-drain policy must therefore reject elevated/unknown callers,
+        // including a stale marker, without attempting recursive relaunch.
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x2000), false).is_ok());
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x2000), true).is_ok());
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), false).unwrap_err().contains("normal-user terminal"));
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), true).is_err());
+        assert!(super::require_prebuilt_runtime_medium(Err("token unavailable".into()), false).is_err());
         let candidate = super::PrebuiltCore::from_report(
             std::path::PathBuf::from("verified release/core.exe"),
             "abc123f".into(),
             None,
         )
         .unwrap();
+        let runtime = continuum_cli_lifecycle::installed_release::Release {
+            artifact: "installed/core.exe".into(), socket: "registered socket".into(),
+            launcher: "sealed/run-service-hidden.ps1".into(), cli: "sealed/continuum.exe".into(),
+            engine: "sealed/engine-c/llama-server.exe".into(), log_directory: "service logs".into(),
+            eye_root: Some("installed browser assets".into()),
+        };
         for have_script in [false, true] {
             for have_installed in [false, true] {
                 for env_from_source in [false, true] {
+                    // Regression 337b2c67: exercise the SAME command constructor
+                    // as production, not only the pure plan followed by a
+                    // disconnected direct-command assertion. Neither inherited
+                    // source intent nor a discoverable script can build here.
+                    assert_eq!(super::plan_launch(super::LaunchSource::ExplicitPrebuilt(&candidate, Some(&runtime)), env_from_source, have_script, have_installed), super::LaunchPlan::Prebuilt);
+                    let command = super::explicit_prebuilt_command(&candidate, "socket from caller", Some(&runtime), std::path::Path::new("powershell.exe"));
+                    let args = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+                    assert_eq!(command.get_program(), "powershell.exe");
+                    for pair in [
+                        ("-File", runtime.launcher.as_str()), ("-ExecutablePath", runtime.cli.as_str()),
+                        ("-CorePath", "verified release/core.exe"), ("-SocketPath", "socket from caller"),
+                        ("-EnginePath", runtime.engine.as_str()), ("-EyeRoot", "installed browser assets"),
+                    ] { assert!(args.windows(2).any(|args| args == [pair.0, pair.1]), "missing runtime argument {pair:?}: {args:?}"); }
+                    assert!(!args.iter().any(|arg| arg.contains("start-server") || arg == "cargo"));
                     assert_eq!(
                         super::plan_launch(
                             super::LaunchSource::Prebuilt(&candidate),
@@ -8614,7 +8733,7 @@ mod tests {
                 }
             }
         }
-        let cmd = super::direct_core_command(&candidate.path, "socket from caller");
+        let cmd = super::explicit_prebuilt_command(&candidate, "socket from caller", None, std::path::Path::new("powershell.exe"));
         assert_eq!(cmd.get_program(), candidate.path.as_os_str());
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
