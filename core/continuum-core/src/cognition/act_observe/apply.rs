@@ -709,6 +709,12 @@ pub async fn apply_act(
     crate::modules::citizen_health::note_act(wrote);
     crate::modules::citizen_health::note_act_of(body.persona_id, wrote);
 
+    // An act that changed a checkout wakes the one carry owner (modules::card_carry), which
+    // carries every resident's committed card work; a turn's end is no longer the only push.
+    if disk == super::disk_change::DiskChange::Changed {
+        crate::modules::card_carry::request();
+    }
+
     ActOutcome::Acted { acts }
 }
 

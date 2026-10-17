@@ -80,6 +80,14 @@ pub const DETACHED_REASON: &str =
 pub const LOCAL_ORIGIN_REASON: &str =
     "origin is a local path: a --shared/--mirror clone of this node's own cache is not a transfer target";
 pub const NO_ORIGIN_REASON: &str = "no origin remote";
+const DIRTY_CARRY_REASON: &str = "dirty checkout: only the resident's turn may commit it";
+
+/// The turn may save its work; a background carry may only publish existing commits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommitPolicy {
+    TurnEnd,
+    Never,
+}
 
 /// PURE: can a push to this origin URL be READ by another node?
 ///
@@ -420,7 +428,7 @@ fn is_missing_remote_ref(err: &str) -> bool {
 /// turn path calls is [`sync_after_act_for`]. `node` is stamped into the WIP commit's
 /// subject so the receiving node can say where the work came from.
 pub async fn sync_after_act(root: &Path, card: Uuid, node: &str, actor: Option<(Uuid, &str)>) -> PushOutcome {
-    sync_after_act_over(root, card, node, carry_of(root).await, actor).await
+    sync_after_act_over(root, card, node, carry_of(root).await, actor, CommitPolicy::TurnEnd).await
 }
 
 /// [`sync_after_act`] with the carry decision supplied — the POLICY (can this checkout
@@ -430,7 +438,7 @@ pub async fn sync_after_act(root: &Path, card: Uuid, node: &str, actor: Option<(
 /// two real clones and a real remote, and an offline test's remote is necessarily a local
 /// path — the very thing the policy refuses. Injecting the decision lets each be tested as
 /// what it is, instead of a fixture quietly proving neither.
-async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, actor: Option<(Uuid, &str)>) -> PushOutcome {
+async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, actor: Option<(Uuid, &str)>, commit: CommitPolicy) -> PushOutcome {
     // Asked BEFORE anything is written: a checkout that cannot carry is left exactly as
     // her act left it. No WIP commit either — a commit whose push can never happen only
     // makes the work harder to see (and a benchmark copy's commits are its grade).
@@ -445,6 +453,9 @@ async fn sync_after_act_over(root: &Path, card: Uuid, node: &str, carry: Carry, 
     };
     let mut committed = false;
     match is_dirty(root).await {
+        Ok(true) if commit == CommitPolicy::Never => {
+            return PushOutcome::NotPushable { reason: DIRTY_CARRY_REASON };
+        }
         Ok(true) => {
             if let Err(error) = commit_tree_no_hooks(root, &wip_message(card, node, actor), true, actor).await {
                 return PushOutcome::CommitFailed { branch, error };
@@ -581,13 +592,15 @@ pub fn forget_checkout(root: &std::path::Path) {
 /// until the git's tree has ended, so a release never removes the checkout under it (Astra
 /// and Codex root on #5026), and the deadline ends the git instead of abandoning it.
 pub async fn sync_after_act_for(lease: std::sync::Arc<crate::code::hands::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
-    crate::code::hands::admitted(Some(lease), sync_admitted(persona, persona_name, root, card)).await
+    crate::code::hands::admitted(Some(lease), sync_admitted(persona, persona_name, root, card, CommitPolicy::TurnEnd)).await
 }
 
-async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> PushOutcome {
+async fn sync_admitted(persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid, commit: CommitPolicy) -> PushOutcome {
     let node = crate::capacity::gossip::this_process_origin().to_string();
     let started = std::time::Instant::now();
-    let outcome = sync_by(tokio::time::Instant::now() + SYNC_BOUND, &root, sync_after_act(&root, card, &node, Some((persona, persona_name)))).await;
+    let outcome = sync_by(tokio::time::Instant::now() + SYNC_BOUND, &root, async {
+        sync_after_act_over(&root, card, &node, carry_of(&root).await, Some((persona, persona_name)), commit).await
+    }).await;
     // Recorded whenever this checkout could hold work a move would strand — INCLUDING a
     // local-path origin, which is exactly the case that must pin her. Only a checkout
     // with no branch of hers is forgotten.
@@ -643,6 +656,23 @@ async fn sync_by(deadline: tokio::time::Instant, root: &Path, sync: impl std::fu
         _ if tokio::time::Instant::now() >= deadline => PushOutcome::TimedOut,
         o => o,
     }
+}
+
+/// Carry COMMITTED work in `root` to origin, under `lease` (an admission to the claim's
+/// hands), by the same bounded, per-checkout-locked sync the turn uses. An initially
+/// dirty tree is left alone (`None`): uncommitted work belongs to the turn writing it, whose own end
+/// commits and carries it. The early checks only avoid unnecessary syncs; Never is
+/// enforced inside the locked sync, so becoming dirty while waiting returns a typed
+/// NotPushable outcome and cannot commit.
+pub async fn carry_committed(lease: std::sync::Arc<crate::code::hands::HandsLease>, persona: Uuid, persona_name: &str, root: PathBuf, card: Uuid) -> Option<PushOutcome> {
+    match is_dirty(&root).await {
+        Ok(false) => {}
+        _ => return None,
+    }
+    if !has_unpushed_work(&root).await {
+        return None;
+    }
+    Some(crate::code::hands::admitted(Some(lease), sync_admitted(persona, persona_name, root, card, CommitPolicy::Never)).await)
 }
 
 /// [`move_blocker`] within [`BLOCKER_BOUND`]; unanswered in time = a blocker (fail
@@ -839,7 +869,7 @@ mod tests {
     /// tested apart: the policy in
     /// `a_push_only_transfers_when_the_other_node_can_read_its_target`, the mechanism here.
     async fn sync(root: &Path, card: Uuid, node: &str) -> PushOutcome {
-        sync_after_act_over(root, card, node, Carry::Via("https://origin.test/repo.git".into()), None).await
+        sync_after_act_over(root, card, node, Carry::Via("https://origin.test/repo.git".into()), None, CommitPolicy::TurnEnd).await
     }
 
     /// A bare `origin` and two clones — machine A and machine B — sharing one `main`
@@ -1302,5 +1332,72 @@ mod tests {
         assert!(!REMOTE_UNKNOWN.contains(&m.a), "the read settled it");
         drop(lock);
         forget_checkout(&m.a);
+    }
+
+    /// what this catches: the carry owner (modules::card_carry) committing a resident's
+    /// work-in-progress mid-edit. It sweeps checkouts outside her turn, so it may only carry
+    /// what she has already committed; a dirty tree is her turn's to commit (2026-10-17).
+    #[tokio::test]
+    async fn the_carry_owner_never_commits_a_residents_uncommitted_work() {
+        use std::future::Future;
+        use std::task::Poll;
+
+        let m = two_machines().await;
+        let root = m.a.clone();
+        // As in sync(), separate transfer policy from the offline mechanism: a
+        // network-shaped fetch URL qualifies, but every push goes to our bare fixture.
+        git(&root, &["remote", "set-url", "origin", "https://origin.test/repo.git"]).await;
+        git(&root, &["remote", "set-url", "--push", "origin", &m.origin.to_string_lossy()]).await;
+        std::fs::write(root.join("half-written.rs"), "fn her_edit(\n").unwrap();
+        let original_head = head(&root).await;
+
+        let (persona, card, claim) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let context = crate::code::hands::HandsContext::for_claim(persona, card, claim);
+        let lease = std::sync::Arc::new(
+            crate::code::hands::admit(context).expect("open hands admit"),
+        );
+        assert_eq!(carry_committed(lease.clone(), persona, "Benchy", root.clone(), card).await, None, "a dirty tree is not the carry's");
+        assert_eq!(head(&root).await, original_head, "no commit was made for her");
+        assert_eq!(git(&root, &["status", "--porcelain"]).await.trim(), "?? half-written.rs", "her edit is exactly as she left it");
+        std::fs::remove_file(root.join("half-written.rs")).unwrap();
+
+        // Regression for #5133: enter the REAL carry path while clean, hold its
+        // checkout lock, then dirty it after the unlocked prechecks have finished.
+        // Poll the same future until sync_by owns its lock clone: no sleeps or race.
+        let lock = CHECKOUT_SYNC.entry(root.clone()).or_default().clone();
+        let held = lock.clone().lock_owned().await;
+        let holders_before = std::sync::Arc::strong_count(&lock);
+        let mut carrying = Box::pin(carry_committed(lease.clone(), persona, "Benchy", root.clone(), card));
+        std::future::poll_fn(|cx| {
+            assert!(carrying.as_mut().poll(cx).is_pending(), "carry must wait on the held checkout lock");
+            if std::sync::Arc::strong_count(&lock) > holders_before { Poll::Ready(()) } else { Poll::Pending }
+        }).await;
+        std::fs::write(root.join("README"), "her staged edit\n").unwrap();
+        git(&root, &["add", "README"]).await;
+        std::fs::write(root.join("README"), "her unfinished successor\n").unwrap();
+        std::fs::write(root.join("half-written.rs"), "fn her_edit(\n").unwrap();
+        let staged = git(&root, &["diff", "--cached", "--binary"]).await;
+        let status = git(&root, &["status", "--porcelain"]).await;
+        drop(held);
+        assert_eq!(carrying.await, Some(PushOutcome::NotPushable { reason: DIRTY_CARRY_REASON }));
+        assert_eq!(head(&root).await, original_head, "carry must never create a commit after its clean precheck");
+        assert_eq!(git(&root, &["diff", "--cached", "--binary"]).await, staged, "her staged edit is preserved");
+        assert_eq!(git(&root, &["status", "--porcelain"]).await, status);
+        assert_eq!(std::fs::read_to_string(root.join("README")).unwrap(), "her unfinished successor\n");
+        assert_eq!(std::fs::read_to_string(root.join("half-written.rs")).unwrap(), "fn her_edit(\n");
+
+        // Only her own commit makes the tree carryable. Publication preserves its
+        // exact identity, including author, rather than substituting a carry commit.
+        git(&root, &["add", "."]).await;
+        git(&root, &["commit", "-q", "-m", "her completed edit"]).await;
+        let authored = head(&root).await;
+        assert!(matches!(carry_committed(lease.clone(), persona, "Benchy", root.clone(), card).await,
+            Some(PushOutcome::Ok { committed: false, pushed: true, sha, .. }) if sha == authored));
+        assert_eq!(head(&root).await, authored);
+        assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).await.trim(), authored);
+        drop(lease);
+        assert!(crate::code::hands::close(context).await.is_empty());
+        drop(lock);
+        forget_checkout(&root);
     }
 }

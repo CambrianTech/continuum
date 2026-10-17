@@ -1374,6 +1374,8 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
         // under the turn's own admission (see sync_after_act_for)
         crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::clone(&card.lease), hands.persona_id, &hands.persona_name, root, card_id).await;
     }
+    // Her other held cards' committed work rides the carry owner, not this card's turn.
+    crate::modules::card_carry::request();
 }
 
 /// Close the hands of every card claim she no longer holds: their claims ended (released,
