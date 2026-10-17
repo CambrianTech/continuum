@@ -35,9 +35,20 @@ pub struct PromptCall {
 /// Input-only diagnostic provenance; hashes precede normal replay identity overrides.
 #[derive(Debug, Clone, Serialize, ts_rs::TS)]
 pub struct InputComparison {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tool_schema: Option<ToolSchemaComparison>,
     pub omitted_message_indices: Vec<u32>,
     pub captured_request_sha256: String,
     pub comparison_request_sha256: String,
+}
+
+/// The selected schema and whole request remain in the existing capture payload.
+#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+pub struct ToolSchemaComparison {
+    pub tool_name: String,
+    pub captured_schema_sha256: String,
+    pub comparison_schema_sha256: String,
 }
 
 #[derive(Debug, Serialize)]
