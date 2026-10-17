@@ -218,8 +218,43 @@ pub trait CommandSpec {
 /// Reflect a typed input contract for any command wire shape, including external
 /// adapters. Keep schema generation identical for native and provided commands.
 pub fn input_schema<P: schemars::JsonSchema>() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(P))
-        .expect("typed command schema must serialize")
+    let mut schema = serde_json::to_value(schemars::schema_for!(P))
+        .expect("typed command schema must serialize");
+    flatten_singleton_all_of(&mut schema);
+    schema
+}
+
+/// schemars 0.8 wraps a documented field of a referenced type as
+/// `{"allOf": [{"$ref": ...}], "description": ...}`. The engine's grammar converter
+/// (llama.cpp json-schema-to-grammar) cannot match a valid value against that shape, so
+/// the field is unwritable by a constrained model: from #5059 (2026-10-15) the edit tool's
+/// `edit_mode` had it, and no resident made a single code/edit call after it (the M5,
+/// captured request). A one-entry `allOf` means "exactly this schema"; folding its entry
+/// into the parent says the same thing in the shape every consumer reads.
+fn flatten_singleton_all_of(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(map) => {
+            let single = match map.get("allOf") {
+                Some(serde_json::Value::Array(all)) if all.len() == 1 && all[0].is_object() => Some(all[0].clone()),
+                _ => None,
+            };
+            if let Some(serde_json::Value::Object(inner)) = single {
+                map.remove("allOf");
+                for (key, val) in inner {
+                    map.entry(key).or_insert(val);
+                }
+            }
+            for child in map.values_mut() {
+                flatten_singleton_all_of(child);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                flatten_singleton_all_of(item);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A TS type the generated surface references: its TS name + the module it's
