@@ -255,7 +255,9 @@ jobs:
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: windows-latest
-    timeout-minutes: 45
+    # Run39000527521 spent >39m before the CLI fixture; its prior measured8m46
+    # makes ~48m total. Keep shared compilation, plus12m for runner variation.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         if: needs.changes.outputs.rust != 'false'
