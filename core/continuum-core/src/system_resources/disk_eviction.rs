@@ -1867,6 +1867,13 @@ mod tests {
                  room's posts; rebuilt on the next read",
             ),
             (
+                "airc-mirrors",
+                "card d166e4f2 (owner Cormac): never pruned in place — preciousObjects refuses \
+                 prune and pack deletion because card clones borrow its objects through \
+                 alternates. Eviction is whole-mirror removal only when no live card clone \
+                 under ~/.airc/worktrees names it in its alternates; that owner is not built",
+            ),
+            (
                 "kv-pages",
                 "#155: broker-reachable pool keyed on slot-pool residency; the \
                  spawn-time generation sweep already owns the stale-geometry path",

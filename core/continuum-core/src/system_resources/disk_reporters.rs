@@ -396,6 +396,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // 2026-07-13 rule exists to catch before it is the incident.
         TrackedDir::new("airc-board-cache", home.join(".airc/work-board-cache")),
         TrackedDir::new("airc-wall-cache", home.join(".airc/wall-cache")),
+        // The node's bare repo mirrors that residents' card clones borrow objects from
+        // (card d166e4f2). One per repo; it grows with the repo's history and is never
+        // pruned (preciousObjects), so its size is the class to watch.
+        TrackedDir::new("airc-mirrors", home.join(".airc/mirrors")),
         TrackedDir::new("logs", home.join(".continuum/logs")),
         TrackedDir::new("probes", home.join(".continuum/probes")),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
