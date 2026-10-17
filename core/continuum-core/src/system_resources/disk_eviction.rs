@@ -1353,7 +1353,10 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
         let usage_before = tracked.bytes();
-        let pool = CargoTargetPool::new(tracked.clone(), 1);
+        let mut pool = CargoTargetPool::new(tracked.clone(), 1);
+        // This fixture owns its serving custody too: another serving test may publish
+        // an unresolved global pin, which correctly refuses every production candidate.
+        pool.active_artifacts = Arc::new(ActiveArtifactSet::default());
 
         // Small want: the incremental rung (4000 B) alone satisfies it.
         let freed = pool.evict_at_least(1000);
@@ -1370,7 +1373,9 @@ mod tests {
         // Large want: remaining rungs go (tests 2000 + debug 3000);
         // release survives regardless.
         let freed = pool.evict_at_least(u64::MAX);
-        assert_eq!(freed, 5000);
+        assert_eq!(freed, 5000, "remaining ladder: decline={} active_pin={}",
+            pool.last_decline.load(std::sync::atomic::Ordering::Relaxed),
+            pool.active_artifacts.protects(tmp.path()));
         assert!(!tmp.path().join("tests").exists());
         assert!(tmp.path().join("release/keep.bin").exists());
 
@@ -1521,7 +1526,10 @@ mod tests {
         for output in outputs { assert_eq!(std::fs::read(release.join(output)).unwrap(), b"preserve installed inputs"); }
         active.release(&certified.join("build/input"));
         let remaining = tracked.bytes();
-        assert_eq!(broker.relieve().bytes_freed, closure_bytes, "release-only intermediate pressure has a real eviction owner");
+        assert_eq!(broker.relieve().bytes_freed, closure_bytes,
+            "release-only intermediate pressure has a real eviction owner: decline={}, observation={}, release_observation={}, active_pin={}",
+            pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), tracked.observation(),
+            pool.release_observation.load(std::sync::atomic::Ordering::Relaxed), active.protects(&release));
         assert_eq!(tracked.bytes(), remaining - closure_bytes);
         for child in custody::CHILDREN { assert!(!certified.join(child).exists()); assert!(unknown.join(child).join("input").exists()); }
         assert!(!cargo_output.exists(), "withdraw Cargo's captured output so missing inputs regenerate");
