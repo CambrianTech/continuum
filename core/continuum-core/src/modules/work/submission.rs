@@ -498,7 +498,7 @@ async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -
 /// that merged nothing upstream keeps its creation base. Unproven ancestry or an unreadable
 /// remote-ref inventory refuses automatic derivation: a wider fallback can publish unrelated
 /// upstream work as her candidate. An explicitly supplied base remains caller-owned.
-fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_work::RepoId>) -> Result<String, CommandError> {
+fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_work::RepoId>, repository_url: Option<&str>) -> Result<String, CommandError> {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
@@ -531,21 +531,7 @@ fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_w
     // authority below distinguishes a feature that tracks the repository's base.
     let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default(); // unwrap_or_default: a detached HEAD has no branch to exclude
     let tracked = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).unwrap_or_default(); // unwrap_or_default: no upstream configured
-    // Allocation intent is immutable; a legacy tree can instead use the SAME repository
-    // policy as AIRC PR creation. A malformed/mismatched record is not a legacy tree.
-    let integration = match repo {
-        Some(repo) => match airc_lib::work_worktree::allocation_evidence(checkout)
-            .map_err(|e| CommandError::Invalid(format!("submission allocation evidence: {e}")))? {
-            Some(evidence) => {
-                if evidence.repo != *repo || evidence.requested_branch != branch {
-                    return Err(CommandError::Invalid("submission allocation evidence does not match the card repository and checkout branch".into()));
-                }
-                evidence.integration_base
-            }
-            None => airc_lib::work_repository::configured_base_branch(repo),
-        },
-        None => None,
-    };
+    let integration = submission_integration_branch(checkout, repo, &branch)?;
     let mut best: Option<(u64, String)> = None;
     for line in refs.lines().filter(|l| !l.is_empty()) {
         let Some((name, r)) = line.split_once(' ') else { continue };
@@ -558,7 +544,10 @@ fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_w
             && remote_branch.is_some_and(|(remote, b)| {
                 integration.as_deref() == Some(b) && repo.is_some_and(|repo| {
                     git(&["remote", "get-url", remote]).is_some_and(|url| {
-                        crate::modules::repo_registry::github_repo_id_from_remote(&url).as_deref() == Some(repo.as_str())
+                        let identity = crate::modules::repo_registry::network_repo_identity(&url);
+                        let authority = repository_url.and_then(crate::modules::repo_registry::network_repo_identity);
+                        identity.as_ref().is_some_and(|(_, _, name)| name == repo.as_str())
+                            && identity.is_some() && identity == authority
                     })
                 })
             });
@@ -592,6 +581,49 @@ fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_w
     }
 }
 
+/// Immutable allocation evidence is authoritative when present; absence is the only
+/// legacy case allowed to consult the shared repository policy.
+fn submission_integration_branch(
+    checkout: &std::path::Path, repo: Option<&airc_work::RepoId>, branch: &str,
+) -> Result<Option<String>, CommandError> {
+    // Allocation intent is immutable; a legacy tree can instead use the SAME repository
+    // policy as AIRC PR creation. A malformed/mismatched record is not a legacy tree.
+    Ok(match repo {
+        Some(repo) => match airc_lib::work_worktree::allocation_evidence(checkout)
+            .map_err(|e| CommandError::Invalid(format!("submission allocation evidence: {e}")))? {
+            Some(evidence) => {
+                if evidence.repo != *repo || evidence.requested_branch != branch {
+                    return Err(CommandError::Invalid("submission allocation evidence does not match the card repository and checkout branch".into()));
+                }
+                evidence.integration_base
+            }
+            None => airc_lib::work_repository::configured_base_branch(repo),
+        },
+        None => None,
+    })
+}
+
+/// Only the tracked-integration exception needs host authority. Ordinary automatic
+/// submissions and unknown policies retain their existing local behavior.
+async fn submission_repository_url(checkout: &std::path::Path, repo: &airc_work::RepoId) -> Result<Option<String>, CommandError> {
+    let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(checkout)
+        .output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default(); // unwrap_or_default: detached has no own branch
+    let integration = submission_integration_branch(checkout, Some(repo), &branch)?;
+    let tracked = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).unwrap_or_default(); // unwrap_or_default: no tracked ref needs no exception
+    let needs_authority = tracked.split_once('/').is_some_and(|(_, name)| name != branch && integration.as_deref() == Some(name));
+    if !needs_authority { return Ok(None); }
+    // Conservative metadata-only network bound approved for this owner: not a latency
+    // estimate or a new background retry policy. Failure leaves the submission unmade.
+    let args = vec!["repo".into(), "view".into(), repo.to_string(), "--json".into(), "url".into(), "--jq".into(), ".url".into()];
+    let url = crate::commands::code::github::run_gh_within(checkout, &args, std::time::Duration::from_secs(30))
+        .await.map_err(CommandError::from)?;
+    if !crate::modules::repo_registry::network_repo_identity(&url).is_some_and(|(_, _, name)| name == repo.as_str()) {
+        return Err(CommandError::Invalid("GitHub repository authority returned an invalid or mismatched URL".into()));
+    }
+    Ok(Some(url))
+}
+
 /// Read the submission off her checkout: instance, base, and the patch's hash + size.
 /// Parts she supplied herself are kept; the artifact is always recomputed here, so a
 /// placeholder can never reach the board.
@@ -613,7 +645,11 @@ async fn derive_submission(
             if is_swe {
                 created
             } else {
-                past_upstream(checkout, &created, repo)?
+                let repository_url = match repo {
+                    Some(repo) => submission_repository_url(checkout, repo).await?,
+                    None => None,
+                };
+                past_upstream(checkout, &created, repo, repository_url.as_deref())?
             }
         }
     };
@@ -1875,21 +1911,21 @@ mod tests {
         assert!(run(&["init", "-q"]).status.success());
         let created = commit("created here");
         // nothing merged from upstream yet: the creation base stands
-        assert_eq!(super::past_upstream(dir.path(), &created, None).expect("proven history"), created);
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("proven history"), created);
         let upstream = commit("someone else's merged work");
         assert!(run(&["update-ref", "refs/remotes/origin/canary", &upstream]).status.success());
         std::fs::write(dir.path().join("hers.rs"), "fn hers() {}\n").expect("write");
         assert!(run(&["add", "hers.rs"]).status.success());
         let _mine = commit("her change");
-        assert_eq!(super::past_upstream(dir.path(), &created, None).expect("proven history"), upstream, "the base moves past what upstream carries");
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("proven history"), upstream, "the base moves past what upstream carries");
         // her own branch pushed to the remote is NOT upstream (Cormac on #4442): the runtime
         // pushes after each act, and that ref sits at her own tip
         let branch = String::from_utf8(run(&["symbolic-ref", "--short", "HEAD"]).stdout).expect("branch").trim().to_string();
         assert!(run(&["update-ref", &format!("refs/remotes/origin/{branch}"), "HEAD"]).status.success());
-        assert_eq!(super::past_upstream(dir.path(), &created, None).expect("proven history"), upstream, "her own pushed tip never becomes the base");
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("proven history"), upstream, "her own pushed tip never becomes the base");
         // a remote that does not descend from the creation base is ignored
         assert!(run(&["update-ref", "refs/remotes/origin/stale", &created]).status.success());
-        assert_eq!(super::past_upstream(dir.path(), &created, None).expect("proven history"), upstream);
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("proven history"), upstream);
 
         // A feature may track the integration branch rather than its own publishing
         // ref. Only recorded repository authority can exempt that tracked ref.
@@ -1911,35 +1947,39 @@ mod tests {
             assert!(run(&["update-ref", airc_lib::work_worktree::ALLOCATION_REF, object.trim()]).status.success());
         };
         record(&serde_json::to_vec(&evidence).expect("allocation"));
-        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("tracked integration"), upstream);
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("tracked integration"), upstream);
         let diff = run(&["diff", &upstream, "HEAD", "--", "hers.rs"]);
         assert!(String::from_utf8(diff.stdout).expect("own diff").contains("fn hers()"), "committed own work remains in the candidate");
         for remote in ["https://foreign.example/CambrianTech/continuum.git", "ssh://git@foreign.example/CambrianTech/continuum.git", "git@foreign.example:CambrianTech/continuum.git"] {
             assert!(run(&["remote", "set-url", "origin", remote]).status.success());
-            assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("foreign host excluded"), created);
+            assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("foreign host excluded"), created);
         }
         for remote in ["git@github.com:CambrianTech/continuum.git", "ssh://git@github.com/CambrianTech/continuum.git"] {
             assert!(run(&["remote", "set-url", "origin", remote]).status.success());
-            assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("same GitHub repository"), upstream);
+            assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("same GitHub repository"), upstream);
         }
+        assert!(run(&["remote", "set-url", "origin", "git@enterprise.example:CambrianTech/continuum.git"]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://enterprise.example/CambrianTech/continuum")).expect("configured enterprise authority"), upstream);
+        assert!(run(&["remote", "set-url", "origin", "https://github.com/CambrianTech/continuum.git.git"]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("distinct repeated suffix identity"), created);
         assert!(run(&["remote", "set-url", "origin", "https://github.com/Foreign/fork.git"]).status.success());
-        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("foreign tracked ref excluded"), created);
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("foreign tracked ref excluded"), created);
         assert!(run(&["remote", "set-url", "origin", "https://github.com/CambrianTech/continuum.git"]).status.success());
         assert!(run(&["config", &format!("branch.{branch}.merge"), &format!("refs/heads/{branch}")]).status.success());
-        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo)).expect("own publishing ref excluded"), upstream);
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("own publishing ref excluded"), upstream);
         evidence.repo = airc_work::RepoId::new("Foreign/fork").expect("foreign repo");
         record(&serde_json::to_vec(&evidence).expect("mismatched allocation"));
-        assert!(super::past_upstream(dir.path(), &created, Some(&repo)).unwrap_err().to_string().contains("does not match"));
+        assert!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).unwrap_err().to_string().contains("does not match"));
         record(b"{broken");
-        assert!(super::past_upstream(dir.path(), &created, Some(&repo)).unwrap_err().to_string().contains("allocation evidence"));
+        assert!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).unwrap_err().to_string().contains("allocation evidence"));
         assert!(run(&["update-ref", "-d", airc_lib::work_worktree::ALLOCATION_REF]).status.success());
         // Legacy absence is not corruption. The same shared policy supplies the base;
         // repositories without a configured policy retain the previous selection.
         assert!(run(&["config", &format!("branch.{branch}.merge"), "refs/heads/canary"]).status.success());
         let legacy_expected = if airc_lib::work_repository::configured_base_branch(&repo).as_deref() == Some("canary") { &upstream } else { &created };
-        assert_eq!(&super::past_upstream(dir.path(), &created, Some(&repo)).expect("legacy shared policy"), legacy_expected);
+        assert_eq!(&super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("legacy shared policy"), legacy_expected);
         let unknown = airc_work::RepoId::new("Unknown/unconfigured").expect("unknown repo");
-        assert_eq!(super::past_upstream(dir.path(), &created, Some(&unknown)).expect("unknown policy preserves selection"), created);
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&unknown), None).expect("unknown policy preserves selection"), created);
         assert!(run(&["config", "--unset", &format!("branch.{branch}.merge")]).status.success());
         assert!(run(&["config", "--unset", &format!("branch.{branch}.remote")]).status.success());
         std::fs::remove_file(evidence_path).expect("remove fixture bytes");
@@ -1951,12 +1991,12 @@ mod tests {
         let shallow = dir.path().join(".git/shallow");
         std::fs::write(&shallow, format!("{upstream}\n")).expect("shallow boundary");
         assert!(!run(&["merge-base", "--is-ancestor", &created, "HEAD"]).status.success());
-        let refused = super::past_upstream(dir.path(), &created, None).expect_err("unproven automatic base");
+        let refused = super::past_upstream(dir.path(), &created, None, None).expect_err("unproven automatic base");
         assert!(refused.to_string().contains("pass a verified base_sha"), "{refused}");
         assert_eq!(String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("head"), head_before);
         assert_eq!(run(&["status", "--porcelain"]).stdout, status_before);
         std::fs::remove_file(shallow).expect("restore fixture history");
-        assert_eq!(super::past_upstream(dir.path(), &created, None).expect("restored ancestry"), upstream);
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("restored ancestry"), upstream);
     }
 
     #[tokio::test]

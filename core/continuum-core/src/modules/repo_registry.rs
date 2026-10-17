@@ -122,10 +122,10 @@ pub fn repo_id_from_remote(url: &str) -> Option<String> {
     }
 }
 
-/// GitHub's `owner/name` identity for an authority decision. The broader registry
-/// parser above also accepts local paths and other hosts; those are not evidence
-/// that a remote belongs to the GitHub repository named by an AIRC card.
-pub(crate) fn github_repo_id_from_remote(remote: &str) -> Option<String> {
+/// Host-qualified network repository identity, for comparing a Git remote with the
+/// URL returned by the configured GitHub owner (including enterprise hosts).
+/// Transport spelling may differ; custom ports remain part of the identity.
+pub(crate) fn network_repo_identity(remote: &str) -> Option<(String, Option<u16>, String)> {
     let remote = remote.trim();
     let normalized;
     let remote = if !remote.contains("://") {
@@ -136,17 +136,19 @@ pub(crate) fn github_repo_id_from_remote(remote: &str) -> Option<String> {
         remote
     };
     let url = reqwest::Url::parse(remote).ok()?;
-    if !matches!(url.scheme(), "https" | "ssh") || url.host_str() != Some("github.com")
-        || url.query().is_some() || url.fragment().is_some()
-        || url.port().is_some_and(|port| port != if url.scheme() == "ssh" { 22 } else { 443 }) {
+    if !matches!(url.scheme(), "https" | "ssh") || url.query().is_some() || url.fragment().is_some() {
         return None;
     }
-    let path = url.path().strip_prefix('/')?.trim_end_matches('/').trim_end_matches(".git");
+    let host = url.host_str()?.to_ascii_lowercase();
+    let port = url.port().filter(|port| *port != if url.scheme() == "ssh" { 22 } else { 443 });
+    let path = url.path().strip_prefix('/')?.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path); // unwrap_or: one transport suffix, never repeated stripping
     let (owner, name) = path.split_once('/')?;
     if owner.is_empty() || name.is_empty() || name.contains('/') {
         return None;
     }
-    airc_work::RepoId::new(path).ok().map(|repo| repo.to_string())
+    let repo = airc_work::RepoId::new(path).ok()?;
+    Some((host, port, repo.to_string()))
 }
 
 /// Record the clone this test binary was built from as this node's own checkout, in the
@@ -222,11 +224,15 @@ mod tests {
         assert_eq!(repo_id_from_remote("https://github.com/CambrianTech/continuum/").as_deref(), Some("CambrianTech/continuum"));
         assert!(repo_id_from_remote("nonsense").is_none());
         for remote in ["https://github.com/CambrianTech/continuum.git", "ssh://git@github.com/CambrianTech/continuum.git", "git@github.com:CambrianTech/continuum.git"] {
-            assert_eq!(github_repo_id_from_remote(remote).as_deref(), Some("CambrianTech/continuum"));
+            assert_eq!(network_repo_identity(remote), Some(("github.com".into(), None, "CambrianTech/continuum".into())));
         }
-        for remote in ["https://foreign.example/CambrianTech/continuum.git", "git@foreign.example:CambrianTech/continuum.git", "file:///CambrianTech/continuum", "https://github.com/extra/CambrianTech/continuum", "https://github.com:444/CambrianTech/continuum", "https://github.com/CambrianTech/continuum?other=1"] {
-            assert!(github_repo_id_from_remote(remote).is_none(), "{remote}");
+        for remote in ["file:///CambrianTech/continuum", "https://github.com/extra/CambrianTech/continuum", "https://github.com/CambrianTech/continuum?other=1"] {
+            assert!(network_repo_identity(remote).is_none(), "{remote}");
         }
+        assert_eq!(network_repo_identity("git@enterprise.example:Owner/repo.git"), network_repo_identity("https://enterprise.example/Owner/repo"));
+        assert_ne!(network_repo_identity("https://foreign.example/Owner/repo"), network_repo_identity("https://enterprise.example/Owner/repo"));
+        assert_ne!(network_repo_identity("https://enterprise.example:444/Owner/repo"), network_repo_identity("https://enterprise.example/Owner/repo"));
+        assert_eq!(network_repo_identity("https://enterprise.example/Owner/repo.git.git").expect("network identity").2, "Owner/repo.git");
     }
 
     // what this catches: recording a card WORKTREE as the clone (deleted on merge,
