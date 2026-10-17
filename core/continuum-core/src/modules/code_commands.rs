@@ -667,8 +667,9 @@ impl ActionCommand for CodeWrite {
         let before = std::fs::metadata(engine.workspace_root().join(&p.file_path))
             .ok()
             .map(|m| m.len());
+        let scope = read_scope_of(ctx, &engine.workspace_root());
         let out = engine
-            .write(&p.file_path, &p.content, p.description.as_deref())
+            .write_in(&p.file_path, &p.content, p.description.as_deref(), &scope)
             .map_err(engine_err);
         crate::probe!(
             class = "code.write.landed",
@@ -912,8 +913,9 @@ impl ActionCommand for CodeEdit {
         reject_placeholder_path(&p.file_path)?;
         let engine = engine!(self, ctx);
         let edit = CanonicalEdit::try_from(p)?;
+        let scope = read_scope_of(ctx, &engine.workspace_root());
         engine
-            .edit(&edit.file_path, &edit.edit_mode, edit.description.as_deref())
+            .edit_in(&edit.file_path, &edit.edit_mode, edit.description.as_deref(), &scope)
             .map_err(engine_err)
     }
 }
@@ -2246,6 +2248,31 @@ mod tests {
         };
         let confined = confinement_of(&outside, ws.path()).expect("a peer from outside this node is confined");
         assert_eq!(confined.workspace(), ws.path());
+    }
+
+    // what this catches: a resident refused a write to an absolute path outside her
+    // workspace (Joel 2026-10-17: "If she wants to write to my documents folder for no
+    // apparent reason so be it"), while a caller from outside this node still is refused.
+    #[test]
+    fn a_resident_writes_where_she_names_and_an_outside_peer_is_held_to_the_workspace() {
+        use crate::code::path_security::PathSecurity;
+        let ws = tempfile::tempdir().expect("test: ws");
+        let elsewhere = tempfile::tempdir().expect("test: elsewhere");
+        let target = elsewhere.path().join("note.txt");
+        let security = PathSecurity::new(ws.path()).expect("test: security");
+        let resident = Ctx {
+            caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
+            ..Ctx::default()
+        };
+        let scope = read_scope_of(&resident, ws.path());
+        let resolved = security.validate_write_in(target.to_str().unwrap(), &scope).expect("a resident's absolute path resolves");
+        assert_eq!(resolved, elsewhere.path().canonicalize().unwrap().join("note.txt"));
+        let outside = Ctx {
+            caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
+            ..Ctx::default()
+        };
+        let confined = read_scope_of(&outside, ws.path());
+        assert!(security.validate_write_in(target.to_str().unwrap(), &confined).is_err(), "an outside peer is held to the workspace");
     }
 
     // what this catches (Kimi, 2026-10-05): a write outside her workspace, a missing file
