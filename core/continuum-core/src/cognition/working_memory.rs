@@ -693,7 +693,9 @@ impl WorkingMemory {
             // No pin yet (before the first act, or a cycle with no loadout): the serving
             // truth, never "no bound". This arm was `ContextBudget::unknown()`.
             0 => ContextBudget::live(),
-            w => ContextBudget::from_window(w),
+            // The ring is STATE, not this turn's prompt: one audience for every turn, so its
+            // share is stable and it collapses only in bursts (see `from_window_for`).
+            w => ContextBudget::from_window_for(w, crate::inference::prefill_rate::Audience::Unattended),
         }
     }
 

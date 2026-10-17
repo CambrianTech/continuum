@@ -253,6 +253,74 @@ const HEALTH_PROBE_EVERY_TICKS: u64 = 12; // 12 × 5s ≈ 60s
 /// a wake burst), and reaping a healthy-but-busy lane is the exact thrash that got the
 /// prior watchdog reverted (commit 93753d812). Two consecutive failures ≈ 2 minutes of
 /// sustained no-decode = genuinely poisoned, not transiently loaded.
+/// How long work may stop advancing on a slot the engine still reports as processing before
+/// the lane is condemned as frozen. derived-or-floor: floor — measured on the M5 2026-10-17
+/// the engine logs a prefill or decode advance every ~3 s while working, and the longest
+/// cold prefill seen that day (23,612 tokens at 105 t/s) still advanced continuously; a
+/// frozen engine advanced nothing for 34 min. Three minutes is 60x the healthy gap.
+const FROZEN_ENGINE_MS: u64 = 180_000;
+
+struct FrozenSlots {
+    generation: uuid::Uuid,
+    fingerprint: u64,
+    unchanged_since: std::time::Instant,
+}
+
+impl FrozenSlots {
+    fn observe(
+        last: &mut Option<Self>,
+        generation: uuid::Uuid,
+        slots: Option<&serde_json::Value>,
+        now: std::time::Instant,
+    ) -> bool {
+        let fingerprint = slots.and_then(|slots| {
+            let active: Vec<_> = slots
+                .as_array()?
+                .iter()
+                .filter(|s| s.get("is_processing").and_then(|v| v.as_bool()) == Some(true))
+                .collect();
+            if active.is_empty()
+                || active.iter().any(|s| {
+                    s.get("id").and_then(|v| v.as_u64()).is_none()
+                        || s.get("id_task")
+                            .and_then(|v| v.as_i64())
+                            .is_none_or(|id| id < 0)
+                        || s.get("n_prompt_tokens_processed")
+                            .and_then(|v| v.as_u64())
+                            .is_none()
+                        || s.get("next_token")
+                            .and_then(|v| v.get("n_decoded").or_else(|| v.get(0)?.get("n_decoded")))
+                            .and_then(|v| v.as_u64())
+                            .is_none()
+                })
+            {
+                return None;
+            }
+            crate::inference::llama_server::slots_activity_fingerprint_of(slots)
+        });
+        let Some(fingerprint) = fingerprint else {
+            *last = None;
+            return false;
+        };
+        match last {
+            Some(previous)
+                if previous.generation == generation && previous.fingerprint == fingerprint =>
+            {
+                now.duration_since(previous.unchanged_since).as_millis()
+                    >= u128::from(FROZEN_ENGINE_MS)
+            }
+            _ => {
+                *last = Some(Self {
+                    generation,
+                    fingerprint,
+                    unchanged_since: now,
+                });
+                false
+            }
+        }
+    }
+}
+
 const HEALTH_FAILS_TO_RELAUNCH: u8 = 2;
 
 /// Bus topic the live [`ServingSnapshot`] is emitted on whenever it changes.
@@ -896,6 +964,7 @@ pub struct ServingDaemonModule {
     /// exonerate a later freeze. `std::sync::Mutex` — held only for a copy, never
     /// across an await.
     last_miss_slots_fp: Arc<std::sync::Mutex<Option<u64>>>,
+    frozen_slots: Arc<parking_lot::Mutex<Option<FrozenSlots>>>,
     /// Where the first plan after boot learns about a PAST FORM OF OURSELF still holding VRAM.
     /// Defaults to the lane registry; tests own it ([`Self::set_inherited_lane`]). See
     /// [`InheritedLaneSource`] for the measured defect this closes (#438).
@@ -1263,6 +1332,7 @@ impl ServingDaemonModule {
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             leased_in_sent: Arc::new(crate::cognition::resource_admission::leased_in_sent_samples),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
+            frozen_slots: Arc::new(parking_lot::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
@@ -4528,6 +4598,7 @@ impl ServingDaemonModule {
             s.ready && s.active_model.is_some()
         };
         if !believe_ready {
+            *self.frozen_slots.lock() = None;
             self.health_fails.store(0, Ordering::Relaxed);
             return None;
         }
@@ -4578,6 +4649,7 @@ impl ServingDaemonModule {
         let probe_window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
         if let Some(since) = (self.decode_age)() {
             if since <= probe_window_ms {
+                *self.frozen_slots.lock() = None;
                 self.health_fails.store(0, Ordering::Relaxed);
                 crate::probe!(
                     class = "serving.health",
@@ -4589,6 +4661,78 @@ impl ServingDaemonModule {
                      smoke probe rather than contend for a slot with the work that proves it",
                 );
                 return None;
+            }
+        }
+        // Adapter stamps miss inherited work. A processing flag is only a baseline:
+        // the same engine and task progress must remain unchanged over the interval.
+        // The M5's verified 34-minute freeze motivated this; its cause is unproven.
+        let frozen_age = (self.decode_age)();
+        if !frozen_age.is_some_and(|age| age >= FROZEN_ENGINE_MS)
+            || self.reconciling.load(Ordering::Acquire)
+        {
+            *self.frozen_slots.lock() = None;
+        }
+        if let Some(since) = frozen_age {
+            if since >= FROZEN_ENGINE_MS && !self.reconciling.load(Ordering::Acquire) {
+                let root = self
+                    .serving_tx
+                    .borrow()
+                    .base_url
+                    .strip_suffix("/v1")
+                    .map(str::to_owned);
+                if let Some(root) = root {
+                    let directory = crate::inference::slots::directory();
+                    let endpoint = directory.endpoint(&root);
+                    if let Some(generation) = directory
+                        .page_discovery_generation(&root)
+                        .filter(|_| endpoint.is_ready())
+                    {
+                        if self.health_probing.swap(true, Ordering::AcqRel) {
+                            return None;
+                        }
+                        let server = self.server.clone();
+                        let serving_tx = self.serving_tx.clone();
+                        let force_relaunch = self.force_relaunch.clone();
+                        let reconciling = self.reconciling.clone();
+                        let health_probing = self.health_probing.clone();
+                        let observation = self.frozen_slots.clone();
+                        let decode_age = self.decode_age.clone();
+                        let bus = self.bus.get().cloned();
+                        return Some(tokio::spawn(async move {
+                            let slots = server.slots_body().await;
+                            let current = {
+                                let state = serving_tx.borrow();
+                                state.ready
+                                    && state.active_model.is_some()
+                                    && state.base_url.strip_suffix("/v1") == Some(root.as_str())
+                                    && !reconciling.load(Ordering::Acquire)
+                                    && endpoint.is_ready()
+                                    && directory.page_discovery_generation(&root)
+                                        == Some(generation)
+                                    && decode_age().is_some_and(|age| age >= FROZEN_ENGINE_MS)
+                            };
+                            let frozen = if current {
+                                FrozenSlots::observe(
+                                    &mut observation.lock(),
+                                    generation,
+                                    slots.as_ref(),
+                                    std::time::Instant::now(),
+                                )
+                            } else {
+                                *observation.lock() = None;
+                                false
+                            };
+                            if frozen {
+                                crate::probe!(class = "serving.health", ok = false, via = "frozen_processing_slot",
+                                    unchanged_ms = FROZEN_ENGINE_MS,
+                                    "same engine and processing task progress remained unchanged across the observation interval");
+                                Self::declare_lane_wedged(&force_relaunch, &serving_tx, bus.as_ref(), "frozen: unchanged processing task progress across the observation interval");
+                            }
+                            health_probing.store(false, Ordering::Release);
+                        }));
+                    }
+                }
+                *self.frozen_slots.lock() = None;
             }
         }
         // NEVER DECODE ON A RESIDENT'S ONLY SLOT (card 9e3350bd, the 5090 2026-10-11): with no
@@ -8803,6 +8947,7 @@ pub(crate) mod tests {
         probe_started: Option<Arc<tokio::sync::Notify>>,
         /// `/slots` reads served ([`LlamaServerControl::slots_body`]): the prefill knee's.
         slots_reads: Arc<AtomicUsize>,
+        slots_reply: Option<Arc<dyn Fn() -> serde_json::Value + Send + Sync>>,
     }
 
     impl FakeServer {
@@ -8822,6 +8967,7 @@ pub(crate) mod tests {
                 serve_started: None,
                 probe_started: None,
                 slots_reads: Arc::new(AtomicUsize::new(0)),
+                slots_reply: None,
             }
         }
     }
@@ -8896,7 +9042,12 @@ pub(crate) mod tests {
         }
         async fn slots_body(&self) -> Option<serde_json::Value> {
             self.slots_reads.fetch_add(1, Ordering::SeqCst);
-            Some(serde_json::json!([]))
+            Some(
+                self.slots_reply
+                    .as_ref()
+                    .map(|reply| reply())
+                    .unwrap_or_else(|| serde_json::json!([])),
+            )
         }
 
         async fn slots_activity_fingerprint(&self) -> Option<u64> {
@@ -10937,6 +11088,168 @@ pub(crate) mod tests {
              latency must be unchanged"
         );
         assert!(d.force_relaunch.load(Ordering::Acquire));
+
+        // The processing-slot path must establish its own task/generation interval,
+        // even when adapter activity is stale after an idle period or core restart.
+        let now = std::time::Instant::now();
+        let interval = Duration::from_millis(FROZEN_ENGINE_MS);
+        let generation = uuid::Uuid::new_v4();
+        let processing = serde_json::json!([{"id": 0, "id_task": 17, "is_processing": true,
+            "n_prompt_tokens_processed": 200, "next_token": [{"n_decoded": 4}]}]);
+        let mut observed = None;
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            generation,
+            Some(&processing),
+            now
+        ));
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            generation,
+            Some(&processing),
+            now + interval / 2
+        ));
+        let mut advancing = processing.clone();
+        advancing[0]["n_prompt_tokens_processed"] = serde_json::json!(201);
+        assert!(!FrozenSlots::observe(
+            &mut observed, generation, Some(&advancing), now + interval / 2
+        ));
+        advancing[0]["next_token"][0]["n_decoded"] = serde_json::json!(5);
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            generation,
+            Some(&advancing),
+            now + interval
+        ));
+        let mut replacement = advancing.clone();
+        replacement[0]["id_task"] = serde_json::json!(18);
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            generation,
+            Some(&replacement),
+            now + interval * 2
+        ));
+        let successor = uuid::Uuid::new_v4();
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            successor,
+            Some(&replacement),
+            now + interval * 3
+        ));
+        assert!(FrozenSlots::observe(
+            &mut observed,
+            successor,
+            Some(&replacement),
+            now + interval * 4
+        ));
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            successor,
+            None,
+            now + interval * 5
+        ));
+        assert!(
+            observed.is_none(),
+            "an unreadable interval cannot support a frozen verdict"
+        );
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            successor,
+            Some(&serde_json::json!([])),
+            now
+        ));
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            successor,
+            Some(&serde_json::json!([{"is_processing": true}])),
+            now
+        ));
+
+        // Exercise the actual heartbeat with the existing endpoint generation owner.
+        let root = format!("test://frozen-{}", uuid::Uuid::new_v4());
+        let directory = crate::inference::slots::directory();
+        let endpoint = directory.endpoint(&root);
+        let launch = endpoint.transition().await;
+        let engine = launch.start_generation().unwrap();
+        launch
+            .ready(
+                &root,
+                &engine,
+                crate::inference::slots::KvPageContract {
+                    model_id: "fixture".into(),
+                    model: "fixture.gguf".into(),
+                    adapters: vec![],
+                    page_dir: None,
+                    context: 11008,
+                    slots: 1,
+                    cache_type: None,
+                    engine: "fixture-engine".into(),
+                    revisions: None,
+                },
+            )
+            .unwrap();
+        drop(launch);
+        let reply = processing.clone();
+        let mut frozen = daemon_with(Arc::new(FakeServer {
+            slots_reply: Some(Arc::new(move || reply.clone())),
+            ..FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)
+        }));
+        let age = Arc::new(AtomicU64::new(FROZEN_ENGINE_MS * 10));
+        let sampled_age = age.clone();
+        frozen.set_decode_age_source(Arc::new(move || Some(sampled_age.load(Ordering::Acquire))));
+        frozen.set_real_fails_source(Arc::new(|| 0));
+        let mut snapshot = ready_snapshot();
+        snapshot.base_url = format!("{root}/v1");
+        frozen.serving_tx.send_replace(snapshot.clone());
+        probe_once(&frozen).await.unwrap();
+        assert!(
+            frozen.serving_tx.borrow().ready,
+            "a newly observed task is not frozen"
+        );
+        frozen.frozen_slots.lock().as_mut().unwrap().unchanged_since -= interval;
+        age.store(TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS + 1, Ordering::Release);
+        for _ in 0..HEALTH_PROBE_EVERY_TICKS {
+            if let Some(probe) = frozen.spawn_health_heartbeat_if_due() {
+                probe.await.unwrap();
+            }
+        }
+        assert!(frozen.frozen_slots.lock().is_none(), "intervening activity beyond the fast trust window still invalidates the interval");
+        age.store(FROZEN_ENGINE_MS * 10, Ordering::Release);
+        probe_once(&frozen).await.unwrap();
+        assert!(!frozen.force_relaunch.load(Ordering::Acquire), "eligibility returning requires a fresh baseline");
+        frozen.frozen_slots.lock().as_mut().unwrap().unchanged_since -= interval;
+        probe_once(&frozen).await.unwrap();
+        assert!(
+            frozen.force_relaunch.load(Ordering::Acquire),
+            "same task unchanged across the interval is evidence"
+        );
+
+        // An engine exit during the awaited read invalidates an otherwise mature observation.
+        let reply = processing.clone();
+        let exiting = engine.clone();
+        let mut stale = daemon_with(Arc::new(FakeServer {
+            slots_reply: Some(Arc::new(move || {
+                exiting.observed_exit();
+                reply.clone()
+            })),
+            ..FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)
+        }));
+        stale.set_decode_age_source(Arc::new(|| Some(FROZEN_ENGINE_MS * 10)));
+        stale.set_real_fails_source(Arc::new(|| 0));
+        stale.prefill_knee_reading.store(true, Ordering::Release);
+        stale.serving_tx.send_replace(snapshot);
+        *stale.frozen_slots.lock() = Some(FrozenSlots {
+            generation: directory.page_discovery_generation(&root).unwrap(),
+            fingerprint: crate::inference::llama_server::slots_activity_fingerprint_of(&processing)
+                .unwrap(),
+            unchanged_since: std::time::Instant::now() - interval,
+        });
+        probe_once(&stale).await.unwrap();
+        assert!(
+            !stale.force_relaunch.load(Ordering::Acquire),
+            "post-await generation validity is required"
+        );
+        assert!(stale.frozen_slots.lock().is_none());
     }
 
     // what this catches: a lane whose per-slot window froze at ≤ HALF the

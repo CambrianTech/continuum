@@ -950,17 +950,36 @@ async fn run_shell_command(
     // shell resolves none). On Unix use `$SHELL` (the user's own shell) as a login
     // shell; fall back to the located POSIX bash. Windows keeps the located bash (the
     // shell_portable WSL-shim guard) — its env model differs and $SHELL is absent.
-    let (shell_bin, shell_flag): (PathBuf, &str) = if cfg!(windows) {
-        (bash, "-c")
+    //
+    // The ENVIRONMENT comes from the user's login shell; the LANGUAGE is always bash.
+    // Citizens (and every model) write bash: `echo '===' ; grep … | head`. Running that
+    // text in a login zsh broke whole commands on `==`/`=word` expansion ("zsh: ==
+    // not found", M5 2026-10-17, three residents, a lost turn each). So the login shell
+    // only loads the profile and then execs the located bash on the command, which
+    // travels in the environment (`CONTINUUM_SHELL_COMMAND`) so no quoting layer can
+    // mangle it.
+    let (shell_bin, shell_args): (PathBuf, Vec<std::ffi::OsString>) = if cfg!(windows) {
+        (bash, vec!["-c".into()])
     } else {
         match std::env::var("SHELL")
             .ok()
             .filter(|s| !s.is_empty() && Path::new(s).exists())
         {
-            Some(user_shell) => (PathBuf::from(user_shell), "-lc"),
-            None => (bash, "-lc"),
+            Some(user_shell) => (
+                PathBuf::from(user_shell),
+                vec![
+                    "-lc".into(),
+                    format!(
+                        "exec '{}' -c \"$CONTINUUM_SHELL_COMMAND\"",
+                        bash.display().to_string().replace('\'', "'\\''")
+                    )
+                    .into(),
+                ],
+            ),
+            None => (bash, vec!["-lc".into()]),
         }
     };
+    let command_in_env = shell_args.len() == 2;
 
     // Layer the per-task PATH prefix (the era venv's bin) ON TOP of the login-loaded
     // PATH. A login shell RE-SETS PATH from the profile, so an inherited PATH override
@@ -981,7 +1000,13 @@ async fn run_shell_command(
         confinement,
         who,
         &shell_bin,
-        &[shell_flag.into(), effective_command.clone().into()],
+        &if command_in_env {
+            shell_args.clone()
+        } else {
+            let mut a = shell_args.clone();
+            a.push(effective_command.clone().into());
+            a
+        },
         Some(cwd),
         cargo_grant,
     );
@@ -1012,6 +1037,11 @@ async fn run_shell_command(
     // Apply session environment variables
     for (k, v) in env {
         cmd.env(k, v);
+    }
+    // The command text rides in the environment when a login shell hands it to bash
+    // (see `command_in_env` above); set last so no session variable can shadow it.
+    if command_in_env {
+        cmd.env("CONTINUUM_SHELL_COMMAND", &effective_command);
     }
 
     // Captured shell sessions are noninteractive; share the platform launch policy.
