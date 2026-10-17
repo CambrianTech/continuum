@@ -112,6 +112,17 @@ pub struct ModelBinding {
     pub context_window: u32,
 }
 
+impl ModelBinding {
+    /// The model this binding's requests are actually served by: the bound one, or the
+    /// adapter's own default when none is bound. This is the one resolution request
+    /// construction uses, so measurements keyed by model (the decode rate) read the same
+    /// key the request carries. A spawn binding starts with `model: None`, and the receipt
+    /// said "no decode rate" for a lane with a fresh curve (card b406e901).
+    pub fn requested_model(&self) -> &str {
+        self.model.as_deref().unwrap_or_else(|| self.adapter.default_model()) // unwrap_or_else: an omitted model selects the adapter default, the same one request construction sends
+    }
+}
+
 struct ActiveVisualFeedback {
     seq: u64,
     parts: Vec<(String, crate::ai::types::ContentPart)>,
@@ -1529,11 +1540,7 @@ impl LlmDeliberationFaculty {
         // ([`output_allowance`]); its bound was already decided by [`reply_claim`].
         kind: TurnKind,
     ) -> TextGenerationRequest {
-        let rate = binding
-            .model
-            .as_deref()
-            .map(crate::inference::decode_knee::rate_for)
-            .unwrap_or(crate::inference::decode_knee::MeasuredRate::UNKNOWN); // unwrap_or: no model bound = no rate known; the need term alone bounds
+        let rate = crate::inference::decode_knee::rate_for(binding.requested_model());
         let need = self
             .working_set
             .as_ref()
@@ -4861,10 +4868,7 @@ impl LlmDeliberationFaculty {
         if images.is_empty() {
             return Ok(None);
         }
-        let model = binding
-            .model
-            .as_deref()
-            .unwrap_or_else(|| binding.adapter.default_model()); // Omitted model selects the same provider default used by request construction.
+        let model = binding.requested_model();
         let native = binding
             .adapter
             .model_metadata(model)
