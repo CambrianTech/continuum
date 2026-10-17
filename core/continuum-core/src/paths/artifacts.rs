@@ -10,6 +10,15 @@ pub fn root(home: &Path) -> Result<PathBuf, String> {
     resolve_root(storage, home)
 }
 
+/// Installed payload placement is independent of downloadable artifact storage.
+/// An unavailable or corrupt placement record is operational uncertainty, never
+/// evidence that the selected published artifact is invalid.
+pub fn service_destination(home: &Path) -> Result<PathBuf, PublishedCoreError> {
+    super::payload_root(home)
+        .map(|root| root.join("bin"))
+        .map_err(PublishedCoreError::OperationalBlocked)
+}
+
 fn resolve_root(storage: Option<PathBuf>, home: &Path) -> Result<PathBuf, String> {
     match storage {
         Some(root) if !root.is_absolute() => {
@@ -188,6 +197,30 @@ mod tests {
                 role: DriveRole::Cold,
             },
         ];
+        // Regression: three c7deff downloads were completed while the installed
+        // service volume could not admit even zero additional bytes. Cold
+        // artifact storage must not be mistaken for installed payload placement.
+        let destination = service_destination(home.path()).unwrap();
+        assert_eq!(destination, home.path().join("bin"));
+        assert!(check_on_drives(&destination, 0, &drives).is_err());
+        assert!(check_on_drives(&root, 0, &drives).is_ok());
+        std::fs::write(
+            home.path().join("payload-root"),
+            storage.path().to_str().unwrap(),
+        )
+        .unwrap();
+        let destination = service_destination(home.path()).unwrap();
+        assert_eq!(destination, storage.path().join("bin"));
+        assert!(check_on_drives(&destination, 0, &drives).is_ok());
+        assert!(
+            check_on_drives(&destination, 251, &drives).is_err(),
+            "zero-byte preflight does not approve the later measured copy"
+        );
+        std::fs::write(home.path().join("payload-root"), "relative").unwrap();
+        assert!(matches!(
+            service_destination(home.path()),
+            Err(PublishedCoreError::OperationalBlocked(_))
+        ));
         assert!(check_on_drives(&root, 100 + 150, &drives).is_ok());
         assert!(check_on_drives(&root, 100 + 151, &drives).is_err());
         assert!(check_on_drives(&root, 1, &[]).is_err());
