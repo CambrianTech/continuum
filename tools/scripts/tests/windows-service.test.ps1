@@ -276,6 +276,61 @@ function Test-WingetAvailable {
         if (-not $refused) { throw 'Missing payload drive silently fell back' }
         Write-Output 'PASS: fresh cold payload placement, sticky rerun, legacy preservation and missing-drive refusal'
     }
+    # what this catches: portable payload preparation must never select its copy
+    # or discard the original installation, even when admission/writer custody fails.
+    & {
+        . (Join-Path $repo 'tools/scripts/lib/windows-payload-staging.ps1')
+        $homeRoot = Join-Path $scratch 'stage-home'
+        $cold = Join-Path $scratch 'stage-cold'
+        New-Item -ItemType Directory -Path (Join-Path $homeRoot 'bin/service-a'), $cold -Force | Out-Null
+        $member = Join-Path $homeRoot 'bin/service-a/continuum.exe'
+        [IO.File]::WriteAllText($member, 'sealed fixture bytes')
+        [IO.File]::WriteAllText((Join-Path $homeRoot 'install-active.json'), 'original selection')
+        $script:stageRefuse = $true
+        $script:stageCreateRecord = $false
+        function Assert-CoreArtifactCapacity { param($ArtifactDirectory,$Destination,$Sources,$AdditionalBytes)
+            if ($Destination -ne $cold -or $AdditionalBytes -le 0 -or $Sources.Count -ne 1) { throw 'Wrong staging admission closure' }
+            if ($script:stageRefuse) { throw 'fixture capacity refusal' }
+            if ($script:stageCreateRecord) { [IO.File]::WriteAllText((Join-Path $homeRoot 'install-previous.json'), 'concurrent record') }
+        }
+        $refused = $false
+        try { New-CorePayloadStage $homeRoot $cold $scratch | Out-Null } catch { $refused = $true }
+        if (-not $refused -or @(Get-ChildItem $cold -Force).Count) { throw 'Refused staging wrote a destination' }
+        $script:stageRefuse = $false
+        $outside = Join-Path $scratch 'stage-outside'
+        New-Item -ItemType Directory -Path $outside | Out-Null
+        $junction = Join-Path $cold 'payloads'
+        New-Item -ItemType Junction -Path $junction -Target $outside | Out-Null
+        try {
+            $refused = $false
+            try { New-CorePayloadStage $homeRoot $cold $scratch | Out-Null } catch { $refused = $true }
+            if (-not $refused -or @(Get-ChildItem $outside -Force).Count) { throw 'Staging followed redirected destination parent' }
+        } finally { [IO.Directory]::Delete($junction) }
+        $lease = [IO.File]::Open((Join-Path $homeRoot 'install.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            $refused = $false
+            try { New-CorePayloadStage $homeRoot $cold $scratch | Out-Null } catch { $refused = $true }
+            if (-not $refused) { throw 'Staging ignored installer custody' }
+        } finally { $lease.Dispose() }
+        $writer = [IO.File]::Open($member, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::ReadWrite)
+        try {
+            $refused = $false
+            try { New-CorePayloadStage $homeRoot $cold $scratch | Out-Null } catch { $refused = $true }
+            if (-not $refused) { throw 'Staging accepted an active writer' }
+        } finally { $writer.Dispose() }
+        $script:stageCreateRecord = $true
+        $refused = $false
+        try { New-CorePayloadStage $homeRoot $cold $scratch | Out-Null } catch { $refused = $true }
+        if (-not $refused -or @(Get-ChildItem $cold -Filter placement-verified.json -Recurse).Count) { throw 'Staging certified a changed absent record' }
+        $script:stageCreateRecord = $false
+        $stage = New-CorePayloadStage $homeRoot $cold $scratch
+        $receipt = Get-Content (Join-Path $stage 'placement-verified.json') -Raw | ConvertFrom-Json
+        if ($receipt.phase -ne 'verified-staging-only' -or $receipt.members.Count -ne 1) { throw 'Missing complete staging evidence' }
+        if ((Get-FileHash $member).Hash -ne (Get-FileHash (Join-Path $stage 'payload/bin/service-a/continuum.exe')).Hash) { throw 'Staged bytes differ' }
+        if ((Get-Content (Join-Path $homeRoot 'install-active.json') -Raw) -cne 'original selection' -or (Test-Path (Join-Path $homeRoot 'payload-root'))) { throw 'Staging changed live selection' }
+        if (Test-Path $receipt.proposed_payload) { throw 'Staging published final placement' }
+        Write-Output 'PASS: payload staging admission, writer refusal, byte verification and untouched selection'
+    }
     # what this catches: a long-lived desktop inherited no Rust-home settings
     # from an earlier install, and PATH refresh discarded session-selected tools.
     & {
@@ -445,6 +500,60 @@ if (-not $FirewallOnly -or -not (Test-Path -LiteralPath $AircPath) -or $env:CAMB
             throw 'Unlaunchable PDF runtime was accepted as healthy.'
         }
         Write-Output 'PASS: corrupt PDF decoder reports drift for installer repair'
+    }
+    # Actual media script honors an explicit relocated server, while its old
+    # one-argument caller keeps the legacy default. No process/listener is created.
+    & {
+        $mediaTest = [PowerShell]::Create()
+        try {
+            [void]$mediaTest.AddScript({ param($mediaScript)
+                $savedUrl = $env:LIVEKIT_URL
+                try {
+                    $env:LIVEKIT_URL = 'ws://localhost:7880'
+                    function New-Item { }
+                    function Resolve-Path { param($LiteralPath) $global:mediaResolvedPath = $LiteralPath; [pscustomobject]@{ Path=$LiteralPath } }
+                    function Get-NetTCPConnection { [pscustomobject]@{ OwningProcess=42 } }
+                    function Get-Process { [pscustomobject]@{ Path=$global:mediaResolvedPath } }
+                    $global:mediaObservedPaths = @()
+                    function Write-Output { param($InputObject) $global:mediaObservedPaths += $global:mediaResolvedPath }
+                    & $mediaScript -BridgeBinary 'fixture-bridge.exe' -LivekitServerBinary 'Q:/fixture-payload/bin/livekit-server.exe'
+                    if ($global:mediaObservedPaths.Count -ne 2 -or $global:mediaObservedPaths[0] -cne 'Q:/fixture-payload/bin/livekit-server.exe' -or $global:mediaObservedPaths[1] -cne 'fixture-bridge.exe') { throw ("Explicit media server selection was lost: count={0}, paths={1}" -f $global:mediaObservedPaths.Count, ($global:mediaObservedPaths -join '|')) }
+                    $global:mediaObservedPaths = @()
+                    & $mediaScript -BridgeBinary 'legacy-bridge.exe'
+                    if ($global:mediaObservedPaths[0] -cne (Join-Path $env:USERPROFILE '.continuum/bin/livekit-server.exe')) { throw 'Legacy media caller changed layout.' }
+                } finally { $env:LIVEKIT_URL = $savedUrl }
+            }).AddArgument((Join-Path $repo 'tools/scripts/start-livekit-windows.ps1'))
+            $null = $mediaTest.Invoke()
+            if ($mediaTest.HadErrors) { throw ($mediaTest.Streams.Error | Out-String) }
+        } finally { $mediaTest.Dispose() }
+        # Real launcher + shared resolver, disposable selected payload. The host
+        # spawn is observed through the existing PowerShell command boundary.
+        $launcherRoot = Join-Path $scratch 'media-runtime-owner'
+        $mediaHome = Join-Path $scratch 'media-user'
+        $mediaPayload = Join-Path $scratch 'media-cold'
+        New-Item -ItemType Directory -Path $launcherRoot, (Join-Path $mediaHome '.continuum'), $mediaPayload -Force | Out-Null
+        Copy-Item (Join-Path $repo 'tools/scripts/run-service-hidden.ps1') $launcherRoot
+        Copy-Item (Join-Path $repo 'tools/scripts/lib/payload-paths.ps1') $launcherRoot
+        [IO.File]::WriteAllText((Join-Path $mediaHome '.continuum/payload-root'), $mediaPayload)
+        [IO.File]::WriteAllText((Join-Path $launcherRoot 'livekit-bridge.exe'), 'fixture only')
+        [IO.File]::WriteAllText((Join-Path $launcherRoot 'start-livekit-windows.ps1'), 'param($BridgeBinary,$LivekitServerBinary) [IO.File]::WriteAllText((Join-Path $PSScriptRoot "observed-server.txt"), $LivekitServerBinary)')
+        $launcherTest = [PowerShell]::Create()
+        $savedProfile = $env:USERPROFILE
+        try {
+            $env:USERPROFILE = $mediaHome
+            [void]$launcherTest.AddScript({ param($launcher, $logs)
+                function Start-Process {
+                    $child = [pscustomobject]@{ Handle=1; ExitCode=0 }
+                    $child | Add-Member ScriptMethod WaitForExit { }
+                    return $child
+                }
+                & $launcher -ExecutablePath 'fixture-cli' -CorePath 'fixture-core' -SocketPath 'fixture-socket' -EnginePath 'fixture-engine' -LogDirectory $logs
+            }).AddArgument((Join-Path $launcherRoot 'run-service-hidden.ps1')).AddArgument($scratch)
+            $null = $launcherTest.Invoke()
+            if ($launcherTest.HadErrors) { throw ($launcherTest.Streams.Error | Out-String) }
+        } finally { $env:USERPROFILE = $savedProfile; $launcherTest.Dispose() }
+        if ([IO.File]::ReadAllText((Join-Path $launcherRoot 'observed-server.txt')) -cne (Join-Path $mediaPayload 'bin/livekit-server.exe')) { throw 'Launcher did not use the selected payload owner.' }
+        Write-Output 'PASS: media explicit payload selection, legacy caller compatibility and installed launcher resolver'
     }
     # what this catches: binary-only updates left a legacy launcher/descriptor
     # behind even when the running core SHA matched HEAD (5090, 2026-09-29).
@@ -1735,6 +1844,7 @@ public static class RegisteredGsudoFixture {
         $expectedCopyBytes += (Get-Item -LiteralPath (Join-Path $target "release\$name")).Length
     }
     foreach ($name in @('run-service-hidden.ps1', 'start-livekit-windows.ps1')) { $expectedCopyBytes += (Get-Item -LiteralPath (Join-Path $repo "tools\scripts\$name")).Length }
+    $expectedCopyBytes += (Get-Item -LiteralPath (Join-Path $repo 'tools/scripts/lib/payload-paths.ps1')).Length
     $capacityCall = $script:capacityCalls[0]
     if ($capacityCall[0] -ne (Join-Path $target 'release\continuum.exe') -or
         $capacityCall[1] -ne (Split-Path -Parent $first.artifact) -or [uint64]$capacityCall[2] -ne $expectedCopyBytes) {
@@ -1742,6 +1852,7 @@ public static class RegisteredGsudoFixture {
     }
     # Prebuilt handoff bypasses start-server: media must travel with the slot.
     $mediaSlot = Split-Path -Parent $first.artifact
+    if ((Get-FileHash -LiteralPath (Join-Path $mediaSlot 'payload-paths.ps1')).Hash -ne (Get-FileHash -LiteralPath (Join-Path $repo 'tools/scripts/lib/payload-paths.ps1')).Hash) { throw 'Installed media payload resolver differs from shared owner.' }
     if ((Get-FileHash -LiteralPath (Join-Path $mediaSlot 'fixture-runtime.dll')).Hash -ne
         (Get-FileHash -LiteralPath (Join-Path $target 'release\fixture-runtime.dll')).Hash) { throw 'Declared CI runtime DLL was not staged intact' }
     Set-Content -LiteralPath (Join-Path $target 'release\runtime-libs.txt') -Value '../escape.dll'
@@ -2236,8 +2347,9 @@ function Mod-LlamaServer {
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $runner = Join-Path $scratch 'run-service-hidden.ps1'
     Copy-Item -LiteralPath (Join-Path $repo 'tools\scripts\run-service-hidden.ps1') -Destination $runner
+    Copy-Item -LiteralPath (Join-Path $repo 'tools/scripts/lib/payload-paths.ps1') -Destination (Join-Path $scratch 'payload-paths.ps1')
     Copy-Item -LiteralPath $child -Destination (Join-Path $scratch 'livekit-bridge.exe')
-    Set-Content -LiteralPath (Join-Path $scratch 'start-livekit-windows.ps1') -Value 'param([string]$BridgeBinary); Set-Content -LiteralPath (Join-Path $PSScriptRoot "media-started") -Value $BridgeBinary'
+    Set-Content -LiteralPath (Join-Path $scratch 'start-livekit-windows.ps1') -Value 'param([string]$BridgeBinary,[string]$LivekitServerBinary); Set-Content -LiteralPath (Join-Path $PSScriptRoot "media-started") -Value $BridgeBinary'
     $core = Join-Path $scratch 'core with spaces.exe'
     $socket = Join-Path $scratch 'socket with spaces.sock'
     & $shell -NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -File $runner -ExecutablePath $child -CorePath $core -SocketPath $socket -EnginePath $child -LogDirectory $logs
