@@ -426,6 +426,34 @@ impl RagSource for RoomBoardSource {
         budget: u32,
         resolution: ResolutionPreference,
     ) -> RagDelivery {
+        let working = crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some();
+        self.deliver_with_workspace(ctx, budget, resolution, working)
+            .await
+    }
+
+    async fn deliver_continuation(
+        &self,
+        _ctx: &RagContext,
+        _cursor: ContinuationCursor,
+        _budget: u32,
+    ) -> Option<RagDelivery> {
+        // Atomic units (one card each), truncate-not-paginate — same as the
+        // active-work source. A board that overflows one budget truncates with
+        // a logged count; there is no continuation cursor to resume.
+        None
+    }
+}
+
+impl RoomBoardSource {
+    // The caller observes workspace custody; eligibility and rendering use the
+    // same board snapshot regardless of whether open-deck detail is suppressed.
+    async fn deliver_with_workspace(
+        &self,
+        ctx: &RagContext,
+        budget: u32,
+        resolution: ResolutionPreference,
+        working: bool,
+    ) -> RagDelivery {
         // Persona-scoped: a cross-persona ctx gets nothing (defense in depth,
         // same shape as the wall / active-work / roster sources).
         if ctx.persona_id != self.persona_id {
@@ -533,30 +561,13 @@ impl RagSource for RoomBoardSource {
         // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
         // someone to pick up. Computed here, before anything is rendered, because the
         // HEADLINE below needs both counts — see its comment for why that matters.
-        // WHILE HER HANDS ARE ROOTED AT A CARD (a work turn), the board she perceives is
-        // her own cards only: the open deck is for pulling, and a holder does not pull
-        // (WIP = 1). Measured 2026-09-05: the 12-card kanban was 3.7k tokens of every act.
-        let working = crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some();
-        let open: Vec<&airc_work::WorkCard> = if working {
-            Vec::new()
-        } else {
-            board
-                .cards
-                .iter()
-                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
-                // expired lease is genuinely available work (claim-contention allows
-                // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
-                // "available" nor honestly-held: invisible as work, sticky as an
-                // attractor.
-                //
-                // The predicate itself lives in `card_holder` and is shared with
-                // `work/list` — this filter used to re-derive it here and excluded only
-                // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
-                // advertised as available: 11 of the 58 offered on the live board
-                // 2026-08-07. One claimability decision, one place.
-                .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
-                .collect()
-        };
+        // A rooted workspace suppresses the detailed open-deck lead, not the
+        // cards' eligibility. Explicit claims remain available while working.
+        let open: Vec<&airc_work::WorkCard> = board
+            .cards
+            .iter()
+            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            .collect();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
         // so a prefix-take can never deliver half of them.
@@ -601,6 +612,7 @@ impl RagSource for RoomBoardSource {
                         "kind": "board-headline",
                         "held_count": mine.len(),
                         "open_count": open.len(),
+                        "open_lead_suppressed": working,
                     }),
                 });
             }
@@ -662,7 +674,7 @@ impl RagSource for RoomBoardSource {
         // ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still follows
         // verbatim in airc's own order — this adds salience, it does not re-rank or
         // filter the board itself.
-        if !open.is_empty() {
+        if !working && !open.is_empty() {
             // NEWEST FIRST, not board order (measured 2026-08-07).
             //
             // Only five titles are ever shown. Taken in board order, a card dispatched
@@ -844,18 +856,6 @@ impl RagSource for RoomBoardSource {
             continuation: None,
             resolution_used: resolution,
         }
-    }
-
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Atomic units (one card each), truncate-not-paginate — same as the
-        // active-work source. A board that overflows one budget truncates with
-        // a logged count; there is no continuation cursor to resume.
-        None
     }
 }
 
@@ -1164,7 +1164,8 @@ mod tests {
         let open_a = card("Claimable one", CardState::Open, None);
         let open_b = card("Claimable two", CardState::Open, None);
 
-        let reader = Arc::new(StubReader::new(snapshot(vec![held, open_a, open_b])));
+        let cards = vec![held, open_a, open_b];
+        let reader = Arc::new(StubReader::new(snapshot(cards.clone())));
         let source = RoomBoardSource::new(me, reader);
         let delivery = source
             .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
@@ -1184,6 +1185,60 @@ mod tests {
             "headline must stay tiny, was {}",
             first.tokens
         );
+
+        // Rooted hands hide the available-work lead, never actual eligibility.
+        // Also cover work rooted elsewhere: this room has no local held card.
+        for local_hold in [true, false] {
+            let local_cards = cards
+                .iter()
+                .filter(|card| local_hold || card.owner != Some(airc_core::PeerId::from_uuid(me)))
+                .cloned()
+                .collect();
+            let source = RoomBoardSource::new(me, Arc::new(StubReader::new(snapshot(local_cards))));
+            let full = source
+                .deliver_with_workspace(&ctx(), 2_000, ResolutionPreference::Raw, true)
+                .await;
+            let headline = &full.items[0];
+            assert_eq!(headline.metadata["kind"], "board-headline");
+            assert_eq!(headline.metadata["held_count"], usize::from(local_hold));
+            assert_eq!(headline.metadata["open_count"], 2);
+            assert_eq!(headline.metadata["open_lead_suppressed"], true);
+            assert!(
+                headline.content.contains("2 claimable"),
+                "{}",
+                headline.content
+            );
+            assert!(!full
+                .items
+                .iter()
+                .any(|item| item.metadata["kind"] == "available-work-lead"));
+            assert_eq!(
+                full.items
+                    .iter()
+                    .filter(|item| item.metadata.get("card_id").is_some())
+                    .count(),
+                if local_hold { 3 } else { 2 }
+            );
+            let tight = source
+                .deliver_with_workspace(&ctx(), headline.tokens, ResolutionPreference::Raw, true)
+                .await;
+            assert_eq!(tight.items[0].content, headline.content);
+            assert_eq!(tight.items[0].metadata, headline.metadata);
+            assert!(tight.tokens_used <= headline.tokens);
+            let short = source
+                .deliver_with_workspace(
+                    &ctx(),
+                    headline.tokens - 1,
+                    ResolutionPreference::Raw,
+                    true,
+                )
+                .await;
+            assert!(!short
+                .items
+                .iter()
+                .any(|item| item.metadata["kind"] == "board-headline"));
+            assert!(short.tokens_used < headline.tokens);
+        }
     }
 
     // what this catches: THE rule Joel set on 2026-08-06 — "should never say
