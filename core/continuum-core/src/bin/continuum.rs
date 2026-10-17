@@ -60,6 +60,9 @@ use continuum_cli_lifecycle::launchd;
 #[cfg(windows)]
 #[path = "continuum/elevated_teardown.rs"]
 mod elevated_teardown;
+#[cfg(windows)]
+#[path = "continuum/container_maintenance.rs"]
+mod container_maintenance;
 // The service host's one drop of privilege (S4U ignores RunLevel); Windows-only like its caller.
 #[cfg(windows)]
 use continuum_cli_lifecycle::unelevated_service;
@@ -213,6 +216,12 @@ async fn run() -> Result<(), CliError> {
     }
     if first == "prepare-prebuilt" {
         return prepare_prebuilt(args.collect()).await.map_err(CliError::Command);
+    }
+    if first == "container-maintenance" {
+        #[cfg(windows)]
+        return container_maintenance::run(args.collect()).await.map_err(CliError::Command);
+        #[cfg(not(windows))]
+        return Err(CliError::Command("legacy container maintenance requires Windows kernel custody".into()));
     }
     if first == "service-host" {
         let code = service_host(args.collect()).await?;
@@ -1262,6 +1271,7 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         let executable = std::env::current_exe().map_err(|e|e.to_string())?;
         let envelope = installed_release::Envelope { schema:2, active_release:args[1].clone(), bootstrap:executable.to_string_lossy().into_owned() };
         envelope.validate(&home,&program_files,&sid)?;
+        let startup = supervisor_install::maintenance::StartupPermit::acquire(&home).await?;
         let path = Path::new(&envelope.active_release);
         let text = installed_release::read_receipt(path)?;
         let payload = continuum_core::paths::payload_root(&home)?;
@@ -1291,6 +1301,7 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         // selected generation remains valid. The installing parent checks its SHA.
         if installed_release::read_receipt(path)? != text { return Err("active release changed during supervisor selection".into()); }
         let tree = continuum_cli_lifecycle::windows_launch::spawn_owned_logged(&command,&log,&log,0x0800_0000).map_err(|e|e.to_string())?;
+        drop(startup); // Maintenance must drain this already-created child.
         let status = tree.wait().await.map_err(|e|e.to_string())?;
         drop(selected);
         Ok(status.code().unwrap_or(1)) // No normal exit code means the supervised child failed.
@@ -3089,21 +3100,7 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
 /// The installer's existing Windows exclusion, held through the reboot handoff.
 #[cfg(windows)]
 fn take_install_lease(root: &Path) -> Result<std::fs::File, String> {
-    use std::os::windows::fs::OpenOptionsExt;
-    std::fs::create_dir_all(root)
-        .map_err(|e| format!("cannot create install lease directory: {e}"))?;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .share_mode(0)
-        .open(root.join("install.lock"))
-        .map_err(|e| {
-            format!(
-                "another installer/reboot holds the install lease, or it cannot be acquired: {e}"
-            )
-        })
+    continuum_cli_lifecycle::supervisor_install::maintenance::take_install_lease(root)
 }
 
 /// RAII deploy claim: published for the length of a swap, released on EVERY exit path
@@ -6729,6 +6726,13 @@ enum GracefulStop {
 }
 
 impl GracefulStop {
+    fn require_durable(&self) -> Result<(), String> {
+        match self {
+            Self::Durable(_) | Self::NothingRunning => Ok(()),
+            other => Err(format!("maintenance refused without durable shutdown evidence: {other:?}; scheduler recovery remains required")),
+        }
+    }
+
     /// A legacy core cannot attest a final checkpoint. Keep it running until the
     /// operator can stop it explicitly and preserve/adopt its selected checkpoint.
     fn ensure_teardown_supported(&self, reboot: bool) -> Result<(), String> {
@@ -7142,7 +7146,7 @@ async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continuum_core::co
     Ok((pids == [target.pid as i32]).then_some(target))
 }
 
-async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget) -> Result<GracefulStop, String> {
+async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget, require_durable: bool) -> Result<GracefulStop, String> {
     use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
@@ -7160,6 +7164,9 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
     } else {
         GracefulStop::Incomplete(result.receipt.summary())
     };
+    if require_durable {
+        graceful.require_durable()?;
+    }
     let pid = target.pid as i32;
     let commit = ShutdownCommitParams {
         target,
@@ -7181,6 +7188,12 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
 
 /// `stop_with`, plus whether the operator can answer a required consent prompt.
 async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result<GracefulStop, String> {
+    stop_with_policy(keep_lanes, operator_present, false).await
+}
+
+// Maintenance may not turn a missing save receipt into permission to force an
+// exit. Ordinary stop keeps its existing explicit forced-stop behavior.
+async fn stop_with_policy(keep_lanes: bool, operator_present: bool, require_durable: bool) -> Result<GracefulStop, String> {
     // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
     // module's `save_state` — so before it, the core gets the chance to stop itself and
     // report what reached disk. The kill still runs afterwards either way: a core that
@@ -7194,16 +7207,22 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     // New Windows cores can exit after the CLI receives their save receipt.
     // Older builds and multi-core recovery keep the OS-capability/UAC path.
     let pids = cores_to_tear_down();
-    let target = if cfg!(windows) && keep_lanes {
+    let target = if cfg!(windows) && (keep_lanes || require_durable) {
         probe_shutdown_target(&pids).await?
     } else {
         None
     };
+    if require_durable && !pids.is_empty() && target.is_none() {
+        return Err("maintenance requires one receipt-bound shutdown generation; legacy or ambiguous cores remain running".into());
+    }
     let self_exited = target.as_ref().map(|target| target.pid as i32);
     let graceful = if let Some(target) = target {
-        commit_graceful_shutdown(target).await?
+        commit_graceful_shutdown(target, require_durable).await?
     } else {
         let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority)?;
+        if require_durable && may_drain.borrow_authority_for.is_some() {
+            return Err("maintenance requires owned durable shutdown authority; the legacy elevated stop cannot attest its save receipt".into());
+        }
         // BORROW THE PRIVILEGE BEFORE ANYTHING IS DRAINED, not after. `operator_present` is
         // INTENT; a consent can still be declined, time out, or land on a token that does not
         // hold the privilege either — and a drain already spent by then leaves exactly the
@@ -7238,6 +7257,9 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     // A third caller that wants lanes kept for some OTHER reason must pass the reboot-ness
     // separately rather than reuse this argument.
     graceful.ensure_teardown_supported(keep_lanes)?;
+    if require_durable {
+        graceful.require_durable()?;
+    }
     match &graceful {
         GracefulStop::Durable(summary) => println!("core stopped gracefully — {summary}"),
         GracefulStop::Incomplete(summary) => {
@@ -7950,6 +7972,9 @@ mod tests {
         assert!(error.contains("before teardown"));
         assert!(error.contains("checkpoint inspect"));
         assert!(error.contains("checkpoint adopt"));
+        // Maintenance must not inherit ordinary stop's permission to force an
+        // exit after a missing or incomplete save receipt (5120).
+        assert!(legacy.require_durable().is_err());
         for outcome in [
             GracefulStop::NothingRunning,
             GracefulStop::Durable("saved".into()),
@@ -7957,6 +7982,8 @@ mod tests {
             GracefulStop::NoAnswer("timed out".into()),
         ] {
             assert!(outcome.ensure_teardown_supported(true).is_ok());
+            assert_eq!(outcome.require_durable().is_ok(), matches!(outcome,
+                GracefulStop::NothingRunning | GracefulStop::Durable(_)));
         }
     }
 

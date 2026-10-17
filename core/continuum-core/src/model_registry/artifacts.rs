@@ -8,6 +8,8 @@ use super::types::Model;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub mod expert_placement;
+
 pub fn resolve_model_artifacts(model: &mut Model) {
     model.gguf_local_path = resolve_gguf_for_model(model);
     if let Some(p) = model.mmproj_local_path.take() {

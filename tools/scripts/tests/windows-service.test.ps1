@@ -830,11 +830,16 @@ try { [IO.File]::WriteAllText('$($marker.Replace("'", "''"))', 'acquired') } fin
         function Get-CoreSupervisorBootstrap { param($UserSid) $fixed }
         function Assert-CoreSupervisorLocation { param($Path,$UserSid) if ($Path -ne $fixed) { throw 'Wrong bootstrap path' } }
         $script:bootstrapVerifications = 0
+        $script:bootstrapProtocol = '4'
         function Assert-CoreSupervisorBootstrap { param($Path,$UserSid) $script:bootstrapVerifications++ }
-        function Invoke-InstallerProcess { param($Executable,$Arguments) if ($Executable -ne $fixed -or ($Arguments -join ' ') -ne 'installed-service --protocol') { throw 'Unexpected bootstrap probe' }; $global:LASTEXITCODE=0; '3' }
+        function Invoke-InstallerProcess { param($Executable,$Arguments) if ($Executable -ne $fixed -or ($Arguments -join ' ') -ne 'installed-service --protocol') { throw 'Unexpected bootstrap probe' }; $global:LASTEXITCODE=0; $script:bootstrapProtocol }
         function Copy-Item { throw 'Task reprovisioning attempted to replace the protected bootstrap' }
         Install-CoreSupervisorBootstrap -Plan ([pscustomobject]@{cli=$fixed;shell=$fixed;userSid=$identity.User.Value;bootstrapSource='missing candidate';bootstrapHashes=@{}})
         if ($script:bootstrapVerifications -ne 1 -or (Get-Content -LiteralPath $fixed -Raw).Trim() -ne 'existing protected image') { throw 'Existing bootstrap was not verified/reused intact' }
+        $script:bootstrapProtocol = '3'
+        $refused = $false
+        try { Install-CoreSupervisorBootstrap -Plan ([pscustomobject]@{cli=$fixed;shell=$fixed;userSid=$identity.User.Value;bootstrapSource='missing candidate';bootstrapHashes=@{}}) } catch { $refused = $_ -match 'incompatible protocol' }
+        if (-not $refused -or (Get-Content -LiteralPath $fixed -Raw).Trim() -ne 'existing protected image') { throw 'Legacy bootstrap was accepted or overwritten during task repair' }
     }
     Write-Output 'PASS: task reprovisioning reuses the verified stable bootstrap without replacing loader files'
     # Regression for 72920541: retrying registration must select exact prepared

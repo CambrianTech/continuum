@@ -76,6 +76,119 @@ pub fn previous_slot(root: &Path) -> Option<&'static str> {
     named_slot(root, PREVIOUS_FILE)
 }
 
+/// The installed engine owner captures every managed slot, not only engines
+/// named by the service receipts. Installation custody must span its lifetime.
+#[cfg(windows)]
+pub struct MaintenanceEngines {
+    root: PathBuf,
+    override_bin: Option<String>,
+    selectors: Vec<(PathBuf, Option<String>)>,
+    engines: Vec<(PathBuf, super::engine_install::EngineInstallReceipt)>,
+    absent: Vec<PathBuf>,
+}
+
+#[cfg(windows)]
+impl MaintenanceEngines {
+    pub fn verified_identity(program: &Path) -> Result<String, String> {
+        super::engine_install::EngineInstallReceipt::maintenance_snapshot(program)?.maintenance_identity()
+    }
+
+    pub fn capture(home: &Path) -> Result<Self, String> {
+        Self::capture_at(root(home)?, super::llama_server::engine_override(), live_lane_engines()?)
+    }
+
+    pub(crate) fn capture_at(root: PathBuf, override_bin: Option<String>, live_engines: Vec<Option<PathBuf>>) -> Result<Self, String> {
+        if let Some(value) = &override_bin {
+            let path = Path::new(value);
+            let slot = slot_of(&root, path).ok_or("operator engine is outside managed maintenance custody")?;
+            if path.canonicalize().map_err(|e| e.to_string())?
+                != slot_bin(&root, slot).canonicalize().map_err(|e| e.to_string())? {
+                return Err("operator engine differs from the managed executable".into());
+            }
+        }
+        let mut selectors = Vec::new();
+        for name in [CURRENT_FILE, PREVIOUS_FILE] {
+            let path = root.join(name);
+            let text = match std::fs::symlink_metadata(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.to_string()),
+                Ok(_) => Some(continuum_cli_lifecycle::installed_release::read_receipt(&path)?),
+            };
+            if text.as_ref().is_some_and(|value| !SLOTS.contains(&value.trim())) {
+                return Err("unknown engine selector blocks maintenance".into());
+            }
+            selectors.push((path, text));
+        }
+        if selectors[0].1.is_none() {
+            return Err("legacy engine fallback is not covered by managed slot maintenance".into());
+        }
+        let mut engines = Vec::new();
+        let mut absent = Vec::new();
+        for slot in SLOTS {
+            let directory = root.join(slot);
+            match std::fs::symlink_metadata(&directory) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => absent.push(directory),
+                Err(e) => return Err(e.to_string()),
+                Ok(_) => engines.push((directory, super::engine_install::EngineInstallReceipt::maintenance_snapshot(&slot_bin(&root, slot))?)),
+            }
+        }
+        for (_, selected) in &selectors {
+            if let Some(selected) = selected {
+                if !engines.iter().any(|(directory, _)| *directory == root.join(selected.trim())) {
+                    return Err("selected engine is absent from the sealed maintenance closure".into());
+                }
+            }
+        }
+        for engine in live_engines {
+            let engine = engine.ok_or("live lane has no engine provenance")?;
+            let slot = slot_of(&root, &engine).ok_or("live lane uses an unmanaged engine")?;
+            if engine != slot_bin(&root, slot) && engine.canonicalize().map_err(|e| e.to_string())?
+                != slot_bin(&root, slot).canonicalize().map_err(|e| e.to_string())? {
+                return Err("live engine differs from managed executable".into());
+            }
+        }
+        Ok(Self { root, override_bin, selectors, engines, absent })
+    }
+
+    pub fn exclude(&self, pins: &mut continuum_cli_lifecycle::installed_release::ExclusiveFiles) -> Result<(), String> {
+        self.revalidate()?;
+        for (path, text) in &self.selectors {
+            if let Some(expected) = text {
+                use std::io::Read;
+                let mut actual = String::new();
+                pins.pin(path)?.take(continuum_cli_lifecycle::installed_release::MAX_RECEIPT_BYTES + 1)
+                    .read_to_string(&mut actual).map_err(|e| e.to_string())?;
+                if &actual != expected { return Err("engine selector changed before exclusion".into()); }
+            }
+        }
+        for (_, engine) in &self.engines { engine.exclude_for_maintenance(pins)?; }
+        Ok(())
+    }
+
+    pub fn revalidate(&self) -> Result<(), String> {
+        // Once selector handles are exclusive they cannot be re-opened here.
+        // Their retained pins prevent mutation; namespace checks remain necessary
+        // because pinning a directory does not prevent every child addition.
+        continuum_cli_lifecycle::installed_release::unredirected(&self.root)?;
+        if super::llama_server::engine_override() != self.override_bin {
+            return Err("engine override changed during maintenance".into());
+        }
+        for (path, expected) in &self.selectors {
+            if expected.is_none() && !matches!(path.symlink_metadata(), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+                return Err("engine selector appeared during maintenance".into());
+            }
+        }
+        for path in &self.absent {
+            match path.symlink_metadata() {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err("an engine slot appeared during maintenance".into()),
+            }
+        }
+        for (_, engine) in &self.engines { engine.maintenance_namespace_unchanged()?; }
+        Ok(())
+    }
+}
+
 fn named_slot(root: &Path, file: &str) -> Option<&'static str> {
     let named = std::fs::read_to_string(root.join(file)).ok()?;
     let named = named.trim();

@@ -35,6 +35,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod maintenance;
+
 pub const CORE_TASK: &str = "ContinuumCore";
 pub const DEPLOY_TASK: &str = "ContinuumDeploy";
 /// How often the supervisor's sibling asks whether a deploy is owed.
@@ -777,6 +779,47 @@ pub fn read_bound_plan(plan_path: &Path, plan_sha: &str) -> Result<SupervisorPla
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn maintenance_recovery_preserves_registration_and_refuses_drift() {
+        use maintenance::{RecoverySnapshot, TaskSnapshot};
+        let snapshot = RecoverySnapshot {
+            version: 1,
+            legacy: None,
+            tasks: [CORE_TASK, DEPLOY_TASK].into_iter().map(|name| TaskSnapshot {
+                name: name.into(), xml: "original scheduler document".into(),
+                identity_xml: "normalized scheduler document".into(),
+                sddl: "original scheduler security".into(), enabled: name == CORE_TASK, state: 4,
+            }).collect(),
+        };
+        let bytes = serde_json::to_vec(&snapshot).unwrap();
+        let restored: RecoverySnapshot = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(restored.tasks, snapshot.tasks);
+        let mut disabled = restored.tasks.clone();
+        for task in &mut disabled { task.enabled = false; task.state = 3; }
+        assert!(restored.check_identity(&disabled).is_ok(), "disable and process exit do not change registration custody");
+        assert!(restored.check_disabled(&disabled).is_ok());
+        disabled[0].enabled = true;
+        assert!(restored.check_disabled(&disabled).is_err(), "a re-enabled task loses scheduler exclusion");
+        disabled[0].enabled = false;
+        for field in ["xml", "security", "name"] {
+            let mut drifted = disabled.clone();
+            match field {
+                "xml" => drifted[0].identity_xml.push_str(" changed action"),
+                "security" => drifted[0].sddl.push_str(" changed ACL"),
+                _ => drifted[0].name = "OtherTask".into(),
+            }
+            assert!(restored.check_identity(&drifted).is_err(), "{field} drift must refuse recovery");
+        }
+        let mut invalid = restored.clone();
+        invalid.tasks.swap(0, 1);
+        assert!(invalid.validate().is_err());
+        invalid = restored.clone(); invalid.version += 1;
+        assert!(invalid.validate().is_err());
+        assert!(serde_json::from_slice::<RecoverySnapshot>(&bytes[..bytes.len()/2]).is_err());
+        assert_eq!(snapshot.tasks[0].xml, "original scheduler document");
+        assert!(!snapshot.tasks[1].enabled, "pre-existing disabled tasks remain disabled after restore");
+    }
 
     fn plan() -> SupervisorPlan {
         SupervisorPlan {

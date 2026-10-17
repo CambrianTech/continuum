@@ -636,7 +636,12 @@ function Register-CoreServiceRelease {
     if (($PersistPreparedReceipt -or $PrepareOnly) -and -not $selectionRecovery) { Save-CorePreparedRelease -Release $Release }
     if ($PrepareOnly) { return }
     $protocol = (Invoke-InstallerProcess $Release.cli @('installed-service', '--protocol') | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Candidate CLI lacks supervisor protocol 3; registration and active release were preserved.' }
+    if ($LASTEXITCODE -ne 0 -or $protocol -cne '4') {
+        $reason = 'Candidate CLI lacks supervisor protocol 4; registration and active release were preserved.'
+        $failure = [InvalidOperationException]::new($reason)
+        $failure.Data['ContinuumDeploymentFailure'] = @{ CapabilityDeferred = $reason }
+        throw $failure
+    }
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     $bootstrap = Get-CoreSupervisorBootstrap -Generation (Get-FileHash -LiteralPath $Release.cli -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -647,7 +652,7 @@ function Register-CoreServiceRelease {
         Assert-CoreSupervisorBootstrap -Path $priorBootstrap
         $priorProtocol = (Invoke-InstallerProcess $priorBootstrap @('installed-service', '--protocol') | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect installed bootstrap capability.' }
-        if ($priorProtocol -ceq '3') { $bootstrap = $priorBootstrap }
+        if ($priorProtocol -ceq '4') { $bootstrap = $priorBootstrap }
     }
     $activePath = Join-Path $env:USERPROFILE '.continuum\install-active.json'
     $arguments = 'installed-service core "{0}"' -f $activePath

@@ -969,6 +969,17 @@ pub struct NvmeServingTierPool {
 }
 
 impl NvmeServingTierPool {
+    /// Whole-container migration uses the artifact owner's durable resolver
+    /// transaction, never this pool's child-entry migration loop. The caller
+    /// must retain real reader/producer/spawn custody; no legacy runtime is
+    /// enrolled automatically merely because a container directory is tracked.
+    pub fn freeze_expert_container(
+        root: &Path,
+        custody: &dyn crate::model_registry::artifacts::expert_placement::ContainerMigrationCustody,
+    ) -> Result<u64, String> {
+        crate::model_registry::artifacts::expert_placement::freeze(root, custody)
+    }
+
     /// `volume_total_bytes` is the TOTAL size of the volume holding the
     /// hot tier (capacity derives from it — never a hand-tuned budget).
     /// `cold_root` is the migration target directory on the COLD drive
