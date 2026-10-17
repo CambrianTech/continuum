@@ -465,6 +465,10 @@ mod tests {
             lane_wait_samples: 0,
             served_context_window: 0,
             decode_tps_milli: 0,
+            // A synthetic offer stands in for an OLDER core: it advertises no
+            // capabilities at all, and the ledger must fold that as 'nothing',
+            // never as 'all' (card 8bd75362).
+            capabilities: Vec::new(),
         }
     }
     // what this catches (2026-09-19, the M5 spilled two minds to ITSELF): a node hears
