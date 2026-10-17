@@ -1,4 +1,8 @@
-param([Parameter(Mandatory=$true)][string]$BridgeBinary)
+param([Parameter(Mandatory=$true)][string]$BridgeBinary,
+      [string]$LivekitServerBinary)
+# Older installed launchers pass only BridgeBinary; retain their home layout.
+# New launchers supply the existing payload owner's selected executable.
+if (-not $LivekitServerBinary) { $LivekitServerBinary = Join-Path $env:USERPROFILE '.continuum/bin/livekit-server.exe' }
 $ErrorActionPreference = 'Stop'
 $logDirectory = Join-Path $env:USERPROFILE '.continuum/logs'
 New-Item -ItemType Directory -Force -Path $logDirectory | Out-Null
@@ -32,6 +36,6 @@ $url = if ($env:LIVEKIT_URL) { [uri]$env:LIVEKIT_URL } else { [uri]'ws://localho
 if ($url.Scheme -notin @('ws','wss')) { throw 'LIVEKIT_URL must use ws or wss' }
 if ($url.IsLoopback) {
     if ($url.Port -ne 7880) { throw 'Local LiveKit startup expects port7880' }
-    Start-LocalMediaProcess (Join-Path $env:USERPROFILE '.continuum/bin/livekit-server.exe') @('--dev','--bind','127.0.0.1') 7880 'livekit-server'
+    Start-LocalMediaProcess $LivekitServerBinary @('--dev','--bind','127.0.0.1') 7880 'livekit-server'
 }
 Start-LocalMediaProcess $BridgeBinary @('127.0.0.1:9101','--livekit-url',$url.AbsoluteUri) 9101 'livekit-bridge'
