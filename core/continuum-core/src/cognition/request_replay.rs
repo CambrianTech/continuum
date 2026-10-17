@@ -531,6 +531,9 @@ mod tests {
 
         // Regression: the named-schema experiment changes no tool identity, request,
         // adapter or protocol field, and all invalid variants refuse before mutation.
+        // Compare the immutable capture in its own JSON representation: typed f32
+        // serialization through Value widens 0.35, unlike the original JSON writer.
+        let captured_request = read().submitted.unwrap()["request"].clone();
         let mut schema_params = p.clone();
         schema_params.max_tokens = None;
         schema_params.expected_request_sha256 = Some(request_hash(&request).unwrap());
@@ -570,7 +573,7 @@ mod tests {
         let mut duplicate_params = schema_params.clone();
         duplicate_params.expected_request_sha256 = Some(request_hash(&duplicate).unwrap());
         assert!(compare_input(&mut duplicate, &duplicate_params).is_err());
-        assert_eq!(read().submitted.unwrap()["request"], serde_json::to_value(&request).unwrap());
+        assert_eq!(read().submitted.unwrap()["request"], captured_request);
 
         // The provenance rides the existing capture format, not an unrelated log.
         let replay_id = prepared.call.persona_id;
