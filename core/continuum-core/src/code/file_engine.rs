@@ -265,7 +265,7 @@ impl FileEngine {
                 let line_num = *i as u32 + 1;
                 line_num >= start && line_num <= end
             })
-            .map(|(i, line)| format!("{:>6} | {}", i as u32 + 1, line))
+            .map(|(i, line)| numbered_line(i as u32 + 1, line))
             .collect::<Vec<_>>()
             .join("\n");
 
@@ -1804,6 +1804,26 @@ fn overwrite_magnitude(old_content: &str, new_content: &str) -> Option<String> {
     Some(out)
 }
 
+/// One line of a read as `code/read` shows it: `{n:>6} | {line}`. The gutter is the
+/// contract between the read and `code/edit`'s line numbers, so its format and its parse
+/// ([`gutter_line_number`]) live together.
+fn numbered_line(number: u32, line: &str) -> String {
+    format!("{number:>6} | {line}")
+}
+
+/// The line number a [`numbered_line`] carries, or `None` for a line with no gutter.
+/// Working memory reads which lines of a file a read actually showed from these.
+pub(crate) fn gutter_line_number(rendered: &str) -> Option<u32> {
+    let t = rendered.trim_start();
+    let digits = t.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits == 0 {
+        return None;
+    }
+    // An empty source line renders as `     5 | ` and may arrive with its trailing space trimmed.
+    let rest = &t[digits..];
+    (rest.starts_with(" | ") || rest == " |").then(|| t[..digits].parse().ok()).flatten()
+}
+
 /// Do these bytes look like `code/read` OUTPUT rather than file CONTENT?
 ///
 /// The hazard that arrives with numbered reads: read a file, hand the numbered text
@@ -1824,12 +1844,7 @@ fn looks_like_numbered_read(content: &str) -> bool {
     }
     let gutters = lines
         .iter()
-        .filter(|l| {
-            // `   123 | text` — digits, then " | ", exactly the shape read/edit emit.
-            let t = l.trim_start();
-            let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
-            !digits.is_empty() && t[digits.len()..].starts_with(" | ")
-        })
+        .filter(|l| gutter_line_number(l).is_some())
         .count();
     gutters * 10 >= lines.len() * 9
 }

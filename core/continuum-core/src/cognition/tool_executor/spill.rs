@@ -518,6 +518,24 @@ pub fn result_text(value: &serde_json::Value) -> String {
     format!("{}\n{body}", serde_json::Value::Object(head))
 }
 
+/// The scalar fields [`result_text`] put on a result's first line (a file read's
+/// `file_path`, `total_lines`, `start_line`…), read back from the text a mind was shown.
+/// When the result was stored, that text opens with the one-line pointer and the head
+/// follows it, so the header is the first or second line. `None` for a result that went
+/// on as something other than one JSON object line (pretty-printed, or not an object).
+pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    shown.lines().take(2).find_map(|line| {
+        let line = line.trim_start();
+        if !line.starts_with('{') {
+            return None;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(serde_json::Value::Object(map)) => Some(map),
+            _ => None,
+        }
+    })
+}
+
 /// A result with no text body longer than this goes on pretty-printed (see [`result_text`]).
 // context-budget-exempt: a readability threshold, not a window bound: compact JSON past a
 // couple of thousand chars is one unreadable line at any window
