@@ -540,6 +540,15 @@ pub struct LlmDeliberationFaculty {
     /// the ceiling; deliberately NOT a process global, because that value feeds a
     /// decision and a global read inside a decision makes tests order-dependent.
     working_set: Option<super::working_set::WorkingSetRegistry>,
+    /// The conversation tokens her LAST answered prompt carried. Her slot holds that
+    /// prefix (kept warm, or paged out and restored), so re-sending it is cache, not
+    /// prefill: the act-latency cap bounds only what is NEW beyond it. Counting it as
+    /// fresh held history at 16,384 tokens with 15-29k of the window unallocated (the M5,
+    /// 2026-10-18 09:46-10:00Z), and the fit, squeezed, folded results and dropped
+    /// grounding differently every turn; the engine then matched 40-574 tokens of a
+    /// 15-20k prompt and re-prefilled the rest at 75-111 tokens/s, which kept the
+    /// measured rate, and so the cap, low.
+    sent_history_tokens: std::sync::atomic::AtomicUsize,
 }
 
 impl LlmDeliberationFaculty {
@@ -574,6 +583,7 @@ impl LlmDeliberationFaculty {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
+            sent_history_tokens: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -2364,6 +2374,13 @@ impl LlmDeliberationFaculty {
         )
     }
 
+    /// How much conversation a turn may carry: the NEW prefill the latency target buys at
+    /// this node's rate (never less than the evidence of her own last move), on top of the
+    /// prefix her slot already holds from her last answered prompt, which costs no prefill.
+    fn history_fill_cap(derived_new: usize, last_move_evidence: usize, cached_history: usize) -> usize {
+        derived_new.max(last_move_evidence).saturating_add(cached_history)
+    }
+
     fn holds_work_card(ws: &Workspace) -> bool {
         ws.broadcast
             .iter()
@@ -2435,6 +2452,8 @@ impl LlmDeliberationFaculty {
             calibration,
             available,
         })));
+        // The engine answered this prompt, so her slot now holds its prefix.
+        self.sent_history_tokens.store(view.history_tokens, std::sync::atomic::Ordering::Relaxed);
         crate::probe!(
             class = "delib.prompt.density",
             persona = %self.persona_name,
@@ -2680,7 +2699,10 @@ impl LlmDeliberationFaculty {
         // costs — ahead of every optional claim, the reply's desire included. `fit_messages`
         // then refuses to evict it; this floor is what makes that refusal satisfiable.
         let evidence = all_messages.recent_move_evidence();
-        let latency_fill_cap = derived_fill_cap.max(evidence.tokens);
+        // The latency target bounds NEW prefill; what her last answered prompt carried is
+        // her slot's cached prefix and rides free (see `sent_history_tokens`).
+        let cached_history = self.sent_history_tokens.load(std::sync::atomic::Ordering::Relaxed);
+        let latency_fill_cap = Self::history_fill_cap(derived_fill_cap, evidence.tokens, cached_history);
         let required_tokens = all_messages.required_tokens();
         let optional_history = all_messages.tokens().saturating_sub(required_tokens);
         // A quiet self-tick (no required input) still sends her newest whole message.
@@ -2789,6 +2811,7 @@ impl LlmDeliberationFaculty {
                 measured_prefill_tps = fill_rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none" and the floor governed
                 target_seconds = PREFILL_TARGET_SECONDS,
                 derived_cap = derived_fill_cap,
+                cached_history,
                 // WHAT THE CLIP COSTS HER, in kind and amount — so "she repeated
                 // herself" is traceable to "we cut the evidence she had already done
                 // it" without anyone opening a capture file. At-least figures: the real
@@ -3039,6 +3062,7 @@ impl LlmDeliberationFaculty {
             input_identity,
             estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
+            history_tokens: used_msg_tokens.saturating_sub(required_tokens),
             capacity_error,
             protocol_error,
             messages,
@@ -4723,6 +4747,9 @@ pub struct DeliberationPromptView {
     /// took, under its runaway bound) — charged against the window here, and carried
     /// verbatim as the wire request's `max_tokens`.
     pub completion_reserve: u32,
+    /// The conversation tokens this prompt carries beyond its required input: once the
+    /// engine answers it, the cached prefix the next turn's latency cap rides free.
+    history_tokens: usize,
     pub capacity_error: Option<PromptCapacityError>,
     pub protocol_error: Option<String>,
     /// The role-attributed conversation thread sent to the model — the persona's
@@ -8822,7 +8849,7 @@ mod tests {
             let estimate = LlmDeliberationFaculty::messages_cost(&roomy.messages);
             let snapshot = DeliberationPromptView {
                 refit: roomy.refit, system: String::new(), input_identity: [0; 32],
-                estimated_prompt_tokens: estimate, completion_reserve: 0,
+                estimated_prompt_tokens: estimate, completion_reserve: 0, history_tokens: 0,
                 capacity_error: None, protocol_error: None, segments: Vec::new(),
                 messages: roomy.messages,
             };
@@ -9672,6 +9699,30 @@ mod tests {
             let insufficient = prompt.recent_move_evidence().tokens - 1;
             assert!(faculty.fit_messages(prompt, insufficient).is_err(),
                 "required action/result continuity must not become optional when it exceeds capacity");
+        }
+
+        // what this catches: the latency cap charging her slot's CACHED prefix as fresh
+        // prefill. On the M5 (2026-10-18 09:46-10:00Z) history was granted exactly 16,384
+        // tokens every turn with 15-29k of the window unallocated; the squeezed fit folded
+        // results and dropped grounding differently each turn, the engine matched 40-574
+        // tokens of a 15-20k prompt, and re-prefilled the rest at 75-111 tokens/s. What her
+        // last answered prompt carried rides free; only new history is latency-capped.
+        #[test]
+        fn the_latency_cap_bounds_new_history_and_her_cached_prefix_rides_free() {
+            assert_eq!(LlmDeliberationFaculty::history_fill_cap(16_384, 900, 0), 16_384,
+                "a cold slot: the latency target alone");
+            assert_eq!(LlmDeliberationFaculty::history_fill_cap(16_384, 900, 20_000), 36_384,
+                "a warm slot: her last prompt's history plus the target's worth of new");
+            assert_eq!(LlmDeliberationFaculty::history_fill_cap(10, 900, 20_000), 20_900,
+                "her own last move still floors the new part");
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            let binding = faculty.binding.load_full();
+            let mut view = faculty.prompt_view_within(&Workspace::new("continue"), 16_384);
+            view.history_tokens = 12_345;
+            faculty.learn_prompt_density(&binding, &view, view.estimated_prompt_tokens as u32 + 1, 16_384);
+            assert_eq!(faculty.sent_history_tokens.load(std::sync::atomic::Ordering::Relaxed), 12_345,
+                "an answered prompt's history becomes the next turn's cached prefix");
         }
 
         // what this catches: THE CLIP TAKING AWAY THE EVIDENCE OF WHAT SHE JUST DID.
