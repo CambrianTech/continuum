@@ -133,6 +133,13 @@ pub fn model_binding(
     model: Option<String>,
     context_window: u32,
 ) -> ModelBindingHandle {
+    // A bound faculty always names the model it is bound to. `None` meant "the adapter's
+    // own model" and was left as `None`, so every rate lookup keyed by the model took the
+    // no-model arm: on the M5 (2026-10-18, 21 of 21 turns since 13:45Z) the latency cap
+    // read `rate_source none` beside a persisted 105.7 tokens/s for the served model and
+    // fell to the unmeasured floor, five times the latency target. Resolve it HERE, the
+    // one owner of the binding, never at each reader.
+    let model = Some(model.unwrap_or_else(|| adapter.default_model().to_owned())); // unwrap_or_else: `None` = the adapter's own model, resolved at bind time
     Arc::new(ArcSwap::from_pointee(ModelBinding {
         adapter,
         model,
@@ -9746,6 +9753,19 @@ mod tests {
             let insufficient = prompt.recent_move_evidence().tokens - 1;
             assert!(faculty.fit_messages(prompt, insufficient).is_err(),
                 "required action/result continuity must not become optional when it exceeds capacity");
+        }
+
+        // what this catches: a faculty bound with `model: None` (the normal boot binding)
+        // reading the prefill-rate ladder under no name and taking the unmeasured floor
+        // while the served model's rate sat measured in the ladder (the M5, 2026-10-18).
+        #[test]
+        fn a_binding_without_a_model_name_carries_the_adapters_served_model() {
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let served = adapter.default_model().to_owned();
+            assert!(!served.is_empty(), "the fixture adapter names a model");
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
+            assert_eq!(faculty.binding.load().model.as_deref(), Some(served.as_str()),
+                "a bound faculty always names the model it is bound to");
         }
 
         // what this catches: the latency cap charging her slot's CACHED prefix as fresh
