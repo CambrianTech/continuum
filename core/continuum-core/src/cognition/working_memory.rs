@@ -834,6 +834,17 @@ impl WorkingMemory {
         self.record_receipt_measured(acts, rendered, room, custody, Default::default());
     }
 
+    /// Attach her stated reasoning for the act just recorded to the open views it touched,
+    /// so each view carries what she understood, not only how far she read. Clipped to the
+    /// window-relative echo budget her other stated reasoning uses.
+    pub fn annotate_open_views(&self, intent: &str) {
+        let Some(seq) = self.next_action_seq.load(Ordering::Relaxed).checked_sub(1) else {
+            return;
+        };
+        let max_chars = self.budget().echoed_arg_chars();
+        self.open_views.lock().annotate(seq, intent, max_chars);
+    }
+
     pub(crate) fn record_receipt_measured(
         &self,
         acts: &[Observation],
@@ -4048,6 +4059,24 @@ mod tests {
 
         fn record(wm: &WorkingMemory, act: Observation) {
             wm.record_receipt_typed(&[act], "[action] code/read", None, saved("open-view-receipt"));
+        }
+
+        // what this catches: a view that says she read a file but not what it said, so once the
+        // bytes left her window she read it again (Benchy, the M5, 2026-10-18 05:01-05:03Z:
+        // `lib.rs` re-read whole with "read 1-498 (all of it)" in her prompt). Her stated
+        // reasoning for the read rides the view; a later read replaces it.
+        #[test]
+        fn a_view_keeps_what_she_understood_when_she_read_it() {
+            let wm = WorkingMemory::new(3);
+            wm.set_served_window(46_848);
+            record(&wm, read(1, 498, 498, None));
+            wm.annotate_open_views("each rule is a module with a predicate over SourceFile, registered in scan()");
+            let block = wm.open_views_block().expect("an open view renders");
+            assert!(block.contains("my note when I read it: \"each rule is a module with a predicate over SourceFile, registered in scan()\""), "{block}");
+            record(&wm, read(1, 80, 498, None));
+            wm.annotate_open_views("the Violation struct is the report shape");
+            let block = wm.open_views_block().expect("still open");
+            assert!(block.contains("the Violation struct is the report shape") && !block.contains("registered in scan()"), "the newest read's note replaces the older: {block}");
         }
 
         // what this catches: a read's range living only in conversation history, which the
