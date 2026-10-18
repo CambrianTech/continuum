@@ -57,6 +57,7 @@ use crate::orm::types::{BatchOperation, BatchOperationType};
 use crate::orm::OrmEntity;
 
 pub mod reviewed;
+pub mod graded;
 
 /// The substrate-wired [`CommandExecutor`] (the one `start_server` builds with the
 /// `GridTrustAuthPolicy` + interceptors), installed once at boot via
@@ -1627,13 +1628,24 @@ fn substrate_connection(executor: &Arc<CommandExecutor>) -> Connection<InProcess
 /// receipted: a store that cannot be read names itself; nothing here can fail the
 /// verdict that triggered it.
 pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
+    let _ = settle_card_credit_bound(card_id, passed, None).await;
+}
+
+pub(crate) async fn settle_card_credit_bound(
+    card_id: Uuid,
+    passed: bool,
+    binding: Option<&graded::BenchmarkCreditAttribution>,
+) -> Result<(), String> {
     let Some(executor) = EXECUTOR.cloned() else {
-        return;
+        return Err("credit executor is not ready".into());
     };
     let Some(registry) = crate::persona::PersonaAircRuntimeRegistry::try_global() else {
-        return;
+        return Err("persona registry is not ready".into());
     };
     for (persona_name, persona_id) in registry.roster_snapshot() {
+        if binding.is_some_and(|b| b.evidence.owner != persona_id) {
+            continue;
+        }
         let handle = format!("@persona:{persona_name}");
         let conn = Connection::new(InProcessTransport::new(
             executor.clone(),
@@ -1661,9 +1673,16 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
             Ok(v) => staged_credit_from_list(v),
             Err(e) => Err(e),
         };
+        let listed = match (listed, binding) {
+            (Ok(rows), Some(binding)) => graded::bound_rows_retained(&conn, &persona_name, binding, rows).await,
+            (listed, _) => listed,
+        };
         let rows = match listed {
             Ok(rows) => rows,
             Err(e) => {
+                if binding.is_some() {
+                    return Err(format!("attributed credit cannot be admitted: {e}"));
+                }
                 crate::probe!(
                     class = "training.credit.settle_unreadable",
                     persona = %persona_name,
@@ -1773,11 +1792,12 @@ pub async fn settle_card_credit(card_id: Uuid, passed: bool) {
         );
         crate::modules::citizen_health::note_credit_settled();
     }
+    Ok(())
 }
 
 /// `data/list` returns DataRecord envelopes, not bare entities. Validate the
 /// complete response before transferring any row; malformed evidence stays put.
-fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCredit>, ClientError> {
+pub(crate) fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCredit>, ClientError> {
     let listed: crate::modules::data::DataListResult = serde_json::from_value(listed)?; // Decode the Value-native data/list response at its command boundary.
     if listed.items.len() != listed.total as usize {
         return Err(ClientError::Transport(format!(
@@ -2494,6 +2514,33 @@ pub(crate) mod tests {
     // step reaches 0.47 and clears MIN_TRAINING_QUALITY 0.45. With a shorter fixture
     // the gate refuses the turn, `plan` returns `None` for the wrong reason, and the
     // failed-case assertion passes while proving nothing.
+    fn claimed_card_fixture(
+        owner: Option<airc_core::PeerId>,
+        claim: Option<airc_work::ClaimId>,
+    ) -> airc_work::WorkCard {
+        airc_work::WorkCard {
+            card_id: airc_work::WorkCardId::new(),
+            repo: airc_work::RepoId::new("acme/continuum").expect("valid repo id in fixture"),
+            title: "t".to_string(),
+            body: None,
+            priority: airc_work::Priority::P2,
+            lane_id: None,
+            state: airc_work::CardState::Claimed,
+            owner,
+            claim_provenance: None,
+            claim_id: claim,
+            claim_expires_at_ms: None,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: airc_core::PeerId::new(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+            reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
+        }
+    }
+
     // what this catches: a FABRICATED claim receipt. `WorkCard::owner` and `claim_id`
     // are both Option. A turn rooted at a card carrying neither is STILL card-linked
     // — she stood in that checkout and her edits landed there — so it must stage. But
@@ -2503,34 +2550,9 @@ pub(crate) mod tests {
     // accountability nobody recorded. Contract stated by Astra 2026-09-08.
     #[test]
     fn a_claimless_card_stages_as_card_linked_without_inventing_a_receipt() {
-        fn card(
-            owner: Option<airc_core::PeerId>,
-            claim: Option<airc_work::ClaimId>,
-        ) -> airc_work::WorkCard {
-            airc_work::WorkCard {
-                card_id: airc_work::WorkCardId::new(),
-                repo: airc_work::RepoId::new("acme/continuum").expect("valid repo id in fixture"),
-                title: "t".to_string(),
-                body: None,
-                priority: airc_work::Priority::P2,
-                lane_id: None,
-                state: airc_work::CardState::Claimed,
-                owner,
-                claim_provenance: None,
-                claim_id: claim,
-                claim_expires_at_ms: None,
-                last_heartbeat_at_ms: None,
-                pull_request: None,
-                created_by: airc_core::PeerId::new(),
-                created_at_ms: 1,
-                updated_at_ms: 1,
-                reviews: None,
-                submissions: Vec::new(),
-                last_submission_rejection: None,
-            }
-        }
 
-        let bare = card(None, None);
+
+        let bare = claimed_card_fixture(None, None);
         let captured = CapturedCredit::from_selected_card(&bare);
         assert_eq!(captured.card_id, bare.card_id.as_uuid());
         assert!(
@@ -2546,7 +2568,7 @@ pub(crate) mod tests {
         // this the assertion above would pass identically if `from_selected_card`
         // never populated a receipt at all.
         let owner = airc_core::PeerId::new();
-        let claimed = card(
+        let claimed = claimed_card_fixture(
             Some(owner),
             Some(airc_work::ClaimId::from_uuid(Uuid::new_v4())),
         );
@@ -2562,13 +2584,13 @@ pub(crate) mod tests {
         // HALF A PAIR IS NOT A PAIR: an owner with no claim is not an accepted
         // claim, and a claim with no owner names nobody.
         assert!(
-            CapturedCredit::from_selected_card(&card(Some(owner), None))
+            CapturedCredit::from_selected_card(&claimed_card_fixture(Some(owner), None))
                 .claim
                 .is_none(),
             "an owner without a claim is not an accepted claim"
         );
         assert!(
-            CapturedCredit::from_selected_card(&card(
+            CapturedCredit::from_selected_card(&claimed_card_fixture(
                 None,
                 Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()))
             ))
@@ -5250,6 +5272,91 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let rows = stored_credit_rows(&data, name).await;
+        let mut evidence = graded::LegacyGradeEvidence {
+            room: Uuid::new_v4(), card, owner: persona, claim: a.claim_id.unwrap(),
+            review_card: Uuid::new_v4(), reviewer: Uuid::new_v4(), review_claim: Uuid::new_v4(),
+            review_post: Uuid::new_v4(), review_sha256: "review-digest".into(),
+            benchmark: "coder-write-eval".into(), instance: instance.clone(),
+            verdict_sha256: "verdict-digest".into(), artifact_sha256: "artifact-digest".into(),
+        };
+        use crate::commands::benchmark::credit_recovery::{verify_cards, verify_post, verify_result};
+        let mut original = claimed_card_fixture(Some(airc_core::PeerId::from_uuid(persona)),
+            Some(airc_work::ClaimId::from_uuid(evidence.claim)));
+        original.card_id = airc_work::WorkCardId::from_uuid(card);
+        original.title = format!("[bench coder-write-eval] {instance}");
+        original.state = airc_work::CardState::Closed;
+        let mut review = claimed_card_fixture(Some(airc_core::PeerId::from_uuid(evidence.reviewer)),
+            Some(airc_work::ClaimId::from_uuid(evidence.review_claim)));
+        review.card_id = airc_work::WorkCardId::from_uuid(evidence.review_card);
+        review.reviews = Some(original.card_id);
+        review.state = airc_work::CardState::Closed;
+        verify_cards(&evidence, &original, &review).unwrap();
+        review.reviews = Some(airc_work::WorkCardId::new());
+        assert!(verify_cards(&evidence, &original, &review).is_err());
+        review.reviews = Some(original.card_id);
+        review.claim_id = Some(airc_work::ClaimId::new());
+        assert!(verify_cards(&evidence, &original, &review).is_err());
+        let artifact = b"independently graded artifact";
+        evidence.artifact_sha256 = graded::digest(artifact);
+        let attested_verdict = crate::cognition::swe_bench::SweVerdict {
+            benchmark: evidence.benchmark.clone(), solver: persona.to_string(),
+            gate_ok: true, f2p_passed: 1, f2p_total: 1, ..verdict.clone()
+        };
+        let bytes = serde_json::to_vec(&attested_verdict).unwrap();
+        evidence.verdict_sha256 = graded::digest(&bytes);
+        verify_result(&evidence, artifact, &bytes).unwrap();
+        assert!(verify_result(&evidence, b"changed artifact", &bytes).is_err());
+        let mut wrong_solver = evidence.clone();
+        wrong_solver.owner = Uuid::new_v4();
+        assert!(verify_result(&wrong_solver, artifact, &bytes).is_err());
+        let ledger = crate::experience::ledger::CardLedger {
+            card_id: evidence.review_card, by: evidence.reviewer,
+            decided_fix: Some(format!("PASS, exact artifact {}", evidence.artifact_sha256)),
+            ..Default::default()
+        };
+        let mut post = airc_core::doctrine::WallPostPublished {
+            room_id: airc_core::RoomId::from_uuid(evidence.room), post_id: evidence.review_post,
+            category: crate::experience::ledger::LEDGER_WALL_CATEGORY.into(),
+            body: serde_json::to_string(&ledger).unwrap(), supersedes: None,
+            published_by: airc_core::PeerId::from_uuid(evidence.reviewer), published_at_ms: 1,
+        };
+        evidence.review_sha256 = graded::digest(post.body.as_bytes());
+        verify_post(&evidence, &post).unwrap();
+        post.published_by = airc_core::PeerId::new();
+        assert!(verify_post(&evidence, &post).is_err(), "body.by cannot impersonate the reviewer");
+        let denied = crate::sdk_codegen::ActionCommand::run(
+            &crate::commands::benchmark::credit_recovery::BenchmarkCreditRecover,
+            &crate::sdk_codegen::Ctx {
+                caller: Some(CallerIdentity::local_persona(airc_core::PeerId::from_uuid(persona))),
+                ..Default::default()
+            },
+            crate::commands::benchmark::credit_recovery::CreditRecoveryParams::Attest { evidence: evidence.clone() },
+        ).await;
+        assert!(matches!(denied, Err(crate::sdk_codegen::CommandError::Denied(_))),
+            "a citizen cannot self-attest a legacy grade");
+        let graded_at_ms = rows.iter().map(|row| row.staged_at_ms).max().unwrap();
+        let binding = graded::BenchmarkCreditAttribution {
+            id: card, rows: graded::select_rows(&evidence, graded_at_ms, &rows).unwrap(),
+            attested_by: evidence.reviewer, evidence, graded_at_ms,
+        };
+        assert_eq!(binding.rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![a.id],
+            "other cards and other claims on this card cannot inherit a legacy grade");
+        graded::persist(&data, name, &binding).await.unwrap();
+        graded::persist(&data, name, &binding).await.unwrap();
+        let retained = reviewed::read_one::<_, graded::BenchmarkCreditAttribution>(
+            &data, name, &card.to_string()).await.unwrap().unwrap();
+        assert_eq!(retained, binding);
+        let mut conflicting = binding.clone();
+        conflicting.evidence.claim = Uuid::new_v4();
+        assert!(graded::persist(&data, name, &conflicting).await.is_err());
+        let mut changed = rows.clone();
+        changed.iter_mut().find(|row| row.id == a.id).unwrap().completion.push_str("changed");
+        assert!(graded::bound_rows(&binding, changed).is_err(), "no transfer after payload drift");
+        let mut changed = rows.clone();
+        changed.iter_mut().find(|row| row.id == a.id).unwrap().coursework_set = Some("changed".into());
+        assert!(graded::bound_rows_retained(&data, name, &binding, changed).await.is_err(),
+            "eligibility metadata is part of the exact attributed row");
+        assert_eq!(graded::bound_rows(&binding, rows.clone()).unwrap().len(), 1);
         crate::cognition::swe_bench::record_card_verdict_with(&verdict, card, |target, passed| {
             let (rows, conn, executor, instance) = (&rows, &conn, &executor, &instance);
             async move {
@@ -5266,6 +5373,8 @@ pub(crate) mod tests {
             }
         }).await.unwrap().expect("durable exact-card verdict");
         assert!(reviewed::transfer_accepted(&data, name, a.id).await.unwrap());
+        assert_eq!(graded::bound_rows_retained(&data, name, &binding, stored_credit_rows(&data, name).await).await.unwrap().len(), 1,
+            "settlement bookkeeping does not invalidate immutable recovery evidence");
         assert!(!reviewed::transfer_accepted(&data, name, b.id).await.unwrap(),
             "same-instance work on another card is not credited");
         for refused in [

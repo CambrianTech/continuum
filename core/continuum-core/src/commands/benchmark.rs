@@ -17,6 +17,8 @@ use ts_rs::TS;
 
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
+pub(crate) mod credit_recovery;
+
 /// How a benchmark's solutions are scored.
 #[derive(Debug, Clone, Copy, Serialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/benchmark/Grader.ts")]
