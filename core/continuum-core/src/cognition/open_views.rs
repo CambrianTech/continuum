@@ -51,6 +51,13 @@ pub struct OpenView {
     /// checkout; `None` = her own workspace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// What she understood when she last read it, in her own words: the reasoning she stated
+    /// for that act. A view that says only "read 1-498 (all of it)" told her THAT she read a
+    /// file but not WHAT it said, so once the bytes left her window she read it again (Benchy,
+    /// the M5, 2026-10-18 05:01-05:03Z, `lib.rs` re-read whole with this very line in her
+    /// prompt). Her note carries the takeaway forward; the bytes stay a page away.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// How many views a mind keeps open. A count of views is the size of this state, not a
@@ -202,6 +209,7 @@ impl OpenViews {
                 handle: None,
                 touched_seq: seq,
                 scope: scope.map(str::to_owned),
+                note: None,
             },
         };
         self.views.push(view);
@@ -220,6 +228,24 @@ impl OpenViews {
     /// One compact block, one line per view visible from `scope`, ordered by what each view
     /// is OF (never by recency), so a page read changes only its own line. `None` when no
     /// view is open here.
+    /// Attach her stated reasoning to every view the acts of this receipt touched (the views
+    /// whose `touched_seq` is `seq`), clipped to `max_chars` (her window-relative echo budget).
+    pub fn annotate(&mut self, seq: u64, intent: &str, max_chars: usize) -> bool {
+        let note = intent.split_whitespace().collect::<Vec<_>>().join(" ");
+        if note.is_empty() {
+            return false;
+        }
+        let note: String = note.chars().take(max_chars).collect();
+        let mut changed = false;
+        for view in self.views.iter_mut().filter(|v| v.touched_seq == seq) {
+            if view.note.as_deref() != Some(note.as_str()) {
+                view.note = Some(note.clone());
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub fn render(&self, scope: Option<&str>) -> Option<String> {
         let mut visible: Vec<&OpenView> = self
             .views
@@ -271,6 +297,9 @@ fn render_line(view: &OpenView) -> String {
     }
     if let (ViewSubject::File { .. }, Some(handle)) = (&view.subject, &view.handle) {
         line.push_str(&format!(" (that whole read is saved as output `{handle}`)"));
+    }
+    if let Some(note) = &view.note {
+        line.push_str(&format!("; my note when I read it: \"{note}\""));
     }
     line
 }

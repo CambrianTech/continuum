@@ -671,6 +671,8 @@ pub async fn apply_act(
     );
     body.working_memory
         .record_receipt_measured(&acts, &observation, Some(room_id), custody, disk);
+    // Each open view this act touched keeps what she understood when she read it.
+    body.working_memory.annotate_open_views(intent);
     // Recorded and published: working memory now names every handle this batch saved, its
     // receipt's and each call's, so the pin that held them since before they were written can go.
     drop(pin);
