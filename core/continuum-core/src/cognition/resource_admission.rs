@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use ts_rs::TS;
 
+mod serving_lane_permit;
+pub use serving_lane_permit::ServingLanePermit;
+
 // ── Soft saturation signal (the read-only companion to the hard gate) ──────────
 //
 // Deliberative model calls currently outstanding against the shared serving target.
@@ -926,48 +929,6 @@ pub fn boot_lane_count() -> usize {
     LANES.lane_count()
 }
 
-/// Lanes a non-directed (ambient / idle) model call may occupy: all lanes minus one
-/// reserved for directed work, floored at 1 so a single-lane machine — where there is
-/// nothing to reserve — still lets idle work run rather than starving it forever.
-/// RAII permit for one serving-lane model call. Holds a physical-lane permit, the
-/// (optional) non-directed sub-cap permit, and the in-flight gauge marker — ALL released
-/// on drop. Acquire it around the single generate call so the reservation window matches
-/// exactly the lane-consuming window (queue + prefill + decode) and nothing downstream.
-#[derive(Debug)]
-pub struct ServingLanePermit {
-    _lane: tokio::sync::OwnedSemaphorePermit,
-    _nondirected: Option<tokio::sync::OwnedSemaphorePermit>,
-    _inflight: InflightModelCall,
-    /// Ledger tag for grant/release probes (2026-08-29 leak hunt) — permits
-    /// vanished with no probe naming the taker, so the permit itself speaks.
-    granted_at: std::time::Instant,
-    directed: bool,
-    priority: LanePriority,
-    /// Attribution survives until release; None is genuinely unowned background work.
-    persona: Option<uuid::Uuid>,
-    /// The gate this permit came from — its release wakes parked ambient callers.
-    released: &'static tokio::sync::Notify,
-}
-
-impl Drop for ServingLanePermit {
-    fn drop(&mut self) {
-        let held_ms = self.granted_at.elapsed().as_millis() as u64;
-        // The measured turn time the NEXT mind's wait is bounded by (`lane_wait_bound`).
-        // One ring push per release, on a path that already probes.
-        note_lane_held_ms(held_ms);
-        crate::probe!(
-            class = "admission.lane.released",
-            persona = ?self.persona,
-            directed = self.directed,
-            priority = ?self.priority,
-            held_ms = held_ms,
-            "serving-lane permit released"
-        );
-        // Permits drop AFTER this body (field order), so wake on the next poll: the
-        // parked caller's try_acquire runs after the semaphore permit has returned.
-        self.released.notify_waiters();
-    }
-}
 
 impl LaneAdmission {
     // A released semaphore permit may transfer directly to a queued waiter,
