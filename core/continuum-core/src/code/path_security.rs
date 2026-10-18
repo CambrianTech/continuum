@@ -436,6 +436,27 @@ impl PathSecurity {
         }
     }
 
+    /// [`Self::validate_write`], widened by `scope` the way [`Self::validate_read_in`] widens
+    /// reads. Under [`ReadScope::Host`] (an unconfined caller: the operator, or this node's
+    /// own resident, Joel 2026-10-17 "Don't restrict them") an ABSOLUTE path outside the
+    /// workspace resolves to itself, its parent directory canonicalized so the write lands
+    /// where it names. Relative paths, and every `Sandbox` or `Confined` caller, keep the
+    /// workspace verdict.
+    pub fn validate_write_in(&self, path: &str, scope: &ReadScope) -> Result<PathBuf, PathSecurityError> {
+        let sandboxed = self.validate_write(path);
+        if sandboxed.is_ok() || !matches!(scope, ReadScope::Host) {
+            return sandboxed;
+        }
+        let host = Path::new(path);
+        let (Some(parent), Some(name)) = (host.is_absolute().then(|| host.parent()).flatten(), host.file_name()) else {
+            return sandboxed;
+        };
+        match parent.canonicalize() {
+            Ok(dir) => Ok(dir.join(name)),
+            Err(_) => sandboxed,
+        }
+    }
+
     /// Validate and resolve a path for write operations.
     ///
     /// The ONLY write boundary is the workspace sandbox: the path must resolve inside the

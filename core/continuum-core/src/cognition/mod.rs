@@ -81,6 +81,8 @@ pub mod learning_policy;
 pub mod llm_deliberation_faculty;
 pub mod memory_consolidation_region;
 pub mod model_resolver;
+/// Paging cursors over large data she is working through, kept in working memory.
+pub mod open_views;
 pub mod parroted_perception;
 pub mod pass_intent;
 pub mod perception_facts;
