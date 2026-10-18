@@ -186,7 +186,7 @@ fn dispatch_compute(
 ) {
     // Drain pending registrations from global bridge
     {
-        let mut bridge = WGPU_BRIDGE.lock().unwrap();
+        let mut bridge = WGPU_BRIDGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         state.pending_setup.append(&mut bridge.pending);
     }
 
@@ -264,8 +264,11 @@ fn dispatch_compute(
     }
 
     // Clone pipeline/layout refs to avoid borrow conflicts
-    let pipeline = state.pipeline.clone().unwrap();
-    let bgl = state.bind_group_layout.clone().unwrap();
+    let (Some(pipeline), Some(bgl)) = (state.pipeline.clone(), state.bind_group_layout.clone())
+    else {
+        clog_warn!("WgpuGpuConvert: compute pipeline missing after lazy init; skipping dispatch");
+        return;
+    };
 
     // Setup pending slots
     let pending: Vec<_> = state.pending_setup.drain(..).collect();
@@ -513,7 +516,7 @@ pub fn register_slot(
     width: u32,
     height: u32,
 ) {
-    let mut bridge = WGPU_BRIDGE.lock().unwrap();
+    let mut bridge = WGPU_BRIDGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
     bridge
         .pending
         .push((slot_id, render_target, frame_tx, width, height));
@@ -528,12 +531,12 @@ pub fn register_slot(
 
 /// Check if a slot has a wgpu GPU bridge active.
 pub fn has_bridge(slot_id: u8) -> bool {
-    WGPU_BRIDGE.lock().unwrap().active_slots.contains(&slot_id)
+    WGPU_BRIDGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active_slots.contains(&slot_id) // unwrap_or: poisoned lock still holds the last consistent state
 }
 
 /// Unregister a slot.
 pub fn unregister_slot(slot_id: u8) {
-    WGPU_BRIDGE.lock().unwrap().active_slots.remove(&slot_id);
+    WGPU_BRIDGE.lock().unwrap_or_else(std::sync::PoisonError::into_inner).active_slots.remove(&slot_id); // unwrap_or: poisoned lock still holds the last consistent state
 }
 
 // =============================================================================

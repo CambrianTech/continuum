@@ -63,13 +63,13 @@ static BEVY_SYSTEM: RwLock<Option<Arc<BevyAvatarSystem>>> = RwLock::new(None);
 pub fn get_or_init() -> Arc<BevyAvatarSystem> {
     // Fast path: read lock, clone Arc if present
     {
-        let guard = BEVY_SYSTEM.read().unwrap();
+        let guard = BEVY_SYSTEM.read().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         if let Some(ref sys) = *guard {
             return Arc::clone(sys);
         }
     }
     // Slow path: write lock, double-check, start
-    let mut guard = BEVY_SYSTEM.write().unwrap();
+    let mut guard = BEVY_SYSTEM.write().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
     if let Some(ref sys) = *guard {
         return Arc::clone(sys);
     }
@@ -97,7 +97,7 @@ pub fn get_or_init() -> Arc<BevyAvatarSystem> {
 /// Get the BevyAvatarSystem if it is currently running.
 /// Returns a cloned Arc — safe to hold across await points.
 pub fn try_get() -> Option<Arc<BevyAvatarSystem>> {
-    let guard = BEVY_SYSTEM.read().unwrap();
+    let guard = BEVY_SYSTEM.read().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
     guard.as_ref().map(Arc::clone)
 }
 
@@ -106,7 +106,7 @@ pub fn try_get() -> Option<Arc<BevyAvatarSystem>> {
 /// Next call to `get_or_init()` will restart it transparently.
 pub fn shutdown() {
     let sys = {
-        let mut guard = BEVY_SYSTEM.write().unwrap();
+        let mut guard = BEVY_SYSTEM.write().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         guard.take()
     };
     if let Some(sys) = sys {
@@ -120,7 +120,7 @@ pub fn shutdown() {
 
 /// Returns true if the Bevy renderer is currently running.
 pub fn is_running() -> bool {
-    let guard = BEVY_SYSTEM.read().unwrap();
+    let guard = BEVY_SYSTEM.read().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
     guard.is_some()
 }
 
@@ -155,7 +155,7 @@ impl BevyAvatarSystem {
         let memory_stats = Arc::new(BevyMemoryStats::new());
         let stats_for_bevy = memory_stats.clone();
 
-        std::thread::Builder::new()
+        if let Err(e) = std::thread::Builder::new()
             .name("bevy-avatar-renderer".into())
             .spawn(move || {
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -178,7 +178,10 @@ impl BevyAvatarSystem {
                     crate::runtime::logger("bevy").error(&format!("BEVY THREAD CRASHED: {}", msg));
                 }
             })
-            .expect("Failed to spawn Bevy avatar renderer thread");
+        {
+            // `ready` stays false; the wait below reports the renderer as not ready.
+            crate::runtime::logger("bevy").error(&format!("failed to spawn Bevy renderer thread: {e}"));
+        }
 
         for _ in 0..50 {
             if ready.load(std::sync::atomic::Ordering::Acquire) {
@@ -247,21 +250,21 @@ impl BevyAvatarSystem {
     pub fn register_identity(&self, identity: &str, slot: u8) {
         self.identity_to_slot
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
             .insert(identity.to_string(), slot);
     }
 
     pub fn unregister_identity(&self, identity: &str) {
-        self.identity_to_slot.lock().unwrap().remove(identity);
+        self.identity_to_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(identity); // unwrap_or: poisoned lock still holds the last consistent state
     }
 
     pub fn identity_to_slot_map(&self) -> HashMap<String, u8> {
-        self.identity_to_slot.lock().unwrap().clone()
+        self.identity_to_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone() // unwrap_or: poisoned lock still holds the last consistent state
     }
 
     /// Resolve identity to slot and execute a command. Returns false if identity not registered.
     fn send_by_identity(&self, identity: &str, make_cmd: impl FnOnce(u8) -> AvatarCommand) -> bool {
-        if let Some(&slot) = self.identity_to_slot.lock().unwrap().get(identity) {
+        if let Some(&slot) = self.identity_to_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(identity) { // unwrap_or: poisoned lock still holds the last consistent state
             let _ = self.command_tx.send(make_cmd(slot));
             true
         } else {

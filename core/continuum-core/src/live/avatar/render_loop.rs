@@ -37,7 +37,7 @@ fn slot_pool() -> &'static std::sync::Mutex<VecDeque<u8>> {
 
 /// Allocate a render slot from the pool. Returns None if all slots are in use.
 fn allocate_slot() -> Option<u8> {
-    let mut pool = slot_pool().lock().unwrap();
+    let mut pool = slot_pool().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
     let slot = pool.pop_front();
     if let Some(s) = slot {
         clog_info!("🎨 Allocated render slot {} ({} remaining)", s, pool.len());
@@ -51,7 +51,7 @@ fn release_slot(slot: u8) {
     if let Some(bevy) = crate::live::video::bevy_renderer::try_get() {
         bevy.unload_model(slot);
     }
-    let mut pool = slot_pool().lock().unwrap();
+    let mut pool = slot_pool().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
     pool.push_back(slot);
     clog_info!(
         "🎨 Released render slot {} ({} available)",
@@ -65,7 +65,7 @@ fn release_slot(slot: u8) {
 /// tasks (video loops that didn't exit cleanly) are reclaimed.
 pub fn reset_slot_pool() {
     let max = crate::live::video::bevy_renderer::MAX_AVATAR_SLOTS;
-    let mut pool = slot_pool().lock().unwrap();
+    let mut pool = slot_pool().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
     let before = pool.len();
     pool.clear();
     pool.extend(0..max);
@@ -382,7 +382,7 @@ pub fn spawn_renderer_loop(
 
     // Identity dedup: if this identity already has a render loop, reuse it
     {
-        let active = active_renderers().lock().unwrap();
+        let active = active_renderers().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         if let Some(existing) = active.get(&identity) {
             clog_info!(
                 "🎨 Reusing existing render loop for '{}' (identity dedup)",
@@ -413,7 +413,7 @@ pub fn spawn_renderer_loop(
 
     // Register in active renderers BEFORE spawning the thread
     {
-        let mut active = active_renderers().lock().unwrap();
+        let mut active = active_renderers().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         active.insert(
             identity.clone(),
             ActiveRenderer {
@@ -426,13 +426,13 @@ pub fn spawn_renderer_loop(
     let renderer = Arc::new(std::sync::Mutex::new(renderer));
     let identity_for_thread = identity.clone();
 
-    std::thread::Builder::new()
+    let spawned = std::thread::Builder::new()
         .name(format!(
             "avatar-renderer-{}",
             &identity[..8.min(identity.len())]
         ))
         .spawn(move || {
-            let mut renderer = renderer.lock().unwrap();
+            let mut renderer = renderer.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
             loop {
                 let frame = renderer.render_frame();
                 match tx.try_send(frame) {
@@ -452,15 +452,30 @@ pub fn spawn_renderer_loop(
             release_slot(bevy_slot);
             // Remove from active renderers
             {
-                let mut active = active_renderers().lock().unwrap();
+                let mut active = active_renderers().lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
                 active.remove(&identity_for_thread);
             }
             clog_info!(
                 "🎨 Render loop exited for '{}'",
                 &identity_for_thread[..8.min(identity_for_thread.len())]
             );
-        })
-        .expect("Failed to spawn avatar renderer thread");
+        });
+    if let Err(e) = spawned {
+        // Thread spawn can fail under OS resource exhaustion: give the slot and
+        // the active-renderer entry back so the pool does not leak, and report
+        // "no renderer" the same way a failed `create_renderer` does.
+        clog_error!(
+            "🎨 Failed to spawn render thread for '{}': {}",
+            &identity[..8.min(identity.len())],
+            e
+        );
+        release_slot(bevy_slot);
+        active_renderers()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
+            .remove(&identity);
+        return None;
+    }
 
     Some((rx, interval_nanos))
 }
