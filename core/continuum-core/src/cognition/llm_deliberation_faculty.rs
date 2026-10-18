@@ -540,15 +540,16 @@ pub struct LlmDeliberationFaculty {
     /// the ceiling; deliberately NOT a process global, because that value feeds a
     /// decision and a global read inside a decision makes tests order-dependent.
     working_set: Option<super::working_set::WorkingSetRegistry>,
-    /// The conversation tokens her LAST answered prompt carried. Her slot holds that
-    /// prefix (kept warm, or paged out and restored), so re-sending it is cache, not
-    /// prefill: the act-latency cap bounds only what is NEW beyond it. Counting it as
-    /// fresh held history at 16,384 tokens with 15-29k of the window unallocated (the M5,
-    /// 2026-10-18 09:46-10:00Z), and the fit, squeezed, folded results and dropped
-    /// grounding differently every turn; the engine then matched 40-574 tokens of a
-    /// 15-20k prompt and re-prefilled the rest at 75-111 tokens/s, which kept the
-    /// measured rate, and so the cap, low.
-    sent_history_tokens: std::sync::atomic::AtomicUsize,
+    /// The prefix the engine REPORTED it reused on her last answered prompt (`cache_n`),
+    /// bounded by the conversation that prompt carried. That much rides free on the next
+    /// turn; the act-latency cap bounds only what is new beyond it. MEASURED, never
+    /// assumed: the first cut of this credited her whole last conversation on the premise
+    /// that her slot held it, and on the M5 (2026-10-18) it did not (reuse 13-18%), so the
+    /// prompt grew with the window (median 8.5k tokens at a 25.6k window to 50.6k at 74k)
+    /// and every act paid it cold: 76 s to 547 s per prefill at the same ~105 tokens/s.
+    /// Credited from the engine's own count, the cap grows when reuse works and falls back
+    /// to the latency target when it does not.
+    cached_prefix_tokens: std::sync::atomic::AtomicUsize,
 }
 
 impl LlmDeliberationFaculty {
@@ -583,7 +584,7 @@ impl LlmDeliberationFaculty {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
-            sent_history_tokens: std::sync::atomic::AtomicUsize::new(0),
+            cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -2440,6 +2441,7 @@ impl LlmDeliberationFaculty {
         binding: &Arc<ModelBinding>,
         view: &DeliberationPromptView,
         engine_prompt_tokens: u32,
+        engine_cached_tokens: u32,
         available: u32,
     ) {
         let Some(calibration) =
@@ -2452,8 +2454,11 @@ impl LlmDeliberationFaculty {
             calibration,
             available,
         })));
-        // The engine answered this prompt, so her slot now holds its prefix.
-        self.sent_history_tokens.store(view.history_tokens, std::sync::atomic::Ordering::Relaxed);
+        // What the engine measured as reused is the only prefix credited as free next turn.
+        self.cached_prefix_tokens.store(
+            (engine_cached_tokens as usize).min(view.history_tokens),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         crate::probe!(
             class = "delib.prompt.density",
             persona = %self.persona_name,
@@ -2699,9 +2704,9 @@ impl LlmDeliberationFaculty {
         // costs — ahead of every optional claim, the reply's desire included. `fit_messages`
         // then refuses to evict it; this floor is what makes that refusal satisfiable.
         let evidence = all_messages.recent_move_evidence();
-        // The latency target bounds NEW prefill; what her last answered prompt carried is
-        // her slot's cached prefix and rides free (see `sent_history_tokens`).
-        let cached_history = self.sent_history_tokens.load(std::sync::atomic::Ordering::Relaxed);
+        // The latency target bounds NEW prefill; what the engine reported it reused on her
+        // last answered prompt rides free (see `cached_prefix_tokens`).
+        let cached_history = self.cached_prefix_tokens.load(std::sync::atomic::Ordering::Relaxed);
         let latency_fill_cap = Self::history_fill_cap(derived_fill_cap, evidence.tokens, cached_history);
         let required_tokens = all_messages.required_tokens();
         let optional_history = all_messages.tokens().saturating_sub(required_tokens);
@@ -5246,7 +5251,14 @@ impl LlmDeliberationFaculty {
                     if let Some(error) = response.generation_error() {
                         return Some(Contribution::deliberation_fault(error));
                     }
-                    self.learn_prompt_density(&binding, &view, response.usage.input_tokens, fit_window);
+                    self.learn_prompt_density(
+                        &binding,
+                        &view,
+                        response.usage.input_tokens,
+                        // No timing on the reply = nothing measured as reused = nothing rides free.
+                        response.timing.as_ref().map_or(0, |t| t.cached_tokens),
+                        fit_window,
+                    );
                     break (view, response);
                 }
             }
@@ -9755,9 +9767,14 @@ mod tests {
             let binding = faculty.binding.load_full();
             let mut view = faculty.prompt_view_within(&Workspace::new("continue"), 16_384);
             view.history_tokens = 12_345;
-            faculty.learn_prompt_density(&binding, &view, view.estimated_prompt_tokens as u32 + 1, 16_384);
-            assert_eq!(faculty.sent_history_tokens.load(std::sync::atomic::Ordering::Relaxed), 12_345,
-                "an answered prompt's history becomes the next turn's cached prefix");
+            let engine_prompt = view.estimated_prompt_tokens as u32 + 1;
+            let credited = |faculty: &LlmDeliberationFaculty| faculty.cached_prefix_tokens.load(std::sync::atomic::Ordering::Relaxed);
+            faculty.learn_prompt_density(&binding, &view, engine_prompt, 0, 16_384);
+            assert_eq!(credited(&faculty), 0, "the engine reused nothing: nothing rides free, the cap is the latency target");
+            faculty.learn_prompt_density(&binding, &view, engine_prompt, 5_000, 16_384);
+            assert_eq!(credited(&faculty), 5_000, "only what the engine measured as reused is credited");
+            faculty.learn_prompt_density(&binding, &view, engine_prompt, 40_000, 16_384);
+            assert_eq!(credited(&faculty), 12_345, "never more than the conversation that prompt carried");
         }
 
         // what this catches: THE CLIP TAKING AWAY THE EVIDENCE OF WHAT SHE JUST DID.
