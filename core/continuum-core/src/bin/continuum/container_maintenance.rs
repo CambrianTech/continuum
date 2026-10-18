@@ -1,6 +1,14 @@
 //! Foreground composition of the existing placement, scheduler and shutdown owners.
 //! No background cleanup, installer retry or automatic legacy-reader assumption.
-use super::*;
+use std::path::{Path, PathBuf};
+
+use serde_json::Value;
+
+use super::client::{core_is_up, running_core_build_sha, running_core_provenance, PING_BUDGET};
+use super::deploy_claim::continuum_root;
+use super::process::{core_process_evidence, pid_alive, process_matches_fragment};
+use super::service::PreparedCoreService;
+use super::stop::{cores_to_tear_down, stop_with_policy};
 use continuum_cli_lifecycle::supervisor_install::maintenance::{
     LegacyImageCustody, LegacyRestoration, LegacySchedulerWindow,
 };
