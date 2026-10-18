@@ -297,6 +297,9 @@ fn settle_step_to_json(
         SettleStep::ActUnfulfilled { calls, intent } => serde_json::json!({
             "outcome": "actUnfulfilled", "intent": intent, "calls": calls.len(),
         }),
+        SettleStep::DeferredBeforeDispatch => serde_json::json!({
+            "outcome": "deferredBeforeDispatch",
+        }),
         SettleStep::Passed { reason } => serde_json::json!({
             "outcome": "passed", "reason": reason,
         }),

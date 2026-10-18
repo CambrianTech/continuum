@@ -170,6 +170,12 @@ pub(crate) fn classify_act(model_ms: u64, generations: usize) -> ActClass {
     }
 }
 
+/// A first-dispatch refusal can preserve the original input. Prior model faults
+/// or completed actions cannot be replayed even if their provenance was absent.
+fn can_defer_input(generations: usize, acts: usize, recorded_acts: usize, retries: u32) -> bool {
+    generations == 0 && acts == 0 && recorded_acts == 0 && retries == 0
+}
+
 /// THE TURN'S OWN PACE CADENCE — the rolling mean each act's wall-clock is judged
 /// against. Only an [`ActClass::Act`] is a sample: a lane wait is real elapsed time
 /// but it is not a sample of how fast she THINKS, and folding it in is what took the
@@ -264,6 +270,10 @@ async fn drive_with_input(
         credit.as_deref_mut(),
     )
     .await;
+    // Admission refusal is not a lived/completed turn or training credit.
+    if settled.deferred_before_dispatch {
+        return settled;
+    }
     // A turn in her mind room is hers (PRIVACY-OF-THOUGHT.md §4, sink 9): it becomes neither
     // curriculum (experience.jsonl) nor training credit. Until her sealed private space exists
     // (build step 2) it is not written at all.
@@ -444,6 +454,7 @@ async fn settle_to_outcome(
                 metrics,
                 generation_receipts: generation_receipts.clone(),
                 inference_error: None,
+                deferred_before_dispatch: false,
                 touched_paths: touched,
                 turn_acts: turn_acts.clone(),
             };
@@ -543,6 +554,7 @@ async fn settle_to_outcome(
                         metrics,
                         generation_receipts: generation_receipts.clone(),
                         inference_error: Some(error),
+                        deferred_before_dispatch: false,
                         touched_paths: touched,
                         turn_acts: turn_acts.clone(),
                     };
@@ -866,6 +878,7 @@ async fn settle_to_outcome(
                     metrics,
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
+                    deferred_before_dispatch: false,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
                 };
@@ -974,6 +987,7 @@ async fn settle_to_outcome(
                     metrics,
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
+                    deferred_before_dispatch: false,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
                 };
@@ -989,6 +1003,7 @@ async fn settle_to_outcome(
                     metrics,
                     generation_receipts: generation_receipts.clone(),
                     inference_error: None,
+                    deferred_before_dispatch: false,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
                 };
@@ -998,6 +1013,9 @@ async fn settle_to_outcome(
             // and never a silent `Pass` ([[fallbacks-are-illegal-fail-loud]]). We do
             // not loop/retry here — the grader owns retry policy; the settle loop's
             // job is to report the truth of THIS attempt.
+            SettleStep::DeferredBeforeDispatch => {
+                unreachable!("deferral is a driven-turn disposition, not an individual step");
+            }
             SettleStep::InferenceFailed { error } => {
                 // A STARVED MIND KEEPS HER BUDGET. This arm's retry budget is for a
                 // TRANSIENT MODEL FAULT — a generation that reached the lane and came
@@ -1008,9 +1026,9 @@ async fn settle_to_outcome(
                 // could hold a mind for 75 minutes and still produce nothing. She
                 // DEFERS instead: `acts` is untouched (so her whole act budget is
                 // intact), the pace cadence did not advance, no retry was spent, and
-                // the pass carries NO reason — `classify_pass` reads that as `Unclear`
-                // and `conclude_from_pass` as `Hold`, so a card she holds stays hers.
-                // The next metronome tick tries again, on a lane that may be free.
+                // a never-dispatched turn carries a distinct deferral to its caller.
+                // Earlier dispatched work keeps the existing continuation policy;
+                // its original input must not be replayed as a new request.
                 if act_class == ActClass::LaneStarved {
                     crate::probe!(
                         class = "persona.act.lane_starved",
@@ -1032,6 +1050,7 @@ async fn settle_to_outcome(
                         generation_receipts: generation_receipts.clone(),
                         // Not an inference fault: no inference was ever dispatched.
                         inference_error: None,
+                        deferred_before_dispatch: can_defer_input(generation_receipts.len(), acts, turn_acts.len(), delib_retries),
                         touched_paths: touched,
                         turn_acts: turn_acts.clone(),
                     };
@@ -1067,6 +1086,7 @@ async fn settle_to_outcome(
                     metrics,
                     generation_receipts: generation_receipts.clone(),
                     inference_error: Some(error),
+                    deferred_before_dispatch: false,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
                 };
@@ -1466,6 +1486,10 @@ mod tests {
         // act that failed, never a starve. Misreading it as a starve would hide the very
         // inference faults `settle.inference_failed` exists to surface.
         assert_eq!(classify_act(0, 1), ActClass::Act);
+        assert!(can_defer_input(0, 0, 0, 0));
+        assert!(!can_defer_input(1, 0, 0, 0), "a dispatched generation is not replayable input");
+        assert!(!can_defer_input(0, 1, 1, 0), "completed actions survive without replay");
+        assert!(!can_defer_input(0, 0, 0, 1), "a prior transient fault must not disappear when the next step starves");
     }
 
     // what this catches: a lane wait advancing the pace cadence it is then judged
