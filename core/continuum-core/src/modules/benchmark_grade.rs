@@ -285,13 +285,13 @@ async fn grade_card(
     // The event carries whatever id the citizen passed to work/state (short 8-char or full).
     // Normalize to simple hex; a short id is a prefix of the full simple form.
     let want = card_id.replace('-', "").to_ascii_lowercase();
-    let (title, owner) = {
+    let (title, owner, graded_card) = {
         let card = board
             .cards
             .iter()
             .find(|c| c.card_id.as_uuid().simple().to_string().starts_with(&want))
             .ok_or_else(|| format!("card {card_id} not on the board"))?;
-        (card.title.clone(), card.owner)
+        (card.title.clone(), card.owner, card.card_id.as_uuid())
     };
 
     let Some((bench, instance)) = parse_bench_title(&title) else {
@@ -308,7 +308,7 @@ async fn grade_card(
         // A gym suite, registered or a coursework lesson set: the ONE resolver turns the
         // title's suite name into the eval set the oracle is read from.
         if let Some(reference) = crate::commands::benchmark::eval_set_reference(&bench) {
-            return grade_gym_card(&airc, &reference, &instance, owner, &bench, room_id).await;
+            return grade_gym_card(&airc, &reference, &instance, owner, &bench, room_id, graded_card).await;
         }
         return Ok(()); // catalogued-but-not-runnable, or a bench name we don't know
     };
@@ -521,6 +521,7 @@ async fn grade_gym_card(
     owner: Option<impl std::fmt::Display>,
     bench: &str,
     room_id: uuid::Uuid,
+    graded_card: uuid::Uuid,
 ) -> Result<(), String> {
     let owner = owner
         .ok_or_else(|| format!("bench card {task_id} has no owner — nobody worked it"))?
@@ -614,7 +615,8 @@ async fn grade_gym_card(
         let verdict = gym_verdict(task_id, bench, &owner, *passed, detail);
         // A record that cannot be written is LOUD. Dropping it quietly would restore the
         // exact invisibility this call exists to end.
-        crate::cognition::swe_bench::record_verdict(&verdict, false)
+        crate::cognition::swe_bench::record_card_verdict(&verdict, graded_card)
+            .await
             .map_err(|e| format!("record gym verdict for {task_id}: {e}"))?;
     }
 

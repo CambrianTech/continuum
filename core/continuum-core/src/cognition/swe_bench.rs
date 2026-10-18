@@ -640,6 +640,44 @@ pub fn regrade_history_path(instance_id: &str) -> PathBuf {
 }
 
 pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<PathBuf>, String> {
+    let recorded = persist_verdict(verdict, is_gold)?;
+    if recorded.is_some() {
+        crate::persona::training_producer::settle_instance_credit(&verdict.instance_id, verdict.resolved);
+    }
+    Ok(recorded)
+}
+
+/// A card grader already owns the exact identity. Do not rediscover it through
+/// the live round: the terminal event may have retired that round before grading.
+pub(crate) async fn record_card_verdict(
+    verdict: &SweVerdict,
+    card: uuid::Uuid,
+) -> Result<Option<PathBuf>, String> {
+    record_card_verdict_with(verdict, card, crate::persona::training_producer::settle_card_credit).await
+}
+
+pub(crate) async fn record_card_verdict_with<F, Fut>(
+    verdict: &SweVerdict,
+    card: uuid::Uuid,
+    settle: F,
+) -> Result<Option<PathBuf>, String>
+where
+    F: FnOnce(uuid::Uuid, bool) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let recorded = persist_verdict(verdict, false)?;
+    if recorded.is_some() {
+        settle(card, verdict.resolved).await;
+    }
+    Ok(recorded)
+}
+
+/// The shared durable verdict boundary. Settlement is admitted only after the
+/// exact verdict is written; gold, errors and refused downgrades never settle.
+fn persist_verdict(
+    verdict: &SweVerdict,
+    is_gold: bool,
+) -> Result<Option<PathBuf>, String> {
     if is_gold || verdict.error.is_some() || verdict.instance_id.is_empty() {
         return Ok(None);
     }
@@ -684,7 +722,6 @@ pub fn record_verdict(verdict: &SweVerdict, is_gold: bool) -> Result<Option<Path
     std::fs::write(&path, body).map_err(|e| format!("write {}: {e}", path.display()))?;
     // The verdict is the OUTCOME every staged work turn on this instance's cards
     // was waiting for: PASS lifts them into the makers' curricula, FAIL discards.
-    crate::persona::training_producer::settle_instance_credit(&verdict.instance_id, verdict.resolved);
     Ok(Some(path))
 }
 
