@@ -2761,6 +2761,7 @@ impl LlmDeliberationFaculty {
             reply,
         ];
         let plan = crate::persona::rag_budget::flex_allocate(context_window, &claims);
+        let budget_floor = super::window_allocator::turn_need(&claims);
         // Whatever no claim took is hers to write with, up to the runaway bound.
         let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant
@@ -2936,15 +2937,13 @@ impl LlmDeliberationFaculty {
                 sample,
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
             );
-            // HER NEED — the allocator's gate (card 70706a9e). Only a turn the fit HELD
-            // (the truthful minimum fitted, and something beyond the framing survived)
-            // measures what a lane must hold for her; a starved or emptied turn says
-            // nothing about her and is not recorded, so the need can never be a
-            // window's echo. The wish above stays the target the allocator grows toward.
+            // HER NEED, the allocator's gate (card 70706a9e): the BUDGETER'S FLOOR on a held
+            // turn, never its post-fit size, which the flexbox grows to any window (the M5,
+            // 10-18: ~48.6k on a 102k lane refused a second lane; 4 residents on 1 slot).
             let sent_tokens = sent.min(u32::MAX as usize) as u32;
             let framing = framing_tokens.min(u32::MAX as usize) as u32;
             let fit_ok = capacity_error.is_none();
-            match crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok) {
+            match crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok).map(|_| budget_floor) {
                 Some(need) => reg.record_need(
                     self.persona_id,
                     need,
