@@ -70,7 +70,7 @@ pub const SEAT_QUEUED_REASON: &str = "seat queued: its measured lane wait is pas
 /// only when the remote turn is expected FASTER — a measured seat is capacity only when
 /// its wait is under this node's own, or under the budget when this node has none.
 pub fn seat_queued(wait_p50_ms: u64, wait_samples: u32, home_wait_p50_ms: Option<u64>) -> bool {
-    wait_samples > 0 && wait_p50_ms >= home_wait_p50_ms.unwrap_or(SEAT_QUEUE_BOUND_MS)
+    wait_samples > 0 && wait_p50_ms >= home_wait_p50_ms.unwrap_or(SEAT_QUEUE_BOUND_MS) // unwrap_or: documented — an unmeasured home is judged against the TTFT budget
 }
 /// At most one move per persona per cooldown — a flapping tower moves her twice an hour,
 /// never twice a minute.

@@ -178,7 +178,7 @@ fn opens_with_tool_envelope(t: &str) -> bool {
             // the discriminator — a namespaced verb, then `(` or `{` — so `[answer] the
             // code/read verb is fine` (no call) stays speech.
             let a = after.trim_start();
-            let call_len = a.find(['(', '{', ' ', '\n']).unwrap_or(a.len());
+            let call_len = a.find(['(', '{', ' ', '\n']).unwrap_or(a.len()); // unwrap_or: no delimiter = the whole remainder is the callee
             let callee = &a[..call_len];
             if verb_ok(verb)
                 && verb_ok(callee)
@@ -458,7 +458,7 @@ const MAX_WRAPPER_DEPTH: usize = 4;
 /// keeps a citizen's own `[re: <room-uuid>] …` aside out of the predicate.
 fn header_names_a_peer(header: &str) -> bool {
     let Some(at) = header.find("peer ") else { return false };
-    is_uuid_shaped(header[at + "peer ".len()..].trim_start().get(..36).unwrap_or(""))
+    header[at + "peer ".len()..].trim_start().get(..36).is_some_and(is_uuid_shaped)
 }
 
 #[cfg(test)]

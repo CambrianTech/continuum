@@ -76,7 +76,7 @@ const SEEN_RING: usize = 128;
 /// Her perception region and its wake channel, registered on the core's one feed.
 struct MindFeed {
     persona: Uuid,
-    region: Arc<std::sync::Mutex<crate::persona::perception_region::PerceptionRegion>>,
+    region: Arc<parking_lot::Mutex<crate::persona::perception_region::PerceptionRegion>>,
     wake_tx: tokio::sync::mpsc::Sender<crate::persona::perception_region::Wake>,
     /// Her wakes until the loop's Wake consumer takes them (`take_wakes`).
     wakes: Option<tokio::sync::mpsc::Receiver<crate::persona::perception_region::Wake>>,
@@ -109,7 +109,7 @@ impl MindFeed {
             }
         }
         let (wake_tx, wakes) = tokio::sync::mpsc::channel(8);
-        Some(Self { persona, region: Arc::new(std::sync::Mutex::new(region)), wake_tx, wakes: Some(wakes) })
+        Some(Self { persona, region: Arc::new(parking_lot::Mutex::new(region)), wake_tx, wakes: Some(wakes) })
     }
 }
 
@@ -250,7 +250,7 @@ use super::durable_history::event_from_row;
 
 async fn catch_up_from_store(
     runtime: &dyn AircCitizen,
-    seen: &std::sync::Mutex<SeenRooms>,
+    seen: &parking_lot::Mutex<SeenRooms>,
     tx: &tokio::sync::mpsc::Sender<Result<AttentionEvent, airc_lib::LiveLag>>,
 ) -> (usize, usize) {
     let rooms = runtime.subscribed_rooms().await.unwrap_or_default(); // unwrap_or: an unreadable room list = nothing to catch up this tick
@@ -291,7 +291,6 @@ async fn catch_up_from_store(
         };
         let floor_ms = *seen
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
             .floor_ms
             .entry(room)
             .or_insert(newest_ms);
@@ -318,15 +317,13 @@ async fn catch_up_from_store(
                         .as_ref()
                         .and_then(|b| b.as_text().map(|t| t.chars().take(60).collect::<String>()))
                         .unwrap_or_else(|| "<non-text>".to_string()), // unwrap_or: a non-text body renders as a marker, never dropped
-                    seen.lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .was_seen(room, e.event_id.as_uuid()), // poisoned lock = read the last state, same policy as every lock in this crate
+                    seen.lock().was_seen(room, e.event_id.as_uuid()),
                 )
             });
         }
         for event in events {
             if event.occurred_at_ms <= floor_ms
-                || seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, event.event_id.as_uuid())  // poisoned lock = read the last state, same policy as every lock in this crate
+                || seen.lock().was_seen(room, event.event_id.as_uuid())
             {
                 continue;
             }
@@ -339,7 +336,7 @@ async fn catch_up_from_store(
                 .filter(|message| message.work.is_none())
                 .map(|message| SeenRooms::fingerprint(message.peer_id, &message.render_content()));
             {
-                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+                let mut s = seen.lock();
                 if let Some(fp) = fingerprint {
                     if s.was_seen_text(room, fp) {
                         continue;
@@ -438,7 +435,7 @@ pub struct AircPersonaConversation {
     /// re-open (membership change) must not re-adopt floors: on the previous
     /// build every re-open reset them to "now", so a line already in the page
     /// read as old forever (zero admissions across four builds).
-    seen: std::sync::Arc<std::sync::Mutex<SeenRooms>>,
+    seen: std::sync::Arc<parking_lot::Mutex<SeenRooms>>,
     /// Membership-change cue (P0 20b44763): when the citizen joins a room at
     /// RUNTIME (benchmark dispatch moving her into a fresh run room), this
     /// epoch moves and `next_message` re-opens the stream so the new room's
@@ -490,7 +487,7 @@ impl AircPersonaConversation {
             own_peer_id,
             inbox: None,
             pump: None,
-            seen: std::sync::Arc::new(std::sync::Mutex::new(SeenRooms::default())),
+            seen: std::sync::Arc::new(parking_lot::Mutex::new(SeenRooms::default())),
             membership_epoch,
             last_lamport: 0,
             initial_watermark: None,
@@ -684,7 +681,7 @@ impl AircPersonaConversation {
                             };
                             if let Ok(attention) = &item {
                                 let ev = &attention.event;
-                                let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
+                                let mut s = seen.lock();
                                 // Two sources may carry one event (the one feed and,
                                 // until it retires, the private subscription): admit once.
                                 if s.was_seen(ev.room_id.as_uuid(), ev.event_id.as_uuid()) {
@@ -1390,7 +1387,6 @@ mod tests {
         assert!(conversation
             .seen
             .lock()
-            .unwrap()
             .was_seen(room, directed.event_id.as_uuid()));
         let perceived = conversation.perceive_ready().await.unwrap();
         assert_eq!(perceived.len(), 2);

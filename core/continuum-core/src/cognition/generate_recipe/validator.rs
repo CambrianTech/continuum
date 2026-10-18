@@ -20,12 +20,15 @@
 //! marked as TS-shim concerns.
 
 use crate::cognition::generate_recipe::types::RecipeDefinitionShape;
-use once_cell::sync::Lazy;
-use regex::Regex;
 
-/// Mirror of the TS regex `/^[a-z0-9-]+$/` for uniqueId format.
-static KEBAB_CASE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^[a-z0-9-]+$").expect("static regex compiles"));
+/// Mirror of the TS regex `/^[a-z0-9-]+$/` for uniqueId format, as a byte
+/// predicate (non-empty; lowercase ASCII letters, digits, hyphens) so there is
+/// no pattern to compile.
+fn is_kebab_case(s: &str) -> bool {
+    !s.is_empty()
+        && s.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
 
 /// Valid `conversationPattern` values from `RecipeStrategy`. Mirrors TS array
 /// at line 297 exactly. Drift here = false-positive validation rejections of
@@ -123,7 +126,7 @@ pub fn validate_recipe_structure(
     }
 
     // ── uniqueId format ────────────────────────────────────────────
-    if !recipe.unique_id.is_empty() && !KEBAB_CASE_RE.is_match(&recipe.unique_id) {
+    if !recipe.unique_id.is_empty() && !is_kebab_case(&recipe.unique_id) {
         errors.push(ValidationError::InvalidFormat {
             field: "uniqueId",
             value: recipe.unique_id.clone(),
@@ -147,7 +150,7 @@ pub fn validate_recipe_structure(
                     field: "command",
                 });
             }
-            let has_params_object = step.get("params").map(|v| v.is_object()).unwrap_or(false);
+            let has_params_object = step.get("params").is_some_and(|v| v.is_object());
             if !has_params_object {
                 errors.push(ValidationError::PipelineStepMissingField {
                     index: idx,
@@ -177,31 +180,31 @@ pub fn validate_recipe_structure(
             .strategy
             .get("conversationPattern")
             .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .filter(|s| !s.is_empty());
 
-        if pattern.is_empty() {
-            errors.push(ValidationError::Missing("strategy.conversationPattern"));
-        } else if !VALID_CONVERSATION_PATTERNS.contains(&pattern) {
-            errors.push(ValidationError::InvalidEnumValue {
-                field: "conversationPattern",
-                value: pattern.to_string(),
-                allowed: VALID_CONVERSATION_PATTERNS,
-            });
+        match pattern {
+            None => errors.push(ValidationError::Missing("strategy.conversationPattern")),
+            Some(pattern) if !VALID_CONVERSATION_PATTERNS.contains(&pattern) => {
+                errors.push(ValidationError::InvalidEnumValue {
+                    field: "conversationPattern",
+                    value: pattern.to_string(),
+                    allowed: VALID_CONVERSATION_PATTERNS,
+                });
+            }
+            Some(_) => {}
         }
 
         if !recipe
             .strategy
             .get("responseRules")
-            .map(|v| v.is_array())
-            .unwrap_or(false)
+            .is_some_and(|v| v.is_array())
         {
             errors.push(ValidationError::Missing("strategy.responseRules array"));
         }
         if !recipe
             .strategy
             .get("decisionCriteria")
-            .map(|v| v.is_array())
-            .unwrap_or(false)
+            .is_some_and(|v| v.is_array())
         {
             errors.push(ValidationError::Missing("strategy.decisionCriteria array"));
         }
@@ -220,22 +223,26 @@ pub fn validate_recipe_structure(
             });
         }
 
-        let role_type = role.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        if role_type.is_empty() {
-            errors.push(ValidationError::Missing("role.type"));
-        } else if !VALID_ROLE_TYPES.contains(&role_type) {
-            errors.push(ValidationError::InvalidEnumValue {
-                field: "role.type",
-                value: role_type.to_string(),
-                allowed: VALID_ROLE_TYPES,
-            });
+        let role_type = role
+            .get("type")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty());
+        match role_type {
+            None => errors.push(ValidationError::Missing("role.type")),
+            Some(role_type) if !VALID_ROLE_TYPES.contains(&role_type) => {
+                errors.push(ValidationError::InvalidEnumValue {
+                    field: "role.type",
+                    value: role_type.to_string(),
+                    allowed: VALID_ROLE_TYPES,
+                });
+            }
+            Some(_) => {}
         }
 
         let requires_ok = role
             .get("requires")
             .and_then(|v| v.as_array())
-            .map(|arr| !arr.is_empty())
-            .unwrap_or(false);
+            .is_some_and(|arr| !arr.is_empty());
         if !requires_ok {
             errors.push(ValidationError::Missing(
                 "role.requires (must be non-empty array)",

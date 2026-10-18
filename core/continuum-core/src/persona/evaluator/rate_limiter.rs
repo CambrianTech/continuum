@@ -49,19 +49,17 @@ impl RateLimiterState {
     pub fn has_reached_response_cap(&self, room_id: Uuid) -> bool {
         self.rooms
             .get(&room_id)
-            .map(|r| r.response_count >= self.max_responses_per_session)
-            .unwrap_or(false)
+            .is_some_and(|r| r.response_count >= self.max_responses_per_session)
     }
 
     /// Check if rate limited for a room (time-based).
     pub fn is_rate_limited(&self, room_id: Uuid, now_ms: u64) -> bool {
         self.rooms
             .get(&room_id)
-            .map(|r| {
+            .is_some_and(|r| {
                 let elapsed_seconds = (now_ms - r.last_response_time_ms) as f64 / 1000.0;
                 elapsed_seconds < self.min_seconds_between_responses
             })
-            .unwrap_or(false)
     }
 
     /// Get seconds until rate limit expires. None if not limited.
@@ -91,7 +89,7 @@ impl RateLimiterState {
         self.rooms
             .get(&room_id)
             .map(|r| r.response_count)
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: a room with no state has had zero responses
     }
 }
 

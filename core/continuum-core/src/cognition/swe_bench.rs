@@ -143,17 +143,36 @@ impl SweInstance {
     /// grade, scoreboard) reads through, so no caller can re-introduce them.
     pub fn f2p(&self) -> Vec<String> {
         Self::satisfiable(
-            serde_json::from_str(&self.fail_to_pass).unwrap_or_default(),
+            Self::decode_ids(&self.fail_to_pass, &self.instance_id, "FAIL_TO_PASS"),
             &self.instance_id,
             "FAIL_TO_PASS",
         )
     }
     pub fn p2p(&self) -> Vec<String> {
         Self::satisfiable(
-            serde_json::from_str(&self.pass_to_pass).unwrap_or_default(),
+            Self::decode_ids(&self.pass_to_pass, &self.instance_id, "PASS_TO_PASS"),
             &self.instance_id,
             "PASS_TO_PASS",
         )
+    }
+
+    /// Decode one JSON-encoded id list. A list that does not decode yields no ids and
+    /// SAYS SO — an undecodable field silently read as empty would shrink the
+    /// denominator exactly the way `satisfiable` refuses to.
+    fn decode_ids(raw: &str, instance_id: &str, field: &str) -> Vec<String> {
+        match serde_json::from_str(raw) {
+            Ok(ids) => ids,
+            Err(e) => {
+                crate::probe!(
+                    class = "benchmark.dataset.undecodable_ids",
+                    instance = %instance_id,
+                    field = %field,
+                    error = %e,
+                    "required-test list is not a JSON string array; this instance has no ids for it"
+                );
+                Vec::new()
+            }
+        }
     }
 
     /// Drop unsatisfiable ids and SAY SO — a silently shrunk denominator is the
@@ -181,7 +200,7 @@ impl SweInstance {
         self.created_at
             .get(..4)
             .and_then(|y| y.parse().ok())
-            .unwrap_or(2023)
+            .unwrap_or(2023) // unwrap_or: no parseable created_at = the 2023 era the dataset was built on
     }
 }
 
@@ -288,11 +307,27 @@ pub struct SweVerdict {
 /// the writer reports a self-consistent lie about an empty dir, the same failure shape the
 /// `swe_cache_dir` doc records for env coverage.
 pub fn solve_ledger_dir() -> PathBuf {
-    crate::paths::continuum_home()
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
-        })
-        .join("progress")
+    benchmark_home().join("progress")
+}
+
+/// The continuum home both benchmark roots hang off. `continuum_home` fails only when
+/// there is no home directory at all (it already consults `$HOME`); the old fallback
+/// re-read `$HOME` — dead by construction — and then landed in `/tmp` silently. The
+/// landing place is unchanged; it is now named once and logged.
+fn benchmark_home() -> PathBuf {
+    match crate::paths::continuum_home() {
+        Ok(home) => home,
+        Err(e) => {
+            let fallback = PathBuf::from("/tmp").join(".continuum");
+            crate::probe!(
+                class = "benchmark.home.unresolved",
+                error = %e,
+                fallback = %fallback.display(),
+                "no continuum home resolvable; benchmark state goes to the temp fallback"
+            );
+            fallback
+        }
+    }
 }
 
 /// The ONE filename prefix a detached solve run's ledger carries: `agent-solve-<run_id>.json`,
@@ -397,7 +432,7 @@ pub fn in_flight_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
         let instance = v
             .get("instance")
             .and_then(|i| i.as_str())
-            .unwrap_or("unknown")
+            .unwrap_or("unknown") // unwrap_or: a ledger with no instance field is listed as unknown, not dropped
             .to_string();
         live.push((run_id, instance));
     }
@@ -475,12 +510,15 @@ pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
         let path = solve_ledger_path(dir, &run_id);
         // Start from what the run itself journaled; the death is an ANNOTATION on that
         // record, never a replacement for it.
-        let mut record = std::fs::read_to_string(&path)
+        let journaled = std::fs::read_to_string(&path)
             .ok()
-            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-            .filter(|v| v.is_object())
-            .unwrap_or_else(|| serde_json::json!({}));
-        let obj = record.as_object_mut().expect("filtered to an object above");
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+        // Typed as a map from the start, so "not an object" has no later panic path:
+        // an unreadable or non-object record is annotated from an empty one.
+        let mut obj = match journaled {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
         obj.insert("failed".into(), serde_json::Value::Bool(true));
         // `state` is what `in_flight_solve_runs_in` keys on. Clearing it off `running` is
         // what makes the reap idempotent — a second boot must not re-reap.
@@ -505,7 +543,7 @@ pub fn reap_orphaned_solve_runs_in(dir: &Path) -> Vec<(String, String)> {
                     .into(),
             ),
         );
-        if std::fs::write(&path, record.to_string()).is_ok() {
+        if std::fs::write(&path, serde_json::Value::Object(obj).to_string()).is_ok() {
             reaped.push((run_id, instance));
         }
     }
@@ -553,10 +591,7 @@ pub fn reap_orphaned_solve_runs() -> Vec<(String, String)> {
 /// and the test was quietly seeding the live verdict record with fixture data — a fixture
 /// that would later read as a genuine measurement.
 pub fn swe_cache_dir() -> PathBuf {
-    crate::paths::continuum_home()
-        .unwrap_or_else(|_| {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into())).join(".continuum")
-        })
+    benchmark_home()
         .join("benchmarks")
         .join("swe")
 }
@@ -871,7 +906,7 @@ where
                 let _ = std::fs::create_dir_all(swe_cache_dir());
                 if let Ok(mut out) = std::fs::File::create(&cache) {
                     for row in &rows {
-                        let _ = writeln!(out, "{}", serde_json::to_string(row).unwrap_or_default());
+                        let _ = writeln!(out, "{row}"); // `Value`'s Display IS its compact JSON — no fallible serialize step
                     }
                 }
                 let _ = std::fs::remove_file(&legacy);
@@ -973,7 +1008,7 @@ where
                 // Write BEFORE handing to the caller: if the caller aborts, the bytes already
                 // fetched are still on disk under the partial name, and the guards below decide
                 // whether they are trustworthy enough to promote.
-                let _ = writeln!(out, "{}", serde_json::to_string(row).unwrap_or_default());
+                let _ = writeln!(out, "{row}"); // `Value`'s Display IS its compact JSON — no fallible serialize step
                 on_row(row)?;
                 streamed += 1;
             }
@@ -1031,7 +1066,19 @@ pub async fn load_dataset(dataset: &str) -> Result<Vec<SweInstance>, String> {
         ));
     }
     let _ = std::fs::create_dir_all(swe_cache_dir());
-    let _ = std::fs::write(&cache, serde_json::to_vec(&rows).unwrap_or_default());
+    match serde_json::to_vec(&rows) {
+        Ok(bytes) => {
+            let _ = std::fs::write(&cache, bytes);
+        }
+        // An empty cache file would read back as "debris" and force a refetch anyway;
+        // skipping the write says the same thing honestly and names why.
+        Err(e) => crate::probe!(
+            class = "benchmark.dataset.cache_skipped",
+            dataset = %dataset,
+            error = %e,
+            "decoded rows did not serialize; not caching them"
+        ),
+    }
     Ok(rows)
 }
 
@@ -1114,7 +1161,7 @@ pub(crate) async fn run_env(
 /// instance staged at two different roots is two independent jobs, while two callers
 /// aiming at ONE path are a razed tree waiting to happen (see the guard below).
 static CLONE_AT_LOCKS: std::sync::LazyLock<
-    std::sync::Mutex<
+    parking_lot::Mutex<
         std::collections::HashMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>,
     >,
 > = std::sync::LazyLock::new(Default::default);
@@ -1122,7 +1169,6 @@ static CLONE_AT_LOCKS: std::sync::LazyLock<
 fn clone_lock_for(repo_dir: &Path) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     CLONE_AT_LOCKS
         .lock()
-        .expect("clone-lock registry poisoned")
         .entry(repo_dir.to_path_buf())
         .or_default()
         .clone()
@@ -1464,13 +1510,13 @@ fn diff_target_paths(diff: &str) -> Vec<String> {
             continue;
         };
         // Trailing tab-separated timestamp is legal in unified diffs; git omits it, others don't.
-        let rest = rest.split('\t').next().unwrap_or(rest).trim();
+        let rest = rest.split('\t').next().unwrap_or(rest).trim(); // unwrap_or: split always yields a first item; unreachable fallback
         let rest = rest.strip_prefix('"').map_or(rest, |r| r.trim_end_matches('"'));
         if rest == "/dev/null" {
             continue;
         }
         // `b/` prefix under the default `--src-prefix`/`--dst-prefix`; `-p1` strips it.
-        let path = rest.strip_prefix("b/").unwrap_or(rest);
+        let path = rest.strip_prefix("b/").unwrap_or(rest); // unwrap_or: no b/ prefix = the path is already stripped (-p1)
         if !path.is_empty() && !out.iter().any(|p| p == path) {
             out.push(path.to_string());
         }
@@ -1685,7 +1731,7 @@ async fn ensure_test_extra(
     // and would need a human to know which files to delete. They self-heal instead.
     if std::fs::read_to_string(&marker)
         .map(|m| !m.trim().is_empty() && m.trim() != "none-declared")
-        .unwrap_or(false)
+        .unwrap_or(false) // unwrap_or: no readable marker = not settled, so the extra self-heals
     {
         return;
     }
@@ -1741,7 +1787,7 @@ fn build_requires(repo_dir: &Path) -> Vec<String> {
                 .map(|s| s.to_string())
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or: no build-system.requires = nothing extra to install
 }
 
 /// Era C code vs MODERN clang (#383 cause 2's second head, measured live 2026-08-16 on
@@ -2148,7 +2194,7 @@ async fn build_env_from_scratch(
     env_dir: PathBuf,
     py: PathBuf,
 ) -> Result<PathBuf, String> {
-    let _ = std::fs::create_dir_all(env_dir.parent().unwrap_or(&env_dir));
+    let _ = std::fs::create_dir_all(env_dir.parent().unwrap_or(&env_dir)); // unwrap_or: an env dir with no parent is a root; create it itself
     // A missing HOST tool is a failure to LOOK, never a fact about the instance: typed
     // by its head so the sweep defers and re-tries every tick instead of recording a
     // standing refusal that only a change in the citizen's WORK can lift (card 1aac0c72:
@@ -2817,7 +2863,7 @@ pub fn patched_test_files(test_patch: &str) -> Vec<String> {
     let mut files: Vec<String> = test_patch
         .lines()
         .filter_map(|l| l.strip_prefix("+++ b/"))
-        .map(|p| p.split_whitespace().next().unwrap_or(p).to_string())
+        .map(|p| p.split_whitespace().next().unwrap_or(p).to_string()) // unwrap_or: split always yields a first item; unreachable fallback
         .collect();
     files.sort();
     files.dedup();
@@ -3294,8 +3340,8 @@ pub fn test_invocation_with(
 /// `tests/migrations/test_operations.py` → `migrations.test_operations` — the same
 /// transform the official harness applies for django/django.
 fn django_directive(file: &str) -> String {
-    let f = file.strip_suffix(".py").unwrap_or(file);
-    let f = f.strip_prefix("tests/").unwrap_or(f);
+    let f = file.strip_suffix(".py").unwrap_or(file); // unwrap_or: no .py suffix = the name is already a module
+    let f = f.strip_prefix("tests/").unwrap_or(f); // unwrap_or: no tests/ prefix = the path is already relative to tests
     f.replace('/', ".")
 }
 
@@ -3380,7 +3426,7 @@ pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
                 Some((func, class_path)) if !func.is_empty() && !class_path.is_empty() => {
                     let class_norm = class_path
                         .strip_suffix(&format!(".{func}"))
-                        .unwrap_or(class_path);
+                        .unwrap_or(class_path); // unwrap_or: pre-4.1 django already prints module.Class alone
                     Some((func.to_string(), class_norm.to_string()))
                 }
                 _ => None,
@@ -3422,7 +3468,7 @@ pub fn parse_django_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
         // django ≥4.1 prints `module.Class.test_name`; the dataset uses `module.Class`.
         let class_norm = class_path
             .strip_suffix(&format!(".{func}"))
-            .unwrap_or(class_path);
+            .unwrap_or(class_path); // unwrap_or: pre-4.1 django already prints module.Class alone
         by_node.insert(format!("{func} ({class_norm})"), ok);
         // Same bare name in two classes: passing only if every one passed (pytest rule).
         let entry = by_func.entry(func.to_string()).or_insert(true);
@@ -3528,10 +3574,10 @@ pub fn parse_pytest_report(report: &str) -> (HashMap<String, bool>, HashMap<Stri
         let func = node
             .rsplit("::")
             .next()
-            .unwrap_or(node)
+            .unwrap_or(node) // unwrap_or: rsplit always yields a first item; unreachable fallback
             .split('[')
             .next()
-            .unwrap_or(node);
+            .unwrap_or(node); // unwrap_or: split always yields a first item; unreachable fallback
         // Same bare name in two files: passing only if every one passed.
         let entry = by_func.entry(func.to_string()).or_insert(true);
         *entry = *entry && ok;
@@ -3602,14 +3648,9 @@ pub fn verdict_for(
     // meant — score it as the AND of every reported node it prefixes, which
     // keeps those tests in the denominator instead of dropping them.
     if id.contains('[') && !id.ends_with(']') {
-        let mut all_ok: Option<bool> = None;
-        for (node, ok) in by_node {
-            if node.starts_with(id) {
-                all_ok = Some(all_ok.unwrap_or(true) && *ok);
-            }
-        }
-        if all_ok.is_some() {
-            return all_ok;
+        let mut prefixed = by_node.iter().filter(|(node, _)| node.starts_with(id)).peekable();
+        if prefixed.peek().is_some() {
+            return Some(prefixed.all(|(_, ok)| *ok));
         }
     }
     // django ids are `test_name (module.Class)` — the bare name is the LEADING token, and
@@ -3617,9 +3658,9 @@ pub fn verdict_for(
     let key = if let Some((func, _)) = id.split_once(" (") {
         func
     } else {
-        let key = id.rsplit("::").next().unwrap_or(id);
-        let key = key.rsplit('.').next().unwrap_or(key);
-        key.split('[').next().unwrap_or(key)
+        let key = id.rsplit("::").next().unwrap_or(id); // unwrap_or: rsplit always yields a first item; unreachable fallback
+        let key = key.rsplit('.').next().unwrap_or(key); // unwrap_or: rsplit always yields a first item; unreachable fallback
+        key.split('[').next().unwrap_or(key) // unwrap_or: split always yields a first item; unreachable fallback
     };
     by_func.get(key).copied()
 }
@@ -3704,7 +3745,7 @@ pub async fn run_tests(
         .map(|id| {
             (
                 id.clone(),
-                verdict_for(id, &by_node, &by_func).unwrap_or(false),
+                verdict_for(id, &by_node, &by_func).unwrap_or(false), // unwrap_or: a required test the report never ran is not passing (harness rule)
             )
         })
         .collect();

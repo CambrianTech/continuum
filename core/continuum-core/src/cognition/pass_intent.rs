@@ -66,7 +66,7 @@ pub fn classify_pass(reason: Option<&str>) -> PassIntent {
     let first = lower
         .split(|c: char| !c.is_alphanumeric())
         .find(|w| !w.is_empty())
-        .unwrap_or("");
+        .unwrap_or(""); // unwrap_or: no word at all = no first token; the contains-scan below still runs
     if DONE.contains(&first) || DONE.iter().any(|k| lower.contains(k)) {
         return PassIntent::Done;
     }

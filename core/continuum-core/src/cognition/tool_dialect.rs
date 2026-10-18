@@ -125,7 +125,7 @@ pub fn to_wire_spec_with(mut spec: NativeToolSpec, style: OfferStyle) -> NativeT
             .map(|&alias| alias.to_string())
             // No trained alias: the long tail is offered under its charset-legal
             // canonical (reachable, just not a trained reflex) — never a raw slash.
-            .unwrap_or_else(|| charset_legal(&spec.name)),
+            .unwrap_or_else(|| charset_legal(&spec.name)), // unwrap_or: no trained alias = the charset-legal canonical
         OfferStyle::Canonical => charset_legal(&spec.name),
     };
     spec
@@ -374,12 +374,11 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
     let mut merged = 0usize;
     if let Some(from_name) = parsed {
         if !from_name.is_empty() {
-            let obj = match call.input.as_object_mut() {
-                Some(o) => o,
-                None => {
-                    call.input = serde_json::Value::Object(serde_json::Map::new());
-                    call.input.as_object_mut().expect("just set to an object")
-                }
+            // A non-object input is replaced by an object, as before; owning the map makes
+            // "not an object" unrepresentable for the merge below.
+            let mut obj = match std::mem::take(&mut call.input) {
+                serde_json::Value::Object(o) => o,
+                _ => serde_json::Map::new(),
             };
             for (k, v) in from_name {
                 if !obj.contains_key(&k) {
@@ -387,6 +386,7 @@ pub fn normalize_call(call: &mut crate::ai::types::ToolCall) -> Option<String> {
                     merged += 1;
                 }
             }
+            call.input = serde_json::Value::Object(obj);
         }
     }
 

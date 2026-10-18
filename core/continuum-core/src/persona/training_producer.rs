@@ -1207,7 +1207,7 @@ async fn submit_plan(
                 domain = %plan.trait_kind,
                 quality = plan.quality as f64,
                 provenance = provenance,
-                outcome = %receipt.outcome.as_deref().unwrap_or("unspecified"),
+                outcome = %receipt.outcome.as_deref().unwrap_or("unspecified"), // unwrap_or: outcome is an optional receipt field; absent is named, not hidden
                 // THE JOIN KEY, not a count. Without it this probe says an example
                 // was accepted but not WHICH submission it became, so a room turn
                 // cannot be joined to `training_trigger_submissions` or to dispatch
@@ -1434,7 +1434,7 @@ async fn read_lived(
             (calls, true)
         }
         _ => {
-            let reason = missing.unwrap_or_else(|| "the turn has no served call".into());
+            let reason = missing.unwrap_or_else(|| "the turn has no served call".into()); // unwrap_or: in this arm no read error means the read came back empty
             crate::probe!(
                 class = "training.credit.lived_unavailable",
                 persona = %persona_name,
@@ -1565,7 +1565,7 @@ fn storage_ok(
                 .as_deref()
                 // An unsuccessful result with no message is still a failure. Saying so
                 // beats inventing a reason or, worse, reading the silence as success.
-                .unwrap_or("reported success=false with no error message"),
+                .unwrap_or("reported success=false with no error message"), // unwrap_or: names the silent failure, never reads it as success
         ),
     })
 }
@@ -1904,7 +1904,7 @@ fn lived_examples(
                 .messages
                 .last()
                 .map(|m| m.content_text())
-                .unwrap_or_default(),
+                .unwrap_or_default(), // unwrap_or: a messageless call has no flat prompt; the whole call still rides in `lived`
             completion: call.response.text.clone(),
             metadata: Some(metadata.clone()),
             lived: Some(call.clone()),

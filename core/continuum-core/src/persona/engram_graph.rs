@@ -197,7 +197,7 @@ impl EngramGraph {
     /// callers virtually always want to iterate, never branch on
     /// presence, so we elide the Option).
     pub fn neighbors(&self, id: &Uuid) -> Vec<EngramEdge> {
-        self.edges.get(id).map(|e| e.clone()).unwrap_or_default()
+        self.edges.get(id).map(|e| e.clone()).unwrap_or_default() // unwrap_or: no outbound edges = empty list, per the doc
     }
 
     /// Count inbound edges to `id` by scanning all sources. O(N) over

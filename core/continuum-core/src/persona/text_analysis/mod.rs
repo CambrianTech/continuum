@@ -9,6 +9,7 @@
 //! Phase 4: Conversation heuristics
 
 pub mod garbage_detection;
+pub(crate) mod literal_regex;
 pub mod loop_detection;
 pub mod mention_detection;
 pub mod response_cleaning;

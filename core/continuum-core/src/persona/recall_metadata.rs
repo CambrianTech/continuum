@@ -336,14 +336,20 @@ impl RecallMetadataRegistry {
     /// before a decay tick fires would observe `delta_ms = now_ms`
     /// — many decades of decay applied in one call, collapsing
     /// salience to ~0 immediately.
-    pub fn admit_with_defaults(&self, engram_id: Uuid) {
+    ///
+    /// Returns the metadata now on record (the fresh defaults, or the existing entry
+    /// when the engram was already tracked), so a caller never has to re-`get` a
+    /// value it just guaranteed exists.
+    pub fn admit_with_defaults(&self, engram_id: Uuid) -> RecallMetadata {
         let now = EpochMs::now().millis();
-        self.inner
+        *self
+            .inner
             .entry(engram_id)
             .or_insert_with(|| RecallMetadata {
                 last_decayed_ms: now,
                 ..RecallMetadata::default()
-            });
+            })
+            .value()
     }
 
     /// Record a recall hit. Atomic increment of access_count +

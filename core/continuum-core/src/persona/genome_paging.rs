@@ -272,9 +272,11 @@ impl GenomePagingEngine {
             };
         }
 
-        // Not in available pool — unknown skill
-        let adapter = match self.available.get(skill_name) {
-            Some(a) => a.clone(),
+        // Not in available pool — unknown skill. Taken out of the pool now: nothing
+        // below re-inserts `skill_name` (eviction moves ACTIVE victims back), so the
+        // adapter is owned from here to activation with no second lookup to fail.
+        let adapter = match self.available.remove(skill_name) {
+            Some(a) => a,
             None => {
                 return ActivateSkillResult {
                     activated: false,
@@ -312,7 +314,7 @@ impl GenomePagingEngine {
         }
 
         // Move from available to active
-        let mut loaded = self.available.remove(skill_name).unwrap_or(adapter);
+        let mut loaded = adapter;
         loaded.is_loaded = true;
         loaded.last_used_ms = now_ms;
         self.memory_used_mb += loaded.size_mb;

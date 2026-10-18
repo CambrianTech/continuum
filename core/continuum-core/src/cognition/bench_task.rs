@@ -315,7 +315,7 @@ impl SuiteAdapter for ProgramAdapter {
         // reuses `prompt` for both roles.
         let preamble = req_str(row, "complete_prompt", &id)
             .or_else(|_| req_str(row, "prompt", &id))
-            .unwrap_or_else(|_| statement.clone());
+            .unwrap_or_else(|_| statement.clone()); // unwrap_or: a row with no starter code (neither field) starts from the statement itself
         Ok(BenchTask {
             statement,
             deliverable: Deliverable::Program {

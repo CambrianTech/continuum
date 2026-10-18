@@ -180,7 +180,7 @@ pub async fn evaluate_gating(
     let model = request
         .model
         .clone()
-        .unwrap_or_else(|| DEFAULT_GATING_MODEL.to_string());
+        .unwrap_or_else(|| DEFAULT_GATING_MODEL.to_string()); // unwrap_or: no model in the request = the default gating model
     let prompt = build_gating_prompt(&request.context);
 
     let gen_request = TextGenerationRequest {
@@ -201,7 +201,7 @@ pub async fn evaluate_gating(
         system_prompt: None,
         model: Some(model.clone()),
         provider: Some(GATING_PROVIDER.to_string()),
-        temperature: Some(request.temperature.unwrap_or(0.3)),
+        temperature: Some(request.temperature.unwrap_or(0.3)), // unwrap_or: no temperature in the request = the gate's default 0.3
         // Model owns its length — the adapter forwards no ceiling (None). The gating
         // prompt asks for a short verdict; brevity is the model's to give, not ours
         // to guillotine (a hard cap truncates a reasoning model mid-thought → empty).
@@ -272,7 +272,7 @@ pub fn build_gating_prompt(context: &AIDecisionContext) -> String {
     let mut conversation_lines = Vec::with_capacity(recent_messages.len() + 1);
 
     for msg in recent_messages {
-        let speaker = msg.name.as_deref().unwrap_or(&msg.role);
+        let speaker = msg.name.as_deref().unwrap_or(&msg.role); // unwrap_or: an unnamed message is labelled by its role
         let line = format!("{speaker}: {}", msg.content);
         let is_trigger = msg.content == *trigger_text && speaker == trigger_sender;
         if is_trigger {
@@ -297,7 +297,7 @@ pub fn build_gating_prompt(context: &AIDecisionContext) -> String {
                 .metadata
                 .recipe_name
                 .as_deref()
-                .unwrap_or("room recipe");
+                .unwrap_or("room recipe"); // unwrap_or: an unnamed recipe is labelled generically in the prompt
             format!(
                 "\n\n**RECIPE RULES (from {recipe_name}):**\n\nConversation Pattern: {}\n\nResponse Rules:\n{}\n\nDecision Criteria:\n{}\n\n",
                 strategy.conversation_pattern,
@@ -315,7 +315,7 @@ pub fn build_gating_prompt(context: &AIDecisionContext) -> String {
                     .join("\n")
             )
         })
-        .unwrap_or_default();
+        .unwrap_or_default(); // unwrap_or: no recipe criteria = no criteria section in the prompt
 
     format!(
         "You are \"{}\" in a group chat. Should you respond to the message marked >>> like this <<<?\n\n\
@@ -375,7 +375,7 @@ pub fn parse_gating_response(ai_text: &str) -> AIGatingDecision {
 
     AIGatingDecision {
         should_respond: should_respond || !should_stay_silent,
-        confidence: extract_confidence(ai_text).unwrap_or(0.5),
+        confidence: extract_confidence(ai_text).unwrap_or(0.5), // unwrap_or: the model stated no confidence = 0.5, the gate's neutral
         reason: extract_reason(ai_text),
         model: String::new(),
         timestamp: 0,
@@ -388,7 +388,7 @@ fn decision_from_json(value: &Value) -> AIGatingDecision {
         .get("confidence")
         .and_then(Value::as_f64)
         .map(|v| v.clamp(0.0, 1.0) as f32)
-        .unwrap_or(0.5);
+        .unwrap_or(0.5); // unwrap_or: the model stated no confidence = 0.5, the gate's neutral
     let factors = value
         .get("factors")
         .and_then(|v| serde_json::from_value::<AIGatingDecisionFactors>(v.clone()).ok());
@@ -397,12 +397,12 @@ fn decision_from_json(value: &Value) -> AIGatingDecision {
         should_respond: value
             .get("shouldRespond")
             .and_then(Value::as_bool)
-            .unwrap_or(false),
+            .unwrap_or(false), // unwrap_or: no affirmative shouldRespond = stay silent
         confidence,
         reason: value
             .get("reason")
             .and_then(Value::as_str)
-            .unwrap_or("No reason provided")
+            .unwrap_or("No reason provided") // unwrap_or: the model gave no reason; the decision says so plainly
             .to_string(),
         model: String::new(),
         timestamp: 0,
@@ -433,7 +433,7 @@ fn extract_reason(text: &str) -> String {
         let reason = text[idx + "because".len()..]
             .split(['.', '\n', '}'])
             .next()
-            .unwrap_or("")
+            .unwrap_or("") // unwrap_or: split always yields a first item; unreachable fallback
             .trim();
         if !reason.is_empty() {
             return reason.to_string();
@@ -443,7 +443,7 @@ fn extract_reason(text: &str) -> String {
     text.lines()
         .find(|line| line.trim().len() >= 10)
         .map(|line| line.trim().chars().take(100).collect())
-        .unwrap_or_else(|| "Extracted from natural language response".to_string())
+        .unwrap_or_else(|| "Extracted from natural language response".to_string()) // unwrap_or: no substantive line = the decision says the reason was inferred
 }
 
 fn contains_word(text: &str, needle: &str) -> bool {

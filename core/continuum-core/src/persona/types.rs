@@ -80,8 +80,7 @@ impl PartialOrd for InboxMessage {
 impl Ord for InboxMessage {
     fn cmp(&self, other: &Self) -> Ordering {
         self.priority
-            .partial_cmp(&other.priority)
-            .unwrap_or(Ordering::Equal)
+            .total_cmp(&other.priority)
     }
 }
 
@@ -124,8 +123,7 @@ impl PartialOrd for InboxTask {
 impl Ord for InboxTask {
     fn cmp(&self, other: &Self) -> Ordering {
         self.priority
-            .partial_cmp(&other.priority)
-            .unwrap_or(Ordering::Equal)
+            .total_cmp(&other.priority)
     }
 }
 
@@ -178,8 +176,7 @@ impl PartialOrd for QueueItem {
 impl Ord for QueueItem {
     fn cmp(&self, other: &Self) -> Ordering {
         self.priority()
-            .partial_cmp(&other.priority())
-            .unwrap_or(Ordering::Equal)
+            .total_cmp(&other.priority())
     }
 }
 

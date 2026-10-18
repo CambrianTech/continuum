@@ -245,7 +245,7 @@ pub fn allocate(
     // it); with nothing known they resolve per candidate to its trained window.
     let largest_known = largest_known(requirements);
     let mut sorted: Vec<&LaneRequirement> = requirements.iter().collect();
-    sorted.sort_by_key(|r| (r.window.unwrap_or(u32::MAX), r.persona));
+    sorted.sort_by_key(|r| (r.window.unwrap_or(u32::MAX), r.persona)); // unwrap_or: sort key only — unknowns sort after every known requirement
     // The lane cap and what set it, chosen together (ties to the earlier term), so a caller can
     // tell a cap from a budget refusal (Codex on #4971): with more minds than `lane_cap`, the
     // unserved were never offered a lane, whatever the budget.

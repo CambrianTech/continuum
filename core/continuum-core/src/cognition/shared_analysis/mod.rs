@@ -33,7 +33,6 @@ use futures::FutureExt;
 use once_cell::sync::Lazy;
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use prompt::{build_prompt, parse_model_output, strip_think_blocks, ANALYSIS_TEMPERATURE, SYSTEM_PROMPT};
 
@@ -223,7 +222,7 @@ async fn run_analysis(
     input: &AnalysisInput,
     cache_key: &str,
 ) -> Result<SharedAnalysis, AnalysisError> {
-    let start = SystemTime::now();
+    let start = std::time::Instant::now(); // monotonic: elapsed() cannot fail on a clock step
     let prompt_text = build_prompt(input);
 
     // Model binding — the SINGLE source of truth (#76, Joel 2026-07-16 smell hunt):
@@ -307,7 +306,7 @@ async fn run_analysis(
     // parser sees the actual structured output.
     let stripped = strip_think_blocks(&response.text);
     let parsed = parse_model_output(&stripped, &input.known_specialties)?;
-    let duration_ms = start.elapsed().map(|d| d.as_millis() as u64).unwrap_or(0);
+    let duration_ms = start.elapsed().as_millis() as u64;
 
     // RTOS-debugger breakpoint: the analyze LLM finished and we
     // parsed its output. Surfaces the per-specialty angle decision

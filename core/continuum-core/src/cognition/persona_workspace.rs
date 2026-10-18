@@ -332,7 +332,7 @@ fn assemble_workspace_cycle(
     // so a message is embedded ONCE and shared across every persona (never 14× for
     // 14 personas). `None` (harnesses) falls back to the lexical bootstrap, which
     // works on any machine with no model. Relevance > recency either way.
-    let embedder = cfg.embedder.unwrap_or_else(|| {
+    let embedder = cfg.embedder.unwrap_or_else(|| { // unwrap_or: no embedder configured (harnesses) means the lexical bootstrap, by design
         Arc::new(CachingEmbeddingProvider::new(Arc::new(
             LexicalEmbedder::new(),
         )))
@@ -590,7 +590,7 @@ fn assemble_workspace_cycle(
         // heads-down, and fuller-grounded on a fresh ask. This is the wire behind
         // "straightforward for whatever their current state requires."
         Arc::new(SituationFocusArbiter::new()),
-        cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY),
+        cfg.capacity.unwrap_or(DEFAULT_WORKSPACE_CAPACITY), // unwrap_or: capacity is an optional override of the default
     )
     .with_genome(genome)
     .with_decoding(decoding)
@@ -858,8 +858,8 @@ async fn drive_create_workspace(
 /// workspace map she perceives and the scope her receipts carry; set at the rooting seam,
 /// cleared on restore.
 static ACTING_ROOTS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<ActingKey, ActingPlace>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    Mutex<std::collections::HashMap<ActingKey, ActingPlace>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Whose place: the persona, and which of her hands (`None` = live).
 type ActingKey = (uuid::Uuid, Option<crate::code::hands::HandsContext>);
@@ -877,17 +877,17 @@ struct ActingPlace {
 /// place ever moves (card fc9e9fd7). Set by [`root_at_held_card`], cleared when that
 /// claim's hands close.
 static FOCUS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<uuid::Uuid, crate::code::hands::HandsContext>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    Mutex<std::collections::HashMap<uuid::Uuid, crate::code::hands::HandsContext>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 fn focus_of(persona_id: uuid::Uuid) -> Option<crate::code::hands::HandsContext> {
-    FOCUS.lock().unwrap_or_else(|e| e.into_inner()).get(&persona_id).copied() // poisoned lock = read the last state, same policy as every lock in this crate
+    FOCUS.lock().get(&persona_id).copied()
 }
 
 /// Point her perception at `context` (or home). The map she perceives re-renders when it moved.
 fn set_focus(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) {
     let moved = {
-        let mut map = FOCUS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+        let mut map = FOCUS.lock();
         let before = match context {
             Some(c) => map.insert(persona_id, c),
             None => map.remove(&persona_id),
@@ -912,9 +912,8 @@ pub fn acting_root_of(persona_id: uuid::Uuid) -> Option<std::path::PathBuf> {
 pub(crate) fn acting_root_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) -> Option<std::path::PathBuf> {
     ACTING_ROOTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .get(&(persona_id, context))
-        .map(|p| p.root.clone()) // poisoned lock = read the last state, same policy as every lock in this crate
+        .map(|p| p.root.clone())
 }
 
 /// The card her hands are rooted at, if a held card rooted them. Her work
@@ -930,18 +929,15 @@ pub fn acting_card_of(persona_id: uuid::Uuid) -> Option<uuid::Uuid> {
 pub(crate) fn acting_card_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>) -> Option<uuid::Uuid> {
     ACTING_ROOTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .get(&(persona_id, context))
-        .and_then(|p| p.card) // poisoned lock = read the last state, same policy as every lock in this crate
+        .and_then(|p| p.card)
 }
 
 fn note_acting_card_in(persona_id: uuid::Uuid, context: Option<crate::code::hands::HandsContext>, card: uuid::Uuid) {
     if let Some(place) = ACTING_ROOTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
         .get_mut(&(persona_id, context))
     {
-        // poisoned lock = read the last state, same policy as every lock in this crate
         place.card = Some(card);
     }
 }
@@ -952,7 +948,7 @@ fn note_acting_root_in(
     root: Option<std::path::PathBuf>,
 ) {
     {
-        let mut map = ACTING_ROOTS.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
+        let mut map = ACTING_ROOTS.lock();
         match root {
             Some(r) => {
                 map.insert(
@@ -1278,15 +1274,15 @@ pub(crate) async fn bind_card(
 /// The checkout each citizen was last TOLD her hands stand in (card 822c4253). Process
 /// memory: after a restart she is told once more, which costs one pinned line.
 static ANNOUNCED_ROOTS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    Mutex<std::collections::HashMap<uuid::Uuid, std::path::PathBuf>>,
+> = std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
 
 /// Whether `root` is the checkout she was last told about. A per-turn rooting at the
 /// same checkout says nothing.
 fn already_told(persona_id: uuid::Uuid, root: &std::path::Path) -> bool {
     ANNOUNCED_ROOTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        
         .get(&persona_id)
         .is_some_and(|r| r == root)
 }
@@ -1295,7 +1291,7 @@ fn already_told(persona_id: uuid::Uuid, root: &std::path::Path) -> bool {
 fn mark_told(persona_id: uuid::Uuid, root: &std::path::Path) {
     ANNOUNCED_ROOTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        
         .insert(persona_id, root.to_path_buf());
 }
 
@@ -1385,7 +1381,7 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
 fn close_ended_claims(live: &ActingHands, held: &[crate::code::hands::HandsContext]) {
     let ended: Vec<crate::code::hands::HandsContext> = ACTING_ROOTS
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
+        
         .iter()
         .filter(|((persona, context), place)| *persona == live.persona_id && place.card.is_some() && context.is_some_and(|c| !held.contains(&c)))
         .filter_map(|((_, context), _)| *context)

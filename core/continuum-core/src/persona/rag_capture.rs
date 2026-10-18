@@ -55,7 +55,7 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -230,7 +230,7 @@ impl RagCaptureSink for JsonlRagCaptureSink {
         line.push('\n');
         // Mutex-protected append. Failures log + drop per the
         // "capture failure must never fail the cognition turn" rule.
-        let mut file = self.file.lock().unwrap();
+        let mut file = self.file.lock();
         if let Err(err) = std::io::Write::write_all(&mut *file, line.as_bytes()) {
             tracing::warn!(
                 error = %err,
@@ -367,26 +367,26 @@ impl InMemoryRagCaptureSink {
     /// Snapshot of all captured events so far. Cheap clone — events
     /// are Clone.
     pub fn events(&self) -> Vec<RagCaptureEvent> {
-        self.inner.lock().unwrap().clone()
+        self.inner.lock().clone()
     }
 
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        self.inner.lock().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().is_empty()
+        self.inner.lock().is_empty()
     }
 
     /// Clear all captured events. Useful between test phases.
     pub fn clear(&self) {
-        self.inner.lock().unwrap().clear();
+        self.inner.lock().clear();
     }
 }
 
 impl RagCaptureSink for InMemoryRagCaptureSink {
     fn record(&self, event: RagCaptureEvent) {
-        self.inner.lock().unwrap().push(event);
+        self.inner.lock().push(event);
     }
 }
 

@@ -123,7 +123,7 @@ impl ChannelElement {
     /// candidates are real identities on the event.
     pub fn sender_id(&self) -> Uuid {
         self.logical_sender
-            .unwrap_or_else(|| self.event.peer_id.as_uuid())
+            .unwrap_or_else(|| self.event.peer_id.as_uuid()) // unwrap_or: no envelope sender means the transport peer spoke (a persona's own say)
     }
 
     /// The message embedding — computed ONCE for this element and shared by every

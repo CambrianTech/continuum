@@ -143,14 +143,14 @@ const OWN_SPEECH_RING: usize = 8;
 /// room-correct (`say_in(turn_room, …)`, "never her ambient default, or she
 /// answers one room's question to a different audience"); only the ring was
 /// blind.
-fn own_speech_rings() -> &'static std::sync::Mutex<
+fn own_speech_rings() -> &'static parking_lot::Mutex<
     std::collections::HashMap<
         (crate::identity::PeerId, uuid::Uuid),
         std::collections::VecDeque<String>,
     >,
 > {
     static RINGS: std::sync::OnceLock<
-        std::sync::Mutex<
+        parking_lot::Mutex<
             std::collections::HashMap<
                 (crate::identity::PeerId, uuid::Uuid),
                 std::collections::VecDeque<String>,
@@ -167,7 +167,7 @@ pub fn record_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid, text: 
     if text.trim().is_empty() {
         return;
     }
-    let mut rings = own_speech_rings().lock().unwrap();
+    let mut rings = own_speech_rings().lock();
     let ring = rings.entry((peer, room)).or_default();
     ring.push_back(text.to_string());
     while ring.len() > OWN_SPEECH_RING {
@@ -180,10 +180,9 @@ pub fn record_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid, text: 
 pub fn recent_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid) -> Vec<String> {
     own_speech_rings()
         .lock()
-        .unwrap()
         .get(&(peer, room))
         .map(|r| r.iter().cloned().collect())
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or: no ring means she has not spoken in this room; empty is the correct reading
 }
 
 /// Every (room, utterances) pair she currently holds — the persistence seam
@@ -194,7 +193,6 @@ pub fn own_speech_by_room(
 ) -> Vec<(uuid::Uuid, Vec<String>)> {
     own_speech_rings()
         .lock()
-        .unwrap()
         .iter()
         .filter(|((p, _), _)| *p == peer)
         .map(|((_, room), ring)| (*room, ring.iter().cloned().collect()))
@@ -216,11 +214,11 @@ const ROOM_SPEECH_RING: usize = 16;
 /// across an entire live chorus). Written ONCE per message at the airc
 /// inbound-attach seam (the single point every room message crosses), read
 /// by the deliberation faculty per tick.
-fn room_speech_rings() -> &'static std::sync::Mutex<
+fn room_speech_rings() -> &'static parking_lot::Mutex<
     std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>,
 > {
     static RINGS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>>,
+        parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>>,
     > = std::sync::OnceLock::new();
     RINGS.get_or_init(Default::default)
 }
@@ -266,7 +264,7 @@ pub fn record_room_speech(room: uuid::Uuid, sender: Option<uuid::Uuid>, content:
         sender,
         content: content.to_string(),
     }); // no receivers = no listeners right now; the ring below is the durable half
-    let mut rings = room_speech_rings().lock().unwrap();
+    let mut rings = room_speech_rings().lock();
     let ring = rings.entry(room).or_default();
     ring.push_back(content.to_string());
     while ring.len() > ROOM_SPEECH_RING {
@@ -278,10 +276,9 @@ pub fn record_room_speech(room: uuid::Uuid, sender: Option<uuid::Uuid>, content:
 pub fn recent_room_speech(room: uuid::Uuid) -> Vec<String> {
     room_speech_rings()
         .lock()
-        .unwrap()
         .get(&room)
         .map(|r| r.iter().cloned().collect())
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or: no ring means an unseen room, whose recent speech is empty
 }
 
 /// Lowercased word-token set for Jaccard similarity.

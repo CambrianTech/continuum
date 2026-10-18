@@ -204,7 +204,7 @@ impl ChannelDigestBuilder {
         let first_unread = elements
             .iter()
             .position(|e| e.event().lamport > bookmark)
-            .unwrap_or(elements.len());
+            .unwrap_or(elements.len()); // unwrap_or: nothing newer than the bookmark means the unread run is empty, starting at the end
         let grounding_start = first_unread.saturating_sub(grounding);
         let unread_start = first_unread - grounding_start;
         let elements = elements.split_off(grounding_start);

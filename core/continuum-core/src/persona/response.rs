@@ -33,6 +33,7 @@
 use crate::time::EpochMs;
 use crate::cognition::tool_executor::types::MediaItemLite;
 use crate::cognition::{analyze, AnalysisInput, PersonaSlot, SharedAnalysis};
+use crate::persona::text_analysis::literal_regex::literal;
 use crate::persona::turn_context::TurnContext;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, LazyLock};
@@ -342,7 +343,7 @@ async fn respond_inner(
         .suggested_angles
         .get(&input.persona.specialty)
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_default(); // unwrap_or: no angle for her specialty this turn renders as the empty angle
     crate::probe!(
         class = "persona.response.analyze.result",
         persona = %input.persona.display_name,
@@ -535,7 +536,7 @@ async fn run_render(
         .suggested_angles
         .get(&input.persona.specialty)
         .cloned()
-        .unwrap_or_default();
+        .unwrap_or_default(); // unwrap_or: no angle for her specialty this turn is the empty angle; assemble skips it
 
     // 2. Convert RecentMessage → HistoryMessage. RecentMessage is
     //    intentionally minimal (analysis-only). The render uses what
@@ -569,7 +570,7 @@ async fn run_render(
     let multi_party_strategy = resolved_model
         .as_ref()
         .map(|m| m.multi_party_strategy.clone())
-        .unwrap_or_default();
+        .unwrap_or_default(); // unwrap_or: a model with no registry row takes the documented default strategy
     // Per-model sampling (#76): the anti-loop decode knobs live on the Model
     // row (ModelSampling default = repeat_penalty 1.1 / repeat_last_n 320 /
     // frequency_penalty 0.3, the #181 anti-loop floor). The persona request
@@ -581,7 +582,7 @@ async fn run_render(
     let sampling = resolved_model
         .as_ref()
         .map(|m| m.sampling)
-        .unwrap_or_default();
+        .unwrap_or_default(); // unwrap_or: a model with no registry row takes the substrate anti-loop sampling floor
 
     // Capture probe signals BEFORE moving matched_angle + history
     // into PromptAssemblyInput. Bool + usize are Copy; the probe
@@ -959,22 +960,22 @@ fn strip_thinks_emit_events(raw: &str, persona_id: Uuid, message_id: Uuid) -> (S
 }
 
 static TOOL_USE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?is)<tool_use\b[^>]*>.*?</tool_use>").expect("tool_use regex")
+    literal(r"(?is)<tool_use\b[^>]*>.*?</tool_use>")
 });
 static TOOL_RESULT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?is)<tool_result\b[^>]*>.*?</tool_result>").expect("tool_result regex")
+    literal(r"(?is)<tool_result\b[^>]*>.*?</tool_result>")
 });
 static THINKING_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?is)<thinking\b[^>]*>.*?</thinking>").expect("thinking regex")
+    literal(r"(?is)<thinking\b[^>]*>.*?</thinking>")
 });
 static TOOL_NAME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?is)<tool_name\b[^>]*>.*?</tool_name>").expect("tool_name regex")
+    literal(r"(?is)<tool_name\b[^>]*>.*?</tool_name>")
 });
 static PARAMETERS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?is)<parameters\b[^>]*>.*?</parameters>").expect("parameters regex")
+    literal(r"(?is)<parameters\b[^>]*>.*?</parameters>")
 });
 static ARGUMENTS_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"(?is)<arguments\b[^>]*>.*?</arguments>").expect("arguments regex")
+    literal(r"(?is)<arguments\b[^>]*>.*?</arguments>")
 });
 static TOOL_CALLS_MARKER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     // The Devstral/Mistral native tool-call marker `[TOOL_CALLS]` plus an optional
@@ -984,15 +985,13 @@ static TOOL_CALLS_MARKER_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
     // visible-text stripper is UNPARSED residue — an unknown/hallucinated tag
     // (#159) — that would otherwise leak as speech (glass-boxed 2026-07-17: Casper
     // spoke `[TOOL_CALLS][room-roster] (no one else is present)` verbatim).
-    regex::Regex::new(r"\[TOOL_CALLS\]\s*(?:\[[a-z][a-z0-9/_-]*\])?")
-        .expect("tool_calls marker regex")
+    literal(r"\[TOOL_CALLS\]\s*(?:\[[a-z][a-z0-9/_-]*\])?")
 });
 static BARE_TOOL_REF_LINE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r#"^\s*['"`][a-z][a-z0-9_-]*/[a-z0-9_/-]+['"`]\s*$"#)
-        .expect("bare tool ref line regex")
+    literal(r#"^\s*['"`][a-z][a-z0-9_-]*/[a-z0-9_/-]+['"`]\s*$"#)
 });
 static EXCESS_BLANK_LINES_RE: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"\n{3,}").expect("blank lines regex"));
+    LazyLock::new(|| literal(r"\n{3,}"));
 
 // System-prompt-section header line: matches `=== SENTINELS ===`,
 // `=== ACTIVITY CONTEXT ===`, `=== TOOL DEFINITIONS ===`, `=== END ===`.
@@ -1007,7 +1006,7 @@ static EXCESS_BLANK_LINES_RE: LazyLock<regex::Regex> =
 // lookahead, so we do the boundary detection in Rust instead of in the
 // pattern.
 static SECTION_HEADER_LINE_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-    regex::Regex::new(r"^=== [A-Z][A-Z0-9 _-]* ===\s*$").expect("section header line regex")
+    literal(r"^=== [A-Z][A-Z0-9 _-]* ===\s*$")
 });
 
 /// Strip system-prompt section blocks. A block opens at a

@@ -40,7 +40,8 @@
 //! concurrently from per-persona task tasks. Same shape as `PersonaInbox`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use parking_lot::{Mutex, RwLock};
+use std::sync::Arc;
 
 use uuid::Uuid;
 
@@ -59,21 +60,21 @@ struct InMemorySeenContent(Mutex<HashMap<String, Uuid>>);
 
 impl SeenContentLookup for InMemorySeenContent {
     fn find_by_content_hash(&self, hash: &str) -> Option<Uuid> {
-        self.0.lock().unwrap().get(hash).copied()
+        self.0.lock().get(hash).copied()
     }
 }
 
 impl InMemorySeenContent {
     fn record(&self, hash: String, engram_id: Uuid) {
-        self.0.lock().unwrap().insert(hash, engram_id);
+        self.0.lock().insert(hash, engram_id);
     }
     /// Snapshot the dedup map for an eval-isolation checkpoint.
     fn snapshot(&self) -> HashMap<String, Uuid> {
-        self.0.lock().unwrap().clone()
+        self.0.lock().clone()
     }
     /// Restore the dedup map to a prior snapshot (rewind a measurement window).
     fn restore(&self, snap: HashMap<String, Uuid>) {
-        *self.0.lock().unwrap() = snap;
+        *self.0.lock() = snap;
     }
 }
 
@@ -82,21 +83,21 @@ struct InMemorySeenEvents(Mutex<HashMap<String, u64>>);
 
 impl SeenEventLookup for InMemorySeenEvents {
     fn first_seen_ms(&self, event_id: &str) -> Option<u64> {
-        self.0.lock().unwrap().get(event_id).copied()
+        self.0.lock().get(event_id).copied()
     }
 }
 
 impl InMemorySeenEvents {
     fn record(&self, event_id: String, when_ms: u64) {
-        self.0.lock().unwrap().insert(event_id, when_ms);
+        self.0.lock().insert(event_id, when_ms);
     }
     /// Snapshot the replay-protection map for an eval-isolation checkpoint.
     fn snapshot(&self) -> HashMap<String, u64> {
-        self.0.lock().unwrap().clone()
+        self.0.lock().clone()
     }
     /// Restore the replay-protection map to a prior snapshot.
     fn restore(&self, snap: HashMap<String, u64>) {
-        *self.0.lock().unwrap() = snap;
+        *self.0.lock() = snap;
     }
 }
 
@@ -321,7 +322,7 @@ impl AdmissionState {
     /// The ONE gate both ingestion paths (`admit`, `admit_reflection`) ask. A bare store with
     /// no owner (tests, replay) has no mind room.
     fn withheld_in_her_mind_room(&self, room: Uuid) -> Option<AdmissionDecision> {
-        let owner = (*self.owner_id.read().unwrap())?;
+        let owner = (*self.owner_id.read())?;
         crate::persona::mind_room::is_private_room(owner, room).then(|| {
             crate::persona::mind_room::note_withheld(owner, "engrams");
             AdmissionDecision::Drop {
@@ -334,14 +335,14 @@ impl AdmissionState {
     }
 
     pub fn set_owner_id(&self, id: Uuid) {
-        *self.owner_id.write().unwrap() = Some(id);
+        *self.owner_id.write() = Some(id);
     }
 
     /// The owning persona's id, if bound. `None` for bare/test states — the
     /// own-chat recall gate is then a no-op (fail-open: never gate what we can't
     /// prove is self-authored).
     fn owner_id_snapshot(&self) -> Option<Uuid> {
-        *self.owner_id.read().unwrap()
+        *self.owner_id.read()
     }
 
     /// Construct AdmissionState for a specific persona — opens the
@@ -477,7 +478,9 @@ impl AdmissionState {
     /// output — a storage-tier weight on a structurally-known kind (a receipt),
     /// the recall-side twin of the recency-vs-recall channel split in act_observe.
     pub fn set_recall_salience(&self, engram_id: uuid::Uuid, salience: f32) {
-        let mut meta = self.recall_metadata.get(engram_id).unwrap_or_default();
+        // An engram with no metadata yet gets the now-stamped defaults first (never the
+        // epoch-0 `RecallMetadata::default()`, which is the decay-collapse above).
+        let mut meta = self.recall_metadata.admit_with_defaults(engram_id);
         meta.salience = salience;
         self.recall_metadata.admit(engram_id, meta);
     }
@@ -521,13 +524,11 @@ impl AdmissionState {
         // (the dedup map points at this engram). Mirrors `record_admitted` +
         // `record_side_effects` for the external path.
         self.seen_content.record(hash, engram.id);
-        self.recall_metadata.admit_with_defaults(engram.id);
-        let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+        let metadata = self.recall_metadata.admit_with_defaults(engram.id);
         self.persistence
             .read()
-            .unwrap()
             .observe_admission(&engram, metadata);
-        self.engrams.lock().unwrap().push(engram.clone());
+        self.engrams.lock().push(engram.clone());
 
         Ok(AdmissionDecision::Admit {
             engram,
@@ -550,17 +551,15 @@ impl AdmissionState {
     fn record_side_effects(&self, decision: &AdmissionDecision) {
         match decision {
             AdmissionDecision::Admit { engram, .. } => {
-                self.record_admitted(engram);
-                self.engrams.lock().unwrap().push(engram.clone());
+                let metadata = self.record_admitted(engram);
+                self.engrams.lock().push(engram.clone());
                 // Observe the admission through the persistence sink.
                 // NoopSink (default) does nothing; OrmPersistenceSink
                 // fires-and-forgets the disk write through tokio::spawn.
                 // The metadata snapshot reflects the just-admitted
-                // default state (admit_with_defaults above).
-                let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+                // default state (admit_with_defaults in record_admitted).
                 self.persistence
                     .read()
-                    .unwrap()
                     .observe_admission(engram, metadata);
             }
             AdmissionDecision::Quarantine { engram, .. } => {
@@ -578,7 +577,7 @@ impl AdmissionState {
     /// (dedup) PLUS, for AIRC origins, event_id → timestamp (replay).
     /// Use only when the engram is actually being stored, otherwise the
     /// dedup pointer dangles.
-    fn record_admitted(&self, engram: &Engram) {
+    fn record_admitted(&self, engram: &Engram) -> crate::persona::recall_metadata::RecallMetadata {
         match &engram.origin {
             EngramOrigin::Chat(r) => {
                 self.seen_content.record(r.content_hash.clone(), engram.id);
@@ -610,7 +609,7 @@ impl AdmissionState {
         // novelty detector (embedding distance × magnitude) to set
         // scored initial salience + protection windows at this same
         // call site.
-        self.recall_metadata.admit_with_defaults(engram.id);
+        self.recall_metadata.admit_with_defaults(engram.id)
     }
 
     /// Replay-only recording for a Quarantined engram: event_id → timestamp
@@ -633,14 +632,14 @@ impl AdmissionState {
 
     /// Number of admitted engrams currently in this persona's store.
     pub fn engram_count(&self) -> usize {
-        self.engrams.lock().unwrap().len()
+        self.engrams.lock().len()
     }
 
     /// Borrow an admitted engram by index (for inspection / future recall).
     /// Returns None if index out of bounds. Clone is cheap in v1; PR-5+
     /// recall will return `&Engram` borrowed from a longer-lived store.
     pub fn engram_at(&self, idx: usize) -> Option<Engram> {
-        self.engrams.lock().unwrap().get(idx).cloned()
+        self.engrams.lock().get(idx).cloned()
     }
 
     /// **Test-only**: push an engram directly into the store without
@@ -652,7 +651,7 @@ impl AdmissionState {
     /// (the cfg gate ensures it doesn't appear in non-test builds).
     #[cfg(test)]
     pub fn push_for_test(&self, engram: Engram) {
-        self.engrams.lock().unwrap().push(engram);
+        self.engrams.lock().push(engram);
     }
 
     /// True iff `content_hash` is recorded as seen in the dedup store.
@@ -686,7 +685,7 @@ impl AdmissionState {
     /// metadata, and both oracles — for a later [`restore`](Self::restore).
     pub fn checkpoint(&self) -> AdmissionCheckpoint {
         AdmissionCheckpoint {
-            engrams: self.engrams.lock().unwrap().clone(),
+            engrams: self.engrams.lock().clone(),
             recall_metadata: self.recall_metadata.snapshot(),
             seen_content: self.seen_content.snapshot(),
             seen_events: self.seen_events.snapshot(),
@@ -699,7 +698,7 @@ impl AdmissionState {
     /// [`swap_persistence`](Self::swap_persistence) so a restore can't race a
     /// disk write back in.
     pub fn restore(&self, cp: &AdmissionCheckpoint) {
-        *self.engrams.lock().unwrap() = cp.engrams.clone();
+        *self.engrams.lock() = cp.engrams.clone();
         self.recall_metadata.restore(cp.recall_metadata.clone());
         self.seen_content.restore(cp.seen_content.clone());
         self.seen_events.restore(cp.seen_events.clone());
@@ -754,7 +753,7 @@ impl AdmissionState {
         &self,
         sink: Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink>,
     ) -> Arc<dyn crate::persona::admission_persistence::AdmissionPersistenceSink> {
-        let mut guard = self.persistence.write().unwrap();
+        let mut guard = self.persistence.write();
         std::mem::replace(&mut *guard, sink)
     }
 
@@ -789,7 +788,7 @@ impl AdmissionState {
         if needles.is_empty() || limit == 0 {
             return Vec::new();
         }
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         let mut hits: Vec<Engram> = engrams
             .iter()
             .rev() // newest-first (insertion order store)
@@ -823,7 +822,7 @@ impl AdmissionState {
         if limit == 0 {
             return Vec::new();
         }
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams
             .iter() // insertion order == oldest first
             .filter(|e| e.kind == crate::persona::engram::EngramKind::Semantic)
@@ -838,7 +837,7 @@ impl AdmissionState {
         if limit == 0 {
             return Vec::new();
         }
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams.iter().rev().take(limit).cloned().collect()
     }
 
@@ -852,7 +851,7 @@ impl AdmissionState {
     /// a NoopSink, so nothing durable is written during an exam anyway).
     /// See [[benchmarks-are-proctored-exams-of-the-natural-living-persona]].
     pub fn forget_context(&self, context_id: Uuid) -> usize {
-        let mut engrams = self.engrams.lock().unwrap();
+        let mut engrams = self.engrams.lock();
         let before = engrams.len();
         engrams.retain(|e| e.context_id != Some(context_id));
         before - engrams.len()
@@ -888,7 +887,7 @@ impl AdmissionState {
         // persist AFTER releasing it (never hold the store lock across the sink).
         let mut changed: Vec<Engram> = Vec::new();
         {
-            let mut engrams = self.engrams.lock().unwrap();
+            let mut engrams = self.engrams.lock();
             for engram in engrams.iter_mut() {
                 let mut touched = false;
                 let (new_content, r) = policy.redact(&engram.content);
@@ -912,7 +911,7 @@ impl AdmissionState {
         }
 
         if !changed.is_empty() {
-            let sink = self.persistence.read().unwrap().clone();
+            let sink = self.persistence.read().clone();
             for engram in &changed {
                 sink.observe_content_update(engram);
             }
@@ -942,7 +941,7 @@ impl AdmissionState {
             return Vec::new();
         }
 
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
 
         // 1. Score every engram. apply_decay brings salience up to
         // `now_ms` for the engram (honors novelty protection +
@@ -960,7 +959,7 @@ impl AdmissionState {
 
         // 2. Top-N by score, descending. Stable sort so equal-score
         // engrams keep insertion order (recency tiebreak).
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(limit);
 
         // 3. Record recall hits on the returned engrams. Hebbian
@@ -974,7 +973,7 @@ impl AdmissionState {
         // persistence sink so the disk row keeps pace. NoopSink
         // (default) does nothing; OrmPersistenceSink upserts the
         // engram_recall_metadata row through tokio::spawn.
-        let sink = self.persistence.read().unwrap().clone();
+        let sink = self.persistence.read().clone();
         for (engram, _) in &scored {
             self.recall_metadata.record_recall_hit(engram.id, now_ms);
             if let Some(updated) = self.recall_metadata.get(engram.id) {
@@ -1007,7 +1006,7 @@ impl AdmissionState {
         // The owning persona's id (if bound) — for the own-authored-chat gate below.
         // Snapshotted once, outside the per-engram closure.
         let owner = self.owner_id_snapshot();
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         // Enumerate in insertion order: `idx` is a monotonic recency rank
         // (higher == more recently admitted), used as the tiebreaker below.
         let mut scored: Vec<(usize, Engram, f32)> = engrams
@@ -1077,9 +1076,7 @@ impl AdmissionState {
         // literally contains what the burst is asking about.
         // See [[act-results-need-a-recency-channel-not-semantic-recall]].
         scored.sort_by(|a, b| {
-            b.2.partial_cmp(&a.2)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(b.0.cmp(&a.0))
+            b.2.total_cmp(&a.2).then(b.0.cmp(&a.0))
         });
         scored.truncate(limit);
         scored.into_iter().map(|(_, e, s)| (e, s)).collect()
@@ -1089,7 +1086,7 @@ impl AdmissionState {
     /// on a specific set of engram ids — the memories a caller actually surfaced.
     /// The write half of the [`recall_candidates`] → re-rank → record loop.
     pub fn record_recall_hits(&self, ids: &[Uuid], now_ms: u64) {
-        let sink = self.persistence.read().unwrap().clone();
+        let sink = self.persistence.read().clone();
         for id in ids {
             self.recall_metadata.record_recall_hit(*id, now_ms);
             if let Some(updated) = self.recall_metadata.get(*id) {
@@ -1101,7 +1098,7 @@ impl AdmissionState {
     /// Recall a specific engram by id. None if not present in the store
     /// (either never admitted, or evicted in a future GC pass).
     pub fn recall_by_id(&self, id: Uuid) -> Option<Engram> {
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams.iter().find(|e| e.id == id).cloned()
     }
 
@@ -1118,7 +1115,7 @@ impl AdmissionState {
             return Vec::new();
         }
         let needle = keyword.to_lowercase();
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams
             .iter()
             .rev()
@@ -1136,7 +1133,7 @@ impl AdmissionState {
         if limit == 0 {
             return Vec::new();
         }
-        let engrams = self.engrams.lock().unwrap();
+        let engrams = self.engrams.lock();
         engrams
             .iter()
             .rev()
@@ -1531,7 +1528,7 @@ mod tests {
         // Stamp the middle engram as belonging to the exam episode (the acting body tags act
         // results with a context_id in the live path; here we set it directly for the test).
         {
-            let mut engrams = state.engrams.lock().unwrap();
+            let mut engrams = state.engrams.lock();
             engrams[1].context_id = Some(exam_ctx);
         }
         let forgotten = state.forget_context(exam_ctx);
@@ -2776,7 +2773,7 @@ mod tests {
         let episode = mk(EngramKind::Episodic, "I edited main.rs and it compiled");
         let stale_id = stale_belief.id;
         for e in [stale_belief, other_belief, episode] {
-            state.engrams.lock().unwrap().push(e);
+            state.engrams.lock().push(e);
         }
         let hits = state.semantic_beliefs_matching(
             &["main.rs".to_string(), "rs".to_string()], // "rs" = noise, skipped

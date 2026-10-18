@@ -547,7 +547,7 @@ impl RoomBoardSource {
             .cards
             .iter()
             .filter(|c| {
-                c.owner.map(|o| o.as_uuid() == self.persona_id).unwrap_or(false)
+                c.owner.is_some_and(|o| o.as_uuid() == self.persona_id)
                     // Only a LIVE lease is "held" (see `claim_is_live`): a lapsed
                     // claim rendered as held contradicts the #156 lost-claim fact
                     // and is the stale-lease loop attractor (2026-08-03).

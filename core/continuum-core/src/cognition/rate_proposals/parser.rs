@@ -11,6 +11,18 @@
 
 use crate::cognition::rate_proposals::types::{ProposalRating, ResponseProposal};
 use regex::Regex;
+use std::sync::LazyLock;
+
+// Literal patterns, compiled once (they were rebuilt on every call). `Regex::new` on a
+// literal fails only on a malformed literal — a programmer error the parser tests force.
+static SPLIT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)PROPOSAL\s+\d+:").expect("literal regex")); // literal pattern: malformed = programmer error, forced by this module's tests
+static SCORE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)Score:\s*([0-9.]+)").expect("literal regex")); // literal pattern: malformed = programmer error, forced by this module's tests
+static SHOULD_POST_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)ShouldPost:\s*(yes|no)").expect("literal regex")); // literal pattern: malformed = programmer error, forced by this module's tests
+static REASONING_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)Reasoning:\s*").expect("literal regex")); // literal pattern: malformed = programmer error, forced by this module's tests
 
 /// Configuration knobs for the parser. Defaults match the TS behavior so
 /// migration consumers get byte-identical fallback semantics.
@@ -59,8 +71,7 @@ pub fn parse_ratings_from_ai_response(
 
     // Split on `PROPOSAL N:` markers (case-insensitive). Drop the first
     // segment (preamble before the first PROPOSAL marker, often empty).
-    let split_re = Regex::new(r"(?i)PROPOSAL\s+\d+:").expect("static regex");
-    let sections: Vec<&str> = split_re.split(response_text).skip(1).collect();
+    let sections: Vec<&str> = SPLIT_RE.split(response_text).skip(1).collect();
 
     let take_n = sections.len().min(proposals.len());
     for i in 0..take_n {
@@ -88,36 +99,33 @@ fn parse_one_section(
     config: &ParseConfig,
 ) -> ProposalRating {
     // Score: floating-point, clamped to [0, 1] per TS.
-    let score_re = Regex::new(r"(?i)Score:\s*([0-9.]+)").expect("static regex");
-    let score = score_re
+    let score = SCORE_RE
         .captures(section)
         .and_then(|c| c.get(1))
         .and_then(|m| m.as_str().parse::<f64>().ok())
-        .unwrap_or(config.default_score)
+        .unwrap_or(config.default_score) // unwrap_or: missing/unparseable score = the configured neutral default (TS contract)
         .clamp(0.0, 1.0);
 
     // ShouldPost: yes/no, case-insensitive.
-    let should_post_re = Regex::new(r"(?i)ShouldPost:\s*(yes|no)").expect("static regex");
-    let should_post = should_post_re
+    let should_post = SHOULD_POST_RE
         .captures(section)
         .and_then(|c| c.get(1))
         .map(|m| m.as_str().eq_ignore_ascii_case("yes"))
-        .unwrap_or(config.default_should_post);
+        .unwrap_or(config.default_should_post); // unwrap_or: missing line = the configured conservative default (TS contract)
 
     // Reasoning: text after `Reasoning:` up to the next blank line OR
     // end of section. The `regex` crate doesn't support lookahead, so
     // do this in two stages: locate the Reasoning: marker, then take
     // until the first `\n\n` (or end). Mirrors TS
     // `/Reasoning:\s*(.+?)(?=\n\n|$)/is` semantics.
-    let reasoning_re = Regex::new(r"(?i)Reasoning:\s*").expect("static regex");
-    let reasoning = reasoning_re
+    let reasoning = REASONING_RE
         .find(section)
         .map(|m| {
             let after = &section[m.end()..];
-            let end = after.find("\n\n").unwrap_or(after.len());
+            let end = after.find("\n\n").unwrap_or(after.len()); // unwrap_or: no blank line = reasoning runs to section end
             after[..end].trim().to_string()
         })
-        .unwrap_or_else(|| config.default_reasoning.clone());
+        .unwrap_or_else(|| config.default_reasoning.clone()); // unwrap_or: missing Reasoning line = the configured default (TS contract)
 
     ProposalRating {
         proposal_id: proposal.proposal_id.clone(),

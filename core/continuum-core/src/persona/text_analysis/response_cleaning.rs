@@ -13,6 +13,7 @@
 //! 3. `[HH:MM] ` — timestamp only
 //! 4. `**Name:** ` or `*Name:* ` — markdown role markers
 
+use super::literal_regex::literal;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -27,24 +28,24 @@ pub struct CleanResult {
 /// Regex to match `<thinking>...</thinking>` and `<think>...</think>` blocks.
 /// Case-insensitive, dotall (. matches newline), non-greedy.
 static PATTERN_THINKING: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?si)<think(?:ing)?>.*?</think(?:ing)?>").expect("thinking regex")
+    literal(r"(?si)<think(?:ing)?>.*?</think(?:ing)?>")
 });
 
 static PATTERN_TIMESTAMP_NAME: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*").expect("timestamp+name regex"));
+    LazyLock::new(|| literal(r"^\[\d{1,2}:\d{2}\]\s+[^:]+:\s*"));
 
 static PATTERN_NAME_ONLY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^[A-Z][A-Za-z\s]+:\s*").expect("name-only regex"));
+    LazyLock::new(|| literal(r"^[A-Z][A-Za-z\s]+:\s*"));
 
 static PATTERN_TIMESTAMP_ONLY: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\[\d{1,2}:\d{2}\]\s*").expect("timestamp-only regex"));
+    LazyLock::new(|| literal(r"^\[\d{1,2}:\d{2}\]\s*"));
 
 static PATTERN_MARKDOWN_ROLE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^\*{1,2}[A-Za-z\s]+:\*{1,2}\s*").expect("markdown role regex"));
+    LazyLock::new(|| literal(r"^\*{1,2}[A-Za-z\s]+:\*{1,2}\s*"));
 
 /// Regex to extract the content INSIDE thinking tags (for downstream use).
 static PATTERN_THINKING_CONTENT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?si)<think(?:ing)?>(.*?)</think(?:ing)?>").expect("thinking content regex")
+    literal(r"(?si)<think(?:ing)?>(.*?)</think(?:ing)?>")
 });
 
 /// Our OWN internal perception-frame section labels — the reserved block headers the
@@ -90,7 +91,7 @@ fn strip_leading_tool_call_marker(s: &str) -> &str {
     s.trim_start()
         .strip_prefix("[TOOL_CALLS]")
         .map(str::trim_start)
-        .unwrap_or(s)
+        .unwrap_or(s) // unwrap_or: no leading marker means the text is already clean, unchanged
 }
 
 /// Strip contiguous LEADING lines that ARE a reserved scaffold header (optionally carrying an
@@ -103,7 +104,7 @@ fn strip_leading_tool_call_marker(s: &str) -> &str {
 fn strip_leading_scaffold_lines(mut s: &str) -> &str {
     loop {
         s = s.trim_start();
-        let line_end = s.find('\n').unwrap_or(s.len());
+        let line_end = s.find('\n').unwrap_or(s.len()); // unwrap_or: no newline means the whole remainder is the last line
         let line_lower = s[..line_end].to_lowercase();
         if SCAFFOLD_LABELS
             .iter()

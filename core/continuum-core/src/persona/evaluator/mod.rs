@@ -260,7 +260,7 @@ pub fn full_evaluate(
             SleepMode::HumanOnly => request.sender_is_human,
             SleepMode::Sleeping => false,
             SleepMode::UntilTopic => {
-                let topic_sim = request.topic_similarity.unwrap_or_else(|| {
+                let topic_sim = request.topic_similarity.unwrap_or_else(|| { // unwrap_or: no host-supplied similarity, so compute it here
                     if let Some(ref texts) = request.recent_room_texts {
                         if texts.is_empty() {
                             return 0.0;

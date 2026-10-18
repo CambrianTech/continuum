@@ -78,7 +78,7 @@ pub fn head_to_tokens(content: &str, budget_tokens: u32) -> String {
         .char_indices()
         .nth(budget_chars)
         .map(|(i, _)| i)
-        .unwrap_or(content.len());
+        .unwrap_or(content.len()); // unwrap_or: fewer chars than the budget = keep the whole content
     let slice = &content[..end];
     match slice.rfind('\n') {
         // Only prefer the newline cut when it keeps a useful fraction — a

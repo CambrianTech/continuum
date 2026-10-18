@@ -58,7 +58,7 @@ fn is_long_running(command: &str) -> bool {
 /// cross turns or rooms by construction — the wire is the scope, never an
 /// inference over timestamps.
 #[derive(Default)]
-pub struct ActChain(std::sync::Mutex<Option<Uuid>>);
+pub struct ActChain(parking_lot::Mutex<Option<Uuid>>);
 
 impl ActChain {
     /// A chain with no recorded antecedent — its first act links to nothing.
@@ -80,18 +80,18 @@ impl ActChain {
     /// what counts as a root lives in ONE place (`Cause::root`) instead of at every
     /// driver that builds a chain.
     pub fn rooted_in(cause: &crate::cognition::workspace::Cause) -> Self {
-        Self(std::sync::Mutex::new(cause.root()))
+        Self(parking_lot::Mutex::new(cause.root()))
     }
 
     /// The CAUSE of whatever act comes next in this chain: the latest admitted act
     /// engram, or — before any act has run — the trigger the chain was rooted in.
     /// `None` only when the chain has no antecedent at all.
     pub fn prior(&self) -> Option<Uuid> {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner())
+        *self.0.lock()
     }
 
     fn advance(&self, id: Uuid) {
-        *self.0.lock().unwrap_or_else(|p| p.into_inner()) = Some(id);
+        *self.0.lock() = Some(id);
     }
 }
 
@@ -130,7 +130,7 @@ pub async fn apply_act(
     let budget = cycle
         .model_loadout()
         .map(|(_, w)| ContextBudget::from_window(w))
-        .unwrap_or_else(ContextBudget::unknown);
+        .unwrap_or_else(ContextBudget::unknown); // unwrap_or: no bound model means the window is unknown, and the unknown budget folds nothing
     // WM clips inside its OWN record path (it owns its truncation), so it needs the live
     // window too — pushed from here, the seam that has the cycle. Re-pushed every act so a
     // lane relaunch at a different `-c` is picked up without a restart.
@@ -291,11 +291,7 @@ pub async fn apply_act(
     // so `entries`/`#seq` alone make a repeat look "new"; the fingerprint keys on the call.
     let mut max_repeat = 0usize;
     for call in fg_calls.iter() {
-        let fp = format!(
-            "{}|{}",
-            call.name,
-            serde_json::to_string(&call.input).unwrap_or_default()
-        );
+        let fp = call.loop_fingerprint();
         max_repeat = max_repeat.max(body.working_memory.note_action_fingerprint(&fp));
         // The TYPED act is the SINGLE source now (Step 5). Correlate the result by
         // `tool_use_id == call.id` (NOT the positional `.get(i)` the old string render
@@ -310,7 +306,7 @@ pub async fn apply_act(
             .iter()
             .find(|r| r.tool_use_id == call.id)
             .cloned()
-            .unwrap_or_else(|| ToolResult {
+            .unwrap_or_else(|| ToolResult { // unwrap_or: the executor returned no result for this call id; she perceives that absence as the result
                 tool_use_id: call.id.clone(),
                 content: "(no result returned)".to_string(),
                 is_error: None,
@@ -420,7 +416,7 @@ pub async fn apply_act(
                         .and_then(|c| c.as_str())
                         .map(|c| c.chars().take(80).collect::<String>())
                 })
-                .unwrap_or_default();
+                .unwrap_or_default(); // unwrap_or: an act with no path and no command has no object to name; the summary is empty
             let update = crate::ipc::positron_source::PersonaActUpdate {
                 act_id: Uuid::new_v4(),
                 room_id,
@@ -481,7 +477,7 @@ pub async fn apply_act(
                             .and_then(|c| c.as_str())
                             .map(|c| c.chars().take(80).collect::<String>())
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_default(); // unwrap_or: an act with no path and no command has no object to name
                 crate::persona::presence_glyph::act_line(
                     &obs.call.name,
                     &object,
@@ -577,7 +573,7 @@ pub async fn apply_act(
     let tool_name = fg_calls
         .first()
         .map(|c| c.name.clone())
-        .unwrap_or_else(|| "action".to_string());
+        .unwrap_or_else(|| "action".to_string()); // unwrap_or: an empty foreground batch has no tool name; "action" is its generic label
     let obs_hash = crate::persona::inbox_admission::content_hash_sha256(&recall_observation);
     let self_observation = crate::persona::engram::Engram {
         id: Uuid::new_v4(),

@@ -59,8 +59,6 @@
 //!   needs envelope material this module's input doesn't carry; that
 //!   conversion is a separate function in a separate slice (PR-5+).
 
-use std::fmt::Write as _;
-
 use sha2::{Digest, Sha256};
 
 use super::admission::{
@@ -149,11 +147,12 @@ pub fn content_hash_sha256(content: &str) -> String {
     let digest = hasher.finalize();
     let mut hex = String::with_capacity(7 + digest.len() * 2);
     hex.push_str("sha256:");
+    // Nibble lookup: each index is `byte >> 4` or `byte & 0xf`, always < 16, so there
+    // is no fallible step to handle.
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
     for byte in digest {
-        // `write!` into a `String` cannot fail — the `Write` impl for
-        // `String` returns `Ok` unconditionally — so the unwrap is the
-        // standard idiom for this pattern.
-        write!(&mut hex, "{:02x}", byte).expect("write to String never fails");
+        hex.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        hex.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
     }
     hex
 }

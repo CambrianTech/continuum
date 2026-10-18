@@ -105,7 +105,7 @@ impl ServiceModule for ShouldRespondModule {
                         crate::cognition::workspace::TurnFraming::ambient(),
                     )
                     .await;
-                let decision = workspace.decision().cloned().unwrap_or_else(Decision::pass);
+                let decision = workspace.decision().cloned().unwrap_or_else(Decision::pass); // unwrap_or: a cycle that reached no verdict is a pass
                 CommandResult::json(&decision)
             }
             other => Err(format!("unknown command: {other}")),

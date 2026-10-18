@@ -182,7 +182,7 @@ impl AircTranscriptReader for airc_lib::Airc {
             airc_lib::Airc::load_runtime_cursor(self, &read_cursor_consumer_id(persona, room))
                 .await?
                 .map(|c| c.lamport)
-                .unwrap_or(0),
+                .unwrap_or(0), // unwrap_or: no cursor row = she has read nothing, lamport 0
         )
     }
 
@@ -293,8 +293,22 @@ impl AircRagSource {
         sender: uuid::Uuid,
         line: &super::durable_history::HydratedLine,
     ) -> TranscriptEvent {
+        // A non-UUID durable message id is logged and given a fresh id (the line is
+        // still context); never a silent substitution.
+        let id = match uuid::Uuid::parse_str(&line.message_id) {
+            Ok(id) => id,
+            Err(e) => {
+                tracing::warn!(
+                    room = %room_id,
+                    message_id = %line.message_id,
+                    error = %e,
+                    "durable history line carries a non-UUID message id; minting one for this hydration"
+                );
+                uuid::Uuid::new_v4()
+            }
+        };
         super::durable_history::event_from_row(room_id, super::durable_history::RoomRow {
-            id: uuid::Uuid::parse_str(&line.message_id).unwrap_or_else(|_| uuid::Uuid::new_v4()),
+            id,
             sender, occurred_at_ms: line.occurred_at_ms, text: line.text.clone(), media: line.media.clone(),
         })
     }
@@ -612,7 +626,7 @@ impl AircRagSource {
         trimmed: Option<String>,
     ) -> RagItem {
         let ev = element.event();
-        let text = trimmed.unwrap_or_else(|| element.text().unwrap_or_default().to_string());
+        let text = trimmed.unwrap_or_else(|| element.text().unwrap_or_default().to_string()); // unwrap_or: untrimmed = whole text; a non-text body renders empty
         let tokens = estimate_tokens(&text);
         RagItem {
             content: text,

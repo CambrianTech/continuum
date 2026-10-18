@@ -153,7 +153,7 @@ impl RecentMessageCache {
                 }
                 (ai, human)
             })
-            .unwrap_or((0, false));
+            .unwrap_or((0, false)); // unwrap_or: an uncached room has no recent messages — zero AI, no human
 
         EchoChamberResult {
             is_echo_chamber: !has_human && ai_count >= ECHO_CHAMBER_AI_THRESHOLD,
@@ -181,7 +181,7 @@ impl RecentMessageCache {
                     .filter(|m| m.sender_id != exclude_persona_id && m.id != exclude_message_id)
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_default() // unwrap_or: an uncached room has no messages since anything
     }
 }
 

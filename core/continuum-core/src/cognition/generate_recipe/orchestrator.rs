@@ -103,7 +103,7 @@ pub async fn generate_recipe_with_ai(
 
     let (system_prompt, user_prompt) = build_prompts(&request);
 
-    let provider_id = provider.as_deref().unwrap_or(DEFAULT_PROVIDER).to_string();
+    let provider_id = provider.as_deref().unwrap_or(DEFAULT_PROVIDER).to_string(); // unwrap_or: optional param; an unnamed provider is the documented default
     let model_id = resolve_model_id(&provider_id, model)?;
 
     let inference_request = TextGenerationRequest {
@@ -122,7 +122,7 @@ pub async fn generate_recipe_with_ai(
         system_prompt: None,
         model: Some(model_id),
         provider: Some(provider_id),
-        temperature: Some(temperature.unwrap_or(DEFAULT_TEMPERATURE)),
+        temperature: Some(temperature.unwrap_or(DEFAULT_TEMPERATURE)), // unwrap_or: optional param; absent, the recipe-generation default applies
         // Model owns its length (None → adapter forwards no ceiling). A full
         // RecipeDefinition's JSON envelope bounds the output, not a const of ours.
         max_tokens: None,

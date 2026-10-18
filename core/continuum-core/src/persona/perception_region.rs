@@ -172,11 +172,11 @@ impl PerceptionRegion {
     pub fn boot(me: PeerId, peer_dir: &Path, turn_budget_tokens: u32, now_ms: u64) -> (Self, watch::Receiver<AwarenessSnapshot>) {
         let state = MindState::load(peer_dir);
         let resumed = state.continuation.is_none();
-        if !resumed {
+        if let Some(continuation) = state.continuation.as_ref() {
             crate::probe!(
                 class = "mind.resume",
                 persona = %me,
-                activity = %state.continuation.as_ref().map(|c| c.activity.to_string()).unwrap_or_default(),
+                activity = %continuation.activity,
                 "a saved continuation: her first wake continues it"
             );
         }
@@ -361,12 +361,12 @@ impl PerceptionRegion {
     /// room digest above her cursor); the region only knows how many lines
     /// ([`pending_speech`](Self::pending_speech)) and how loud.
     pub fn take_board(&mut self, activity: Uuid) -> Vec<BoardChange> {
-        self.views.get_mut(&activity).map(|v| std::mem::take(&mut v.board)).unwrap_or_default()
+        self.views.get_mut(&activity).map(|v| std::mem::take(&mut v.board)).unwrap_or_default() // unwrap_or: an activity with no view has no board changes
     }
 
     /// How many spoken lines are pending in `activity` above her cursor.
     pub fn pending_speech(&self, activity: Uuid) -> usize {
-        self.views.get(&activity).map(|v| v.speech.len()).unwrap_or(0)
+        self.views.get(&activity).map(|v| v.speech.len()).unwrap_or(0) // unwrap_or: an activity with no view has no pending speech
     }
 
     /// After a turn: she perceived `activity` through `cursor`. Her cursor moves
@@ -460,7 +460,7 @@ impl PerceptionRegion {
                 name: v.name.clone(),
                 unread: v.unread() as u32,
                 salience: v.salience.clone(),
-                last_activity_ms: v.last_activity_ms.unwrap_or(0),
+                last_activity_ms: v.last_activity_ms.unwrap_or(0), // unwrap_or: 0 is the strip's wire form of 'no activity yet'
                 surprise: v.surprise,
                 waiting_on_me: v
                     .board

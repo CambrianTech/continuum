@@ -128,9 +128,12 @@ pub(crate) async fn ask_the_act_question(
     // this gate is asking.
     {
         if let Some(citizen) = conversation.stream_citizen() {
-            let claims_result = citizen.active_claims().await;
-            let claims_err = claims_result.as_ref().err().map(|e| e.to_string());
-            let claims = claims_result.unwrap_or_default();
+            // A failed claims read is an explicit outcome, not a panic: she holds no
+            // readable card this turn, and the error rides the probe below.
+            let (claims, claims_err) = match citizen.active_claims().await {
+                Ok(claims) => (claims, String::new()),
+                Err(e) => (Vec::new(), e.to_string()),
+            };
             // ONE card per work turn — her freshest live claim (the FOCUS rule,
             // `bench_round::room_for_card`): with two held cards the staging
             // resolution was ambiguous, her hands stayed at home, and every act
@@ -145,7 +148,7 @@ pub(crate) async fn ask_the_act_question(
                 directed = directed,
                 active_claims = claims.len(),
                 held = held.len(),
-                claims_error = claims_err.as_deref().unwrap_or(""),
+                claims_error = claims_err.as_str(),
                 states = claims
                     .iter()
                     .map(|c| format!("{:?}", c.state))

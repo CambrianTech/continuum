@@ -144,7 +144,7 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
         if replacement.schema_type != "object" || !replacement.properties.is_object() || encoded != change.input_schema {
             return Err(CommandError::Invalid("tool schema must round-trip exactly through the native object schema".into()));
         }
-        let matches: Vec<_> = request.tools.as_deref().unwrap_or_default().iter().enumerate()
+        let matches: Vec<_> = request.tools.as_deref().unwrap_or_default().iter().enumerate() // unwrap_or_default: no tools = no match, refused just below
             .filter(|(_, tool)| tool.name == change.tool_name).collect();
         if matches.len() != 1 {
             return Err(CommandError::Invalid(format!("tool schema override must match exactly one captured tool: {}", change.tool_name)));
@@ -183,8 +183,10 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
     });
     let tool_schema = if let Some((index, replacement, audit)) = schema_change {
         // The index and both containers were validated above, before any mutation.
-        request.tools.as_mut().expect("validated tool set")[index].input_schema =
-            replacement;
+        let tool = request.tools.as_mut().and_then(|tools| tools.get_mut(index)).ok_or_else(|| {
+            CommandError::Internal(format!("validated tool index {index} vanished before the schema override"))
+        })?;
+        tool.input_schema = replacement;
         Some(audit)
     } else { None };
     Ok(InputComparison {

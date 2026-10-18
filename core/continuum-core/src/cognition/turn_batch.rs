@@ -201,7 +201,7 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
         &req.trigger
             .message_id
             .map(|id| id.to_string())
-            .unwrap_or_else(|| "no-message-id".to_string()),
+            .unwrap_or_else(|| "no-message-id".to_string()), // unwrap_or: message id is optional; its absence is keyed explicitly
         &req.trigger.timestamp_ms.to_string(),
         req.trigger.text.trim(),
     ]);
@@ -283,13 +283,13 @@ pub fn plan_turn_batch(req: RecipeTurnBatchRequest) -> RecipeTurnBatchPlan {
         .filter(|plan| plan.local_model)
         .map(|plan| plan.estimated_finish_ms)
         .min()
-        .unwrap_or(0);
+        .unwrap_or(0); // unwrap_or: no local generation = nothing local to wait on
     let estimated_all_responses_ms = persona_plans
         .iter()
         .filter(|plan| plan.local_model)
         .map(|plan| plan.estimated_finish_ms)
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0); // unwrap_or: no local generation = nothing local to wait on
 
     let first_response_budget_ms = effective_budget_ms(
         req.first_response_budget_ms,
@@ -345,11 +345,11 @@ fn estimate_wave_start_ms(existing_plans: &[PersonaTurnPlan], generation_wave: u
         .filter(|plan| plan.local_model && plan.generation_wave == generation_wave - 1)
         .map(|plan| plan.estimated_finish_ms)
         .max()
-        .unwrap_or(0)
+        .unwrap_or(0) // unwrap_or: no plan in the previous wave = this wave starts at 0
 }
 
 fn estimate_generation_ms(candidate: &RecipePersonaCandidate) -> u64 {
-    let tokens_per_second = candidate.tokens_per_second.unwrap_or(1.0).max(1.0);
+    let tokens_per_second = candidate.tokens_per_second.unwrap_or(1.0).max(1.0); // unwrap_or: unknown rate estimated at the same 1 tok/s floor (pessimistic, never optimistic)
     (((candidate.max_output_tokens as f32) / tokens_per_second) * 1000.0).ceil() as u64
 }
 

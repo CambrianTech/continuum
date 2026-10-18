@@ -24,7 +24,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use parking_lot::Mutex;
+use std::sync::{Arc, OnceLock};
 use uuid::Uuid;
 
 /// How far a mute navigates her ambient attention away from a lane. Mute is attention
@@ -335,12 +336,11 @@ impl FocusRegistry {
     /// caller for a persona installs a default `FocusState` (balanced, no mutes — the
     /// correct birth posture, not a silent fallback over a missing precondition); every
     /// later caller — serve loop, tool — gets the SAME `Arc`, so her steering and the
-    /// wake floor read one state. A poisoned lock is a prior panic mid-mutation and is
-    /// propagated (fail loud), never swallowed.
+    /// wake floor read one state. A lock poisoned by a prior panic mid-mutation is
+    /// unrepresentable: `parking_lot::Mutex` does not poison, so there is no panic path.
     pub fn handle(&self, persona_id: Uuid) -> Arc<Mutex<FocusState>> {
         self.states
             .lock()
-            .expect("focus registry mutex poisoned by a prior panic")
             .entry(persona_id)
             .or_insert_with(|| Arc::new(Mutex::new(FocusState::new())))
             .clone()
@@ -350,7 +350,6 @@ impl FocusRegistry {
     pub fn get(&self, persona_id: &Uuid) -> Option<Arc<Mutex<FocusState>>> {
         self.states
             .lock()
-            .expect("focus registry mutex poisoned by a prior panic")
             .get(persona_id)
             .cloned()
     }
@@ -581,14 +580,14 @@ mod tests {
         let q = Uuid::from_u128(0xBB);
 
         let h1 = reg.handle(p);
-        h1.lock().unwrap().set_focus(0.9);
+        h1.lock().set_focus(0.9);
         let h2 = reg.handle(p); // same persona → same state
         assert!(Arc::ptr_eq(&h1, &h2));
-        assert!((h2.lock().unwrap().focus() - 0.9).abs() < f32::EPSILON);
+        assert!((h2.lock().focus() - 0.9).abs() < f32::EPSILON);
 
         // a distinct persona is untouched (its own default), and `get` sees what
         // `handle` installed.
-        let q_focus = reg.handle(q).lock().unwrap().focus();
+        let q_focus = reg.handle(q).lock().focus();
         assert!((q_focus - 0.5).abs() < f32::EPSILON);
         assert!(reg.get(&p).is_some());
         assert!(reg.get(&Uuid::from_u128(0xCC)).is_none());

@@ -56,7 +56,8 @@ use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use async_trait::async_trait;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Shared input queue: the conversation consumes events while its feed appends
@@ -132,7 +133,7 @@ impl ScriptedConversation {
     /// When the queue drains, subsequent `next_message` calls yield
     /// `Ok(None)` so the loop never hangs.
     pub fn with_events(self, events: Vec<Result<Option<IncomingMessage>, String>>) -> Self {
-        *self.events.lock().unwrap() = VecDeque::from(events);
+        *self.events.lock() = VecDeque::from(events);
         self
     }
 
@@ -155,7 +156,7 @@ impl ScriptedConversation {
     /// (`spawn_persona_service` returns Err; supervisor records
     /// `BootSlotFailure`).
     pub fn with_prime_failure(self, reason: impl Into<String>) -> Self {
-        *self.prime_result.lock().unwrap() = Err(reason.into());
+        *self.prime_result.lock() = Err(reason.into());
         self
     }
 
@@ -187,7 +188,6 @@ impl ScriptedConversation {
     pub fn said(&self) -> Vec<String> {
         self.said
             .lock()
-            .unwrap()
             .iter()
             .map(|(_room, text)| text.clone())
             .collect()
@@ -198,7 +198,7 @@ impl ScriptedConversation {
     /// audience — invisible to [`said`](Self::said), which only knows
     /// that she spoke.
     pub fn said_in(&self) -> Vec<(Uuid, String)> {
-        self.said.lock().unwrap().clone()
+        self.said.lock().clone()
     }
 }
 
@@ -206,7 +206,7 @@ impl ScriptedConversation {
 impl PersonaConversation for ScriptedConversation {
     async fn prime(&mut self) -> Result<(), String> {
         self.primed.fetch_add(1, Ordering::SeqCst);
-        self.prime_result.lock().unwrap().clone()
+        self.prime_result.lock().clone()
     }
 
     async fn high_water_mark(&self, _limit: usize) -> Result<u64, String> {
@@ -224,7 +224,7 @@ impl PersonaConversation for ScriptedConversation {
             // surfaces an event or an err. Per [[no-fallbacks-ever]] the
             // contract is "queue progress per call", not "queue progress
             // per success."
-            let drained = self.events.lock().unwrap().pop_front();
+            let drained = self.events.lock().pop_front();
             return match drained {
                 Some(_) => Err(
                     "ScriptedConversation::next_message called before prime() — \
@@ -237,7 +237,7 @@ impl PersonaConversation for ScriptedConversation {
         if let Some(message) = self.perceived_backlog.pop_front() {
             return Ok(Some(Arc::unwrap_or_clone(message)));
         }
-        self.events.lock().unwrap().pop_front().unwrap_or(Ok(None))
+        self.events.lock().pop_front().unwrap_or(Ok(None)) // unwrap_or: an exhausted script is a quiet room — no message, not an error
     }
 
     async fn perceive_ready(
@@ -246,10 +246,7 @@ impl PersonaConversation for ScriptedConversation {
         if self.require_prime && self.primed.load(Ordering::SeqCst) == 0 {
             return Err("ScriptedConversation::perceive_ready called before prime()".into());
         }
-        let mut events = self
-            .events
-            .lock()
-            .map_err(|_| "scripted conversation lock poisoned".to_string())?;
+        let mut events = self.events.lock();
         for _ in 0..super::airc_persona_conversation::CATCH_UP_PAGE {
             if self.perceived_backlog.len() >= super::airc_persona_conversation::INBOX_CAPACITY {
                 return Err(
@@ -269,7 +266,7 @@ impl PersonaConversation for ScriptedConversation {
         if let Some(reason) = &self.say_failure {
             return Err(reason.clone());
         }
-        self.said.lock().unwrap().push((room_id, text.to_string()));
+        self.said.lock().push((room_id, text.to_string()));
         Ok(())
     }
 
@@ -288,10 +285,7 @@ pub struct ScriptedConversationFeed(ScriptedEventQueue);
 #[cfg(any(test, feature = "test-fixtures"))]
 impl ScriptedConversationFeed {
     pub fn push(&self, event: Result<Option<IncomingMessage>, String>) {
-        self.0
-            .lock()
-            .expect("scripted input lock poisoned") // A poisoned fixture cannot safely inject input; fail the simulation explicitly.
-            .push_back(event);
+        self.0.lock().push_back(event);
     }
 }
 

@@ -151,13 +151,14 @@ where
         .copied()
         .filter(|r| will.accepts(*r))
         .collect();
-    rungs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    if rungs.is_empty() {
+    rungs.sort_by(f32::total_cmp);
+    // The top rung carries the non-empty fact: no top rung is the NoCapacity outcome.
+    let Some(&top) = rungs.last() else {
         return Err(ResolutionError::NoCapacity {
             floor: will.floor(),
             offered,
         });
-    }
+    };
 
     // Lowest rung at/above the will's draft point; if the will asks above everything
     // available, start at the top rung (the most capable resolution we can serve).
@@ -165,7 +166,7 @@ where
     let start_idx = rungs
         .iter()
         .position(|r| *r + f32::EPSILON >= start)
-        .unwrap_or(rungs.len() - 1);
+        .unwrap_or(rungs.len() - 1); // unwrap_or: a will above every rung starts at the top (step 3)
 
     let mut attempts: u32 = 0;
     let mut feedback: Option<String> = None;
@@ -191,7 +192,7 @@ where
 
     Ok(Resolved::Exhausted {
         last: last_draft,
-        resolution: *rungs.last().expect("rungs non-empty checked above"),
+        resolution: top,
         escalations: attempts.saturating_sub(1),
         verdict: last_verdict,
     })

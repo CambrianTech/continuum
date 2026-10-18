@@ -48,7 +48,7 @@ pub(crate) fn critical_path_us(timings: &[FacultyTiming]) -> u128 {
             .filter(|t| t.deliberation == deliberation)
             .map(|t| t.elapsed_us)
             .max()
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: no faculty on that side ran = it adds nothing to the path
     };
     slowest_of(false) + slowest_of(true)
 }
@@ -144,7 +144,7 @@ impl WorkspaceCaptureSink for DashboardCaptureSink {
             .find(|c| c.decision.is_some())
             .and_then(|c| c.metrics.as_ref())
             .map(|m| (m.input_tokens, m.output_tokens))
-            .unwrap_or((0, 0));
+            .unwrap_or((0, 0)); // unwrap_or: no deliberation bid with metrics this cycle = no tokens shown
 
         let state = WorkspaceLiveState {
             persona_id: self.persona_id.to_string(),

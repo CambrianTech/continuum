@@ -920,7 +920,8 @@ mod tests {
         use crate::persona::attention::{AttentionDial, Continuation};
         use crate::persona::perception_region::PerceptionRegion;
         use crate::persona::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
-        use std::sync::{Arc as StdArc, Mutex};
+        use parking_lot::Mutex;
+        use std::sync::Arc as StdArc;
         let w = decision_world().await;
         let activity = uuid::Uuid::new_v4();
         let mine = uuid::Uuid::new_v4();

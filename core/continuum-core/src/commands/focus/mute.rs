@@ -122,9 +122,7 @@ impl ActionCommand for FocusMute {
         })?;
 
         let handle = focus::registry().handle(persona_id);
-        let mut state = handle
-            .lock()
-            .expect("focus mutex poisoned by a prior panic");
+        let mut state = handle.lock();
 
         if p.unmute {
             state.unmute(lane);
@@ -188,7 +186,7 @@ mod tests {
         // The SAME state the serve loop reads now carries the mute.
         let state = focus::registry().handle(persona);
         assert_eq!(
-            state.lock().unwrap().active_mute(room, EpochMs::now().millis()),
+            state.lock().active_mute(room, EpochMs::now().millis()),
             Some(MuteLevel::Soft),
         );
 
@@ -203,7 +201,7 @@ mod tests {
             .await
             .expect("ok");
         assert_eq!(cleared.level, "none");
-        assert_eq!(state.lock().unwrap().active_mute(room, EpochMs::now().millis()), None);
+        assert_eq!(state.lock().active_mute(room, EpochMs::now().millis()), None);
     }
 
     // what this catches: a hard snooze sets a future expiry and suppresses AMBIENT wake
@@ -239,11 +237,11 @@ mod tests {
 
         let state = focus::registry().handle(persona);
         // hard mute suppresses AMBIENT wake while active...
-        assert!(!state.lock().unwrap().wakes_on(lane, false, before + 1_000));
+        assert!(!state.lock().wakes_on(lane, false, before + 1_000));
         // ...but a direct address still pierces it — never numb...
-        assert!(state.lock().unwrap().wakes_on(lane, true, before + 1_000));
+        assert!(state.lock().wakes_on(lane, true, before + 1_000));
         // ...and ambient awareness self-restores once the snooze lapses.
-        assert!(state.lock().unwrap().wakes_on(lane, false, expiry + 1));
+        assert!(state.lock().wakes_on(lane, false, expiry + 1));
     }
 
     // what this catches: focus/mute refuses a non-persona caller (it's a local-persona

@@ -153,7 +153,7 @@ pub async fn evaluate_redundancy(
     let model = request
         .model
         .clone()
-        .unwrap_or_else(|| DEFAULT_REDUNDANCY_MODEL.to_string());
+        .unwrap_or_else(|| DEFAULT_REDUNDANCY_MODEL.to_string()); // unwrap_or: the request names no model, so the redundancy default model applies
     let inference_request = build_redundancy_generation_request(&request, model.clone());
 
     let registry = global_registry();
@@ -251,7 +251,7 @@ pub fn build_redundancy_prompt(context: &AIDecisionContext, draft_text: &str) ->
     let conversation_text = recent
         .iter()
         .map(|msg| {
-            let speaker = msg.name.as_deref().unwrap_or(&msg.role);
+            let speaker = msg.name.as_deref().unwrap_or(&msg.role); // unwrap_or: an unnamed message is attributed to its role
             let time_prefix = format_time_prefix(msg.timestamp);
             format!("{time_prefix}{speaker}: {}", msg.content)
         })
@@ -317,7 +317,7 @@ pub fn parse_redundancy_response(
         .get("reason")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| "No reason provided".to_string());
+        .unwrap_or_else(|| "No reason provided".to_string()); // unwrap_or: `reason` is an optional field of the reply; isRedundant is the required one
     Ok(ParsedRedundancyResponse {
         is_redundant,
         reason,

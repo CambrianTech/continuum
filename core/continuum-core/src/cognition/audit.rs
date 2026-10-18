@@ -92,6 +92,19 @@ pub enum AuditEntryKind {
     AccessDenied,
 }
 
+impl AuditEntryKind {
+    /// The kebab-case wire name — byte-identical to the serde rename, as an exhaustive
+    /// match so the chain hash needs no fallible serializer call.
+    pub fn wire_name(&self) -> &'static str {
+        match self {
+            Self::Refusal => "refusal",
+            Self::GovernorOverride => "governor-override",
+            Self::FederationPolicyDrift => "federation-policy-drift",
+            Self::AccessDenied => "access-denied",
+        }
+    }
+}
+
 /// One audit log entry. Append-only — entries are written once, never
 /// modified. The `chain_hash` is computed from the entry's content + the
 /// previous entry's chain_hash, forming the tamper-detection chain.
@@ -207,8 +220,9 @@ fn compute_chain_hash(
     payload: &serde_json::Value,
     prev_chain_hash: &str,
 ) -> String {
-    let kind_json =
-        serde_json::to_string(kind).expect("AuditEntryKind serialization is infallible");
+    // The JSON encoding of the kind (a quoted wire name) — the exact bytes every
+    // existing chain was hashed over.
+    let kind_json = format!("\"{}\"", kind.wire_name());
     let payload_json = payload.to_string();
 
     let mut hasher = Sha256::new();
@@ -373,7 +387,7 @@ pub fn read_audit_log(path: &Path) -> Result<Vec<AuditEntry>, AuditError> {
         let entry: AuditEntry = serde_json::from_str(&line)?;
 
         // 1. Seq monotonic-strict
-        let expected_seq = prev_seq.map(|p| p + 1).unwrap_or(0);
+        let expected_seq = prev_seq.map(|p| p + 1).unwrap_or(0); // unwrap_or: no prior entry means this is genesis, whose seq is 0
         if entry.seq != expected_seq {
             return Err(AuditError::SequenceGap {
                 expected: expected_seq,
@@ -452,6 +466,19 @@ mod tests {
             serde_json::to_string(&AuditEntryKind::AccessDenied).unwrap(),
             "\"access-denied\""
         );
+        // The chain hash encodes the kind via `wire_name`; it must stay byte-identical
+        // to serde or every previously written chain fails verification.
+        for kind in [
+            AuditEntryKind::Refusal,
+            AuditEntryKind::GovernorOverride,
+            AuditEntryKind::FederationPolicyDrift,
+            AuditEntryKind::AccessDenied,
+        ] {
+            assert_eq!(
+                serde_json::to_string(&kind).unwrap(),
+                format!("\"{}\"", kind.wire_name())
+            );
+        }
     }
 
     // ===== AuditChain.build_next =====

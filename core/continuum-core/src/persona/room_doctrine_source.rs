@@ -164,7 +164,7 @@ pub struct RoomDoctrineSource {
     ///
     /// Bounded by the persona's subscribed rooms, which is a handful; a room she
     /// never takes a turn in never gets an entry.
-    observed: std::sync::Mutex<
+    observed: parking_lot::Mutex<
         crate::cognition::bounded_room_ledger::BoundedRoomLedger<Option<uuid::Uuid>, (Outcome, u64)>,
     >,
 }
@@ -175,7 +175,7 @@ impl RoomDoctrineSource {
             persona_id,
             room_id: None,
             reader,
-            observed: std::sync::Mutex::new(
+            observed: parking_lot::Mutex::new(
                 crate::cognition::bounded_room_ledger::BoundedRoomLedger::new(
                     crate::cognition::bounded_room_ledger::ROOMS_TRACKED,
                 ),
@@ -234,12 +234,11 @@ impl RoomDoctrineSource {
     /// replay stays deterministic.
     fn report(&self, outcome: Outcome, room: Option<uuid::Uuid>, now_ms: u64) -> bool {
         let now = now_ms;
-        // lock poisoning here would mean a panic inside this tiny map update; the
-        // observation ledger is diagnostics, and taking cognition down to protect
-        // its bookkeeping is the wrong trade.
-        let mut guard = self.observed.lock().unwrap_or_else(|e| e.into_inner());
+        // `parking_lot::Mutex` does not poison: a panic elsewhere cannot take this
+        // diagnostics ledger (and so cognition) down with it.
+        let mut guard = self.observed.lock();
         let prev = guard.insert(room, (outcome, now));
-        let (prev_outcome, prev_at) = prev.unwrap_or((Outcome::Unobserved, now));
+        let (prev_outcome, prev_at) = prev.unwrap_or((Outcome::Unobserved, now)); // unwrap_or: first report for this room — the documented pre-first-call sentinel
         if prev_outcome == outcome {
             return false;
         }
@@ -265,7 +264,6 @@ impl RoomDoctrineSource {
     fn observed_in(&self, room: Option<uuid::Uuid>) -> Outcome {
         self.observed
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // diagnostics-only ledger, same as report()
             .get(&room)
             .map(|(o, _)| *o)
             .unwrap_or(Outcome::Unobserved)

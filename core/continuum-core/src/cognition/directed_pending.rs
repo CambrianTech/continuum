@@ -39,9 +39,16 @@ fn cell(persona: Uuid) -> Arc<Pending> {
 /// A directed line was forwarded to this citizen's inbox.
 pub fn signal(persona: Uuid) {
     let c = cell(persona);
-    c.state.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |state| {
-        Some(state.wrapping_add(2) | 1)
-    }).expect("attention generation update is unconditional");
+    // Unconditional bump: advance the generation and set the pending bit. A plain CAS
+    // loop, so there is no `fetch_update` refusal path to unwrap.
+    let mut current = c.state.load(Ordering::SeqCst);
+    loop {
+        let next = current.wrapping_add(2) | 1;
+        match c.state.compare_exchange_weak(current, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => break,
+            Err(actual) => current = actual,
+        }
+    }
     c.notify.notify_waiters();
 }
 

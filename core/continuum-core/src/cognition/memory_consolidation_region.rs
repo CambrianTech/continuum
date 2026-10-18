@@ -158,7 +158,7 @@ impl MemoryConsolidationRegion {
                 Err(_) => return sleep(),
             };
             let empty = HashSet::new();
-            Self::unconsolidated(&entries, seen.get(&persona_id).unwrap_or(&empty))
+            Self::unconsolidated(&entries, seen.get(&persona_id).unwrap_or(&empty)) // unwrap_or: a persona never consolidated has seen nothing yet
         };
         if fresh.is_empty() {
             // Rest, not a clock — nothing new to compress.

@@ -176,7 +176,7 @@ pub async fn evaluate_validate_response(
     let model = request
         .model
         .clone()
-        .unwrap_or_else(|| DEFAULT_VALIDATE_MODEL.to_string());
+        .unwrap_or_else(|| DEFAULT_VALIDATE_MODEL.to_string()); // unwrap_or: model is an optional request override
     let inference_request = build_validate_generation_request(&request, model.clone());
 
     let registry_arc = global_registry();

@@ -281,7 +281,7 @@ pub fn holder(
         // sentence never carries an id (Joel, 2026-10-06: "uuid should never be inside
         // or part of a string in any way"). She can still reach the holder: the typed
         // `owner` rides beside this, rendered as a handle only in its own field.
-        Some(o) => names.name_of(&o).unwrap_or_else(|| UNNAMED_HOLDER.to_string()),
+        Some(o) => names.name_of(&o).unwrap_or_else(|| UNNAMED_HOLDER.to_string()), // unwrap_or: an unpublished name is said as unnamed, never an id
     };
     let quiet_for_ms = owner
         .and(card.last_heartbeat_at_ms)
@@ -329,7 +329,7 @@ impl CardHolder {
         let quiet = self
             .quiet_for_ms
             .map(|ms| format!(", silent {}", crate::time::age::Age::from_millis(ms).span()))
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or: no heartbeat to age = no silence clause
         let owner = match self.hold {
             Hold::Unclaimed => "unclaimed".to_string(),
             Hold::Held if self.is_self => "owner YOU".to_string(),

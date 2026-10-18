@@ -125,7 +125,7 @@ fn first_cpu_brand(system_info: &System) -> String {
         .cpus()
         .first()
         .map(|c| c.brand().to_string())
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or: documented contract, no enumerated CPU yields an empty brand
 }
 
 /// Classify a host whose GPU monitor reports `platform == "metal"`. Splits

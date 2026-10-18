@@ -19,7 +19,8 @@
 //! DEBT the next tick's reconcile retries, self-healing as calls finish).
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use parking_lot::Mutex;
+use std::sync::{Arc, OnceLock};
 
 use crate::capacity::{AllocationPolicy, DeviceCapacity, FitPolicy, LeaseRequest};
 
@@ -66,9 +67,17 @@ pub struct PrefillThrottle {
     want_lanes: AtomicUsize,
     /// Consecutive reconciles that wanted a grow — gate for [`GROW_STICKINESS_TICKS`].
     grow_streak: AtomicUsize,
-    /// Serializes reconcile's read-modify-write on (installed, semaphore).
+    /// Serializes reconcile's read-modify-write on (installed, semaphore). `parking_lot`
+    /// does not poison, so there is no "lock poisoned" state to handle.
     reconcile_lock: Mutex<()>,
 }
+
+/// The prefill semaphore was closed, so no slot can be granted. `sem` is private and this
+/// module never calls `close()`, so this is a broken invariant, not a load condition —
+/// surfaced as a typed outcome rather than a panic in the model-call path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("prefill throttle semaphore closed; no prefill slot can be granted")]
+pub struct PrefillThrottleClosed;
 
 fn throttle() -> &'static PrefillThrottle {
     THROTTLE.get_or_init(|| {
@@ -187,12 +196,16 @@ impl PrefillThrottle {
     }
 
     /// See [`acquire_prefill_slot`].
-    pub async fn acquire_prefill_slot(&self) -> tokio::sync::OwnedSemaphorePermit {
-        self.sem
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("prefill semaphore is never closed")
+    pub async fn acquire_prefill_slot(
+        &self,
+    ) -> Result<tokio::sync::OwnedSemaphorePermit, PrefillThrottleClosed> {
+        self.sem.clone().acquire_owned().await.map_err(|_closed| {
+            tracing::error!(
+                target: "cognition::prefill_throttle",
+                "prefill semaphore closed — the throttle can no longer gate concurrent prefills"
+            );
+            PrefillThrottleClosed
+        })
     }
 
     /// See [`installed_permits`].
@@ -209,10 +222,7 @@ impl PrefillThrottle {
         // a resident model may always run ONE prefill (residency decision)
         let hold = hold.max(1);
         let grow = grow.max(1);
-        let _g = self
-            .reconcile_lock
-            .lock()
-            .expect("prefill reconcile lock never poisoned");
+        let _g = self.reconcile_lock.lock();
         let installed = self.installed.load(Ordering::Acquire);
         // THE DEADBAND, resolved against the authoritative `installed` under the lock — not
         // against a value read before it, which would be a race the moment reconcile gains a
@@ -261,7 +271,7 @@ impl PrefillThrottle {
 
 /// Acquire one concurrent-prefill slot for the model-call window. Await under pressure —
 /// the call proceeds when a slot frees or reconcile grows the gate back.
-pub async fn acquire_prefill_slot() -> tokio::sync::OwnedSemaphorePermit {
+pub async fn acquire_prefill_slot() -> Result<tokio::sync::OwnedSemaphorePermit, PrefillThrottleClosed> {
     throttle().acquire_prefill_slot().await
 }
 

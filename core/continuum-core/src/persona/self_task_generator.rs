@@ -162,7 +162,11 @@ impl SelfTaskGenerator {
         task: &Value,
         executor: &crate::runtime::command_executor::CommandExecutor,
     ) -> Result<Value, String> {
-        let id = task.get("id").and_then(|v| v.as_str()).unwrap_or_default();
+        let Some(id) = task.get("id").and_then(|v| v.as_str()) else {
+            // `create_task` always stamps an id; a task without one is malformed and
+            // persisting it under "" would collide every such task into one row.
+            return Err("self-task has no string `id` — refusing to persist it".to_string());
+        };
         executor
             .execute_json(
                 "data/create",
@@ -222,13 +226,13 @@ impl SelfTaskGenerator {
                         .and_then(|v| v.as_str())
                         .and_then(parse_iso_to_epoch_ms)
                 })
-                .unwrap_or(now_ms);
+                .unwrap_or(now_ms); // unwrap_or: an undated task cannot be shown stale, so it is read as fresh (not resumed)
 
             if updated_at < threshold {
                 let original_desc = data
                     .get("description")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                    .unwrap_or(""); // unwrap_or: description is an optional field; absent = empty text
                 let truncated = if original_desc.len() > 200 {
                     format!("{}...", &original_desc[..197])
                 } else {
@@ -342,7 +346,7 @@ impl SelfTaskGenerator {
                 .get("data")
                 .and_then(|d| d.get("domain"))
                 .and_then(|v| v.as_str())
-                .unwrap_or("unknown")
+                .unwrap_or("unknown") // unwrap_or: a failed task with no domain is grouped under the explicit "unknown" bucket
                 .to_string();
             *failures_by_domain.entry(domain).or_insert(0) += 1;
         }

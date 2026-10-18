@@ -81,8 +81,7 @@ pub fn orchestrate(
         .filter(|(_, d)| d.should_respond)
         .max_by(|(_, a), (_, b)| {
             a.relevance_score
-                .partial_cmp(&b.relevance_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&b.relevance_score)
                 .then_with(|| b.persona_id.cmp(&a.persona_id)) // reverse for tie-break stability
         })
         .map(|(i, _)| i);

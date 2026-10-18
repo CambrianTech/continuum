@@ -331,7 +331,7 @@ fn resolve_burst(
             path.display()
         )));
     }
-    let turn = p.turn.unwrap_or(-1);
+    let turn = p.turn.unwrap_or(-1); // unwrap_or: turn omitted = the most recent (-1), the documented default
     let idx = if turn < 0 {
         lines.len() as i64 + turn
     } else {
@@ -344,7 +344,7 @@ fn resolve_burst(
         )));
     }
     let line = &lines[idx as usize];
-    let room = p.room_id.clone().unwrap_or_else(|| line.room_id.clone());
+    let room = p.room_id.clone().unwrap_or_else(|| line.room_id.clone()); // unwrap_or: room is an optional override of the trace's own room
     Ok(ResolvedBurst::from_trace(
         line,
         room,

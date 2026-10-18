@@ -97,7 +97,7 @@ pub struct RedactionReport {
 impl RedactionReport {
     /// How many spans of `class` were redacted.
     pub fn count(&self, class: RedactionClass) -> usize {
-        self.counts.get(&class).copied().unwrap_or(0)
+        self.counts.get(&class).copied().unwrap_or(0) // unwrap_or: a class with no entry had zero spans redacted
     }
 
     /// Total spans redacted across all classes.

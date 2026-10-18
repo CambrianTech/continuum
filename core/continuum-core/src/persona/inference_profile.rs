@@ -157,6 +157,11 @@ pub enum InferenceProfileError {
     /// The persona's role template references a model_id but the model
     /// registry has no row for it.
     UnknownModel { model_id: String, role_id: String },
+    /// The model row names a provider id the registry has no row for, so whether
+    /// it is local (needs a GGUF, budgets to the served window) or cloud cannot be
+    /// known. Refused rather than guessed: reading it as Cloud skipped the GGUF
+    /// check and budgeted a local model to its full declared window.
+    UnknownProvider { model_id: String, provider_id: String },
     /// The model registry row exists but `gguf_local_path` is None and
     /// the adapter is local-inference (would need a GGUF on disk).
     NoLocalGguf {
@@ -183,6 +188,16 @@ impl std::fmt::Display for InferenceProfileError {
                  not found in registry. Either add the model row in \
                  the Rust catalog (catalog.rs) or update the role_template.",
                 role_id, model_id
+            ),
+            Self::UnknownProvider {
+                model_id,
+                provider_id,
+            } => write!(
+                f,
+                "PersonaInferenceProfile: model '{}' names provider '{}' \
+                 which is not in the registry. Add the provider row in the \
+                 Rust catalog (catalog.rs) or fix the model's provider id.",
+                model_id, provider_id
             ),
             Self::NoLocalGguf {
                 model_id,

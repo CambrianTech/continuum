@@ -129,16 +129,15 @@ impl EngramSource {
             };
             let salience = recall_meta
                 .get(engram.id)
-                .map(|m| m.salience)
-                .unwrap_or(0.5);
+                .unwrap_or_default() // unwrap_or: no recall row = default metadata, neutral salience
+                .salience;
             let score = composite_score(salience, engram.admitted_at_ms, now_ms);
             scored.push((score, engram));
         }
         // Sort by score descending; stable enough — same-score engrams
         // tiebreak on admitted_at_ms descending to favor newer.
         scored.sort_by(|a, b| {
-            b.0.partial_cmp(&a.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.0.total_cmp(&a.0)
                 .then(b.1.admitted_at_ms.cmp(&a.1.admitted_at_ms))
         });
         scored

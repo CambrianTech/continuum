@@ -100,9 +100,7 @@ impl ActionCommand for FocusNudge {
         let persona_id = caller.peer_id.as_uuid();
 
         let handle = focus::registry().handle(persona_id);
-        let mut state = handle
-            .lock()
-            .expect("focus mutex poisoned by a prior panic");
+        let mut state = handle.lock();
 
         if p.reset {
             state.reset_focus();
@@ -176,7 +174,7 @@ mod tests {
 
         // the SAME state the kernel/serve loop reads now carries the leaned value.
         let state = focus::registry().handle(persona);
-        assert!((state.lock().unwrap().focus() - 0.3).abs() < 1e-5);
+        assert!((state.lock().focus() - 0.3).abs() < 1e-5);
     }
 
     // what this catches: an over-large delta saturates at the bound (intent, not error
@@ -190,7 +188,6 @@ mod tests {
         focus::registry()
             .handle(persona)
             .lock()
-            .unwrap()
             .set_cursor(lane);
 
         let pinned = FocusNudge
@@ -220,7 +217,7 @@ mod tests {
             "reset → resting setpoint"
         );
         assert_eq!(
-            focus::registry().handle(persona).lock().unwrap().cursor(),
+            focus::registry().handle(persona).lock().cursor(),
             Some(lane),
             "reset spares the cursor — it resets concentration only"
         );

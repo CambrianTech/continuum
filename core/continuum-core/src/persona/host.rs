@@ -215,7 +215,7 @@ pub struct PersonaSpawnSupervisor {
     model_registry: &'static crate::model_registry::Registry,
     rt_handle: tokio::runtime::Handle,
     /// Seats that failed, by persona: attempts and the instant they may be tried again.
-    slot_backoff: std::sync::Mutex<std::collections::HashMap<Uuid, SlotBackoff>>,
+    slot_backoff: parking_lot::Mutex<std::collections::HashMap<Uuid, SlotBackoff>>,
 }
 
 impl PersonaSpawnSupervisor {
@@ -242,7 +242,7 @@ impl PersonaSpawnSupervisor {
             tier_id: tier_id.into(),
             model_registry,
             rt_handle,
-            slot_backoff: std::sync::Mutex::new(std::collections::HashMap::new()),
+            slot_backoff: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -415,13 +415,13 @@ impl PersonaSpawnSupervisor {
     ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
         // A pre-1970 clock reads 0 here: every backoff reads as expired: a retry, never a stuck seat.
         let now = EpochMs::now().millis();
-        let map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
+        let map = self.slot_backoff.lock();
         filter_by_backoff_with(now, &map, plans)
     }
 
     fn note_slot_failure(&self, persona_id: Uuid, reason: &str) {
         let now = EpochMs::now().millis();
-        let mut map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.slot_backoff.lock();
         let entry = map.entry(persona_id).or_insert(SlotBackoff { attempts: 0, until_ms: 0 });
         entry.attempts = entry.attempts.saturating_add(1);
         let delay = backoff_delay(entry.attempts);
@@ -437,9 +437,7 @@ impl PersonaSpawnSupervisor {
     }
 
     fn clear_slot_failure(&self, persona_id: Uuid) {
-        if let Ok(mut map) = self.slot_backoff.lock() {
-            map.remove(&persona_id);
-        }
+        self.slot_backoff.lock().remove(&persona_id);
     }
 
     fn filter_by_hold(
@@ -681,7 +679,7 @@ impl PersonaSpawnSupervisor {
                         self.note_slot_failure(pid, &format!("{err}"));
                     }
                     summary.failures.push(BootSlotFailure {
-                        slot_index: slot_index.unwrap_or(slot_idx),
+                        slot_index: slot_index.unwrap_or(slot_idx), // unwrap_or: an error naming no slot is the slot being booted
                         role: Some(role),
                         persona_id,
                         reason: format!("{err}"),
@@ -727,10 +725,17 @@ impl PersonaSpawnSupervisor {
         // spawn, so the flag is present; if it somehow isn't, that's a registration
         // bug, not a serving one — degrade to a private never-set flag (she's simply
         // never quiescable) rather than fail her whole boot.
-        let quiesced = self
-            .registry
-            .quiesced_flag(persona_id)
-            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let quiesced = match self.registry.quiesced_flag(persona_id) {
+            Some(flag) => flag,
+            None => {
+                tracing::error!(
+                    persona_id = %persona_id,
+                    "registry holds no quiesce flag at spawn (registration bug); \
+                     she runs with a private never-set flag and cannot be quiesced"
+                );
+                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+            }
+        };
         let handle = match spawn_persona_service(
             ctx,
             ServeOptions {

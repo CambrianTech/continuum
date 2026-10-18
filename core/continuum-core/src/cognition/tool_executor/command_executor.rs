@@ -589,8 +589,10 @@ impl ToolExecutor for CommandToolExecutor {
         let results = join_all(dispatches)
             .await
             .into_iter()
-            .enumerate()
-            .map(|(i, (tool_use_id, outcome))| match outcome {
+            // One dispatch per call, in order (built by `calls.iter().map` above), so
+            // zipping pairs each outcome with ITS call — no index to fall off the end.
+            .zip(calls)
+            .map(|((tool_use_id, outcome), call)| match outcome {
                 Ok(mut value) => {
                     // THE TOOL'S OWN VERDICT, derived HERE — before the fold, from
                     // the FULL value. Ordering is the contract, not an accident: the
@@ -609,7 +611,7 @@ impl ToolExecutor for CommandToolExecutor {
                     // longer decodes projects `Undecodable` — schema drift, a defect,
                     // and never silently a success (Astra, #4352 review).
                     let canonical =
-                        crate::cognition::tool_dialect::resolve_wire_name(&calls[i].name);
+                        crate::cognition::tool_dialect::resolve_wire_name(&call.name);
                     let (verdict, dispatch_handle) =
                         crate::sdk_codegen::project_result(&canonical, &value);
                     if verdict == ActVerdict::Undecodable {
@@ -678,7 +680,7 @@ impl ToolExecutor for CommandToolExecutor {
                     };
                     // Index back to the call that failed (the OK path never pays
                     // this — names are only needed to build recovery guidance).
-                    let attempted = calls.get(i).map(|c| c.name.as_str()).unwrap_or("");
+                    let attempted = call.name.as_str();
                     // A refusal is a wall in her hands; it must reach the probe stream,
                     // not only her. Kimi's own ledger showed work/create ✗×6 on
                     // 2026-10-05 and nothing on our side could say why without opening

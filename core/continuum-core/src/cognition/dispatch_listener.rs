@@ -59,10 +59,10 @@ pub fn fold_completion(wm: &WorkingMemory, ev: CommandCompletedEvent) -> bool {
             .result
             .as_ref()
             .map(summarize_result)
-            .unwrap_or_else(|| "done".to_string());
+            .unwrap_or_else(|| "done".to_string()); // unwrap_or: a success that carried no result value reads as plain "done"
         (body, DispatchStatus::Done)
     } else {
-        let body = ev.error.unwrap_or_else(|| "failed".to_string());
+        let body = ev.error.unwrap_or_else(|| "failed".to_string()); // unwrap_or: a failure that carried no error text reads as plain "failed"
         (body, DispatchStatus::Failed)
     };
     wm.record_dispatch_event(handle, &label, &content, status);

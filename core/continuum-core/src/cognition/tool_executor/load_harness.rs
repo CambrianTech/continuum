@@ -36,7 +36,7 @@ use uuid::Uuid;
 /// A shared project tree: `files` source files of ~`lines`×2 lines each — a small
 /// crate's worth of realistic, searchable content (not `{"i": n}`).
 fn make_project(files: usize, lines: usize) -> TempDir {
-    let dir = TempDir::new().expect("tempdir");
+    let dir = TempDir::new().expect("tempdir"); // test harness: a panic here fails the stress test that drove it
     for f in 0..files {
         let mut content = String::with_capacity(lines * 120);
         content.push_str(&format!("//! module {f} — the quick brown fox\n\n"));
@@ -46,7 +46,7 @@ fn make_project(files: usize, lines: usize) -> TempDir {
                  pub fn func_{f}_{l}(x: usize) -> usize {{ x * {l} + {f} + 42 }}\n\n"
             ));
         }
-        std::fs::write(dir.path().join(format!("mod_{f}.rs")), content).expect("write file");
+        std::fs::write(dir.path().join(format!("mod_{f}.rs")), content).expect("write file"); // test harness: a panic here fails the stress test that drove it
     }
     dir
 }
@@ -118,7 +118,7 @@ async fn team(executor: &Arc<CommandExecutor>, root: &str) -> Vec<(Uuid, Command
         let out = client
             .execute_native_batch(&calls, &ctx(id), 8000)
             .await
-            .expect("workspace batch");
+            .expect("workspace batch"); // test harness: a panic here fails the stress test that drove it
         assert!(
             out.results[0].is_error.is_none(),
             "create-workspace failed: {}",
@@ -159,7 +159,7 @@ async fn profile_op<F>(
                     let out = client
                         .execute_native_batch(&calls, &c, 16000)
                         .await
-                        .unwrap();
+                        .unwrap(); // test harness: a panic here fails the stress test that drove it
                     stats.record(t0.elapsed().as_micros() as u64);
                     if out.results[0].is_error.is_some() {
                         errors.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -168,7 +168,7 @@ async fn profile_op<F>(
             })
         })
         .collect();
-    join_all(handles).await.into_iter().for_each(|r| r.unwrap());
+    join_all(handles).await.into_iter().for_each(|r| r.unwrap()); // test harness: a panic here fails the stress test that drove it
 
     let wall = start.elapsed();
     let ops = PERSONAS * ROUNDS;
@@ -206,7 +206,7 @@ async fn team_of(
                 8000,
             )
             .await
-            .expect("workspace");
+            .expect("workspace"); // test harness: a panic here fails the stress test that drove it
         team.push((id, client));
     }
     team
@@ -247,13 +247,13 @@ async fn read_scaling_sweep() {
                     for r in 0..ROUNDS {
                         let calls = vec![tool("r", "code/read", json!({ "persona_id": id.to_string(), "file_path": format!("mod_{}.rs", r % FILES) }))];
                         let t0 = Instant::now();
-                        client.execute_native_batch(&calls, &c, 16000).await.unwrap();
+                        client.execute_native_batch(&calls, &c, 16000).await.unwrap(); // test harness: a panic here fails the stress test that drove it
                         stats.record(t0.elapsed().as_micros() as u64);
                     }
                 })
             })
             .collect();
-        join_all(handles).await.into_iter().for_each(|r| r.unwrap());
+        join_all(handles).await.into_iter().for_each(|r| r.unwrap()); // test harness: a panic here fails the stress test that drove it
         let wall = start.elapsed();
         let ops = n * ROUNDS;
         let snap = stats.snapshot();
@@ -348,13 +348,13 @@ async fn realistic_collaborative_tool_load() {
                         tool("t", "code/tree", json!({ "persona_id": id.to_string(), "max_depth": 5 })),
                     ];
                     let t0 = Instant::now();
-                    client.execute_native_batch(&batch, &c, 16000).await.unwrap();
+                    client.execute_native_batch(&batch, &c, 16000).await.unwrap(); // test harness: a panic here fails the stress test that drove it
                     stats.record(t0.elapsed().as_micros() as u64);
                 }
             })
         })
         .collect();
-    join_all(handles).await.into_iter().for_each(|r| r.unwrap());
+    join_all(handles).await.into_iter().for_each(|r| r.unwrap()); // test harness: a panic here fails the stress test that drove it
     let wall = start.elapsed();
     let turns = PERSONAS * ROUNDS;
     let snap = stats.snapshot();

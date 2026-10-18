@@ -40,7 +40,7 @@
 //! `gender_from_identity(id)` and genesis collapses to pure `project_persona(id)`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use std::collections::BTreeMap;
 
@@ -111,7 +111,7 @@ impl PersonaCard {
     ) -> Self {
         let agent_name = agent_name.into();
         let id_str = persona_id.to_string();
-        let gender = gender_from_name(&agent_name).unwrap_or_else(|| gender_from_identity(&id_str));
+        let gender = gender_from_name(&agent_name).unwrap_or_else(|| gender_from_identity(&id_str)); // unwrap_or: an unanchored name derives gender from the id hash
         Self {
             persona_id,
             agent_name,
@@ -131,7 +131,7 @@ impl PersonaCard {
 /// which consults it FIRST. Same process-global shape as the substrate's other
 /// stateless lookups (`perception_registry`, `shared_compute::global`): a lookup
 /// table, not a manager.
-static CARD_REGISTRY: Mutex<Option<HashMap<String, PersonaCard>>> = Mutex::new(None);
+static CARD_REGISTRY: Mutex<Option<HashMap<String, PersonaCard>>> = parking_lot::const_mutex(None);
 
 /// Register (or refresh) a local persona's durable card, keyed by her identity. The
 /// authoritative gender/presentation source for every avatar/voice selection — this
@@ -140,7 +140,6 @@ pub fn register(card: PersonaCard) {
     let key = card.persona_id.to_string();
     CARD_REGISTRY
         .lock()
-        .unwrap()
         .get_or_insert_with(HashMap::new)
         .insert(key, card);
 }
@@ -149,7 +148,6 @@ pub fn register(card: PersonaCard) {
 pub fn get(identity: &str) -> Option<PersonaCard> {
     CARD_REGISTRY
         .lock()
-        .unwrap()
         .as_ref()
         .and_then(|m| m.get(identity).cloned())
 }
@@ -162,10 +160,9 @@ pub fn get(identity: &str) -> Option<PersonaCard> {
 pub fn ids() -> Vec<Uuid> {
     CARD_REGISTRY
         .lock()
-        .unwrap()
         .as_ref()
         .map(|m| m.values().map(|c| c.persona_id).collect())
-        .unwrap_or_default()
+        .unwrap_or_default() // unwrap_or: a never-populated registry knows no personas
 }
 
 /// The registered card's gender for an identity, if present. The seam
@@ -174,7 +171,6 @@ pub fn ids() -> Vec<Uuid> {
 pub fn gender_of(identity: &str) -> Option<AvatarGender> {
     CARD_REGISTRY
         .lock()
-        .unwrap()
         .as_ref()
         .and_then(|m| m.get(identity).map(|c| c.gender))
 }
@@ -182,7 +178,7 @@ pub fn gender_of(identity: &str) -> Option<AvatarGender> {
 /// Drop a persona's card from the live registry (test isolation + despawn).
 #[cfg(test)]
 pub fn remove(identity: &str) {
-    if let Some(m) = CARD_REGISTRY.lock().unwrap().as_mut() {
+    if let Some(m) = CARD_REGISTRY.lock().as_mut() {
         m.remove(identity);
     }
 }

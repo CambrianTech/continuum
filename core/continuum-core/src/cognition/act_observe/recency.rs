@@ -63,7 +63,7 @@ pub(super) fn humanize_result_content(raw: &str) -> String {
                     other => {
                         out.push_str(key);
                         out.push_str(": ");
-                        out.push_str(&serde_json::to_string(other).unwrap_or_default());
+                        out.push_str(&other.to_string());
                     }
                 }
                 out.push('\n');
@@ -103,7 +103,7 @@ pub(super) fn summarize_args_for_recency(
     args: &serde_json::Value,
     budget: Option<usize>,
 ) -> String {
-    let fold_at = budget.unwrap_or(usize::MAX);
+    let fold_at = budget.unwrap_or(usize::MAX); // unwrap_or: an unknown window folds nothing (see the doc above), never an invented bound
     match args {
         serde_json::Value::Object(map) => map
             .iter()
@@ -187,7 +187,7 @@ pub(super) fn render_act_for_recall(
     } else {
         format!(
             "{label} {}",
-            truncate_chars(body.trim().lines().next().unwrap_or(""), 140)
+            truncate_chars(body.trim().lines().next().unwrap_or(""), 140) // unwrap_or: a body with no lines has an empty first line
         )
     };
     let mark = if is_err {

@@ -685,12 +685,12 @@ impl ServiceModule for PersonaServiceModule {
                 let system_prompt = params
                     .get("system_prompt")
                     .and_then(Value::as_str)
-                    .unwrap_or("")
+                    .unwrap_or("") // unwrap_or: system_prompt is an optional enroll param; absent = none
                     .to_string();
                 let specialty = params
                     .get("specialty")
                     .and_then(Value::as_str)
-                    .unwrap_or("general")
+                    .unwrap_or("general") // unwrap_or: specialty is optional; the documented default is "general"
                     .to_string();
                 // capabilities arrives as a JSON array of strings; each
                 // entry is the kebab-case name of a `Capability` variant
@@ -704,7 +704,7 @@ impl ServiceModule for PersonaServiceModule {
                             .filter_map(|s| serde_json::from_value::<Capability>(json!(s)).ok())
                             .collect()
                     })
-                    .unwrap_or_default();
+                    .unwrap_or_default(); // unwrap_or: capabilities is an optional enroll param; absent = none declared
                 let responder_config = ResponderConfig {
                     model,
                     system_prompt,

@@ -374,18 +374,28 @@ impl ThreatDetector for LiteralThreatDetector {
             let excerpt = frame
                 .text
                 .get(byte_start..byte_end)
-                .unwrap_or(pattern.phrase)
+                .unwrap_or(pattern.phrase) // unwrap_or: ASCII lowercasing keeps byte offsets, so this is the matched phrase either way
                 .to_string();
             let evidence = ThreatEvidence::new(excerpt, byte_start as u32, byte_end as u32);
-            let signal = ThreatSignal::new(
+            match ThreatSignal::new(
                 self.id(),
                 pattern.pattern.clone(),
                 pattern.severity,
                 pattern.confidence,
                 vec![evidence],
-            )
-            .expect("literal threat detector patterns use valid confidence");
-            signals.push(signal);
+            ) {
+                Ok(signal) => signals.push(signal),
+                // A literal pattern with an out-of-range confidence is a table defect: name
+                // it loudly and skip that one pattern rather than crash the detector.
+                Err(error) => tracing::error!(
+                    target: "cognition::threat_detector",
+                    detector = self.id,
+                    phrase = pattern.phrase,
+                    confidence = pattern.confidence,
+                    %error,
+                    "literal threat pattern rejected by ThreatSignal::new"
+                ),
+            }
         }
 
         signals

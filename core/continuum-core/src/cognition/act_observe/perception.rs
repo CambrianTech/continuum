@@ -186,7 +186,7 @@ pub(super) enum ConcernPhase {
 pub(super) fn mutated_workspace(recent: &[WmEntry], phase: ConcernPhase) -> bool {
     let end = match phase {
         ConcernPhase::Ongoing => recent.len(),
-        ConcernPhase::JustSettled => last_settlement(recent).unwrap_or(recent.len()),
+        ConcernPhase::JustSettled => last_settlement(recent).unwrap_or(recent.len()), // unwrap_or: no settlement yet means the whole slice is this concern
     };
     let start = last_settlement(&recent[..end]).map_or(0, |i| i + 1);
     recent[start..end].iter().any(|entry| {

@@ -157,9 +157,12 @@ impl AdmissionPersistenceSink for OrmPersistenceSink {
 
     fn observe_admission(&self, engram: &Engram, metadata: RecallMetadata) {
         let engram = engram.clone();
-        let metadata_row = EngramRecallMetadata::for_new_row(engram.id, metadata);
-        let row_id = uuid::Uuid::parse_str(&metadata_row.base.id)
-            .expect("BaseEntity::for_new_record always produces a valid UUID");
+        // Mint the row id as a typed Uuid here and render it into the row, rather than
+        // parsing back the string `BaseEntity::for_new_record` rendered: the id is a
+        // value we own, never a string we have to trust.
+        let row_id = Uuid::new_v4();
+        let mut metadata_row = EngramRecallMetadata::for_new_row(engram.id, metadata);
+        metadata_row.base.id = row_id.to_string();
         let engram_id = engram.id;
         // Cache the engram_id → row_id mapping NOW (before spawn) so
         // any concurrent `observe_metadata_update` for this engram_id
@@ -304,17 +307,17 @@ async fn update_metadata_row(
 /// system level, ubiquitous across every test in the substrate,
 /// not bespoke per test module.
 pub struct RecordingSink {
-    admissions: std::sync::Mutex<Vec<(Engram, RecallMetadata)>>,
-    metadata_updates: std::sync::Mutex<Vec<(Uuid, RecallMetadata)>>,
-    content_updates: std::sync::Mutex<Vec<Engram>>,
+    admissions: parking_lot::Mutex<Vec<(Engram, RecallMetadata)>>,
+    metadata_updates: parking_lot::Mutex<Vec<(Uuid, RecallMetadata)>>,
+    content_updates: parking_lot::Mutex<Vec<Engram>>,
 }
 
 impl RecordingSink {
     pub fn new() -> Self {
         Self {
-            admissions: std::sync::Mutex::new(Vec::new()),
-            metadata_updates: std::sync::Mutex::new(Vec::new()),
-            content_updates: std::sync::Mutex::new(Vec::new()),
+            admissions: parking_lot::Mutex::new(Vec::new()),
+            metadata_updates: parking_lot::Mutex::new(Vec::new()),
+            content_updates: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -323,17 +326,17 @@ impl RecordingSink {
     }
 
     pub fn admissions_seen(&self) -> Vec<(Engram, RecallMetadata)> {
-        self.admissions.lock().unwrap().clone()
+        self.admissions.lock().clone()
     }
 
     pub fn metadata_updates_seen(&self) -> Vec<(Uuid, RecallMetadata)> {
-        self.metadata_updates.lock().unwrap().clone()
+        self.metadata_updates.lock().clone()
     }
 
     /// Engrams whose content was re-saved via `observe_content_update`
     /// (redaction rewrote them). Lets a test assert the durable-rewrite fired.
     pub fn content_updates_seen(&self) -> Vec<Engram> {
-        self.content_updates.lock().unwrap().clone()
+        self.content_updates.lock().clone()
     }
 }
 
@@ -350,17 +353,15 @@ impl AdmissionPersistenceSink for RecordingSink {
     fn observe_admission(&self, engram: &Engram, metadata: RecallMetadata) {
         self.admissions
             .lock()
-            .unwrap()
             .push((engram.clone(), metadata));
     }
     fn observe_metadata_update(&self, engram_id: Uuid, metadata: RecallMetadata) {
         self.metadata_updates
             .lock()
-            .unwrap()
             .push((engram_id, metadata));
     }
     fn observe_content_update(&self, engram: &Engram) {
-        self.content_updates.lock().unwrap().push(engram.clone());
+        self.content_updates.lock().push(engram.clone());
     }
 }
 

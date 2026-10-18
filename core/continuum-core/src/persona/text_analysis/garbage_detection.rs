@@ -10,36 +10,37 @@ use regex::Regex;
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
+use super::literal_regex::literal;
 use super::types::{GarbageCheckResult, GarbageReason};
 
 // Pre-compiled regex patterns (compiled once, used forever)
-static REPLACEMENT_CHAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x{FFFD}").unwrap());
+static REPLACEMENT_CHAR: LazyLock<Regex> = LazyLock::new(|| literal(r"\x{FFFD}"));
 static CONTROL_CHARS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[\x00-\x08\x0B\x0C\x0E-\x1F]").unwrap());
+    LazyLock::new(|| literal(r"[\x00-\x08\x0B\x0C\x0E-\x1F]"));
 static PRINTABLE_ASCII: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[\x20-\x7E\n\r\t]").unwrap());
+    LazyLock::new(|| literal(r"[\x20-\x7E\n\r\t]"));
 static EMOJI_RANGE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"[\x{1F300}-\x{1F9FF}]").unwrap());
+    LazyLock::new(|| literal(r"[\x{1F300}-\x{1F9FF}]"));
 // Note: no EXACT_REPEAT regex — Rust regex doesn't support backreferences.
 // Repetition detection uses algorithmic sliding window instead (faster).
 static PUNCT_CHARS: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"[.!?,;:'"()\{\}\[\]<>/\\|@#$%^&*~`]"#).unwrap());
-static LETTER_CHARS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[a-zA-Z]").unwrap());
-static REPEATED_PUNCT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[.!?]{5,}").unwrap());
-static NON_ASCII_CHAR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[^\x00-\x7F]").unwrap());
+    LazyLock::new(|| literal(r#"[.!?,;:'"()\{\}\[\]<>/\\|@#$%^&*~`]"#));
+static LETTER_CHARS: LazyLock<Regex> = LazyLock::new(|| literal(r"[a-zA-Z]"));
+static REPEATED_PUNCT: LazyLock<Regex> = LazyLock::new(|| literal(r"[.!?]{5,}"));
+static NON_ASCII_CHAR: LazyLock<Regex> = LazyLock::new(|| literal(r"[^\x00-\x7F]"));
 // ASCII_LETTER removed — use LETTER_CHARS (identical regex, one source of truth)
 static ERROR_PREFIX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)^(error|failed|cannot|unable|timeout|invalid):").unwrap());
+    LazyLock::new(|| literal(r"(?i)^(error|failed|cannot|unable|timeout|invalid):"));
 
 // Fabricated conversation patterns
 // Timestamped speaker: "02/16/2026 09:51 General AI: text" or "2026-02-16 09:51 Name: text"
 static FABRICATED_TIMESTAMP_SPEAKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\s+\d{1,2}:\d{2}\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s").unwrap()
+    literal(r"(?m)^\s*\d{1,4}[/-]\d{1,2}[/-]\d{1,4}\s+\d{1,2}:\d{2}\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s")
 });
 // Multi-word speaker at line start: "General AI: text", "Local Assistant: text"
 // Requires 2+ capitalized words to avoid matching "Note:", "Warning:", etc.
 static FABRICATED_MULTI_WORD_SPEAKER: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?m)^[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s+\S").unwrap()
+    literal(r"(?m)^[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*:\s+\S")
 });
 
 // Inference error patterns
@@ -47,68 +48,68 @@ static INFERENCE_PATTERNS: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(
     vec![
         // Sampling errors (Candle)
         (
-            Regex::new(r"(?i)sampling failed:?\s+").unwrap(),
+            literal(r"(?i)sampling failed:?\s+"),
             "Sampling failure",
         ),
         (
-            Regex::new(r"(?i)a weight is (negative|invalid|too large)").unwrap(),
+            literal(r"(?i)a weight is (negative|invalid|too large)"),
             "Invalid weights",
         ),
         (
-            Regex::new(r"(?i)invalid probability distribution").unwrap(),
+            literal(r"(?i)invalid probability distribution"),
             "Invalid distribution",
         ),
         // Memory errors
-        (Regex::new(r"(?i)out of memory:?\s+").unwrap(), "OOM error"),
+        (literal(r"(?i)out of memory:?\s+"), "OOM error"),
         (
-            Regex::new(r"(?i)memory allocation failed").unwrap(),
+            literal(r"(?i)memory allocation failed"),
             "Memory allocation",
         ),
         // Timeout errors
         (
-            Regex::new(r"(?i)generation timed out").unwrap(),
+            literal(r"(?i)generation timed out"),
             "Generation timeout",
         ),
         (
-            Regex::new(r"(?i)request timed out after").unwrap(),
+            literal(r"(?i)request timed out after"),
             "Request timeout",
         ),
         (
-            Regex::new(r"(?i)deadline exceeded").unwrap(),
+            literal(r"(?i)deadline exceeded"),
             "Deadline exceeded",
         ),
         // Connection errors
         (
-            Regex::new(r"(?i)cannot connect to inference server").unwrap(),
+            literal(r"(?i)cannot connect to inference server"),
             "Connection error",
         ),
         (
-            Regex::new(r"(?i)grpc.*unavailable").unwrap(),
+            literal(r"(?i)grpc.*unavailable"),
             "gRPC unavailable",
         ),
         // Model errors
         (
-            Regex::new(r"(?i)model not (found|loaded)").unwrap(),
+            literal(r"(?i)model not (found|loaded)"),
             "Model not found",
         ),
         (
-            Regex::new(r"(?i)forward pass failed").unwrap(),
+            literal(r"(?i)forward pass failed"),
             "Forward pass error",
         ),
         (
-            Regex::new(r"(?i)narrow invalid args").unwrap(),
+            literal(r"(?i)narrow invalid args"),
             "Tensor shape error",
         ),
         (
-            Regex::new(r"(?i)rope.*position").unwrap(),
+            literal(r"(?i)rope.*position"),
             "RoPE position error",
         ),
         // Generic error patterns
         (
-            Regex::new(r"(?i)this usually means:\s*\n").unwrap(),
+            literal(r"(?i)this usually means:\s*\n"),
             "Error with help text",
         ),
-        (Regex::new(r"(?i)try:\s+\n?•").unwrap(), "Error suggestions"),
+        (literal(r"(?i)try:\s+\n?•"), "Error suggestions"),
     ]
 });
 
@@ -202,7 +203,7 @@ fn check_inference_error(text: &str) -> Option<GarbageCheckResult> {
             let first_line = text
                 .lines()
                 .next()
-                .unwrap_or("")
+                .unwrap_or("") // unwrap_or: text with no lines has an empty first line to quote
                 .chars()
                 .take(100)
                 .collect::<String>();
@@ -221,7 +222,7 @@ fn check_inference_error(text: &str) -> Option<GarbageCheckResult> {
         let first_line = trimmed
             .lines()
             .next()
-            .unwrap_or("")
+            .unwrap_or("") // unwrap_or: text with no lines has an empty first line to quote
             .chars()
             .take(100)
             .collect::<String>();

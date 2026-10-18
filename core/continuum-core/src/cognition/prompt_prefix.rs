@@ -18,7 +18,7 @@ use std::sync::LazyLock;
 /// with its role. The role is part of the rendered prompt, so a role change is a change.
 fn rendered(req: &TextGenerationRequest) -> Vec<String> {
     let mut out = Vec::with_capacity(req.messages.len() + 2);
-    out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or("")));
+    out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or(""))); // unwrap_or: no system prompt renders as an empty system turn
     // The tool surface: Qwen/ChatML templates append it to the END of the system turn,
     // ahead of every message, and it varies per turn (delib.tool_surface.withheld). Left out,
     // a tool-set change broke the engine's prefix at the system turn while this comparison
@@ -58,7 +58,7 @@ pub(crate) fn compare(previous: &[String], now: &[String]) -> PrefixMatch {
                 let banner: String = body
                     .lines()
                     .find(|l| !l.trim().is_empty())
-                    .unwrap_or("")
+                    .unwrap_or("") // unwrap_or: an all-blank message has no banner line
                     .trim()
                     .chars()
                     .take(60)
@@ -231,14 +231,18 @@ pub(crate) fn observe(persona: uuid::Uuid, req: &TextGenerationRequest) {
     let found = LAST.get(&persona).map(|previous| compare(&previous, &now));
     LAST.insert(persona, now);
     let Some(found) = found else { return };
-    let (index, banner) = found.first_divergent.clone().unwrap_or((usize::MAX, String::new()));
+    // Identical prompts have no divergent element: the probe says -1 and an empty banner.
+    let (index, banner): (i64, &str) = match &found.first_divergent {
+        Some((index, banner)) => (*index as i64, banner.as_str()),
+        None => (-1, ""),
+    };
     crate::probe!(
         class = "delib.prompt.common_prefix",
         persona = %persona,
         common_chars = found.common_chars as u64,
         total_chars = found.total_chars as u64,
         share = if found.total_chars == 0 { 0.0 } else { found.common_chars as f64 / found.total_chars as f64 },
-        first_divergent_index = if index == usize::MAX { -1 } else { index as i64 }, // probe field: -1 = identical
+        first_divergent_index = index, // probe field: -1 = identical
         first_divergent = %banner,
         "how much of this prompt the persona's previous request already held, and the first message that changed"
     );

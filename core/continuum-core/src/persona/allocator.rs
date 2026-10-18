@@ -167,6 +167,43 @@ pub struct AllocationResult {
 /// System reserve in GB for Bevy renderer, TTS, etc.
 const SYSTEM_RESERVE_GB: f64 = 2.0;
 
+/// The RAM the CPU-mode plan assumes when the platform probe cannot read it — the
+/// value this path has always planned against (previously an anonymous `unwrap_or`).
+/// Only reached on an unreadable probe, which is logged at the call site.
+const UNREADABLE_SYSTEM_RAM_PLANNING_GB: f64 = 8.0;
+
+/// Total system RAM in GiB, or `None` when the platform probe could not read it.
+/// The caller decides what an unreadable reading means; this never invents one.
+fn read_system_ram_gb() -> Option<f64> {
+    #[cfg(target_os = "linux")]
+    {
+        let meminfo = std::fs::read_to_string("/proc/meminfo").ok()?;
+        meminfo
+            .lines()
+            .find(|l| l.starts_with("MemTotal:"))
+            .and_then(|l| l.split_whitespace().nth(1))
+            .and_then(|kb| kb.parse::<f64>().ok())
+            .map(|kb| kb / (1024.0 * 1024.0))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()?;
+        String::from_utf8(output.stdout)
+            .ok()
+            .and_then(|s| s.trim().parse::<f64>().ok())
+            .map(|bytes| bytes / (1024.0 * 1024.0 * 1024.0))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        // No probe on this platform: the reading is unknown, and the caller says so.
+        None
+    }
+}
+
+
 /// Select the best local model given total VRAM (system-wide default).
 /// Thresholds use 0.5GB margin — GPUs report slightly less than nominal
 /// (e.g. RTX 5090 "32GB" reports 31.84GB).
@@ -231,34 +268,16 @@ pub fn allocate(
     // In CPU/container mode (no GPU / Docker without GPU passthrough), use
     // system RAM as the memory budget. Runtime local chat is llama.cpp/Qwen,
     // not Candle; Candle remains a training/auxiliary concern.
-    let system_ram_gb = {
-        #[cfg(target_os = "linux")]
-        {
-            std::fs::read_to_string("/proc/meminfo")
-                .ok()
-                .and_then(|s| {
-                    s.lines()
-                        .find(|l| l.starts_with("MemTotal:"))
-                        .and_then(|l| l.split_whitespace().nth(1))
-                        .and_then(|kb| kb.parse::<f64>().ok())
-                        .map(|kb| kb / (1024.0 * 1024.0))
-                })
-                .unwrap_or(8.0)
-        }
-        #[cfg(target_os = "macos")]
-        {
-            std::process::Command::new("sysctl")
-                .args(["-n", "hw.memsize"])
-                .output()
-                .ok()
-                .and_then(|o| String::from_utf8(o.stdout).ok())
-                .and_then(|s| s.trim().parse::<f64>().ok())
-                .map(|bytes| bytes / (1024.0 * 1024.0 * 1024.0))
-                .unwrap_or(8.0)
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            8.0f64
+    let system_ram_gb = match read_system_ram_gb() {
+        Some(gb) => gb,
+        None => {
+            // Unknown RAM is named, not laundered: the plan proceeds against the
+            // stated floor and the log says it is an assumption, not a reading.
+            tracing::warn!(
+                assumed_gb = UNREADABLE_SYSTEM_RAM_PLANNING_GB,
+                "system RAM could not be read; planning CPU mode against the assumed floor"
+            );
+            UNREADABLE_SYSTEM_RAM_PLANNING_GB
         }
     };
 
@@ -452,12 +471,13 @@ fn resolve_model_for_persona(
     if let Some(forced) = override_model {
         return ResolvedModel {
             model: forced.to_string(),
-            vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0),
+            vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0), // unwrap_or: catalog entry omits min_vram_gb, the catalog default budget applies
         };
     }
 
-    // Check tiered model preferences (sorted highest-tier-first in catalog)
-    if !entry.model_preferences.is_empty() {
+    // Check tiered model preferences (sorted highest-tier-first in catalog).
+    // `last()` being `Some` IS the non-empty check, so the lowest tier is in hand.
+    if let Some(last) = entry.model_preferences.last() {
         for pref in &entry.model_preferences {
             if total_vram_gb >= pref.min_vram_gb {
                 return ResolvedModel {
@@ -467,7 +487,6 @@ fn resolve_model_for_persona(
             }
         }
         // If no preference matches, use last entry (lowest tier)
-        let last = entry.model_preferences.last().unwrap();
         return ResolvedModel {
             model: last.model.clone(),
             vram_budget_gb: last.vram_budget_gb,
@@ -478,14 +497,14 @@ fn resolve_model_for_persona(
     if let Some(ref model_id) = entry.model_id {
         return ResolvedModel {
             model: model_id.clone(),
-            vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0),
+            vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0), // unwrap_or: catalog entry omits min_vram_gb, the catalog default budget applies
         };
     }
 
     // System-wide default
     ResolvedModel {
         model: default_local_model.to_string(),
-        vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0),
+        vram_budget_gb: entry.min_vram_gb.unwrap_or(4.0), // unwrap_or: catalog entry omits min_vram_gb, the catalog default budget applies
     }
 }
 
@@ -496,9 +515,11 @@ struct ResolvedModel {
 }
 
 /// Load the persona catalog from the embedded JSON.
-pub fn load_catalog() -> Vec<PersonaCatalogEntry> {
-    let json = include_str!("catalog.json");
-    serde_json::from_str(json).expect("Failed to parse persona catalog.json")
+///
+/// The JSON is compiled in, so a parse failure is a malformed asset (pinned by
+/// `test_load_catalog`) — still returned as a typed error, never a panic in the core.
+pub fn load_catalog() -> Result<Vec<PersonaCatalogEntry>, serde_json::Error> {
+    serde_json::from_str(include_str!("catalog.json"))
 }
 
 #[cfg(test)]
@@ -548,7 +569,7 @@ mod tests {
 
     #[test]
     fn test_load_catalog() {
-        let catalog = load_catalog();
+        let catalog = load_catalog().expect("embedded catalog.json parses");
         assert!(!catalog.is_empty(), "Catalog should not be empty");
         // Verify some expected entries
         assert!(
@@ -577,7 +598,7 @@ mod tests {
             "test:synthetic",
             16 * 1024 * 1024 * 1024,
         ));
-        let catalog = load_catalog();
+        let catalog = load_catalog().expect("embedded catalog.json parses");
         let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         // Should always create at least one local persona.
@@ -603,7 +624,7 @@ mod tests {
     #[test]
     fn test_allocate_with_anthropic_key() {
         let manager = test_gpu_manager();
-        let catalog = load_catalog();
+        let catalog = load_catalog().expect("embedded catalog.json parses");
         let keys = vec!["ANTHROPIC_API_KEY".to_string()];
         let result = allocate(&manager, &keys, &catalog, &std::collections::HashMap::new());
 
@@ -789,7 +810,7 @@ mod tests {
     /// Verify catalog model_preferences are correctly parsed from catalog.json
     #[test]
     fn test_catalog_has_model_preferences() {
-        let catalog = load_catalog();
+        let catalog = load_catalog().expect("embedded catalog.json parses");
 
         let codereview = catalog
             .iter()
@@ -828,7 +849,7 @@ mod tests {
         use crate::gpu::GpuMemoryManager;
 
         let manager = GpuMemoryManager::simulated("NVIDIA RTX 5090", 32 * 1024 * 1024 * 1024);
-        let catalog = load_catalog();
+        let catalog = load_catalog().expect("embedded catalog.json parses");
         let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         // Find local personas
@@ -866,7 +887,7 @@ mod tests {
         use crate::gpu::GpuMemoryManager;
 
         let manager = GpuMemoryManager::simulated("Apple M1 Pro", 16 * 1024 * 1024 * 1024);
-        let catalog = load_catalog();
+        let catalog = load_catalog().expect("embedded catalog.json parses");
         let result = allocate(&manager, &[], &catalog, &std::collections::HashMap::new());
 
         let local: Vec<_> = result

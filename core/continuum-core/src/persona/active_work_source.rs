@@ -60,7 +60,7 @@ pub struct ActiveWorkSource {
     persona_id: uuid::Uuid,
     reader: Arc<dyn AircWorkReader>,
     /// Observation and source-admission state, never held across an await.
-    claims_seen: std::sync::Mutex<ClaimsSeen>,
+    claims_seen: parking_lot::Mutex<ClaimsSeen>,
 }
 
 /// One current snapshot plus a coalesced historical notice. Refused transitions
@@ -77,7 +77,7 @@ impl ActiveWorkSource {
         Self {
             persona_id,
             reader,
-            claims_seen: std::sync::Mutex::new(ClaimsSeen::default()),
+            claims_seen: parking_lot::Mutex::new(ClaimsSeen::default()),
         }
     }
 
@@ -182,7 +182,7 @@ impl RagSource for ActiveWorkSource {
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
         {
-            let mut seen = self.claims_seen.lock().unwrap_or_else(|p| p.into_inner());
+            let mut seen = self.claims_seen.lock();
             if seen.loss_notice_pending {
                 let notice = Self::deferred_loss_item();
                 if notice.tokens <= budget {
@@ -584,7 +584,7 @@ mod tests {
             assert!(churn.deliver(&ctx(persona), 0, raw).await.items.is_empty());
         }
         {
-            let seen = churn.claims_seen.lock().unwrap();
+            let seen = churn.claims_seen.lock();
             assert!(seen.current.as_ref().unwrap().is_empty());
             assert!(seen.loss_notice_pending);
         }

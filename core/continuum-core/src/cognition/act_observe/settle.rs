@@ -739,7 +739,7 @@ async fn settle_to_outcome(
         // This act's model wall-time, captured before the accumulate consumes
         // the metrics — the pace row below splits act time into model vs
         // residue with it.
-        let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0);
+        let act_model_ms = step_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0); // unwrap_or: no metrics means the step never reached the model, so its model time is 0 (classify_act reads exactly that)
         // How many generations THIS step dispatched — counted before the receipts are
         // folded into the turn's, because it is the other half of "did this iteration
         // reach the model at all" (`classify_act`).

@@ -68,7 +68,7 @@ pub const HERMES_MIN_SERVED_CONTEXT: u32 = 64_000;
 pub fn resolve_endpoint(endpoint: Option<&str>) -> String {
     endpoint
         .map(|e| e.trim_end_matches('/').to_string())
-        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string())
+        .unwrap_or_else(|| DEFAULT_ENDPOINT.to_string()) // unwrap_or: the documented default-location contract for an absent endpoint
 }
 
 /// One coding task posed to a competitor arm, with the endpoint already resolved.
@@ -222,11 +222,11 @@ impl CompetitorAgent for RawOneshotArm {
             .into_iter()
             .next()
             .map(|c| c.message.content)
-            .unwrap_or_default();
+            .ok_or_else(|| format!("raw-oneshot: {url} returned no choices: {text}"))?;
         let output_tokens = parsed
             .usage
             .map(|u| u.completion_tokens)
-            .unwrap_or_else(|| estimate_tokens(&answer));
+            .unwrap_or_else(|| estimate_tokens(&answer)); // unwrap_or: `usage` is optional on the /v1 wire; absent, the count is estimated from the answer
         Ok(SolveOutcome {
             answer,
             output_tokens,
@@ -345,7 +345,7 @@ pub fn optional_arms() -> Vec<Box<dyn CompetitorAgent>> {
 /// neither is not gradeable as a mouth answer — fail LOUD, never a silent pass.
 pub async fn grade_answer(task: &EvalTask, answer: &str) -> (bool, String) {
     if let Some(test) = task.test.as_deref() {
-        let lang = task.lang.as_deref().unwrap_or("rust");
+        let lang = task.lang.as_deref().unwrap_or("rust"); // unwrap_or: a task that names no language is a Rust task (the eval default)
         crate::cognition::gym_grader::test_grade(answer, lang, test).await
     } else if !task.expect.is_empty() {
         let ok = answer.to_lowercase().contains(&task.expect.to_lowercase());

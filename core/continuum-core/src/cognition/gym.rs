@@ -177,7 +177,7 @@ fn embedded_for(reference: &str) -> Option<(&'static str, &'static str)> {
     let base = Path::new(reference)
         .file_name()
         .and_then(|n| n.to_str())
-        .unwrap_or(reference);
+        .unwrap_or(reference); // unwrap_or: a reference with no file-name component is matched whole
     EMBEDDED_GYMS
         .iter()
         .find(|(name, _)| *name == base)
@@ -423,7 +423,7 @@ fn resolve_gym_in(reference: &str, cache: &Path) -> Result<(String, String), Str
          see benchmarks/swe/RUNBOOK.md.)",
         cwd = std::env::current_dir()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "<unknown>".to_string()),
+            .unwrap_or_else(|e| format!("<unreadable: {e}>")), // unwrap_or: diagnostic text in an error already being returned; the read failure is shown, not hidden
         names = embedded_names(),
     ))
 }

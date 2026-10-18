@@ -11,15 +11,18 @@
 //! matching the shape) become unit tests instead of live-fixture-only tests.
 
 use crate::cognition::generate_recipe::types::RecipeDefinitionShape;
-use once_cell::sync::Lazy;
-use regex::Regex;
 
-/// Why this catches non-empty output: matches the first `{ ... }` envelope in
-/// the response, including newlines. Mirrors TS `/\{[\s\S]*\}/` exactly. NOT
-/// anchored — the AI may emit prose before/after the JSON despite the prompt
-/// rule "Output ONLY the JSON object", so the matcher tolerates it.
-static JSON_ENVELOPE_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)\{.*\}").expect("static regex compiles"));
+/// Why this catches non-empty output: the first `{ ... }` envelope in the
+/// response, including newlines — from the first `{` to the LAST `}` after it.
+/// Mirrors TS `/\{[\s\S]*\}/` exactly (greedy), as plain string search so
+/// there is no pattern to compile. NOT anchored — the AI may emit prose
+/// before/after the JSON despite the prompt rule "Output ONLY the JSON object",
+/// so the matcher tolerates it.
+fn json_envelope(text: &str) -> Option<&str> {
+    let start = text.find('{')?;
+    let end = text.rfind('}')?;
+    (end > start).then(|| &text[start..=end])
+}
 
 /// Typed parse failure. Carrier for the TS shim's `validationErrors` array
 /// when surfaced through PR-2's IPC handler. Avoids the silent
@@ -72,15 +75,13 @@ pub fn parse_recipe_from_ai_response(
 ) -> Result<RecipeDefinitionShape, ParseError> {
     let preview = preview(response_text);
 
-    let envelope = JSON_ENVELOPE_RE
-        .find(response_text)
-        .ok_or(ParseError::NoJsonEnvelope {
-            raw_preview: preview.clone(),
-        })?;
+    let envelope = json_envelope(response_text).ok_or(ParseError::NoJsonEnvelope {
+        raw_preview: preview.clone(),
+    })?;
 
-    serde_json::from_str::<RecipeDefinitionShape>(envelope.as_str()).map_err(|err| {
+    serde_json::from_str::<RecipeDefinitionShape>(envelope).map_err(|err| {
         ParseError::MalformedJson {
-            raw_preview: preview_str(envelope.as_str()),
+            raw_preview: preview_str(envelope),
             serde_error: err.to_string(),
         }
     })

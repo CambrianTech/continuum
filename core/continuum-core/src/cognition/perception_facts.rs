@@ -322,7 +322,7 @@ impl PerceptionFact for StepsLedger {
         // needed capture-scraping precisely because these numbers were invisible.
         crate::probe!(
             class = "perception.steps_ledger",
-            room = %cx.room_id.map(|r| r.to_string()).unwrap_or_else(|| "unscoped".into()),
+            room = %cx.room_id.map(|r| r.to_string()).unwrap_or_else(|| "unscoped".into()), // unwrap_or: probe label for an unscoped render
             // WHOSE ledger, and WHICH working-memory instance. Without these two,
             // 2026-08-21's diagnosis of a split-brain (two cycles serving one
             // persona's turns — a veteran at taken=3389 and a newborn at taken=0
@@ -334,7 +334,7 @@ impl PerceptionFact for StepsLedger {
             // three wm ids in one ROOM read as a split-brain until it turned out
             // to be three personas legitimately sharing the round room). The
             // duplicate-cycle signature is two instance ids under ONE persona.
-            persona = %cx.persona_id.map(|p| p.to_string()).unwrap_or_else(|| "unscoped".into()),
+            persona = %cx.persona_id.map(|p| p.to_string()).unwrap_or_else(|| "unscoped".into()), // unwrap_or: probe label for an unscoped render
             shown = fit.len(),
             elsewhere = elsewhere,
             taken = taken,

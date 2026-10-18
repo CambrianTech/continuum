@@ -156,7 +156,7 @@ impl ExamServingContext {
         .await;
         crate::probe!(
             class = "exam.acquire.ludicrous",
-            settled_window = settled.unwrap_or(0),
+            settled_window = ?settled,
             settled = settled.is_some(),
             "exam lane grown to Ludicrous (Performance) and settled before pinning"
         );

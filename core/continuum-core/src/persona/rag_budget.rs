@@ -694,12 +694,17 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         // Stable sort by priority desc, then by source_id for
         // deterministic tie-break — the boot-time output should
         // not depend on slice ordering or hashmap iteration.
-        let mut sorted: Vec<&RagSourceBudget> = sources.iter().collect();
-        sorted.sort_by(|a, b| {
+        // `order[rank]` is the INPUT position of the source at that rank, so the
+        // result maps back to input order by index — a permutation, with no lookup
+        // that could miss.
+        let mut order: Vec<usize> = (0..sources.len()).collect();
+        order.sort_by(|&a, &b| {
+            let (a, b) = (&sources[a], &sources[b]);
             b.priority
                 .cmp(&a.priority)
                 .then(a.source_id.cmp(&b.source_id))
         });
+        let sorted: Vec<&RagSourceBudget> = order.iter().map(|&i| &sources[i]).collect();
 
         // Working allocation: source_id -> tokens. Use a Vec parallel
         // to sorted for cache-locality + deterministic iteration.
@@ -843,19 +848,15 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
 
         // Build result in input order (NOT sorted order) for caller
         // ergonomics.
-        let mut allocations_by_id: std::collections::HashMap<
-            String,
-            (u32, AllocationState, &RagSourceBudget),
-        > = std::collections::HashMap::new();
-        for (i, source) in sorted.iter().enumerate() {
-            allocations_by_id.insert(source.source_id.clone(), (alloc[i], state[i], *source));
+        let mut tokens_by_input = vec![0u32; sources.len()];
+        let mut state_by_input = vec![AllocationState::Dropped; sources.len()];
+        for (rank, &input) in order.iter().enumerate() {
+            tokens_by_input[input] = alloc[rank];
+            state_by_input[input] = state[rank];
         }
         let mut allocations = Vec::with_capacity(sources.len());
         let mut total_allocated = 0u32;
-        for src in sources {
-            let (tokens, st, _) = allocations_by_id
-                .remove(&src.source_id)
-                .expect("every source must appear in the working alloc");
+        for ((src, tokens), st) in sources.iter().zip(tokens_by_input).zip(state_by_input) {
             total_allocated = total_allocated.saturating_add(tokens);
             // The allocator decided how much of her mind each source gets, and
             // until now said NOTHING. So when a grounding block failed to
@@ -950,7 +951,7 @@ pub struct StubRagSource {
     source_id: &'static str,
     persona_id: uuid::Uuid,
     items: Vec<RagItem>,
-    cursor: std::sync::Mutex<usize>,
+    cursor: parking_lot::Mutex<usize>,
 }
 
 impl StubRagSource {
@@ -959,7 +960,7 @@ impl StubRagSource {
             source_id,
             persona_id,
             items,
-            cursor: std::sync::Mutex::new(0),
+            cursor: parking_lot::Mutex::new(0),
         }
     }
 }
@@ -1003,7 +1004,7 @@ impl RagSource for StubRagSource {
 
         let mut taken = Vec::new();
         let mut used: u32 = 0;
-        let start = *self.cursor.lock().unwrap();
+        let start = *self.cursor.lock();
         let mut end = start;
         for item in &self.items[start..] {
             if used.saturating_add(item.tokens) > budget {
@@ -1024,7 +1025,7 @@ impl RagSource for StubRagSource {
         };
         // Update cursor so subsequent deliver() calls resume — this
         // is the state-maintenance pattern Joel asked about.
-        *self.cursor.lock().unwrap() = end;
+        *self.cursor.lock() = end;
         RagDelivery {
             source_id: self.source_id.to_string(),
             items: taken,
@@ -1056,7 +1057,7 @@ impl RagSource for StubRagSource {
         if next >= self.items.len() {
             return None;
         }
-        *self.cursor.lock().unwrap() = next;
+        *self.cursor.lock() = next;
         Some(self.deliver(ctx, budget, ResolutionPreference::Raw).await)
     }
 }

@@ -68,12 +68,13 @@ pub(crate) fn roster_budget_claim(
     window: u32,
     headroom: u32,
 ) -> super::rag_budget::RagSourceBudget {
-    super::rag_budget::RagSourceBudget::floorless_share(
-        source_id,
-        window,
-        headroom,
-        std::num::NonZeroU32::new(64).expect("existing nonzero roster share"),
-    )
+    // A const-evaluated divisor: zero is rejected at compile time, so no runtime
+    // failure path exists.
+    const ROSTER_SHARE_DIVISOR: std::num::NonZeroU32 = match std::num::NonZeroU32::new(64) {
+        Some(n) => n,
+        None => panic!("roster share divisor must be nonzero"),
+    };
+    super::rag_budget::RagSourceBudget::floorless_share(source_id, window, headroom, ROSTER_SHARE_DIVISOR)
 }
 
 /// Source identifier — used by budget presets, telemetry, and the

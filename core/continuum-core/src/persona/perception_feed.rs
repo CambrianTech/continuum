@@ -20,7 +20,8 @@
 //! is held for one classification, never across an await.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, OnceLock};
+use parking_lot::Mutex;
+use std::sync::{Arc, OnceLock};
 
 use airc_core::{PeerId, TranscriptEvent};
 use tokio::sync::mpsc;
@@ -62,7 +63,6 @@ pub fn register(
     let identity = super::persona_identity::PersonaIdentity::new(peer.as_uuid(), agent_name.to_string());
     registry()
         .lock()
-        .unwrap_or_else(|p| p.into_inner())
         .insert(persona, Resident { peer, identity, region, wake_tx, events_tx });
     crate::probe!(class = "mind.feed.registered", persona = %persona, "her perception region is on the one feed");
 }
@@ -71,10 +71,10 @@ pub fn register(
 /// the core attaches to any new room, so a room she joined herself, a DM or a
 /// project nobody else here is in never goes silent for her (Cormac, #4731).
 pub fn refresh_membership(persona: Uuid, rooms: &[(Uuid, String)]) {
-    let residents = registry().lock().unwrap_or_else(|p| p.into_inner());
+    let residents = registry().lock();
     let Some(resident) = residents.get(&persona) else { return };
     {
-        let mut region = resident.region.lock().unwrap_or_else(|p| p.into_inner());
+        let mut region = resident.region.lock();
         for (id, name) in rooms {
             region.join(*id, name.clone());
         }
@@ -87,7 +87,7 @@ pub fn refresh_membership(persona: Uuid, rooms: &[(Uuid, String)]) {
 /// of residents' memberships. So every room in her region is attached here.
 fn attach_her_rooms(region: &Arc<Mutex<PerceptionRegion>>) {
     let Some(registry) = crate::airc::inbound_attach::AttachRegistry::try_global() else { return };
-    let rooms: Vec<Uuid> = region.lock().unwrap_or_else(|p| p.into_inner()).activities();
+    let rooms: Vec<Uuid> = region.lock().activities();
     for room in rooms {
         registry.ensure_attached(airc_core::RoomId::from_uuid(room));
     }
@@ -96,14 +96,14 @@ fn attach_her_rooms(region: &Arc<Mutex<PerceptionRegion>>) {
 /// Her awareness strip right now, for the turn's grounding source. `None` = no
 /// region resident here (a mind not yet serving on this core).
 pub fn awareness_of(persona: Uuid, now_ms: u64) -> Option<super::awareness::AwarenessSnapshot> {
-    let reg = registry().lock().unwrap_or_else(|e| e.into_inner()); // a poisoned registry still answers; same policy as every lock in this crate
+    let reg = registry().lock();
     let resident = reg.get(&persona)?;
-    let region = resident.region.lock().unwrap_or_else(|e| e.into_inner());
+    let region = resident.region.lock();
     Some(region.snapshot(now_ms))
 }
 
 pub fn unregister(persona: Uuid) {
-    registry().lock().unwrap_or_else(|p| p.into_inner()).remove(&persona);
+    registry().lock().remove(&persona);
 }
 
 /// Where her durable mind state lives: her peer dir beside the rest of what is hers.
@@ -127,8 +127,8 @@ pub fn mark_perceived(persona: Uuid, room: Uuid, lamport: u64, event_id: Option<
 /// Act on her own registered region (her verbs write her mind through this); `None`
 /// when she is not resident on this core.
 pub fn with_region<R>(persona: Uuid, f: impl FnOnce(&mut PerceptionRegion) -> R) -> Option<R> {
-    let region = registry().lock().unwrap_or_else(|p| p.into_inner()).get(&persona).map(|r| Arc::clone(&r.region))?;
-    let mut region = region.lock().unwrap_or_else(|p| p.into_inner());
+    let region = registry().lock().get(&persona).map(|r| Arc::clone(&r.region))?;
+    let mut region = region.lock();
     Some(f(&mut region))
 }
 
@@ -168,10 +168,10 @@ pub fn feed(event: &Arc<TranscriptEvent>, now_ms: u64) -> usize {
     let fed = classify(event);
     let room = event.room_id.as_uuid();
     let mut count = 0;
-    let residents = registry().lock().unwrap_or_else(|p| p.into_inner());
+    let residents = registry().lock();
     for (persona, resident) in residents.iter() {
         let wake = {
-            let mut region = resident.region.lock().unwrap_or_else(|p| p.into_inner());
+            let mut region = resident.region.lock();
             if !region.is_in(room) {
                 continue;
             }

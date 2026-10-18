@@ -33,7 +33,8 @@
 //! `docs/architecture/BENCHMARK-HARNESS-INTEGRATION.md`).
 
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, RwLock};
+use parking_lot::RwLock;
+use std::sync::{Arc, LazyLock};
 
 use async_trait::async_trait;
 
@@ -183,7 +184,6 @@ static REGISTRY: LazyLock<RwLock<HashMap<String, Arc<dyn BenchmarkAdapter>>>> =
 pub fn register(adapter: Arc<dyn BenchmarkAdapter>) {
     REGISTRY
         .write()
-        .unwrap_or_else(|p| p.into_inner())
         .insert(adapter.name().to_string(), adapter);
 }
 
@@ -192,7 +192,6 @@ pub fn register(adapter: Arc<dyn BenchmarkAdapter>) {
 pub fn get(name: &str) -> Option<Arc<dyn BenchmarkAdapter>> {
     if let Some(a) = REGISTRY
         .read()
-        .unwrap_or_else(|p| p.into_inner())
         .get(name)
         .cloned()
     {
@@ -209,7 +208,6 @@ pub fn get(name: &str) -> Option<Arc<dyn BenchmarkAdapter>> {
 pub fn names() -> Vec<String> {
     let mut v: Vec<String> = REGISTRY
         .read()
-        .unwrap_or_else(|p| p.into_inner())
         .keys()
         .cloned()
         .collect();

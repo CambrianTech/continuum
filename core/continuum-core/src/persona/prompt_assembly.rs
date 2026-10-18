@@ -135,7 +135,7 @@ pub fn looks_like_silence_token(text: &str) -> bool {
         return false;
     }
     // Allow one trailing `.` for LCD-tier punctuation habit.
-    let core = trimmed.strip_suffix('.').unwrap_or(trimmed).trim_end();
+    let core = trimmed.strip_suffix('.').unwrap_or(trimmed).trim_end(); // unwrap_or: the trailing dot is optional; no dot = the text as-is
     if core.eq_ignore_ascii_case(SILENCE_TOKEN) {
         return true;
     }
@@ -159,14 +159,13 @@ pub fn looks_like_silence_token(text: &str) -> bool {
     // brackets, broadcasting the goodbye anyway and re-fueling the loop).
     core.lines()
         .last()
-        .map(|l| {
+        .is_some_and(|l| {
             let l = l.trim().trim_matches(|c| {
                 matches!(c, '[' | ']' | '(' | ')' | '*' | '_' | '`' | '"' | '\'')
             });
-            let l = l.strip_suffix('.').unwrap_or(l).trim_end();
+            let l = l.strip_suffix('.').unwrap_or(l).trim_end(); // unwrap_or: the trailing dot is optional; no dot = the line as-is
             l.eq_ignore_ascii_case(SILENCE_TOKEN)
         })
-        .unwrap_or(false)
 }
 
 /// Input to prompt assembly. Carries everything needed to build the

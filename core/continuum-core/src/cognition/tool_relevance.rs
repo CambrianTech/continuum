@@ -108,8 +108,7 @@ pub fn select_expanded_categories<R: ToolRelevance + ?Sized>(
         .filter(|(_, s)| *s >= floor)
         .collect();
     scored.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        b.1.total_cmp(&a.1)
             .then_with(|| a.0.cmp(b.0))
     });
 

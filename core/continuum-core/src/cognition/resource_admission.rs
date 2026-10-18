@@ -13,7 +13,8 @@ use crate::inference::planning::throughput_lease::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Mutex, MutexGuard};
+// parking_lot: no lock poisoning, so a prior panic is not a state any lock here handles.
+use parking_lot::{Mutex, MutexGuard};
 use ts_rs::TS;
 
 // ── Soft saturation signal (the read-only companion to the hard gate) ──────────
@@ -175,8 +176,8 @@ impl LeasedInCall {
 /// 2026-09-18: the 5090 considered 2 × 49k every tick and kept 1 × 101k, because 49k was
 /// under a floor computed from Sahar's prompts alone while twelve leased-in coders sent
 /// ~30k). The existing bounded ring retains the newest [`LEASED_IN_SENT_SAMPLES`] facts.
-static LEASED_IN_SENT: std::sync::Mutex<PromptSamples> =
-    std::sync::Mutex::new(PromptSamples::new());
+static LEASED_IN_SENT: Mutex<PromptSamples> =
+    Mutex::new(PromptSamples::new());
 
 /// Each semantic role retains its own existing history depth. Successful small
 /// turns cannot age unmet demand out merely by being more frequent.
@@ -238,7 +239,7 @@ pub(crate) fn note_served_prompt(endpoint: &str, geometry: crate::modules::serve
 }
 
 fn note_prompt_sample(sample: super::working_set::PromptSample) {
-    let mut ring = LEASED_IN_SENT.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
+    let mut ring = LEASED_IN_SENT.lock();
     ring.record(sample);
 }
 /// A prompt this seat REFUSED at its served window (`serving_guard`, #175) is demand the
@@ -254,7 +255,6 @@ pub fn note_refused_prompt(prompt_tokens: u32) {
 pub fn leased_in_sent_samples() -> Vec<super::working_set::PromptSample> {
     LEASED_IN_SENT
         .lock()
-        .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: same policy — read the last state
         .snapshot()
 }
 /// THE SEAT'S OWN QUEUE, measured where it forms: for each leased-in generate, the wait from
@@ -388,26 +388,26 @@ pub fn reserve_lendable(
 }
 /// A bounded ring of wait samples (ms), newest kept, read as (p50, count) so an empty ring
 /// is UNMEASURED — never "0 ms". One shape for every queue a node measures about itself.
-pub struct WaitRing(std::sync::Mutex<std::collections::VecDeque<u64>>);
+pub struct WaitRing(Mutex<std::collections::VecDeque<u64>>);
 /// How many waits a ring remembers. A plan window's worth.
 pub const WAIT_RING_SAMPLES: usize = 64;
 impl WaitRing {
     pub const fn new() -> Self {
-        Self(std::sync::Mutex::new(std::collections::VecDeque::new()))
+        Self(Mutex::new(std::collections::VecDeque::new()))
     }
     pub fn note(&self, ms: u64) {
-        let mut ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
+        let mut ring = self.0.lock();
         ring.push_back(ms);
         while ring.len() > WAIT_RING_SAMPLES {
             ring.pop_front();
         }
     }
     fn p50(&self) -> (u64, u32) {
-        let ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
+        let ring = self.0.lock();
         p50_of(ring.iter().copied())
     }
     pub fn p50_p90(&self) -> (u64, u64, u32) {
-        let ring = self.0.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same policy — read the last state
+        let ring = self.0.lock();
         percentiles_of(ring.iter().copied())
     }
 }
@@ -733,8 +733,8 @@ pub(crate) fn typical_turn_ms(personas: &[uuid::Uuid]) -> Option<u64> {
 
 /// Pure: is a mind whose last turn was `last_turn_ms` (None = none since boot) starving at `now_ms`?
 pub fn starving_since(last_turn_ms: Option<u64>, now_ms: u64, boot_ms: u64) -> bool {
-    now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS
     // JUSTIFIED unwrap_or: no turn yet is measured from boot — absence IS "since boot"
+    now_ms.saturating_sub(last_turn_ms.unwrap_or(boot_ms)) >= IDLE_STARVATION_MS // unwrap_or: absence of a turn IS "since boot"
 }
 
 /// The ambient permit for `persona`'s musing tail: a plain try, unless she is starving —
@@ -976,10 +976,7 @@ impl LaneAdmission {
         installed: &AtomicUsize,
         budget: LaneBudget,
     ) -> Option<tokio::sync::OwnedSemaphorePermit> {
-        let _guard = self
-            .resize_lock
-            .lock()
-            .expect("lane-resize lock never poisoned");
+        let _guard = self.resize_lock.lock();
         let target = match budget {
             LaneBudget::Physical => self.lane_count(),
             LaneBudget::NonDirected => self.nondirected_budget(),
@@ -1028,7 +1025,7 @@ impl LaneAdmission {
                 .clone()
                 .acquire_owned()
                 .await
-                .expect("lane semaphore never closed");
+                .expect("lane semaphore never closed"); // invariant: lane semaphores are private to this gate and nothing here calls close(); a typed error would ripple into acquire_serving_lane's callers in llm_deliberation_faculty.rs (out of scope this pass)
             if let Some(permit) = self.permit_or_retire(permit, installed, budget) {
                 return permit;
             }
@@ -1069,10 +1066,7 @@ impl LaneAdmission {
     /// See [`set_served_lane_count`].
     pub fn set_served_lane_count(&self, lanes: usize) {
         let lanes = lanes.max(1);
-        let _guard = self
-            .resize_lock
-            .lock()
-            .expect("lane-resize lock never poisoned");
+        let _guard = self.resize_lock.lock();
         let before = (
             self.served.load(Ordering::Acquire),
             self.serving_installed.load(Ordering::Acquire),
@@ -1432,7 +1426,7 @@ impl ResourceAdmissionGate {
             .cost_by_target_silicon
             .get(&request.policy.target_silicon)
             .copied()
-            .unwrap_or(0);
+            .unwrap_or(0); // unwrap_or: no active lease on this silicon = zero cost
 
         if active_count >= request.policy.max_concurrency {
             return Err(ResourceAdmissionError::Denied {
@@ -1475,9 +1469,7 @@ impl ResourceAdmissionGate {
     }
 
     fn lock_registry(&self) -> MutexGuard<'_, ThroughputLeaseRegistry> {
-        self.registry
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.registry.lock()
     }
 
     #[cfg(test)]

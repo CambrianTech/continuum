@@ -435,9 +435,15 @@ impl ChatQueueItem {
         // VideoFrameQueueItem / GameMoveQueueItem can choose different
         // trigger rules appropriate to their domain.
         let latest_with_media = all_messages.iter().rev().find(|m| !m.media.is_empty());
-        let trigger = latest_with_media
-            .copied()
-            .unwrap_or(*all_messages.last().unwrap());
+        // `self` is in the set, so the latest-by-timestamp fold starts from a real
+        // item (no empty case); `>=` keeps the stable sort's last-of-ties, as `last()` did.
+        let trigger: &ChatQueueItem = match latest_with_media {
+            Some(media_item) => *media_item,
+            None => all_messages
+                .iter()
+                .copied()
+                .fold(self, |latest, m| if m.timestamp >= latest.timestamp { m } else { latest }),
+        };
         let prior: Vec<&ChatQueueItem> = all_messages
             .iter()
             .copied()
@@ -597,11 +603,7 @@ impl TaskQueueItem {
     pub fn consolidate_with_items(&self, others: &[&TaskQueueItem]) -> TaskQueueItem {
         let mut all_tasks: Vec<&TaskQueueItem> = others.to_vec();
         all_tasks.push(self);
-        all_tasks.sort_by(|a, b| {
-            b.priority
-                .partial_cmp(&a.priority)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        all_tasks.sort_by(|a, b| b.priority.total_cmp(&a.priority));
 
         let primary = all_tasks[0];
 

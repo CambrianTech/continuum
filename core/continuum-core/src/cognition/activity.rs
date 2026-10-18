@@ -172,7 +172,7 @@ impl Outcome {
     /// Text on `channel`, or `""` when absent — the ergonomic read for judges that treat a
     /// missing modality the same as an empty one (a diff-grading judge does).
     pub fn channel_text(&self, channel: Channel) -> &str {
-        self.channel(channel).and_then(|v| v.text()).unwrap_or("")
+        self.channel(channel).and_then(|v| v.text()).unwrap_or("") // unwrap_or: documented contract, an absent modality reads as empty
     }
 
     /// Attach `value` to `channel`, replacing anything already there.

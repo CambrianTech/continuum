@@ -107,7 +107,10 @@ pub fn build_profile(
     let provider_kind = registry
         .provider(&model.provider)
         .map(|p| p.kind)
-        .unwrap_or(crate::model_registry::types::ProviderKind::Cloud);
+        .ok_or_else(|| InferenceProfileError::UnknownProvider {
+            model_id: model_id.to_string(),
+            provider_id: model.provider.clone(),
+        })?;
 
     let gguf_local_path = if matches!(
         provider_kind,

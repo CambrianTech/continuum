@@ -14,7 +14,7 @@ tokio::task_local! {
 
 /// The audience of the turn this task is running, `Interactive` when none was declared.
 pub fn current() -> Audience {
-    AUDIENCE.try_with(|a| *a).unwrap_or(Audience::Interactive)
+    AUDIENCE.try_with(|a| *a).unwrap_or(Audience::Interactive) // unwrap_or: no audience declared for this task means Interactive, per the doc above
 }
 
 /// Run `fut` as a turn for `audience`. Task-locals do not cross a `spawn`; a seam that

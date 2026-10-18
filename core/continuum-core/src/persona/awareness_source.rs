@@ -95,12 +95,18 @@ impl RagSource for AwarenessRagSource {
     }
 
     fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        // A const-evaluated divisor: zero is rejected at compile time, so no runtime
+        // failure path exists.
+        const AWARENESS_SHARE_DIVISOR: std::num::NonZeroU32 = match std::num::NonZeroU32::new(48) {
+            Some(n) => n,
+            None => panic!("awareness share divisor must be nonzero"),
+        };
         // Existing strip allowance: one short line per activity, window / 48.
         super::rag_budget::RagSourceBudget::floorless_share(
             self.source_id(),
             window,
             headroom,
-            std::num::NonZeroU32::new(48).expect("existing nonzero source share"),
+            AWARENESS_SHARE_DIVISOR,
         )
     }
 

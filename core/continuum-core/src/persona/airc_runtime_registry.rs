@@ -350,8 +350,7 @@ impl PersonaAircRuntimeRegistry {
     pub fn is_quiesced(&self, persona_id: Uuid) -> bool {
         self.inner
             .get(&persona_id)
-            .map(|e| e.quiesced.load(Ordering::Relaxed))
-            .unwrap_or(false)
+            .is_some_and(|e| e.quiesced.load(Ordering::Relaxed))
     }
 
     /// Suspend / resume ONE persona's autonomic self-tick. No-op if she isn't

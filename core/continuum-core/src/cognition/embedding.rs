@@ -377,17 +377,17 @@ impl EmbeddingCache {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
             Err(e) => return Err(e),
         };
-        let mut pos = 0usize;
-        let take = |pos: &mut usize, n: usize| -> Option<&[u8]> {
-            if *pos + n > bytes.len() {
-                return None;
-            }
-            let s = &bytes[*pos..*pos + n];
-            *pos += n;
-            Some(s)
-        };
-        let count = match take(&mut pos, 8) {
-            Some(b) => u64::from_le_bytes(b.try_into().unwrap()) as usize,
+        // Each field is read as a fixed-size array straight off the front of the
+        // remaining bytes (`split_first_chunk`), so a short read is `None` by type
+        // rather than a slice whose length is re-asserted with an unwrap.
+        let mut rest: &[u8] = &bytes;
+        fn take<const N: usize>(rest: &mut &[u8]) -> Option<[u8; N]> {
+            let (head, tail) = rest.split_first_chunk::<N>()?;
+            *rest = tail;
+            Some(*head)
+        }
+        let count = match take::<8>(&mut rest) {
+            Some(b) => u64::from_le_bytes(b) as usize,
             None => return Ok(0),
         };
         let mut loaded = 0usize;
@@ -395,22 +395,21 @@ impl EmbeddingCache {
             if self.map.len() >= EMBEDDING_CACHE_MAX {
                 break;
             }
-            let key = match take(&mut pos, 8) {
-                Some(b) => u64::from_le_bytes(b.try_into().unwrap()),
+            let key = match take::<8>(&mut rest) {
+                Some(b) => u64::from_le_bytes(b),
                 None => break, // truncated tail — keep what parsed
             };
-            let dim = match take(&mut pos, 4) {
-                Some(b) => u32::from_le_bytes(b.try_into().unwrap()) as usize,
+            let dim = match take::<4>(&mut rest) {
+                Some(b) => u32::from_le_bytes(b) as usize,
                 None => break,
             };
-            let raw = match take(&mut pos, dim * 4) {
-                Some(b) => b,
-                None => break,
-            };
-            let vec: Vec<f32> = raw
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-                .collect();
+            if rest.len() < dim * 4 {
+                break; // truncated tail — keep what parsed
+            }
+            let (raw, tail) = rest.split_at(dim * 4);
+            rest = tail;
+            let (floats, _) = raw.as_chunks::<4>();
+            let vec: Vec<f32> = floats.iter().map(|c| f32::from_le_bytes(*c)).collect();
             self.map.insert(key, vec);
             loaded += 1;
         }
@@ -650,7 +649,21 @@ impl EmbeddingProvider for NeuralEmbeddingProvider {
             provider: None,
         };
         match self.adapter.create_embedding(request).await {
-            Ok(resp) => resp.embeddings.into_iter().next().unwrap_or_default(),
+            Ok(resp) => match resp.embeddings.into_iter().next() {
+                Some(vector) => vector,
+                None => {
+                    // A successful response carrying zero vectors is the embedder
+                    // failing to answer, not an empty embedding: name it, then
+                    // degrade to "no signal" exactly like the error arm below.
+                    crate::probe!(
+                        class = "embedding.neural.failed",
+                        model = %self.model_slug,
+                        error = "asked for 1 embedding, got 0",
+                        "neural embed returned no vector; degrading this item to no-relevance"
+                    );
+                    Vec::new()
+                }
+            },
             Err(e) => {
                 // Degrade to "no signal" (empty → cosine 0 by cosine_similarity's
                 // contract), never junk vectors — but VISIBLY, never silently. A
@@ -912,7 +925,7 @@ pub async fn resolve_recall_embedder(
     // so in-process and gateway vectors stay in one comparable space.
     let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string()); // unwrap_or: unset override = the canonical grid embedder by design
 
     // 1. Preferred: the dedicated in-process embed model. Pinned independently of
     //    the chat model, so changing Asha's brain never disturbs recall. ONE
@@ -971,7 +984,7 @@ pub async fn resolve_recall_embedder(
 pub async fn resolve_recall_embedder_local() -> Arc<dyn EmbeddingProvider> {
     let model = crate::config_env::read("UNSLOTH_EMBED_MODEL")
         .filter(|m| !m.trim().is_empty())
-        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string());
+        .unwrap_or_else(|| CANONICAL_EMBED_MODEL.to_string()); // unwrap_or: unset override = the canonical grid embedder by design
 
     if let Some((provider, gguf_id)) = shared_in_process_embedder(&model).await {
         crate::probe!(
@@ -1042,11 +1055,11 @@ impl EmbeddingProvider for LazyRecallEmbedder {
         self.resolved
             .get()
             .map(|p| p.id())
-            .unwrap_or("recall-embedder(resolving)")
+            .unwrap_or("recall-embedder(resolving)") // unwrap_or: not yet resolved is a real state; the placeholder id is informational only
     }
 
     fn dim(&self) -> usize {
-        self.resolved.get().map(|p| p.dim()).unwrap_or(0)
+        self.resolved.get().map(|p| p.dim()).unwrap_or(0) // unwrap_or: dim is unknown until first embed resolves; 0 = no vector yet
     }
 
     async fn embed(&self, text: &str) -> Vec<f32> {

@@ -552,7 +552,7 @@ async fn serve_persona_loop_inner(
             _ = sleep_until_some(perceive_recheck.map(|(at, _)| at)), if deferred_input.message().is_none() => {
                 let activity = perceive_recheck.take().map(|(_, a)| a);
                 match activity {
-                    Some(a) if crate::persona::perception_feed::with_region(me, |r| r.is_pending(a)).unwrap_or(false) => {
+                    Some(a) if crate::persona::perception_feed::with_region(me, |r| r.is_pending(a)).unwrap_or(false) => { // unwrap_or: not resident on this core means nothing is pending for her here
                         Wake::Mind { why: "perceive", room: Some(a) }
                     }
                     _ => Wake::Idle,
@@ -920,7 +920,7 @@ async fn serve_persona_loop_inner(
                 sender_name: roster_names
                     .get(&msg.peer_id)
                     .cloned()
-                    .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
+                    .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])), // unwrap_or: a sender with no roster row is named by her short peer id
                 sender_type: crate::persona::types::SenderType::Persona,
                 content: msg.render_content(),
                 timestamp: now_ms,
@@ -1059,7 +1059,7 @@ async fn serve_persona_loop_inner(
             sender_name: roster_names
                 .get(&msg.peer_id)
                 .cloned()
-                .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])),
+                .unwrap_or_else(|| format!("peer-{}", &msg.peer_id.to_string()[..8])), // unwrap_or: a sender with no roster row is named by her short peer id
             sender_type: crate::persona::types::SenderType::Persona,
             content: msg.render_content(),
             timestamp: now_ms,
@@ -1346,7 +1346,7 @@ async fn serve_persona_loop_inner(
                 // Human opportunity retains priority, but sender kind can be stale
                 // or shared across clients: it cannot assert that she was named.
                 let attention = admitted_retry.then(|| deferred_input.attention()).flatten()
-                    .unwrap_or_else(|| crate::cognition::workspace::TurnAttention::for_message(
+                    .unwrap_or_else(|| crate::cognition::workspace::TurnAttention::for_message( // unwrap_or: no carried attention (fresh trigger) is scored from this message
                         ctx.identity.persona_identity().mentions(&msg.text),
                         crate::ipc::positron_presence::is_human_peer(msg.peer_id),
                     ));
@@ -1819,7 +1819,7 @@ async fn serve_persona_loop_inner(
             lamport = msg.lamport,
             turn_duration_ms = turn_duration_ms,
             turns_replied = outcome.turns_replied,
-            mean_ms = outcome.turn_latency.mean_ms().unwrap_or(0.0),
+            mean_ms = outcome.turn_latency.mean_ms().unwrap_or(0.0), // unwrap_or: no replied turns yet logs 0, matching min/max below
             min_ms = outcome.turn_latency.min_ms.unwrap_or(0), // unwrap_or: clock before the epoch = 0
             max_ms = outcome.turn_latency.max_ms.unwrap_or(0), // unwrap_or: clock before the epoch = 0
             recall_ms = phase_timings.recall_ms,
@@ -2226,7 +2226,7 @@ pub(crate) fn build_workspace_turns(
                 .metadata
                 .get("peer_id")
                 .and_then(|v| v.as_str())
-                .unwrap_or("peer");
+                .unwrap_or("peer"); // unwrap_or: an item without a peer_id is labelled generically, never dropped
             // is_self — the ONE structural fact role attribution turns on (own posts
             // → assistant, peers → user). Carried here where the peer_id is intact,
             // never re-derived from a `Name:` prefix downstream.
@@ -2234,7 +2234,7 @@ pub(crate) fn build_workspace_turns(
             let author = if is_self {
                 agent_name
             } else {
-                names.get(who_raw).copied().unwrap_or(who_raw)
+                names.get(who_raw).copied().unwrap_or(who_raw) // unwrap_or: an unrostered peer is shown by her raw id
             };
             let occurred_at_ms = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64());
             BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms)
@@ -2258,7 +2258,7 @@ pub(crate) fn build_workspace_turns(
             let author = names
                 .get(trigger.peer_id)
                 .copied()
-                .unwrap_or(trigger.peer_id);
+                .unwrap_or(trigger.peer_id); // unwrap_or: an unrostered peer is shown by her raw id
             turns.push(BurstTurn::attributed(
                 false,
                 author,
@@ -2576,7 +2576,7 @@ fn burst_fingerprint(
             .metadata
             .get("peer_id")
             .and_then(|v| v.as_str())
-            .unwrap_or("peer");
+            .unwrap_or("peer"); // unwrap_or: an item without a peer_id cannot be her own output, so it is kept
         if who == own_peer {
             continue; // don't subscribe to my own chat output
         }
@@ -2834,7 +2834,7 @@ async fn run_self_cycle(
             .compose_for_turn(
                 &ctx.profile,
                 now_ms,
-                Some(focus_room.unwrap_or(ctx.identity.default_room)),
+                Some(focus_room.unwrap_or(ctx.identity.default_room)), // unwrap_or: no focused room means compose for her default room
             )
             .await
     };
@@ -2953,9 +2953,7 @@ async fn run_self_cycle(
     // synchronous read (no await held), per the concurrency style guide.
     let focus_handle = crate::persona::focus::registry().handle(ctx.identity.peer_id.as_uuid());
     let wakes = {
-        let mut focus = focus_handle
-            .lock()
-            .expect("focus mutex poisoned by a prior panic");
+        let mut focus = focus_handle.lock();
         focus.prune_expired(now_ms); // drop lapsed snoozes while we hold it (bounded list)
         focus.wakes_on(ctx.identity.default_room, addressed, now_ms)
     };
@@ -5559,7 +5557,7 @@ mod tests {
             drove,
             "she held a card, so a held-work turn must have been driven"
         );
-        let advanced = recorder.lock().unwrap_or_else(|p| p.into_inner()).clone(); // test: poisoned recorder lock still holds the pushes
+        let advanced = recorder.lock().clone();
         assert_eq!(
             advanced.len(),
             1,

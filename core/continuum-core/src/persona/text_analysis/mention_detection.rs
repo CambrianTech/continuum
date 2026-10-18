@@ -19,13 +19,14 @@
 //! ASCII fast path is sufficient.
 
 use crate::persona::text_analysis::ascii_case::starts_with_ascii_case_insensitive;
+use super::literal_regex::literal;
 use regex::Regex;
 use std::sync::LazyLock;
 
 /// Regex for detecting directed @mentions anywhere in text.
 /// Matches @word at start or after whitespace. Excludes email-like patterns (word@word).
 static DIRECTED_MENTION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?:^|\s)@[a-zA-Z][\w\s-]*").expect("directed mention regex"));
+    LazyLock::new(|| literal(r"(?:^|\s)@[a-zA-Z][\w\s-]*"));
 
 /// Check if a specific persona is mentioned in the message text.
 ///

@@ -97,7 +97,7 @@ pub async fn rate_proposals_with_ai(
         system_prompt: None,
         model: Some(model_id),
         provider: Some(model_provider),
-        temperature: Some(temperature.unwrap_or(DEFAULT_TEMPERATURE)),
+        temperature: Some(temperature.unwrap_or(DEFAULT_TEMPERATURE)), // unwrap_or: temperature is an optional request field, documented default 0.7
         // Model owns its length (None → adapter forwards no ceiling). The JSON
         // response_format + prompt bound the rater's output, not a const of ours.
         max_tokens: None,

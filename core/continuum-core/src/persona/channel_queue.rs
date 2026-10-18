@@ -84,7 +84,7 @@ impl ChannelQueue {
 
             // Sort by resistance ascending (lowest kicked first)
             kickable_indices
-                .sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+                .sort_by(|a, b| a.1.total_cmp(&b.1));
 
             let kick_idx = kickable_indices[0].0;
             let kicked = self.items.remove(kick_idx);
@@ -314,7 +314,7 @@ impl ChannelQueue {
         self.items
             .first()
             .map(|i| i.effective_priority(now, i.timestamp()))
-            .unwrap_or(0.0)
+            .unwrap_or(0.0) // unwrap_or: an empty queue has no work, the lowest priority
     }
 
     /// Remove and return the highest-priority item
@@ -406,11 +406,12 @@ impl ChannelQueue {
 
         // Compute window span. anchor is at index 0 by definition; the
         // others are bounded by ±window_ms around it.
+        // The anchor itself is in the window at distance 0, so folding from 0 is
+        // the exact max — there is no empty case to default.
         let window_span_ms = in_window
             .iter()
             .map(|i| i.timestamp().abs_diff(anchor_ts))
-            .max()
-            .unwrap_or(0);
+            .fold(0, u64::max);
 
         // Build the typed CoherentUnit. Each queue is per-domain
         // (routing enforces it), so we discriminate on `self.domain`.
@@ -419,11 +420,22 @@ impl ChannelQueue {
                 // Pull the primary_room from the anchor. Consolidation
                 // guarantees same-room grouping for chat items, so the
                 // anchor's room is the burst's room.
-                let primary_room = in_window
+                let primary_room = match in_window
                     .first()
                     .and_then(|i| i.as_any().downcast_ref::<ChatQueueItem>())
-                    .map(|c| c.room_id)
-                    .unwrap_or_else(uuid::Uuid::nil);
+                {
+                    Some(anchor) => anchor.room_id,
+                    None => {
+                        // Routing puts only chat items in the chat queue; a non-chat
+                        // anchor is a routing defect, named here rather than hidden.
+                        tracing::error!(
+                            domain = ?self.domain,
+                            items = in_window.len(),
+                            "chat burst anchor is not a ChatQueueItem; burst carries no room"
+                        );
+                        uuid::Uuid::nil()
+                    }
+                };
                 CoherentUnit::Chat {
                     items: in_window,
                     window_span_ms,
@@ -478,7 +490,7 @@ impl ChannelQueue {
             let pa = a.effective_priority(now, a.timestamp());
             let pb = b.effective_priority(now, b.timestamp());
             // Higher priority first
-            pb.partial_cmp(&pa).unwrap_or(std::cmp::Ordering::Equal)
+            pb.total_cmp(&pa)
         });
     }
 }

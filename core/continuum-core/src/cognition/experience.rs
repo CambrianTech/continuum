@@ -186,7 +186,7 @@ impl ExperienceRecord {
             task: task.clone(),
             ok,
             grade: grade.to_string(),
-            answer: settled.spoken.clone().unwrap_or_default(),
+            answer: settled.spoken.clone().unwrap_or_default(), // unwrap_or: she said nothing this episode; the lived answer is empty
             world_state: settled.world_state.clone(),
             room_updates: settled
                 .room_updates
@@ -281,7 +281,7 @@ impl ExperienceRecord {
                 }
                 (None, true) => "lived turn: settled".to_string(),
             },
-            answer: settled.spoken.clone().unwrap_or_default(),
+            answer: settled.spoken.clone().unwrap_or_default(), // unwrap_or: she said nothing this episode; the lived answer is empty
             world_state: settled.world_state.clone(),
             room_updates: settled
                 .room_updates
@@ -348,14 +348,14 @@ impl ExperienceRecord {
             .context
             .get("shared_by")
             .and_then(|v| v.as_str())
-            .unwrap_or("unknown");
+            .unwrap_or("unknown"); // unwrap_or: `shared_by` is an optional context field; absent, the sharer is unknown
         // The scope (the room/project the lesson pertains to) frames the lesson as its
         // "topic"; there is no stimulus (nothing was asked) — the content IS the lesson.
         let scope = record
             .context
             .get("scope")
             .and_then(|v| v.as_str())
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or: `scope` is an optional context field; absent, the lesson has no topic
         Self {
             task: EvalTask {
                 prompt: scope.to_string(),

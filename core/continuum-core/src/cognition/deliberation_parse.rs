@@ -63,7 +63,7 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>, present: &[Str
         crate::probe!(
             class = "cognition.identity_claim",
             claimed = %peer,
-            own = own_name.unwrap_or("?"),
+            own = own_name.unwrap_or("?"), // unwrap_or: probe display only; an unknown own name renders as "?"
             chars = trimmed.chars().count() as u64,
             "response spoke in the first person under a present peer's name — a pass, never posted"
         );

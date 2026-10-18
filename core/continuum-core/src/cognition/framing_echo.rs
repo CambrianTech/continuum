@@ -216,7 +216,7 @@ pub fn echoes_turn_framing(text: &str, own_name: Option<&str>) -> Option<&'stati
         NOTICE_SENTENCES.iter().any(|n| l == *n || l == n.trim_end_matches('.'))
             || (l.starts_with("I have now issued ") && l.ends_with(REPEAT_CALL_TAIL))
             || {
-                let e = l.strip_prefix(ECHO_FACT_TAG).map(str::trim_start).unwrap_or(l);
+                let e = l.strip_prefix(ECHO_FACT_TAG).map(str::trim_start).unwrap_or(l); // unwrap_or: a line without the echo tag is matched as-is
                 let lower = e.to_ascii_lowercase();
                 lower.starts_with("the message ")
                     && lower.contains(ECHO_FACT_MIDDLE)

@@ -236,7 +236,7 @@ impl PersonaChannelView for ChatChannelView {
                     // Empty Arc<Vec<f32>> sentinel only when the burst
                     // had no chat items (defensive — drain_batch should
                     // never produce such a burst for ActivityDomain::Chat).
-                    burst_embedding: burst_embedding.unwrap_or_else(|| Arc::new(Vec::new())),
+                    burst_embedding: burst_embedding.unwrap_or_else(|| Arc::new(Vec::new())), // unwrap_or: no chat item = zero messages, nothing to embed
                 })
             }
             // Programmer-error guard, NOT a fallback. The dispatch

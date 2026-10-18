@@ -50,7 +50,8 @@
 //! salience-free, no new coupling. In the converged end-state this policy is just
 //! what each native faculty's `contribute()` returns.
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use uuid::Uuid;
@@ -291,9 +292,9 @@ impl RagSourceFaculty {
             return None;
         }
         let streak = {
-            // diagnostics-only bookkeeping; a poisoned lock must not take
-            // cognition down to protect a counter. No await is held here.
-            let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
+            // diagnostics-only bookkeeping; `parking_lot` does not poison, so a prior
+            // panic cannot take cognition down to protect a counter. No await is held here.
+            let mut g = self.empty_streak.lock();
             let c = g.entry_or(room, 0);
             *c += 1;
             *c
@@ -318,7 +319,6 @@ impl RagSourceFaculty {
     fn streak_in(&self, room: Uuid) -> u32 {
         self.empty_streak
             .lock()
-            .unwrap_or_else(|e| e.into_inner()) // diagnostics-only, same as note_absence
             .get(&room)
             .copied()
             .unwrap_or(0)
@@ -337,8 +337,8 @@ impl RagSourceFaculty {
             return None;
         }
         let streak = {
-            // same contract as note_absence: recover the guard, never panic here.
-            let mut g = self.empty_streak.lock().unwrap_or_else(|e| e.into_inner());
+            // same contract as note_absence: a non-poisoning lock, never a panic here.
+            let mut g = self.empty_streak.lock();
             // `None` here is BOTH "never absent" and "evicted", and that is
             // deliberate: announcing a recovery for a record that was merely
             // dropped would be the same lie this whole change is about.

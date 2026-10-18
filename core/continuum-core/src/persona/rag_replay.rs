@@ -39,7 +39,7 @@
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use async_trait::async_trait;
 
@@ -151,12 +151,12 @@ impl ReplayRagSource {
     /// How many deliveries remain in the initial queue. Useful for
     /// tests + harness assertions ("did we exhaust the trace?").
     pub fn remaining_initial(&self) -> usize {
-        self.initial.lock().unwrap().len()
+        self.initial.lock().len()
     }
 
     /// How many deliveries remain in the continuation queue.
     pub fn remaining_continuations(&self) -> usize {
-        self.continuations.lock().unwrap().len()
+        self.continuations.lock().len()
     }
 }
 
@@ -183,10 +183,9 @@ impl RagSource for ReplayRagSource {
     fn budget_claim(&self, window: u32, headroom: u32) -> RagSourceBudget {
         self.initial
             .lock()
-            .unwrap()
             .front()
             .and_then(|(_, claim)| claim.clone())
-            .unwrap_or_else(|| RagSourceBudget::retrieval(self.source_id, 0, window, headroom))
+            .unwrap_or_else(|| RagSourceBudget::retrieval(self.source_id, 0, window, headroom)) // unwrap_or: no captured claim (pre-built delivery or drained FIFO) = an unprioritised retrieval claim
     }
 
     async fn deliver(
@@ -204,7 +203,7 @@ impl RagSource for ReplayRagSource {
                 resolution_used: ResolutionPreference::Placeholder,
             };
         }
-        match self.initial.lock().unwrap().pop_front() {
+        match self.initial.lock().pop_front() {
             Some((delivery, _)) => delivery,
             None => RagDelivery {
                 source_id: self.source_id.to_string(),
@@ -231,7 +230,7 @@ impl RagSource for ReplayRagSource {
         if cursor.source_id != self.source_id {
             return None;
         }
-        self.continuations.lock().unwrap().pop_front()
+        self.continuations.lock().pop_front()
     }
 }
 

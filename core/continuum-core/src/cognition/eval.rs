@@ -211,8 +211,8 @@ impl std::ops::Deref for EvalLane {
 /// the moment its last real user drops — no lingering VRAM, no reaper task, no eviction
 /// policy to get wrong. Dangling entries are pruned lazily on the next miss.
 static WARM_EVAL_LANES: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::sync::Weak<EvalLaneInner>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    parking_lot::Mutex<std::collections::HashMap<String, std::sync::Weak<EvalLaneInner>>>,
+> = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 /// Guards the WARM-LANE map across a cold spawn: a racer for the same key must find
 /// the winner's lane instead of building a second one, which needs the lookup, the
@@ -233,7 +233,7 @@ static EVAL_LANE_SPAWN_GATE: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 
 /// Return a handle to a live warm lane for `key`, pruning a dangling entry on a miss.
 fn lookup_warm_eval_lane(key: &str) -> Option<EvalLane> {
-    let mut map = WARM_EVAL_LANES.lock().unwrap();
+    let mut map = WARM_EVAL_LANES.lock();
     if let Some(weak) = map.get(key) {
         if let Some(inner) = weak.upgrade() {
             return Some(EvalLane { inner });
@@ -273,7 +273,6 @@ where
     let inner = std::sync::Arc::new(build().await?);
     WARM_EVAL_LANES
         .lock()
-        .unwrap()
         .insert(key.to_string(), std::sync::Arc::downgrade(&inner));
     Ok(EvalLane { inner })
 }
@@ -1229,7 +1228,7 @@ async fn build_external_eval_lane_inner(
     // fallback when the provider doesn't report one.
     let served_ctx = external_served_context_window(&base_url, &base.id)
         .await
-        .unwrap_or(base.context_window);
+        .unwrap_or(base.context_window); // unwrap_or: provider did not report a served window; the lane's configured window is the documented fallback
     Ok(EvalLaneInner {
         measured_gene: None,
         lane: None,
@@ -1817,7 +1816,7 @@ impl EvalTask {
     /// The run-level decision is `any task needs tools` (tools are offered to the whole run),
     /// so a mixed gym with one repo-nav task correctly arms tools for all. See #208.
     pub fn needs_tools(&self) -> bool {
-        self.needs_tools.unwrap_or_else(|| {
+        self.needs_tools.unwrap_or_else(|| { // unwrap_or: no explicit needs_tools on the task = infer it from the task's shape
             self.solution_file.is_some()
                 || self.dod_shell.is_some()
                 || self.workspace_root.is_some()
@@ -1863,7 +1862,7 @@ impl EvalTask {
         {
             return;
         }
-        let ext = match self.lang.as_deref().unwrap_or("rust") {
+        let ext = match self.lang.as_deref().unwrap_or("rust") { // unwrap_or: a task with no lang is a rust task (gym default)
             "rust" | "rs" => "rs",
             "python" | "py" => "py",
             "typescript" | "ts" => "ts",
@@ -2349,13 +2348,13 @@ impl ActionCommand for CognitionEval {
         // returns a job handle NOW, and lets the real result land in the progress ledger. The
         // run survives the client disconnecting; the caller polls
         // `~/.continuum/progress/<persona>.jsonl` by `note`.
-        if p.detach.unwrap_or(false) {
+        if p.detach.unwrap_or(false) { // unwrap_or: detach is opt-in; absent = run attached
             let persona_id = p.persona_id.clone();
-            let note = p.note.clone().unwrap_or_default();
+            let note = p.note.clone().unwrap_or_default(); // unwrap_or: note is an optional label; absent = unlabeled run
             let run_id = p
                 .run_id
                 .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()); // unwrap_or: no caller run_id = mint a fresh one for this run
             let mut inner = p.clone();
             inner.detach = Some(false);
             inner.run_id = Some(run_id.clone());
@@ -2512,7 +2511,7 @@ impl CognitionEval {
         } else {
             p.eval_set
                 .clone()
-                .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string())
+                .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string()) // unwrap_or: no eval_set named = the default eval set
         };
 
         // Task source: inline → a gym reference resolved through `gym::resolve_gym`
@@ -2527,7 +2526,7 @@ impl CognitionEval {
         let mut tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
-            let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
+            let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET); // unwrap_or: no eval_set named = the default eval set
             let (origin, text) =
                 crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
             crate::cognition::gym::parse_tasks(&text, &origin).map_err(CommandError::Invalid)?
@@ -2580,7 +2579,7 @@ impl CognitionEval {
             let tag = p
                 .run_id
                 .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()); // unwrap_or: no caller run_id = mint a fresh tag for this root
             match provision_ephemeral_eval_root(&tag) {
                 Ok(root) => Some(EphemeralEvalRoot::new(root)),
                 Err(e) => {
@@ -2601,7 +2600,7 @@ impl CognitionEval {
 
         // #207: suppress the fork's drifting episodic recall for a reproducible ABSOLUTE
         // baseline. Opt-in; default false = memories intact (the natural persona).
-        let suppress_recall = p.suppress_recall.unwrap_or(false);
+        let suppress_recall = p.suppress_recall.unwrap_or(false); // unwrap_or: suppress_recall is opt-in; absent = memories intact
 
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
         // copy while the LIVING persona keeps living (heartbeat beating, present in
@@ -2894,8 +2893,8 @@ impl CognitionEval {
             );
         }
 
-        let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize;
-        let max_retries = p.max_retries.unwrap_or(MAX_FAIL_RETRIES);
+        let max_acts = p.max_acts.unwrap_or(DEFAULT_MAX_ACTS) as usize; // unwrap_or: absent max_acts = the documented default act budget
+        let max_retries = p.max_retries.unwrap_or(MAX_FAIL_RETRIES); // unwrap_or: absent max_retries = the documented default retry budget
         let total = tasks.len() as u32;
         let rate = |score: u32| {
             if total > 0 {
@@ -2965,7 +2964,7 @@ impl CognitionEval {
                 name: gene.name.clone(),
                 path: gene.path.clone(),
                 domain: String::new(),
-                scale: gene.scale.unwrap_or(1.0),
+                scale: gene.scale.unwrap_or(1.0), // unwrap_or: absent gene scale = full strength 1.0
             }]);
             let gene_outcome = run_pass(
                 &cycle,
@@ -3007,11 +3006,11 @@ impl CognitionEval {
                 lane_placement: placement_evidence
                     .as_ref()
                     .map(|e| e.device.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_default(), // unwrap_or: no placement evidence = empty field on the receipt, not a guess
                 lane_placement_reason: placement_evidence
                     .as_ref()
                     .map(|e| e.reason.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_default(), // unwrap_or: no placement evidence = empty field on the receipt, not a guess
                 lane_free_vram_bytes: placement_evidence.as_ref().and_then(|e| e.free_vram_bytes),
                 lane_estimated_footprint_bytes: placement_evidence
                     .as_ref()
@@ -3072,7 +3071,7 @@ impl CognitionEval {
         // (reviewers>=1, live single-pass only) forks a second copy of the same persona
         // as a reviewer and grades the reviewed answer — same model, +1 teammate.
         let want_team =
-            p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
+            p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none(); // unwrap_or: absent reviewers = solo run (zero reviewers)
         let outcome = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
                 .fork_eval_cycle(&persona_uuid, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
@@ -4200,7 +4199,7 @@ fn html_artifact_from_answer(answer: &str) -> Option<String> {
     let mut rest = answer;
     while let Some(open) = rest.find("```") {
         let after = &rest[open + 3..];
-        let nl = after.find('\n').unwrap_or(after.len());
+        let nl = after.find('\n').unwrap_or(after.len()); // unwrap_or: no newline after the fence = the tag runs to the end
         let lang = after[..nl].trim().to_ascii_lowercase();
         let body_area = if nl < after.len() {
             &after[nl + 1..]
@@ -4310,9 +4309,22 @@ async fn perception_grade(
         // [[beat-oss-agentic-systems-as-whole-beings-never-strip-to-pass]],
         // [[fix-the-substrate-never-rig-the-persona-the-line-between-assist-and-scaffold]],
         // [[execute-dont-narrate]]
-        let wrote_with_hands = std::fs::read_to_string(p)
-            .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
+        let wrote_with_hands = match std::fs::read_to_string(p) {
+            Ok(s) => !s.trim().is_empty(),
+            // Absent file = she never wrote it: the case this gate exists to score.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+            Err(e) => {
+                // Any other read failure is the GRADER failing, not her: name it, then
+                // score it as not-written (the same outcome as before, now visible).
+                crate::probe!(
+                    class = "eval.grade.read_failed",
+                    path = %p.display(),
+                    error = %e,
+                    "could not read the solution file to grade it"
+                );
+                false
+            }
+        };
         if !wrote_with_hands {
             let spoke_one = html_artifact_from_answer(answer).is_some();
             return (
@@ -4645,7 +4657,7 @@ fn report_task_graded(
         pass = pass,
         running_rate = format!("{:.3}", pass as f64 / done.max(1) as f64).as_str(),
         latency_ms = latency_ms,
-        vram_free_gb = vram_free_gb.unwrap_or(0),
+        vram_free_gb = vram_free_gb, // Option: absent when unmeasured, never a fake 0
         "task graded",
     );
 }
@@ -4703,7 +4715,7 @@ fn infra_verdict(outcome: &PassOutcome) -> Option<InfraUnavailable> {
         reason: outcome
             .infra_reason
             .clone()
-            .unwrap_or_else(|| "serving lane never recovered".to_string()),
+            .unwrap_or_else(|| "serving lane never recovered".to_string()), // unwrap_or: an infra abort with no recorded reason still names the lane failure
         tasks_attempted: outcome.results.len() as u32,
         infra_faults: outcome.infra_faults,
     })
@@ -5311,7 +5323,7 @@ Fix the workspace and finish —                              the grade reads th
             }
             }
         }
-        let answer = settled.spoken.clone().unwrap_or_default();
+        let answer = settled.spoken.clone().unwrap_or_default(); // unwrap_or: she spoke nothing = an empty answer, graded as such
         // DoD-INFRA GATE (2026-08-25): the grader itself could not run (missing
         // workspace, refused/not-found command). This is NOT a model miss — record it
         // as an infra fault (which flips the whole run to InfraUnavailable, so no
@@ -5354,15 +5366,15 @@ Fix the workspace and finish —                              the grade reads th
             // her own eyes (the eye-node path) and score the element tree — the money signal for
             // "can a persona build a UI that works", judged on the structure a non-visual model
             // reads too. Default target `index.html`; default threshold 1.0 ("it works").
-            let target = t.target.as_deref().unwrap_or("index.html");
-            let threshold = t.ui_pass_threshold.unwrap_or(1.0);
+            let target = t.target.as_deref().unwrap_or("index.html"); // unwrap_or: absent target = index.html, the documented UI default
+            let threshold = t.ui_pass_threshold.unwrap_or(1.0); // unwrap_or: absent threshold = 1.0 (it works), the documented default
             perception_grade(cycle, target, &t.ui_checks, threshold, task_root, &answer).await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
             // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
             // text) — the only way the act→verify loop shows up in the score. Same harness as
             // test_grade (strip her main, append test, compile, run).
-            let lang = t.lang.as_deref().unwrap_or("rust");
+            let lang = t.lang.as_deref().unwrap_or("rust"); // unwrap_or: a task with no lang is a rust task (gym default)
             crate::cognition::gym_grader::test_grade_file(
                 task_root.map(std::path::Path::new),
                 file,
@@ -5565,7 +5577,7 @@ async fn run_pass_team(
     for t in tasks {
         // WRITER solves (same delivery as solo run_pass).
         let w = eval_settle(writer, room, &t.prompt, max_acts).await;
-        let writer_answer = w.spoken.clone().unwrap_or_default();
+        let writer_answer = w.spoken.clone().unwrap_or_default(); // unwrap_or: the writer spoke nothing = an empty answer for review
 
         // REVIEWER reviews the writer's solution and produces the FINAL code.
         // The reviewer's job is QUALITY CONTROL, not rewriting. The failure mode a glass-box
@@ -5585,7 +5597,7 @@ async fn run_pass_team(
             t.prompt, writer_answer
         );
         let r = eval_settle(reviewer, room, &review_prompt, max_acts).await;
-        let answer = r.spoken.clone().unwrap_or_default();
+        let answer = r.spoken.clone().unwrap_or_default(); // unwrap_or: the reviewer spoke nothing = an empty answer, graded as such
 
         // Infra fault on EITHER teammate's generation → the lane failed, not a wrong
         // answer. Team mode has no per-task retry loop (the solo run_pass owns bounded
@@ -5644,7 +5656,7 @@ async fn run_pass_team(
                     .or(workspace_root)
                     .map(std::path::Path::new),
                 file,
-                t.lang.as_deref().unwrap_or("rust"),
+                t.lang.as_deref().unwrap_or("rust"), // unwrap_or: a task with no lang is a rust task (gym default)
                 test,
             )
             .await
@@ -6572,16 +6584,14 @@ mod tests {
         // Registered but immediately dropped inner → the Weak is dead → miss + prune.
         {
             let map = &*WARM_EVAL_LANES;
-            map.lock()
-                .unwrap()
-                .insert(key.clone(), std::sync::Weak::new());
+            map.lock().insert(key.clone(), std::sync::Weak::new());
         }
         assert!(
             lookup_warm_eval_lane(&key).is_none(),
             "dead Weak must not satisfy"
         );
         assert!(
-            !WARM_EVAL_LANES.lock().unwrap().contains_key(&key),
+            !WARM_EVAL_LANES.lock().contains_key(&key),
             "dead entry must be pruned on the miss"
         );
     }

@@ -241,16 +241,19 @@ pub fn select_model_with_signatures(
         let trait_match = registry
             .adapters
             .values()
-            .filter(|a| a.domain == target_trait && a.trained_model_name.is_some())
-            .max_by(|a, b| {
+            .filter(|a| a.domain == target_trait)
+            // Pair each adapter with its model name so a nameless adapter is never a
+            // candidate — the selected one carries its name by construction.
+            .filter_map(|a| a.trained_model_name.as_ref().map(|model| (a, model)))
+            .max_by(|(a, _), (b, _)| {
                 // Prefer loaded > unloaded, then higher priority
                 (a.is_loaded as u8, (a.priority * 1000.0) as u32)
                     .cmp(&(b.is_loaded as u8, (b.priority * 1000.0) as u32))
             });
 
-        if let Some(adapter) = trait_match {
+        if let Some((adapter, model)) = trait_match {
             return Ok(ModelSelectionResult {
-                model: adapter.trained_model_name.clone().unwrap(),
+                model: model.clone(),
                 source: "trait_adapter".into(),
                 adapter_name: Some(adapter.name.clone()),
                 trait_used: Some(target_trait.to_string()),
@@ -264,11 +267,12 @@ pub fn select_model_with_signatures(
     let current = registry
         .adapters
         .values()
-        .find(|a| a.is_current && a.trained_model_name.is_some());
+        .filter(|a| a.is_current)
+        .find_map(|a| a.trained_model_name.as_ref().map(|model| (a, model)));
 
-    if let Some(adapter) = current {
+    if let Some((adapter, model)) = current {
         return Ok(ModelSelectionResult {
-            model: adapter.trained_model_name.clone().unwrap(),
+            model: model.clone(),
             source: "current_adapter".into(),
             adapter_name: Some(adapter.name.clone()),
             trait_used: None,
@@ -281,15 +285,15 @@ pub fn select_model_with_signatures(
     let any_adapter = registry
         .adapters
         .values()
-        .filter(|a| a.trained_model_name.is_some())
-        .max_by(|a, b| {
+        .filter_map(|a| a.trained_model_name.as_ref().map(|model| (a, model)))
+        .max_by(|(a, _), (b, _)| {
             (a.is_loaded as u8, (a.priority * 1000.0) as u32)
                 .cmp(&(b.is_loaded as u8, (b.priority * 1000.0) as u32))
         });
 
-    if let Some(adapter) = any_adapter {
+    if let Some((adapter, model)) = any_adapter {
         return Ok(ModelSelectionResult {
-            model: adapter.trained_model_name.clone().unwrap(),
+            model: model.clone(),
             source: "any_adapter".into(),
             adapter_name: Some(adapter.name.clone()),
             trait_used: None,

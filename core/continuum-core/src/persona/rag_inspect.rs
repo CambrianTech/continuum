@@ -405,23 +405,23 @@ pub async fn inspect_persona_rag_with_inference(
                 .metadata
                 .get("score")
                 .and_then(|v| v.as_f64())
-                .unwrap_or(0.0);
+                .unwrap_or(0.0); // unwrap_or: inspector display; an unscored item shows 0 and the raw metadata rides along
             let lamport = item
                 .metadata
                 .get("lamport")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+                .unwrap_or(0); // unwrap_or: inspector display; a non-airc item has no lamport, raw metadata rides along
             let peer_id_prefix = item
                 .metadata
                 .get("peer_id")
                 .and_then(|v| v.as_str())
                 .map(|s| s.chars().take(8).collect::<String>())
-                .unwrap_or_else(|| "????".to_string());
+                .unwrap_or_else(|| "????".to_string()); // unwrap_or: inspector display; an item with no peer renders the placeholder
             let occurred_at_ms = item
                 .metadata
                 .get("occurred_at_ms")
                 .and_then(|v| v.as_u64())
-                .unwrap_or(0);
+                .unwrap_or(0); // unwrap_or: 0 = undated, which the age arm below reads as age 0
             let age_s = if occurred_at_ms > 0 && request.now_ms > occurred_at_ms {
                 (request.now_ms - occurred_at_ms) / 1_000
             } else {
@@ -571,7 +571,7 @@ async fn run_inference_probe(
     let last_item_preview: String = items
         .last()
         .map(|i| i.content.chars().take(160).collect())
-        .unwrap_or_else(|| "(no items — RAG delivered nothing)".to_string());
+        .unwrap_or_else(|| "(no items — RAG delivered nothing)".to_string()); // unwrap_or: an empty delivery is named in the probe, not hidden
 
     tracing::info!(
         persona = %persona_name,

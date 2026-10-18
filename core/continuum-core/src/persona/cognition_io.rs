@@ -249,8 +249,8 @@ pub fn build_respond_input(signal: &Signal, ctx: &PersonaContext) -> Result<Resp
         }
     }
 
-    let message_id = signal.message_id.unwrap_or(Uuid::nil());
-    let room_id = ctx.room_id.unwrap_or(Uuid::nil());
+    let message_id = signal.message_id.unwrap_or(Uuid::nil()); // unwrap_or: optional wire id, absent = host carries none
+    let room_id = ctx.room_id.unwrap_or(Uuid::nil()); // unwrap_or: room-less hosts (game/AR) send no room
 
     // Per-turn shared context. Hoisting the room-level fields
     // (room_id + recent_history + known_specialties) into an
@@ -351,8 +351,8 @@ pub fn signal_to_inbox_message(signal: &Signal, ctx: &PersonaContext) -> InboxMe
     };
 
     InboxMessage {
-        id: signal.message_id.unwrap_or_else(Uuid::new_v4),
-        room_id: ctx.room_id.unwrap_or(Uuid::nil()),
+        id: signal.message_id.unwrap_or_else(Uuid::new_v4), // unwrap_or: absent id mints a fresh one, pinned by a test
+        room_id: ctx.room_id.unwrap_or(Uuid::nil()), // unwrap_or: room-less hosts (game/AR) send no room
         sender_id,
         sender_name,
         sender_type,

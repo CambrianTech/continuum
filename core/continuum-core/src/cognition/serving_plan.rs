@@ -829,8 +829,7 @@ pub fn plan_serving(
                 a.weights_bytes
                     .cmp(&b.weights_bytes)
                     .then(a.model_id.cmp(&b.model_id))
-            })
-            .expect("candidates non-empty checked above");
+            })?; // empty candidates = the documented `None` (no candidates to choose from)
         return Some(ServingPlan {
             base_model: (*smallest).clone(),
             served_context_window: MIN_SERVE_CTX,
@@ -974,7 +973,7 @@ pub fn plan_serving(
             let lanes = (1..=lane_cap)
                 .rev()
                 .find(|&l| window_for(l as u64) >= per_lane_floor)
-                .unwrap_or(1);
+                .unwrap_or(1); // unwrap_or: no count clears the floor = one lane, the resident minimum
             let bound = if lanes < lane_cap {
                 LanesBound::PerLaneFloor {
                     floor_tokens: per_lane_floor,

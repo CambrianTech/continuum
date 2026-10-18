@@ -14,11 +14,11 @@
 //! instantaneous per-event FLASH is a separate lane (the stream rail); this is
 //! the steady-state glow the flash rides on.
 //!
-//! Interior-mutable (a `std::sync::Mutex` over four small cells): the living
+//! Interior-mutable (a `parking_lot::Mutex` over four small cells): the living
 //! cycle is shared via `&self`, bumped from the tick seam, sampled by the
 //! radiator. The lock is held only for a cheap read/write, never across an await.
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use std::time::Instant;
 
 use super::workspace::FacultyId;
@@ -142,10 +142,9 @@ impl FacultyPulse {
     pub fn note(&self, axis: CognitionAxis, level: u8) {
         let now = Instant::now();
         let l = level.min(100) as f32;
-        // A poisoned lock (a bumper panicked mid-write) must not brick observability
-        // for the process — recover the guard; a stale cell is a cosmetic glitch, not
-        // a correctness fault.
-        let mut cells = self.cells.lock().unwrap_or_else(|e| e.into_inner());
+        // `parking_lot::Mutex` does not poison: a bumper that panicked mid-write cannot
+        // brick observability for the process (a stale cell is cosmetic, not a fault).
+        let mut cells = self.cells.lock();
         let cell = &mut cells[axis.idx()];
         cell.level_at_bump = cell.decayed(now).max(l);
         cell.bumped = now;
@@ -160,7 +159,7 @@ impl FacultyPulse {
     /// radiator samples. Read-only (decay is derived, not stored back).
     pub fn levels(&self) -> [u8; 4] {
         let now = Instant::now();
-        let cells = self.cells.lock().unwrap_or_else(|e| e.into_inner());
+        let cells = self.cells.lock();
         let mut out = [0u8; 4];
         for axis in CognitionAxis::ALL {
             out[axis.idx()] = cells[axis.idx()].decayed(now).round() as u8;
@@ -220,7 +219,7 @@ mod tests {
         // samples with turns minutes apart (glass-boxed 2026-07-30).
         let past = FacultyPulse::new();
         {
-            let mut cells = past.cells.lock().unwrap();
+            let mut cells = past.cells.lock();
             cells[1] = Cell {
                 level_at_bump: 100.0,
                 bumped: Instant::now() - Duration::from_secs(3),
@@ -232,7 +231,7 @@ mod tests {
             "100 eases to 82 after 3s at 6/s — visible afterglow"
         );
         {
-            let mut cells = past.cells.lock().unwrap();
+            let mut cells = past.cells.lock();
             cells[1] = Cell {
                 level_at_bump: 100.0,
                 bumped: Instant::now() - Duration::from_secs(20),

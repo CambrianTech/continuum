@@ -95,7 +95,7 @@ where
         .map(|p| (p.id.as_str(), p.kind))
         .collect();
     let is_local = |provider_id: &str| {
-        provider_kinds.get(provider_id).copied().unwrap_or_default() == ProviderKind::Local
+        matches!(provider_kinds.get(provider_id), Some(ProviderKind::Local))
     };
 
     let registry: Vec<&Model> = models.into_iter().collect();
@@ -195,7 +195,21 @@ where
         | LocalOrCloudPolicy::PreferCloud
         | LocalOrCloudPolicy::Any => true,
     });
-    if candidates.is_empty() {
+    // Rank: PreferLocal/PreferCloud reorder; other policies preserve order.
+    match requirement.provider_policy {
+        LocalOrCloudPolicy::PreferLocal => {
+            candidates.sort_by_key(|m| u8::from(!is_local(&m.provider)));
+        }
+        LocalOrCloudPolicy::PreferCloud => {
+            candidates.sort_by_key(|m| u8::from(is_local(&m.provider)));
+        }
+        _ => {}
+    }
+
+    // Nothing survived the provider-policy filter (ranking never changes emptiness):
+    // decided here, at the one place the winner is taken, so no path reaches a
+    // `first()` that could be `None`.
+    let Some(best) = candidates.first() else {
         if is_sensory_query {
             return Err(no_multimodal_base_err());
         }
@@ -208,20 +222,7 @@ where
             candidates_after_filter: 0,
             unmet_filters: unmet,
         });
-    }
-
-    // Rank: PreferLocal/PreferCloud reorder; other policies preserve order.
-    match requirement.provider_policy {
-        LocalOrCloudPolicy::PreferLocal => {
-            candidates.sort_by_key(|m| u8::from(!is_local(&m.provider)));
-        }
-        LocalOrCloudPolicy::PreferCloud => {
-            candidates.sort_by_key(|m| u8::from(is_local(&m.provider)));
-        }
-        _ => {}
-    }
-
-    let best = candidates.first().expect("non-empty after filters");
+    };
     let target_silicon = derive_target_silicon(best, &provider_kinds, &requirement.host);
 
     // Silicon-residency gate. No silent CPU fallback. No silent Cloud

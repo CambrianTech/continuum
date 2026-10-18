@@ -115,14 +115,12 @@ impl PersonaInbox {
         drop(heap);
 
         messages.sort_by_key(|message| message.timestamp);
-        let oldest_timestamp = messages
-            .first()
-            .map(|message| message.timestamp)
-            .unwrap_or(0);
-        let newest_timestamp = messages
-            .last()
-            .map(|message| message.timestamp)
-            .unwrap_or(0);
+        // The anchor is always in `messages`, so the span is seeded from it rather than
+        // from an `Option` over a possibly-empty list — there is no empty case to default.
+        let (oldest_timestamp, newest_timestamp) = messages.iter().fold(
+            (anchor_timestamp, anchor_timestamp),
+            |(oldest, newest), message| (oldest.min(message.timestamp), newest.max(message.timestamp)),
+        );
 
         Some(PersonaInboxFrame {
             persona_id: self.persona_id,
@@ -134,7 +132,7 @@ impl PersonaInbox {
                 oldest_timestamp,
                 newest_timestamp,
                 frame_span_ms: newest_timestamp.saturating_sub(oldest_timestamp),
-                drain_duration_us: u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX),
+                drain_duration_us: start.elapsed().as_micros().min(u128::from(u64::MAX)) as u64, // saturating u128 -> u64; the min makes the cast lossless
             },
             messages,
         })

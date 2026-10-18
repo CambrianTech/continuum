@@ -160,7 +160,7 @@ impl ActionCommand for ResolutionBench {
         _ctx: &Ctx,
         p: ResolutionBenchParams,
     ) -> Result<ResolutionBenchResult, CommandError> {
-        if p.detach.unwrap_or(false) {
+        if p.detach.unwrap_or(false) { // unwrap_or: detach is an optional flag, absent = run inline
             tokio::spawn(async move {
                 match ResolutionBench::run_bench(p).await {
                     Ok(r) => tracing::info!(
@@ -217,9 +217,9 @@ impl ResolutionBench {
         })?;
         let adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter> = Arc::new(adapter);
 
-        let steps = p.steps.unwrap_or(4).max(1) as usize;
-        let min_tokens = p.min_tokens.unwrap_or(160);
-        let max_tokens = p.max_tokens.unwrap_or(2048);
+        let steps = p.steps.unwrap_or(4).max(1) as usize; // unwrap_or: optional param, documented default
+        let min_tokens = p.min_tokens.unwrap_or(160); // unwrap_or: optional param, documented default
+        let max_tokens = p.max_tokens.unwrap_or(2048); // unwrap_or: optional param, documented default
 
         let mut tasks = Vec::new();
         for task in [EASY, HARD] {

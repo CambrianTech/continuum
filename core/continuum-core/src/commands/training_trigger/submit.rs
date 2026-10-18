@@ -928,7 +928,8 @@ mod tests {
         use crate::persona::attention::{AttentionDial, Continuation};
         use crate::persona::perception_region::PerceptionRegion;
         use crate::persona::salience::{BoardChange, Expectation, ExpectedVerdict, ObservedVerdict};
-        use std::sync::{Arc, Mutex};
+        use parking_lot::Mutex;
+        use std::sync::Arc;
         let (trigger, executor, _dir) = build_runtime_with_trigger_and_genome().await;
         let persona = Uuid::new_v4();
         let activity = Uuid::new_v4();
@@ -972,7 +973,7 @@ mod tests {
         assert!(trigger.state.test_job_board.snapshot().is_empty(), "no job while she is unsurprised");
 
         // The room contradicts her once: 1 of 4, at the floor. The next fill decides.
-        region.lock().unwrap().observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer, review: Uuid::new_v4() }], now + 4);
+        region.lock().observe_board(activity, vec![BoardChange::Reviewed { card_id: mine, outcome: ObservedVerdict::Failed, reviewer, review: Uuid::new_v4() }], now + 4);
         let next = executor
             .execute_json("genome/training-trigger/submit", submit_params(persona, "test-trait", vec![ex("k", "l")], Some(5)))
             .await

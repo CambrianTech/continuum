@@ -384,10 +384,10 @@ pub struct StubAircCitizen {
     /// completion edge concluded the right card with the right state — the
     /// WRITE half the read supertraits can't observe. Shared `Arc` so the test
     /// holds a clone and reads it after driving the turn.
-    advanced: std::sync::Arc<std::sync::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>>,
+    advanced: std::sync::Arc<parking_lot::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>>,
     /// Records every `claim_card` (pull) call — the kanban-pull half, so a test
     /// can assert an idle citizen pulled the right Open card off the deck.
-    claimed: std::sync::Arc<std::sync::Mutex<Vec<airc_lib::WorkCardId>>>,
+    claimed: std::sync::Arc<parking_lot::Mutex<Vec<airc_lib::WorkCardId>>>,
 }
 
 impl StubAircCitizen {
@@ -401,14 +401,14 @@ impl StubAircCitizen {
             claimable: Vec::new(),
             held: Vec::new(),
             boards: std::collections::HashMap::new(),
-            advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            claimed: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            advanced: std::sync::Arc::new(parking_lot::Mutex::new(Vec::new())),
+            claimed: std::sync::Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
     /// A handle to the `claim_card` (pull) recording — clone before moving the
     /// stub behind an `Arc<dyn AircCitizen>`, then read which cards she pulled.
-    pub fn claim_recorder(&self) -> std::sync::Arc<std::sync::Mutex<Vec<airc_lib::WorkCardId>>> {
+    pub fn claim_recorder(&self) -> std::sync::Arc<parking_lot::Mutex<Vec<airc_lib::WorkCardId>>> {
         self.claimed.clone()
     }
 
@@ -442,7 +442,7 @@ impl StubAircCitizen {
     /// stub behind an `Arc<dyn AircCitizen>`, then read after driving the turn.
     pub fn advance_recorder(
         &self,
-    ) -> std::sync::Arc<std::sync::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>> {
+    ) -> std::sync::Arc<parking_lot::Mutex<Vec<(airc_lib::WorkCardId, airc_lib::CardState)>>> {
         self.advanced.clone()
     }
 
@@ -600,7 +600,6 @@ impl AircCitizen for StubAircCitizen {
     ) -> Result<(), String> {
         self.advanced
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
             .push((card_id, state));
         Ok(())
     }
@@ -608,7 +607,6 @@ impl AircCitizen for StubAircCitizen {
     async fn claim_card(&self, card_id: airc_lib::WorkCardId) -> Result<bool, String> {
         self.claimed
             .lock()
-            .unwrap_or_else(|p| p.into_inner())
             .push(card_id);
         Ok(true)
     }

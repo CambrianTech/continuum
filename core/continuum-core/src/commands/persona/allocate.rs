@@ -13,6 +13,7 @@ use ts_rs::TS;
 
 use crate::gpu::GpuMemoryManager;
 use crate::persona::{allocate_personas, load_catalog, AllocationResult};
+use crate::sdk_codegen::CommandError;
 
 /// Params for `persona/allocate`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
@@ -42,7 +43,8 @@ crate::action_command! {
     params: PersonaAllocateParams,
     output: AllocationResult,
     run(this, _ctx, p) => {
-        let catalog = load_catalog();
+        let catalog = load_catalog()
+            .map_err(|e| CommandError::Internal(format!("persona catalog.json failed to parse: {e}")))?;
         // No per-persona overrides at the planning surface: `persona/allocate` is a
         // stateless hardware-tier query with no persona homes in scope. The runtime
         // assignment path (`persona/reassign-model`) is the caller that resolves each

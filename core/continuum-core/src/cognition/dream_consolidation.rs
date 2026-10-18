@@ -451,7 +451,7 @@ impl SemanticDistiller {
         // before the parse strips it (25 live reviews were undiagnosable
         // without this; the distiller path has no prompt-capture yet).
         if !prior_beliefs.is_empty() {
-            let tail = raw.lines().last().unwrap_or("").trim();
+            let tail = raw.lines().last().unwrap_or("").trim(); // unwrap_or: an empty reply has an empty tail, which the probe shows as such
             crate::probe!(
                 class = "dream.review.raw_tail",
                 persona = ?persona_id,

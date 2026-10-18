@@ -191,7 +191,7 @@ fn llama_server_row_ready(
     if snap.vision_model.as_deref() != Some(model_id) {
         return Err(format!(
             "the verified vision endpoint serves {:?}, not this row",
-            snap.vision_model.as_deref().unwrap_or("<none>")
+            snap.vision_model.as_deref().unwrap_or("<none>") // unwrap_or: renders an absent model in the refusal text
         ));
     }
     Ok(())
@@ -381,7 +381,7 @@ fn build_generate_params(
         .options
         .prompt
         .clone()
-        .unwrap_or_else(|| build_prompt(&req.options));
+        .unwrap_or_else(|| build_prompt(&req.options)); // unwrap_or: prompt is an optional caller override
 
     // Build the multimodal `ai/generate` request payload. Shape mirrors
     // what the TS-side AIProviderDaemon.generateText expects + what the
@@ -395,7 +395,7 @@ fn build_generate_params(
         .options
         .max_length
         .map(|len| u32::max(50, len.div_ceil(4)))
-        .unwrap_or(500);
+        .unwrap_or(500); // unwrap_or: max_length is an optional hint; absent = the 500-token default
 
     serde_json::json!({
         "messages": [{
@@ -433,7 +433,7 @@ fn generation_text<'a>(response_value: &'a serde_json::Value, model: &str, provi
     let response_text = response_value
         .get("text")
         .and_then(|v| v.as_str())
-        .unwrap_or("");
+        .unwrap_or(""); // unwrap_or: missing text is refused as empty just below, never passed on
 
     if matches!(finish_reason, Some(crate::ai::types::FinishReason::Error))
         || response_text.trim().is_empty()

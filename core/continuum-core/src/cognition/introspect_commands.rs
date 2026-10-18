@@ -116,7 +116,7 @@ impl ActionCommand for CognitionTrace {
         _ctx: &Ctx,
         p: CognitionTraceParams,
     ) -> Result<CognitionTraceResult, CommandError> {
-        let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
+        let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT); // unwrap_or: optional param; absent, the default tail length
         let records = tail_persona_jsonl(
             super::workspace_capture::FIXTURE_DIR,
             p.persona_id.as_str(),
@@ -182,7 +182,7 @@ impl ActionCommand for CognitionPrompt {
         _ctx: &Ctx,
         p: CognitionPromptParams,
     ) -> Result<CognitionPromptResult, CommandError> {
-        let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT);
+        let limit = p.limit.map(|n| n as usize).unwrap_or(DEFAULT_LIMIT); // unwrap_or: optional param; absent, the default tail length
         let persona = uuid::Uuid::parse_str(p.persona_id.as_str())
             .map_err(|_| CommandError::Arguments("persona_id must be a UUID".into()))?;
         let dir = crate::persona::recorder::fixture_dir(super::prompt_capture::FIXTURE_DIR)

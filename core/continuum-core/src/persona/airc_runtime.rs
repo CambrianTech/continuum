@@ -275,9 +275,9 @@ fn persona_identity_card(
         role: card
             .role
             .map(|r| r.as_str().to_string())
-            .unwrap_or_default(),
+            .unwrap_or_default(), // unwrap_or: a seed with no role publishes an empty role, as the comment above says
         // The self-authored bio lives in the OPEN profile map; empty when unset.
-        bio: card.profile.get("bio").cloned().unwrap_or_default(),
+        bio: card.profile.get("bio").cloned().unwrap_or_default(), // unwrap_or: an unset bio is published empty
         integrations,
         // `status` (away) and `fingerprint` (pubkey-derived, computed by airc
         // tooling) are not authored here — Default leaves them empty.
@@ -369,11 +369,24 @@ impl PersonaAircRuntime {
         // Migration: refuse to use the pre-Slice-4 layout. Hard-error
         // with the exact `mv` command per [[no-fallbacks-ever]].
         if let Some(legacy) = crate::context::legacy_home_path(continuum_root, kind, &agent_name) {
-            if tokio::fs::try_exists(&legacy).await.unwrap_or(false) {
+            // An unreadable legacy path is logged and treated as absent (the
+            // same outcome as before), never a panic or a silent default.
+            let legacy_present = match tokio::fs::try_exists(&legacy).await {
+                Ok(present) => present,
+                Err(e) => {
+                    tracing::warn!(
+                        legacy = %legacy.display(),
+                        error = %e,
+                        "could not stat the pre-Slice-4 citizen home; treating it as absent"
+                    );
+                    false
+                }
+            };
+            if legacy_present {
                 let new_parent = home
                     .parent()
                     .map(|p| p.to_path_buf())
-                    .unwrap_or_else(|| home.clone());
+                    .unwrap_or_else(|| home.clone()); // unwrap_or: a parentless home is its own container
                 return Err(PersonaAircRuntimeError::LegacyLayoutDetected {
                     legacy,
                     new: home.clone(),
@@ -556,7 +569,7 @@ impl PersonaAircRuntime {
         let seed_path = home
             .parent()
             .map(|p| p.join("seed.json"))
-            .unwrap_or_else(|| home.join("seed.json"));
+            .unwrap_or_else(|| home.join("seed.json")); // unwrap_or: a parentless home holds its own seed
         match crate::persona::seed::read_seed(&seed_path).await {
             Ok(seed) => {
                 let identity = persona_identity_card(&seed.card(), kind_label);
@@ -785,7 +798,7 @@ impl PersonaAircRuntime {
                                     agent_name = %hb_name,
                                     idle = %idle
                                         .map(|ms| ms.to_string())
-                                        .unwrap_or_else(|| "never-thought".to_string()),
+                                        .unwrap_or_else(|| "never-thought".to_string()), // unwrap_or: no thought yet is a word, never a number
                                     ttl_ms = crate::modules::work::DEFAULT_CLAIM_TTL_MS,
                                     "no cognition within one lease-length — renewals \
                                      DENIED from here until she thinks again; holds \

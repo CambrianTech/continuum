@@ -334,7 +334,20 @@ async fn scan_personas_dir(
                 source,
             })?
     {
-        if !entry.file_type().await.map(|t| t.is_dir()).unwrap_or(false) {
+        let file_type = match entry.file_type().await {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                // An entry whose type cannot be read is not a persona home we can
+                // resume; skipped, but said aloud rather than read as "not a dir".
+                tracing::warn!(
+                    path = %entry.path().display(),
+                    %error,
+                    "persona home scan: entry type unreadable — skipped"
+                );
+                continue;
+            }
+        };
+        if !file_type.is_dir() {
             // Each direct child of personas/ should be a persona
             // directory; non-dir entries (stray file, .DS_Store, etc.)
             // are operator artifacts, silently ignored.

@@ -129,7 +129,7 @@ pub fn clean_and_validate(
     let gate = validation
         .gate_failed
         .clone()
-        .unwrap_or_else(|| "unknown".to_string());
+        .unwrap_or_else(|| "unknown".to_string()); // unwrap_or: a failed validation that named no gate renders as "unknown"
     let reason = match gate.as_str() {
         "garbage" => format!(
             "Garbage output: {:?} - {}",

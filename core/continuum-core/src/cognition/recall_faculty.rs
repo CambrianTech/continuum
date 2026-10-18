@@ -165,7 +165,7 @@ fn focused_query(world_state: &str) -> &str {
         .map(str::trim)
         .filter(|l| !l.is_empty() && (!l.starts_with('[') || l.starts_with("[t=")))
         .last()
-        .unwrap_or(world_state.trim());
+        .unwrap_or(world_state.trim()); // unwrap_or: no content line = the whole state is the query
     if let Some(rest) = line.strip_prefix("[t=") {
         if let Some(close) = rest.find("] ") {
             return rest[close + 2..].trim();
@@ -353,7 +353,7 @@ fn strip_action_stamp(entry: &str) -> &str {
     entry
         .strip_prefix("[action #")
         .and_then(|rest| rest.find("] ").map(|i| &rest[i + 2..]))
-        .unwrap_or(entry)
+        .unwrap_or(entry) // unwrap_or: no action stamp = the entry is already the body
         .trim()
 }
 
@@ -483,7 +483,7 @@ impl Faculty for RecallFaculty {
                         })
                         .collect();
                 let ranker: Arc<dyn crate::cognition::recall_ranker::RecallRanker> =
-                    self.ranker.clone().unwrap_or_else(|| {
+                    self.ranker.clone().unwrap_or_else(|| { // unwrap_or: no injected ranker = build the default focus-gated one
                         // The significance bar comes from the focus junction:
                         // σ(focus), anchored so NEUTRAL == the conventional 3σ.
                         let mut r = crate::cognition::recall_ranker::SignificanceRanker::new(
@@ -495,12 +495,8 @@ impl Faculty for RecallFaculty {
                         // the resting setpoint; no state is created for her).
                         let scalar = crate::persona::focus::registry()
                             .get(&self.persona_id)
-                            .map(|h| {
-                                h.lock()
-                                    .expect("focus state mutex poisoned by a prior panic")
-                                    .focus()
-                            })
-                            .unwrap_or(crate::persona::focus::RESTING_FOCUS);
+                            .map(|h| h.lock().focus())
+                            .unwrap_or(crate::persona::focus::RESTING_FOCUS); // unwrap_or: she never touched focus = the resting setpoint, by design
                         r.sigma = self.focus_policy.recall_sigma(scalar);
                         Arc::new(r)
                     });
@@ -520,7 +516,7 @@ impl Faculty for RecallFaculty {
                         (v.score, engram, salience, v.passes, v.attention_bid)
                     })
                     .collect();
-                s.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+                s.sort_by(|a, b| b.0.total_cmp(&a.0));
                 s
             }
             None => candidates
@@ -614,7 +610,7 @@ impl Faculty for RecallFaculty {
                     .char_indices()
                     .nth(BURST_DEDUP_HEAD_CHARS)
                     .map(|(i, _)| i)
-                    .unwrap_or(body.len());
+                    .unwrap_or(body.len()); // unwrap_or: body shorter than the head = the whole body is the head
                 !ws.world_state.contains(&body[..head_end])
             });
         }
@@ -644,8 +640,8 @@ impl Faculty for RecallFaculty {
             query = %focused_query(&ws.world_state).chars().take(90).collect::<String>(),
             embedder = self.embedder.is_some(),
             relevance_weight = self.relevance_weight,
-            null_mean = null.map(|(m, _)| m).unwrap_or(f32::NAN),
-            null_std = null.map(|(_, s)| s).unwrap_or(f32::NAN),
+            null_mean = null.map(|(m, _)| m),
+            null_std = null.map(|(_, s)| s),
             surfaced = %scored
                 .iter()
                 .map(|(blended, e, sal, _)| format!(

@@ -310,6 +310,9 @@ impl DomainClassifier {
         let mut best_domain = self.fallback_domain.clone();
         let mut best_score: f32 = 0.0;
         let mut best_adapter: Option<String> = None;
+        // The winning domain's vocabulary size, captured with the win so the
+        // confidence curve never re-looks-up a key (it is only read when a win exists).
+        let mut best_vocab_size: f32 = 0.0;
 
         for (domain, vocab) in &self.domains {
             if vocab.keywords.is_empty() {
@@ -349,20 +352,14 @@ impl DomainClassifier {
                 best_score = score;
                 best_domain = domain.clone();
                 best_adapter = vocab.adapter_name.clone();
+                best_vocab_size = vocab_size;
             }
         }
 
         // Confidence: sigmoid-like curve on raw match count
         // 0 matches = 0.0, 3 matches = ~0.5, 8+ matches = ~0.9
         let confidence = if best_score > 0.0 {
-            let raw_matches = best_score
-                * (1.0
-                    + (self
-                        .domains
-                        .get(&best_domain)
-                        .map(|v| v.keywords.len() as f32)
-                        .unwrap_or(1.0))
-                    .sqrt());
+            let raw_matches = best_score * (1.0 + best_vocab_size.sqrt());
             (1.0 - (-0.3 * raw_matches).exp()).min(1.0)
         } else {
             0.0

@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::persona::{load_catalog, PersonaCatalogEntry};
+use crate::sdk_codegen::CommandError;
 
 /// Params for `persona/catalog` — none (the whole catalog is returned).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS, schemars::JsonSchema)]
@@ -41,7 +42,9 @@ crate::action_command! {
     params: PersonaCatalogParams,
     output: PersonaCatalogResult,
     run(_this, _ctx, _p) => {
-        Ok(PersonaCatalogResult { entries: load_catalog() })
+        let entries = load_catalog()
+            .map_err(|e| CommandError::Internal(format!("persona catalog.json failed to parse: {e}")))?;
+        Ok(PersonaCatalogResult { entries })
     }
 }
 

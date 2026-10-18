@@ -39,7 +39,8 @@ use crate::ai::adapter::InferenceDevice;
 use crate::ai::types::{EmbeddingInput, EmbeddingRequest, EmbeddingResponse};
 use crate::modules::ai_provider::global_registry;
 use serde::{Deserialize, Serialize};
-use std::sync::{LazyLock, Mutex};
+use parking_lot::Mutex;
+use std::sync::LazyLock;
 use ts_rs::TS;
 
 /// Default similarity threshold for `semantic_search_tools` — results
@@ -283,7 +284,7 @@ pub async fn embed_tools(
     let model = request
         .model
         .clone()
-        .unwrap_or_else(|| TOOL_EMBEDDING_MODEL.to_string());
+        .unwrap_or_else(|| TOOL_EMBEDDING_MODEL.to_string()); // unwrap_or: model is an optional request override
 
     let inputs: Vec<String> = request
         .tools
@@ -333,9 +334,7 @@ pub async fn embed_tools(
         .collect();
 
     {
-        let mut cache = TOOL_EMBEDDING_CACHE
-            .lock()
-            .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+        let mut cache = TOOL_EMBEDDING_CACHE.lock();
         *cache = Some(ToolEmbeddingCache {
             embeddings: embeddings.clone(),
             descriptions: request.tools.clone(),
@@ -367,9 +366,7 @@ pub async fn semantic_search_tools(
     request: SemanticSearchToolsRequest,
 ) -> Result<Vec<SemanticSearchResult>, ToolEmbeddingError> {
     let (cached_embeddings, cached_descriptions, cache_model) = {
-        let cache = TOOL_EMBEDDING_CACHE
-            .lock()
-            .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+        let cache = TOOL_EMBEDDING_CACHE.lock();
         let entry = cache.as_ref().ok_or(ToolEmbeddingError::CacheEmpty)?;
         (
             entry.embeddings.clone(),
@@ -382,9 +379,9 @@ pub async fn semantic_search_tools(
     // — but ALWAYS embed the query through the same path. Passing a
     // different model would compute cosine in an alien embedding
     // space; refuse silent mixing.
-    let model = request.model.clone().unwrap_or(cache_model);
-    let threshold = request.threshold.unwrap_or(SIMILARITY_THRESHOLD);
-    let limit = request.limit.unwrap_or(DEFAULT_SEARCH_LIMIT) as usize;
+    let model = request.model.clone().unwrap_or(cache_model); // unwrap_or: absent override = the cache's own model (same space)
+    let threshold = request.threshold.unwrap_or(SIMILARITY_THRESHOLD); // unwrap_or: optional request field, documented default
+    let limit = request.limit.unwrap_or(DEFAULT_SEARCH_LIMIT) as usize; // unwrap_or: optional request field, documented default
 
     let registry_arc = global_registry();
     let registry = registry_arc.read().await;
@@ -428,11 +425,7 @@ pub async fn semantic_search_tools(
         })
         .collect();
 
-    results.sort_by(|a, b| {
-        b.similarity
-            .partial_cmp(&a.similarity)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    results.sort_by(|a, b| b.similarity.total_cmp(&a.similarity));
     results.truncate(limit);
     Ok(results)
 }
@@ -441,9 +434,7 @@ pub async fn semantic_search_tools(
 /// rebuild via `embed_tools`, never silently clear.
 #[cfg(test)]
 pub fn _clear_cache_for_tests() {
-    let mut cache = TOOL_EMBEDDING_CACHE
-        .lock()
-        .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+    let mut cache = TOOL_EMBEDDING_CACHE.lock();
     *cache = None;
 }
 
@@ -456,9 +447,7 @@ pub fn _install_cache_for_tests(
     descriptions: Vec<ToolDescription>,
     model: String,
 ) {
-    let mut cache = TOOL_EMBEDDING_CACHE
-        .lock()
-        .expect("TOOL_EMBEDDING_CACHE mutex poisoned");
+    let mut cache = TOOL_EMBEDDING_CACHE.lock();
     *cache = Some(ToolEmbeddingCache {
         embeddings,
         descriptions,
@@ -705,7 +694,7 @@ mod tests {
         );
         // Read it back to confirm install
         let snapshot = {
-            let guard = TOOL_EMBEDDING_CACHE.lock().unwrap();
+            let guard = TOOL_EMBEDDING_CACHE.lock();
             guard.clone()
         };
         assert!(snapshot.is_some());
