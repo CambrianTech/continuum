@@ -62,7 +62,7 @@ pub(crate) fn digest(bytes: &[u8]) -> String {
 pub(crate) fn entity_digest<T: Serialize>(value: &T) -> Result<String, String> {
     // Only this digest is retained in attribution, never another copy of the
     // private staged payload. The verdict and wall use their original raw bytes.
-    serde_json::to_vec(value)
+    serde_json::to_vec(value) // Canonical bytes for the persisted attribution's content digest.
         .map(|bytes| digest(&bytes))
         .map_err(|e| e.to_string())
 }
