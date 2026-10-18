@@ -201,11 +201,13 @@ mod tests {
     /// driven), not an iteration counter in the agentic sense.
     struct ActThenSpeak {
         responded_through: std::sync::atomic::AtomicU64,
+        admission_open: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
     impl ActThenSpeak {
         fn new() -> Self {
             Self {
                 responded_through: std::sync::atomic::AtomicU64::new(0),
+                admission_open: None,
             }
         }
     }
@@ -230,6 +232,10 @@ mod tests {
             true
         }
         async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+            if self.admission_open.as_ref().is_some_and(|gate| !gate.load(std::sync::atomic::Ordering::SeqCst)) {
+                return Some(Contribution::deliberation_fault("lane starved before dispatch"));
+            }
+
             use std::sync::atomic::Ordering;
             let latest = latest_action_seq(&ws.perceived());
             if latest > self.responded_through.load(Ordering::Relaxed) {
@@ -930,6 +936,83 @@ mod tests {
         assert_eq!(outcome.acts, 1, "acted exactly once before settling");
         assert_eq!(outcome.spoken.as_deref(), Some("the answer is 4"));
         assert!(matches!(outcome.decision, Decision::Speak { .. }));
+    }
+
+    // Regression 2e3f0eab: admission refusal must retain the original directed
+    // input, even when a newer directed input arrives before the admitted retry.
+    #[tokio::test]
+    async fn starved_priority_input_survives_until_dispatch_without_replaying_actions() {
+        use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
+        use crate::persona::scripted_conversation::ScriptedConversation;
+        use crate::persona::wake_backlog::PendingInput;
+        use crate::cognition::workspace::{Burst, TurnAttention};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut faculty = ActThenSpeak::new();
+        faculty.admission_open = Some(Arc::clone(&gate));
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Arc::new(Mutex::new(None)),
+            result_content: "4".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(8));
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>, Arc::new(faculty)],
+            Arc::new(SalienceArbiter), 8,
+        ).with_acting(body_with_wm(exec.clone(), admission(), wm));
+        let original = IncomingMessage {
+            event_id: Uuid::new_v4(), lamport: 10, peer_id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(), text: "Asha, inspect this exact input".into(), work: None,
+            media: vec![crate::persona::channel_items::MediaItemRequest {
+                kind: "image".into(), mime_type: Some("image/png".into()),
+                blob_hash: Some("sha256:retained-input".into()), url: None,
+                description: Some("original attachment".into()),
+            }],
+        };
+        let mut newer = original.clone();
+        newer.event_id = Uuid::new_v4();
+        newer.room_id = Uuid::new_v4();
+        newer.lamport += 1;
+        newer.text = "Asha, a newer directed request".into();
+        let mut conversation = ScriptedConversation::new();
+        conversation.prime().await.unwrap();
+        let mut pending = PendingInput::default();
+        let cause = Some(Uuid::new_v4());
+        let framing = TurnFraming::message(TurnAttention::for_message(true, false));
+        let burst = |message: &IncomingMessage| Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(message.room_id).unwrap(),
+            message.render_content(),
+        );
+        let refused = drive_to_settle_with_input(&cycle, burst(&original), 8, framing, &mut conversation).await;
+        assert!(refused.deferred_before_dispatch);
+        assert_eq!(refused.acts, 0);
+        assert!(exec.seen_context.lock().unwrap().is_none());
+        let (step, _, _) = SettleStep::from_settled(refused);
+        pending.settle(&original, cause, true, &step);
+        conversation.event_feed().push(Ok(Some(newer.clone())));
+        assert_eq!(pending.message(), Some(&original));
+        assert_eq!(pending.wake_engram(), cause);
+
+        // A second failed admission neither consumes nor replaces the original.
+        let retried = pending.message().unwrap().clone();
+        let refused_again = drive_to_settle_with_input(&cycle, burst(&retried), 8, framing, &mut conversation).await;
+        let (step, _, _) = SettleStep::from_settled(refused_again);
+        pending.settle(&retried, cause, true, &step);
+        assert_eq!(pending.message(), Some(&original));
+        assert!(conversation.perceive_ready().await.unwrap().iter().any(|m| **m == newer));
+
+        gate.store(true, Ordering::SeqCst);
+        let completed = drive_to_settle_with_input(&cycle, burst(pending.message().unwrap()), 8, framing, &mut conversation).await;
+        assert!(!completed.deferred_before_dispatch);
+        assert_eq!(completed.acts, 1, "only the admitted retry executes an action");
+        assert!(completed.room_updates.iter().any(|m| **m == newer));
+        assert_eq!(completed.room, original.room_id);
+        let (step, _, _) = SettleStep::from_settled(completed);
+        assert!(matches!(&step, SettleStep::Spoke(_)));
+        pending.settle(&original, cause, true, &step);
+        assert!(pending.message().is_none(), "completed input is not replayed");
+        assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
+        assert!(conversation.next_message().await.unwrap().is_none());
     }
 
     // what this catches: THE SETTLE ARTERY (the dominant SWE-bench killer, glass-boxed

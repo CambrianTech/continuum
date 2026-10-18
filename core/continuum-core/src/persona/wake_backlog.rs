@@ -18,6 +18,49 @@ use uuid::Uuid;
 
 use super::service_loop::IncomingMessage;
 
+/// One already-admitted priority input waiting for its first model dispatch.
+/// This is loop-local custody, not durable replay or a second inbox. New arrivals
+/// remain with PersonaConversation while the ordinary beat retries this input.
+#[derive(Default)]
+pub(crate) struct PendingInput {
+    input: Option<(IncomingMessage, Option<Uuid>)>,
+}
+
+impl PendingInput {
+    pub(crate) fn message(&self) -> Option<&IncomingMessage> {
+        self.input.as_ref().map(|(message, _)| message)
+    }
+
+    /// Retry on the caller's existing beat without consuming the owned input.
+    /// Cancellation, early gates and a second admission refusal leave it intact.
+    pub(crate) async fn at_next_beat(&self, beat: std::time::Duration) -> Option<IncomingMessage> {
+        tokio::time::sleep(beat).await;
+        self.message().cloned()
+    }
+
+    pub(crate) fn wake_engram(&self) -> Option<Uuid> {
+        self.input.as_ref().and_then(|(_, engram)| *engram)
+    }
+
+    pub(crate) fn settle(
+        &mut self,
+        message: &IncomingMessage,
+        wake_engram: Option<Uuid>,
+        priority: bool,
+        step: &crate::cognition::act_observe::SettleStep,
+    ) {
+        if matches!(step, crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch) {
+            // Ambient input keeps its existing transcript/re-perception policy.
+            // Retaining it here would prevent a newer directed input waking us.
+            if priority {
+                self.input = Some((message.clone(), wake_engram));
+            }
+        } else {
+            self.input = None;
+        }
+    }
+}
+
 /// Event-id ring for replay/redelivery dedupe at the loop head. Small: the
 /// pump already dedupes the store catch-up; this catches re-open replays.
 pub(crate) struct SeenIds {
@@ -128,6 +171,38 @@ pub(crate) fn publish_heard(persona: Uuid, msg: &IncomingMessage) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Regression 2e3f0eab: the actual wake owner waits the existing cadence,
+    // retains input across cancellation/new arrivals, and clears only on handling.
+    #[tokio::test(start_paused = true)]
+    async fn deferred_attention_waits_without_consuming_the_trigger_or_new_input() {
+        use crate::cognition::act_observe::SettleStep;
+        use crate::persona::scripted_conversation::ScriptedConversation;
+        use crate::persona::service_loop::PersonaConversation;
+        use std::time::Duration;
+        let original = line(1, 1, "original directed request");
+        let newer = line(2, 2, "newer directed request");
+        let cause = Some(Uuid::new_v4());
+        let mut pending = PendingInput::default();
+        pending.settle(&original, cause, true, &SettleStep::DeferredBeforeDispatch);
+        let mut conversation = ScriptedConversation::new().with_events(vec![Ok(Some(newer.clone()))]);
+        conversation.prime().await.unwrap();
+        let beat = Duration::from_secs(3);
+        assert!(tokio::time::timeout(beat / 2, pending.at_next_beat(beat)).await.is_err());
+        assert_eq!(pending.message(), Some(&original), "cancelled wake retains custody");
+        let retry = pending.at_next_beat(beat).await.unwrap();
+        assert_eq!(retry, original);
+        assert_eq!(pending.wake_engram(), cause);
+        assert_eq!(conversation.perceive_ready().await.unwrap().front().map(|m| m.as_ref()), Some(&newer));
+        pending.settle(&retry, cause, true, &SettleStep::DeferredBeforeDispatch);
+        assert_eq!(pending.message(), Some(&original), "another refusal is not completion");
+        pending.settle(&retry, cause, true, &SettleStep::Passed { reason: Some("chosen silence".into()) });
+        assert!(pending.at_next_beat(beat).await.is_none(), "a genuine Pass is terminal");
+        assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
+        assert!(conversation.next_message().await.unwrap().is_none());
+        pending.settle(&original, cause, false, &SettleStep::DeferredBeforeDispatch);
+        assert!(pending.message().is_none(), "ambient policy does not hold off directed arrivals");
+    }
 
     // what this catches (2026-09-13): a teammate's 💭/⚙ receipt admitting a turn — every
     // holder in a five-coder room took a lane per teammate trace and re-oriented instead
