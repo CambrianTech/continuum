@@ -2331,6 +2331,7 @@ fn result_handles_at(
                     &wm.recent_results,
                     &wm.evicted_pointers,
                     &wm.receipt_children,
+                    &wm.open_views,
                 )
             })
             .unwrap_or_default(),

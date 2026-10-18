@@ -333,6 +333,10 @@ pub struct WorkingMemory {
     /// the block drops to the trail head (still in `entries`, still in episodic memory,
     /// still re-fetchable). 0 = nothing settled yet → the current result is active.
     active_from_seq: AtomicU64,
+    /// The large files and saved outputs she is paging through, and which lines of each she
+    /// has read: her cursors, kept here because the history that carried each page is the
+    /// first thing a tight window's fit drops ([`super::open_views`]).
+    open_views: Mutex<super::open_views::OpenViews>,
 }
 
 /// The PROVENANCE of one working-memory entry — the type that makes receipts,
@@ -483,6 +487,11 @@ pub struct VolatileSnapshot {
     /// written before this field.
     #[serde(default)]
     pub receipt_children: BTreeMap<String, Vec<String>>,
+    /// Her open views ([`super::open_views`]): what she has read of each large file and saved
+    /// output survives a restart with the rest of her working memory. Empty on snapshots
+    /// written before this field.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_views: Vec<super::open_views::OpenView>,
 }
 
 impl VolatileSnapshot {
@@ -535,6 +544,7 @@ pub(crate) fn reachable_handles<'a>(
     recent_results: impl IntoIterator<Item = &'a (u64, Option<Uuid>, String, String, Option<String>)>,
     evicted_pointers: impl IntoIterator<Item = &'a (String, String)>,
     receipt_children: &BTreeMap<String, Vec<String>>,
+    open_views: &[super::open_views::OpenView],
 ) -> HashSet<String> {
     let mut roots: Vec<String> = recent_results
         .into_iter()
@@ -542,6 +552,8 @@ pub(crate) fn reachable_handles<'a>(
         .collect();
     roots.extend(evicted_pointers.into_iter().map(|(_, handle)| handle.clone()));
     let mut reachable: HashSet<String> = HashSet::new();
+    // An open view names the saved whole it pages: that handle must still resolve.
+    reachable.extend(super::open_views::view_handles(open_views).map(str::to_owned));
     for root in roots {
         if let Some(children) = receipt_children.get(&root) {
             reachable.extend(children.iter().cloned());
@@ -654,6 +666,7 @@ impl WorkingMemory {
             evicted_pointer_scopes: Mutex::new(VecDeque::new()),
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
+            open_views: Mutex::new(Default::default()),
         }
     }
 
@@ -851,6 +864,9 @@ impl WorkingMemory {
         }
         let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
         let scope = self.scope.lock().clone();
+        // Her cursors over large data move with the acts that paged it (published as live
+        // handles below, with the ring's).
+        self.open_views.lock().note_acts(&acts, seq, scope.as_deref());
         // Keep the LATEST result in FULL so the mind can work with it next turn (count a
         // file, read a screenshot description, scan a log). Overwrites the prior latest —
         // older acts survive only as heads in the trail below.
@@ -1199,6 +1215,7 @@ impl WorkingMemory {
             evicted_pointers,
             evicted_pointer_scopes,
             receipt_children: self.receipt_children.lock().clone(),
+            open_views: self.open_views.lock().saved(),
         }
     }
 
@@ -1277,6 +1294,7 @@ impl WorkingMemory {
             scopes.resize(ptrs.len(), None);
         }
         *self.receipt_children.lock() = snap.receipt_children;
+        *self.open_views.lock() = super::open_views::OpenViews::from_saved(snap.open_views);
         // Against the REAL window only; an unknown one folds nothing (the rule lives in
         // `collapse_results_over_cap`): a floor here folded results the served window holds,
         // cap 1,536 measured at restore on the 5090, card df0035bf.
@@ -1605,6 +1623,14 @@ impl WorkingMemory {
     /// llama's --cache-reuse chunk-shifting re-aligns the surviving suffix
     /// instead of re-ingesting it. First message carries the banner so the
     /// semantics of the ledger stay stated.
+    /// Her open views as one compact block, one line per view visible from where her hands
+    /// stand ([`super::open_views::OpenViews::render`]). Rendered as a required notice
+    /// (`perception_facts::OpenViews`), so the history fit never drops it.
+    pub fn open_views_block(&self) -> Option<String> {
+        let scope = self.scope.lock().clone();
+        self.open_views.lock().render(scope.as_deref())
+    }
+
     pub fn recent_results_messages(&self) -> Vec<String> {
         self.recent_results_with_pointers().into_iter().map(|(body, _)| body).collect()
     }
@@ -1759,7 +1785,8 @@ impl WorkingMemory {
         let retained_sequences: HashSet<u64> = rr.iter().map(|(seq, ..)| *seq).collect();
         scopes.retain(|seq, _|
             Some(*seq) == latest || retained_sequences.contains(seq));
-        let handles = reachable_handles(rr.iter(), ptrs.iter(), &children);
+        let views = self.open_views.lock().saved();
+        let handles = reachable_handles(rr.iter(), ptrs.iter(), &children, &views);
         drop((rr, scopes, ptrs, children));
         crate::cognition::tool_executor::spill::publish_live_handles(self.instance, handles);
     }
@@ -2498,7 +2525,7 @@ mod tests {
         assert!(live(&receipt) && children.iter().all(|c| live(c)), "the pointer holds the receipt and its children");
 
         let snapshot = wm.snapshot();
-        let checkpointed = reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children);
+        let checkpointed = reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children, &snapshot.open_views);
         assert!(children.iter().all(|c| checkpointed.contains(c)), "the checkpoint names each child");
         // Through the checkpoint's own encoding, not just in memory.
         let written = serde_json::to_string(&snapshot).expect("test: encode");
@@ -2992,6 +3019,7 @@ mod tests {
             evicted_pointers: Vec::new(),
             evicted_pointer_scopes: Vec::new(),
             receipt_children: Default::default(),
+            open_views: Vec::new(),
         });
         assert!(quiet.recent().is_empty(), "an empty snapshot restores an empty window");
         let q = quiet.pinned_facts();
@@ -3962,5 +3990,133 @@ mod tests {
         wm.end_of_work_turn();
         assert!(wm.pinned_facts().is_empty(), "and leaves after it");
         assert!(!wm.notices().iter().any(|text| text.contains("[released]")));
+    }
+
+    /// Open views: paging cursors over a large file that survive the history fit.
+    mod open_views {
+        use super::*;
+        use crate::ai::types::{ResultCustody, ToolCall, ToolResult};
+        use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
+
+        const PATH: &str = "core/source-hygiene/src/lib.rs";
+
+        /// A `code/read` of `start..=end` of a `total`-line file, as the executor renders it
+        /// (`spill::result_text` over the command's `ReadResult`). `stored_head` = how many
+        /// lines of that text she was shown when it was saved whole as `handle`.
+        fn read(start: u32, end: u32, total: u32, stored_head: Option<(usize, &str)>) -> Observation {
+            let body = (start..=end).map(|n| format!("{n:>6} | line {n}")).collect::<Vec<_>>().join("\n");
+            let value = serde_json::to_value(crate::code::types::ReadResult {
+                success: true,
+                content: Some(body),
+                file_path: PATH.into(),
+                total_lines: total,
+                lines_returned: end - start + 1,
+                start_line: start,
+                end_line: end,
+                size_bytes: 22_000,
+                error: None,
+            })
+            .expect("test: encode");
+            let full = crate::cognition::tool_executor::spill::result_text(&value);
+            let (content, custody) = match stored_head {
+                None => (full, ResultCustody::Whole { handle: "small".into() }),
+                Some((lines, handle)) => {
+                    let head: Vec<&str> = full.lines().take(lines).collect();
+                    (
+                        format!("[this result is saved whole as output `{handle}`]\n{}\n[the rest is not shown]", head.join("\n")),
+                        ResultCustody::Pointer { handle: handle.into() },
+                    )
+                }
+            };
+            Observation {
+                call: ToolCall {
+                    id: format!("read-{start}"),
+                    name: "code/read".into(),
+                    input: serde_json::json!({ "file_path": PATH, "start_line": start, "end_line": end }),
+                },
+                output: ToolOutput {
+                    image: None,
+                    additional_images: None,
+                    result: ToolResult { tool_use_id: format!("read-{start}"), content, is_error: None, custody },
+                    verb: ToolVerb::classify("code/read"),
+                    paths: Vec::new(),
+                    verdict: Default::default(),
+                },
+                status: ActStatus::Executed,
+            }
+        }
+
+        fn record(wm: &WorkingMemory, act: Observation) {
+            wm.record_receipt_typed(&[act], "[action] code/read", None, saved("open-view-receipt"));
+        }
+
+        // what this catches: a read's range living only in conversation history, which the
+        // fit drops first (Benchy, the M5, 2026-10-17: re-read lib.rs from line 1 every turn
+        // at 66k tokens asked against a 34,560 window). The receipt itself must open a view
+        // with the exact range the read showed and the file's size, and the rendered block
+        // must say what is still unread.
+        #[test]
+        fn a_code_read_opens_a_view_with_the_range_it_showed() {
+            let wm = WorkingMemory::new(3);
+            record(&wm, read(1, 250, 498, None));
+            let views = wm.snapshot().open_views;
+            assert_eq!(views.len(), 1, "{views:?}");
+            assert_eq!(views[0].subject, crate::cognition::open_views::ViewSubject::File { path: PATH.into() });
+            assert_eq!((views[0].total_lines, views[0].seen.clone(), views[0].handle.clone()), (Some(498), vec![(1, 250)], None));
+            let block = wm.open_views_block().expect("an open view renders");
+            assert!(block.contains(&format!("- {PATH}, 498 lines: read 1-250; not yet read 251-498")), "{block}");
+        }
+
+        // what this catches: a second, overlapping page of the same file opening a second
+        // view or listing both ranges side by side, so the cursor grows with every page
+        // instead of saying how far she has got. Overlapping and touching ranges merge; the
+        // stored read's cursor comes from the lines she was SHOWN (its head), not from the
+        // range she asked for, and it names the handle the rest is saved under.
+        #[test]
+        fn overlapping_reads_merge_and_a_stored_read_counts_only_its_shown_head() {
+            let wm = WorkingMemory::new(3);
+            record(&wm, read(1, 250, 498, None));
+            record(&wm, read(200, 300, 498, None));
+            assert_eq!(wm.snapshot().open_views[0].seen, vec![(1, 300)], "1-250 and 200-300 are one range");
+            // Asked for 301-498, saved whole, shown the pointer, the header and 120 numbered lines.
+            record(&wm, read(301, 498, 498, Some((121, "abc123"))));
+            let views = wm.snapshot().open_views;
+            assert_eq!(views.len(), 1, "one file is one view: {views:?}");
+            assert_eq!(views[0].seen, vec![(1, 420)], "only 301-420 were shown");
+            assert_eq!(views[0].handle.as_deref(), Some("abc123"));
+            let block = wm.open_views_block().expect("renders");
+            assert!(block.contains("read 1-420; not yet read 421-498 (that whole read is saved as output `abc123`)"), "{block}");
+            record(&wm, read(421, 498, 498, None));
+            let block = wm.open_views_block().expect("renders");
+            assert!(block.contains(&format!("- {PATH}, 498 lines: read 1-498 (all of it)")), "{block}");
+        }
+
+        // what this catches: the cursor dying with the process. A restart that forgets what
+        // she has read sends her back to line 1 exactly as the dropped history did; the view
+        // must ride the checkpoint's own encoding, render byte-identically after restore
+        // (a stable block keeps the KV prefix), and keep the handle it names resolvable.
+        #[test]
+        fn an_open_view_survives_checkpoint_and_restore() {
+            let wm = WorkingMemory::new(3);
+            record(&wm, read(1, 120, 498, Some((121, "feedface00000001"))));
+            let before = wm.open_views_block().expect("renders");
+            let snapshot = wm.snapshot();
+            assert!(
+                reachable_handles(&snapshot.recent_results, &snapshot.evicted_pointers, &snapshot.receipt_children, &snapshot.open_views)
+                    .contains("feedface00000001"),
+                "the checkpoint keeps the view's saved read reachable"
+            );
+            let written = serde_json::to_string(&snapshot).expect("test: encode");
+            let read_back: VolatileSnapshot = serde_json::from_str(&written).expect("test: decode");
+            let restored = WorkingMemory::new(3);
+            restored.restore(read_back);
+            assert_eq!(restored.open_views_block().as_deref(), Some(before.as_str()));
+            assert!(before.contains(PATH) && before.contains("498 lines") && before.contains("read 1-120") && before.contains("`feedface00000001`"), "{before}");
+            // A checkpoint written before this field has no views and loads.
+            let legacy = written.replace(&format!(",\"open_views\":{}", serde_json::to_string(&snapshot.open_views).expect("test: encode")), "");
+            assert!(!legacy.contains("open_views"), "the field was stripped");
+            let legacy: VolatileSnapshot = serde_json::from_str(&legacy).expect("a pre-field checkpoint decodes");
+            assert!(legacy.open_views.is_empty());
+        }
     }
 }
