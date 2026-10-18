@@ -5,6 +5,8 @@
 //! can therefore be completed from the intent; no multi-row transaction is
 //! assumed. An interrupted provider call is never repeated on absence of proof.
 
+mod policy;
+
 use super::{BucketKey, PendingBatch, TrainingTriggerState};
 use std::sync::{atomic::Ordering, Arc};
 
@@ -194,6 +196,7 @@ pub(super) struct DurableStore {
     dispatches: OrmStore<DispatchIntent>,
     retirements: OrmStore<Retirement>,
     retry_decisions: OrmStore<RetryDecision>,
+    policy_corrections: OrmStore<policy::PolicyCorrection>,
     adapter: Arc<dyn StorageAdapter>,
 }
 
@@ -212,6 +215,7 @@ impl DurableStore {
             retry_decisions: OrmStore::new(adapter.clone())
                 .await
                 .map_err(|e| e.to_string())?,
+            policy_corrections: OrmStore::new(adapter.clone()).await.map_err(|e| e.to_string())?,
             adapter,
         })
     }
@@ -809,7 +813,7 @@ impl TrainingTriggerState {
                 if row.key() != *key {
                     return Err(format!("dispatch has a foreign submission {id}"));
                 }
-                append_batch(&mut progress.active_batch, id, row.batch)?;
+                append_batch(&mut progress.active_batch, id, store.effective_batch(&row).await?)?;
                 progress.active_index = index + 1;
                 remaining -= 1;
             }
@@ -834,7 +838,7 @@ impl TrainingTriggerState {
                 .as_ref()
                 .or_else(|| progress.cached_active.as_ref().map(|active| &active.intent));
             if !intent.is_some_and(|intent| intent.submission_ids.contains(&id)) {
-                append_batch(&mut progress.pending, id, row.batch)?;
+                append_batch(&mut progress.pending, id, store.effective_batch(&row).await?)?;
             }
             progress.pending_after = sequence;
         }
@@ -873,7 +877,7 @@ impl TrainingTriggerState {
             if row.key() != *key || row.is_pending || row.dispatch_id != Some(dispatch) {
                 return Err(format!("submission {id} does not belong to dispatch {dispatch}"));
             }
-            append_batch(&mut batch, *id, row.batch)?;
+            append_batch(&mut batch, *id, store.effective_batch(&row).await?)?;
         }
         let batch = batch.ok_or_else(|| format!("dispatch {dispatch} has no submitted examples"))?;
         Ok(batch.training_request(key.persona_id, &key.trait_kind, &key.base_model))
@@ -947,7 +951,7 @@ impl TrainingTriggerState {
             .await
             .map_err(|e| ("PersistenceFailed", e.to_string()))?
         {
-            if existing.key() != *key || !existing.batch.same_submission(&batch) {
+            if existing.key() != *key || !store.replay_matches(&existing, &batch).await.map_err(|e| ("RecoveryRequired", e))? {
                 return Err((
                     "SubmissionConflict",
                     format!("submission {id} already binds different content or policy"),
@@ -2436,8 +2440,8 @@ mod tests {
             base_model: key.base_model.clone(),
             submission_ids: vec![submission],
             phase: DispatchPhase::Dispatched {
-                handle: JobHandle { provider_id: "fixture".into(), provider_job_id: job.to_string(), local_id: job },
-                provider: "fixture".into(),
+                handle: JobHandle { provider_id: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(), provider_job_id: job.to_string(), local_id: job },
+                provider: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(),
             },
             is_active: false,
         };
@@ -2446,7 +2450,7 @@ mod tests {
         store.assign(&intent).await.unwrap();
         board.register(WatchedJob {
             trigger_dispatch_id: Some(dispatch),
-            handle: JobHandle { provider_id: "fixture".into(), provider_job_id: job.to_string(), local_id: job },
+            handle: JobHandle { provider_id: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(), provider_job_id: job.to_string(), local_id: job },
             persona_id: persona, persona_name: "test-p".into(), base_model: "synthetic".into(), trait_kind: "code".into(),
             eval_set: None, signature: None, decision: None,
         });
@@ -2478,8 +2482,8 @@ mod tests {
         let store = crashed.state.durable.require().unwrap();
         let mut broken = intent.clone();
         broken.phase = DispatchPhase::Dispatched {
-            handle: JobHandle { provider_id: "fixture".into(), provider_job_id: "wrong".into(), local_id: Uuid::new_v4() },
-            provider: "fixture".into(),
+            handle: JobHandle { provider_id: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(), provider_job_id: "wrong".into(), local_id: Uuid::new_v4() },
+            provider: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(),
         };
         store.dispatches.update(dispatch, &broken).await.unwrap();
         assert!(return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed).await.is_err(), "a usable request file cannot bypass a broken recorded dispatch");
@@ -2520,7 +2524,87 @@ mod tests {
         }
         assert!(matches!(return_parked_remainder(&next.state, &board, artifacts.path(), &completed).await.unwrap(), Remainder::AlreadyReturned));
         assert!(return_job(&next.state, &board, artifacts.path(), job).await.is_err(), "the full return of a completed job stays refused");
-        next.shutdown().await.unwrap();
+        if !explicit {
+            use crate::commands::training_trigger::policy_recover::{PolicyRecoverParams, ReturnPolicyEdge};
+            use crate::commands::training_trigger::submit::ReturnScope;
+            let returned_id = ReturnScope::Parked(&parked).chunk_id(job, 0);
+            let store = next.state.durable.require().unwrap();
+            let mut historical = store.submissions.find_by_id(returned_id).await.unwrap().unwrap();
+            // Reproduce the persisted old adapter-file return, without altering its examples.
+            historical.batch.lora = adapter_request.lora.clone();
+            historical.batch.schedule = adapter_request.schedule.clone();
+            store.submissions.update(returned_id, &historical).await.unwrap();
+            next.state.restore_pending_bucket(&key).await.unwrap();
+            let raw_before = serde_json::to_value(&historical.batch).unwrap();
+            let actor = Uuid::new_v4();
+            let mut correction = PolicyRecoverParams {
+                submission_id: returned_id, expected_batch_sha256: None,
+                edges: vec![ReturnPolicyEdge { dispatch_id: dispatch, job_id: job, parked: Some(parked.clone()), chunk_index: 0 }],
+                reason: "fixture: original producer policy was replaced by adapter defaults".into(), apply: false,
+            };
+            let mut explicit_source = original.clone();
+            explicit_source.batch.lora = Some(serde_json::from_value(serde_json::json!({"rank":4,"alpha":8,"dropout":0.0,"targetModules":["q_proj"]})).unwrap());
+            store.submissions.update(submission, &explicit_source).await.unwrap();
+            assert!(next.state.recover_return_policy(correction.clone(), actor).await.is_err(), "an explicit producer policy change is not adapter materialization");
+            store.submissions.update(submission, &original).await.unwrap();
+            let mut unknown_provider = intent.clone();
+            unknown_provider.phase = DispatchPhase::Dispatched {
+                handle: JobHandle { provider_id: "unknown-provider".into(), provider_job_id: job.to_string(), local_id: job },
+                provider: "unknown-provider".into(),
+            };
+            store.dispatches.update(dispatch, &unknown_provider).await.unwrap();
+            assert!(next.state.recover_return_policy(correction.clone(), actor).await.is_err(), "unknown providers cannot establish native default materialization");
+            store.dispatches.update(dispatch, &intent).await.unwrap();
+            let mut active = intent.clone();
+            active.is_active = true;
+            store.dispatches.update(dispatch, &active).await.unwrap();
+            assert!(next.state.recover_return_policy(correction.clone(), actor).await.is_err(), "an active dispatch prevents policy correction");
+            store.dispatches.update(dispatch, &intent).await.unwrap();
+            let inspected = next.state.recover_return_policy(correction.clone(), actor).await.unwrap();
+            assert!(!inspected.applied);
+            assert!(store.policy_corrections.find_by_id(returned_id).await.unwrap().is_none());
+            correction.apply = true;
+            correction.expected_batch_sha256 = Some("wrong digest".into());
+            assert!(next.state.recover_return_policy(correction.clone(), actor).await.is_err());
+            correction.expected_batch_sha256 = Some(inspected.batch_sha256.clone());
+            let mut wrong_job = correction.clone();
+            wrong_job.edges[0].job_id = Uuid::new_v4();
+            assert!(next.state.recover_return_policy(wrong_job, actor).await.is_err());
+            assert!(store.policy_corrections.find_by_id(returned_id).await.unwrap().is_none());
+            let applied = next.state.recover_return_policy(correction.clone(), actor).await.unwrap();
+            assert!(applied.applied && !applied.replayed);
+            let stored = store.submissions.find_by_id(returned_id).await.unwrap().unwrap();
+            assert_eq!(serde_json::to_value(&stored.batch).unwrap(), raw_before, "original accepted batch stays immutable");
+            let effective = store.effective_batch(&stored).await.unwrap();
+            assert!(effective.lora.is_none() && effective.schedule.is_none());
+            assert_eq!(serde_json::to_value(&effective.examples).unwrap(), serde_json::to_value(&stored.batch.examples).unwrap());
+            assert_eq!(next.state.bucket_example_count(persona, "code", "synthetic"), Some(13));
+            let raw_replay = next.state.accept(&key, Some(returned_id), stored.batch.clone()).await.unwrap();
+            let corrected_replay = next.state.accept(&key, Some(returned_id), effective.clone()).await.unwrap();
+            assert!(raw_replay.replayed && corrected_replay.replayed);
+            let mut altered = effective;
+            altered.examples[0].completion.push_str("changed");
+            assert!(next.state.accept(&key, Some(returned_id), altered).await.is_err());
+            for _ in 0..3 {
+                let id = Uuid::new_v4();
+                let mut incoming = stored.batch.clone();
+                incoming.lora = None; incoming.schedule = None;
+                incoming.examples = vec![ex("new graded example", "accepted")];
+                let accepted = next.state.accept(&key, Some(id), incoming.clone()).await.unwrap();
+                assert!(!accepted.replayed);
+                assert!(next.state.accept(&key, Some(id), incoming).await.unwrap().replayed);
+            }
+            assert_eq!(next.state.bucket_example_count(persona, "code", "synthetic"), Some(16));
+            next.shutdown().await.unwrap();
+            let (restarted, _exec) = build_runtime(store.adapter.clone(), false).await;
+            assert!(restarted.state.recover_return_policy(correction, actor).await.unwrap().replayed);
+            assert_eq!(restarted.state.bucket_example_count(persona, "code", "synthetic"), Some(16));
+            let retained = restarted.state.durable.require().unwrap().submissions.find_by_id(returned_id).await.unwrap().unwrap();
+            assert_eq!(serde_json::to_value(&retained.batch).unwrap(), raw_before);
+            restarted.shutdown().await.unwrap();
+        } else {
+            next.shutdown().await.unwrap();
+        }
         }
     }
 
