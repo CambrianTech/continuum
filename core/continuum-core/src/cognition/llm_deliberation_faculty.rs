@@ -557,6 +557,9 @@ pub struct LlmDeliberationFaculty {
     /// Credited from the engine's own count, the cap grows when reuse works and falls back
     /// to the latency target when it does not.
     cached_prefix_tokens: std::sync::atomic::AtomicUsize,
+    /// Ring results collapsed to their pointer for this resident; sticky while they stay in
+    /// the ring (`fit_messages`).
+    collapsed_results: parking_lot::Mutex<std::collections::HashSet<u64>>,
 }
 
 impl LlmDeliberationFaculty {
@@ -592,6 +595,7 @@ impl LlmDeliberationFaculty {
             decoding: relaxed_decoding(),
             working_set: None,
             cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
+            collapsed_results: parking_lot::Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -3795,18 +3799,66 @@ impl LlmDeliberationFaculty {
         // alternative. No second store or mutation of WM: custody stays with the
         // existing saved result, and only the fitted view changes. Unsaved results
         // never supply an alternative. Ordinary eviction still bounds this view.
+        //
+        // A collapse is STICKY and goes all at once (the M5, 2026-10-18: in 46% of the
+        // re-prefilled characters across 104 consecutive act pairs, the first changed byte
+        // was a ring result rewritten to its pointer, or back). Collapsing oldest-first
+        // "until it fits" moved with each act's budget, which swings with the size of the
+        // newest result: a result collapsed on one act came back whole on the next, and the
+        // collapse frontier crept one result per act through the middle of the ring,
+        // re-prefilling everything behind it every time. Now a result once collapsed stays
+        // collapsed while it remains in the ring, and when the budget forces a collapse,
+        // every collapsible result goes in that one rewrite, so the acts after it append.
         let mut history_tokens = Self::messages_cost(&prompt.history);
-        for (index, pointer) in std::mem::take(&mut prompt.result_pointers) {
-            let Some(message) = prompt.history.get_mut(index) else { continue };
+        let mut collapsed = self.collapsed_results.lock();
+        let identity = |pointer: &ChatMessage| {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            pointer.content_text().hash(&mut h);
+            h.finish()
+        };
+        let offered: Vec<(usize, ChatMessage, u64)> = std::mem::take(&mut prompt.result_pointers)
+            .into_iter()
+            .map(|(index, pointer)| {
+                let id = identity(&pointer);
+                (index, pointer, id)
+            })
+            .collect();
+        // Forget results that left the ring: the set never outgrows what is offered.
+        collapsed.retain(|id| offered.iter().any(|(_, _, o)| o == id));
+        let collapse = |history: &mut Vec<ChatMessage>, index: usize, pointer: ChatMessage, tokens: &mut usize| -> Option<ChatMessage> {
+            let message = history.get_mut(index)?;
             let old_cost = Self::message_cost(message);
             let pointer_cost = Self::message_cost(&pointer);
-            if history_tokens > history_budget && pointer_cost < old_cost {
-                history_tokens = history_tokens.saturating_sub(old_cost - pointer_cost);
-                *message = pointer;
+            if pointer_cost >= old_cost {
+                return Some(pointer);
+            }
+            *tokens = tokens.saturating_sub(old_cost - pointer_cost);
+            *message = pointer;
+            None
+        };
+        let mut open = Vec::new();
+        for (index, pointer, id) in offered {
+            if collapsed.contains(&id) {
+                if let Some(pointer) = collapse(&mut prompt.history, index, pointer, &mut history_tokens) {
+                    open.push((index, pointer, id));
+                }
             } else {
-                prompt.result_pointers.push((index, pointer));
+                open.push((index, pointer, id));
             }
         }
+        if history_tokens > history_budget {
+            for (index, pointer, id) in std::mem::take(&mut open) {
+                match collapse(&mut prompt.history, index, pointer, &mut history_tokens) {
+                    None => {
+                        collapsed.insert(id);
+                    }
+                    Some(pointer) => open.push((index, pointer, id)),
+                }
+            }
+        }
+        drop(collapsed);
+        prompt.result_pointers = open.into_iter().map(|(index, pointer, _)| (index, pointer)).collect();
         // Read BEFORE the history is borrowed for costing: what her own last move and its
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
@@ -8908,7 +8960,15 @@ mod tests {
             }
             let saved = crate::cognition::tool_executor::spill::resolve(persona, &handle).unwrap();
             assert_eq!(std::fs::read_to_string(saved).unwrap(), inventory);
-            // Fitting is a projection: a later roomy request still has the body.
+            // A collapse is sticky: a later roomy request keeps the pointer, so the ring's
+            // bytes do not flip back and re-prefill everything behind them (the M5,
+            // 2026-10-18: 46% of re-prefilled characters began at such a flip). The body
+            // stays reachable through its handle (resolved above).
+            let sticky = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
+            assert!(sticky.messages.iter().any(|m| m.content_text() == expected_pointer));
+            assert!(!sticky.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
+            // With no collapse on record, a roomy request carries the body whole.
+            faculty.collapsed_results.lock().clear();
             let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
             assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
             // Exact-refusal correction reuses saved alternatives and keeps the
