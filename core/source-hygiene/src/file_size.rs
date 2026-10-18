@@ -17,7 +17,7 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 /// **This number may only ever go DOWN.** A split by owner lowers it; raising it is
 /// growing the monolith.
 #[cfg(test)]
-const BASELINE_LINES_OVER: usize = 159_729;
+const BASELINE_LINES_OVER: usize = 159_720;
 
 pub struct FileSize;
 
@@ -84,5 +84,6 @@ mod tests {
             "lines past {READABLE_FILE_LINES} rose to {total} (baseline {BASELINE_LINES_OVER}). Split the \
              file you grew by owner, one responsibility per file. Never raise the baseline."
         );
+        crate::assert_baseline_is_current("BASELINE_LINES_OVER", total, BASELINE_LINES_OVER);
     }
 }

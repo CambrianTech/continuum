@@ -57,6 +57,41 @@ fn module_of(file: &SourceFile) -> Option<&str> {
     Some(first.strip_suffix(".rs").unwrap_or(first))
 }
 
+/// The top-level modules a path after `crate::` names: `cognition::x` names `cognition`;
+/// a group `{cognition::x, modules::{a, b}, time}` names each head at depth one, across
+/// lines (rustfmt wraps long groups). A head followed by neither `::` nor a group end is a
+/// local item, not a module, and is skipped by `ring_of` returning `None`.
+fn named_modules(rest: &str) -> Vec<&str> {
+    let ident_end = |s: &str| s.find(|c: char| !(c.is_ascii_lowercase() || c == '_')).unwrap_or(s.len());
+    let Some(group) = rest.strip_prefix('{') else {
+        let end = ident_end(rest);
+        return if rest[end..].starts_with("::") { vec![&rest[..end]] } else { Vec::new() };
+    };
+    let mut heads = Vec::new();
+    let mut depth = 1usize;
+    let mut at_head = true;
+    let mut i = 0;
+    while i < group.len() && depth > 0 {
+        let tail = &group[i..];
+        let c = tail.chars().next().unwrap_or(' '); // unwrap_or: i < len, so a char exists
+        if at_head && depth == 1 && c.is_ascii_lowercase() {
+            let end = ident_end(tail);
+            heads.push(&tail[..end]);
+            at_head = false;
+            i += end;
+            continue;
+        }
+        match c {
+            '{' => depth += 1,
+            '}' => depth -= 1,
+            ',' if depth == 1 => at_head = true,
+            _ => {}
+        }
+        i += c.len_utf8();
+    }
+    heads
+}
+
 pub struct LayerDiscipline;
 
 impl SourceRule for LayerDiscipline {
@@ -70,28 +105,23 @@ impl SourceRule for LayerDiscipline {
         };
         let mut seen: Vec<&str> = Vec::new();
         let mut out = Vec::new();
-        for (line_no, line) in file.raw.lines().enumerate() {
-            let mut rest = line;
-            while let Some(at) = rest.find("crate::") {
-                rest = &rest[at + "crate::".len()..];
-                let end = rest
-                    .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
-                    .unwrap_or(rest.len());
-                let dep = &rest[..end];
-                if !rest[end..].starts_with("::") || seen.contains(&dep) {
+        let raw = file.raw.as_str();
+        let mut rest = raw;
+        while let Some(at) = rest.find("crate::") {
+            let line_no = raw[..raw.len() - rest.len() + at].matches('\n').count();
+            rest = &rest[at + "crate::".len()..];
+            for dep in named_modules(rest) {
+                if seen.contains(&dep) || !ring_of(dep).is_some_and(|r| r > own) {
                     continue;
                 }
-                if ring_of(dep).is_some_and(|r| r > own) {
-                    // `dep` borrows from `line`, which borrows from `file.raw`: it lives as
-                    // long as `file`, so holding it across the loop is sound.
-                    seen.push(dep);
-                    out.push(Violation {
-                        rule: "layer-discipline",
-                        file: file.rel.clone(),
-                        line: line_no + 1,
-                        source: format!("ring {own} imports ring {} `crate::{dep}::`", ring_of(dep).unwrap_or(own)), // unwrap_or: `is_some_and` above proved it is Some
-                    });
-                }
+                // `dep` borrows from `file.raw`: it lives as long as `file`.
+                seen.push(dep);
+                out.push(Violation {
+                    rule: "layer-discipline",
+                    file: file.rel.clone(),
+                    line: line_no + 1,
+                    source: format!("ring {own} imports ring {} `crate::{dep}::`", ring_of(dep).unwrap_or(own)), // unwrap_or: `is_some_and` above proved it is Some
+                });
             }
         }
         out
@@ -117,6 +147,13 @@ mod tests {
         assert_eq!(v.len(), 2, "sdk_codegen and routing once each, never time: {named:?}");
         assert!(named.iter().any(|s| s.contains("`crate::sdk_codegen::`")));
         assert!(named.iter().any(|s| s.contains("`crate::routing::`")));
+        // A grouped import names each head, across lines, nested groups included.
+        let grouped = SourceFile::for_test(
+            "inference/x.rs",
+            "use crate::{\n    cognition::a,\n    time::now,\n    modules::{b, c},\n};\n",
+        );
+        let g: Vec<String> = LayerDiscipline.check(&grouped).into_iter().map(|v| v.source).collect();
+        assert_eq!(g.len(), 2, "cognition and modules, never time: {g:?}");
         // Downward and sideways are the architecture, not a violation.
         let ok = SourceFile::for_test("commands/x.rs", "use crate::cognition::a; use crate::runtime::b; use crate::ipc::c;\n");
         assert!(LayerDiscipline.check(&ok).is_empty());
@@ -152,5 +189,6 @@ mod tests {
              names a higher ring: move the fact or verb down to its owner, or place the module \
              in its ring. Never raise the baseline."
         );
+        crate::assert_baseline_is_current("BASELINE_UPWARD_IMPORTS", count, BASELINE_UPWARD_IMPORTS);
     }
 }

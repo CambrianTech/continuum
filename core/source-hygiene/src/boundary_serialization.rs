@@ -132,6 +132,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        crate::assert_baseline_is_current("BASELINE_UNJUSTIFIED", count, BASELINE_UNJUSTIFIED);
     }
 
     /// What this catches: the justification predicate accepting a non-reason —

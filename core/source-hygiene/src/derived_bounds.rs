@@ -390,6 +390,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        crate::assert_baseline_is_current("BASELINE_UNDERIVED_BOUNDS", count, BASELINE_UNDERIVED_BOUNDS);
     }
 
     /// What this catches: the guard going blind to the exact line it was written for.

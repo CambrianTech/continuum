@@ -26,7 +26,7 @@ use super::{SourceFile, SourceRule, Violation};
 /// deliberate (watch-channel sentinels skipped before cognition, fixture
 /// builders) — listed so a NEW one has to argue, not sneak.
 #[cfg(test)]
-const BASELINE_NIL_ROOM_LINES: usize = 4;
+const BASELINE_NIL_ROOM_LINES: usize = 3;
 
 /// Directories whose production halves carry cognition turns — the trees where
 /// a nil room becomes an invisible turn.
@@ -130,6 +130,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        crate::assert_baseline_is_current("BASELINE_NIL_ROOM_LINES", violations.len(), BASELINE_NIL_ROOM_LINES);
     }
 
     // what this catches: a NEW `format!("…{a}@{b}…")` composite key in the
