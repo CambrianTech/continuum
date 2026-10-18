@@ -136,11 +136,14 @@ impl DerivedBounds {
     /// erring toward noise here rather than toward silence, deliberately, because this
     /// rule has already been shown a case where silence was wrong.
     fn production_lines<'a>(file: &'a SourceFile) -> impl Iterator<Item = (usize, &'a str)> + 'a {
-        let end = file
-            .raw
-            .lines()
-            .position(|l| l.starts_with("#[cfg(test)]"))
-            .unwrap_or(usize::MAX); // no test mod in this file = every line is production
+        let end = if crate::is_test_only_file(&file.raw) {
+            0
+        } else {
+            file.raw
+                .lines()
+                .position(|l| l.starts_with("#[cfg(test)]"))
+                .unwrap_or(usize::MAX) // no test mod in this file = every line is production
+        };
         file.raw
             .lines()
             .enumerate()
