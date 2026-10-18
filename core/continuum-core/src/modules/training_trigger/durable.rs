@@ -951,8 +951,7 @@ impl TrainingTriggerState {
             .await
             .map_err(|e| ("PersistenceFailed", e.to_string()))?
         {
-            if existing.key() != *key || (!existing.batch.same_submission(&batch)
-                && !store.corrected_replay(&existing, &batch).await.map_err(|e| ("RecoveryRequired", e))?) {
+            if existing.key() != *key || !store.replay_matches(&existing, &batch).await.map_err(|e| ("RecoveryRequired", e))? {
                 return Err((
                     "SubmissionConflict",
                     format!("submission {id} already binds different content or policy"),

@@ -70,7 +70,7 @@ impl DurableStore {
         Ok(batch)
     }
 
-    pub(super) async fn corrected_replay(
+    pub(super) async fn replay_matches(
         &self,
         row: &Submission,
         incoming: &PendingBatch,
@@ -83,10 +83,11 @@ impl DurableStore {
             .map_err(|e| e.to_string())?
             .is_none()
         {
-            return Ok(false);
+            return Ok(row.batch.same_submission(incoming));
         }
         // Unlike generic legacy replay, this audited alternative binds all lived content too.
-        Ok(digest(&self.effective_batch(row).await?)? == digest(incoming)?)
+        Ok(digest(&row.batch)? == digest(incoming)?
+            || digest(&self.effective_batch(row).await?)? == digest(incoming)?)
     }
 }
 
