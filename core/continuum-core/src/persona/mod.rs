@@ -225,6 +225,7 @@ pub const SUBSTRATE_ORM_COLLECTIONS: &[&str] = &[
     <role_template::RoleTemplate as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::StagedCredit as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::StagedCreditGeneration as crate::orm::OrmEntity>::COLLECTION,
+    <training_producer::graded::BenchmarkCreditAttribution as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::WorkCreditBinding as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::CreditTransferIntent as crate::orm::OrmEntity>::COLLECTION,
     <training_producer::reviewed::CreditGenerationReservation as crate::orm::OrmEntity>::COLLECTION,
@@ -251,6 +252,7 @@ pub fn register_substrate_orm_entities(
     // being enforced.
     registry.register::<training_producer::StagedCredit>()?;
     registry.register::<training_producer::StagedCreditGeneration>()?;
+    registry.register::<training_producer::graded::BenchmarkCreditAttribution>()?;
     registry.register::<training_producer::reviewed::WorkCreditBinding>()?;
     registry.register::<training_producer::reviewed::CreditTransferIntent>()?;
     registry.register::<training_producer::reviewed::CreditGenerationReservation>()?;

@@ -446,7 +446,7 @@ pub(crate) async fn grade_submission(
 /// rule dispatch applies before composing the card — so the `solution_file` this grader
 /// reads is byte-for-byte the path the card told her to write. Pure over the embedded
 /// gym text; the unit test below pins the agreement.
-fn normalized_gym_task(
+pub(crate) fn normalized_gym_task(
     reference: &str,
     task_id: &str,
 ) -> Result<crate::cognition::eval::EvalTask, String> {
