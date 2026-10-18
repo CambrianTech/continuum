@@ -264,15 +264,6 @@ pub fn note_generation(cached: u32, prefilled: u32) {
     crate::inference::prefill_knee::note_turn(cached, prefilled);
 }
 
-/// The fraction of prompt tokens the lanes served from their KV cache since the ledger's
-/// hour began, `None` until a generation reported timings. The render budget reads it: a
-/// prompt's time-to-first-token is spent on the tokens that are NOT cached.
-pub fn prompt_cache_fraction() -> Option<f64> {
-    let cached = LEDGER.prompt_cached.load(Ordering::Relaxed);
-    let total = cached.saturating_add(LEDGER.prompt_prefilled.load(Ordering::Relaxed));
-    (total > 0).then(|| cached as f64 / total as f64)
-}
-
 /// An act was observed (the `persona.act.observed` seam). `wrote` = it changed a file.
 pub fn note_act(wrote: bool) {
     LEDGER.acts.fetch_add(1, Ordering::Relaxed);

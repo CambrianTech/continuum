@@ -27,7 +27,9 @@
 pub mod boundary_serialization;
 pub mod derived_bounds;
 pub mod grab_bag;
+pub mod file_size;
 pub mod identity_discipline;
+pub mod layer_discipline;
 pub mod production_reachability;
 pub mod tenant_neutrality;
 pub mod test_mod_singularity;
@@ -245,6 +247,20 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
     }
     out
 }
+
+/// The second half of every ratchet in this crate (the first, "never rise", is each rule's
+/// own assert with its own advice): when a count FALLS below its baseline, the baseline must
+/// fall with it in the same change. Otherwise the win is slack the next change can spend
+/// unseen (Cormac's #5153 review, 2026-10-18).
+#[cfg(test)]
+pub fn assert_baseline_is_current(name: &str, count: usize, baseline: usize) {
+    assert!(
+        count >= baseline,
+        "{name} fell to {count} (baseline {baseline}). Lower the baseline to {count} in this \
+         change, so the win cannot be given back."
+    );
+}
+
 
 /// Walk this crate's `src/` once and apply every per-file rule to every `.rs` file.
 pub fn scan(rules: &[&dyn SourceRule]) -> Vec<Violation> {

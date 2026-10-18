@@ -1,0 +1,91 @@
+//! A file nobody can read whole has no owner. The core held 142 files over 1,000 lines
+//! (159,729 lines past that mark, the four largest 12,357 / 12,120 / 9,838 / 9,822) on canary
+//! 2026-10-18; Joel: "Every file over 1000 lines must be broken up ... the monolith. It's
+//! absurd." This ratchet makes that number fall and never rise: it counts the lines each
+//! file carries past 1,000, summed over the crate.
+//!
+//! The 1,000 is the owner's line, not a measured optimum: a file of that size is still one
+//! read. Splitting by OWNER (one responsibility per file) is the fix; this count only keeps
+//! the direction honest. Test files count too: a 4,000-line test file is as unreadable.
+
+use super::{SourceFile, SourceRule, Violation};
+
+/// Lines a file may carry before every further line counts against the crate.
+pub const READABLE_FILE_LINES: usize = 1_000;
+
+/// Lines past `READABLE_FILE_LINES`, summed over the crate, measured on canary `e953bb11d`
+/// as this ratchet lands (2026-10-18). Before it existed, #5150 grew
+/// `system_resources/disk_eviction.rs` (2,406 lines) by 64, and nothing could refuse it;
+/// that file's split is on the batch split now under way. **This number may only ever go
+/// DOWN.** A split by owner lowers it; raising it is growing the monolith.
+#[cfg(test)]
+const BASELINE_LINES_OVER: usize = 159_784;
+
+pub struct FileSize;
+
+impl SourceRule for FileSize {
+    fn name(&self) -> &'static str {
+        "file-size"
+    }
+
+    fn check(&self, file: &SourceFile) -> Vec<Violation> {
+        let lines = file.raw.lines().count();
+        if lines <= READABLE_FILE_LINES {
+            return Vec::new();
+        }
+        vec![Violation {
+            rule: "file-size",
+            file: file.rel.clone(),
+            line: READABLE_FILE_LINES + 1,
+            source: format!("{lines} lines: {} past {READABLE_FILE_LINES}", lines - READABLE_FILE_LINES),
+        }]
+    }
+}
+
+/// The excess a violation records: the number before " past".
+#[cfg(test)]
+fn excess(v: &Violation) -> usize {
+    v.source
+        .split(": ")
+        .nth(1)
+        .and_then(|rest| rest.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0) // unwrap_or: `check` writes every source in this exact shape; an unparsable one counts as 0 and the shape test below catches it
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scan;
+
+    // what this catches: a file growing past one read without anyone deciding it should.
+    #[test]
+    fn a_file_past_the_readable_size_is_one_violation_carrying_its_excess() {
+        let small = SourceFile::for_test("x/small.rs", &"fn a() {}\n".repeat(1_000));
+        assert!(FileSize.check(&small).is_empty(), "1,000 lines is still one read");
+        let big = SourceFile::for_test("x/big.rs", &"fn a() {}\n".repeat(1_250));
+        let v = FileSize.check(&big);
+        assert_eq!(v.len(), 1);
+        assert_eq!(excess(&v[0]), 250, "{}", v[0].source);
+    }
+
+    // what this catches: the monolith growing. Every split by owner lowers the count; if
+    // this fails because you lowered it, lower `BASELINE_LINES_OVER` and take the win.
+    #[test]
+    fn lines_past_the_readable_size_never_rise() {
+        let violations = scan(&[&FileSize]);
+        let total: usize = violations.iter().map(excess).sum();
+        let mut worst: Vec<_> = violations.iter().map(|v| (excess(v), v.file.as_str())).collect();
+        worst.sort_by(|a, b| b.0.cmp(&a.0));
+        eprintln!("lines past {READABLE_FILE_LINES}: {total} across {} files (baseline {BASELINE_LINES_OVER})", violations.len());
+        for (n, f) in worst.iter().take(6) {
+            eprintln!("  {f}: +{n}");
+        }
+        assert!(
+            total <= BASELINE_LINES_OVER,
+            "lines past {READABLE_FILE_LINES} rose to {total} (baseline {BASELINE_LINES_OVER}). Split the \
+             file you grew by owner, one responsibility per file. Never raise the baseline."
+        );
+        crate::assert_baseline_is_current("BASELINE_LINES_OVER", total, BASELINE_LINES_OVER);
+    }
+}
