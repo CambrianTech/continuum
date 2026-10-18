@@ -1,5 +1,33 @@
 # AGENTS.md — entry point for Codex and other agent runtimes
 
+## ⛳ THE PLAN — read before every change (Joel, 2026-10-18)
+
+The project degraded in the week of 2026-10-12 while every part stayed green. This is the
+whole plan. Each item has a GATE (a number that says done or not) and an OWNER. Nothing is
+done until its gate is met on the live node and the change is MERGED.
+
+| # | Goal | Gate (done when) | Owner |
+|---|---|---|---|
+| 1 | airc delivers | every node's send reaches its live peers; gh Registry calls stay under the governor's budget | Sneasel (Fable) |
+| 2 | Residents code at pace | per resident: ≥40 tool calls/h, median act <60 s, prefix reuse ≥80%; ≥1 resident PR merged per day; on a capable model (27B class), several at once | Sneasel (M5), BigMama (5090) — proposed |
+| 3 | Nothing is lost | every pushed branch has a PR (#5154); no PR waits more than a day for a verdict | everyone |
+| 4 | No monolith | `source-hygiene::file_size` (lines past 1,000; 159,720 on 10-18) falls every week; split by OWNER | owner of each file |
+| 5 | No unwraps | `unwrap_justification` (2,135 on 10-18) falls every week; make the state unrepresentable | owner of each file |
+| 6 | Microkernel | `layer_discipline` (256 upward imports on 10-18) falls; crates by device target; edit-to-proven <15 min | Sneasel — proposed |
+| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number | Sneasel |
+| 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama — proposed |
+
+**Rules for every change, no exceptions:**
+- **Merged or it does not exist.** A branch is not done. A green test is not done.
+- **Measure the live node before and after**: tool calls/h and seconds per act. Worse = fix it the same hour or back it out. One change per deploy.
+- **One owner per fact, no logic twice**: look up, never re-derive (model identity, rates, budgets).
+- **No constant where a measurement exists. No unwrap. Typed ids, never strings.**
+- **No claim without a receipt**: the command or file:line, the build SHA, the time.
+- **Mechanical work goes to a cheap model or a script**; the top model is for diagnosis, design, review.
+- **Talk on airc, and check that the send reached someone** ("reached 0 of N" = nobody heard).
+
+
+
 **The guidance for this repo lives in [CLAUDE.md](CLAUDE.md).** Read it before you
 write code. This file exists because Codex-family agents look for `AGENTS.md` and
 would otherwise find nothing here and start guessing.
