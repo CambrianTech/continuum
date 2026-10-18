@@ -943,6 +943,8 @@ pub struct ServingLanePermit {
     granted_at: std::time::Instant,
     directed: bool,
     priority: LanePriority,
+    /// Attribution survives until release; None is genuinely unowned background work.
+    persona: Option<uuid::Uuid>,
     /// The gate this permit came from — its release wakes parked ambient callers.
     released: &'static tokio::sync::Notify,
 }
@@ -955,6 +957,7 @@ impl Drop for ServingLanePermit {
         note_lane_held_ms(held_ms);
         crate::probe!(
             class = "admission.lane.released",
+            persona = ?self.persona,
             directed = self.directed,
             priority = ?self.priority,
             held_ms = held_ms,
@@ -1163,9 +1166,11 @@ impl LaneAdmission {
     /// test instance can never drift into two different policies.
     pub async fn acquire_serving_lane(
         &'static self,
+        persona: Option<uuid::Uuid>,
         priority: LanePriority,
         expected_occupancy: Option<std::time::Duration>,
     ) -> ServingLanePermit {
+        let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
         // acquire below can never let non-directed work starve a directed caller —
@@ -1232,6 +1237,8 @@ impl LaneAdmission {
         };
         crate::probe!(
             class = "admission.lane.granted",
+            persona = ?persona,
+            waited_ms = queued_at.elapsed().as_millis() as u64,
             directed,
             priority = ?priority,
             now_available = self.serving_lanes().available_permits() as u64,
@@ -1242,6 +1249,7 @@ impl LaneAdmission {
             _nondirected: nondirected,
             _inflight: InflightModelCall::enter(),
             granted_at: std::time::Instant::now(),
+            persona,
             directed,
             priority,
             released: &self.released,
@@ -1350,10 +1358,11 @@ pub fn serving_lane_permits_available() -> usize {
 /// a WORK call uses it — the reserved lane may be lent to it inside the directed wait
 /// budget (`reserve_lendable`). Directed and ambient callers pass `None`.
 pub async fn acquire_serving_lane(
+    persona: Option<uuid::Uuid>,
     priority: LanePriority,
     expected_occupancy: Option<std::time::Duration>,
 ) -> ServingLanePermit {
-    LANES.acquire_serving_lane(priority, expected_occupancy).await
+    LANES.acquire_serving_lane(persona, priority, expected_occupancy).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
@@ -1871,7 +1880,7 @@ mod tests {
         // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
         let mut nondirected = Vec::new();
         for _ in 0..budget {
-            nondirected.push(gate.acquire_serving_lane(LanePriority::Ambient, None).await);
+            nondirected.push(gate.acquire_serving_lane(None, LanePriority::Ambient, None).await);
         }
 
         // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
@@ -1879,7 +1888,7 @@ mod tests {
         if gate.lane_count() > 1 {
             let directed = tokio::time::timeout(
                 Duration::from_millis(250),
-                gate.acquire_serving_lane(LanePriority::Directed, None),
+                gate.acquire_serving_lane(None, LanePriority::Directed, None),
             )
             .await;
             assert!(
@@ -1891,7 +1900,7 @@ mod tests {
             // times out rather than stealing the lane the directed turn is using.
             let extra_nondirected = tokio::time::timeout(
                 Duration::from_millis(150),
-                gate.acquire_serving_lane(LanePriority::Ambient, None),
+                gate.acquire_serving_lane(None, LanePriority::Ambient, None),
             )
             .await;
             assert!(
@@ -2107,8 +2116,8 @@ mod tests {
         use std::time::Duration;
         let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
         gate.set_served_lane_count(2); // non-directed budget = 1
-        let held = gate.acquire_serving_lane(LanePriority::Ambient, None).await;
-        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work, None).await });
+        let held = gate.acquire_serving_lane(None, LanePriority::Ambient, None).await;
+        let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work, None).await });
         // Deterministic (Cormac's note on #4083): wait until the task is COUNTED, under a
         // bound, instead of a fixed sleep a loaded runner can outlast.
         let counted = tokio::time::timeout(Duration::from_secs(5), async {
@@ -2128,7 +2137,7 @@ mod tests {
         drop(held);
         let ambient = tokio::time::timeout(
             Duration::from_millis(1500),
-            gate.acquire_serving_lane(LanePriority::Ambient, None),
+            gate.acquire_serving_lane(None, LanePriority::Ambient, None),
         )
         .await;
         assert!(
@@ -2148,9 +2157,9 @@ mod tests {
         use std::time::Duration;
         let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
         gate.set_served_lane_count(2); // non-directed budget = 1
-        let held = gate.acquire_serving_lane(LanePriority::Ambient, None).await;
+        let held = gate.acquire_serving_lane(None, LanePriority::Ambient, None).await;
 
-        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work, None).await });
+        let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             gate.work_waiting(),
@@ -2158,7 +2167,7 @@ mod tests {
             "the work caller is counted while it waits"
         );
         let ambient =
-            tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Ambient, None).await });
+            tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Ambient, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!ambient.is_finished(), "ambient parks while work waits");
 
