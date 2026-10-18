@@ -2584,13 +2584,13 @@ pub(crate) mod tests {
         // HALF A PAIR IS NOT A PAIR: an owner with no claim is not an accepted
         // claim, and a claim with no owner names nobody.
         assert!(
-            CapturedCredit::from_selected_card(&card(Some(owner), None))
+            CapturedCredit::from_selected_card(&claimed_card_fixture(Some(owner), None))
                 .claim
                 .is_none(),
             "an owner without a claim is not an accepted claim"
         );
         assert!(
-            CapturedCredit::from_selected_card(&card(
+            CapturedCredit::from_selected_card(&claimed_card_fixture(
                 None,
                 Some(airc_work::ClaimId::from_uuid(Uuid::new_v4()))
             ))
