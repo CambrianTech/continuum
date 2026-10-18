@@ -13,11 +13,13 @@ use super::{SourceFile, SourceRule, Violation};
 /// Lines a file may carry before every further line counts against the crate.
 pub const READABLE_FILE_LINES: usize = 1_000;
 
-/// Lines past `READABLE_FILE_LINES`, summed over the crate, measured on canary 2026-10-18.
-/// **This number may only ever go DOWN.** A split by owner lowers it; raising it is
-/// growing the monolith.
+/// Lines past `READABLE_FILE_LINES`, summed over the crate, measured on canary `e953bb11d`
+/// as this ratchet lands (2026-10-18). Before it existed, #5150 grew
+/// `system_resources/disk_eviction.rs` (2,406 lines) by 64, and nothing could refuse it;
+/// that file's split is on the batch split now under way. **This number may only ever go
+/// DOWN.** A split by owner lowers it; raising it is growing the monolith.
 #[cfg(test)]
-const BASELINE_LINES_OVER: usize = 159_720;
+const BASELINE_LINES_OVER: usize = 159_784;
 
 pub struct FileSize;
 
