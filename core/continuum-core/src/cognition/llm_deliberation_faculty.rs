@@ -3324,7 +3324,6 @@ impl LlmDeliberationFaculty {
         // Split by churn class: non-WM grounding (semi-stable) → append-only ring →
         // the trail (churniest standing block) → facts/ask/pin. One rule, monotone
         // in stability, same law as the system-side phases.
-        let grounding_at = messages.len();
         let render_trailing = |messages: &mut Vec<ChatMessage>, wm_trail: bool| {
             // Canonical wire order (churn class, then name) — the same rule the standing
             // grounding and the system's stable tier follow, so two trailing sources can
@@ -3357,7 +3356,14 @@ impl LlmDeliberationFaculty {
                 }
             }
         };
-        render_trailing(&mut messages, false);
+        // THE RING BEFORE THE GROUNDING (the M5, 2026-10-18): the order below was grounding
+        // → ring, on the premise that grounding is the more stable. Measured, it is not: the
+        // grounding at the head of the messages carries recall (Turn churn) and the kanban
+        // (Claims churn), and every turn's `delib.segment.attribution` broke there — engine
+        // reuse stopped at 8-11.5k tokens of 50-64k-token prompts, re-prefilling the ~30k-token
+        // ring behind it at ~100 tokens/s. The ring is append-only (a new result lands at its
+        // end; collapse is a rare burst under the window), so it leads; the grounding follows
+        // in churn order, and a grounding change now re-prefills only what is behind it.
         let mut result_pointers = Vec::new();
         if let Some(wm) = &self.working_memory {
             // The append-only results ring — its appends land at the growth
@@ -3369,6 +3375,8 @@ impl LlmDeliberationFaculty {
                 messages.push(ChatMessage::text("user", block));
             }
         }
+        let grounding_at = messages.len();
+        render_trailing(&mut messages, false);
         render_trailing(&mut messages, true);
 
         // Facts flicker per act — they render after every append-only block,
@@ -8400,6 +8408,33 @@ mod tests {
         // after it (~4000 tokens / ~30s of pure re-prefill — the eval-lane crawl). The
         // stable framing stays in the system message; the trailing proprioception does
         // not. regression for #205
+        // what this catches: churning grounding ahead of the append-only results ring. On the
+        // M5 (2026-10-18) recall (Turn churn) and the kanban (Claims churn) led the messages,
+        // every turn's reuse broke there, and the ~30k-token ring behind them re-prefilled at
+        // ~100 tokens/s. The ring leads; the grounding follows it.
+        #[test]
+        fn the_results_ring_renders_before_churning_grounding() {
+            let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(3));
+            wm.set_served_window(32_768);
+            let custody = |h: &str| crate::ai::types::ResultCustody::Whole { handle: h.into() };
+            wm.record_receipt_typed(&[], "RING-ENTRY older result", None, custody("1111111111111111"));
+            wm.record_receipt_typed(&[], "the newest result", None, custody("2222222222222222"));
+            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
+                .with_context_window(32_768)
+                .with_working_memory(Arc::clone(&wm));
+            let mut ws = Workspace::new("continue the card");
+            ws.broadcast.push(
+                Contribution::context(FacultyId::Recall, "RECALL-BLOCK something I remembered", 0.6, "recall")
+                    .trailing(),
+            );
+            let view = faculty.prompt_view(&ws);
+            let at = |needle: &str| view.messages.iter().position(|m| m.content_text().contains(needle));
+            let (ring, recall) = (at("RING-ENTRY"), at("RECALL-BLOCK"));
+            assert!(ring.is_some() && recall.is_some(), "both render: ring {ring:?}, recall {recall:?}");
+            assert!(ring < recall, "the append-only ring leads, churning grounding follows: ring {ring:?}, recall {recall:?}");
+        }
+
         #[test]
         fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
             use crate::ai::types::MessageContent;
