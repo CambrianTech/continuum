@@ -132,10 +132,9 @@ pub struct GenerateModuleResult {
 /// constrain to lowercase ASCII letters/digits with `_`/`-` allowed
 /// as word separators, and refuse a leading digit.
 pub fn validate_module_name(name: &str) -> Result<(), String> {
-    if name.is_empty() {
+    let Some(first) = name.chars().next() else {
         return Err("Module name cannot be empty".to_string());
-    }
-    let first = name.chars().next().unwrap();
+    };
     if !first.is_ascii_lowercase() && first != '_' {
         return Err(format!(
             "Module name `{name}` must start with a lowercase ASCII letter or underscore \

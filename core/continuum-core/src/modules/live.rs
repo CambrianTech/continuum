@@ -187,7 +187,10 @@ async fn perception_ingest_drain(
             viewers = viewers.len() as u64,
             "bridge receipt to perception fan-out (not remote capture latency)"
         );
-        ingest.as_ref().expect("ingest built above").fan_out(
+        let Some(frame_ingest) = ingest.as_ref() else {
+            continue; // describer is built above; absent only before the executor is installed
+        };
+        frame_ingest.fan_out(
             &frame.speaker_id,
             &viewers,
             frame.jpeg,
@@ -301,7 +304,7 @@ impl ServiceModule for VoiceModule {
                 // agent batches, causing the reconnect churn cycle (agents connect → old
                 // ones get evicted by LiveKit → new ones reconnect → repeat).
                 {
-                    let mut sessions = self.state.active_sessions.lock().unwrap();
+                    let mut sessions = self.state.active_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
                     if !sessions.insert(call_id.to_string()) {
                         log_info!(
                             "module",
@@ -473,7 +476,7 @@ impl ServiceModule for VoiceModule {
                 // and drop any legacy aliases pointing at the ended call — a rejoin
                 // records fresh ones.
                 {
-                    let mut sessions = self.state.active_sessions.lock().unwrap();
+                    let mut sessions = self.state.active_sessions.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
                     sessions.remove(&call_id);
                 }
                 {

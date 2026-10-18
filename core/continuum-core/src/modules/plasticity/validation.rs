@@ -10,6 +10,9 @@
 //! Tests use synthetic mini-models (tiny Llama-like architecture) to avoid
 //! requiring multi-GB real models during CI/unit testing.
 
+// Compiled only under `cargo test`: this whole file is test support.
+#![cfg(test)]
+
 use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::llama::Config as LlamaConfig;
