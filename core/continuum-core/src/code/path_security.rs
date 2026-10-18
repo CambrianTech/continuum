@@ -29,9 +29,13 @@ pub struct PathSecurity {
 pub enum ReadScope {
     /// The workspace and its read-only roots — every caller.
     Sandbox,
-    /// Also any absolute path the OS user can read — the OPERATOR only: the core runs as
-    /// the operator, and the operator's reads are the operator's. Writes never widen.
-    Host,
+    /// Also any absolute path the OS user can read or write, except `deny`: the operator
+    /// (`deny` empty: the core runs as the operator, whose files are the operator's), and
+    /// this node's resident (`deny` = her confinement's [`host_denials`]: every credential
+    /// path and every other citizen's directory, Joel 2026-10-18 "keep creds off-limits").
+    ///
+    /// [`host_denials`]: super::confinement::Confinement::host_denials
+    Host { deny: Vec<PathBuf> },
     /// Also any absolute path inside the caller's confinement (card d598c806): a citizen
     /// whose trust admits `code/shell` reads what her shell can read — her workspace,
     /// her citizen directory, the toolchains, the temp dir — and nothing the kernel
@@ -346,6 +350,12 @@ pub fn clean_path_arg(raw: &str) -> CleanedPathArg {
     }
 }
 
+/// Whether a host-scope caller is refused `path` (canonical): inside a denial root, or a
+/// scope's signing key wherever it sits.
+fn host_denied(deny: &[PathBuf], path: &Path) -> bool {
+    deny.iter().any(|d| path.starts_with(d)) || super::confinement::is_scoped_credential(path)
+}
+
 impl PathSecurity {
     /// Create a new PathSecurity validator for a workspace.
     ///
@@ -415,7 +425,13 @@ impl PathSecurity {
     /// sandbox's verdict stands for every relative path and for every `Sandbox` caller.
     pub fn validate_read_in(&self, path: &str, scope: ReadScope) -> Result<PathBuf, PathSecurityError> {
         let sandboxed = self.validate_read(path);
-        if sandboxed.is_ok() {
+        if let Ok(inside) = &sandboxed {
+            // Inside the workspace too: a scope key or a credential is never hers to read.
+            if let ReadScope::Host { deny } = &scope {
+                if host_denied(deny, inside) {
+                    return Err(PathSecurityError::TraversalBlocked { path: path.to_string(), workspace: self.workspace_root.display().to_string() });
+                }
+            }
             return sandboxed;
         }
         let host = Path::new(path);
@@ -424,7 +440,11 @@ impl PathSecurity {
             (_, Some(Ok(canonical))) => canonical,
         };
         match scope {
-            ReadScope::Host => Ok(canonical),
+            ReadScope::Host { deny } if host_denied(&deny, &canonical) => Err(PathSecurityError::TraversalBlocked {
+                path: path.to_string(),
+                workspace: self.workspace_root.display().to_string(),
+            }),
+            ReadScope::Host { .. } => Ok(canonical),
             ReadScope::Confined(list) if list.permits_read(&canonical) => Ok(canonical),
             // Outside her roots: the sandbox's verdict names the workspace she escaped, the
             // same refusal her shell would have met at the kernel.
@@ -444,7 +464,13 @@ impl PathSecurity {
     /// workspace verdict.
     pub fn validate_write_in(&self, path: &str, scope: &ReadScope) -> Result<PathBuf, PathSecurityError> {
         let sandboxed = self.validate_write(path);
-        if sandboxed.is_ok() || !matches!(scope, ReadScope::Host) {
+        let ReadScope::Host { deny } = scope else {
+            return sandboxed;
+        };
+        if let Ok(inside) = &sandboxed {
+            if host_denied(deny, inside) {
+                return Err(PathSecurityError::TraversalBlocked { path: path.to_string(), workspace: self.workspace_root.display().to_string() });
+            }
             return sandboxed;
         }
         let host = Path::new(path);
@@ -452,7 +478,19 @@ impl PathSecurity {
             return sandboxed;
         };
         match parent.canonicalize() {
-            Ok(dir) => Ok(dir.join(name)),
+            // The target itself may be a link (`~/notes -> ~/.ssh/authorized_keys`): judged
+            // where the write would land, not where it was named.
+            Ok(dir) => {
+                let target = dir.join(name);
+                let lands = target.canonicalize().unwrap_or_else(|_| target.clone());
+                if host_denied(deny, &target) || host_denied(deny, &lands) {
+                    return Err(PathSecurityError::TraversalBlocked {
+                        path: path.to_string(),
+                        workspace: self.workspace_root.display().to_string(),
+                    });
+                }
+                Ok(target)
+            }
             Err(_) => sandboxed,
         }
     }
@@ -822,9 +860,35 @@ mod tests {
         fs::write(&file, "diff").unwrap();
         let abs = file.to_string_lossy().to_string();
         assert!(security.validate_read_in(&abs, ReadScope::Sandbox).is_err());
-        assert_eq!(security.validate_read_in(&abs, ReadScope::Host).unwrap(), file.canonicalize().unwrap());
-        assert!(security.validate_read_in("../../etc/passwd", ReadScope::Host).is_err());
+        assert_eq!(security.validate_read_in(&abs, ReadScope::Host { deny: Vec::new() }).unwrap(), file.canonicalize().unwrap());
+        assert!(security.validate_read_in("../../etc/passwd", ReadScope::Host { deny: Vec::new() }).is_err());
         assert!(security.validate_write(&abs).is_err(), "writes never widen");
+    }
+
+    // what this catches (Joel 2026-10-18 "keep creds off-limits"): a resident's file verbs,
+    // which reach the whole host, reading or writing a credential root: directly, through a
+    // link she names, or a scope's signing key inside her own workspace.
+    #[cfg(unix)]
+    #[test]
+    fn host_scope_refuses_every_credential_path_however_it_is_named() {
+        let (dir, security) = setup_workspace();
+        let outside = tempfile::tempdir().unwrap();
+        let ssh = outside.path().join(".ssh");
+        fs::create_dir_all(&ssh).unwrap();
+        fs::write(ssh.join("id"), "secret").unwrap();
+        fs::write(outside.path().join("notes.txt"), "hers").unwrap();
+        std::os::unix::fs::symlink(ssh.join("id"), outside.path().join("innocent")).unwrap();
+        fs::create_dir_all(dir.path().join(".airc")).unwrap();
+        fs::write(dir.path().join(".airc/identity.key"), "key").unwrap();
+        let scope = || ReadScope::Host { deny: vec![ssh.canonicalize().unwrap()] };
+        let at = |p: &std::path::Path| p.to_string_lossy().to_string();
+        assert!(security.validate_read_in(&at(&outside.path().join("notes.txt")), scope()).is_ok(), "the rest of the host is hers");
+        assert!(security.validate_read_in(&at(&ssh.join("id")), scope()).is_err(), "a credential root");
+        assert!(security.validate_read_in(&at(&outside.path().join("innocent")), scope()).is_err(), "a link to one");
+        assert!(security.validate_read_in(".airc/identity.key", scope()).is_err(), "a scope key inside her own workspace");
+        assert!(security.validate_write_in(&at(&outside.path().join("new.txt")), &scope()).is_ok(), "she writes where she names");
+        assert!(security.validate_write_in(&at(&ssh.join("authorized_keys")), &scope()).is_err(), "never into a credential root");
+        assert!(security.validate_write_in(&at(&outside.path().join("innocent")), &scope()).is_err(), "nor through a link into one");
     }
 
     // what this catches (card d598c806): a citizen whose shell is confined reading, by
@@ -845,6 +909,7 @@ mod tests {
             write: vec![hers.path().canonicalize().unwrap()],
             read: vec![],
             deny: vec![],
+            listable: vec![],
         };
         let scope = ReadScope::Confined(list);
         let mine_s = mine.to_string_lossy().to_string();
