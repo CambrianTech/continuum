@@ -3211,9 +3211,22 @@ impl LlmDeliberationFaculty {
         participants.dedup();
         input.update(b"stimulus");
         input.update([stimulus_index.is_some() as u8]);
+        // The system's own words to her (`TurnVoice::Perception`: a [pattern] notice, a
+        // board anchor) are perception facts, not conversation. In the conversation they
+        // sat AHEAD of the append-only results ring, so each new notice displaced the ring
+        // and everything behind it: Benchy's engine reuse fell to the system prompt alone
+        // (7,441 tokens) the turn a `[pattern]` notice landed (the M5, 2026-10-18 16:16Z).
+        // They render with the facts, after every append-only block, before the ask.
+        let mut perceived: Vec<String> = Vec::new();
         for (index, turn) in ws.turns.iter().enumerate() {
             let role = if turn.is_self { "assistant" } else { "user" };
             let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
+            if turn.voice == TurnVoice::Perception && Some(index) != stimulus_index {
+                // A fact, like every other fact: not part of the request's input identity, so
+                // diagnostic churn never reads as new input to a retained refusal.
+                perceived.push(line);
+                continue;
+            }
             if Some(index) == stimulus_index {
                 // The event time and addressed author are required provenance too.
                 field(&mut input, line.as_bytes());
@@ -3265,7 +3278,7 @@ impl LlmDeliberationFaculty {
             persona_id: Some(self.persona_id),
         };
         let mut ledger = Vec::new();
-        let mut facts = Vec::new();
+        let mut facts = perceived;
         let mut notices = Vec::new();
         for fact in super::perception_facts::render_facts(
             &fact_cx,
