@@ -31,7 +31,7 @@ pub(super) struct PolicyCorrection {
 
 fn digest(batch: &PendingBatch) -> Result<String, String> {
     // Exact immutable batch content boundary, including lived examples and policy.
-    serde_json::to_vec(batch)
+    serde_json::to_vec(batch) // Immutable batch content-digest boundary, including lived content.
         .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
         .map_err(|e| e.to_string())
 }
@@ -253,8 +253,8 @@ impl TrainingTriggerState {
                 .iter()
                 .map(|&i| &source.batch.examples[i])
                 .collect();
-            if serde_json::to_value(&examples).map_err(|e| e.to_string())?
-                != serde_json::to_value(&current.batch.examples).map_err(|e| e.to_string())?
+            if serde_json::to_value(&examples).map_err(|e| e.to_string())? // Exact persisted example-content comparison boundary.
+                != serde_json::to_value(&current.batch.examples).map_err(|e| e.to_string())? // Compare the complete returned content, including lived data.
             {
                 return Err("return examples differ from the exact original ordered subset".into());
             }
