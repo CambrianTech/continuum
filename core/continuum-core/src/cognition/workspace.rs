@@ -2904,7 +2904,9 @@ mod tests {
 
         // Baseline: what boot bound.
         assert_eq!(handle.load().context_window, 4096);
-        assert!(handle.load().model.is_none());
+        // A binding always names its model: `None` resolves to the adapter's served model at
+        // bind time (one owner of the identity; every rate lookup is keyed by it).
+        assert_eq!(handle.load().model.as_deref(), Some(adapter.default_model()));
 
         // A served-model change re-homes onto a new model + served window.
         c.rebind_model(ModelBinding {
