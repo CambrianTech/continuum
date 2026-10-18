@@ -5334,9 +5334,10 @@ pub(crate) mod tests {
         ).await;
         assert!(matches!(denied, Err(crate::sdk_codegen::CommandError::Denied(_))),
             "a citizen cannot self-attest a legacy grade");
+        let graded_at_ms = rows.iter().map(|row| row.staged_at_ms).max().unwrap();
         let binding = graded::BenchmarkCreditAttribution {
-            id: card, rows: graded::select_rows(&evidence, u64::MAX, &rows).unwrap(),
-            attested_by: evidence.reviewer, evidence, graded_at_ms: u64::MAX,
+            id: card, rows: graded::select_rows(&evidence, graded_at_ms, &rows).unwrap(),
+            attested_by: evidence.reviewer, evidence, graded_at_ms,
         };
         assert_eq!(binding.rows.iter().map(|row| row.id).collect::<Vec<_>>(), vec![a.id],
             "other cards and other claims on this card cannot inherit a legacy grade");
