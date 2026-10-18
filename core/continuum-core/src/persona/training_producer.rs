@@ -5236,8 +5236,11 @@ pub(crate) mod tests {
         let round = Uuid::new_v4();
         let other_round = Uuid::new_v4();
         let instance = format!("credit-{}", card);
-        crate::cognition::bench_round::register_round(round, "coder-write-eval", &[card]);
-        crate::cognition::bench_round::register_round(other_round, "coder-write-eval", &[other_card]);
+        for (id, target) in [(round, card), (other_round, other_card)] {
+            crate::cognition::bench_round::open_round(id, "coder-write-eval", Default::default());
+            crate::cognition::bench_round::add_card(id, target);
+            crate::cognition::bench_round::seal_round(id);
+        }
         crate::cognition::bench_round::record_card_instance(card, &instance);
         crate::cognition::bench_round::record_card_instance(other_card, &instance);
         crate::cognition::bench_round::settle_card_direct(card, "closed");
