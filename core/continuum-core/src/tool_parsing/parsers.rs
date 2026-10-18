@@ -17,6 +17,7 @@
 //! automatically unsanitized back to canonical form.
 
 use once_cell::sync::Lazy;
+use super::static_regex;
 use regex::Regex;
 use std::collections::HashMap;
 
@@ -48,11 +49,11 @@ pub fn parse_all_formats(text: &str) -> Vec<RawToolMatch> {
 // ─── Anthropic XML ──────────────────────────────────────────────────
 
 static RE_ANTHROPIC: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<tool_use>(.*?)</tool_use>").unwrap());
+    Lazy::new(|| static_regex(r"(?s)<tool_use>(.*?)</tool_use>"));
 static RE_TOOL_NAME: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<tool_name>(.*?)</tool_name>").unwrap());
+    Lazy::new(|| static_regex(r"(?s)<tool_name>(.*?)</tool_name>"));
 static RE_PARAMS_BLOCK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<parameters>(.*?)</parameters>").unwrap());
+    Lazy::new(|| static_regex(r"(?s)<parameters>(.*?)</parameters>"));
 
 fn parse_anthropic(text: &str) -> Vec<RawToolMatch> {
     RE_ANTHROPIC
@@ -88,7 +89,7 @@ fn parse_anthropic(text: &str) -> Vec<RawToolMatch> {
 //   <function=name>{"param": "value"}</function>   — standard
 //   function=name>{"param": "value"}               — Groq variant (no < prefix, no closing tag)
 static RE_FUNCTION: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?si)<?function=([^>\s]+)>\s*(\{[\s\S]*?\})\s*(?:</function>)?").unwrap()
+    static_regex(r"(?si)<?function=([^>\s]+)>\s*(\{[\s\S]*?\})\s*(?:</function>)?")
 });
 
 fn parse_function_style(text: &str) -> Vec<RawToolMatch> {
@@ -167,20 +168,20 @@ fn all_prefix_pattern() -> String {
 static RE_BARE: Lazy<Regex> = Lazy::new(|| {
     let prefix_pat = all_prefix_pattern();
     // Match tool call with optional backticks, optional trailing </function>
-    Regex::new(&format!(
+    static_regex(&format!(
         r"`?(?:{})[a-zA-Z0-9/_-]+`?\s*\{{[^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*\}}\s*(?:</function>)?",
         prefix_pat
     ))
-    .unwrap()
+    
 });
 
 static RE_BARE_PARSE: Lazy<Regex> = Lazy::new(|| {
     let prefix_pat = all_prefix_pattern();
-    Regex::new(&format!(
+    static_regex(&format!(
         r"(?s)`?((?:{})[a-zA-Z0-9/_-]+)`?\s*(\{{.+?\}})\s*(?:</function>)?",
         prefix_pat
     ))
-    .unwrap()
+    
 });
 
 /// Unsanitize a tool name: convert underscore-based names back to slash-based.
@@ -252,7 +253,7 @@ fn parse_bare(text: &str) -> Vec<RawToolMatch> {
 //   {"type": "function", "name": "code_git", "parameters": {"operation": "status"}}
 // Used by Fireworks and some OpenAI-compatible models
 static RE_JSON_TOOL: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"\{(?:\s*"type"\s*:\s*"[^"]*"\s*,)?\s*"name"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\}"#).unwrap()
+    static_regex(r#"\{(?:\s*"type"\s*:\s*"[^"]*"\s*,)?\s*"name"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\}"#)
 });
 
 fn parse_json_object(text: &str) -> Vec<RawToolMatch> {
@@ -280,7 +281,7 @@ fn parse_json_object(text: &str) -> Vec<RawToolMatch> {
 //          ["collaboration_chat_send", {"room": "general", "message": "hello"}]
 
 static RE_ARRAY_STYLE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r#"\[\s*"([^"]+)"\s*,\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\]"#).unwrap()
+    static_regex(r#"\[\s*"([^"]+)"\s*,\s*(\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\})\s*\]"#)
 });
 
 /// Check if a name looks like a tool name (has slash or starts with known prefix after unsanitize).
@@ -322,7 +323,7 @@ fn parse_curly_shorthand(text: &str) -> Vec<RawToolMatch> {
     // Find JSON objects via serde, check if single-key with tool-like name
     // Use regex to find candidate { ... } blocks first, then validate with serde
     static RE_OUTER_BRACE: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}").unwrap());
+        Lazy::new(|| static_regex(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}"));
 
     RE_OUTER_BRACE
         .find_iter(text)
@@ -371,8 +372,8 @@ fn parse_curly_shorthand(text: &str) -> Vec<RawToolMatch> {
 
 // ─── Markdown backtick ──────────────────────────────────────────────
 
-static RE_MD_TOOL: Lazy<Regex> = Lazy::new(|| Regex::new(r"(?i)`tool:\s*([^`]+)`").unwrap());
-static RE_MD_PARAM: Lazy<Regex> = Lazy::new(|| Regex::new(r"`([^`=]+)=([^`]*)`").unwrap());
+static RE_MD_TOOL: Lazy<Regex> = Lazy::new(|| static_regex(r"(?i)`tool:\s*([^`]+)`"));
+static RE_MD_PARAM: Lazy<Regex> = Lazy::new(|| static_regex(r"`([^`=]+)=([^`]*)`"));
 
 fn parse_markdown(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
@@ -442,7 +443,7 @@ fn parse_markdown_match(text: &str) -> Option<(String, HashMap<String, String>)>
 // ─── Old-style XML ──────────────────────────────────────────────────
 
 static RE_OLD_STYLE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r#"(?s)<tool\s+name="([^"]+)">(.*?)</tool>"#).unwrap());
+    Lazy::new(|| static_regex(r#"(?s)<tool\s+name="([^"]+)">(.*?)</tool>"#));
 
 fn parse_old_style(text: &str) -> Vec<RawToolMatch> {
     RE_OLD_STYLE
@@ -482,18 +483,18 @@ static COLON_TOOL_PREFIX_RE: &str = r"(?:code|data|collaboration|ai|voice|search
 
 // JSON-params variant: `tool/name: {key: "value"...}`
 static RE_COLON_TOOL_LINE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(&format!(
+    static_regex(&format!(
         r"(?m)^({}):\s*\{{([^\n\}}]*)",
         COLON_TOOL_PREFIX_RE
     ))
-    .unwrap()
+    
 });
 
 // Bare-value variant: `tool/name: bare_value` (no leading `{`)
 // Captures the rest of the line after the colon-space.
 // JSON-params cases (value starts with `{`) are filtered out in the parse loop.
 static RE_COLON_BARE_LINE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(&format!(r"(?m)^({}):\s*([^\n]+)", COLON_TOOL_PREFIX_RE)).unwrap());
+    Lazy::new(|| static_regex(&format!(r"(?m)^({}):\s*([^\n]+)", COLON_TOOL_PREFIX_RE)));
 
 /// Map a tool name to its first (only positional) parameter key.
 fn first_positional_param(tool: &str) -> &'static str {
@@ -511,17 +512,17 @@ fn first_positional_param(tool: &str) -> &'static str {
 fn extract_code_block(after: &str) -> Option<(String, usize)> {
     // Complete code block: ```lang\ncontent\n```
     static RE_CODE_BLOCK: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"(?s)```(?:\w*)\n(.*?)\n```").unwrap());
+        Lazy::new(|| static_regex(r"(?s)```(?:\w*)\n(.*?)\n```"));
     // Open/incomplete code block: ```lang\ncontent (no closing ```)
     static RE_OPEN_BLOCK: Lazy<Regex> =
-        Lazy::new(|| Regex::new(r"```(?:\w*)\n([\s\S]+)$").unwrap());
+        Lazy::new(|| static_regex(r"```(?:\w*)\n([\s\S]+)$"));
 
     let trimmed = after.trim_start_matches([',', '}', '\n', '\r', ' ']);
     let offset = after.len() - trimmed.len();
 
     if let Some(cb) = RE_CODE_BLOCK.captures(trimmed) {
         let content = cb.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
-        let consumed = offset + cb.get(0).unwrap().end();
+        let consumed = offset + cb.get(0)?.end();
         Some((content, consumed))
     } else if let Some(ob) = RE_OPEN_BLOCK.captures(trimmed) {
         // Truncated response: accept content up to end of string
@@ -545,8 +546,10 @@ fn parse_colon_shorthand(text: &str) -> Vec<RawToolMatch> {
 
     // ── Pass 1: JSON-params variant `tool: {key: "val"...}` ──────────
     for cap in RE_COLON_TOOL_LINE.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
-        let name = cap.get(1).unwrap().as_str().trim().to_string();
+        let (Some(full_match), Some(name_match)) = (cap.get(0), cap.get(1)) else {
+            continue;
+        };
+        let name = name_match.as_str().trim().to_string();
         let inline_params = cap.get(2).map(|m| m.as_str()).unwrap_or("");
 
         let mut parameters = parse_colon_params(inline_params);
@@ -589,7 +592,9 @@ fn parse_colon_shorthand(text: &str) -> Vec<RawToolMatch> {
     // ── Pass 2: Bare-value variant `tool: bare_value` ────────────────
     // Only emit if no JSON-params match already covers this position.
     'bare: for cap in RE_COLON_BARE_LINE.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let start = full_match.start();
 
         // Skip if a JSON-params result already covers this offset.
@@ -599,7 +604,10 @@ fn parse_colon_shorthand(text: &str) -> Vec<RawToolMatch> {
             }
         }
 
-        let name = cap.get(1).unwrap().as_str().trim().to_string();
+        let Some(name_match) = cap.get(1) else {
+            continue 'bare;
+        };
+        let name = name_match.as_str().trim().to_string();
         let raw_value = cap.get(2).map(|m| m.as_str().trim()).unwrap_or("");
 
         // Skip JSON-params cases (value starts with `{`) — handled by Pass 1.
@@ -672,7 +680,7 @@ fn parse_colon_params(s: &str) -> HashMap<String, String> {
     // Fallback: extract any `key: "value"` or `"key": "value"` pairs.
     static RE_PARAM: Lazy<Regex> = Lazy::new(|| {
         // Matches: optionally-quoted key, colon, then a quoted value.
-        Regex::new(r#""?([a-zA-Z_][a-zA-Z0-9_]*)"?\s*:\s*"([^"]*)""#).unwrap()
+        static_regex(r#""?([a-zA-Z_][a-zA-Z0-9_]*)"?\s*:\s*"([^"]*)""#)
     });
     for cap in RE_PARAM.captures_iter(s) {
         if let (Some(k), Some(v)) = (cap.get(1), cap.get(2)) {
@@ -685,15 +693,17 @@ fn parse_colon_params(s: &str) -> HashMap<String, String> {
 // ─── Helpers ────────────────────────────────────────────────────────
 
 /// Regex to find opening XML tags: `<tagName>`
-static RE_XML_OPEN: Lazy<Regex> = Lazy::new(|| Regex::new(r"<(\w+)>").unwrap());
+static RE_XML_OPEN: Lazy<Regex> = Lazy::new(|| static_regex(r"<(\w+)>"));
 
 /// Extract `<paramName>value</paramName>` pairs from an XML block.
 /// Uses a two-pass approach since Rust regex doesn't support backreferences.
 pub fn extract_xml_params(block: &str) -> HashMap<String, String> {
     let mut params = HashMap::new();
     for cap in RE_XML_OPEN.captures_iter(block) {
-        let tag_name = cap.get(1).unwrap().as_str();
-        let open_tag = cap.get(0).unwrap();
+        let (Some(tag_match), Some(open_tag)) = (cap.get(1), cap.get(0)) else {
+            continue;
+        };
+        let tag_name = tag_match.as_str();
         let after_open = open_tag.end();
 
         // Look for the matching closing tag
@@ -725,7 +735,7 @@ pub fn parse_json_params(json_str: &str) -> HashMap<String, String> {
         _ => {
             // Fallback: extract "key": "value" pairs
             static RE_KV: Lazy<Regex> =
-                Lazy::new(|| Regex::new(r#""([^"]+)":\s*"([^"]*)""#).unwrap());
+                Lazy::new(|| static_regex(r#""([^"]+)":\s*"([^"]*)""#));
             RE_KV
                 .captures_iter(json_str)
                 .filter_map(|cap| {
@@ -780,8 +790,8 @@ pub fn parse_with_model_family(text: &str, family: ModelFamily) -> Vec<RawToolMa
 //   ▁ = U+2581 (lower one eighth block, used as word separator)
 
 static RE_DEEPSEEK_BLOCK: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?s)\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}(.*?)\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}")
-        .unwrap()
+    static_regex(r"(?s)\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}begin\u{FF5C}\u{FF1E}(.*?)\u{FF1C}\u{FF5C}tool\u{2581}calls\u{2581}end\u{FF5C}\u{FF1E}")
+        
 });
 
 /// Parse a single DeepSeek tool call JSON object.
@@ -871,13 +881,15 @@ fn parse_deepseek(text: &str) -> Vec<RawToolMatch> {
 //   <|python_tag|>{"type": "function", "function": {"name": "...", "arguments": {...}}}
 
 static RE_LLAMA_BLOCK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<\|python_tag\|>\s*(.+?)(?:<\|eot_id\|>|\z)").unwrap());
+    Lazy::new(|| static_regex(r"(?s)<\|python_tag\|>\s*(.+?)(?:<\|eot_id\|>|\z)"));
 
 fn parse_llama(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
     for cap in RE_LLAMA_BLOCK.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
         // Try parsing the body as JSON
@@ -983,13 +995,15 @@ fn extract_arguments_field(
 //   [TOOL_CALLS] [{"name": "code_search", "arguments": {"pattern": "test"}}]
 
 static RE_MISTRAL_BLOCK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)\[TOOL_CALLS\]\s*(\[.+?\])").unwrap());
+    Lazy::new(|| static_regex(r"(?s)\[TOOL_CALLS\]\s*(\[.+?\])"));
 
 fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
     for cap in RE_MISTRAL_BLOCK.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let arr_str = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
         if let Ok(serde_json::Value::Array(arr)) =
@@ -1023,13 +1037,15 @@ fn parse_mistral(text: &str) -> Vec<RawToolMatch> {
 //   </tool_call>
 
 static RE_HERMES_BLOCK: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>").unwrap());
+    Lazy::new(|| static_regex(r"(?s)<tool_call>\s*(.*?)\s*</tool_call>"));
 
 fn parse_hermes(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
     for cap in RE_HERMES_BLOCK.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
@@ -1064,7 +1080,9 @@ fn parse_qwen(text: &str) -> Vec<RawToolMatch> {
     let mut results = Vec::new();
 
     for cap in RE_HERMES_BLOCK.captures_iter(text) {
-        let full_match = cap.get(0).unwrap();
+        let Some(full_match) = cap.get(0) else {
+            continue;
+        };
         let body = cap.get(1).map(|m| m.as_str().trim()).unwrap_or("");
 
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(body) {
