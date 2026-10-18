@@ -227,7 +227,7 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
             // its own scan, silently. Match by nature, never by name.
             let production = match src
                 .lines()
-                .position(|l| split_code_and_comment(l).0.contains("#[cfg(test)]"))
+                .position(|l| split_code_and_comment(l).0.contains("#[cfg(test)]") || split_code_and_comment(l).0.contains("#![cfg(test)]"))
             {
                 Some(line_idx) => src
                     .lines()
