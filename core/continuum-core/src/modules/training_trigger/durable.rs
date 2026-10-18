@@ -2547,6 +2547,19 @@ mod tests {
             store.submissions.update(submission, &explicit_source).await.unwrap();
             assert!(next.state.recover_return_policy(correction.clone(), actor).await.is_err(), "an explicit producer policy change is not adapter materialization");
             store.submissions.update(submission, &original).await.unwrap();
+            let mut unknown_provider = intent.clone();
+            unknown_provider.phase = DispatchPhase::Dispatched {
+                handle: JobHandle { provider_id: "unknown-provider".into(), provider_job_id: job.to_string(), local_id: job },
+                provider: "unknown-provider".into(),
+            };
+            store.dispatches.save(dispatch, &unknown_provider).await.unwrap();
+            assert!(next.state.recover_return_policy(correction.clone(), actor).await.is_err(), "unknown providers cannot establish native default materialization");
+            store.dispatches.save(dispatch, &intent).await.unwrap();
+            let mut active = intent.clone();
+            active.is_active = true;
+            store.dispatches.save(dispatch, &active).await.unwrap();
+            assert!(next.state.recover_return_policy(correction.clone(), actor).await.is_err(), "an active dispatch prevents policy correction");
+            store.dispatches.save(dispatch, &intent).await.unwrap();
             let inspected = next.state.recover_return_policy(correction.clone(), actor).await.unwrap();
             assert!(!inspected.applied);
             assert!(store.policy_corrections.find_by_id(returned_id).await.unwrap().is_none());
