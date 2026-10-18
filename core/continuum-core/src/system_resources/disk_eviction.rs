@@ -578,13 +578,7 @@ impl CargoTargetPool {
         let mut current = root.to_path_buf();
         let check = |path: &Path| -> Result<std::fs::Metadata, String> {
             let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-            let redirected = metadata.file_type().is_symlink();
-            #[cfg(windows)]
-            let redirected = {
-                use std::os::windows::fs::MetadataExt;
-                redirected || metadata.file_attributes() & 0x400 != 0
-            };
-            if redirected { return Err(format!("redirected cache path: {}", path.display())); }
+            if Self::is_redirect(&metadata) { return Err(format!("redirected cache path: {}", path.display())); }
             Ok(metadata)
         };
         let mut metadata = check(&current)?;
@@ -601,20 +595,64 @@ impl CargoTargetPool {
         Ok(metadata)
     }
 
+    /// A symlink, or on Windows a reparse point (junction): an entry that names another
+    /// place. One definition for the root check and the tree walk.
+    fn is_redirect(metadata: &std::fs::Metadata) -> bool {
+        let redirected = metadata.file_type().is_symlink();
+        #[cfg(windows)]
+        let redirected = {
+            use std::os::windows::fs::MetadataExt;
+            redirected || metadata.file_attributes() & 0x400 != 0
+        };
+        redirected
+    }
+
+    /// The rung itself must be physical (its whole chain is checked); BELOW it, a link
+    /// is a leaf the removal unlinks and never follows, so it is no reason to refuse the
+    /// rung. Cargo writes such links into its own build tree: cxxbridge's
+    /// `out/cxxbridge/include/<crate>/src/*.rs` link back to the source, and refusing on
+    /// them refused every eviction of the shared cache for 29 hours (the M5,
+    /// 2026-10-17 04:58Z to 10-18 09:28Z, 211 declines, 96% disk), which refused every
+    /// KV page save and cooled every resident's turn.
     fn validate_tree(path: &Path, root: &Path) -> Result<(), String> {
         if Self::owned_metadata(path, root)?.is_dir() {
             for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
-                Self::validate_tree(&entry.map_err(|error| error.to_string())?.path(), root)?;
+                Self::validate_below(&entry.map_err(|error| error.to_string())?.path())?;
             }
         }
         Ok(())
+    }
+
+    fn validate_below(path: &Path) -> Result<(), String> {
+        let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
+        if !Self::is_redirect(&metadata) && metadata.is_dir() {
+            for entry in std::fs::read_dir(path).map_err(|error| error.to_string())? {
+                Self::validate_below(&entry.map_err(|error| error.to_string())?.path())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Unlink a link found inside a physical owned directory: the link goes, its target
+    /// is never touched. A Windows junction is a directory entry, so it takes `remove_dir`.
+    fn unlink_redirect(path: &Path, root: &Path) {
+        let Some(parent) = path.parent() else { return };
+        if path == root || Self::owned_metadata(parent, root).is_err() { return; }
+        if std::fs::symlink_metadata(path).is_ok_and(|metadata| Self::is_redirect(&metadata))
+            && std::fs::remove_file(path).is_err()
+        {
+            let _ = std::fs::remove_dir(path);
+        }
     }
 
     /// Recheck each child during removal and never traverse a redirected entry.
     /// Count only successfully removed file bytes, including a partial IO failure.
     fn free_owned_tree(path: &Path, root: &Path, preserve: Option<&Path>) -> u64 {
         if preserve == Some(path) { return 0; }
-        let Ok(metadata) = Self::owned_metadata(path, root) else { return 0; };
+        let Ok(metadata) = Self::owned_metadata(path, root) else {
+            Self::unlink_redirect(path, root);
+            return 0;
+        };
         if !metadata.is_dir() {
             return if metadata.is_file() && std::fs::remove_file(path).is_ok() { metadata.len() } else { 0 };
         }
@@ -1591,7 +1629,8 @@ mod tests {
         symlink(outside.path(), tmp.path().join("release/incremental/redirect")).unwrap();
         assert_eq!(pool.evict_at_least(u64::MAX), 0);
         assert_eq!(std::fs::read(outside.path().join("keep")).unwrap(), b"not cache ownership");
-        assert!(tmp.path().join("release/incremental/redirect").symlink_metadata().unwrap().file_type().is_symlink());
+        assert!(tmp.path().join("release/incremental/redirect").symlink_metadata().is_err(),
+            "a link below a physical rung is unlinked, never followed (its target was kept above)");
         let parent = tmp.path().join("parent");
         std::fs::create_dir_all(parent.join("cache")).unwrap();
         let remembered = TrackedDir::new("cargo-target", parent.join("cache").canonicalize().unwrap());
@@ -1601,6 +1640,31 @@ mod tests {
         assert_eq!(CargoTargetPool::new(remembered, 1).evict_at_least(u64::MAX), 0,
             "a formerly physical root cannot acquire a new destination through its ancestor");
         assert!(!outside.path().join("cache/.cargo-lock").exists());
+    }
+
+    // what this catches: a link INSIDE the build tree refusing the whole eviction. Cargo's
+    // cxxbridge writes `out/cxxbridge/include/<crate>/src/*.rs` as links back to source, so
+    // refusing on any link below a rung meant the shared cache never evicted: the M5,
+    // 2026-10-17 04:58Z to 10-18 09:28Z, 211 declines at 96% disk, every KV page save
+    // refused, every resident turn re-prefilled cold. The real bytes beside the link go;
+    // the link is unlinked; the source it names is untouched.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_the_build_tree_is_unlinked_and_the_rest_is_reclaimed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("peer_connection_factory.rs"), b"source, never cache").unwrap();
+        let include = tmp.path().join("debug/build/webrtc-sys-ac76/out/cxxbridge/include/webrtc-sys/src");
+        std::fs::create_dir_all(&include).unwrap();
+        std::os::unix::fs::symlink(source.path().join("peer_connection_factory.rs"), include.join("peer_connection_factory.rs")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("debug/deps")).unwrap();
+        std::fs::write(tmp.path().join("debug/deps/libwebrtc_sys.rlib"), vec![7u8; 4096]).unwrap();
+        let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
+        let freed = CargoTargetPool::new(tracked, 1).evict_at_least(u64::MAX);
+        assert!(freed >= 4096, "the real artifact beside the link is reclaimed: freed {freed}");
+        assert!(!tmp.path().join("debug/deps/libwebrtc_sys.rlib").exists());
+        assert!(include.join("peer_connection_factory.rs").symlink_metadata().is_err(), "the link itself is unlinked");
+        assert_eq!(std::fs::read(source.path().join("peer_connection_factory.rs")).unwrap(), b"source, never cache");
     }
 
     // what this catches: pressure is usage/BUDGET (policy-bounded), not
