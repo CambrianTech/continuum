@@ -5139,6 +5139,7 @@ pub(crate) mod tests {
         let executor = data_runtime();
         let persona = Uuid::new_v4();
         let card = Uuid::new_v4();
+        let other_card = Uuid::new_v4();
         let name = "settlement-models";
         let (_, a) = stage_settlement_fixture(
             executor.clone(),
@@ -5152,7 +5153,7 @@ pub(crate) mod tests {
             executor.clone(),
             persona,
             name,
-            card,
+            other_card,
             vec![served_receipt("b", "model-b")],
         )
         .await;
@@ -5230,9 +5231,53 @@ pub(crate) mod tests {
             .await
             .unwrap());
         assert_eq!(stored_credit_rows(&data, name).await.len(), 4);
-        assert!(settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, true)
-            .await
-            .unwrap());
+        // Regression for c744: the last card retires its round BEFORE async
+        // grading. A different round using the same instance must not receive it.
+        let round = Uuid::new_v4();
+        let other_round = Uuid::new_v4();
+        let instance = format!("credit-{}", card);
+        for (id, target) in [(round, card), (other_round, other_card)] {
+            crate::cognition::bench_round::open_round(id, "coder-write-eval", Default::default());
+            crate::cognition::bench_round::add_card(id, target);
+            crate::cognition::bench_round::seal_round(id);
+        }
+        crate::cognition::bench_round::record_card_instance(card, &instance);
+        crate::cognition::bench_round::record_card_instance(other_card, &instance);
+        crate::cognition::bench_round::settle_card_direct(card, "closed");
+        assert_eq!(crate::cognition::bench_round::cards_for_instance(&instance), vec![other_card]);
+        let verdict = crate::cognition::swe_bench::SweVerdict {
+            instance_id: instance.clone(), resolved: true,
+            ..Default::default()
+        };
+        let rows = stored_credit_rows(&data, name).await;
+        crate::cognition::swe_bench::record_card_verdict_with(&verdict, card, |target, passed| {
+            let (rows, conn, executor, instance) = (&rows, &conn, &executor, &instance);
+            async move {
+            assert_eq!(target, card);
+            assert!(crate::cognition::swe_bench::read_verdict(&instance).unwrap().resolved,
+                "the durable grade precedes any transfer");
+            let mut transferred = 0;
+            for row in rows.iter().filter(|row| row.card_id == target) {
+                transferred += usize::from(settle_staged_row(
+                    &conn, &substrate_conn(&executor), persona, name, row, passed,
+                ).await.unwrap());
+            }
+            assert_eq!(transferred, 1);
+            }
+        }).await.unwrap().expect("durable exact-card verdict");
+        assert!(reviewed::transfer_accepted(&data, name, a.id).await.unwrap());
+        assert!(!reviewed::transfer_accepted(&data, name, b.id).await.unwrap(),
+            "same-instance work on another card is not credited");
+        for refused in [
+            crate::cognition::swe_bench::SweVerdict { resolved: false, ..verdict.clone() },
+            crate::cognition::swe_bench::SweVerdict {
+                error: Some("grader unavailable".into()), ..verdict.clone()
+            },
+        ] {
+            assert!(crate::cognition::swe_bench::record_card_verdict_with(
+                &refused, card, |_, _| async { panic!("unrecorded verdict settled credit") },
+            ).await.unwrap().is_none());
+        }
         script_settlement_reply(
             &submit,
             &b,
@@ -5259,13 +5304,21 @@ pub(crate) mod tests {
         submit.respond_to("genome/training-trigger/submit", |_| {
             panic!("acknowledged transfer was dispatched again")
         });
-        assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &a, true)
-            .await
-            .unwrap());
+        crate::cognition::swe_bench::record_card_verdict_with(&verdict, card, |target, passed| {
+            let (rows, conn, executor) = (&rows, &conn, &executor);
+            async move {
+            for row in rows.iter().filter(|row| row.card_id == target) {
+                assert!(!settle_staged_row(
+                    &conn, &substrate_conn(&executor), persona, name, row, passed,
+                ).await.unwrap(), "retry reuses the existing acceptance");
+            }
+            }
+        }).await.unwrap().expect("repeated durable grade can retry transfer");
         assert!(!settle_staged_row(&conn, &substrate_conn(&executor), persona, name, &b, true)
             .await
             .unwrap());
         assert!(remaining.iter().any(|row| row.id == mixed.id));
         assert!(remaining.iter().any(|row| row.id == faulted.id));
+        crate::cognition::bench_round::settle_card_direct(other_card, "closed");
     }
 }
