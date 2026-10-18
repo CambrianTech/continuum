@@ -2623,39 +2623,13 @@ impl ActionCommand for BenchmarkDispatch {
         // `work.card.state_changed` subscriber settles cards as they reach terminal
         // states and announces the END — instead of the round's fate being probe
         // archaeology ("random and directed by agent, not an ecosystem", Joel 8/16).
-        // ONE kickoff for the whole deck of a citizen-driven round, addressed to the
-        // ROOM: the deck is shared, the substrate pulls for whoever is idle, and the
-        // claim stages the work — so the message is an announcement, not an order.
+        // Announce the open deck as the actual dispatch caller. Borrowing a citizen's
+        // identity makes a singleton recipient drop the announcement as her own echo.
+        // This offers work; claiming remains a citizen act, never automatic assignment.
         if driver == crate::cognition::bench_round::WorkDriver::Citizen && !card_ids.is_empty() {
-            let text = format!(
-                "{} cards are OPEN on this board ({}): {}. Whoever is free pulls one — the \
-                 substrate claims it for you when you are idle (or claim_task <id>), and the \
-                 claim stages the work in YOUR workspace. Work it there; when your fix is \
-                 verified green say `work/state <id> done` — that is what fires your grade. \
-                 One card at a time; talk here when you are stuck or when you can review a \
-                 teammate's diff.",
-                card_ids.len(),
-                spec.name,
-                card_ids.join(", ")
-            );
-            match self.registry.any_live_citizen() {
-                Some(voice_rt) => {
-                    if let Err(e) = voice_rt.join_room(&room_name).await {
-                        kickoff_errors.push(format!("deck kickoff: voice join: {e}"));
-                    } else {
-                        match crate::persona::airc_citizen::publish_text_in_room(
-                            voice_rt.airc(),
-                            room.room_id.as_uuid(),
-                            &text,
-                        )
-                        .await
-                        {
-                            Ok(_) => kickoffs += 1,
-                            Err(e) => kickoff_errors.push(format!("deck kickoff: {e}")),
-                        }
-                    }
-                }
-                None => kickoff_errors.push("deck kickoff: no live citizen to voice it".into()),
+            match publish_citizen_deck(&airc, room.room_id.as_uuid(), spec.name, &card_ids).await {
+                Ok(_) => kickoffs += 1,
+                Err(e) => kickoff_errors.push(format!("deck kickoff: {e}")),
             }
         }
         crate::cognition::bench_round::seal_round(room.room_id.as_uuid());
@@ -2734,8 +2708,51 @@ impl ActionCommand for BenchmarkDispatch {
 // Default-constructible commands; this one is not).
 crate::register_command!(BenchmarkDispatch);
 
+/// Publish through the same caller authority that created the activity and its cards.
+async fn publish_citizen_deck(
+    author: &airc_lib::Airc,
+    room: uuid::Uuid,
+    benchmark: &str,
+    cards: &[String],
+) -> Result<airc_core::EventId, airc_lib::AircError> {
+    let text = format!(
+        "{} cards are OPEN on this board ({}): {}. Whoever is free may claim one with \
+         claim_task <id>; the claim stages the work in YOUR workspace. Work it there; \
+         when your fix is verified green say `work/state <id> done` — that is what fires \
+         your grade. One card at a time; talk here when you are stuck or when you can \
+         review a teammate's diff.",
+        cards.len(), benchmark, cards.join(", ")
+    );
+    crate::persona::airc_citizen::publish_text_in_room(author, room, &text).await
+}
+
 #[cfg(test)]
 mod tests {
+    // what this catches: c744's singleton deck was voiced as its recipient and
+    // filtered as self-speech. The persisted announcement must retain its caller
+    // and explicit room even when that caller subsequently focuses elsewhere.
+    #[tokio::test]
+    async fn citizen_deck_retains_command_author_and_target_room() {
+        use crate::persona::airc_source::AircTranscriptReader;
+        let home = tempfile::tempdir().expect("isolated author scope");
+        let author = airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+            .await.expect("local author without daemon");
+        let room = author.join("bench-author-contract").await.expect("join activity");
+        let lobby = author.join("general").await.expect("move ambient focus");
+        let id = super::publish_citizen_deck(
+            &author, room.channel.as_uuid(), "coder-write-eval", &["card-1".into()],
+        ).await.expect("publish through caller authority");
+        let events = AircTranscriptReader::page_recent_in(&author, Some(room.channel), 10)
+            .await.expect("activity transcript");
+        let event = events.iter().find(|e| e.event_id == id).expect("published deck in target room");
+        assert_eq!(event.peer_id, author.peer_id());
+        assert_eq!(event.room_id, room.channel);
+        let body = serde_json::to_string(&event.body).expect("public announcement body");
+        assert!(body.contains("card-1") && body.contains("claim_task <id>"));
+        assert!(!body.contains("substrate claims"), "no automatic-claim promise");
+        assert_eq!(author.current_room().await.expect("current room").channel, lobby.channel);
+    }
+
     // what this catches: the recipe row's serde contract — a minimal hand-authored
     // `data/create` row (name + dispatches only) MUST parse, extra/unknown future
     // fields MUST be tolerated, and instances default empty. The recipe is data
