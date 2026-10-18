@@ -152,12 +152,10 @@ impl Participant {
 pub fn run_market(participants: &mut [Participant], jobs: usize) {
     for _ in 0..jobs {
         let Some(w) = (0..participants.len()).min_by(|&a, &b| {
-            expected_cost(&participants[a].specs, &participants[a].reputation)
-                .partial_cmp(&expected_cost(
-                    &participants[b].specs,
-                    &participants[b].reputation,
-                ))
-                .expect("entry prices and trust bounds are finite")
+            expected_cost(&participants[a].specs, &participants[a].reputation).total_cmp(&expected_cost(
+                &participants[b].specs,
+                &participants[b].reputation,
+            ))
         }) else {
             break;
         };
@@ -174,12 +172,10 @@ pub fn run_paid_market(participants: &mut [Participant], jobs: usize, probe_quot
         let Some(w) = (0..participants.len())
             .filter(|&i| graduated(&participants[i].reputation, probe_quota))
             .min_by(|&a, &b| {
-                expected_cost(&participants[a].specs, &participants[a].reputation)
-                    .partial_cmp(&expected_cost(
-                        &participants[b].specs,
-                        &participants[b].reputation,
-                    ))
-                    .expect("entry prices and trust bounds are finite")
+                expected_cost(&participants[a].specs, &participants[a].reputation).total_cmp(&expected_cost(
+                &participants[b].specs,
+                &participants[b].reputation,
+            ))
             })
         else {
             break; // no graduated participant is eligible for paid work this tick

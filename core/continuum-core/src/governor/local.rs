@@ -179,7 +179,7 @@ impl LocalSubstrateGovernor {
         let mut state = self
             .snapshot_state
             .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         state.thresholds = thresholds;
     }
 
@@ -188,7 +188,7 @@ impl LocalSubstrateGovernor {
     pub fn current_cascade_step(&self) -> u8 {
         self.snapshot_state
             .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
             .current_step
     }
 
@@ -199,7 +199,7 @@ impl LocalSubstrateGovernor {
         let mut guard = self
             .candidates
             .lock()
-            .expect("LocalSubstrateGovernor candidates mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         *guard = candidates;
     }
 
@@ -208,7 +208,7 @@ impl LocalSubstrateGovernor {
     pub fn candidate_count(&self) -> usize {
         self.candidates
             .lock()
-            .expect("LocalSubstrateGovernor candidates mutex poisoned")
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
             .len()
     }
 
@@ -219,7 +219,7 @@ impl LocalSubstrateGovernor {
         let mut state = self
             .snapshot_state
             .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         state.cascade_transition_count = state.cascade_transition_count.saturating_add(1);
     }
 
@@ -230,7 +230,7 @@ impl LocalSubstrateGovernor {
         let candidates = self
             .candidates
             .lock()
-            .expect("LocalSubstrateGovernor candidates mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         let selected = select_policy(&candidates, &hw)?;
         let new_policy = crate::governor::into_governor_policy(selected.clone(), hw, crate::time::EpochMs::now().millis());
         drop(candidates);
@@ -243,7 +243,7 @@ impl LocalSubstrateGovernor {
             let mut base = self
                 .base_policy
                 .lock()
-                .expect("LocalSubstrateGovernor base_policy mutex poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
             *base = new_policy.clone();
             base.cascade_step = 0;
         }
@@ -251,7 +251,7 @@ impl LocalSubstrateGovernor {
             let mut state = self
                 .snapshot_state
                 .lock()
-                .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
             state.current_step = 0;
             state.last_step_change_ms = crate::time::EpochMs::now().millis();
             state.pending_speculation_retreat = false;
@@ -291,7 +291,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
             let mut state = self
                 .snapshot_state
                 .lock()
-                .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+                .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
 
             // Record the signal in the ring.
             if state.recent_signals.len() >= RECENT_SIGNALS_CAPACITY {
@@ -330,7 +330,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
                 let base_clone: GovernorPolicy = self
                     .base_policy
                     .lock()
-                    .expect("LocalSubstrateGovernor base_policy mutex poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
                     .clone();
 
                 let mut next_policy = apply_cascade_step_to_policy(&base_clone, new_step);
@@ -372,7 +372,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
                 let base_clone: GovernorPolicy = self
                     .base_policy
                     .lock()
-                    .expect("LocalSubstrateGovernor base_policy mutex poisoned")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
                     .clone();
                 let mut next_policy = apply_cascade_step_to_policy(&base_clone, state.current_step);
                 next_policy.policy_version =
@@ -395,7 +395,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
         let state = self
             .snapshot_state
             .lock()
-            .expect("LocalSubstrateGovernor snapshot mutex poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         GovernorSnapshot {
             current_policy: (*policy).clone(),
             cascade_transition_count: state.cascade_transition_count,

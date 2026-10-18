@@ -6443,7 +6443,9 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
             _ => unreachable!("only a validated prebuilt source selects this plan"),
         },
         LaunchPlan::Script => {
-            let script = script.expect("plan_launch only picks Script when one was found");
+            let Some(script) = script else {
+                return Err("launch plan chose a start script but none was found".to_string());
+            };
             if env_from_source || policy == LaunchSource::FromSource {
                 eprintln!(
                     "▶ building from source, then starting via {} (log: {logfile}) — \
@@ -6463,9 +6465,9 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
             c
         }
         LaunchPlan::Installed | LaunchPlan::InstalledWithoutRebuild => {
-            let bin = server_bin
-                .as_ref()
-                .expect("plan_launch only picks Installed when one was found");
+            let Some(bin) = server_bin.as_ref() else {
+                return Err("launch plan chose the installed server but none was found".to_string());
+            };
             if plan == LaunchPlan::InstalledWithoutRebuild {
                 // Say it. A reboot that restarts the same artifact is a legitimate
                 // operation on an installed node, but calling it a deploy without

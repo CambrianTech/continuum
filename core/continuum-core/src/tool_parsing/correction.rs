@@ -7,6 +7,7 @@
 
 use super::types::CorrectedToolCall;
 use once_cell::sync::Lazy;
+use super::static_regex;
 use regex::Regex;
 use std::collections::HashMap;
 
@@ -123,7 +124,7 @@ static NAMED_ENTITIES: Lazy<HashMap<&str, &str>> = Lazy::new(|| {
 
 /// HTML entity regex.
 static RE_ENTITY: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"&(#\d+|#x[\da-fA-F]+|[a-zA-Z]+);").unwrap());
+    Lazy::new(|| static_regex(r"&(#\d+|#x[\da-fA-F]+|[a-zA-Z]+);"));
 
 /// Correct a tool call: name mapping, parameter mapping, content cleaning.
 pub fn correct_tool_call(
@@ -144,8 +145,10 @@ pub fn correct_tool_call(
     let mut params = parameters.clone();
     if let Some(corrections) = PARAM_CORRECTIONS.get(name.as_str()) {
         for &(wrong, correct) in corrections {
-            if params.contains_key(wrong) && !params.contains_key(correct) {
-                let value = params.remove(wrong).unwrap();
+            if params.contains_key(correct) {
+                continue;
+            }
+            if let Some(value) = params.remove(wrong) {
                 params.insert(correct.to_string(), value);
                 param_corrections.push(format!("{} -> {}", wrong, correct));
             }
