@@ -312,9 +312,17 @@ tokens/s, and never one model call's aggregate tokens/s.
 - One lane serialises every resident behind every other resident's whole turn, prefill and
   decode both. Prefill cannot overlap decode, and each hand-off pages a warm KV out. So a
   lower per-stream rate at more lanes is the expected price of concurrency, not a loss.
-- Measured case (the M5, 27B, 2026-10-17): 15.7 t/s with one stream decoding, 5.4 t/s
-  each with two. Reading that as "two lanes lose 31%" and cutting to one lane would have
-  made four residents queue serially. Joel: "Two sequentially is even slower."
+- Joel's direction, 2026-10-17; per-resident wait not yet measured. The decode numbers that
+  prompted it (the M5, 27B: 15.7 t/s with one stream decoding, 5.4 t/s each with two) do
+  NOT decide it on their own: two residents served one after another on decode alone would
+  average 15.7 / 2 ≈ 7.85 t/s each, which beats 5.4. Two lanes can only win on what decode
+  does not show: prefill that cannot overlap across residents, and the warm-KV hand-off a
+  single lane pays at every switch. Joel: "Two sequentially is even slower." Until the
+  measurement below exists, that is the direction, not a receipt.
+- The measurement this rule owes (owner: Fable; deadline: 2026-10-25): on the M5 at the live
+  roster, `cognition.cycle.cost` cycle_ms per resident and `delib.gate.lane_wait` ->
+  `lane_acquired`, at one lane and at two, each with the core SHA and the time window. Not
+  run while a resident's turn depends on the lane count changing under her.
 - Before changing a deliberate floor (`decode_knee::MIN_KNEE_LANES`), name the
   resident-visible wait it protects and measure that: `cognition.cycle.cost` cycle_ms per
   resident and `delib.gate.lane_wait` -> `lane_acquired` at the live roster.
