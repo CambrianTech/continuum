@@ -94,7 +94,7 @@ where
             let _permit = limiter
                 .acquire()
                 .await
-                .expect("concurrency limiter should not be closed");
+                .expect("concurrency limiter should not be closed"); // JUSTIFIED: the semaphore is private and never close()d, so acquire() cannot fail
             work.await
         } else {
             work.await

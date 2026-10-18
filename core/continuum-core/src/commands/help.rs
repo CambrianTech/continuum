@@ -334,9 +334,8 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
                         inner.extend(required_object_example(v, root));
                         example = Value::Object(inner);
                     }
-                } else if props.len() == 1 {
+                } else if let (1, Some((vname, vschema))) = (props.len(), props.iter().next()) {
                     // EXTERNALLY-tagged: the single property key IS the variant name.
-                    let (vname, vschema) = props.iter().next().unwrap();
                     let vs = resolve_ref(vschema, root);
                     let fields: Vec<String> = vs
                         .get("properties")

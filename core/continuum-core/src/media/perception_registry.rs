@@ -59,7 +59,7 @@ impl PerceptionRegistry {
     pub fn handle(&self, persona_id: Uuid) -> Arc<PerceptionBuffer> {
         self.buffers
             .lock()
-            .expect("perception registry mutex poisoned by a prior panic")
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
             .entry(persona_id)
             .or_insert_with(|| Arc::new(PerceptionBuffer::new(AMBIENT_PERCEPTION_SIZE)))
             .clone()
@@ -70,7 +70,7 @@ impl PerceptionRegistry {
     pub fn get(&self, persona_id: &Uuid) -> Option<Arc<PerceptionBuffer>> {
         self.buffers
             .lock()
-            .expect("perception registry mutex poisoned by a prior panic")
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
             .get(persona_id)
             .cloned()
     }
@@ -79,7 +79,7 @@ impl PerceptionRegistry {
     pub fn remove(&self, persona_id: &Uuid) {
         self.buffers
             .lock()
-            .expect("perception registry mutex poisoned by a prior panic")
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
             .remove(persona_id);
     }
 
@@ -88,7 +88,7 @@ impl PerceptionRegistry {
     pub fn total_resident_bytes(&self) -> u64 {
         self.buffers
             .lock()
-            .expect("perception registry mutex poisoned by a prior panic")
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
             .values()
             .map(|b| b.resident_bytes())
             .sum()
@@ -102,7 +102,7 @@ impl PerceptionRegistry {
         let buffers: Vec<Arc<PerceptionBuffer>> = self
             .buffers
             .lock()
-            .expect("perception registry mutex poisoned by a prior panic")
+            .unwrap_or_else(std::sync::PoisonError::into_inner) // unwrap_or: poisoned lock still holds the last consistent state
             .values()
             .cloned()
             .collect();

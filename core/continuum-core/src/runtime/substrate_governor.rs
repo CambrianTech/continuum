@@ -343,7 +343,7 @@ impl ServiceModule for SubstrateGovernor {
         // Prune cadence entries for personas that left, so the table can't grow
         // unbounded over a long-lived process. Lock taken + released here; never held
         // across an await (concurrency-style-guide rule).
-        self.cadence.lock().unwrap().retain_personas(&personas);
+        self.cadence.lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain_personas(&personas); // unwrap_or: poisoned lock still holds the last consistent state
 
         // ── Phase 1: collect due pairs, grouped by orientation class ──────────────
         // One lock spanning a purely synchronous loop (no await inside) → released
@@ -351,7 +351,7 @@ impl ServiceModule for SubstrateGovernor {
         let mut groups: [Vec<(usize, Uuid, Orientation)>; 3] = [Vec::new(), Vec::new(), Vec::new()];
         let mut skipped = 0usize;
         {
-            let cadence = self.cadence.lock().unwrap();
+            let cadence = self.cadence.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
             for (region_idx, region) in self.regions.iter().enumerate() {
                 let orientation = region.orientation(); // static class, read once per region
                 let oi = orientation_index(orientation);
@@ -369,7 +369,7 @@ impl ServiceModule for SubstrateGovernor {
         // The active policy is the controller's current shares (R4) if installed, else the
         // static prior. Brief lock, released before any region tick.
         let active_shares = match &self.controller {
-            Some(c) => c.lock().unwrap().shares(),
+            Some(c) => c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shares(), // unwrap_or: poisoned lock still holds the last consistent state
             None => self.shares,
         };
 
@@ -405,7 +405,7 @@ impl ServiceModule for SubstrateGovernor {
         // Close the R4 loop: feed this pass's measured per-class deferral back so the
         // controller reallocates for the NEXT pass. Brief lock, before any await below.
         if let Some(c) = &self.controller {
-            c.lock().unwrap().observe(deferred_by_orientation);
+            c.lock().unwrap_or_else(std::sync::PoisonError::into_inner).observe(deferred_by_orientation); // unwrap_or: poisoned lock still holds the last consistent state
         }
 
         let mut ticked = 0usize;
@@ -454,7 +454,7 @@ impl ServiceModule for SubstrateGovernor {
 
             // Record the hint → schedule next eligibility. Lock taken + released here,
             // AFTER the await; never held across it.
-            self.cadence.lock().unwrap().record(key, tick, hint);
+            self.cadence.lock().unwrap_or_else(std::sync::PoisonError::into_inner).record(key, tick, hint); // unwrap_or: poisoned lock still holds the last consistent state
         }
 
         // ── Out-breath: announce which beings got a cognitive slice ──────────────────

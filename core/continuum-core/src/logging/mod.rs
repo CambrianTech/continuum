@@ -73,11 +73,38 @@ pub fn init_logger(socket_path: &str) -> Result<(), String> {
         .map_err(|_| "Logger already initialized".to_string())
 }
 
-/// Get the global logger instance
-pub fn logger() -> &'static LoggerClient {
-    LOGGER
-        .get()
-        .expect("Logger not initialized - call init_logger() first")
+/// The process-wide logger as a handle that is always usable: it routes to the
+/// connected [`LoggerClient`] once `init_logger` ran, and to the same direct sink
+/// the `log_*!` macros fall back to before that. Logging never panics and never
+/// evaporates just because the legacy FFI init has not been called.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct GlobalLogger;
+
+impl GlobalLogger {
+    fn emit(&self, level: LogLevel, label: &str, category: &str, component: &str, message: &str) {
+        if let Some(client) = LOGGER.get() {
+            client.log(category, level, component, message, None);
+        } else if crate::modules::logger::log_sink_ready() {
+            write_log_direct(category, label, component, message);
+        }
+    }
+
+    pub fn debug(&self, category: &str, component: &str, message: &str) {
+        self.emit(LogLevel::Debug, "DEBUG", category, component, message);
+    }
+
+    pub fn info(&self, category: &str, component: &str, message: &str) {
+        self.emit(LogLevel::Info, "INFO", category, component, message);
+    }
+
+    pub fn error(&self, category: &str, component: &str, message: &str) {
+        self.emit(LogLevel::Error, "ERROR", category, component, message);
+    }
+}
+
+/// Get the global logger handle.
+pub fn logger() -> GlobalLogger {
+    GlobalLogger
 }
 
 /// Log macros for convenience

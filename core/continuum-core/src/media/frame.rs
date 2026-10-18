@@ -59,6 +59,13 @@ pub struct MediaFrame {
     source: Arc<Vec<u8>>,
 }
 
+/// `SharedCompute` returns `None` when a (scope, key) cell was cached as a different
+/// type; frame cells are keyed per result type, so that is a wiring bug: surface it as
+/// the cell's own typed `Err` rather than a panic.
+fn type_clash<T>(key: &str) -> Arc<Result<T, String>> {
+    Arc::new(Err(format!("shared-compute cell '{key}' holds a different type")))
+}
+
 impl MediaFrame {
     /// Wrap encoded image bytes, hashing them once to get the content address.
     pub fn from_bytes(source: Vec<u8>) -> Self {
@@ -117,6 +124,7 @@ impl MediaFrame {
                 describer.describe(&source, &mime).await
             })
             .await
+            .unwrap_or_else(|| type_clash(DESCRIBE_KEY)) // unwrap_or: a cell cached as another type is reported as a typed Err
     }
 
     /// Eagerly warm a set of scaled cells CONCURRENTLY — "if we know we'll need it,
@@ -151,6 +159,7 @@ impl MediaFrame {
                 scale_crop(&source, crop, dest)
             })
             .await
+            .unwrap_or_else(|| type_clash(&key)) // unwrap_or: a cell cached as another type is reported as a typed Err
     }
 
     /// NON-BLOCKING read of an already-warmed scaled cell — the read-side twin of
@@ -190,6 +199,7 @@ impl MediaFrame {
                 super::image_ops::luma_signature(&source, super::image_ops::SIGNATURE_SIZE)
             })
             .await
+            .unwrap_or_else(|| type_clash(SIGNATURE_KEY)) // unwrap_or: a cell cached as another type is reported as a typed Err
     }
 
     /// NON-BLOCKING read of the already-warmed signature cell — the read-side twin of

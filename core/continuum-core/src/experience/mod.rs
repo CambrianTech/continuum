@@ -375,7 +375,7 @@ pub fn benchmark_experience(
     owner_peer_id: crate::identity::PeerId,
 ) -> Experience {
     recipe::ExperienceRecipe::from_json(include_str!("recipes/benchmark.json"))
-        .expect("embedded benchmark recipe must be valid JSON")
+        .expect("embedded benchmark recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
         .project(vec![
             Member {
                 peer_id: examinee_peer_id,
@@ -402,7 +402,7 @@ pub fn chat_experience(
     member_peer_id: crate::identity::PeerId,
 ) -> Experience {
     recipe::ExperienceRecipe::from_json(include_str!("recipes/chat.json"))
-        .expect("embedded chat recipe must be valid JSON")
+        .expect("embedded chat recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
         .project(vec![
             Member {
                 peer_id: owner_peer_id,
