@@ -82,23 +82,12 @@ pub fn compact_model(
     let tensors = SafeTensors::deserialize(&model_bytes)
         .map_err(|e| format!("Failed to deserialize safetensors: {e}"))?;
 
-    let mut output_tensors: HashMap<String, Vec<u8>> = HashMap::new();
-    let mut output_metadata: HashMap<String, (Vec<usize>, Dtype)> = HashMap::new();
+    let mut tensor_views: Vec<(String, Vec<usize>, Dtype, Vec<u8>)> = Vec::new();
 
     for (name, tensor) in tensors.tensors() {
         let (data, shape, dtype) = compact_tensor(&name, &tensor, topology)?;
-        output_metadata.insert(name.clone(), (shape, dtype));
-        output_tensors.insert(name, data);
+        tensor_views.push((name, shape, dtype, data));
     }
-
-    // Build the output safetensors
-    let tensor_views: Vec<(String, Vec<usize>, Dtype, Vec<u8>)> = output_tensors
-        .into_iter()
-        .map(|(name, data)| {
-            let (shape, dtype) = output_metadata.get(&name).unwrap().clone();
-            (name, shape, dtype, data)
-        })
-        .collect();
 
     let tensor_refs: Vec<(&str, &[u8], &[usize], Dtype)> = tensor_views
         .iter()
@@ -463,11 +452,10 @@ fn serialize_tensors(tensors: &[(&str, &[u8], &[usize], Dtype)]) -> Result<Vec<u
         .iter()
         .map(|(name, data, shape, dtype)| {
             let view = TensorView::new(*dtype, shape.to_vec(), data)
-                .map_err(|e| format!("Failed to create TensorView for {name}: {e}"))
-                .unwrap();
-            (name.to_string(), view)
+                .map_err(|e| format!("Failed to create TensorView for {name}: {e}"))?;
+            Ok((name.to_string(), view))
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
 
     let refs: Vec<(&str, TensorView<'_>)> = tensor_views
         .iter()

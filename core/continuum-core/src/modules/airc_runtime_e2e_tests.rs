@@ -3,6 +3,9 @@
 //! `airc_ipc` frames directly so the test cannot pass through CLI subprocesses
 //! or stdout parsing.
 
+// Compiled only under `cargo test`: this whole file is test support.
+#![cfg(test)]
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;

@@ -22,7 +22,7 @@ use super::types::ExecutionContext;
 ///   Pass 1: resolves `{{input.iteration}}` → `0`
 ///   Pass 2: resolves `{{steps.0.output.topics.0.name}}` → topic name
 static INTERPOLATION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{\{([^{}\n]+)\}\}").unwrap());
+    LazyLock::new(|| Regex::new(r"\{\{([^{}\n]+)\}\}").unwrap()); // JUSTIFIED: constant literal pattern; invalid only by edit, caught by interpolation tests
 
 /// Interpolate {{variable}} references in a template string.
 /// Runs multiple passes to resolve nested interpolation.

@@ -672,7 +672,7 @@ pub fn resolve_continuum_root() -> PathBuf {
     if let Ok(root) = std::env::var("CONTINUUM_ROOT") {
         return PathBuf::from(root);
     }
-    let home = dirs::home_dir().expect("HOME directory is required to resolve CONTINUUM_ROOT");
+    let home = dirs::home_dir().expect("HOME directory is required to resolve CONTINUUM_ROOT"); // JUSTIFIED: no HOME means no persistent state at all: boot-fatal by design; 20+ callers need the infallible PathBuf
     home.join(".continuum")
 }
 

@@ -35,7 +35,8 @@ use std::any::Any;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{OnceCell, RwLock};
+use std::sync::OnceLock;
+use tokio::sync::RwLock;
 
 /// Provider ID for the Docker Model Runner adapter — single source of truth
 /// shared between init-time registration and the watchdog tick.
@@ -102,7 +103,7 @@ pub fn global_registry() -> Arc<RwLock<AdapterRegistry>> {
 /// AIProviderModule - ServiceModule implementation for AI inference
 pub struct AIProviderModule {
     registry: Arc<RwLock<AdapterRegistry>>,
-    log: OnceCell<Arc<ModuleLogger>>,
+    log: OnceLock<Arc<ModuleLogger>>,
     /// GPU memory manager — passed to CandleAdapter for VRAM allocation tracking.
     gpu_manager: Option<Arc<crate::gpu::memory_manager::GpuMemoryManager>>,
     /// DMR watchdog state — counts consecutive down-probe ticks so we can
@@ -155,7 +156,7 @@ impl AIProviderModule {
     pub fn new() -> Self {
         Self {
             registry: GLOBAL_REGISTRY.clone(),
-            log: OnceCell::new(),
+            log: OnceLock::new(),
             gpu_manager: None,
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
             executor: LateBound::new("ai-provider::executor"),
@@ -168,7 +169,7 @@ impl AIProviderModule {
     ) -> Self {
         Self {
             registry: GLOBAL_REGISTRY.clone(),
-            log: OnceCell::new(),
+            log: OnceLock::new(),
             gpu_manager: Some(gpu_manager),
             dmr_consecutive_down_ticks: Arc::new(AtomicU64::new(0)),
             executor: LateBound::new("ai-provider::executor"),
@@ -187,7 +188,7 @@ impl AIProviderModule {
     /// tick.
     fn probe_dmr() -> Option<DmrEndpoint> {
         let localhost_ok = std::net::TcpStream::connect_timeout(
-            &"127.0.0.1:12434".parse().unwrap(),
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 12434)),
             Duration::from_secs(1),
         )
         .is_ok();
@@ -420,11 +421,11 @@ impl AIProviderModule {
         });
     }
 
-    /// Get logger (panics if called before initialize)
+    /// Module logger: the context-scoped one once `initialize` ran, the
+    /// process-wide component logger if something logs before that.
     fn log(&self) -> &ModuleLogger {
         self.log
-            .get()
-            .expect("AIProviderModule not initialized")
+            .get_or_init(|| crate::runtime::logger("ai_provider"))
             .as_ref()
     }
 
@@ -888,7 +889,7 @@ impl AIProviderModule {
         // parity (re-register when it appears, deregister when it dies)
         // follows once the lifecycle is governed.
         let ds4_up = std::net::TcpStream::connect_timeout(
-            &"127.0.0.1:8901".parse().unwrap(),
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 8901)),
             Duration::from_secs(1),
         )
         .is_ok();
