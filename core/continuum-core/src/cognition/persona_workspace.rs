@@ -4144,6 +4144,49 @@ mod tests {
             assert_ne!(reacquired, context, "a re-acquired claim is new hands, never the old one's");
 
             assert!(end_acting_context(&live).await.is_err(), "her default hands can't be ended");
+
+            // A no-setup gym still needs bound hands. Previously its claim staged
+            // Ordinary and the resolver searched only SWE checkouts, so valid
+            // code/write and code/shell calls were refused as unrooted.
+            let _home = crate::test_env::HomeGuard::set(home.path()).await;
+            std::env::set_var("CONTINUUM_HOME", home.path());
+            let gym_card = airc_lib::WorkCard {
+                card_id: airc_work::WorkCardId::new(),
+                repo: airc_work::RepoId::new("CambrianTech/continuum").unwrap(),
+                title: "[bench coder-write-eval] sum_evens: write and verify".into(),
+                body: None, priority: airc_work::Priority::P2, lane_id: None,
+                state: airc_work::CardState::Claimed,
+                owner: Some(airc_core::PeerId::from_uuid(persona)),
+                claim_provenance: None,
+                claim_id: Some(airc_work::ClaimId::from_uuid(Uuid::new_v4())),
+                claim_expires_at_ms: None, last_heartbeat_at_ms: None,
+                pull_request: None, created_by: airc_core::PeerId::new(),
+                created_at_ms: 0, updated_at_ms: 0, reviews: None,
+                submissions: Vec::new(), last_submission_rejection: None,
+            };
+            let workspace = crate::modules::card_staging::gym_workspace(home.path(), persona);
+            assert!(crate::modules::card_staging::checkout_path_for(&persona, &gym_card).is_none());
+            assert_eq!(
+                crate::modules::card_staging::stage_for_card(home.path(), persona, &gym_card).await,
+                crate::modules::card_staging::Staging::Ready { path: workspace.clone() },
+            );
+            let cycle = WorkspaceCycle::new(vec![], Arc::new(crate::cognition::workspace::SalienceArbiter), 4)
+                .with_acting(Arc::new(ActingBody {
+                    persona_id: persona, persona_name: live.persona_name.clone(),
+                    executor: live.executor.clone(), working_memory: live.working_memory.clone(),
+                    admission: Arc::new(AdmissionState::new(Arc::new(RecallMetadataRegistry::new()))),
+                }));
+            let bound = bind_card(&cycle, persona, &gym_card).await;
+            let gym = &bound.hands.as_ref().expect("a claimed no-setup gym has real hands").hands;
+            let (written, failed) = call(gym, "code/write", serde_json::json!({"file_path":"binding-proof.txt", "content":"gym-owned\n"})).await;
+            assert!(!failed, "actual write is admitted: {written}");
+            assert_eq!(std::fs::read_to_string(workspace.join("binding-proof.txt")).unwrap(), "gym-owned\n");
+            let (ran, failed) = call(gym, "code/shell", serde_json::json!({"cmd":"cat binding-proof.txt", "wait_ms":20000})).await;
+            assert!(!failed && ran.contains("gym-owned"), "actual shell sees the same artifact: {ran}");
+            assert!(!home.path().join("binding-proof.txt").exists());
+            assert!(!card_dir.path().join("binding-proof.txt").exists());
+            assert!(listing(&claim_hands).await.contains("CARD_ONLY.rs"), "the prior claim's hands never moved");
+            assert!(listing(&live).await.contains("HER_OWN_notes.md"), "resident hands never moved");
         }
 
 

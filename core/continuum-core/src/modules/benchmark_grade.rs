@@ -527,12 +527,10 @@ async fn grade_gym_card(
         .to_string();
     let task = normalized_gym_task(reference, task_id)?;
     // Her workspace root — the same layout every other per-citizen path uses.
-    let workspace = crate::paths::continuum_home()
-        .map_err(|e| format!("{e:?}"))?
-        .join("citizens")
-        .join("peers")
-        .join(&owner)
-        .join("workspace");
+    let workspace = crate::modules::card_staging::gym_workspace(
+        &crate::paths::continuum_home().map_err(|e| format!("{e:?}"))?,
+        owner.parse().map_err(|e| format!("invalid gym owner {owner}: {e}"))?,
+    );
     // The graded OUTCOME is carried as a value, and the room line is rendered FROM it.
     // It used to be the other way round: the only typed thing was the prose, and the
     // probe recovered the score by reading its own emoji back out of the message. A fact
