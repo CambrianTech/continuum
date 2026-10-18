@@ -79,6 +79,7 @@ pub mod inference_session;
 pub mod introspect_commands;
 pub mod learning_policy;
 pub mod llm_deliberation_faculty;
+pub(crate) mod tool_surface;
 pub mod memory_consolidation_region;
 pub mod model_resolver;
 /// Paging cursors over large data she is working through, kept in working memory.

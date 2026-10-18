@@ -1919,23 +1919,9 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && c.trailing)
             .map(|c| est_tokens(&c.content))
             .sum();
-        // The prompt this lane affords (served window bounded by prefill t/s x TTFT), read
-        // beside what the tool surface and framing cost. Observation only: nothing here
-        // changes what is sent (card 3026b83e, step 1).
-        let affordable_tokens =
-            super::context_budget::ContextBudget::from_window(context_window).affordable_tokens();
-        if let Some(affordable) = affordable_tokens.filter(|a| framing_tokens + tool_tokens > *a) {
-            crate::probe!(
-                class = "delib.tool_surface.over_affordable",
-                persona = %self.persona_name,
-                surface_reason = ?surface_reason,
-                tool_tokens,
-                framing_tokens,
-                affordable_tokens = affordable,
-                context_window,
-                "the tool surface and framing alone cost more than the prompt this lane can prefill inside its TTFT budget"
-            );
-        }
+        let affordable_tokens = super::tool_surface::over_affordable_receipt(
+            &self.persona_name, surface_reason, tool_tokens, framing_tokens, context_window,
+        );
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
             // whose entire context vanished must say so, not render silently empty
@@ -4105,41 +4091,7 @@ impl LlmDeliberationFaculty {
     }
 }
 
-/// Chars-per-token assumed by the window guard. Deliberately CONSERVATIVE (3,
-/// not the substrate-wide ~4 used for RAG sizing): here a wrong estimate is not
-/// a slightly-off budget but a hard llama-server 500 ("Context size has been
-/// exceeded") that mutes the persona for the whole tick. The deliberation prompt
-/// carries UUID-dense rosters, structured engram observations, and code, which
-/// tokenize far denser than English — so we OVER-count tokens to stay safely
-/// under `n_ctx`. The completion reserve absorbs the remaining slack.
-/// How many tool categories the bookmarked menu may OPEN (list their verbs inline)
-/// WHY a turn's tool surface is what it is.
-///
-/// Carried alongside the cost because the cost alone cannot be interpreted: see
-/// [`SelectedSurface::demand_tokens`], where two of these arms want different
-/// numbers from the same selection.
-///
-/// `Default` is [`Self::NoTools`] so a default [`ContextComposition`] is coherent: zero
-/// `tool_tokens` because no tools were offered, not a reason that disagrees with its cost.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) enum SurfaceReason {
-    /// She has no native specs at all — nothing to offer, nothing to price.
-    #[default]
-    NoTools,
-    /// The whole registry fit its share of the served window and was offered.
-    Full,
-    /// A WORK turn takes her hands for FOCUS. The full surface was never wanted
-    /// on this turn, so nothing was truncated and nothing was lost.
-    HandsForWork,
-    /// The full surface did NOT fit its share of the served window. She wanted it
-    /// and the window refused it — this arm is a truncation, the others are not.
-    HandsForBudget,
-    /// The ROOM's recipe declares affordances, and they selected the surface (S1).
-    /// Not a truncation: the recipe is the rule, and a rule is never a loss —
-    /// `demand_tokens` prices what was sent. The discovery pair rides along so a
-    /// withheld verb stays one `commands/list` away.
-    RoomAffordances,
-}
+pub(crate) use super::tool_surface::SurfaceReason;
 
 /// The tool surface a turn actually sends, its cost, and why it is that surface.
 ///
