@@ -159,9 +159,10 @@ pub enum CapabilityId {
     /// which overcounts what a second node would see.
     PlacementReservationGrant,
     /// Parse-only: a name THIS build does not know (a newer core advertising a capability we
-    /// predate). It never grants — `has_capability` matches by exact name — but its presence
-    /// must not drop the rest of the beacon, so forward compatibility stays fail-safe in BOTH
-    /// directions: an old core reads a new name as unknown rather than refusing to parse.
+    /// predate). It never grants — membership of this list is exact-name, so an unknown name
+    /// cannot stand in for another — but its presence must not drop the rest of the beacon,
+    /// so forward compatibility stays fail-safe in BOTH directions: an old core reads a new
+    /// name as unknown rather than refusing to parse.
     #[serde(other)]
     Unknown,
 }
