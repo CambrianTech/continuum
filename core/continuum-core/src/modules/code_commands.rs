@@ -80,7 +80,8 @@ fn read_scope_of(ctx: &Ctx, workspace: &std::path::Path) -> crate::code::path_se
         return ReadScope::Sandbox;
     }
     match confinement_of(ctx, workspace) {
-        None => ReadScope::Host,
+        None => ReadScope::Host { deny: Vec::new() },
+        Some(confinement) if confinement.reaches_host() => ReadScope::Host { deny: confinement.host_denials() },
         Some(confinement) => ReadScope::Confined(confinement.materialize()),
     }
 }
@@ -545,22 +546,24 @@ async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String, CommandErr
 }
 
 /// The confinement this caller's children and reads are held to: `None` for the
-/// operator and for this node's own resident minds, `Some` for a caller from outside
-/// this node (an airc peer, a socket), rooted at `workspace`.
+/// operator, the whole host minus credentials for this node's own resident, and her
+/// workspace for a caller from outside this node (an airc peer, a socket).
 ///
-/// This node's residents are not sandboxed (Joel 2026-10-17: "Don't restrict them. If she
-/// wants to write to my documents folder for no apparent reason so be it"). Their shell
-/// still never inherits the core's secrets (`strip_secret_env`): that hands out no keys,
-/// it restricts nothing she chooses to do.
+/// This node's residents are not restricted (Joel 2026-10-17: "Don't restrict them. If she
+/// wants to write to my documents folder for no apparent reason so be it") EXCEPT the
+/// credential paths and other citizens' directories (Joel 2026-10-18: "keep creds
+/// off-limits"): she quotes tool output into rooms, and a room reaches every enrolled
+/// peer. Her shell also never inherits the core's secrets (`strip_secret_env`).
 pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::code::confinement::Confinement> {
     let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
     let trust = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref());
-    if resident || trust == crate::modules::grid::node::TrustLevel::Owner {
+    if !resident && trust == crate::modules::grid::node::TrustLevel::Owner {
         return None;
     }
     let home = crate::paths::home_dir()?;
     let continuum_root = crate::paths::continuum_home().ok()?;
-    Some(crate::code::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(ctx), workspace))
+    let confinement = crate::code::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(ctx), workspace);
+    Some(if resident { confinement.reaching_host() } else { confinement })
 }
 
 /// How long `code/shell` waits INLINE for completion before handing back a handle
@@ -2230,23 +2233,27 @@ mod tests {
         assert_eq!(std::fs::canonicalize(root).unwrap(), std::fs::canonicalize(bound.path()).unwrap(), "still where they were bound");
     }
 
-    // what this catches: this node's own residents sandboxed (Joel 2026-10-17: "Don't restrict
-    // them"), or a caller from OUTSIDE this node (an airc peer) left unconfined. The operator
-    // is never confined. The decision is the caller's identity, never a params field.
+    // what this catches: this node's own residents held to a workspace (Joel 2026-10-17:
+    // "Don't restrict them"), or given the credentials (Joel 2026-10-18: "keep creds
+    // off-limits"), or a caller from OUTSIDE this node (an airc peer) let past her workspace.
+    // The operator is never confined. The decision is the caller's identity, never a params field.
     #[test]
-    fn a_resident_and_the_operator_are_unconfined_and_an_outside_peer_is_confined() {
+    fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
         let ws = tempfile::tempdir().expect("test: ws");
         assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
         let resident = Ctx {
             caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
             ..Ctx::default()
         };
-        assert!(confinement_of(&resident, ws.path()).is_none(), "this node's resident is not restricted");
+        let hers = confinement_of(&resident, ws.path()).expect("a resident carries the credential boundary");
+        assert!(hers.reaches_host(), "this node's resident reaches the whole host");
+        assert!(matches!(read_scope_of(&resident, ws.path()), crate::code::path_security::ReadScope::Host { .. }), "her file verbs reach the host too");
         let outside = Ctx {
             caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
             ..Ctx::default()
         };
         let confined = confinement_of(&outside, ws.path()).expect("a peer from outside this node is confined");
+        assert!(!confined.reaches_host(), "held to her workspace");
         assert_eq!(confined.workspace(), ws.path());
     }
 
