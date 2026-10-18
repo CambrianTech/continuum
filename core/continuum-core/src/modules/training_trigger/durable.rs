@@ -2485,11 +2485,11 @@ mod tests {
             handle: JobHandle { provider_id: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(), provider_job_id: "wrong".into(), local_id: Uuid::new_v4() },
             provider: crate::genome::fine_tuning::cuda_lora_adapter::PROVIDER_ID.into(),
         };
-        store.dispatches.save(dispatch, &broken).await.unwrap();
+        store.dispatches.update(dispatch, &broken).await.unwrap();
         assert!(return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed).await.is_err(), "a usable request file cannot bypass a broken recorded dispatch");
         assert_eq!(crashed.state.bucket_example_count(persona, "code", "synthetic"), None);
         assert!(!jd.join(REMAINDER_RECEIPT).exists());
-        store.dispatches.save(dispatch, &intent).await.unwrap();
+        store.dispatches.update(dispatch, &intent).await.unwrap();
         let returned = return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed).await.unwrap();
         let Remainder::Submitted(accepted) = returned else { panic!("expected a new return: {returned:?}") };
         {
