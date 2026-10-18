@@ -338,9 +338,21 @@ impl ExpertBank {
     }
 
     fn verify_identity(&self, buf: &[u8], offset: u64, expert: u16) -> Result<(), ContainerError> {
-        let found_magic = u32::from_le_bytes(buf[0..4].try_into().expect("8-byte header"));
-        let found_layer = u16::from_le_bytes(buf[4..6].try_into().expect("8-byte header"));
-        let found_expert = u16::from_le_bytes(buf[6..8].try_into().expect("8-byte header"));
+        let Some(&[m0, m1, m2, m3, l0, l1, e0, e1]) = buf.first_chunk::<8>() else {
+            // A record too short to carry its 8-byte identity header cannot match any identity.
+            return Err(ContainerError::RecordIdentity {
+                path: self.path.clone(),
+                offset,
+                found_magic: 0,
+                found_layer: 0,
+                found_expert: 0,
+                want_layer: self.layer,
+                want_expert: expert,
+            });
+        };
+        let found_magic = u32::from_le_bytes([m0, m1, m2, m3]);
+        let found_layer = u16::from_le_bytes([l0, l1]);
+        let found_expert = u16::from_le_bytes([e0, e1]);
         if found_magic != RECORD_MAGIC || found_layer != self.layer || found_expert != expert {
             return Err(ContainerError::RecordIdentity {
                 path: self.path.clone(),
@@ -591,15 +603,16 @@ impl ExpertContainer {
         let record_bytes = self.tiers[tier as usize].record_bytes;
         let path = self.bank_path(key.layer, tier);
         let slot = &mut self.banks[key.layer as usize * n_tiers as usize + tier as usize];
-        if slot.is_none() {
-            *slot = Some(ExpertBank::open(
+        let bank = match slot {
+            Some(bank) => bank,
+            None => slot.insert(ExpertBank::open(
                 &path,
                 key.layer,
                 record_bytes,
                 self.manifest.experts_per_layer,
-            )?);
-        }
-        slot.as_ref().expect("just opened").fetch(key.expert, buf)
+            )?),
+        };
+        bank.fetch(key.expert, buf)
     }
 }
 
@@ -636,11 +649,11 @@ pub mod fixtures {
         };
         std::fs::write(
             root.join("manifest.json"),
-            serde_json::to_string_pretty(&manifest).expect("serialize"),
+            serde_json::to_string_pretty(&manifest).expect("serialize"), // JUSTIFIED: test-fixture writer (cfg test/test-fixtures only); a failed write must fail the test loudly
         )
-        .expect("write manifest");
+        .expect("write manifest"); // JUSTIFIED: test-fixture writer (cfg test/test-fixtures only); a failed write must fail the test loudly
         for layer in 0..n_layers {
-            let mut f = File::create(root.join(format!("experts-L{layer}.bin"))).expect("bank");
+            let mut f = File::create(root.join(format!("experts-L{layer}.bin"))).expect("bank"); // JUSTIFIED: test-fixture writer (cfg test/test-fixtures only); a failed write must fail the test loudly
             for expert in 0..experts {
                 let mut rec = vec![0u8; RECORD_ALIGN as usize];
                 rec[0..4].copy_from_slice(&RECORD_MAGIC.to_le_bytes());
@@ -649,7 +662,7 @@ pub mod fixtures {
                 // Distinguishable payload so round-trip is provable.
                 rec[HEADER_IDENT_BYTES] = (layer as u8) ^ 0xA0;
                 rec[HEADER_IDENT_BYTES + 1] = expert as u8;
-                f.write_all(&rec).expect("record");
+                f.write_all(&rec).expect("record"); // JUSTIFIED: test-fixture writer (cfg test/test-fixtures only); a failed write must fail the test loudly
             }
         }
         manifest
@@ -684,13 +697,13 @@ pub mod fixtures {
         };
         std::fs::write(
             root.join("manifest.json"),
-            serde_json::to_string_pretty(&manifest).expect("serialize"),
+            serde_json::to_string_pretty(&manifest).expect("serialize"), // JUSTIFIED: test-fixture writer (cfg test/test-fixtures only); a failed write must fail the test loudly
         )
-        .expect("write manifest");
+        .expect("write manifest"); // JUSTIFIED: test-fixture writer (cfg test/test-fixtures only); a failed write must fail the test loudly
         for layer in 0..n_layers {
             for tier in &tiers {
                 let mut f = File::create(root.join(format!("experts-L{layer}-T{}.bin", tier.id)))
-                    .expect("bank");
+                    .expect("bank"); // JUSTIFIED: test-fixture writer (cfg test/test-fixtures only); a failed write must fail the test loudly
                 for expert in 0..experts {
                     let mut rec = vec![0u8; tier.record_bytes as usize];
                     rec[0..4].copy_from_slice(&RECORD_MAGIC.to_le_bytes());
@@ -700,7 +713,7 @@ pub mod fixtures {
                     // must never come back with tier-1 bytes.
                     rec[HEADER_IDENT_BYTES] = tier.id as u8 ^ 0x5A;
                     rec[HEADER_IDENT_BYTES + 1] = expert as u8;
-                    f.write_all(&rec).expect("record");
+                    f.write_all(&rec).expect("record"); // JUSTIFIED: test-fixture writer (cfg test/test-fixtures only); a failed write must fail the test loudly
                 }
             }
         }
