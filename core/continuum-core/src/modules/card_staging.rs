@@ -35,7 +35,7 @@ use uuid::Uuid;
 /// What staging produced for this claimer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Staging {
-    /// Not a recipe card (or a recipe with no workspace step) — nothing to stage,
+    /// Not a recipe card — nothing to stage,
     /// her hands stay where they are.
     Ordinary,
     /// The card's work is ready in her workspace at `path` (workspace-relative
@@ -85,11 +85,14 @@ pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathB
             return Some(copy.path.clone());
         }
     }
-    if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
-        return crate::persona::staged_workspace::workspace_for_held_cards(
-            peer,
-            std::iter::once(card.title.as_str()),
-        );
+    if let Some((bench, _)) = crate::commands::benchmark::parse_card_title(&card.title) {
+        let spec = crate::commands::benchmark::known_benchmarks().iter().find(|s| s.name == bench)?;
+        return if spec.swe_dataset().is_some() {
+            crate::persona::staged_workspace::workspace_for_held_cards(peer, std::iter::once(card.title.as_str()))
+        } else {
+            let root = gym_workspace(&crate::paths::continuum_home().ok()?, *peer);
+            root.is_dir().then_some(root)
+        };
     }
     airc_lib::work_worktree::worktree_path_for(card.card_id).filter(|p| p.join(".git").exists())
 }
@@ -360,20 +363,26 @@ async fn ensure_managed_clone(home: &Path, repo: &str) -> Result<PathBuf, CloneE
     Ok(target)
 }
 
+/// The gym artifact root, shared by claim staging, hands binding and grading.
+pub(crate) fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
+    crate::identity::citizen_peer_dir(home, crate::identity::PeerId::from_uuid(peer)).join("workspace")
+}
+
 pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
     let Some((bench, task)) = crate::commands::benchmark::parse_card_title(title) else {
         return Staging::Ordinary;
     };
-    let workspace =
-        crate::identity::citizen_peer_dir(home, crate::identity::PeerId::from_uuid(claimer))
-            .join("workspace");
+    let workspace = gym_workspace(home, claimer);
     let step = match resolve_step(&bench, &task).await {
         Ok(step) => step,
         Err(error) => return failed(claimer, title, "resolve", error),
     };
     let started = std::time::Instant::now();
     let outcome = match step {
-        Step::Nothing => Staging::Ordinary,
+        Step::Nothing => match std::fs::create_dir_all(&workspace) {
+            Ok(()) => Staging::Ready { path: workspace },
+            Err(error) => Staging::Failed { stage: "workspace", error: error.to_string() },
+        },
         Step::Shell(shell) => stage_shell(&workspace, &shell).await,
         Step::Swe(instance) => stage_swe(&workspace, &instance).await,
     };
@@ -676,7 +685,7 @@ mod tests {
         std::fs::create_dir_all(swe.join(".git")).unwrap(); // test: fixture checkout
 
         // POSITIVE CONTROL: the recipe path is untouched — a bench card still resolves.
-        let bench = generic_card(&format!("[bench swe] {instance}: fix the thing"));
+        let bench = generic_card(&format!("[bench swe-bench-lite] {instance}: fix the thing"));
         assert_eq!(
             checkout_path_for(&peer, &bench).as_deref(),
             Some(swe.as_path()),
@@ -691,6 +700,9 @@ mod tests {
             "a generic repo card was answered with a bench checkout its title merely named \
              — it must resolve by CARD ID through airc's per-card worktree"
         );
+
+        let unknown = generic_card(&format!("[bench unknown-recipe] {instance}: refuse"));
+        assert!(checkout_path_for(&peer, &unknown).is_none(), "an unknown recipe cannot borrow a SWE checkout");
 
     }
 
