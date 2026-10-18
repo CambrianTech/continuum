@@ -77,6 +77,8 @@ pub trait PerceptionFact: Send + Sync {
 pub enum FactPlacement { History, Ledger, Notice }
 
 pub struct RenderedFact {
+    /// The fact's own id: the key its prompt position is measured under (`prompt_churn`).
+    pub id: &'static str,
     pub placement: FactPlacement,
     pub text: String,
 }
@@ -457,7 +459,7 @@ pub fn render_facts(cx: &FactContext, policy: &FactPolicy) -> Vec<RenderedFact> 
             "perception fact evaluated"
         );
         if let Some(text) = out {
-            rendered.push(RenderedFact { placement: fact.placement(), text });
+            rendered.push(RenderedFact { id: fact.id(), placement: fact.placement(), text });
         }
     }
     rendered

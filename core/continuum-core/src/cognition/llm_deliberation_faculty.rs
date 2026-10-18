@@ -38,6 +38,7 @@ use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::persona_tools;
+use super::prompt_churn;
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
 use crate::ai::types::{ActiveAdapterRequest, ChatMessage, FinishReason, NativeToolSpec, TextGenerationRequest, TextGenerationResponse};
@@ -557,6 +558,8 @@ pub struct LlmDeliberationFaculty {
     /// Credited from the engine's own count, the cap grows when reuse works and falls back
     /// to the latency target when it does not.
     cached_prefix_tokens: std::sync::atomic::AtomicUsize,
+    /// How often each block after the results ring changed, per act: its prompt position.
+    prompt_churn: parking_lot::Mutex<prompt_churn::ChurnMeter>,
 }
 
 impl LlmDeliberationFaculty {
@@ -592,6 +595,7 @@ impl LlmDeliberationFaculty {
             decoding: relaxed_decoding(),
             working_set: None,
             cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
+            prompt_churn: parking_lot::Mutex::new(prompt_churn::ChurnMeter::default()),
         }
     }
 
@@ -3278,7 +3282,7 @@ impl LlmDeliberationFaculty {
             persona_id: Some(self.persona_id),
         };
         let mut ledger = Vec::new();
-        let mut facts = perceived;
+        let mut facts: Vec<(&'static str, String)> = Vec::new();
         let mut notices = Vec::new();
         for fact in super::perception_facts::render_facts(
             &fact_cx,
@@ -3286,7 +3290,7 @@ impl LlmDeliberationFaculty {
         ) {
             use super::perception_facts::FactPlacement;
             match fact.placement {
-                FactPlacement::History => facts.push(fact.text),
+                FactPlacement::History => facts.push((fact.id, fact.text)),
                 FactPlacement::Ledger => ledger.push(fact.text),
                 FactPlacement::Notice => notices.push(ChatMessage::text("user", fact.text)),
             }
@@ -3349,7 +3353,7 @@ impl LlmDeliberationFaculty {
         // Split by churn class: non-WM grounding (semi-stable) → append-only ring →
         // the trail (churniest standing block) → facts/ask/pin. One rule, monotone
         // in stability, same law as the system-side phases.
-        let render_trailing = |messages: &mut Vec<ChatMessage>, wm_trail: bool| {
+        let render_trailing = |blocks: &mut Vec<prompt_churn::Block>, wm_trail: bool| {
             // Canonical wire order (churn class, then name) — the same rule the standing
             // grounding and the system's stable tier follow, so two trailing sources can
             // never swap places between acts (`deliberation_prompt::stable_prefix_order`).
@@ -3377,7 +3381,10 @@ impl LlmDeliberationFaculty {
                     body.push_str(c.faculty.as_str());
                     body.push_str("]\n");
                     body.push_str(&c.content);
-                    messages.push(ChatMessage::text("user", body));
+                    blocks.push(prompt_churn::Block {
+                        key: prompt_churn::BlockKey::of(c.faculty.as_str()),
+                        messages: vec![body],
+                    });
                 }
             }
         };
@@ -3401,24 +3408,38 @@ impl LlmDeliberationFaculty {
             }
         }
         let grounding_at = messages.len();
-        render_trailing(&mut messages, false);
-        render_trailing(&mut messages, true);
-
-        // Facts flicker per act — they render after every append-only block,
-        // immediately before the ask (parrot-fix order preserved).
-        for fact in facts {
-            messages.push(ChatMessage::text("user", fact));
+        // Everything between the ring and the ask, as blocks in the PHASE order (non-WM
+        // grounding, the working-memory trail, perceived turns, perception facts, the
+        // clock + presence framing). That order is only the cold start: once a block has
+        // been seen twice, `prompt_churn` places it by how often its bytes actually changed
+        // (the M5, 2026-10-18: the trail changed on 100% of acts and sat ahead of facts that
+        // changed on 7-20%, so every act re-prefilled them). All of it stays before the ask
+        // (the parrot-fix order) and after the append-only ring.
+        let mut blocks: Vec<prompt_churn::Block> = Vec::new();
+        render_trailing(&mut blocks, false);
+        render_trailing(&mut blocks, true);
+        if !perceived.is_empty() {
+            // Perceived turns are one block: chronological among themselves.
+            blocks.push(prompt_churn::Block { key: prompt_churn::BlockKey::of("perceived"), messages: perceived });
         }
-        // The volatile framing (clock + own-time/presence flip) — same flicker
-        // class as the facts, so it rides HERE: before the ask (the parrot-fix
-        // order), after everything stable. It lived at the tail of the system
-        // message until 2026-09-01, where its per-act mutation (the [now]
-        // minute tick, DIRECTED↔SILENCE) invalidated the KV prefix behind it
-        // on nearly every act — hit_rate 0.0 with per-resident slots and a
-        // server whose reuse measured perfect the same hour.
+        for (id, text) in facts {
+            match blocks.last_mut().filter(|b| b.key == prompt_churn::BlockKey::of(id)) {
+                Some(block) => block.messages.push(text),
+                None => blocks.push(prompt_churn::Block { key: prompt_churn::BlockKey::of(id), messages: vec![text] }),
+            }
+        }
+        // The volatile framing (clock + own-time/presence flip). It lived at the tail of
+        // the system message until 2026-09-01, where its per-act mutation invalidated the
+        // KV prefix behind it on nearly every act.
         if let Some(framing) = trailing_framing {
-            messages.push(ChatMessage::text("user", framing.to_string()));
+            blocks.push(prompt_churn::Block { key: prompt_churn::BlockKey::of("framing"), messages: vec![framing.to_string()] });
         }
+        {
+            let mut churn = self.prompt_churn.lock();
+            churn.observe(ws.cycle, &blocks);
+            churn.order(&mut blocks);
+        }
+        messages.extend(blocks.into_iter().flat_map(|b| b.messages).map(|text| ChatMessage::text("user", text)));
         // Use the actual received action payload. The old pinned block clipped
         // its head before this fitter clipped its tail: the two cuts could leave
         // only a truncation notice. Oversized output paging belongs to the
