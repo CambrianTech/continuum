@@ -2742,7 +2742,8 @@ mod tests {
         let id = super::publish_citizen_deck(
             &author, room.channel.as_uuid(), "coder-write-eval", &["card-1".into()],
         ).await.expect("publish through caller authority");
-        let events = author.page_recent_in(Some(room.channel), 10).await.expect("activity transcript");
+        let events = AircTranscriptReader::page_recent_in(&author, Some(room.channel), 10)
+            .await.expect("activity transcript");
         let event = events.iter().find(|e| e.event_id == id).expect("published deck in target room");
         assert_eq!(event.peer_id, author.peer_id());
         assert_eq!(event.room_id, room.channel);
