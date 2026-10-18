@@ -225,16 +225,20 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
             // that, including this one. Found by the guard's own positive control:
             // the naive form excluded nearly all of `source_hygiene/mod.rs` from
             // its own scan, silently. Match by nature, never by name.
-            let production = match src
-                .lines()
-                .position(|l| split_code_and_comment(l).0.contains("#[cfg(test)]"))
-            {
-                Some(line_idx) => src
+            let production = if is_test_only_file(&src) {
+                String::new()
+            } else {
+                match src
                     .lines()
-                    .take(line_idx)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                None => src.clone(),
+                    .position(|l| split_code_and_comment(l).0.contains("#[cfg(test)]"))
+                {
+                    Some(line_idx) => src
+                        .lines()
+                        .take(line_idx)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    None => src.clone(),
+                }
             };
             out.push(SourceFile {
                 rel,
@@ -328,6 +332,22 @@ fn raw_sources(root: &Path) -> Vec<String> {
 
 fn sort_violations(v: &mut [Violation]) {
     v.sort_by(|a, b| (a.file.as_str(), a.line).cmp(&(b.file.as_str(), b.line)));
+}
+
+/// Whether a whole file is test code: its first line of CODE is the inner attribute
+/// `#![cfg(test)]`.
+///
+/// A test suite too large for one file lives in a `tests/` directory declared by
+/// `#[cfg(test)] mod tests;` — and the files under it carry no `#[cfg(test)]` line of
+/// their own, so the line-based split would read every one of them as production and
+/// count its asserts' unwraps against the production ratchets. Each such file says
+/// what it is with a leading `#![cfg(test)]`; this is the one place that reads it, for
+/// the shared split and for any rule that cuts its own production half.
+pub fn is_test_only_file(src: &str) -> bool {
+    src.lines()
+        .map(|l| split_code_and_comment(l).0.trim())
+        .find(|code| !code.is_empty())
+        == Some("#![cfg(test)]")
 }
 
 /// Split a source line into (code, same-line comment), respecting string literals so
@@ -543,6 +563,18 @@ mod tests {
         // An escaped quote must not end the string early.
         let (_, comment) = split_code_and_comment(r#"let s = "a\"// b";"#);
         assert_eq!(comment, None);
+    }
+
+    /// What this catches: a split-out test file (a `tests/` directory under a
+    /// `#[cfg(test)] mod tests;`) read as production, which charged every assert's
+    /// unwrap to the production ratchets — and the opposite slip, an ordinary file that
+    /// merely MENTIONS the attribute in prose being dropped from the scan.
+    #[test]
+    fn a_file_that_gates_itself_to_test_has_no_production_half() {
+        assert!(is_test_only_file("#![cfg(test)]\n\nuse super::*;\n"));
+        assert!(is_test_only_file("//! The suite.\n// note\n\n#![cfg(test)]\nuse super::*;\n"));
+        assert!(!is_test_only_file("//! Gated with `#![cfg(test)]` elsewhere.\nfn live() {}\n"));
+        assert!(!is_test_only_file("fn live() {}\n#![cfg(test)]\n"));
     }
 
     /// What this catches: the production/test split silently swallowing the whole

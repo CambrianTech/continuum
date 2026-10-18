@@ -186,7 +186,7 @@ impl ExperienceRecord {
             task: task.clone(),
             ok,
             grade: grade.to_string(),
-            answer: settled.spoken.clone().unwrap_or_default(),
+            answer: settled.spoken_answer(),
             world_state: settled.world_state.clone(),
             room_updates: settled
                 .room_updates
@@ -281,7 +281,7 @@ impl ExperienceRecord {
                 }
                 (None, true) => "lived turn: settled".to_string(),
             },
-            answer: settled.spoken.clone().unwrap_or_default(),
+            answer: settled.spoken_answer(),
             world_state: settled.world_state.clone(),
             room_updates: settled
                 .room_updates

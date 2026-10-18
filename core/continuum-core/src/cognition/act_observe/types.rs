@@ -83,6 +83,13 @@ pub struct SettleOutcome {
 }
 
 impl SettleOutcome {
+    /// The answer an observer grades: what she spoke, or an empty answer when she
+    /// settled without speaking (a Pass, or an Act the budget cut off). Silence is graded
+    /// as no answer — never as an error — so every grader reads it from here.
+    pub fn spoken_answer(&self) -> String {
+        self.spoken.clone().unwrap_or_default() // unwrap_or_default: an unspoken settle IS the empty answer, by the grading contract
+    }
+
     /// An infra-failure outcome: no verdict was reached because the deliberation
     /// call failed OR was aborted by a watchdog (e.g. a per-task deadline in the
     /// eval loop). The grader keys on `inference_error.is_some()` to score this a
