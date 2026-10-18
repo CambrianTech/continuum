@@ -2405,9 +2405,9 @@ mod tests {
     #[tokio::test]
     async fn a_canonical_completed_jobs_remainder_survives_a_crash_before_its_receipt() {
         use crate::commands::training_trigger::return_::{return_job, return_parked_remainder, Remainder, REMAINDER_RECEIPT};
-        use crate::commands::training_trigger::submit::{return_request, ReturnScope};
         use crate::genome::fine_tuning::job_board::{CompletedJob, WatchedJob};
         use crate::genome::fine_tuning::types::{TrainingArtifact, TrainingStatus};
+        for explicit in [false, true] {
         let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
         let (old, executor) = build_runtime(adapter.clone(), false).await;
         let artifacts = tempfile::tempdir().unwrap();
@@ -2423,6 +2423,10 @@ mod tests {
             .collect();
         let mut params = submit_params(persona, "code", originals.clone(), Some(64));
         params["submissionId"] = serde_json::json!(submission);
+        if explicit {
+            params["lora"] = serde_json::json!({"rank":4,"alpha":8,"dropout":0.0,"targetModules":["q_proj"]});
+            params["schedule"] = serde_json::json!({"epochs":1,"batchSize":2,"sequenceLength":1024,"learningRate":0.0002});
+        }
         assert_eq!(executor.execute_json("genome/training-trigger/submit", params).await.unwrap()["success"], true);
         let store = old.state.durable.require().unwrap();
         let intent = DispatchIntent {
@@ -2464,9 +2468,33 @@ mod tests {
         drop(executor);
         drop(old);
         let (crashed, crashed_executor) = build_runtime(adapter.clone(), false).await;
-        let mut remainder = crashed.state.dispatched_request(&key, dispatch, job).await.unwrap();
-        remainder.dataset.examples = parked.iter().map(|&i| remainder.dataset.examples[i].clone()).collect();
-        let accepted = return_request(&crashed.state, remainder, job, ReturnScope::Parked(&parked)).await.unwrap();
+        let mut adapter_request = crashed.state.dispatched_request(&key, dispatch, job).await.unwrap();
+        let original_lora = adapter_request.lora.clone();
+        let original_schedule = adapter_request.schedule.clone();
+        assert_eq!(original_lora.is_some(), explicit);
+        adapter_request.lora = Some(serde_json::from_value(serde_json::json!({"rank":8,"alpha":16,"dropout":0.0,"targetModules":["q_proj","v_proj"]})).unwrap());
+        adapter_request.schedule = Some(serde_json::from_value(serde_json::json!({"epochs":3,"batchSize":4,"sequenceLength":2048,"learningRate":0.0001})).unwrap());
+        std::fs::write(jd.join("request.json"), serde_json::to_vec(&adapter_request).unwrap()).unwrap();
+        let store = crashed.state.durable.require().unwrap();
+        let mut broken = intent.clone();
+        broken.phase = DispatchPhase::Dispatched {
+            handle: JobHandle { provider_id: "fixture".into(), provider_job_id: "wrong".into(), local_id: Uuid::new_v4() },
+            provider: "fixture".into(),
+        };
+        store.dispatches.update(dispatch, &broken).await.unwrap();
+        assert!(return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed).await.is_err(), "a usable request file cannot bypass a broken recorded dispatch");
+        assert_eq!(crashed.state.bucket_example_count(persona, "code", "synthetic"), None);
+        assert!(!jd.join(REMAINDER_RECEIPT).exists());
+        store.dispatches.update(dispatch, &intent).await.unwrap();
+        let returned = return_parked_remainder(&crashed.state, &board, artifacts.path(), &completed).await.unwrap();
+        let Remainder::Submitted(accepted) = returned else { panic!("expected a new return: {returned:?}") };
+        {
+            let pending = crashed.state.buckets.get(&key).unwrap();
+            assert_eq!(pending.lora, original_lora, "retain both omitted and explicit producer policy");
+            assert_eq!(pending.schedule, original_schedule, "adapter defaults cannot replace explicit schedule");
+        }
+        // Model a crash before the receipt became durable, retaining the accepted batch.
+        std::fs::remove_file(jd.join(REMAINDER_RECEIPT)).unwrap();
         assert!(accepted.success, "the remainder is durably accepted before the crash: {accepted:?}");
         assert!(!accepted.acceptance.as_ref().expect("an acceptance receipt").replayed, "the first acceptance is new: {accepted:?}");
         assert_eq!(crashed.state.bucket_example_count(persona, "code", "synthetic"), Some(13), "exactly the thirteen: {accepted:?}");
@@ -2493,6 +2521,7 @@ mod tests {
         assert!(matches!(return_parked_remainder(&next.state, &board, artifacts.path(), &completed).await.unwrap(), Remainder::AlreadyReturned));
         assert!(return_job(&next.state, &board, artifacts.path(), job).await.is_err(), "the full return of a completed job stays refused");
         next.shutdown().await.unwrap();
+        }
     }
 
     // What this catches (278afa6c): an init timeout must not permanently disable
