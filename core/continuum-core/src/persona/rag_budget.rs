@@ -679,184 +679,26 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
         reserved: ReservedTokens,
         sources: &[RagSourceBudget],
     ) -> BudgetAllocation {
-        let mut warnings = Vec::new();
         let available = reserved.headroom_within(context_window);
 
         if available == 0 {
-            warnings.push(format!(
+            let warnings = vec![format!(
                 "reserved tokens ({}) >= context window ({}); no budget for sources",
                 reserved.total(),
                 context_window
-            ));
+            )];
             return empty_allocation(context_window, reserved, sources, warnings, true);
         }
 
-        // Stable sort by priority desc, then by source_id for
-        // deterministic tie-break — the boot-time output should
-        // not depend on slice ordering or hashmap iteration.
-        let mut sorted: Vec<&RagSourceBudget> = sources.iter().collect();
-        sorted.sort_by(|a, b| {
-            b.priority
-                .cmp(&a.priority)
-                .then(a.source_id.cmp(&b.source_id))
-        });
-
-        // Working allocation: source_id -> tokens. Use a Vec parallel
-        // to sorted for cache-locality + deterministic iteration.
-        let mut alloc: Vec<u32> = vec![0; sorted.len()];
-        let mut state: Vec<AllocationState> = vec![AllocationState::Dropped; sorted.len()];
-        let mut remaining: u32 = available;
-        let mut escalation_needed = false;
-
-        // ---- Pass 1: floors (unconditional) ----
-        // Pre-flight: do all required floors fit?
-        let required_floor_sum: u32 = sorted
-            .iter()
-            .filter(|s| s.required)
-            .map(|s| s.floor_tokens)
-            .sum();
-
-        if required_floor_sum > available {
-            warnings.push(format!(
-                "required floor sum ({}) exceeds available ({}); some required sources UnderProvisioned",
-                required_floor_sum, available
-            ));
-        }
-
-        // Allocate floors in priority order. required first, then
-        // optional. If we can't honor a required floor, set
-        // UnderProvisioned (the floor itself becomes whatever
-        // remains, or 0).
-        for (i, source) in sorted.iter().enumerate() {
-            if !source.required {
-                continue;
-            }
-            if source.floor_tokens <= remaining {
-                alloc[i] = source.floor_tokens;
-                remaining -= source.floor_tokens;
-                state[i] = AllocationState::FloorOnly;
-            } else {
-                // required source can't get its floor — escalate.
-                alloc[i] = remaining;
-                remaining = 0;
-                state[i] = AllocationState::UnderProvisioned;
-                escalation_needed = true;
-            }
-        }
-        for (i, source) in sorted.iter().enumerate() {
-            if source.required {
-                continue;
-            }
-            if source.floor_tokens == 0 {
-                // optional source with floor 0 — floor is trivially
-                // satisfied; mark FloorOnly so pass 2 + pass 3 see it
-                // as eligible for grow. (If we left state as Dropped
-                // here, the source would be permanently skipped — bug
-                // surfaced by the max_caps_distribution test.)
-                state[i] = AllocationState::FloorOnly;
-                continue;
-            }
-            if source.floor_tokens <= remaining {
-                alloc[i] = source.floor_tokens;
-                remaining -= source.floor_tokens;
-                state[i] = AllocationState::FloorOnly;
-            } else {
-                // optional source can't get its floor — drop entirely.
-                // alloc[i] stays 0, state stays Dropped.
-                warnings.push(format!(
-                    "optional source `{}` dropped — floor {} > remaining {}",
-                    source.source_id, source.floor_tokens, remaining
-                ));
-            }
-        }
-
-        // ---- Pass 2: min — top up to min_tokens for sources we
-        // haven't dropped, in priority order ----
-        for (i, source) in sorted.iter().enumerate() {
-            if matches!(
-                state[i],
-                AllocationState::Dropped | AllocationState::UnderProvisioned
-            ) {
-                continue;
-            }
-            let needed = source.min_tokens.saturating_sub(alloc[i]);
-            let granted = needed
-                .min(remaining)
-                .min(source.max_tokens.saturating_sub(alloc[i]));
-            alloc[i] += granted;
-            remaining -= granted;
-            if alloc[i] >= source.min_tokens {
-                state[i] = AllocationState::Satisfied;
-            }
-            // else stays FloorOnly
-        }
-
-        // ---- Pass 3: grow — distribute remaining by priority weight,
-        // capped at max_tokens ----
-        // Iterate until no movement (capped sources stop being
-        // candidates and free tokens flow to others).
-        loop {
-            let active: Vec<usize> = sorted
-                .iter()
-                .enumerate()
-                .filter(|(i, s)| {
-                    !matches!(
-                        state[*i],
-                        AllocationState::Dropped | AllocationState::UnderProvisioned
-                    ) && alloc[*i] < s.max_tokens
-                })
-                .map(|(i, _)| i)
-                .collect();
-            if active.is_empty() || remaining == 0 {
-                break;
-            }
-            let priority_sum: u32 = active.iter().map(|&i| sorted[i].priority as u32).sum();
-            if priority_sum == 0 {
-                break;
-            }
-            let mut moved = 0u32;
-            for &i in &active {
-                let share = ((remaining as u64) * (sorted[i].priority as u64)
-                    / (priority_sum as u64)) as u32;
-                let headroom = sorted[i].max_tokens - alloc[i];
-                let grant = share.min(headroom);
-                if grant > 0 {
-                    alloc[i] += grant;
-                    moved += grant;
-                }
-            }
-            if moved == 0 {
-                // No grant could move (e.g., remaining/priority_sum = 0).
-                // Give the single highest-priority active source 1 token
-                // to break the loop deterministically.
-                let i = active[0];
-                let headroom = sorted[i].max_tokens - alloc[i];
-                if headroom > 0 && remaining > 0 {
-                    alloc[i] += 1;
-                    moved = 1;
-                } else {
-                    break;
-                }
-            }
-            remaining = remaining.saturating_sub(moved);
-        }
-
-        // Build result in input order (NOT sorted order) for caller
-        // ergonomics.
-        let mut allocations_by_id: std::collections::HashMap<
-            String,
-            (u32, AllocationState, &RagSourceBudget),
-        > = std::collections::HashMap::new();
-        for (i, source) in sorted.iter().enumerate() {
-            allocations_by_id.insert(source.source_id.clone(), (alloc[i], state[i], *source));
-        }
-        let mut allocations = Vec::with_capacity(sources.len());
+        let FlexAllocation {
+            allocations,
+            unallocated,
+            escalation_needed,
+            warnings,
+        } = flex_allocate(available, sources);
         let mut total_allocated = 0u32;
-        for src in sources {
-            let (tokens, st, _) = allocations_by_id
-                .remove(&src.source_id)
-                .expect("every source must appear in the working alloc");
-            total_allocated = total_allocated.saturating_add(tokens);
+        for allocation in &allocations {
+            total_allocated = total_allocated.saturating_add(allocation.allocated_tokens);
             // The allocator decided how much of her mind each source gets, and
             // until now said NOTHING. So when a grounding block failed to
             // appear, "the source abstained" and "the source was granted zero"
@@ -868,27 +710,21 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
             // GOT. A source at allocated=0 (or below its own floor) is a
             // faculty the persona cannot hear this turn, and that must be a
             // readable fact, not an inference. [[observability-as-substrate]]
-            if tokens == 0 || tokens < src.floor_tokens {
+            if allocation.allocated_tokens == 0
+                || allocation.allocated_tokens < allocation.requested_floor
+            {
                 tracing::info!(
                     probe_class = "rag.budget.starved",
-                    source = %src.source_id,
-                    granted = tokens,
-                    floor = src.floor_tokens,
-                    min = src.min_tokens,
-                    max = src.max_tokens,
-                    state = ?st,
+                    source = %allocation.source_id,
+                    granted = allocation.allocated_tokens,
+                    floor = allocation.requested_floor,
+                    min = allocation.requested_min,
+                    max = allocation.requested_max,
+                    state = ?allocation.state,
                     context_window,
                     "source granted less than its own floor — this faculty is silent this turn"
                 );
             }
-            allocations.push(SourceAllocation {
-                source_id: src.source_id.to_string(),
-                allocated_tokens: tokens,
-                requested_floor: src.floor_tokens,
-                requested_min: src.min_tokens,
-                requested_max: src.max_tokens,
-                state: st,
-            });
         }
 
         BudgetAllocation {
@@ -897,10 +733,228 @@ impl RagBudgetAdapter for FlexboxRagBudgetAdapter {
             available_for_sources: available,
             allocations,
             total_allocated,
-            unallocated: available.saturating_sub(total_allocated),
+            unallocated,
             escalation_needed,
             warnings,
         }
+    }
+}
+
+/// What [`flex_allocate`] decided: every claim's grant in INPUT order, the tokens no
+/// claim could take, and the same escalation/warning receipts the adapter reports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FlexAllocation {
+    pub allocations: Vec<SourceAllocation>,
+    pub unallocated: u32,
+    /// A required claim got less than its floor.
+    pub escalation_needed: bool,
+    pub warnings: Vec<String>,
+}
+
+impl FlexAllocation {
+    /// The grant of the claim named `source_id`; 0 when no such claim was made.
+    pub fn granted(&self, source_id: &str) -> u32 {
+        self.allocations
+            .iter()
+            .find(|a| a.source_id == source_id)
+            .map_or(0, |a| a.allocated_tokens)
+    }
+}
+
+/// THE flexbox algorithm, pure: `available` tokens shared across `claims`.
+///
+/// One algorithm for every budget in the persona. [`FlexboxRagBudgetAdapter`] runs it
+/// over the RAG sources inside `compose_for_turn`; the deliberation faculty runs it
+/// over its prompt (framing, required input, grounding, history) AND its reply, so the
+/// reply competes for the window by priority instead of being carved off the top by a
+/// separate rule. Pure and allocation-only: no I/O, no adapter instance (the adapter
+/// stays one-per-brain, PERSONA-COGNITION-PIPELINE §5).
+///
+/// 1. **Floor pass** — required floors first (priority order), then optional floors.
+///    A required claim that cannot get its floor takes what remains and is
+///    `UnderProvisioned` (escalation); an optional one is `Dropped`.
+/// 2. **Min pass** — top up to `min_tokens` in priority order, capped at `max_tokens`.
+/// 3. **Grow pass** — distribute what remains by priority weight, capped at
+///    `max_tokens`, iterating until nothing moves.
+pub fn flex_allocate(available: u32, claims: &[RagSourceBudget]) -> FlexAllocation {
+    let mut warnings = Vec::new();
+    // Stable sort by priority desc, then by source_id for deterministic tie-break —
+    // the output must not depend on slice ordering or hashmap iteration. `order[k]`
+    // is the input index of the k-th claim in priority order.
+    let mut order: Vec<usize> = (0..claims.len()).collect();
+    order.sort_by(|&a, &b| {
+        claims[b]
+            .priority
+            .cmp(&claims[a].priority)
+            .then(claims[a].source_id.cmp(&claims[b].source_id))
+    });
+    let sorted: Vec<&RagSourceBudget> = order.iter().map(|&i| &claims[i]).collect();
+
+    // Working allocation parallel to `sorted` for cache-locality + deterministic
+    // iteration.
+    let mut alloc: Vec<u32> = vec![0; sorted.len()];
+    let mut state: Vec<AllocationState> = vec![AllocationState::Dropped; sorted.len()];
+    let mut remaining: u32 = available;
+    let mut escalation_needed = false;
+
+    // ---- Pass 1: floors (unconditional) ----
+    // Pre-flight: do all required floors fit?
+    let required_floor_sum: u32 = sorted
+        .iter()
+        .filter(|s| s.required)
+        .map(|s| s.floor_tokens)
+        .sum();
+
+    if required_floor_sum > available {
+        warnings.push(format!(
+            "required floor sum ({}) exceeds available ({}); some required sources UnderProvisioned",
+            required_floor_sum, available
+        ));
+    }
+
+    // Allocate floors in priority order. required first, then optional. If we
+    // can't honor a required floor, set UnderProvisioned (the floor itself becomes
+    // whatever remains, or 0).
+    for (i, source) in sorted.iter().enumerate() {
+        if !source.required {
+            continue;
+        }
+        if source.floor_tokens <= remaining {
+            alloc[i] = source.floor_tokens;
+            remaining -= source.floor_tokens;
+            state[i] = AllocationState::FloorOnly;
+        } else {
+            // required source can't get its floor — escalate.
+            alloc[i] = remaining;
+            remaining = 0;
+            state[i] = AllocationState::UnderProvisioned;
+            escalation_needed = true;
+        }
+    }
+    for (i, source) in sorted.iter().enumerate() {
+        if source.required {
+            continue;
+        }
+        if source.floor_tokens == 0 {
+            // optional source with floor 0 — floor is trivially satisfied; mark
+            // FloorOnly so pass 2 + pass 3 see it as eligible for grow. (If we left
+            // state as Dropped here, the source would be permanently skipped — bug
+            // surfaced by the max_caps_distribution test.)
+            state[i] = AllocationState::FloorOnly;
+            continue;
+        }
+        if source.floor_tokens <= remaining {
+            alloc[i] = source.floor_tokens;
+            remaining -= source.floor_tokens;
+            state[i] = AllocationState::FloorOnly;
+        } else {
+            // optional source can't get its floor — drop entirely.
+            // alloc[i] stays 0, state stays Dropped.
+            warnings.push(format!(
+                "optional source `{}` dropped — floor {} > remaining {}",
+                source.source_id, source.floor_tokens, remaining
+            ));
+        }
+    }
+
+    // ---- Pass 2: min — top up to min_tokens for sources we haven't dropped, in
+    // priority order ----
+    for (i, source) in sorted.iter().enumerate() {
+        if matches!(
+            state[i],
+            AllocationState::Dropped | AllocationState::UnderProvisioned
+        ) {
+            continue;
+        }
+        let needed = source.min_tokens.saturating_sub(alloc[i]);
+        let granted = needed
+            .min(remaining)
+            .min(source.max_tokens.saturating_sub(alloc[i]));
+        alloc[i] += granted;
+        remaining -= granted;
+        if alloc[i] >= source.min_tokens {
+            state[i] = AllocationState::Satisfied;
+        }
+        // else stays FloorOnly
+    }
+
+    // ---- Pass 3: grow — distribute remaining by priority weight, capped at
+    // max_tokens ----
+    // Iterate until no movement (capped sources stop being candidates and free
+    // tokens flow to others).
+    loop {
+        let active: Vec<usize> = sorted
+            .iter()
+            .enumerate()
+            .filter(|(i, s)| {
+                !matches!(
+                    state[*i],
+                    AllocationState::Dropped | AllocationState::UnderProvisioned
+                ) && alloc[*i] < s.max_tokens
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if active.is_empty() || remaining == 0 {
+            break;
+        }
+        let priority_sum: u32 = active.iter().map(|&i| sorted[i].priority as u32).sum();
+        if priority_sum == 0 {
+            break;
+        }
+        let mut moved = 0u32;
+        for &i in &active {
+            let share = ((remaining as u64) * (sorted[i].priority as u64)
+                / (priority_sum as u64)) as u32;
+            let headroom = sorted[i].max_tokens - alloc[i];
+            let grant = share.min(headroom);
+            if grant > 0 {
+                alloc[i] += grant;
+                moved += grant;
+            }
+        }
+        if moved == 0 {
+            // No grant could move (e.g., remaining/priority_sum = 0). Give the single
+            // highest-priority active source 1 token to break the loop
+            // deterministically.
+            let i = active[0];
+            let headroom = sorted[i].max_tokens - alloc[i];
+            if headroom > 0 && remaining > 0 {
+                alloc[i] += 1;
+                moved = 1;
+            } else {
+                break;
+            }
+        }
+        remaining = remaining.saturating_sub(moved);
+    }
+
+    // Report in INPUT order (not priority order) for caller ergonomics.
+    let mut by_input: Vec<Option<(u32, AllocationState)>> = vec![None; claims.len()];
+    for (k, &input) in order.iter().enumerate() {
+        by_input[input] = Some((alloc[k], state[k]));
+    }
+    let mut total_allocated = 0u32;
+    let allocations = claims
+        .iter()
+        .zip(by_input)
+        .map(|(src, slot)| {
+            let (tokens, st) = slot.expect("every claim appears in the priority order");
+            total_allocated = total_allocated.saturating_add(tokens);
+            SourceAllocation {
+                source_id: src.source_id.to_string(),
+                allocated_tokens: tokens,
+                requested_floor: src.floor_tokens,
+                requested_min: src.min_tokens,
+                requested_max: src.max_tokens,
+                state: st,
+            }
+        })
+        .collect();
+    FlexAllocation {
+        allocations,
+        unallocated: available.saturating_sub(total_allocated),
+        escalation_needed,
+        warnings,
     }
 }
 
