@@ -20,7 +20,7 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 /// the batch split lowers it. **This number may only ever go DOWN.** A split by owner lowers
 /// it; raising it is growing the monolith.
 #[cfg(test)]
-const BASELINE_LINES_OVER: usize = 160_594;
+const BASELINE_LINES_OVER: usize = 160_566;
 
 pub struct FileSize;
 
