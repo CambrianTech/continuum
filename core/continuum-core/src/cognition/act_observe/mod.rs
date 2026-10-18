@@ -988,7 +988,7 @@ mod tests {
         assert_eq!(refused.acts, 0);
         assert!(exec.seen_context.lock().unwrap().is_none());
         let (step, _, _) = SettleStep::from_settled(refused);
-        pending.settle(&original, cause, true, &step);
+        pending.settle(&original, cause, framing.attention, &step);
         conversation.event_feed().push(Ok(Some(newer.clone())));
         assert_eq!(pending.message(), Some(&original));
         assert_eq!(pending.wake_engram(), cause);
@@ -997,7 +997,7 @@ mod tests {
         let retried = pending.message().unwrap().clone();
         let refused_again = drive_to_settle_with_input(&cycle, burst(&retried), 8, framing, &mut conversation).await;
         let (step, _, _) = SettleStep::from_settled(refused_again);
-        pending.settle(&retried, cause, true, &step);
+        pending.settle(&retried, cause, framing.attention, &step);
         assert_eq!(pending.message(), Some(&original));
         assert!(conversation.perceive_ready().await.unwrap().iter().any(|m| **m == newer));
 
@@ -1009,7 +1009,7 @@ mod tests {
         assert_eq!(completed.room, original.room_id);
         let (step, _, _) = SettleStep::from_settled(completed);
         assert!(matches!(&step, SettleStep::Spoke(_)));
-        pending.settle(&original, cause, true, &step);
+        pending.settle(&original, cause, framing.attention, &step);
         assert!(pending.message().is_none(), "completed input is not replayed");
         assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
         assert!(conversation.next_message().await.unwrap().is_none());

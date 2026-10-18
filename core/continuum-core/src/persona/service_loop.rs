@@ -1345,10 +1345,11 @@ async fn serve_persona_loop_inner(
                 // store (#89); this is the addressing half, unblocked today.
                 // Human opportunity retains priority, but sender kind can be stale
                 // or shared across clients: it cannot assert that she was named.
-                let attention = crate::cognition::workspace::TurnAttention::for_message(
-                    ctx.identity.persona_identity().mentions(&msg.text),
-                    crate::ipc::positron_presence::is_human_peer(msg.peer_id),
-                );
+                let attention = admitted_retry.then(|| deferred_input.attention()).flatten()
+                    .unwrap_or_else(|| crate::cognition::workspace::TurnAttention::for_message(
+                        ctx.identity.persona_identity().mentions(&msg.text),
+                        crate::ipc::positron_presence::is_human_peer(msg.peer_id),
+                    ));
                 if attention.requires_priority() {
                     // Focus = she is TAKING the turn on it; the heard receipt
                     // already fired at the drain (`wake_backlog::publish_heard`).
@@ -1555,7 +1556,7 @@ async fn serve_persona_loop_inner(
                         "deliberation generation cost"
                     );
                 }
-                deferred_input.settle(&msg, wake_engram, attention.requires_priority(), &step);
+                deferred_input.settle(&msg, wake_engram, attention, &step);
                 match step {
                     crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
                         continue;

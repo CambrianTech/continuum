@@ -17,18 +17,19 @@ use std::collections::{HashSet, VecDeque};
 use uuid::Uuid;
 
 use super::service_loop::IncomingMessage;
+use crate::cognition::workspace::TurnAttention;
 
 /// One already-admitted priority input waiting for its first model dispatch.
 /// This is loop-local custody, not durable replay or a second inbox. New arrivals
 /// remain with PersonaConversation while the ordinary beat retries this input.
 #[derive(Default)]
 pub(crate) struct PendingInput {
-    input: Option<(IncomingMessage, Option<Uuid>)>,
+    input: Option<(IncomingMessage, Option<Uuid>, TurnAttention)>,
 }
 
 impl PendingInput {
     pub(crate) fn message(&self) -> Option<&IncomingMessage> {
-        self.input.as_ref().map(|(message, _)| message)
+        self.input.as_ref().map(|(message, _, _)| message)
     }
 
     /// Retry on the caller's existing beat without consuming the owned input.
@@ -39,21 +40,26 @@ impl PendingInput {
     }
 
     pub(crate) fn wake_engram(&self) -> Option<Uuid> {
-        self.input.as_ref().and_then(|(_, engram)| *engram)
+        self.input.as_ref().and_then(|(_, engram, _)| *engram)
+    }
+
+    /// Preserve the admitted classification even if peer presence changes.
+    pub(crate) fn attention(&self) -> Option<TurnAttention> {
+        self.input.as_ref().map(|(_, _, attention)| *attention)
     }
 
     pub(crate) fn settle(
         &mut self,
         message: &IncomingMessage,
         wake_engram: Option<Uuid>,
-        priority: bool,
+        attention: TurnAttention,
         step: &crate::cognition::act_observe::SettleStep,
     ) {
         if matches!(step, crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch) {
             // Ambient input keeps its existing transcript/re-perception policy.
             // Retaining it here would prevent a newer directed input waking us.
-            if priority {
-                self.input = Some((message.clone(), wake_engram));
+            if attention.requires_priority() {
+                self.input = Some((message.clone(), wake_engram, attention));
             }
         } else {
             self.input = None;
@@ -184,7 +190,7 @@ mod tests {
         let newer = line(2, 2, "newer directed request");
         let cause = Some(Uuid::new_v4());
         let mut pending = PendingInput::default();
-        pending.settle(&original, cause, true, &SettleStep::DeferredBeforeDispatch);
+        pending.settle(&original, cause, TurnAttention::HumanOpportunity, &SettleStep::DeferredBeforeDispatch);
         let mut conversation = ScriptedConversation::new().with_events(vec![Ok(Some(newer.clone()))]);
         conversation.prime().await.unwrap();
         let beat = Duration::from_secs(3);
@@ -193,14 +199,21 @@ mod tests {
         let retry = pending.at_next_beat(beat).await.unwrap();
         assert_eq!(retry, original);
         assert_eq!(pending.wake_engram(), cause);
+        // Presence may disappear while waiting; the admitted human opportunity
+        // remains priority without becoming a literal address.
+        assert_eq!(TurnAttention::for_message(false, false), TurnAttention::Ambient);
+        assert_eq!(pending.attention(), Some(TurnAttention::HumanOpportunity));
+        assert!(pending.attention().unwrap().requires_priority());
+        assert!(!pending.attention().unwrap().is_addressed());
         assert_eq!(conversation.perceive_ready().await.unwrap().front().map(|m| m.as_ref()), Some(&newer));
-        pending.settle(&retry, cause, true, &SettleStep::DeferredBeforeDispatch);
+        pending.settle(&retry, cause, TurnAttention::HumanOpportunity, &SettleStep::DeferredBeforeDispatch);
         assert_eq!(pending.message(), Some(&original), "another refusal is not completion");
-        pending.settle(&retry, cause, true, &SettleStep::Passed { reason: Some("chosen silence".into()) });
+        pending.settle(&retry, cause, TurnAttention::HumanOpportunity, &SettleStep::Passed { reason: Some("chosen silence".into()) });
         assert!(pending.at_next_beat(beat).await.is_none(), "a genuine Pass is terminal");
+        assert!(pending.attention().is_none());
         assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
         assert!(conversation.next_message().await.unwrap().is_none());
-        pending.settle(&original, cause, false, &SettleStep::DeferredBeforeDispatch);
+        pending.settle(&original, cause, TurnAttention::Ambient, &SettleStep::DeferredBeforeDispatch);
         assert!(pending.message().is_none(), "ambient policy does not hold off directed arrivals");
     }
 

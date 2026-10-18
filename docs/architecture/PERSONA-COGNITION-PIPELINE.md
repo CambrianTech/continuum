@@ -448,7 +448,8 @@ workspace-deliverable contract or the citizen's ability to answer by speaking.
 The wake owner retains an admitted priority message when the entire settle attempt
 never dispatched a generation or performed an action. This is a distinct deferred
 outcome, not a voluntary Pass. The existing heartbeat retries the exact event,
-room, media and causal engram without repeating input admission or heard receipts.
+room, media, admitted attention and causal engram without repeating input admission
+or heard receipts. Changing peer presence does not reclassify that admitted input.
 New arrivals remain in the existing conversation inbox and can be perceived during
 the retry. A completed decision or prior dispatched work does not replay the input;
 ambient input keeps its existing transcript/re-perception policy. This custody is
