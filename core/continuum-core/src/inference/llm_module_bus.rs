@@ -86,18 +86,15 @@ pub const RESIDENCY_FAULT_KEY: &str = "inference/llm.residency_fault";
 /// future bus subscription consumes; today (PR-2) the module is
 /// command-driven and this publishing path is observer-only.
 ///
-/// Serialization failures fall back to `Value::Null` rather than
-/// panicking — the InferenceRequest shape is serde-derived and
-/// known to serialize cleanly, so a failure here would indicate
-/// substrate corruption. The trace bus still fires (with empty
-/// payload) so subscribers see something happened.
+/// Serialization goes through [`publish_serialized`]: a failure is
+/// logged and published as `Value::Null`, so the trace bus still fires
+/// and subscribers see that something happened.
 pub async fn publish_inference_request(
     bus: &MessageBus,
     registry: &ModuleRegistry,
     request: &InferenceRequest,
 ) {
-    let payload = serde_json::to_value(request).unwrap_or(serde_json::Value::Null);
-    bus.publish(INFERENCE_REQUEST_KEY, payload, registry).await;
+    publish_serialized(bus, registry, INFERENCE_REQUEST_KEY, request).await;
 }
 
 /// Publish an `InferenceComplete` to the trace bus. Same async
@@ -107,8 +104,7 @@ pub async fn publish_inference_complete(
     registry: &ModuleRegistry,
     complete: &InferenceComplete,
 ) {
-    let payload = serde_json::to_value(complete).unwrap_or(serde_json::Value::Null);
-    bus.publish(INFERENCE_COMPLETE_KEY, payload, registry).await;
+    publish_serialized(bus, registry, INFERENCE_COMPLETE_KEY, complete).await;
 }
 
 /// Publish a `FirstTokenEmitted` event. The TTFT observability
@@ -119,9 +115,31 @@ pub async fn publish_first_token_emitted(
     registry: &ModuleRegistry,
     event: &FirstTokenEmitted,
 ) {
-    let payload = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
-    bus.publish(FIRST_TOKEN_EMITTED_KEY, payload, registry)
-        .await;
+    publish_serialized(bus, registry, FIRST_TOKEN_EMITTED_KEY, event).await;
+}
+
+/// The one serialize-then-publish step every typed publisher above shares. These
+/// payloads are serde-derived and serialize cleanly, so a failure means substrate
+/// corruption: it is LOGGED (never swallowed) and the event still fires with a
+/// `Null` payload so subscribers see that it happened.
+async fn publish_serialized<T: serde::Serialize>(
+    bus: &MessageBus,
+    registry: &ModuleRegistry,
+    key: &'static str,
+    value: &T,
+) {
+    let payload = match serde_json::to_value(value) {
+        Ok(payload) => payload,
+        Err(e) => {
+            tracing::error!(
+                key,
+                error = %e,
+                "trace-bus payload failed to serialize — publishing Null so the event still fires"
+            );
+            serde_json::Value::Null
+        }
+    };
+    bus.publish(key, payload, registry).await;
 }
 
 /// Publish a `ResidencyFault` event. Sentinel-observer subscribes
@@ -132,8 +150,7 @@ pub async fn publish_residency_fault(
     registry: &ModuleRegistry,
     fault: &ResidencyFault,
 ) {
-    let payload = serde_json::to_value(fault).unwrap_or(serde_json::Value::Null);
-    bus.publish(RESIDENCY_FAULT_KEY, payload, registry).await;
+    publish_serialized(bus, registry, RESIDENCY_FAULT_KEY, fault).await;
 }
 
 // ─── Subscriber convenience ─────────────────────────────────────

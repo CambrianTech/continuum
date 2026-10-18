@@ -228,7 +228,7 @@ pub(crate) struct StreamToolAccum {
 
 /// Fold one streamed tool-call fragment into the per-index accumulator.
 pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: OpenAIStreamToolCall) {
-    let idx = tc.index.unwrap_or(0);
+    let idx = tc.index.unwrap_or(0); // unwrap_or: a fragment without `index` belongs to the single (first) tool call
     if acc.len() <= idx {
         acc.resize_with(idx + 1, StreamToolAccum::default);
     }

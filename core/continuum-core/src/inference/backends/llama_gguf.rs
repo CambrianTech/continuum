@@ -74,27 +74,30 @@ impl LlamaGgufBackend {
     }
 
     /// Read EOS token IDs from GGUF metadata.
-    fn read_eos_tokens(ct: &gguf_file::Content) -> Vec<u32> {
-        let arch = ct
-            .metadata
+    /// `general.architecture`, or `None` when the GGUF does not declare one.
+    fn read_arch(ct: &gguf_file::Content) -> Option<&str> {
+        ct.metadata
             .get("general.architecture")
             .and_then(|v| v.to_string().ok())
-            .cloned()
-            .unwrap_or_default();
+            .map(String::as_str)
+    }
+
+    fn read_eos_tokens(ct: &gguf_file::Content) -> Vec<u32> {
+        let arch = Self::read_arch(ct);
 
         let base_eos = ct
             .metadata
             .get("tokenizer.ggml.eos_token_id")
             .and_then(|v| v.to_u32().ok());
 
-        match arch.as_str() {
-            "qwen2" => {
+        match arch {
+            Some("qwen2") => {
                 // Qwen2 chat: only <|im_end|> (151645) should stop generation.
                 // <|endoftext|> (151643) has inflated logits in Q3_K_S quantization
                 // and fires prematurely if included as EOS.
                 vec![151645]
             }
-            "llama" => {
+            Some("llama") => {
                 if let Some(eos) = base_eos {
                     if eos == 128001 {
                         vec![128001, 128009] // Llama 3: <|end_of_text|> + <|eot_id|>
@@ -105,22 +108,15 @@ impl LlamaGgufBackend {
                     vec![128009]
                 }
             }
-            _ => base_eos.map(|e| vec![e]).unwrap_or_else(|| vec![128009]),
+            _ => base_eos.map(|e| vec![e]).unwrap_or_else(|| vec![128009]), // unwrap_or: GGUF declares no eos id — <|eot_id|>, the Llama-3 terminator this candle backend was built for
         }
     }
 
     /// Read suppress token IDs from GGUF metadata.
     /// Architecture-specific control tokens that should never appear in output.
     fn read_suppress_tokens(ct: &gguf_file::Content) -> Vec<u32> {
-        let arch = ct
-            .metadata
-            .get("general.architecture")
-            .and_then(|v| v.to_string().ok())
-            .cloned()
-            .unwrap_or_default();
-
-        match arch.as_str() {
-            "qwen2" => {
+        match Self::read_arch(ct) {
+            Some("qwen2") => {
                 // <|endoftext|> (151643): inflated logits in Q3/Q5_K_S quantization.
                 //   Consistently rank 1 (~18-21 logit) after ChatML prefill.
                 // <|im_start|> (151644): chat control token, never in generated text.
@@ -178,10 +174,8 @@ impl ModelBackend for LlamaGgufBackend {
         &self.device
     }
 
-    fn estimated_vram_bytes(&self) -> u64 {
-        std::fs::metadata(&self.model_path)
-            .map(|m| m.len())
-            .unwrap_or(0)
+    fn estimated_vram_bytes(&self) -> Option<u64> {
+        std::fs::metadata(&self.model_path).ok().map(|m| m.len())
     }
 
     fn forward(&mut self, input: &Tensor, index_pos: usize) -> Result<Tensor, candle_core::Error> {

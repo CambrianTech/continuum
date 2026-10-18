@@ -135,11 +135,11 @@ pub trait ModelBackend: Send + Sync {
 
     // ── Memory ──
 
-    /// Estimated VRAM consumed by this model's weights (bytes).
-    /// Used by GpuMemoryManager to track real allocations.
-    /// Default: 0 (unknown). Backends should override with file-size-based estimate.
-    fn estimated_vram_bytes(&self) -> u64 {
-        0
+    /// Estimated VRAM consumed by this model's weights (bytes), used to
+    /// track real allocations. `None` = unknown — never a `0` that a budgeter
+    /// would read as "free". Backends override with a file-size-based estimate.
+    fn estimated_vram_bytes(&self) -> Option<u64> {
+        None
     }
 
     // ── Optional: LoRA Support ──
@@ -342,16 +342,16 @@ pub fn generate(
         let prefill_vec: Vec<f32> = prefill_logits
             .flatten_all()
             .and_then(|t| t.to_vec1())
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or: CANDLE_DEBUG_TOKENS diagnostics only — an unreadable tensor prints no rows
         let mut indexed: Vec<(usize, f32)> = prefill_vec
             .iter()
             .enumerate()
             .map(|(i, &v)| (i, v))
             .collect();
-        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
         eprintln!("Top 10 logits after prefill (Candle GGUF):");
         for (rank, &(tid, val)) in indexed.iter().take(10).enumerate() {
-            let decoded = backend.decode(&[tid as u32]).unwrap_or_else(|_| "?".into());
+            let decoded = backend.decode(&[tid as u32]).unwrap_or_else(|_| "?".into()); // unwrap_or: debug print — "?" marks an undecodable token
             eprintln!(
                 "  {}. token={:>6} logit={:>8.3}  {:?}",
                 rank + 1,
@@ -370,7 +370,7 @@ pub fn generate(
             if let Some(&val) = prefill_vec.get(sid as usize) {
                 let name = backend
                     .decode(&[sid])
-                    .unwrap_or_else(|_| format!("?{}", sid));
+                    .unwrap_or_else(|_| format!("?{}", sid)); // unwrap_or: debug print — "?id" marks an undecodable token
                 eprintln!("  suppress[{}] {:?} logit={:.3}", sid, name, val);
             }
         }
@@ -498,11 +498,11 @@ pub fn generate(
 
         if debug_tokens {
             // Log: token ID, decoded text, logit stats, EOS logit rank
-            let decoded = backend.decode(&[next_token]).unwrap_or_else(|_| "?".into());
+            let decoded = backend.decode(&[next_token]).unwrap_or_else(|_| "?".into()); // unwrap_or: debug print — "?" marks an undecodable token
             let logits_vec: Vec<f32> = logits
                 .flatten_all()
                 .and_then(|t| t.to_vec1())
-                .unwrap_or_default();
+                .unwrap_or_default(); // unwrap_or: CANDLE_DEBUG_TOKENS diagnostics only — an unreadable tensor prints no stats
             let max_logit = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let min_logit = logits_vec.iter().cloned().fold(f32::INFINITY, f32::min);
 
@@ -800,9 +800,9 @@ fn apply_logit_processing(
     // Uses select_nth_unstable (O(n) average) instead of full sort (O(n log n)).
     if sampling.top_k > 0 && sampling.top_k < logits.len() {
         let mut scratch = logits.clone();
-        scratch.select_nth_unstable_by(sampling.top_k, |a, b| {
-            b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
-        });
+        // `total_cmp` is a real total order (a NaN logit cannot make the
+        // comparator inconsistent, which select_nth may reject by panicking).
+        scratch.select_nth_unstable_by(sampling.top_k, |a, b| b.total_cmp(a));
         let threshold = scratch[sampling.top_k];
         for v in logits.iter_mut() {
             if *v < threshold {
@@ -921,9 +921,17 @@ fn sanitize_logits_with_flag(logits: &Tensor, device: &Device) -> Result<(Tensor
 /// Save a failed prompt to disk for replay in tests.
 fn save_prompt_replay(prompt: &str, tokens: &[u32], error: &str) {
     let log = runtime::logger("candle");
-    let home = dirs::home_dir().expect("Failed to resolve home directory");
+    // The canonical home (`$CONTINUUM_HOME` else `~/.continuum`); a replay is
+    // a diagnostic, so an unresolvable home is logged and skipped, never a panic
+    // on top of the generation failure being recorded.
+    let home = match crate::paths::continuum_home() {
+        Ok(home) => home,
+        Err(e) => {
+            log.warn(&format!("Prompt replay not saved: continuum home unresolved ({e})"));
+            return;
+        }
+    };
     let replay_dir = home
-        .join(".continuum")
         .join("jtag")
         .join("logs")
         .join("prompt-replays");

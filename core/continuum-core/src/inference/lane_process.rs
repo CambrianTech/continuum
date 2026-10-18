@@ -63,7 +63,7 @@ pub fn descendants(pid: u32) -> Vec<ProcessIdentity> {
     let mut found: Vec<(usize, ProcessIdentity)> = Vec::new();
     let mut frontier = vec![(pid, 0usize)];
     while let Some((at, depth)) = frontier.pop() {
-        for &child in children.get(&at).map(Vec::as_slice).unwrap_or(&[]) {
+        for &child in children.get(&at).into_iter().flatten() {
             if found.iter().any(|(_, seen)| seen.pid == child.pid) {
                 continue; // a table read mid-fork can list a pid twice; walk it once
             }
@@ -245,7 +245,7 @@ impl StreamCapture {
     /// What has been read so far and how reading ended, or `Cut("still reading")` mid-read.
     pub fn snapshot(&self) -> Captured {
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: as above
-        Captured { bytes: st.0.clone(), end: st.1.clone().unwrap_or_else(|| CaptureEnd::Cut("still reading".into())) }
+        Captured { bytes: st.0.clone(), end: st.1.clone().unwrap_or_else(|| CaptureEnd::Cut("still reading".into())) } // unwrap_or: no end recorded yet IS "still reading" (fn doc)
     }
 }
 
@@ -722,7 +722,7 @@ pub fn command_name(pid: u32) -> Option<String> {
     }
     // `comm` can be a full path on Linux — take the basename so the
     // "llama-server" match is on the binary name, not its install dir.
-    Some(line.rsplit('/').next().unwrap_or(line).to_string())
+    Some(line.rsplit_once('/').map_or(line, |(_, base)| base).to_string())
 }
 
 /// Windows has no `ps`. Without this arm `command_name` returned `None` for EVERY

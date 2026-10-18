@@ -16,7 +16,7 @@ impl From<&Model> for ModelInfo {
         // Display name — fall back to id if TOML didn't supply one. The
         // fallback is intentionally ugly (full id, often dotted hf.co paths)
         // so the empty-name case surfaces at UI time and the catalog gets fixed.
-        let name = m.name.clone().unwrap_or_else(|| m.id.clone());
+        let name = m.name.clone().unwrap_or_else(|| m.id.clone()); // unwrap_or: catalog row has no display name — its id is the name
 
         ModelInfo {
             id: m.id.clone(),

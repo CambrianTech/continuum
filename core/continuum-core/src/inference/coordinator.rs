@@ -447,7 +447,7 @@ impl InferenceCoordinator {
     pub fn open_lane(&self, req: OpenLaneRequest) -> Result<HandleRef, CoordinatorError> {
         let class = req
             .class_override
-            .unwrap_or_else(|| LaneClass::default_for_task(req.task));
+            .unwrap_or_else(|| LaneClass::default_for_task(req.task)); // unwrap_or: no override requested — the task's own class applies
         let seed_tokens = req.task.default_seed_tokens();
         // Cost units = tokens (1:1). Simple + maps directly to the
         // admission planner's per-lane max_cost_units.

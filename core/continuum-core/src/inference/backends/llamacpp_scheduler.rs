@@ -48,7 +48,7 @@
 //!   stop sequence's tokens before signaling Done) — same as the prior
 //!   per-call generate.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -129,16 +129,17 @@ pub struct Scheduler {
 impl Scheduler {
     /// Spawn the driver thread and return a handle. The thread runs until
     /// the last `Scheduler` clone is dropped (channel closed) AND no
-    /// active sequences remain.
-    pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Self {
+    /// active sequences remain. Errs when the OS refuses the driver thread
+    /// (thread/resource exhaustion) — a request-level failure, not a panic.
+    pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Result<Self, String> {
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let model_for_thread = model.clone();
         let cfg = config.clone();
         std::thread::Builder::new()
             .name("llamacpp-scheduler".to_string())
             .spawn(move || driver_loop(model_for_thread, cfg, request_rx))
-            .expect("failed to spawn scheduler thread");
-        Self { request_tx }
+            .map_err(|e| format!("failed to spawn llamacpp-scheduler thread: {e}"))?;
+        Ok(Self { request_tx })
     }
 
     /// Enqueue a request. Returns Err if the scheduler thread has exited.
@@ -244,7 +245,9 @@ fn driver_loop(
     let n_seq_max = config.n_seq_max as i32;
     let mut batch = Batch::allocated(n_batch as i32, n_seq_max);
 
-    let mut active: HashMap<i32, ActiveSeq> = HashMap::new();
+    // Ordered by seq_id: the batch builder walks it in key order for
+    // determinism in tests/logs, borrowing each seq directly.
+    let mut active: BTreeMap<i32, ActiveSeq> = BTreeMap::new();
     let mut free_seqs: Vec<i32> = (0..n_seq_max).collect();
 
     // The gene set currently applied to the shared context (its signature).
@@ -283,10 +286,9 @@ fn driver_loop(
         // ── Phase 1: Accept new requests into free slots ──
         // If nothing is active, block on the first request (avoid spinning).
         // Otherwise non-blocking try_recv to keep the decode loop hot.
-        loop {
-            if free_seqs.is_empty() {
-                break;
-            }
+        // A free seq is taken BEFORE waiting and handed back if no request
+        // arrives, so "a request with no free seq" cannot be represented.
+        while let Some(seq_id) = free_seqs.pop() {
             let recv = if active.is_empty() {
                 match request_rx.recv() {
                     Ok(r) => Ok(r),
@@ -300,7 +302,6 @@ fn driver_loop(
             };
             match recv {
                 Ok(req) => {
-                    let seq_id = free_seqs.pop().unwrap();
                     match start_request(&model, seq_id, req) {
                         Ok(seq) => {
                             log.info(&format!(
@@ -332,7 +333,10 @@ fn driver_loop(
                         }
                     }
                 }
-                Err(()) => break,
+                Err(()) => {
+                    free_seqs.push(seq_id);
+                    break;
+                }
             }
         }
 
@@ -353,22 +357,16 @@ fn driver_loop(
         // first seq with work (lowest seq_id) defines the group; seqs wanting
         // a different gene are deferred to a later iteration so a seq is never
         // decoded under another seq's adapter.
-        let mut batch_lora_sig: Option<String> = None;
-        let mut batch_lora_rep: Option<i32> = None;
+        // `(signature, representative seq_id)` — one value, so a group with a
+        // signature but no representative cannot exist.
+        let mut batch_group: Option<(String, i32)> = None;
 
-        // Iterate sorted by seq_id for determinism in tests/logs.
-        let seq_ids: Vec<i32> = {
-            let mut v: Vec<i32> = active.keys().copied().collect();
-            v.sort_unstable();
-            v
-        };
-
-        for seq_id in seq_ids {
+        // BTreeMap iteration is sorted by seq_id (determinism in tests/logs).
+        for (&seq_id, seq) in active.iter_mut() {
             let room = n_batch.saturating_sub(tokens_in_batch);
             if room == 0 {
                 break;
             }
-            let seq = active.get_mut(&seq_id).expect("seq present");
 
             // Gene-group gate (see batch_lora_sig above). A seq with no work
             // this iteration is skipped without claiming the group.
@@ -376,12 +374,9 @@ fn driver_loop(
             if !has_work {
                 continue;
             }
-            match batch_lora_sig {
-                None => {
-                    batch_lora_sig = Some(seq.lora_sig.clone());
-                    batch_lora_rep = Some(seq_id);
-                }
-                Some(ref sig) if *sig != seq.lora_sig => continue,
+            match &batch_group {
+                None => batch_group = Some((seq.lora_sig.clone(), seq_id)),
+                Some((sig, _)) if *sig != seq.lora_sig => continue,
                 Some(_) => {}
             }
 
@@ -424,36 +419,43 @@ fn driver_loop(
             }
         }
 
-        if tokens_in_batch == 0 {
-            // Nothing to do this iteration — yield briefly.
+        // A group is claimed exactly when a seq with work had room in the
+        // batch, i.e. exactly when at least one token was pushed. No group =
+        // nothing to decode this iteration — yield briefly.
+        let Some((desired_sig, rep)) = batch_group else {
             std::thread::sleep(std::time::Duration::from_millis(1));
             continue;
-        }
+        };
 
         // ── Phase 3: Apply this batch's gene group, then decode ──
         // Context-level LoRA. The homogeneity gate guarantees every seq in
-        // this batch shares `batch_lora_sig`, and a seq is only ever decoded
+        // this batch shares `desired_sig`, and a seq is only ever decoded
         // under its own gene, so its KV history stays consistent. We only call
         // set_loras/clear_loras when the desired group differs from what's
         // already on the context (the cheap hot-swap). A set_loras failure is
         // routed through the same fan-out as a decode failure — never decode
         // under the wrong gene (Rule 2).
-        let desired_sig = batch_lora_sig.clone().unwrap_or_default();
         let lora_apply: Result<(), String> = if desired_sig == current_ctx_lora_sig {
             Ok(())
         } else if desired_sig.is_empty() {
             ctx.clear_loras()
         } else {
-            let rep =
-                batch_lora_rep.expect("non-empty gene signature must have a representative seq");
-            let refs: Vec<(&LoraAdapter, f32)> = active
-                .get(&rep)
-                .expect("representative seq present")
-                .active_loras
-                .iter()
-                .map(|(a, s)| (a.as_ref(), *s))
-                .collect();
-            ctx.set_loras(&refs)
+            // `rep` claimed the group in the loop above and nothing has left
+            // `active` since; a miss is routed through the decode-failure
+            // fan-out rather than decoding under the wrong gene.
+            match active.get(&rep) {
+                Some(rep_seq) => {
+                    let refs: Vec<(&LoraAdapter, f32)> = rep_seq
+                        .active_loras
+                        .iter()
+                        .map(|(a, s)| (a.as_ref(), *s))
+                        .collect();
+                    ctx.set_loras(&refs)
+                }
+                None => Err(format!(
+                    "gene group representative seq {rep} is not active"
+                )),
+            }
         };
 
         let decode_start = Instant::now();

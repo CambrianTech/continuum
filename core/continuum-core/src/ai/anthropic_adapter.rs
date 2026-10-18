@@ -22,7 +22,7 @@ use std::time::Instant;
 use crate::model_registry::Capability;
 use crate::secrets::get_secret;
 
-use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
+use super::adapter::{AIProviderAdapter, AdapterBuildError, AdapterCapabilities, ApiStyle};
 use super::types::{
     ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
     TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
@@ -45,37 +45,50 @@ pub struct AnthropicAdapter {
 }
 
 impl AnthropicAdapter {
-    pub fn new() -> Self {
+    /// Build from the model registry. Both model ids come from the catalog;
+    /// an incomplete catalog row or an unbuildable HTTP client is a typed
+    /// [`AdapterBuildError`] the boot path logs (provider not registered),
+    /// never a panic inside the constructor.
+    pub fn new() -> Result<Self, AdapterBuildError> {
+        const PROVIDER_ID: &str = "anthropic";
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(120))
             .build()
-            .expect("Failed to create HTTP client");
+            .map_err(|e| AdapterBuildError::HttpClient {
+                provider_id: PROVIDER_ID.to_string(),
+                reason: e.to_string(),
+            })?;
 
-        // Both model ids come from the registry. Panics (loudly) if the
-        // registry wasn't initialized before adapter construction —
-        // that's a boot-order bug, not a runtime failure mode.
         let reg = crate::model_registry::global();
-        let default_model = reg
-            .provider("anthropic")
-            .and_then(|p| p.default_model.clone())
-            .expect("anthropic provider has no default_model in the Rust catalog (catalog.rs)");
+        let provider = reg
+            .provider(PROVIDER_ID)
+            .ok_or_else(|| AdapterBuildError::UnknownProvider {
+                provider_id: PROVIDER_ID.to_string(),
+            })?;
+        let default_model =
+            provider
+                .default_model
+                .clone()
+                .ok_or_else(|| AdapterBuildError::NoDefaultModel {
+                    provider_id: PROVIDER_ID.to_string(),
+                })?;
+        // `total_cmp` is a total order on f32, so a NaN cost (a malformed
+        // catalog row) sorts last instead of comparing "equal" to everything.
         let health_check_model = reg
-            .models_for_provider("anthropic")
-            .min_by(|a, b| {
-                a.cost_input_per_1k
-                    .partial_cmp(&b.cost_input_per_1k)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .models_for_provider(PROVIDER_ID)
+            .min_by(|a, b| a.cost_input_per_1k.total_cmp(&b.cost_input_per_1k))
             .map(|m| m.id.clone())
-            .expect("anthropic has no models registered");
+            .ok_or_else(|| AdapterBuildError::NoModels {
+                provider_id: PROVIDER_ID.to_string(),
+            })?;
 
-        Self {
+        Ok(Self {
             api_key: None,
             client,
             initialized: false,
             default_model,
             health_check_model,
-        }
+        })
     }
 
     /// Convert ChatMessage to Anthropic format
@@ -137,7 +150,7 @@ impl AnthropicAdapter {
                                         "tool_use_id": tool_use_id,
                                         "content": content
                                     });
-                                    if is_error.unwrap_or(false) {
+                                    if matches!(is_error, Some(true)) {
                                         obj["is_error"] = json!(true);
                                     }
                                     Some(obj)
@@ -165,7 +178,7 @@ impl AnthropicAdapter {
                                             "type": "image",
                                             "source": {
                                                 "type": "base64",
-                                                "media_type": image.mime_type.as_deref().unwrap_or("image/png"),
+                                                "media_type": image.wire_mime_type(),
                                                 "data": b64
                                             }
                                         }))
@@ -203,12 +216,6 @@ impl AnthropicAdapter {
             "tool_use" => FinishReason::ToolUse,
             _ => FinishReason::Error,
         }
-    }
-}
-
-impl Default for AnthropicAdapter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -314,8 +321,8 @@ impl AIProviderAdapter for AnthropicAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis()));
-        let model = request.model.as_deref().unwrap_or(&self.default_model);
+            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis())); // unwrap_or: caller sent no request id — mint one for the receipts
+        let model = request.model.as_deref().unwrap_or(&self.default_model); // unwrap_or: request named no model — the catalog default serves it
 
         // Build messages and extract system prompt
         let (messages, msg_system) = self.format_messages(&request.messages);
@@ -346,7 +353,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": request.temperature.unwrap_or(0.7)
+            "temperature": request.temperature_or_default()
         });
 
         // Add system prompt if present
@@ -411,7 +418,7 @@ impl AIProviderAdapter for AnthropicAdapter {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = crate::ai::inference_error::error_response_body(response).await;
             return Err(format!("Anthropic returned {}: {}", status, body));
         }
 
@@ -452,7 +459,7 @@ impl AIProviderAdapter for AnthropicAdapter {
             .stop_reason
             .as_deref()
             .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(FinishReason::Stop); // unwrap_or: response carried no stop_reason — labelled a normal end
 
         let usage = response_json
             .usage
@@ -462,7 +469,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                 total_tokens: u.input_tokens + u.output_tokens,
                 estimated_cost: Some(self.calculate_cost(u.input_tokens, u.output_tokens, model)),
             })
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or: response carried no usage block — usage is observability only, never a budget input here
 
         Ok(TextGenerationResponse {
             text,
@@ -493,7 +500,7 @@ impl AIProviderAdapter for AnthropicAdapter {
     }
 
     async fn health_check(&self) -> HealthStatus {
-        if self.api_key.is_none() {
+        let Some(api_key) = self.api_key.as_deref() else {
             return HealthStatus {
                 status: HealthState::Unhealthy,
                 api_available: false,
@@ -502,7 +509,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                 last_checked: crate::time::EpochMs::now().millis(),
                 message: Some("Anthropic API key not configured".to_string()),
             };
-        }
+        };
 
         let start = Instant::now();
 
@@ -510,7 +517,7 @@ impl AIProviderAdapter for AnthropicAdapter {
         let result = self
             .client
             .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", self.api_key.as_deref().unwrap_or_default())
+            .header("x-api-key", api_key)
             .header("anthropic-version", "2023-06-01")
             .header("Content-Type", "application/json")
             .json(&json!({

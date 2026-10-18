@@ -757,6 +757,7 @@ async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, CommandError>
     //    override is what keeps the measurement off the living persona's lane).
     let mut adapter =
         crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+            .map_err(|e| CommandError::Internal(e.to_string()))?
             .with_runtime_base_url(lane.root().to_string())
             .with_default_model(base.id.clone())
             // This adapter owns the ephemeral lane it points at — readiness is
@@ -914,6 +915,7 @@ async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLaneInner, Comm
             })?;
     let mut adapter =
         crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+            .map_err(|e| CommandError::Internal(e.to_string()))?
             .with_runtime_base_url(lane.root().to_string())
             .with_default_model(base.id.clone())
             .with_dedicated_lane();
@@ -1023,6 +1025,7 @@ impl PrivateTeacherLane {
         let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
             crate::inference::llama_server::PROVIDER_ID,
         )
+        .map_err(|e| CommandError::Internal(e.to_string()))?
         .with_runtime_base_url(self.lane.root().to_string())
         .with_default_model(self.target.model.id.clone())
         .with_dedicated_lane();
@@ -1126,10 +1129,23 @@ async fn share_live_serving_lane_from_snapshot(
     // Blind must not mean "assume clean" — that principle was right. The error was
     // treating an unanswered HTTP call as evidence when the invariant was already
     // guaranteed upstream by the code that applies the adapters.
-    let mut adapter =
-        crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+    let mut adapter = match crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
+        PROVIDER_ID,
+    ) {
+        Ok(adapter) => adapter
             .with_runtime_base_url(snap.base_url.clone())
-            .with_default_model(base.id.clone());
+            .with_default_model(base.id.clone()),
+        Err(e) => {
+            crate::probe!(
+                class = "eval.lane.acquire",
+                step = "share_adapter_build_failed",
+                model = %base.id,
+                error = %e,
+                "live-lane share adapter could not be built — falling to cold path"
+            );
+            return None;
+        }
+    };
     // BOUNDED: this initialize is an HTTP round-trip against the LIVE lane, and this
     // server is documented (the /lora-adapters lesson above) to block non-completion
     // endpoints while generating. A share CHECK must never park acquisition — if the
@@ -1216,6 +1232,7 @@ async fn build_external_eval_lane_inner(
     );
     let mut adapter =
         crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(&base.provider)
+            .map_err(|e| CommandError::Internal(e.to_string()))?
             .with_default_model(base.id.clone());
     adapter.initialize().await.map_err(|e| {
         CommandError::Internal(format!(

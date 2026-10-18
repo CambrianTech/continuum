@@ -170,15 +170,17 @@ pub fn find_candidate(
             skipped.push(format!("{}: no mmproj projector on disk", m.id));
             continue;
         };
-        let weights_bytes = std::fs::metadata(&gguf).map(|md| md.len()).unwrap_or(0);
-        if weights_bytes == 0 {
-            skipped.push(format!(
-                "{}: GGUF unreadable/empty at {}",
-                m.id,
-                gguf.display()
-            ));
-            continue;
-        }
+        let weights_bytes = match std::fs::metadata(&gguf) {
+            Ok(md) if md.len() > 0 => md.len(),
+            Ok(_) => {
+                skipped.push(format!("{}: GGUF empty at {}", m.id, gguf.display()));
+                continue;
+            }
+            Err(e) => {
+                skipped.push(format!("{}: GGUF unreadable at {}: {e}", m.id, gguf.display()));
+                continue;
+            }
+        };
         // Size it HERE, through the one shared calculation, so the candidate carries a
         // number the ledger would agree with. A row that cannot be sized is skipped
         // rather than admitted on a guess — refusing to spawn is recoverable, spawning
@@ -229,7 +231,19 @@ pub async fn ensure_sidecar(
     if let Some(existing) = slot.as_ref() {
         match existing.multimodal_support().await {
             Ok(props) => {
-                let verified = vision_lane_ready(true, true, props).unwrap_or(false);
+                // A sight check that fails is a NAMED reason to respawn, logged
+                // here — not a bare `false` that forgets why the lane was dropped.
+                let verified = match vision_lane_ready(true, true, props) {
+                    Ok(verified) => verified,
+                    Err(reason) => {
+                        tracing::info!(
+                            model = %cand.model.id,
+                            %reason,
+                            "vision sidecar incumbent lost sight — respawning"
+                        );
+                        false
+                    }
+                };
                 if verified
                     && existing.active_model().await.ok().flatten().as_deref()
                         == Some(cand.model.id.as_str())

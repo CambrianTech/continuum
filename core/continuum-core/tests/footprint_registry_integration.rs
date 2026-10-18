@@ -42,7 +42,7 @@ fn qwen35_4b_target_path() -> PathBuf {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires real qwen3.5-4b GGUF + 5-10s; run manually with --ignored --nocapture"]
 async fn llamacpp_adapter_reports_model_weights_to_global_registry() {
-    // Need the model registry initialized so LlamaCppAdapter::new() can
+    // Need the model registry initialized so LlamaCppAdapter::try_new() can
     // resolve the llamacpp-local row from the Rust catalog (catalog.rs).
     let _reg = continuum_core::model_registry::init_global()
         .expect("model_registry init for adapter construction");
@@ -74,7 +74,8 @@ async fn llamacpp_adapter_reports_model_weights_to_global_registry() {
 
     // Build adapter with a small context budget so KV doesn't OOM the box
     // (262K context = 24GB on qwen3.5-4b; 4K is plenty for this test).
-    let mut adapter = LlamaCppAdapter::new()
+    let mut adapter = LlamaCppAdapter::try_new()
+        .expect("local llamacpp GGUF in the registry")
         .with_model_path(model_path.clone())
         .with_context_length(4_096);
     adapter.initialize().await.expect("adapter initialize");
@@ -151,7 +152,8 @@ async fn scheduler_reports_per_seq_kv_bytes_for_persona() {
         return;
     }
 
-    let mut adapter = LlamaCppAdapter::new()
+    let mut adapter = LlamaCppAdapter::try_new()
+        .expect("local llamacpp GGUF in the registry")
         .with_model_path(model_path.clone())
         .with_context_length(4_096);
     adapter.initialize().await.expect("adapter initialize");

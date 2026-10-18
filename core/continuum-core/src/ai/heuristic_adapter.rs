@@ -317,8 +317,9 @@ impl HeuristicInferenceAdapter {
             // the rag_inspect inference probe's JSON parser is
             // exercised end-to-end. `will_respond: true` keeps the
             // happy path going.
-            let inner = serde_json::to_string(&plain).expect("plain string serializes");
-            return format!("{{\"will_respond\":true,\"response\":{inner}}}");
+            // Built as a `Value` (infallible Display) rather than by
+            // serializing a string fragment and splicing it into a template.
+            return serde_json::json!({ "will_respond": true, "response": plain }).to_string();
         }
         plain
     }
@@ -430,11 +431,11 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         let model = request
             .model
             .clone()
-            .unwrap_or_else(|| HEURISTIC_DEFAULT_MODEL.to_string());
+            .unwrap_or_else(|| HEURISTIC_DEFAULT_MODEL.to_string()); // unwrap_or: request named no model — this adapter's own default IS the answer
         let text = self
             .canned_response
             .clone()
-            .unwrap_or_else(|| Self::build_response_text(&request));
+            .unwrap_or_else(|| Self::build_response_text(&request)); // unwrap_or: no scripted canned text — the heuristic response is the defined behavior
 
         // Token accounting: input = system + all message text;
         // output = response text. Same chars/4 heuristic the rest
@@ -461,7 +462,7 @@ impl AIProviderAdapter for HeuristicInferenceAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("heuristic-{}", Self::determinism_prefix(&request)));
+            .unwrap_or_else(|| format!("heuristic-{}", Self::determinism_prefix(&request))); // unwrap_or: caller sent no request id — mint a deterministic one
 
         Ok(TextGenerationResponse {
             text,

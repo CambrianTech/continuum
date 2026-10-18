@@ -559,8 +559,8 @@ enum Projection {
 ///   "model.layers.{N}.self_attn.{q|k|v|o}_proj"
 fn parse_lora_layer_name(name: &str) -> Option<(usize, Projection)> {
     // Strip common prefixes
-    let name = name.strip_prefix("base_model.model.").unwrap_or(name);
-    let name = name.strip_prefix("model.").unwrap_or(name);
+    let name = name.strip_prefix("base_model.model.").unwrap_or(name); // unwrap_or: no PEFT prefix — already bare
+    let name = name.strip_prefix("model.").unwrap_or(name); // unwrap_or: no `model.` prefix — already bare
 
     // Now expect: "layers.{N}.self_attn.{X}_proj" or "layers.{N}.mlp.{X}_proj"
     let parts: Vec<&str> = name.split('.').collect();
@@ -705,7 +705,7 @@ impl ModelWeights {
             .get("general.architecture")
             .and_then(|v| v.to_string().ok())
             .cloned()
-            .unwrap_or_else(|| "llama".to_string());
+            .unwrap_or_else(|| "llama".to_string()); // unwrap_or: undeclared arch — upstream's own assumption (this loader began llama-only)
 
         let md_get = |s: &str| match ct.metadata.get(s) {
             None => candle_core::bail!("cannot find {s} in metadata"),
@@ -718,14 +718,14 @@ impl ModelWeights {
         let context_length = md_get(&arch_key("context_length"))
             .and_then(|v| v.to_u32())
             .map(|v| v as usize)
-            .unwrap_or(DEFAULT_CONTEXT_LENGTH);
+            .unwrap_or(DEFAULT_CONTEXT_LENGTH); // unwrap_or: GGUF omits context_length — upstream's ceiling (change 1 in the header)
 
         let n_expert = md_get(&arch_key("expert_count"))
             .and_then(|v| v.to_u32())
-            .unwrap_or(0) as usize;
+            .unwrap_or(0) as usize; // unwrap_or: no expert_count key — a dense model has 0 experts
         let n_expert_used = md_get(&arch_key("expert_used_count"))
             .and_then(|v| v.to_u32())
-            .unwrap_or(0) as usize;
+            .unwrap_or(0) as usize; // unwrap_or: no expert_used_count key — a dense model routes to 0 experts
         let head_count = md_get(&arch_key("attention.head_count"))?.to_u32()? as usize;
         let head_count_kv = md_get(&arch_key("attention.head_count_kv"))?.to_u32()? as usize;
         let block_count = md_get(&arch_key("block_count"))?.to_u32()? as usize;
@@ -738,7 +738,7 @@ impl ModelWeights {
             .or_else(|_| md_get(&arch_key("attention.value_length")).and_then(|v| v.to_u32()))
             .or_else(|_| md_get(&arch_key("rope.dimension_count")).and_then(|v| v.to_u32()))
             .map(|v| v as usize)
-            .unwrap_or_else(|_| {
+            .unwrap_or_else(|_| { // unwrap_or: no head-size key — derive it from the K weight shape below
                 // Last resort: derive from K projection weight shape.
                 // K weight is [embedding_length, kv_heads * head_dim], so:
                 // head_dim = K_weight_dim1 / kv_heads
@@ -756,7 +756,7 @@ impl ModelWeights {
 
         let rope_freq_base = md_get(&arch_key("rope.freq_base"))
             .and_then(|m| m.to_f32())
-            .unwrap_or(10000f32);
+            .unwrap_or(10000f32); // unwrap_or: GGUF omits rope.freq_base — llama.cpp's own default base
 
         // RoPE convention depends on model architecture (matching llama.cpp).
         // NEOX (non-interleaved): pairs (i, i+d/2) — Qwen, Qwen2, Falcon, Phi, BERT, etc.
@@ -1059,7 +1059,7 @@ impl ModelWeights {
         let effective_max = std::env::var("CANDLE_MAX_LAYERS")
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(max_layers)
+            .unwrap_or(max_layers) // unwrap_or: debug env unset — run every layer
             .min(max_layers);
 
         let (_b_sz, seq_len) = x.dims2()?;

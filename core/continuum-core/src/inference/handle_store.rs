@@ -343,8 +343,7 @@ impl InferenceHandleStore {
             active_adapter_count: session
                 .active_adapters
                 .as_ref()
-                .map(|a| a.len())
-                .unwrap_or(0),
+                .map_or(0, Vec::len),
         })
     }
 

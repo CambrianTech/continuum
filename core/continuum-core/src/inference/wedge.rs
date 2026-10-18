@@ -93,7 +93,7 @@ fn progress_of(line: &str) -> Option<f32> {
     let rest = line.split_once("progress = ")?.1;
     let end = rest
         .find(|c: char| !(c.is_ascii_digit() || c == '.'))
-        .unwrap_or(rest.len());
+        .unwrap_or(rest.len()); // unwrap_or: no terminator — the number runs to the end of the line
     rest[..end].parse::<f32>().ok()
 }
 

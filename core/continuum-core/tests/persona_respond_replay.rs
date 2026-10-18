@@ -91,7 +91,7 @@ async fn ensure_llamacpp_registered() {
         .add_persona(PersonaContextBudget::for_task("Teacher", TaskKind::Chat))
         .add_persona(PersonaContextBudget::for_task("CodeReview", TaskKind::Chat))
         .add_persona(PersonaContextBudget::for_task("Local", TaskKind::Chat));
-    let adapter = continuum_core::inference::LlamaCppAdapter::new().with_recipe_budget(&recipe);
+    let adapter = continuum_core::inference::LlamaCppAdapter::try_new().expect("local llamacpp GGUF in the registry").with_recipe_budget(&recipe);
     let health = adapter.health_check().await;
     assert!(
         health.api_available,

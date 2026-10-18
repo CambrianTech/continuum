@@ -126,8 +126,8 @@ fn forward_stream_chunk(
                 .ok()
                 .map(|v| GenerationChunk::Prefill {
                     processed: v["processed"].as_u64().unwrap_or(0), // unwrap_or: a malformed progress frame reads as no progress, never as a token
-                    total: v["total"].as_u64().unwrap_or(0),
-                    cached: v["cached"].as_u64().unwrap_or(0),
+                    total: v["total"].as_u64().unwrap_or(0), // unwrap_or: as `processed` — a malformed frame reads as no progress
+                    cached: v["cached"].as_u64().unwrap_or(0), // unwrap_or: as `processed` — a malformed frame reads as no progress
                 }),
             _ => Some(GenerationChunk::Token(text.to_string())),
         };

@@ -137,7 +137,7 @@ fn decode_data_url_or_base64(
 ) -> Result<Vec<u8>, String> {
     use base64::{engine::general_purpose, Engine};
     if let Some(b64) = b64 {
-        let payload = b64.split_once(',').map(|(_, rest)| rest).unwrap_or(b64);
+        let payload = b64.split_once(',').map(|(_, rest)| rest).unwrap_or(b64); // unwrap_or: no data-URL prefix — the string is bare base64
         general_purpose::STANDARD
             .decode(payload.as_bytes())
             .map_err(|e| format!("{modality_label}.base64 not valid base64: {e}"))
@@ -249,30 +249,17 @@ pub struct LlamaCppAdapter {
 }
 
 impl LlamaCppAdapter {
-    /// Construct from the model_registry. Looks up the first model under
-    /// provider `llamacpp-local` whose GGUF artifact resolved locally
-    /// and uses its id + path. If the registry has no such row, panics
-    /// — that's a config bug, not a runtime failure mode (per the
-    /// no-fallback rule).
-    ///
-    /// Prefer [`Self::try_new`] when calling from a path that should
-    /// surface the missing-Qwen state as observable runtime health
-    /// rather than crashing the process. Boot-time health checks
-    /// (continuum status, ai/status, install-time validators) MUST use
-    /// `try_new` so an install with no Qwen seeded reports
-    /// `NoLocalModelLoadable` cleanly instead of crash-looping.
-    pub fn new() -> Self {
-        Self::try_new().unwrap_or_else(|err| panic!("{err}"))
-    }
-
-    /// Result-returning variant of [`Self::new`]. Returns
+    /// Construct from the model_registry: the first model under provider
+    /// `llamacpp-local` whose GGUF artifact resolved locally, with its id +
+    /// path. Returns
     /// [`NoLocalModelLoadable`] when the registry has no `llamacpp-local`
     /// row with a resolved `gguf_local_path` — the typed failure mode
     /// for "install seeded no local Qwen GGUF" which surfaces at
     /// install-time on hosts where the model-init container did not
     /// download a chat-capable model (RTX 5090 finding, 2026-05-11). The
-    /// caller decides whether to crash (legacy `new()` behavior),
-    /// degrade, or report the error to operators.
+    /// caller decides whether to degrade or report the error to operators.
+    /// (There is deliberately no panicking `new()`: an install with no local
+    /// GGUF is a reportable state, never a crash loop.)
     pub fn try_new() -> Result<Self, NoLocalModelLoadable> {
         let reg = crate::model_registry::global();
         Self::try_new_from(reg.models_for_provider(LLAMACPP_PROVIDER_ID))
@@ -287,20 +274,17 @@ impl LlamaCppAdapter {
         I: IntoIterator<Item = &'a crate::model_registry::Model>,
     {
         let candidates: Vec<&crate::model_registry::Model> = models.into_iter().collect();
-        let with_path: Vec<&crate::model_registry::Model> = candidates
+        // The first row whose GGUF resolved locally, paired with that resolved
+        // path — the filter and the extraction are one step, so there is no
+        // "present — filtered above" Option left to unwrap.
+        let (model, model_path) = candidates
             .iter()
-            .copied()
-            .filter(|m| m.gguf_local_path.is_some())
-            .collect();
-        let model = with_path.first().ok_or_else(|| NoLocalModelLoadable {
-            provider_id: LLAMACPP_PROVIDER_ID.to_string(),
-            rows_in_registry: candidates.len(),
-            rows_with_gguf_local_path: 0,
-        })?;
-        let model_path = model
-            .gguf_local_path
-            .clone()
-            .expect("gguf_local_path present — filtered above");
+            .find_map(|m| m.gguf_local_path.clone().map(|path| (*m, path)))
+            .ok_or_else(|| NoLocalModelLoadable {
+                provider_id: LLAMACPP_PROVIDER_ID.to_string(),
+                rows_in_registry: candidates.len(),
+                rows_with_gguf_local_path: 0,
+            })?;
         Ok(Self {
             backend: Arc::new(RwLock::new(None)),
             model_path,
@@ -542,7 +526,7 @@ impl LlamaCppAdapter {
         // smoke binaries that don't carry a profile yet).
         let n_gpu_layers: i32 = self
             .n_gpu_layers_override
-            .unwrap_or_else(|| match std::env::var("CONTINUUM_TIER").as_deref() {
+            .unwrap_or_else(|| match std::env::var("CONTINUUM_TIER").as_deref() { // unwrap_or: no profile override — the legacy tier env decides (comment above)
                 Ok("mac_intel_discrete") => 0,
                 _ => -1,
             });
@@ -556,7 +540,7 @@ impl LlamaCppAdapter {
         // regardless of what the caller configured. A `tracing::warn!`
         // surfaces the clamp so operators see the safety net firing
         // instead of silent quality loss.
-        let requested_n_seq_max = self.n_seq_max_override.unwrap_or(1);
+        let requested_n_seq_max = self.n_seq_max_override.unwrap_or(1); // unwrap_or: no profile asked for batching — one sequence
         let effective_n_seq_max = if requested_n_seq_max > 1 {
             match crate::inference::batching_probe::probe_gguf_batching_safety(&self.model_path) {
                 Ok(verdict) => {
@@ -617,7 +601,7 @@ impl LlamaCppAdapter {
             // Future: derive from the Rust catalog (catalog.rs) row per [[orm-everything-
             // not-hand-edited-files]] so each model declares its own
             // realistic batch ceiling.
-            n_ubatch: self.n_ubatch_override.unwrap_or(512),
+            n_ubatch: self.n_ubatch_override.unwrap_or(512), // unwrap_or: no profile override — 512, the #130-measured graph size (comment above)
             flash_attn: FlashAttn::Disabled,
             fused_gdn_ar: false,
             fused_gdn_ch: false,
@@ -663,12 +647,6 @@ impl LlamaCppAdapter {
     }
 }
 
-impl Default for LlamaCppAdapter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[async_trait]
 impl AIProviderAdapter for LlamaCppAdapter {
     fn provider_id(&self) -> &str {
@@ -680,22 +658,18 @@ impl AIProviderAdapter for LlamaCppAdapter {
     }
 
     fn capabilities(&self) -> AdapterCapabilities {
-        // max_context_window: if the backend has been loaded, use the
-        // model's actual training ceiling; otherwise leave 0 to signal
-        // "ask the model" via model_metadata. Never invent a number.
-        let max_ctx = self
-            .backend
-            .read()
-            .as_ref()
-            .map(|b| b.n_ctx_train())
-            .unwrap_or(0);
+        // max_context_window: if the backend has been loaded, the model's
+        // actual training ceiling; otherwise UNDECLARED (`None`, the field's
+        // contract) so callers ask the model via model_metadata. Never invent
+        // a number — 0 included.
+        let loaded_ctx = self.backend.read().as_ref().map(|b| b.n_ctx_train());
         // llama.cpp does text + chat + streaming, native (prompt-driven) tool
         // calls, and embeddings (--embedding mode). Vision is handled by the
         // mmproj adapter when loaded, not declared at this text-LLM layer;
         // audio is bridged via STT (whisper) / TTS in the substrate.
         // Tools are prompt-driven (no native protocol); structured output via
         // GBNF grammar-constrained sampling, which IS native to llama.cpp.
-        AdapterCapabilities::builder()
+        let builder = AdapterCapabilities::builder()
             .capabilities([
                 Capability::TextGeneration,
                 Capability::Chat,
@@ -703,8 +677,12 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 Capability::Streaming,
                 Capability::Embedding,
             ])
-            .local()
-            .context_window(max_ctx)
+            .local();
+        let builder = match loaded_ctx {
+            Some(n_ctx) => builder.context_window(n_ctx),
+            None => builder,
+        };
+        builder
             .max_output_tokens(4096)
             .protocols(crate::ai::adapter::NativeProtocols::GrammarConstrained)
             .build()
@@ -864,10 +842,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     }
                 }
             }
+            let model_label = request.model.as_deref().unwrap_or("?"); // unwrap_or: telemetry label — "?" renders an unnamed model
             let log = runtime::logger("llamacpp");
             log.info(&format!(
                 "generate_text request: model={} messages={} (text={} parts={}; parts contain text={} image={} audio={} other={})",
-                request.model.as_deref().unwrap_or("?"),
+                model_label,
                 request.messages.len(),
                 text_msgs,
                 parts_msgs,
@@ -887,10 +866,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // fingerprint without grepping logs.
             crate::probe!(
                 class = "inference.generate.enter",
-                model = request.model.as_deref().unwrap_or("?"),
-                persona_id = request.persona_id.as_deref().unwrap_or(""),
+                model = model_label,
+                persona_id = request.persona_id.as_deref().unwrap_or(""), // unwrap_or: telemetry label — "" renders an unattributed request
                 msg_count = request.messages.len(),
-                max_tokens = request.max_tokens.unwrap_or(0),
+                max_tokens = request.max_tokens.unwrap_or(0), // unwrap_or: telemetry — 0 renders "no cap requested"
                 has_system_prompt = request.system_prompt.is_some(),
                 parts_image = parts_image,
                 parts_audio = parts_audio,
@@ -970,7 +949,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let max_tokens = request
             .max_tokens
             .map(|n| n as usize)
-            .unwrap_or_else(|| backend.n_ctx_train() as usize);
+            .unwrap_or_else(|| backend.n_ctx_train() as usize); // unwrap_or: no cap requested — decode up to the trained context (comment above)
         let sampling = sampling_config_from_request(&request);
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
@@ -979,7 +958,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // same answer until max_tokens. The registry's stop_sequences
         // field carries the correct strings (e.g. `<|im_end|>`) that the
         // scheduler matches against streamed output.
-        let mut stop_owned: Vec<String> = request.stop_sequences.clone().unwrap_or_default();
+        let mut stop_owned: Vec<String> = request.stop_sequences.iter().flatten().cloned().collect();
         if let Some(model_meta) =
             crate::model_registry::try_global().and_then(|reg| reg.model(backend.model_id()))
         {
@@ -1012,19 +991,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // context-level before decode. Empty in the common base case.
         let requested_genes: Vec<(String, std::path::PathBuf, f32)> = request
             .active_adapters
-            .as_ref()
-            .map(|v| {
-                v.iter()
-                    .map(|a| {
-                        (
-                            a.name.clone(),
-                            std::path::PathBuf::from(&a.path),
-                            a.scale as f32,
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+            .iter()
+            .flatten()
+            .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
+            .collect();
 
         let result: Result<(String, usize), String> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
@@ -1082,20 +1052,21 @@ impl AIProviderAdapter for LlamaCppAdapter {
                      path; send the gene-bearing request without media."
                 ));
             }
-            if collected_media.len() > 1 {
-                let kinds: Vec<String> = collected_media
-                    .iter()
-                    .map(|(k, _)| format!("{:?}", k))
-                    .collect();
-                return Err(format!(
-                    "llamacpp_adapter: multi-media not yet supported in this adapter \
-                     ({} items: {}); send one media item per request until backend.\
-                     generate_with_media accepts &[(MediaKind, Vec<u8>)]",
-                    collected_media.len(),
-                    kinds.join(", ")
-                ));
-            }
-            let (kind, media_bytes) = collected_media.into_iter().next().unwrap();
+            // Exactly one media item, by construction: the else-branch is only
+            // reached with a non-empty vec, and the array conversion refuses
+            // more than one while handing the vec back for the error message.
+            let [(kind, media_bytes)]: [(llama::MediaKind, Vec<u8>); 1] =
+                collected_media.try_into().map_err(|many: Vec<(llama::MediaKind, Vec<u8>)>| {
+                    let kinds: Vec<String> =
+                        many.iter().map(|(k, _)| format!("{:?}", k)).collect();
+                    format!(
+                        "llamacpp_adapter: multi-media not yet supported in this adapter \
+                         ({} items: {}); send one media item per request until backend.\
+                         generate_with_media accepts &[(MediaKind, Vec<u8>)]",
+                        many.len(),
+                        kinds.join(", ")
+                    )
+                })?;
             // RTOS timing probe: mtmd path runs single-flight (no
             // scheduler batching for media) so the timing here is
             // direct end-to-end. Separate seam from the text path so
@@ -1266,9 +1237,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     // a TRANSIENT over-commit (a lane mid-relaunch, a burst), and
                     // relief lands within a governor tick. The second refusal is
                     // the honest failure.
-                    let mut refused: Option<u64> = None;
-                    let mut granted = None;
-                    for attempt in 0..2u8 {
+                    // The refusal that ends the retry carries its own `available`
+                    // straight into the error, so there is no "refused, but by how
+                    // much?" Option to default after the loop.
+                    let mut attempt: u8 = 0;
+                    let guard = loop {
                         match daemon.acquire_guarded(&req) {
                             Ok(guard) => {
                                 crate::probe!(
@@ -1279,8 +1252,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                                     retried = (attempt > 0),
                                     "embedding lane acquired a governed VRAM lease"
                                 );
-                                granted = Some(guard);
-                                break;
+                                break guard;
                             }
                             Err(LeaseError::InsufficientCapacity { available, .. }) => {
                                 crate::probe!(
@@ -1290,10 +1262,17 @@ impl AIProviderAdapter for LlamaCppAdapter {
                                     attempt = attempt,
                                     "embedding VRAM lease refused — failing loud, NOT emitting degenerate zeros"
                                 );
-                                refused = Some(available);
-                                if attempt == 0 {
-                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                if attempt > 0 {
+                                    return Err(format!(
+                                        "embed: VRAM lease refused twice — {} MiB requested, {} MiB governed-available. \
+                                         Refusing to allocate an OOM-doomed embedding context (it would decode to \
+                                         degenerate zeros). Free VRAM (tier down serving) and retry.",
+                                        EMBED_LANE_VRAM_BYTES / (1024 * 1024),
+                                        available / (1024 * 1024),
+                                    ));
                                 }
+                                attempt += 1;
+                                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                             }
                             Err(e) => {
                                 return Err(format!(
@@ -1301,20 +1280,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
                                 ));
                             }
                         }
-                    }
-                    match granted {
-                        Some(guard) => Some(guard),
-                        None => {
-                            let available = refused.unwrap_or(0);
-                            return Err(format!(
-                                "embed: VRAM lease refused twice — {} MiB requested, {} MiB governed-available. \
-                                 Refusing to allocate an OOM-doomed embedding context (it would decode to \
-                                 degenerate zeros). Free VRAM (tier down serving) and retry.",
-                                EMBED_LANE_VRAM_BYTES / (1024 * 1024),
-                                available / (1024 * 1024),
-                            ));
-                        }
-                    }
+                    };
+                    Some(guard)
                 }
                 // Ungoverned node (no ResourceDaemon::global()): behavior unchanged —
                 // the backend's own new_context allocation is the only gate, as before.

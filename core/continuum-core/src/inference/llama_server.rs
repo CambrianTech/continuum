@@ -921,12 +921,13 @@ pub fn cold_expert_offload_ot(hot_layers: &[u32], n_layers: u32) -> Option<Strin
 /// append `/v1` and `/health` as needed so there is one source of truth.
 pub fn serving_root() -> String {
     if let Some(raw) = crate::config_env::read("LLAMA_SERVER_BASE_URL") {
-        let trimmed = raw.trim().trim_end_matches('/');
         // Accept a configured `.../v1` and normalize back to the root so callers
-        // get a single canonical form regardless of how the operator wrote it.
-        // An operator-pinned endpoint is honored VERBATIM — no scan: they chose
-        // a fixed address deliberately (possibly a remote server).
-        let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+        // get a single canonical form regardless of how the operator wrote it
+        // (the ONE normalizer, `OpenAiBase`). An operator-pinned endpoint is
+        // honored VERBATIM — no scan: they chose a fixed address deliberately
+        // (possibly a remote server).
+        let base = crate::ai::openai_endpoints::OpenAiBase::new(raw.trim());
+        let root = base.root();
         if !root.is_empty() {
             return root.to_string();
         }
@@ -1006,7 +1007,7 @@ pub fn moe_glass_box_paths(port: u16) -> Option<MoeGlassBoxPaths> {
 /// the positron capture tail and the serving daemon's plan-file publisher must
 /// agree on this parse or they read/write different files than spawn env'd.
 pub fn port_of_base_url(url: &str) -> Option<u16> {
-    let after_scheme = url.split("://").nth(1).unwrap_or(url);
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
     let host_port = after_scheme.split('/').next()?;
     host_port.rsplit_once(':')?.1.parse().ok()
 }
@@ -1942,7 +1943,7 @@ fn main_lane_mmproj_decision_for(
     } else {
         let rows: Vec<crate::model_registry::types::Model> = crate::model_registry::try_global()
             .map(|r| r.models().cloned().collect())
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or: no registry installed yet — no catalog row exists to offer a sidecar
         // Availability only (does ANY sidecar row exist), not admission: the pin is judged
         // where the sidecar is launched, by the daemon that holds the operator's pins.
         Some(crate::inference::vision_sidecar::find_candidate(&rows, Some(&model.id), &[]).is_ok())
@@ -2149,7 +2150,7 @@ pub fn current_serving() -> ServingSnapshot {
     SERVING_STATE
         .get()
         .map(|rx| rx.borrow().clone())
-        .unwrap_or_else(ServingSnapshot::empty)
+        .unwrap_or_else(ServingSnapshot::empty) // unwrap_or: daemon state not installed yet — the documented empty snapshot (fn doc)
 }
 
 /// Default bound for an upstart path that needs the served model and can wait
@@ -2245,8 +2246,8 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
 /// pinned", the seam the hosting path branches on.
 pub fn external_serving_pin() -> Option<String> {
     let raw = crate::config_env::read("LLAMA_SERVER_BASE_URL")?;
-    let trimmed = raw.trim().trim_end_matches('/');
-    let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
+    let base = crate::ai::openai_endpoints::OpenAiBase::new(raw.trim());
+    let root = base.root();
     (!root.is_empty()).then(|| root.to_string())
 }
 
@@ -2398,7 +2399,7 @@ fn restore_probe_response(status: reqwest::StatusCode, body: &serde_json::Value,
     if body.is_array() {
         return slots_progress(body).map_or(EngineProbe::Busy, EngineProbe::Progress);
     }
-    restore_progress(body, operation, slot).unwrap_or(EngineProbe::Busy)
+    restore_progress(body, operation, slot).unwrap_or(EngineProbe::Busy) // unwrap_or: a body that is not THIS operation's progress proves nothing — still busy (comment above)
 }
 
 pub(crate) async fn restore_probe(root: &str, client: &reqwest::Client, operation: uuid::Uuid, slot: u32) -> EngineProbe {
@@ -3455,7 +3456,7 @@ async fn smoke_attempt(
     let visible = v
         .pointer("/choices/0/message/content")
         .and_then(|c| c.as_str())
-        .unwrap_or("")
+        .unwrap_or("") // unwrap_or: missing content IS the empty visible answer the verdict must see (comment above)
         .to_string();
     // The PRIVATE reasoning channel (llama-server splits `<think>` out when the
     // template opens one). Its length is evidence of where the budget went.
@@ -3463,7 +3464,7 @@ async fn smoke_attempt(
         .pointer("/choices/0/message/reasoning_content")
         .and_then(|c| c.as_str())
         .map(str::len)
-        .unwrap_or(0);
+        .unwrap_or(0); // unwrap_or: no reasoning channel on the reply — zero reasoning was emitted
     Some((out_tokens, visible, reasoning_len))
 }
 
@@ -4147,7 +4148,7 @@ impl LlamaServerProcess {
             404 | 405 => Ok(LoraPost::NoRoute),
             503 => Ok(LoraPost::Busy),
             status => {
-                let text = resp.text().await.unwrap_or_default(); // unwrap_or_default: the status alone still names the failure
+                let text = crate::ai::inference_error::error_response_body(resp).await;
                 Err(LlamaServerError::Unreachable(format!("/lora-adapters/{verb} status {status}: {text}")))
             }
         }

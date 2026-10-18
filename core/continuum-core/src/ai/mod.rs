@@ -13,11 +13,11 @@
 //! ```rust
 //! let mut registry = AdapterRegistry::new();
 //!
-//! let mut deepseek = OpenAICompatibleAdapter::from_registry("deepseek");
+//! let mut deepseek = OpenAICompatibleAdapter::from_registry("deepseek")?;
 //! deepseek.initialize().await?;
 //! registry.register(Arc::new(deepseek), 0);
 //!
-//! let mut anthropic = AnthropicAdapter::new();
+//! let mut anthropic = AnthropicAdapter::new()?;
 //! anthropic.initialize().await?;
 //! registry.register(Arc::new(anthropic), 1);
 //!
@@ -46,8 +46,8 @@ pub mod types;
 
 // Re-export commonly used types
 pub use adapter::{
-    AIProviderAdapter, AdapterCapabilities, AdapterConfig, AdapterRegistry, AdapterSelectionError,
-    ApiStyle, LoRAAdapterInfo, LoRACapabilities,
+    AIProviderAdapter, AdapterBuildError, AdapterCapabilities, AdapterConfig, AdapterRegistry,
+    AdapterSelectionError, ApiStyle, LoRAAdapterInfo, LoRACapabilities,
 };
 pub use anthropic_adapter::AnthropicAdapter;
 #[cfg(any(test, feature = "test-fixtures"))]

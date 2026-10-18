@@ -481,7 +481,7 @@ impl ExternalWebviewAuthService {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body = response.text().await.unwrap_or_default();
+            let body = crate::ai::inference_error::error_response_body(response).await;
             return Err(format!("Token refresh failed (HTTP {status}): {body}"));
         }
 
@@ -711,7 +711,7 @@ async fn handle_callback(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = crate::ai::inference_error::error_response_body(response).await;
         return Err(format!("Token exchange failed (HTTP {status}): {body}"));
     }
 

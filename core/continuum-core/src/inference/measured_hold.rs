@@ -257,15 +257,18 @@ async fn defer_in(
     purpose: Option<&str>,
     ceiling: Duration,
 ) -> DeferOutcome {
-    if !should_defer(class, current_in(c).as_ref(), caller) {
+    // Read the hold ONCE: the defer decision and the `held_by` it reports are
+    // the same hold, so there is no "deferring, but held by nobody" to default.
+    let Some(hold) = current_in(c).filter(|h| should_defer(class, Some(h), caller)) else {
         return DeferOutcome::Passed;
-    }
+    };
     let started = std::time::Instant::now();
-    let held_by = current_in(c).map(|h| h.run_id).unwrap_or_default();
+    let held_by = hold.run_id;
+    let purpose = purpose.unwrap_or("-"); // unwrap_or: telemetry label — "-" marks an unlabelled caller
     crate::probe!(
         class = "inference.hold.deferred",
         traffic = %class.as_str(),
-        purpose = %purpose.unwrap_or("-"),
+        purpose = %purpose,
         held_by = %held_by,
         "background generation deferring — measured work holds the core"
     );
@@ -279,7 +282,7 @@ async fn defer_in(
             crate::probe!(
                 class = "inference.hold.resumed",
                 traffic = %class.as_str(),
-                purpose = %purpose.unwrap_or("-"),
+                purpose = %purpose,
                 waited_ms = started.elapsed().as_millis() as u64,
                 "hold released — deferred generation proceeding"
             );
@@ -290,7 +293,7 @@ async fn defer_in(
             crate::probe!(
                 class = "inference.hold.defer_ceiling",
                 traffic = %class.as_str(),
-                purpose = %purpose.unwrap_or("-"),
+                purpose = %purpose,
                 waited_ms = started.elapsed().as_millis() as u64,
                 "defer ceiling reached with the hold still set — proceeding LOUDLY; \
                  if the measured run is not actually alive this is a leaked lease"

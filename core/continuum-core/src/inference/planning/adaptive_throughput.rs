@@ -258,7 +258,7 @@ fn admit_decision(
     let used = used_by_lane
         .get(&job.target_silicon)
         .copied()
-        .unwrap_or((0, 0));
+        .unwrap_or((0, 0)); // unwrap_or: no jobs admitted on this lane yet — nothing in use
     if used.0 < budget.max_concurrency
         && used.1.saturating_add(job.cost_units) <= budget.max_cost_units
     {

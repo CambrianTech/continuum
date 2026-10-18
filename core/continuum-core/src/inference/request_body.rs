@@ -211,7 +211,7 @@ pub(crate) fn finish_body(
         tool_choice = body.get("tool_choice").is_some(),
         stops_n = body.get("stop").and_then(|s| s.as_array()).map_or(0, |a| a.len()),
         msgs_n = body.get("messages").and_then(|m| m.as_array()).map_or(0, |a| a.len()),
-        temperature = body.get("temperature").and_then(|t| t.as_f64()).unwrap_or(-1.0),
+        temperature = body.get("temperature").and_then(|t| t.as_f64()).unwrap_or(-1.0), // unwrap_or: telemetry only — -1 marks "no temperature on the body"
         "outbound chat request tool surface"
     );
 
@@ -287,8 +287,7 @@ pub(crate) fn close_trailing_assistant(messages: &mut Vec<Value>) {
         .last()
         .and_then(|m| m.get("role"))
         .and_then(|r| r.as_str())
-        .map(|r| r == "assistant")
-        .unwrap_or(false);
+        == Some("assistant");
     if ends_with_assistant {
         messages.push(json!({
             "role": "user",
@@ -458,7 +457,7 @@ pub(crate) fn wire_messages(
                                         "type": "image_url",
                                         "image_url": {
                                             "url": format!("data:{};base64,{}",
-                                                image.mime_type.as_deref().unwrap_or("image/png"), b64)
+                                                image.wire_mime_type(), b64)
                                         }
                                     }))
                                 }
@@ -554,7 +553,7 @@ pub(crate) fn build_base_body(
     let mut body = json!({
         "model": model,
         "messages": messages,
-        "temperature": request.temperature.unwrap_or(0.7),
+        "temperature": request.temperature_or_default(),
         // Stream tokens the instant they're decoded. `include_usage` makes the
         // backend emit a final usage-only frame so we still get token counts.
         "stream": true,

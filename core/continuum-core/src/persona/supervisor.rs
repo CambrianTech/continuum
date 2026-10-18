@@ -167,6 +167,7 @@ pub async fn build_served_adapter(
     let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
         crate::inference::llama_server::PROVIDER_ID,
     )
+    .map_err(|e| format!("persona adapter build failed: {e}"))?
     .with_runtime_base_url(snap.base_url.clone())
     .with_default_model(model);
     adapter

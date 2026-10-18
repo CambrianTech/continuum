@@ -80,6 +80,7 @@ pub async fn build_adapter_embedder(
     let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
         crate::inference::llama_server::PROVIDER_ID,
     )
+    .map_err(|e| format!("embed adapter build failed: {e}"))?
     .with_runtime_base_url(snap.base_url)
     .with_default_model(model);
     adapter

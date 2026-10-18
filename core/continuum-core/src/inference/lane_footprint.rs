@@ -207,11 +207,15 @@ pub fn observe(
 /// (2026-09-19) would otherwise survive a relaunch for [`FRESH_MS`] while every fresh
 /// sample of the new process read "nothing beyond the cache" and left it standing.
 fn apply_sample(costs: &mut BTreeMap<String, MeasuredCost>, model: &str, sample: Option<&MeasuredCost>) -> bool {
-    let before = costs.get(model).map(|c| c.per_token_bytes).unwrap_or(0);
+    let before = costs.get(model).map(|c| c.per_token_bytes);
     match sample {
         Some(cost) => {
             costs.insert(model.to_string(), cost.clone());
-            before == 0 || corrects(before, cost.per_token_bytes) || corrects(cost.per_token_bytes, before)
+            match before {
+                // No prior (or a zero) record: any reading is a material move.
+                None | Some(0) => true,
+                Some(before) => corrects(before, cost.per_token_bytes) || corrects(cost.per_token_bytes, before),
+            }
         }
         None => costs.remove(model).is_some(),
     }
@@ -351,16 +355,18 @@ fn anon_footprint_impl(pid: u32) -> Option<u64> {
 fn anon_footprint_impl(pid: u32) -> Option<u64> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     let mut anon = None;
-    let mut swap = 0u64;
+    // No `VmSwap:` line means nothing swapped; a line whose value does not parse
+    // makes the whole footprint unknown (None), never a silent 0.
+    let mut swap = Some(0u64);
     for line in status.lines() {
         let kb = |l: &str| l.split_whitespace().nth(1).and_then(|v| v.parse::<u64>().ok()).map(|v| v * 1024);
         if line.starts_with("RssAnon:") {
             anon = kb(line);
         } else if line.starts_with("VmSwap:") {
-            swap = kb(line).unwrap_or(0);
+            swap = kb(line);
         }
     }
-    anon.map(|a| a + swap)
+    anon.zip(swap).map(|(a, s)| a + s)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]

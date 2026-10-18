@@ -34,6 +34,17 @@
 
 use std::fmt;
 
+/// The body of a non-success HTTP response, for the error that reports it. A body
+/// that cannot be read is NAMED as unreadable (with the transport classification,
+/// never the raw error text — see [`transport_diagnostic`]), instead of being
+/// rendered as an empty string that reads like "the server said nothing".
+pub(crate) async fn error_response_body(response: reqwest::Response) -> String {
+    match response.text().await {
+        Ok(body) => body,
+        Err(e) => format!("<response body unreadable: {}>", transport_diagnostic(&e)),
+    }
+}
+
 /// Operator diagnostics shared by quoting and generation. Never render arbitrary
 /// error Display/source text: it can contain a URL (including credentials/query)
 /// or data from a response. Preserve transport classifications and typed OS cause.

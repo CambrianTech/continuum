@@ -18,7 +18,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use llama::{FlashAttn, KvCacheType, LoraAdapter, Model, ModelParams};
@@ -342,9 +342,13 @@ pub struct LlamaCppBackend {
     /// Real model capabilities, read once at load. The authority for the
     /// context window — never a per-tier guess.
     caps: ModelCapabilities,
-    /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
-    /// touches the Model Arc and we want a single instance per backend.
-    scheduler: OnceLock<Scheduler>,
+    /// Lazy-spawned scheduler, one instance per backend. A `Mutex<Option<_>>`
+    /// rather than a `OnceLock` because spawning the driver thread is
+    /// FALLIBLE: a failed spawn must surface as an error on that request and
+    /// leave the slot empty for the next attempt, which `get_or_init` cannot
+    /// express. The lock also serializes concurrent first calls, so a second
+    /// driver (and its KV context) is never allocated and thrown away.
+    scheduler: Mutex<Option<Scheduler>>,
     /// Lazy-loaded multimodal projector. Built on first `generate_with_image`
     /// call from `config.mmproj_path` (so text-only backends pay zero cost).
     /// Sits behind a Mutex<Option<...>> so concurrent first-call requests
@@ -381,7 +385,7 @@ impl LlamaCppBackend {
             .model_path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "unknown".into());
+            .unwrap_or_else(|| "unknown".into()); // unwrap_or: a path with no file stem (e.g. `..`) — the id is a label only
 
         let load_start = Instant::now();
         let model = Model::load(
@@ -410,7 +414,7 @@ impl LlamaCppBackend {
             config,
             model_id,
             caps,
-            scheduler: OnceLock::new(),
+            scheduler: Mutex::new(None),
             mtmd: Mutex::new(None),
             loras: Mutex::new(HashMap::new()),
         })
@@ -743,7 +747,7 @@ impl LlamaCppBackend {
                 eprintln!("[gen-with-img] WARN: logits_ith(-1) returned empty");
             } else {
                 let mut indexed: Vec<(usize, f32)> = logits.iter().copied().enumerate().collect();
-                indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                indexed.sort_by(|a, b| b.1.total_cmp(&a.1));
                 eprintln!("[gen-with-img] top-10 logits at post-image position:");
                 for (id, score) in indexed.iter().take(10) {
                     let piece = self.model.token_to_piece(*id as i32);
@@ -841,8 +845,15 @@ impl LlamaCppBackend {
 
     /// Lazily spawn (or get) the scheduler. Single instance per backend —
     /// owns the shared Context and the OS-thread driver loop.
-    fn scheduler(&self) -> &Scheduler {
-        self.scheduler.get_or_init(|| {
+    fn scheduler(&self) -> Result<Scheduler, String> {
+        let mut slot = self
+            .scheduler
+            .lock()
+            .map_err(|e| format!("scheduler lock poisoned: {e}"))?;
+        if let Some(existing) = slot.as_ref() {
+            return Ok(existing.clone());
+        }
+        let spawned = {
             // Per-sequence window from the model's REAL ceiling bounded by
             // REAL available memory (task #46), not a hand-set the Rust catalog (catalog.rs)
             // value. `effective_context_length` already divides the memory
@@ -869,8 +880,10 @@ impl LlamaCppBackend {
                     type_k: self.config.type_k,
                     type_v: self.config.type_v,
                 },
-            )
-        })
+            )?
+        };
+        *slot = Some(spawned.clone());
+        Ok(spawned)
     }
 
     /// Generate text. Routes through the continuous-batching scheduler:
@@ -975,7 +988,7 @@ impl LlamaCppBackend {
             persona_id,
         };
 
-        self.scheduler().enqueue(req)?;
+        self.scheduler()?.enqueue(req)?;
 
         // Collect tokens from the channel until Done/Error. We're called
         // synchronously from spawn_blocking by CandleAdapter — block_in_place

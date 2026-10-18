@@ -715,27 +715,27 @@ async fn call_llm(
     // register per task #162 (registry stores Arc; no
     // initialize_all on the registry).
     if get_secret("DEEPSEEK_API_KEY").is_some() {
-        let mut a = OpenAICompatibleAdapter::from_registry("deepseek");
+        let mut a = OpenAICompatibleAdapter::from_registry("deepseek").map_err(|e| e.to_string())?;
         a.initialize().await?;
         registry.register(std::sync::Arc::new(a), 0);
     }
     if get_secret("ANTHROPIC_API_KEY").is_some() {
-        let mut a = AnthropicAdapter::new();
+        let mut a = AnthropicAdapter::new().map_err(|e| e.to_string())?;
         a.initialize().await?;
         registry.register(std::sync::Arc::new(a), 1);
     }
     if get_secret("OPENAI_API_KEY").is_some() {
-        let mut a = OpenAICompatibleAdapter::from_registry("openai");
+        let mut a = OpenAICompatibleAdapter::from_registry("openai").map_err(|e| e.to_string())?;
         a.initialize().await?;
         registry.register(std::sync::Arc::new(a), 2);
     }
     if get_secret("GROQ_API_KEY").is_some() {
-        let mut a = OpenAICompatibleAdapter::from_registry("groq");
+        let mut a = OpenAICompatibleAdapter::from_registry("groq").map_err(|e| e.to_string())?;
         a.initialize().await?;
         registry.register(std::sync::Arc::new(a), 3);
     }
     if get_secret("TOGETHER_API_KEY").is_some() {
-        let mut a = OpenAICompatibleAdapter::from_registry("together");
+        let mut a = OpenAICompatibleAdapter::from_registry("together").map_err(|e| e.to_string())?;
         a.initialize().await?;
         registry.register(std::sync::Arc::new(a), 4);
     }

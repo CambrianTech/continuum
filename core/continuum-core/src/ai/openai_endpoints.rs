@@ -42,7 +42,7 @@ impl OpenAiBase {
     /// ```
     pub fn new(raw: &str) -> Self {
         let trimmed = raw.trim_end_matches('/');
-        let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string();
+        let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string(); // unwrap_or: no `/v1` suffix — the base already IS the root
         Self { root }
     }
 

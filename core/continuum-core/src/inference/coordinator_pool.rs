@@ -105,7 +105,7 @@ impl ResourcePool for CoordinatorResourcePool {
 
     fn capacity_bytes(&self) -> u64 {
         self.capacity_override
-            .unwrap_or_else(|| self.coordinator.capacity_bytes())
+            .unwrap_or_else(|| self.coordinator.capacity_bytes()) // unwrap_or: no tier override — the coordinator's measured capacity applies
     }
 
     fn usage_bytes(&self) -> u64 {

@@ -126,7 +126,7 @@ impl OpenAIFineTuningAdapter {
             .map_err(|e| FineTuningError::Transient(format!("upload POST failed: {e}")))?;
 
         if let Err(e) = error_for_status(&resp) {
-            let body = resp.text().await.unwrap_or_default();
+            let body = crate::ai::inference_error::error_response_body(resp).await;
             return Err(map_status_error(e, body));
         }
 
@@ -195,7 +195,7 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
             .map_err(|e| FineTuningError::Transient(format!("create POST failed: {e}")))?;
 
         if let Err(e) = error_for_status(&resp) {
-            let body = resp.text().await.unwrap_or_default();
+            let body = crate::ai::inference_error::error_response_body(resp).await;
             return Err(map_status_error(e, body));
         }
 
@@ -228,7 +228,7 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
             .map_err(|e| FineTuningError::Transient(format!("poll GET failed: {e}")))?;
 
         if let Err(e) = error_for_status(&resp) {
-            let body = resp.text().await.unwrap_or_default();
+            let body = crate::ai::inference_error::error_response_body(resp).await;
             return Err(map_status_error(e, body));
         }
 
@@ -257,7 +257,7 @@ impl FineTuningAdapter for OpenAIFineTuningAdapter {
             .map_err(|e| FineTuningError::Transient(format!("cancel POST failed: {e}")))?;
 
         if let Err(e) = error_for_status(&resp) {
-            let body = resp.text().await.unwrap_or_default();
+            let body = crate::ai::inference_error::error_response_body(resp).await;
             return Err(map_status_error(e, body));
         }
         Ok(())

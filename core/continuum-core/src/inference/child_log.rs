@@ -111,7 +111,9 @@ async fn pump(
         .append(true)
         .open(path)
         .await?;
-    let mut written = file.metadata().await.map(|m| m.len()).unwrap_or(0);
+    // The size the cap is counted from: an unreadable size is an error, not a
+    // 0 that would let the file grow a whole extra cap before rotating.
+    let mut written = file.metadata().await?.len();
 
     while let Some(line) = lines.next_line().await? {
         // Observe BEFORE writing: a fault the observer exists to catch must still be
@@ -141,7 +143,7 @@ async fn pump(
 async fn rotate(path: &Path) -> io::Result<()> {
     let rotated = path.with_extension(format!(
         "{}.1",
-        path.extension().and_then(|e| e.to_str()).unwrap_or("log")
+        path.extension().and_then(|e| e.to_str()).unwrap_or("log") // unwrap_or: extensionless path — rotate under the `.log` family it is written as
     ));
     // A missing source is not an error — first rotation on a fresh file.
     let _ = tokio::fs::remove_file(&rotated).await;

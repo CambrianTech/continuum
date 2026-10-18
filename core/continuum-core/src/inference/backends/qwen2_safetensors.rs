@@ -130,11 +130,12 @@ impl ModelBackend for Qwen2SafetensorsBackend {
             .map_err(|e| format!("Decode failed: {e}"))
     }
 
-    fn estimated_vram_bytes(&self) -> u64 {
+    fn estimated_vram_bytes(&self) -> Option<u64> {
+        // Every weight file must stat: one unreadable shard makes the total
+        // unknown rather than silently smaller.
         self.weight_paths
             .iter()
-            .filter_map(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len())
+            .map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
             .sum()
     }
 

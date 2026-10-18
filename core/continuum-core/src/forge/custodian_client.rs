@@ -176,7 +176,7 @@ impl ForgeCustodian for ForgeCustodianHttp {
             .map_err(|e| ForgeCustodianError::Unreachable(e.to_string()))?;
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+            let text = crate::ai::inference_error::error_response_body(resp).await;
             return Err(ForgeCustodianError::Api(format!(
                 "{ROUTE_GGUF_LORA} {status}: {text}"
             )));

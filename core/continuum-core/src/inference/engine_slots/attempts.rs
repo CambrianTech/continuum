@@ -87,7 +87,7 @@ pub(super) fn describe(root: &Path, slot: &str) -> Result<String, String> {
         record
             .as_ref()
             .map(Attempt::identity)
-            .unwrap_or_else(|| "none".into()),
+            .unwrap_or_else(|| "none".into()), // unwrap_or: rendering — "none" names an absent record
         record
             .as_ref()
             .is_some_and(|record| record.failed_at_ms.is_some())

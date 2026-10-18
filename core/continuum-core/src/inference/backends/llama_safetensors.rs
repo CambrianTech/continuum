@@ -184,11 +184,12 @@ impl ModelBackend for LlamaSafetensorsBackend {
             .map_err(|e| format!("Decode failed: {e}"))
     }
 
-    fn estimated_vram_bytes(&self) -> u64 {
+    fn estimated_vram_bytes(&self) -> Option<u64> {
+        // Every weight file must stat: one unreadable shard makes the total
+        // unknown rather than silently smaller.
         self.weight_paths
             .iter()
-            .filter_map(|p| std::fs::metadata(p).ok())
-            .map(|m| m.len())
+            .map(|p| std::fs::metadata(p).ok().map(|m| m.len()))
             .sum()
     }
 
@@ -205,9 +206,10 @@ impl ModelBackend for LlamaSafetensorsBackend {
     ) -> Result<(), String> {
         // Transient spike: old model + new model coexist during rebuild.
         // Allocate for the doubled memory, release after swap.
+        // Unknown weight size → no spike reservation (nothing honest to reserve).
         let vram_bytes = self.estimated_vram_bytes();
-        let _spike_guard = gpu_manager.and_then(|mgr| {
-            mgr.allocate(GpuSubsystem::Inference, vram_bytes, GpuPriority::Background)
+        let _spike_guard = gpu_manager.zip(vram_bytes).and_then(|(mgr, bytes)| {
+            mgr.allocate(GpuSubsystem::Inference, bytes, GpuPriority::Background)
                 .ok()
         });
 

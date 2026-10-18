@@ -303,7 +303,7 @@ pub(crate) async fn guard_resident_model(
             // stream itself (2026-08-15: every turn of a round waited here for
             // 120s each while serving/status knew the exact cause — a failed
             // decode smoke-probe — and nothing surfaced it).
-            let degraded = snap.degraded_reason.as_deref().unwrap_or("");
+            let degraded = snap.degraded_reason.as_deref().unwrap_or(""); // unwrap_or: telemetry label — empty means the daemon stated no degradation
             crate::probe!(
                 class = "inference.awaiting_serving_transition",
                 provider = cfg.provider_id.as_str(),

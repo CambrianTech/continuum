@@ -3440,7 +3440,8 @@ mod tests {
         // fall back to n_ctx_train — the 2026-04 Metal-KV-blowup guard). new()
         // doesn't set it; production uses for_persona(profile). 8192 fits Metal.
         let adapter: Arc<dyn AIProviderAdapter> = Arc::new(
-            LlamaCppAdapter::new()
+            LlamaCppAdapter::try_new()
+                .expect("local llamacpp GGUF in the registry")
                 .with_context_length(8192)
                 .with_n_seq_max(1),
         );

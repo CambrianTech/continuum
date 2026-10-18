@@ -25,7 +25,8 @@ use crate::secrets::get_secret;
 use crate::{clog_info, clog_warn};
 
 use super::adapter::{
-    AIProviderAdapter, AdapterCapabilities, ApiStyle, GenerationChunk, LoRACapabilities,
+    AIProviderAdapter, AdapterBuildError, AdapterCapabilities, ApiStyle, GenerationChunk,
+    LoRACapabilities,
 };
 use super::openai_endpoints::OpenAiBase;
 use super::registry_bridge::models_for_provider_via_registry;
@@ -59,12 +60,29 @@ pub enum ThinkingMode {
     Suppress,
 }
 
+/// How an OpenAI-compatible provider authenticates. One value instead of a
+/// `requires_auth: bool` beside an `api_key_env: Option<String>`, so "requires
+/// auth but names no key" cannot be constructed — the catalog row is checked
+/// once, in [`OpenAICompatibleAdapter::from_registry`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProviderAuth {
+    /// No Authorization header (localhost DMR, llama-server).
+    None,
+    /// A bearer key read from this secret/env name at `initialize`.
+    ApiKey { env: String },
+}
+
+impl ProviderAuth {
+    pub fn requires_key(&self) -> bool {
+        matches!(self, Self::ApiKey { .. })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OpenAICompatibleConfig {
     pub provider_id: String,
     pub name: String,
     pub base_url: String,
-    pub api_key_env: Option<String>,
     pub default_model: String,
     /// What this provider's models can do — projected into the ONE capability
     /// vocabulary (#65). Tool-use + vision come from scanning the provider's
@@ -75,9 +93,9 @@ pub struct OpenAICompatibleConfig {
     pub capabilities: BTreeSet<Capability>,
     pub models: Vec<ModelInfo>,
     pub model_prefixes: Vec<String>,
-    /// Whether this provider requires an Authorization header. Derived
-    /// from `Provider.auth`: Bearer → true, ApiKey → true, None → false.
-    pub requires_auth: bool,
+    /// Whether (and with which key) this provider sends an Authorization
+    /// header. Derived from `Provider.auth` + `Provider.api_key_env`.
+    pub auth: ProviderAuth,
     /// How this provider exchanges tool calls. NativeFunctionCalling = real
     /// OpenAI function-calling; JsonInPrompt = describe tools in the prompt +
     /// parse the JSON call from the response (for gateways/models that ignore
@@ -164,13 +182,15 @@ pub struct OpenAICompatibleAdapter {
     /// available. Without this, supports_model falls back to static
     /// `supported_model_prefixes()` which for docker-model-runner returned
     /// `[]` → DMR never won routing → every user silently landed on Candle.
-    runtime_models: std::sync::Arc<std::sync::RwLock<Option<std::collections::HashSet<String>>>>,
+    /// `parking_lot` lock: no poisoning, so a reader never has a "lock
+    /// poisoned" case to unwrap.
+    runtime_models: std::sync::Arc<parking_lot::RwLock<Option<std::collections::HashSet<String>>>>,
     /// Discovered LoRA page-in capability + catalog, populated by probing the
     /// serving backend's `GET /lora-adapters` (see [`LoraSupport`]). Starts
     /// `Unknown`; the first generation that carries `active_adapters` triggers
     /// the probe. This is the self-organizing alternative to a hardcoded
     /// "which provider supports LoRA" table — the endpoint describes itself.
-    lora_support: std::sync::Arc<std::sync::RwLock<LoraSupport>>,
+    lora_support: std::sync::Arc<parking_lot::RwLock<LoraSupport>>,
     /// Throttle for concurrent POSTs to this provider's endpoint.
     /// llama.cpp-backed providers (DMR) are single-slot in practice:
     /// one prompt at a time gets the full GPU. Letting N personas
@@ -233,7 +253,7 @@ fn apply_llamacpp_sampling_knobs(
 ) {
     obj.insert(
         "repeat_penalty".to_string(),
-        json!(request.repeat_penalty.unwrap_or(1.1)),
+        json!(request.repeat_penalty.unwrap_or(1.1)), // unwrap_or: request set no penalty — llama.cpp's own 1.1 default, sent explicitly (see fn doc)
     );
     if let Some(rln) = request.repeat_last_n {
         obj.insert("repeat_last_n".to_string(), json!(rln));
@@ -264,15 +284,18 @@ impl OpenAICompatibleAdapter {
     /// backend went silent → fail loud). `connect_timeout` still bounds the
     /// handshake to a dead loopback backend; `pool_idle_timeout` prevents stale
     /// pooled sockets across backend restarts.
-    fn build_http_client() -> reqwest::Client {
+    fn build_http_client(provider_id: &str) -> Result<reqwest::Client, AdapterBuildError> {
         reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(3))
             .pool_idle_timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("Failed to create HTTP client")
+            .map_err(|e| AdapterBuildError::HttpClient {
+                provider_id: provider_id.to_string(),
+                reason: e.to_string(),
+            })
     }
 
-    pub fn new(config: OpenAICompatibleConfig) -> Self {
+    pub fn new(config: OpenAICompatibleConfig) -> Result<Self, AdapterBuildError> {
         // 120s total timeout bounds long generations (qwen3.5 reasoning
         // can take ~60s to emit a full response). Connect timeout bounds
         // the local-loopback DMR case specifically: when Docker Desktop
@@ -281,7 +304,7 @@ impl OpenAICompatibleAdapter {
         // the reqwest pool from holding onto dead sockets across DMR
         // restarts — a stale pooled connection to a killed server was
         // the reproducing cause of 120s "error sending request" stalls.
-        let client = Self::build_http_client();
+        let client = Self::build_http_client(&config.provider_id)?;
 
         // Per-provider concurrency gate. A single-resident-model gateway
         // (DMR, llama-server) must not take more concurrent POSTs than it has
@@ -310,21 +333,21 @@ impl OpenAICompatibleAdapter {
         };
         let concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(slots));
 
-        Self {
+        Ok(Self {
             config,
             api_key: None,
             runtime_base_url: None,
             dedicated_lane: false,
             client,
             initialized: false,
-            runtime_models: std::sync::Arc::new(std::sync::RwLock::new(None)),
-            lora_support: std::sync::Arc::new(std::sync::RwLock::new(LoraSupport::Unknown)),
+            runtime_models: std::sync::Arc::new(parking_lot::RwLock::new(None)),
+            lora_support: std::sync::Arc::new(parking_lot::RwLock::new(LoraSupport::Unknown)),
             concurrency,
             permit_target: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(slots)),
             permit_reconciler_started: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
                 false,
             )),
-        }
+        })
     }
 
     /// Override the base URL at runtime (e.g. when running inside a Docker
@@ -362,11 +385,15 @@ impl OpenAICompatibleAdapter {
     /// exactly one place and the snapshot's `/v1` shape can no longer double to
     /// `/v1/v1/...` (THE Asha-mute bug). See [`crate::ai::openai_endpoints`].
     fn endpoints(&self) -> OpenAiBase {
-        let raw = self
-            .runtime_base_url
+        OpenAiBase::new(self.effective_base_url())
+    }
+
+    /// The runtime override if one was set, else the configured base — the
+    /// ONE resolution both request routing and lane attribution use.
+    fn effective_base_url(&self) -> &str {
+        self.runtime_base_url
             .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
-        OpenAiBase::new(raw)
+            .unwrap_or(self.config.base_url.as_str()) // unwrap_or: no runtime override set — the configured base IS the endpoint
     }
 
     /// Does this adapter's effective base URL target the LOCAL llama-server lane
@@ -385,11 +412,7 @@ impl OpenAICompatibleAdapter {
                 .trim_end_matches("/v1")
                 .trim_end_matches('/')
         }
-        let raw = self
-            .runtime_base_url
-            .as_deref()
-            .unwrap_or(self.config.base_url.as_str());
-        norm(raw) == norm(&snap.base_url)
+        norm(self.effective_base_url()) == norm(&snap.base_url)
     }
 
     /// The endpoint base for a SPECIFIC requested model. Same as [`Self::endpoints`]
@@ -422,7 +445,7 @@ impl OpenAICompatibleAdapter {
     /// `runtime_models` on success; leaves it unchanged on failure so stale
     /// data is preferred over empty data. Never silently succeeds with an
     /// empty set — returns Err if the endpoint responds with nothing.
-    async fn refresh_runtime_models(&self) -> Result<(), String> {
+    async fn refresh_runtime_models(&self) -> Result<usize, String> {
         let url = self.endpoints().models();
 
         let mut req = self.client.get(&url);
@@ -440,20 +463,19 @@ impl OpenAICompatibleAdapter {
             .json()
             .await
             .map_err(|e| format!("Parse {} body: {}", url, e))?;
-        let ids: std::collections::HashSet<String> = body
-            .get("data")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let Some(data) = body.get("data").and_then(|v| v.as_array()) else {
+            return Err(format!("{} body has no `data` array", url));
+        };
+        let ids: std::collections::HashSet<String> = data
+            .iter()
+            .filter_map(|m| m.get("id").and_then(|i| i.as_str()).map(String::from))
+            .collect();
         if ids.is_empty() {
             return Err(format!("{} returned no models", url));
         }
-        *self.runtime_models.write().unwrap() = Some(ids);
-        Ok(())
+        let count = ids.len();
+        *self.runtime_models.write() = Some(ids);
+        Ok(count)
     }
 
     /// Resolve a logical model name to the actual DMR model ID stored in
@@ -483,7 +505,6 @@ impl OpenAICompatibleAdapter {
         let available: Vec<String> = self
             .runtime_models
             .read()
-            .unwrap()
             .as_ref()
             .map(|ids| ids.iter().cloned().collect())
             .ok_or_else(|| "DMR runtime_models still empty after refresh".to_string())?;
@@ -498,7 +519,7 @@ impl OpenAICompatibleAdapter {
     /// trivial contains in either direction. No I/O, no refresh — callers
     /// own the refresh decision.
     fn lookup_runtime_model(&self, model_name: &str) -> Option<String> {
-        let guard = self.runtime_models.read().unwrap();
+        let guard = self.runtime_models.read();
         let ids = guard.as_ref()?;
         let needle = model_name.to_lowercase();
         ids.iter()
@@ -523,7 +544,7 @@ impl OpenAICompatibleAdapter {
     /// 2026-07-24). Not a fallback: this records a fact the daemon's reconcile
     /// already verified against the live process.
     pub fn ensure_runtime_model(&self, id: &str) {
-        let mut guard = self.runtime_models.write().unwrap();
+        let mut guard = self.runtime_models.write();
         match guard.as_mut() {
             Some(set) => {
                 set.insert(id.to_string());
@@ -535,7 +556,7 @@ impl OpenAICompatibleAdapter {
     }
 
     fn runtime_models_contain(&self, model_name: &str) -> bool {
-        let guard = self.runtime_models.read().unwrap();
+        let guard = self.runtime_models.read();
         match guard.as_ref() {
             None => false, // not populated — can't lie, return false
             Some(ids) => {
@@ -637,20 +658,22 @@ impl OpenAICompatibleAdapter {
         {
             served_ctx_by_root().insert(root.to_owned(), n_ctx as u32);
         }
-        let n_slots = body
+        // Missing (or zero / out-of-range) geometry is not proof that activity
+        // paging is unsupported — it is simply no pool to install.
+        let Some(n_slots) = body
             .get("total_slots")
             .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
-        if n_slots == 0 {
-            // Missing geometry is not proof that activity paging is unsupported.
+            .and_then(|n| u32::try_from(n).ok())
+            .filter(|&n| n > 0)
+        else {
             return None;
-        }
+        };
         if dir.page_discovery_generation(root) != discovery_generation {
             return None; // props belongs to the superseded process, not its replacement
         }
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
-        let pool = existing_pool.clone().unwrap_or_else(|| dir.ensure_pool(root, n_slots));
+        let pool = existing_pool.clone().unwrap_or_else(|| dir.ensure_pool(root, n_slots)); // unwrap_or: no pool installed yet — installing it IS the first probe's job
         if pool.n_slots() != n_slots {
             return None; // installed geometry and this props response must agree
         }
@@ -709,7 +732,7 @@ impl OpenAICompatibleAdapter {
         if resp.status() == reqwest::StatusCode::NOT_FOUND
             || resp.status() == reqwest::StatusCode::NOT_IMPLEMENTED
         {
-            *self.lora_support.write().unwrap() = LoraSupport::Unsupported;
+            *self.lora_support.write() = LoraSupport::Unsupported;
             return Ok(());
         }
         if !resp.status().is_success() {
@@ -734,16 +757,16 @@ impl OpenAICompatibleAdapter {
                 let id = entry
                     .get("id")
                     .and_then(|v| v.as_i64())
-                    .unwrap_or(idx as i64);
+                    .unwrap_or(idx as i64); // unwrap_or: older llama-server omits `id`; array position is its load index
                 let path = entry
                     .get("path")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
+                    .unwrap_or("") // unwrap_or: a pathless entry is still LOADED (needs its scale-0 entry); "" never matches a request
                     .to_string();
                 (id, path)
             })
             .collect();
-        *self.lora_support.write().unwrap() = LoraSupport::Supported(catalog);
+        *self.lora_support.write() = LoraSupport::Supported(catalog);
         Ok(())
     }
 
@@ -809,7 +832,7 @@ impl OpenAICompatibleAdapter {
         // fail loud on miss). Explicit requested scales override the 0.0 neutral.
         let mut requested: Vec<(i64, f64)> = Vec::with_capacity(reqs.len());
         if !reqs.is_empty() {
-            if matches!(&*self.lora_support.read().unwrap(), LoraSupport::Unknown) {
+            if matches!(&*self.lora_support.read(), LoraSupport::Unknown) {
                 self.probe_lora_catalog().await?;
             }
             for req in reqs {
@@ -830,7 +853,7 @@ impl OpenAICompatibleAdapter {
         // Neutralize every loaded-but-unrequested adapter. Unknown/Unsupported with
         // an EMPTY request → nothing known to neutralize → omit the field (the eval
         // probes at lane spawn so its base arm already has the catalog here).
-        let loaded_ids: Vec<i64> = match &*self.lora_support.read().unwrap() {
+        let loaded_ids: Vec<i64> = match &*self.lora_support.read() {
             LoraSupport::Supported(catalog) => catalog.iter().map(|(id, _)| *id).collect(),
             _ => Vec::new(),
         };
@@ -844,7 +867,7 @@ impl OpenAICompatibleAdapter {
                     .iter()
                     .find(|(rid, _)| *rid == id)
                     .map(|(_, s)| *s)
-                    .unwrap_or(0.0);
+                    .unwrap_or(0.0); // unwrap_or: a loaded adapter this request did not ask for is switched OFF (scale 0)
                 json!({ "id": id, "scale": scale })
             })
             .collect();
@@ -854,7 +877,7 @@ impl OpenAICompatibleAdapter {
     /// Local lookup against the discovered catalog. `None` when unsupported,
     /// unprobed, or genuinely absent — callers own the probe/fail decision.
     fn lookup_lora_index(&self, name: &str, path: &str) -> Option<i64> {
-        match &*self.lora_support.read().unwrap() {
+        match &*self.lora_support.read() {
             LoraSupport::Supported(catalog) => Self::match_lora_index(catalog, name, path),
             _ => None,
         }
@@ -863,7 +886,7 @@ impl OpenAICompatibleAdapter {
     /// The fail-loud message for an unresolved page-in, naming the cause so the
     /// log makes the boundary obvious (backend can't, vs custodian hasn't).
     fn lora_miss_error(&self, name: &str, path: &str) -> String {
-        match &*self.lora_support.read().unwrap() {
+        match &*self.lora_support.read() {
             LoraSupport::Unsupported => format!(
                 "LoRA page-in requested (adapter '{}') but provider '{}' exposes no \
                  /lora-adapters — its serving backend can't apply a LoRA per-request \
@@ -900,15 +923,13 @@ impl OpenAICompatibleAdapter {
     /// Capability. A new Vision-capable model showing up in the catalog flips
     /// the adapter's vision flag automatically on next boot — no code
     /// change.
-    pub fn from_registry(provider_id: &str) -> Self {
+    pub fn from_registry(provider_id: &str) -> Result<Self, AdapterBuildError> {
         let reg = crate::model_registry::global();
-        let provider = reg.provider(provider_id).unwrap_or_else(|| {
-            panic!(
-                "provider `{}` not in the Rust catalog (catalog.rs) — can't build \
-                 OpenAICompatibleAdapter",
-                provider_id
-            )
-        });
+        let provider =
+            reg.provider(provider_id)
+                .ok_or_else(|| AdapterBuildError::UnknownProvider {
+                    provider_id: provider_id.to_string(),
+                })?;
 
         let models = models_for_provider_via_registry(provider_id);
 
@@ -951,34 +972,42 @@ impl OpenAICompatibleAdapter {
         {
             capabilities.insert(Capability::ImageGeneration);
         }
-        let requires_auth = !matches!(provider.auth, AuthKind::None);
+        // Parse the catalog's auth pair into the one typed value: an
+        // authenticated provider with no key name is an incomplete row,
+        // reported here rather than discovered by a panic at `initialize`.
+        let auth = match (&provider.auth, &provider.api_key_env) {
+            (AuthKind::None, _) => ProviderAuth::None,
+            (_, Some(env)) => ProviderAuth::ApiKey { env: env.clone() },
+            (_, None) => {
+                return Err(AdapterBuildError::AuthWithoutKeyEnv {
+                    provider_id: provider_id.to_string(),
+                })
+            }
+        };
 
         // `default_model` is non-optional in the adapter trait
         // (`fn default_model(&self) -> &str`) — callers always get a
         // concrete id back. Providers with genuinely dynamic catalogs
         // (DMR) still declare a default id the user is most likely to
         // want; operator overrides flow through explicit request.model.
-        // Panic if missing: the registry row is incomplete, not a runtime
-        // condition.
-        let default_model = provider.default_model.clone().unwrap_or_else(|| {
-            panic!(
-                "provider `{}` has no `default_model` in the Rust catalog (catalog.rs) — \
-                 every OpenAI-compatible adapter needs one because the trait \
-                 returns &str, not Option<&str>",
-                provider_id
-            )
-        });
+        // A row without one is incomplete: a typed build error, not a panic.
+        let default_model =
+            provider
+                .default_model
+                .clone()
+                .ok_or_else(|| AdapterBuildError::NoDefaultModel {
+                    provider_id: provider_id.to_string(),
+                })?;
 
         Self::new(OpenAICompatibleConfig {
             provider_id: provider.id.clone(),
             name: provider.display_name().to_string(),
             base_url: provider.base_url.clone(),
-            api_key_env: provider.api_key_env.clone(),
             default_model,
             capabilities,
             models,
             model_prefixes: provider.model_prefixes.clone(),
-            requires_auth,
+            auth,
             // Tool-call shape + thinking + embeddings + single-slot residency +
             // dynamic-catalog + llama.cpp sampling extensions ALL come from the
             // registry's declared `Provider.capabilities` (#55) — the adapter
@@ -995,7 +1024,7 @@ impl OpenAICompatibleAdapter {
             thinking: {
                 let keep_thinking = std::env::var("UNSLOTH_THINKING")
                     .map(|v| v.trim().eq_ignore_ascii_case("on"))
-                    .unwrap_or(false);
+                    .unwrap_or(false); // unwrap_or: override unset — no operator request to keep thinking
                 if provider.capabilities.suppress_thinking && !keep_thinking {
                     ThinkingMode::Suppress
                 } else {
@@ -1144,7 +1173,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// derived catalog value and can misname the lane (5090 2026-07-24), so
     /// a refusal must not point callers at it when the truth is known.
     fn served_model_ids(&self) -> Vec<String> {
-        let guard = self.runtime_models.read().unwrap();
+        let guard = self.runtime_models.read();
         match guard.as_ref().filter(|set| !set.is_empty()) {
             Some(set) => {
                 let mut ids: Vec<String> = set.iter().cloned().collect();
@@ -1201,27 +1230,20 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // itself, and any modality absent from the set is bridged (vision →
         // VisionDescriptionService, audio → STT/TTS) before the request lands.
         let supports_tools = self.config.capabilities.contains(&Capability::ToolUse);
-        AdapterCapabilities::builder()
+        let builder = AdapterCapabilities::builder()
             .capabilities(self.config.capabilities.iter().copied())
-            .remote()
-            // Sourced from the served model's declared ceiling (#46) — never a
-            // hardcoded per-adapter clamp. The fallbacks only apply when no
-            // model row is present (a mis-provisioned adapter), which fails
-            // loud downstream anyway.
-            .context_window(
-                self.config
-                    .models
-                    .first()
-                    .map(|m| m.context_window)
-                    .unwrap_or(128_000),
-            )
-            .max_output_tokens(
-                self.config
-                    .models
-                    .first()
-                    .map(|m| m.max_output_tokens)
-                    .unwrap_or(16_384),
-            )
+            .remote();
+        // Sourced from the served model's declared ceiling (#46) — never a
+        // hardcoded per-adapter clamp. With no model row (a mis-provisioned
+        // adapter) both stay UNDECLARED (`None`), the field's own contract —
+        // never an invented 128k/16k that a budgeter would then trust.
+        let builder = match self.config.models.first() {
+            Some(m) => builder
+                .context_window(m.context_window)
+                .max_output_tokens(m.max_output_tokens),
+            None => builder,
+        };
+        builder
             // Native function-calling + JSON-Schema when the served model does
             // tools; otherwise the model is a competent chat model and cognition
             // emulates tools/schema in-prompt.
@@ -1261,7 +1283,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// so the fabric's capability-aware selection sees the truth the endpoint
     /// told us — not a guess. `Unknown`/`Unsupported` → `None`.
     fn lora_capabilities(&self) -> LoRACapabilities {
-        match &*self.lora_support.read().unwrap() {
+        match &*self.lora_support.read() {
             LoraSupport::Supported(catalog) => LoRACapabilities::MultiLayerPaging {
                 max_loaded: catalog.len(),
                 supports_hot_swap: true,
@@ -1332,14 +1354,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         }
         // Only require API key if provider needs auth. Providers without
         // an `api_key_env` in the catalog (localhost DMR, llamacpp-local) skip
-        // this entirely — their `requires_auth` is false.
-        if self.config.requires_auth {
-            let key_env = self.config.api_key_env.as_deref().unwrap_or_else(|| {
-                panic!(
-                    "provider `{}` requires auth but has no api_key_env in the catalog",
-                    self.config.provider_id
-                )
-            });
+        // this entirely — their `auth` is `ProviderAuth::None`.
+        if let ProviderAuth::ApiKey { env: key_env } = &self.config.auth {
+            let key_env = key_env.as_str();
             self.api_key = get_secret(key_env).map(|s| s.to_string());
             if self.api_key.is_none() {
                 return Err(format!(
@@ -1358,20 +1375,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // That's the correct failure mode: don't falsely claim availability.
         // Gated on the TYPED capability (#55), never the provider id.
         if self.config.dynamic_model_catalog {
-            if let Err(e) = self.refresh_runtime_models().await {
-                clog_warn!(
+            match self.refresh_runtime_models().await {
+                Err(e) => clog_warn!(
                     "DMR model catalog fetch failed at init: {}. DMR will report no models available until a successful refresh.",
                     e
-                );
-            } else {
-                let count = self
-                    .runtime_models
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .map(|s| s.len())
-                    .unwrap_or(0);
-                clog_info!("DMR live model catalog: {} model(s) available", count);
+                ),
+                Ok(count) => {
+                    clog_info!("DMR live model catalog: {} model(s) available", count)
+                }
             }
         }
 
@@ -1418,7 +1429,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, crate::ai::inference_error::InferenceError> {
         // Only require API key for providers that need auth
-        if self.config.requires_auth && self.api_key.is_none() {
+        if self.config.auth.requires_key() && self.api_key.is_none() {
             return Err(format!("{} not initialized", self.config.name).into());
         }
 
@@ -1427,11 +1438,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis()));
+            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis())); // unwrap_or: caller sent no request id — mint one for the receipts
         let raw_model = request
             .model
             .as_deref()
-            .unwrap_or(self.config.default_model.as_str());
+            .unwrap_or(self.config.default_model.as_str()); // unwrap_or: request named no model — the adapter's declared default serves it
 
         // For DMR: resolve the logical model name to the actual model ID
         // stored in Docker Model Runner (which may have hf.co/ prefix and
@@ -1463,12 +1474,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     crate::sensory::route(row, crate::sensory::Modality::ImageIn).is_native()
                 })
             })
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision));
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::Vision)); // unwrap_or: no registry row for this model — the provider's projected capability set is the authority
 
         // Build the base request body — `inference::request_body` (the head of assembly).
         let audio_native = crate::model_registry::try_global()
             .and_then(|reg| reg.model(raw_model).map(|row| row.has(Capability::AudioInput)))
-            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput));
+            .unwrap_or_else(|| self.config.capabilities.contains(&Capability::AudioInput)); // unwrap_or: no registry row for this model — the provider's projected capability set is the authority
         let mut body = crate::inference::request_body::build_base_body(
             &self.config,
             &request,
@@ -1583,7 +1594,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 crate::probe!(
                     class = "inference.hold.backoff",
                     traffic = %class.as_str(),
-                    purpose = %request.purpose.as_deref().unwrap_or("-"),
+                    purpose = %request.purpose.as_deref().unwrap_or("-"), // unwrap_or: telemetry label only — "-" marks an unlabelled request
                     "hold active at the adapter seam — refusing fast so the caller drops its permits and retries through the pre-gate defer"
                 );
                 return Err(
@@ -1749,7 +1760,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // discovered, not declared: it probes the endpoint and FAILS LOUD if the
         // backend can't page LoRA or a requested adapter isn't loaded. `None` only
         // when nothing is loaded (omit the field, no probe penalty for non-LoRA).
-        let active = request.active_adapters.as_deref().unwrap_or(&[]);
+        let active = request.active_adapters.as_deref().unwrap_or(&[]); // unwrap_or: no genome named on the request = no adapters active
         crate::probe!(
             class = "inference.request.lora_resolve",
             adapters = active.len() as u64,
@@ -1785,7 +1796,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .header("Content-Type", "application/json");
 
         // Only add Authorization header if provider requires auth
-        if self.config.requires_auth {
+        if self.config.auth.requires_key() {
             if let Some(api_key) = &self.api_key {
                 request_builder =
                     request_builder.header("Authorization", format!("Bearer {}", api_key));
@@ -1830,12 +1841,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             body_bytes.len(),
             body.get("tools")
                 .and_then(|v| v.as_array())
-                .map(|a| a.len())
-                .unwrap_or(0)
-                > 0,
-            body.get("stream")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false)
+                .is_some_and(|a| !a.is_empty()),
+            body.get("stream").and_then(|v| v.as_bool()) == Some(true)
         );
 
         // Concurrency permit. Turn admission above already took it (permit-FIRST,
@@ -1937,7 +1944,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let mut finish_reason = finish_reason_str
             .as_deref()
             .map(|r| self.map_finish_reason(r))
-            .unwrap_or(FinishReason::Stop);
+            .unwrap_or(FinishReason::Stop); // unwrap_or: no finish_reason — `generation_completed` below records it as NOT completed; Stop is only the label
         let generation_completed =
             finish_reason_str.is_some() && !matches!(finish_reason, FinishReason::Error);
 
@@ -2100,10 +2107,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 output_tokens: u.completion_tokens,
                 total_tokens: u
                     .total_tokens
-                    .unwrap_or(u.prompt_tokens + u.completion_tokens),
+                    .unwrap_or(u.prompt_tokens + u.completion_tokens), // unwrap_or: total omitted — it is by definition prompt + completion
                 estimated_cost: None, // TODO: Calculate from model pricing
             })
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or: provider sent no usage block — usage is observability only, never a budget input here
 
         // Per-call PREFILL-vs-DECODE split for the speed harness. cache_n vs
         // prompt_n is the KV-cache hit/miss that dominates Metal wall-clock.
@@ -2176,7 +2183,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         Ok(TextGenerationResponse {
             text,
             finish_reason,
-            model: resp_model.unwrap_or_else(|| model.to_string()),
+            model: resp_model.unwrap_or_else(|| model.to_string()), // unwrap_or: response omitted its model — the model we addressed answered
             provider: self.config.provider_id.to_string(),
             usage,
             response_time_ms,
@@ -2226,7 +2233,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .client
             .post(&url)
             .header("Content-Type", "application/json");
-        if self.config.requires_auth {
+        if self.config.auth.requires_key() {
             if let Some(api_key) = &self.api_key {
                 request_builder =
                     request_builder.header("Authorization", format!("Bearer {api_key}"));
@@ -2241,7 +2248,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
         let status = response.status();
         if !status.is_success() {
-            let err_body = response.text().await.unwrap_or_default();
+            let err_body = crate::ai::inference_error::error_response_body(response).await;
             return Err(format!(
                 "{} /v1/embeddings {status}: {err_body}",
                 self.config.name
@@ -2267,7 +2274,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
     async fn health_check(&self) -> HealthStatus {
         // Only require API key if provider needs auth
-        if self.config.requires_auth && self.api_key.is_none() {
+        if self.config.auth.requires_key() && self.api_key.is_none() {
             return HealthStatus {
                 status: HealthState::Unhealthy,
                 api_available: false,
@@ -2289,7 +2296,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             .timeout(std::time::Duration::from_secs(5));
 
         // Only add Authorization header if provider requires auth
-        if self.config.requires_auth {
+        if self.config.auth.requires_key() {
             if let Some(api_key) = &self.api_key {
                 request_builder =
                     request_builder.header("Authorization", format!("Bearer {}", api_key));
@@ -2412,15 +2419,22 @@ fn parse_embedding_response(body: &Value) -> Result<Vec<Vec<f32>>, String> {
             .get("index")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
-            .unwrap_or(i);
+            .unwrap_or(i); // unwrap_or: provider omitted `index` — items arrive in request order
         let emb = item
             .get("embedding")
             .and_then(|v| v.as_array())
             .ok_or_else(|| format!("embeddings response item {i} missing `embedding`"))?;
+        // A non-numeric element is a malformed vector, refused — a 0.0 stand-in
+        // would hand recall a silently wrong embedding.
         let vec: Vec<f32> = emb
             .iter()
-            .map(|n| n.as_f64().unwrap_or(0.0) as f32)
-            .collect();
+            .enumerate()
+            .map(|(j, n)| {
+                n.as_f64().map(|f| f as f32).ok_or_else(|| {
+                    format!("embeddings response item {i} element {j} is not a number")
+                })
+            })
+            .collect::<Result<_, _>>()?;
         indexed.push((idx, vec));
     }
     indexed.sort_by_key(|(i, _)| *i);
@@ -2435,12 +2449,12 @@ fn parse_embedding_usage(body: &Value) -> UsageMetrics {
     let prompt = usage
         .and_then(|u| u.get("prompt_tokens"))
         .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32;
+        .unwrap_or(0) as u32; // unwrap_or: usage is observability (fn doc) — an omitted count reads as 0
     let total = usage
         .and_then(|u| u.get("total_tokens"))
         .and_then(|v| v.as_u64())
         .map(|v| v as u32)
-        .unwrap_or(prompt);
+        .unwrap_or(prompt); // unwrap_or: embeddings have no completion tokens, so total = prompt
     UsageMetrics {
         input_tokens: prompt,
         output_tokens: 0,
@@ -2686,18 +2700,18 @@ mod tests {
             provider_id: "test-gateway".into(),
             name: "Test Gateway".into(),
             base_url: "http://127.0.0.1:0".into(),
-            api_key_env: None,
             default_model: "test-model".into(),
             capabilities: std::collections::BTreeSet::new(),
             models: Vec::new(),
             model_prefixes: Vec::new(),
-            requires_auth: false,
+            auth: ProviderAuth::None,
             tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
             thinking: ThinkingMode::Default,
             single_resident_model: false,
             dynamic_model_catalog: false,
             llamacpp_sampling_extensions: false,
         })
+        .expect("a plain loopback config builds an adapter")
     }
 
     // what this catches: be553169 — `live_served_window` is now the ONLY thing that stamps

@@ -8606,7 +8606,8 @@ mod tests {
             // provider-specific metadata, without making an inference call.
             let binding = ModelBinding {
                 adapter: Arc::new(
-                    crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("llama-server"),
+                    crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry("llama-server")
+                        .expect("llama-server row is in the catalog"),
                 ),
                 model: Some("ggml-org/Qwen3.8-27B-GGUF".into()),
                 context_window: 8192,

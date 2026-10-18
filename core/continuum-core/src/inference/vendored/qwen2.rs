@@ -39,7 +39,7 @@ impl Qwen2Config {
             .get("head_dim")
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
-            .unwrap_or(hidden_size / num_attention_heads);
+            .unwrap_or(hidden_size / num_attention_heads); // unwrap_or: config omits head_dim — the HF definition hidden/heads
 
         Ok(Self {
             vocab_size: v["vocab_size"].as_u64().ok_or("missing vocab_size")? as usize,
@@ -62,15 +62,15 @@ impl Qwen2Config {
             rms_norm_eps: v
                 .get("rms_norm_eps")
                 .and_then(|v| v.as_f64())
-                .unwrap_or(1e-6),
+                .unwrap_or(1e-6), // unwrap_or: config omits rms_norm_eps — Qwen2's HF default
             rope_theta: v
                 .get("rope_theta")
                 .and_then(|v| v.as_f64())
-                .unwrap_or(1_000_000.0) as f32,
+                .unwrap_or(1_000_000.0) as f32, // unwrap_or: config omits rope_theta — the Qwen2 release value
             tie_word_embeddings: v
                 .get("tie_word_embeddings")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false),
+                .unwrap_or(false), // unwrap_or: config omits tie_word_embeddings — HF default is untied
         })
     }
 }

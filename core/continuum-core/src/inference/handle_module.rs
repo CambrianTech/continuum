@@ -546,8 +546,8 @@ impl InferenceHandleModule {
         };
 
         if let Some(coordinator) = &self.coordinator {
-            let persona = PeerId::from_uuid(params.persona_id.unwrap_or_else(Uuid::new_v4));
-            let task = params.task.unwrap_or(TaskKind::Chat);
+            let persona = PeerId::from_uuid(params.persona_id.unwrap_or_else(Uuid::new_v4)); // unwrap_or: anonymous handle — a fresh id so it never shares a named persona's lane
+            let task = params.task.unwrap_or(TaskKind::Chat); // unwrap_or: no task named — a handle opens as chat
             let now_ms = crate::time::EpochMs::now().millis();
             let lane_req = OpenLaneRequest {
                 persona,

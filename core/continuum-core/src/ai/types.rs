@@ -80,6 +80,14 @@ pub struct ImageInput {
     pub mime_type: Option<String>,
 }
 
+impl ImageInput {
+    /// The image's media type for the wire. The ONE place the PNG assumption for
+    /// an undeclared image lives — it was a literal in each provider's body builder.
+    pub fn wire_mime_type(&self) -> &str {
+        self.mime_type.as_deref().unwrap_or("image/png") // unwrap_or: producer declared no type — PNG is the single substrate-wide assumption for an undeclared image
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export, export_to = "../../../protocol/typescript/ai/AudioInput.ts")]
 #[serde(rename_all = "camelCase")]
@@ -196,6 +204,10 @@ pub struct ActiveAdapterRequest {
 fn default_adapter_scale() -> f64 {
     1.0
 }
+
+/// Sampling temperature a provider body carries when the request names none. One
+/// value for every provider (it was a literal `0.7` in two body builders).
+pub const DEFAULT_TEMPERATURE: f32 = 0.7;
 
 /// Text generation request
 #[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
@@ -314,6 +326,13 @@ pub struct TextGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "{ secs: number, nanos: number }")]
     pub turn_bound: Option<std::time::Duration>,
+}
+
+impl TextGenerationRequest {
+    /// The temperature to put on the wire.
+    pub fn temperature_or_default(&self) -> f32 {
+        self.temperature.unwrap_or(DEFAULT_TEMPERATURE) // unwrap_or: request named no temperature — the shared provider default applies
+    }
 }
 
 /// Constrains the model's output format. OpenAI-compatible serialization:
@@ -756,10 +775,7 @@ impl TextGenerationResponse {
 
     /// Check if response has tool calls
     pub fn has_tool_calls(&self) -> bool {
-        self.tool_calls
-            .as_ref()
-            .map(|tc| !tc.is_empty())
-            .unwrap_or(false)
+        self.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())
     }
 }
 

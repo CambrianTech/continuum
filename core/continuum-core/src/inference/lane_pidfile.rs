@@ -105,7 +105,9 @@ pub enum ReclaimOutcome {
     /// The pid is alive but is NOT a `llama-server` (reused pid, or unverifiable).
     /// We did NOT kill it; the stale pidfile was removed. A true unknown squatter
     /// on the port — if any — surfaces at bind time, loud.
-    NotOurProcess { pid: u32, comm: String },
+    /// `comm` is `None` when the process name could not be read (`ps`
+    /// unavailable) — unknown, distinct from an empty name.
+    NotOurProcess { pid: u32, comm: Option<String> },
     /// Killed our orphaned `llama-server` and the canonical port is free again.
     Reclaimed { pid: u32 },
     /// Killed it but the port had not released within [`PORT_RELEASE_BUDGET`].
@@ -182,7 +184,7 @@ async fn reclaim_at(path: &Path, port: u16) -> ReclaimOutcome {
             clear_at(path);
             ReclaimOutcome::NotOurProcess {
                 pid,
-                comm: other.unwrap_or_default(),
+                comm: other,
             }
         }
     }

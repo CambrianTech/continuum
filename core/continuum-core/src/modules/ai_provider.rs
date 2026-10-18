@@ -220,23 +220,24 @@ impl AIProviderModule {
     /// Build a DMR adapter for the given endpoint. Same construction path
     /// used by both init-time registration and watchdog re-registration —
     /// the two never produce different-shaped adapters.
-    fn build_dmr_adapter(endpoint: &DmrEndpoint) -> Box<dyn AIProviderAdapter> {
+    fn build_dmr_adapter(
+        endpoint: &DmrEndpoint,
+    ) -> Result<Box<dyn AIProviderAdapter>, crate::ai::AdapterBuildError> {
         // Note: returns `Box` because the watchdog re-registration
         // path needs ownership of a Sized adapter to call
         // `initialize` on it before wrapping in `Arc`. The
         // init-then-register caller does:
-        //   let mut a = Self::build_dmr_adapter(...);
+        //   let mut a = Self::build_dmr_adapter(...)?;
         //   a.initialize().await?;
         //   registry.register(Arc::from(a), priority);
         // — `Arc::from(Box<dyn T>)` is a zero-copy ownership flip per
         // [[init-once-handle-then-lease-zero-copy-refs]].
-        let adapter = if let Some(url) = &endpoint.base_url {
-            OpenAICompatibleAdapter::from_registry("docker-model-runner")
-                .with_runtime_base_url(url.clone())
-        } else {
-            OpenAICompatibleAdapter::from_registry("docker-model-runner")
+        let adapter = OpenAICompatibleAdapter::from_registry("docker-model-runner")?;
+        let adapter = match &endpoint.base_url {
+            Some(url) => adapter.with_runtime_base_url(url.clone()),
+            None => adapter,
         };
-        Box::new(adapter)
+        Ok(Box::new(adapter))
     }
 }
 
@@ -318,6 +319,7 @@ async fn build_gateway_adapter(
     active_model: Option<&str>,
 ) -> Result<OpenAICompatibleAdapter, String> {
     let mut a = OpenAICompatibleAdapter::from_registry(crate::inference::llama_server::PROVIDER_ID)
+        .map_err(|e| e.to_string())?
         .with_runtime_base_url(base_url);
     a.initialize().await.map_err(|e| e.to_string())?;
     // The snapshot's active_model ALWAYS selects, whatever /v1/models claimed —
@@ -473,107 +475,46 @@ impl AIProviderModule {
         // surface the failure rather than substituting a degraded
         // adapter, and other providers can still register.
         //
-        // The pattern: `let mut a = X::new(); a.initialize().await?;
-        // registry.register(Arc::new(a), priority);` — eight repeats
-        // for the cloud-API set below.
+        // The pattern: build (typed `AdapterBuildError` on an incomplete
+        // catalog row), `initialize().await`, register — one loop over the
+        // cloud-API table below, in priority order (index = priority).
+        type BuildCloud = fn() -> Result<Box<dyn AIProviderAdapter>, crate::ai::AdapterBuildError>;
+        fn openai_compat(provider_id: &str) -> Result<Box<dyn AIProviderAdapter>, crate::ai::AdapterBuildError> {
+            Ok(Box::new(OpenAICompatibleAdapter::from_registry(provider_id)?))
+        }
+        let cloud: [(&str, &str, BuildCloud); 9] = [
+            ("DEEPSEEK_API_KEY", "DeepSeek", || openai_compat("deepseek")),
+            ("ANTHROPIC_API_KEY", "Anthropic", || {
+                Ok(Box::new(AnthropicAdapter::new()?))
+            }),
+            ("OPENAI_API_KEY", "OpenAI", || openai_compat("openai")),
+            ("GROQ_API_KEY", "Groq", || openai_compat("groq")),
+            ("TOGETHER_API_KEY", "Together", || openai_compat("together")),
+            ("FIREWORKS_API_KEY", "Fireworks", || openai_compat("fireworks")),
+            ("XAI_API_KEY", "XAI", || openai_compat("xai")),
+            ("GOOGLE_API_KEY", "Google", || openai_compat("google")),
+            ("MISTRAL_API_KEY", "Mistral", || openai_compat("mistral")),
+        ];
 
         // Only register adapters that have API keys configured.
-        if get_secret("DEEPSEEK_API_KEY").is_some() {
-            self.log().info("Registering DeepSeek adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("deepseek");
+        for (priority, (secret, label, build)) in cloud.into_iter().enumerate() {
+            if get_secret(secret).is_none() {
+                continue;
+            }
+            self.log().info(&format!("Registering {label} adapter"));
+            let mut a = match build() {
+                Ok(a) => a,
+                Err(e) => {
+                    self.log()
+                        .warn(&format!("{label} adapter build failed: {e} — not registered"));
+                    continue;
+                }
+            };
             match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 0),
+                Ok(()) => registry.register(Arc::from(a), priority),
                 Err(e) => self
                     .log()
-                    .warn(&format!("DeepSeek initialize failed: {e} — not registered")),
-            }
-        }
-
-        if get_secret("ANTHROPIC_API_KEY").is_some() {
-            self.log().info("Registering Anthropic adapter");
-            let mut a = AnthropicAdapter::new();
-            match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 1),
-                Err(e) => self.log().warn(&format!(
-                    "Anthropic initialize failed: {e} — not registered"
-                )),
-            }
-        }
-
-        if get_secret("OPENAI_API_KEY").is_some() {
-            self.log().info("Registering OpenAI adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("openai");
-            match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 2),
-                Err(e) => self
-                    .log()
-                    .warn(&format!("OpenAI initialize failed: {e} — not registered")),
-            }
-        }
-
-        if get_secret("GROQ_API_KEY").is_some() {
-            self.log().info("Registering Groq adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("groq");
-            match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 3),
-                Err(e) => self
-                    .log()
-                    .warn(&format!("Groq initialize failed: {e} — not registered")),
-            }
-        }
-
-        if get_secret("TOGETHER_API_KEY").is_some() {
-            self.log().info("Registering Together adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("together");
-            match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 4),
-                Err(e) => self
-                    .log()
-                    .warn(&format!("Together initialize failed: {e} — not registered")),
-            }
-        }
-
-        if get_secret("FIREWORKS_API_KEY").is_some() {
-            self.log().info("Registering Fireworks adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("fireworks");
-            match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 5),
-                Err(e) => self.log().warn(&format!(
-                    "Fireworks initialize failed: {e} — not registered"
-                )),
-            }
-        }
-
-        if get_secret("XAI_API_KEY").is_some() {
-            self.log().info("Registering XAI adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("xai");
-            match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 6),
-                Err(e) => self
-                    .log()
-                    .warn(&format!("XAI initialize failed: {e} — not registered")),
-            }
-        }
-
-        if get_secret("GOOGLE_API_KEY").is_some() {
-            self.log().info("Registering Google adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("google");
-            match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 7),
-                Err(e) => self
-                    .log()
-                    .warn(&format!("Google initialize failed: {e} — not registered")),
-            }
-        }
-
-        if get_secret("MISTRAL_API_KEY").is_some() {
-            self.log().info("Registering Mistral adapter");
-            let mut a = OpenAICompatibleAdapter::from_registry("mistral");
-            match a.initialize().await {
-                Ok(()) => registry.register(Arc::new(a), 8),
-                Err(e) => self
-                    .log()
-                    .warn(&format!("Mistral initialize failed: {e} — not registered")),
+                    .warn(&format!("{label} initialize failed: {e} — not registered")),
             }
         }
 
@@ -858,13 +799,19 @@ impl AIProviderModule {
                 // vs the host-built bundled llama.cpp (verified
                 // 2026-04-19: 33 tok/s container vs 47 tok/s
                 // in-process for the same forge model).
-                let mut dmr = Self::build_dmr_adapter(&endpoint);
-                if let Err(e) = dmr.initialize().await {
-                    self.log().warn(&format!(
-                        "DMR adapter initialize failed: {e} — not registered"
-                    ));
-                } else {
-                    registry.register(Arc::from(dmr), 1);
+                match Self::build_dmr_adapter(&endpoint) {
+                    Err(e) => self
+                        .log()
+                        .warn(&format!("DMR adapter build failed: {e} — not registered")),
+                    Ok(mut dmr) => {
+                        if let Err(e) = dmr.initialize().await {
+                            self.log().warn(&format!(
+                                "DMR adapter initialize failed: {e} — not registered"
+                            ));
+                        } else {
+                            registry.register(Arc::from(dmr), 1);
+                        }
+                    }
                 }
             }
             None => {
@@ -888,21 +835,26 @@ impl AIProviderModule {
         // parity (re-register when it appears, deregister when it dies)
         // follows once the lifecycle is governed.
         let ds4_up = std::net::TcpStream::connect_timeout(
-            &"127.0.0.1:8901".parse().unwrap(),
+            &std::net::SocketAddr::from(([127, 0, 0, 1], 8901)),
             Duration::from_secs(1),
         )
         .is_ok();
         if ds4_up {
             self.log()
                 .info("Registering DwarfStar (ds4) sidecar adapter (localhost:8901)");
-            let mut ds4 = Box::new(OpenAICompatibleAdapter::from_registry("ds4"))
-                as Box<dyn AIProviderAdapter>;
-            if let Err(e) = ds4.initialize().await {
-                self.log().warn(&format!(
-                    "ds4 adapter initialize failed: {e} — not registered"
-                ));
-            } else {
-                registry.register(Arc::from(ds4), 2);
+            match OpenAICompatibleAdapter::from_registry("ds4") {
+                Err(e) => self
+                    .log()
+                    .warn(&format!("ds4 adapter build failed: {e} — not registered")),
+                Ok(mut ds4) => {
+                    if let Err(e) = ds4.initialize().await {
+                        self.log().warn(&format!(
+                            "ds4 adapter initialize failed: {e} — not registered"
+                        ));
+                    } else {
+                        registry.register(Arc::new(ds4), 2);
+                    }
+                }
             }
         } else {
             self.log().info(
@@ -1122,11 +1074,20 @@ impl ServiceModule for AIProviderModule {
                 // The adapter stays unregistered until init succeeds, which
                 // is the safer state than registering a half-initialized
                 // adapter that will silently reject every request.
-                let mut adapter = Self::build_dmr_adapter(&endpoint);
                 let desc = endpoint
                     .base_url
                     .as_deref()
                     .unwrap_or("localhost:12434 (host-native)");
+                let mut adapter = match Self::build_dmr_adapter(&endpoint) {
+                    Ok(adapter) => adapter,
+                    Err(e) => {
+                        self.log().warn(&format!(
+                            "DMR is reachable ({desc}) but the adapter could not be \
+                             built — will retry on next tick. Cause: {e}"
+                        ));
+                        return Ok(());
+                    }
+                };
                 if let Err(e) = adapter.initialize().await {
                     self.log().warn(&format!(
                         "DMR is reachable ({desc}) but adapter.initialize() \
@@ -1309,18 +1270,18 @@ mod tests {
                 provider_id: crate::inference::llama_server::PROVIDER_ID.into(),
                 name: "llama-server (test)".into(),
                 base_url: "http://127.0.0.1:0".into(),
-                api_key_env: None,
                 default_model: "catalog-default".into(),
                 capabilities: std::collections::BTreeSet::new(),
                 models: Vec::new(),
                 model_prefixes: Vec::new(),
-                requires_auth: false,
+                auth: crate::ai::openai_adapter::ProviderAuth::None,
                 tool_protocol: crate::model_registry::ToolProtocol::NativeFunctionCalling,
                 thinking: crate::ai::openai_adapter::ThinkingMode::Default,
                 single_resident_model: false,
                 dynamic_model_catalog: false,
                 llamacpp_sampling_extensions: false,
-            });
+            })
+            .expect("a plain loopback config builds an adapter");
         let catalog_default = gateway.default_model().to_string();
         assert_eq!(gateway.served_model_ids(), vec![catalog_default.clone()]);
 

@@ -55,8 +55,7 @@ fn engine_root(cfg: &OpenAICompatibleConfig) -> Option<String> {
     if !cfg.single_resident_model {
         return None;
     }
-    let trimmed = cfg.base_url.trim_end_matches('/');
-    Some(trimmed.strip_suffix("/v1").unwrap_or(trimmed).to_string())
+    Some(crate::ai::openai_endpoints::OpenAiBase::new(&cfg.base_url).root().to_string())
 }
 
 /// One client for the header wait's engine probes, built once per process.
@@ -304,7 +303,7 @@ pub(crate) async fn send_with_lane_retry(
 
     if !response.status().is_success() {
         let status = response.status();
-        let body = response.text().await.unwrap_or_default();
+        let body = crate::ai::inference_error::error_response_body(response).await;
         // Classify ONCE, here, where the status code and the raw body still
         // exist. Preserve the same classification for the caller's admission
         // decision; prose is only an operator-facing representation.

@@ -207,7 +207,7 @@ impl FootprintRegistry {
             .collect();
 
         // Cheapest first.
-        candidates.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.sort_by(|a, b| a.2.total_cmp(&b.2));
 
         let mut plan_entries = Vec::new();
         let mut bytes_freed = 0u64;

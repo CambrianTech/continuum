@@ -362,7 +362,7 @@ async fn measure_examples(
             .map_err(|e| format!("POST /train/measure on {lane}: {e}"))?;
         let code = r.status();
         if !code.is_success() {
-            let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the measure
+            let why = crate::ai::inference_error::error_response_body(r).await;
             return Err(format!("POST /train/measure on {lane}: HTTP {code}: {why}"));
         }
         let reply: Reply = r.json().await.map_err(|e| format!("POST /train/measure on {lane}: {e}"))?;
@@ -1290,7 +1290,7 @@ impl EngineRun {
                 Ok(r) if r.status().is_success() => {}
                 Ok(r) => {
                     let status = r.status();
-                    let why = r.text().await.unwrap_or_default(); // unwrap_or_default: an unreadable refusal body still fails the job
+                    let why = crate::ai::inference_error::error_response_body(r).await;
                     let end = InPlaceEnd::Failed(format!("the engine refused the training run: HTTP {status}: {why}"));
                     // Only the engine's documented refusal proves nothing of ours runs (Codex on
                     // #5001): any other non-2xx (a 500, a proxy's answer) proves nothing.

@@ -785,6 +785,33 @@ impl std::fmt::Display for AdapterSelectionError {
 
 impl std::error::Error for AdapterSelectionError {}
 
+/// Why an adapter could not be CONSTRUCTED. Construction is the edge where a
+/// provider's catalog row is parsed into a usable adapter, so an incomplete row
+/// or an unbuildable HTTP client is reported here, typed, instead of panicking
+/// inside a constructor that pretends to be infallible. The caller decides:
+/// a boot path logs and skips the provider; a test fails loud.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AdapterBuildError {
+    /// `reqwest::Client::builder().build()` refused (TLS backend / resolver
+    /// initialization failed on this host).
+    #[error("provider `{provider_id}`: HTTP client could not be built: {reason}")]
+    HttpClient { provider_id: String, reason: String },
+    /// The provider id has no row in the Rust catalog (catalog.rs).
+    #[error("provider `{provider_id}` is not in the Rust catalog (catalog.rs)")]
+    UnknownProvider { provider_id: String },
+    /// The catalog row declares no `default_model`; the adapter trait returns
+    /// a concrete `&str`, so there is nothing to answer `default_model()` with.
+    #[error("provider `{provider_id}` has no `default_model` in the Rust catalog (catalog.rs)")]
+    NoDefaultModel { provider_id: String },
+    /// The catalog has no models registered under this provider.
+    #[error("provider `{provider_id}` has no models registered in the Rust catalog (catalog.rs)")]
+    NoModels { provider_id: String },
+    /// The catalog row declares an authenticated provider but names no
+    /// environment/secret key to read the credential from.
+    #[error("provider `{provider_id}` requires auth but declares no `api_key_env` in the Rust catalog (catalog.rs)")]
+    AuthWithoutKeyEnv { provider_id: String },
+}
+
 /// Registry of AI provider adapters.
 ///
 /// Stores `Arc<dyn AIProviderAdapter>` so the substrate's shared

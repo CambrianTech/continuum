@@ -206,7 +206,10 @@ impl ResolutionBench {
         // default base_url). No dedicated-lane override: we WANT the resident serving
         // snapshot to accept these generations against the live model.
         let mut adapter =
-            crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID);
+            crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(PROVIDER_ID)
+                .map_err(|e| {
+                    CommandError::Internal(format!("resolution-bench adapter build failed: {e}"))
+                })?;
         if let Some(m) = p.model_id.as_ref() {
             adapter = adapter.with_default_model(m.clone());
         }

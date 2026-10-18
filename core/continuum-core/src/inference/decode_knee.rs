@@ -252,8 +252,8 @@ pub fn observe(model: &str, inflight: u32, measured_tps: f64, expected_tps: f64)
         crate::probe!(
             class = "serving.decode_knee.moved",
             model = model,
-            from = before.map(|k| k as u64).unwrap_or(0),
-            to = after.map(|k| k as u64).unwrap_or(0),
+            from = before.map(|k| k as u64).unwrap_or(0), // unwrap_or: telemetry only — 0 renders "no knee yet"
+            to = after.map(|k| k as u64).unwrap_or(0), // unwrap_or: telemetry only — 0 renders "no knee any more"
             inflight = inflight as u64,
             measured_tps,
             ratio,
