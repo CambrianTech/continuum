@@ -1,11 +1,16 @@
 //! Explicit owner attestation for legacy grades without immutable card linkage.
 //! No grader, inference, claim mutation, or training flush is invoked here.
 
-use super::*;
+use async_trait::async_trait;
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+use ts_rs::TS;
+use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 use crate::orm::OrmEntity;
 use crate::persona::training_producer::{self as credit, graded, reviewed};
 use graded::{BenchmarkCreditAttribution, LegacyGradeEvidence};
 use uuid::Uuid;
+use super::{eval_set_reference, parse_card_title};
 
 #[derive(Deserialize, JsonSchema, TS)]
 #[serde(tag = "operation", rename_all = "snake_case")]
