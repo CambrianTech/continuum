@@ -1,0 +1,38 @@
+name: Every pushed branch has a pull request
+
+# A branch with no PR is lost work: nobody reviews it and nothing lands it (192 such
+# branches on 2026-10-18). The moment a branch is pushed without one, this opens a DRAFT
+# PR for it, so it is in the review queue from its first push and its owner decides to
+# finish it or close it with a reason. API calls only, no checkout, no build; a PR opened
+# with GITHUB_TOKEN does not trigger other workflows, so this adds no CI cost.
+on:
+  push:
+    branches-ignore:
+      - canary
+      - main
+      - 'release/**'
+      - 'dependabot/**'
+
+jobs:
+  draft-pr:
+    if: github.repository_owner == 'CambrianTech'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Open a draft PR when the branch has none
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          existing=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq 'length')
+          [ "$existing" = "0" ] || { echo "$BRANCH already has a PR"; exit 0; }
+          ahead=$(gh api "repos/$REPO/compare/canary...$BRANCH" --jq '.ahead_by' 2>/dev/null || echo 0)
+          [ "$ahead" != "0" ] || { echo "$BRANCH has no commits ahead of canary"; exit 0; }
+          subject=$(gh api "repos/$REPO/commits/$(printf %s "$BRANCH" | jq -sRr @uri)" --jq '.commit.message | split("\n")[0]')
+          gh pr create --repo "$REPO" --draft --base canary --head "$BRANCH" \
+            --title "$subject" \
+            --body "Opened automatically: this branch was pushed with no pull request. Draft until its owner marks it ready, or closes it with a one-line reason. Work on a branch with no PR is lost."
