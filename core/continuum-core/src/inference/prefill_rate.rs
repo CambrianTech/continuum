@@ -134,16 +134,21 @@ impl PrefillPoint {
         self.samples >= MIN_SAMPLES && now_ms.saturating_sub(self.last_ms) <= FRESH_MS
     }
 
-    /// This point's rate and where it came from: fresh, else stale — the record survives
-    /// a reboot, and last hour's measured rate is still evidence about this box where a
-    /// constant never was. A point with no lifetime evidence (or a pre-freshness `0.0`)
-    /// is UNKNOWN, never a measured zero.
+}
+
+impl crate::inference::decode_knee::OwnRate for PrefillPoint {
+    /// Trusted = fresh. Otherwise ANY evidence of this model's own rate (one recent
+    /// sample, or an old trusted average) ranks as stale — above every other model's
+    /// point, which the ladder reaches only when this model has none. Requiring
+    /// `MIN_SAMPLES` here too meant that after any hour's gap the first sample reset the
+    /// count and the served model's own 105.7 tokens/s (persisted, 4 samples) lost to a
+    /// 30-day-old 575 tokens/s from a model that was not even loaded (the M5,
+    /// 2026-10-18 10:41Z on, `rate_source=conservative`): five times the real rate.
     fn own_rate(&self, now_ms: u64) -> Option<(f64, RateSource)> {
         if self.trusted_at(now_ms) {
             return Some((self.tps_ema, RateSource::Fresh));
         }
-        (self.samples >= MIN_SAMPLES && self.tps_ema > 0.0)
-            .then_some((self.tps_ema, RateSource::Stale))
+        (self.samples >= 1 && self.tps_ema > 0.0).then_some((self.tps_ema, RateSource::Stale))
     }
 }
 
@@ -186,23 +191,8 @@ pub fn latency_fill_cap(target_seconds: usize, rate: MeasuredRate) -> usize {
     }
 }
 
-/// PURE: the rate ladder for `model` over `rates` — fresh → stale on its own point, else
-/// the SLOWEST rate any model on this box holds (the biggest model's, in practice — the
-/// same conservatism the decode side uses), else unknown. Mirrors
-/// [`crate::inference::decode_knee::rate_from`] deliberately: one ladder, two rates.
-pub fn rate_from(rates: &BTreeMap<String, PrefillPoint>, model: &str, now_ms: u64) -> MeasuredRate {
-    if let Some((tps, source)) = rates.get(model).and_then(|p| p.own_rate(now_ms)) {
-        return MeasuredRate { tps: Some(tps), source };
-    }
-    let slowest = rates
-        .values()
-        .filter_map(|p| p.own_rate(now_ms).map(|(t, _)| t))
-        .fold(None, |acc: Option<f64>, t| Some(acc.map_or(t, |a: f64| a.min(t))));
-    match slowest {
-        Some(tps) => MeasuredRate { tps: Some(tps), source: RateSource::Conservative },
-        None => MeasuredRate::UNKNOWN,
-    }
-}
+/// The one ladder, shared with the decode axis — see [`crate::inference::decode_knee::rate_from`].
+pub use crate::inference::decode_knee::rate_from;
 
 /// This box's prefill rate for `model` WITH its provenance — the ladder above. Prefer
 /// this over [`rate_for`] wherever an absence would otherwise become a constant: the
@@ -466,12 +456,22 @@ mod tests {
         let borrowed = rate_from(&rates, "never-served", T);
         assert_eq!((borrowed.source, borrowed.tps), (RateSource::Conservative, Some(70.0)));
 
-        // A point with too few samples is not a rung.
+        // The served model's OWN evidence, however thin, outranks every other model's point.
+        // This assertion used to read "one sample is not a rate" (UNKNOWN), and that rule is
+        // what let a 30-day-old 575 tok/s from a model that was not loaded stand in for the
+        // served model's 105.7 after an hour's gap reset its count (the M5, 2026-10-18 10:41Z
+        // on): a thin own point is evidence about THIS box; an old point about another model
+        // is not evidence about this one.
         let mut thin = BTreeMap::new();
         let mut p = PrefillPoint::default();
-        p.observe(400.0, T);
+        p.observe(105.7, T);
         thin.insert("m".to_string(), p);
-        assert_eq!(rate_from(&thin, "m", T), MeasuredRate::UNKNOWN, "one sample is not a rate");
+        thin.insert("unloaded".to_string(), trusted(575.6, T - 30 * 24 * 60 * 60 * 1000));
+        let own = rate_from(&thin, "m", T);
+        assert_eq!((own.source, own.tps), (RateSource::Stale, Some(105.7)), "one sample of the served model is evidence, and it wins");
+        // A model with NO point of its own still borrows the slowest the box holds.
+        let borrowed = rate_from(&thin, "never-served", T);
+        assert_eq!((borrowed.source, borrowed.tps), (RateSource::Conservative, Some(105.7)));
     }
 
     // what this catches (card c30a4757, the IntelMac 09:15–10:15Z 2026-09-22): a

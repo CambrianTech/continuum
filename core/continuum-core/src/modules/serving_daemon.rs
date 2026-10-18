@@ -879,6 +879,10 @@ pub struct ServingDaemonModule {
     /// with no governor has no honest VRAM ceiling, and serving must fail
     /// closed rather than over-commit.
     resource_daemon: Arc<ResourceDaemon>,
+    /// The plan's memory budget, SUSTAINED: every instantaneous reading of the last
+    /// `READY_TIMEOUT`, so the plan grows only into headroom that has outlived one relaunch
+    /// and shrinks the moment pressure arrives (`system_resources::sustained`).
+    budget_readings: parking_lot::Mutex<crate::system_resources::sustained::Sustained>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -1305,6 +1309,7 @@ impl ServingDaemonModule {
             gpu,
             system,
             resource_daemon,
+            budget_readings: parking_lot::Mutex::new(crate::system_resources::sustained::Sustained::new(crate::inference::llama_server::READY_TIMEOUT)),
             plan_tx,
             plan_view_tx,
             server,
@@ -1522,32 +1527,26 @@ pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: 
 /// on the one seat everyone queues on, each swing destroying the remote turns it was sized
 /// for. One constant for both directions, on purpose: the guard that stops a squeeze
 /// evicting the best activity is the guard that stops a burst evicting the grid's coders.
-pub fn sustained_leased_in(tick_peaks: &[usize]) -> usize {
-    let window = DOWNSHIFT_SUSTAINED_TICKS as usize;
-    if tick_peaks.len() < window {
-        return 0;
-    }
-    tick_peaks[tick_peaks.len() - window..]
-        .iter()
-        .copied()
-        .min()
-        .unwrap_or(0) // unwrap_or: unreachable (window >= 1 and len >= window) — an empty slice reads as no demand, never a lane
+/// The leased-in demand the plan may act on: the ring's minimum, and only once the ring
+/// holds a full `DOWNSHIFT_SUSTAINED_TICKS` of peaks; fewer reads as no demand, never a lane.
+pub fn sustained_leased_in(samples: usize, floor: usize) -> usize {
+    if samples < DOWNSHIFT_SUSTAINED_TICKS as usize { 0 } else { floor }
 }
 /// The last [`DOWNSHIFT_SUSTAINED_TICKS`] per-tick leased-in peaks, oldest first — the
 /// input to [`sustained_leased_in`]. Kept beside the tick that fills it. The most recent
 /// raw peak is also kept so the plan receipt can carry both numbers.
-static LEASED_IN_PEAKS: std::sync::Mutex<std::collections::VecDeque<usize>> =
-    std::sync::Mutex::new(std::collections::VecDeque::new());
+static LEASED_IN_PEAKS: std::sync::Mutex<crate::system_resources::sustained::Sustained> =
+    std::sync::Mutex::new(crate::system_resources::sustained::Sustained::bounded(
+        Duration::from_secs(DOWNSHIFT_SUSTAINED_TICKS as u64 * TICK.as_secs()),
+        DOWNSHIFT_SUSTAINED_TICKS as usize,
+    ));
 static LAST_LEASED_IN_PEAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Fold this tick's leased-in peak into the ring and return the sustained demand.
 fn note_leased_in_peak(peak: usize) -> usize {
     LAST_LEASED_IN_PEAK.store(peak.min(u32::MAX as usize) as u32, Ordering::Relaxed);
     let mut ring = LEASED_IN_PEAKS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
-    ring.push_back(peak);
-    while ring.len() > DOWNSHIFT_SUSTAINED_TICKS as usize {
-        ring.pop_front();
-    }
-    sustained_leased_in(ring.make_contiguous())
+    let floor = ring.observe(crate::time::EpochMs::now().millis(), peak as u64).min;
+    sustained_leased_in(ring.len(), floor as usize)
 }
 
 /// Add a measurement override: the fleet's warm-slot demand becomes `active` (minds that
@@ -2071,8 +2070,28 @@ impl ServingDaemonModule {
                 );
             }
         }
+        let instant = plan_fill(live, mode.serving_fraction(), unified);
+        // The plan budgets the sustained MINIMUM over one relaunch's duration (READY_TIMEOUT):
+        // headroom that has not outlived a relaunch has not earned one; pressure is honoured
+        // at once. The M5, 2026-10-18 15:27-15:28Z: the instantaneous budget read 22.9, 29.8,
+        // 29.1 then 41.9 GB within 22 s (ledger flat at 41.68 GB) and the plan it fed
+        // relaunched the engine at 15:06, 15:18 and 15:24, every resident cold each time.
+        let usable_bytes = self
+            .budget_readings
+            .lock()
+            .observe(crate::time::EpochMs::now().millis(), instant)
+            .min;
+        if usable_bytes != instant {
+            crate::probe!(
+                class = "serving.budget.sustained",
+                instant_bytes = instant,
+                usable_bytes,
+                window_ms = crate::inference::llama_server::READY_TIMEOUT.as_millis() as u64,
+                "the plan budgets the sustained minimum, not this tick's reading"
+            );
+        }
         HostBudget {
-            usable_bytes: plan_fill(live, mode.serving_fraction(), unified),
+            usable_bytes,
             perf_cores: perf_cores(),
         }
     }
@@ -8418,13 +8437,13 @@ pub(crate) mod tests {
     fn a_burst_of_leased_in_calls_on_one_tick_does_not_move_the_lane_count() {
         let w = DOWNSHIFT_SUSTAINED_TICKS as usize;
         assert!(w >= 2, "the guard only means something with a window");
-        assert_eq!(sustained_leased_in(&[3]), 0, "a fresh gauge never relaunches");
-        assert_eq!(sustained_leased_in(&[3, 0, 0]), 0, "a burst that vanished is not demand");
-        assert_eq!(sustained_leased_in(&[3, 3, 0]), 0, "two ticks is still a burst");
-        assert_eq!(sustained_leased_in(&[3, 3, 3]), 3, "three consecutive ticks: a load");
-        assert_eq!(sustained_leased_in(&[0, 3, 3, 3]), 3, "the window is the LAST w ticks");
-        assert_eq!(sustained_leased_in(&[2, 3, 3]), 2, "the minimum, not the max: a dip is honored");
-        assert_eq!(sustained_leased_in(&[3, 3, 3, 1]), 1, "a falling load falls at once");
+        assert_eq!(sustained_leased_in(1, 3), 0, "a fresh gauge never relaunches");
+        assert_eq!(sustained_leased_in(3, 0), 0, "a burst that vanished is not demand");
+        assert_eq!(sustained_leased_in(3, 0), 0, "two ticks is still a burst");
+        assert_eq!(sustained_leased_in(3, 3), 3, "three consecutive ticks: a load");
+        assert_eq!(sustained_leased_in(3, 3), 3, "the window is the LAST w ticks: [0, 3, 3, 3] keeps [3, 3, 3]");
+        assert_eq!(sustained_leased_in(3, 2), 2, "the minimum, not the max: a dip is honored");
+        assert_eq!(sustained_leased_in(3, 1), 1, "a falling load falls at once: [3, 3, 3, 1] keeps [3, 3, 1]");
     }
 
     #[test]

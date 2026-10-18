@@ -21,6 +21,9 @@ pub(super) fn confined_command_with(
         .chain(list.read.iter().cloned())
         .collect();
     let write: Vec<PathBuf> = list.write.clone();
+    // A directory a carve-out was cut from: its entries may be LISTED, never read or
+    // written through this rule (landlock rules are recursive, so ReadDir only).
+    let listable: Vec<PathBuf> = list.listable.clone();
     // landlock is allow-only: the deny roots are simply never granted (the read roots
     // were enumerated beneath them), so nothing here reads `list.deny`.
     let compatible = Ruleset::default().handle_access(AccessFs::from_all(abi)).is_ok();
@@ -40,6 +43,8 @@ pub(super) fn confined_command_with(
                 .add_rules(landlock::path_beneath_rules(&read, AccessFs::from_read(abi)))
                 .map_err(std::io::Error::other)?
                 .add_rules(landlock::path_beneath_rules(&write, AccessFs::from_all(abi)))
+                .map_err(std::io::Error::other)?
+                .add_rules(landlock::path_beneath_rules(&listable, AccessFs::ReadDir))
                 .map_err(std::io::Error::other)?;
             ruleset.restrict_self().map_err(std::io::Error::other)?;
             Ok(())

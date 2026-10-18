@@ -44,10 +44,43 @@ pub fn seatbelt_profile(home: &Path, list: &AllowList) -> String {
     for root in &list.write {
         rule(&mut out, "allow", &SEATBELT_OPS, root);
     }
-    for root in &list.deny {
-        rule(&mut out, "deny", &SEATBELT_OPS, root);
+    // A directory a carve-out was cut from is listable itself (`literal`, not `subpath`):
+    // nothing beneath it is granted by this rule.
+    for dir in &list.listable {
+        out.push_str(&format!("(allow file-read* (literal \"{}\"))\n", sbpl_string(dir)));
     }
+    deny_credentials(&mut out, list);
     out
+}
+
+/// Escape a literal path fragment for an SBPL `#"..."` regex.
+fn regex_escape(fragment: &str) -> String {
+    fragment.chars().flat_map(|c| if ".^$*+?()[]{}|\\".contains(c) { vec!['\\', c] } else { vec![c] }).collect()
+}
+
+/// The profile for a HOST-reach resident: everything the operator's process may do, minus
+/// the credential roots and scope keys, written as denials only. Deny-capable, so it needs
+/// no carved grant: a directory she creates after her shell started is hers like any other.
+pub fn seatbelt_host_profile(list: &AllowList) -> String {
+    let mut out = String::from("(version 1)\n(allow default)\n");
+    deny_credentials(&mut out, list);
+    out
+}
+
+/// The carve-outs and scope keys, last: within an operation the last match wins.
+fn deny_credentials(out: &mut String, list: &AllowList) {
+    for root in &list.deny {
+        for op in SEATBELT_OPS {
+            out.push_str(&format!("(deny {op} (subpath \"{}\"))\n", sbpl_string(root)));
+        }
+    }
+    // A scope's signing key wherever the scope sits (`<repo>/.airc/identity.key`).
+    for suffix in super::CREDENTIAL_SUFFIXES {
+        let pattern = format!("/{}$", regex_escape(suffix));
+        for op in SEATBELT_OPS {
+            out.push_str(&format!("(deny {op} (regex #\"{pattern}\"))\n"));
+        }
+    }
 }
 
 fn sbpl_string(p: &Path) -> String {
@@ -61,7 +94,7 @@ pub(super) fn confined_command_with(
     program: &Path,
     args: &[std::ffi::OsString],
 ) -> (tokio::process::Command, Enforcement) {
-    let profile = seatbelt_profile(&confinement.home, list);
+    let profile = if confinement.reaches_host() { seatbelt_host_profile(list) } else { seatbelt_profile(&confinement.home, list) };
     let mut cmd = tokio::process::Command::new("/usr/bin/sandbox-exec");
     cmd.arg("-p").arg(profile).arg(program).args(args);
     (cmd, Enforcement::Enforced { mechanism: "seatbelt" })
