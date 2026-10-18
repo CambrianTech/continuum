@@ -717,5 +717,5 @@ pub fn cache_relaunch_needed(launched_mib: u32, would_launch_mib: u32, measured_
         && measured_state.is_some_and(|state| u64::from(would_launch_mib) * 1024 * 1024 >= state)
 }
 
-#[cfg(test)]
+// The tests gate themselves (`#![cfg(test)]` in tests.rs), so the scanner reads the file as test code.
 mod tests;

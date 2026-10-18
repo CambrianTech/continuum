@@ -1,4 +1,4 @@
-
+#![cfg(test)]
     // what this catches (the 5090, 2026-10-11: launched --cache-ram 4288 against ~5.5 GB
     // measured states, 114 skips, 76% of restores cold, and nothing ever relaunched for it):
     // the agreed rule. A cache that holds no measured state is evidence for a re-home when a
