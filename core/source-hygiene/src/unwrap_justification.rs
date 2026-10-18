@@ -68,7 +68,7 @@ const SHAPES: &[&str] = &[
 /// correct code-vs-prose split then revealed 14 more that a doc-comment mention of
 /// `#[cfg(test)]` had been hiding — see `scan`.)
 #[cfg(test)]
-const BASELINE_UNJUSTIFIED: usize = 2257;
+const BASELINE_UNJUSTIFIED: usize = 2144;
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).
