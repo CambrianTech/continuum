@@ -93,11 +93,11 @@ impl CollectionMigrationState {
     fn to_progress(&self) -> CollectionProgress {
         CollectionProgress {
             collection: self.collection.clone(),
-            status: format!("{:?}", *self.status.read().unwrap()).to_lowercase(),
+            status: format!("{:?}", *self.status.read().unwrap_or_else(std::sync::PoisonError::into_inner)).to_lowercase(), // unwrap_or: poisoned lock still holds the last consistent state
             total: self.total.load(Ordering::Relaxed),
             migrated: self.migrated.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
-            error: self.error.read().unwrap().clone(),
+            error: self.error.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone(), // unwrap_or: poisoned lock still holds the last consistent state
         }
     }
 }
@@ -182,7 +182,7 @@ pub struct MigrationHandle {
 impl MigrationHandle {
     /// Get current migration progress (lock-free atomics) as a typed snapshot.
     pub fn status(&self) -> MigrationProgress {
-        let states = self.states.read().unwrap();
+        let states = self.states.read().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         let collections: Vec<CollectionProgress> =
             states.values().map(|s| s.to_progress()).collect();
         let total: usize = states
@@ -234,7 +234,7 @@ impl MigrationHandle {
         let mut results = Vec::new();
         let mut all_match = true;
 
-        let states = self.states.read().unwrap().clone();
+        let states = self.states.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone(); // unwrap_or: poisoned lock still holds the last consistent state
         for (collection, state) in &states {
             let source_count = self
                 .source
@@ -345,7 +345,7 @@ impl MigrationEngine {
             counted.push((collection.clone(), count.data.unwrap_or(0)));
         }
         {
-            let mut states = self.states.write().unwrap();
+            let mut states = self.states.write().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
             for (collection, total) in counted {
                 let state = Arc::new(CollectionMigrationState::new(collection.clone(), total));
                 states.insert(collection, state);
@@ -370,19 +370,19 @@ impl MigrationEngine {
     /// Migrate a single collection with streaming pagination
     async fn migrate_collection(&self, collection: &str) -> Result<(), String> {
         let state = {
-            let states = self.states.read().unwrap();
+            let states = self.states.read().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
             states
                 .get(collection)
                 .ok_or_else(|| format!("No state for collection: {}", collection))?
                 .clone()
         };
 
-        *state.status.write().unwrap() = MigrationStatus::InProgress;
+        *state.status.write().unwrap_or_else(std::sync::PoisonError::into_inner) = MigrationStatus::InProgress; // unwrap_or: poisoned lock still holds the last consistent state
 
         // Ensure target schema exists by reading first record
         let total = state.total.load(Ordering::Relaxed);
         if total == 0 {
-            *state.status.write().unwrap() = MigrationStatus::Completed;
+            *state.status.write().unwrap_or_else(std::sync::PoisonError::into_inner) = MigrationStatus::Completed; // unwrap_or: poisoned lock still holds the last consistent state
             return Ok(());
         }
 
@@ -391,7 +391,7 @@ impl MigrationEngine {
 
         loop {
             if self.paused.load(Ordering::Relaxed) {
-                *state.status.write().unwrap() = MigrationStatus::Paused;
+                *state.status.write().unwrap_or_else(std::sync::PoisonError::into_inner) = MigrationStatus::Paused; // unwrap_or: poisoned lock still holds the last consistent state
                 return Ok(());
             }
 
@@ -409,8 +409,8 @@ impl MigrationEngine {
                 Some(_) => break, // Empty page = done
                 None => {
                     let err = result.error.unwrap_or_else(|| "Source query failed".into());
-                    *state.error.write().unwrap() = Some(err.clone());
-                    *state.status.write().unwrap() = MigrationStatus::Failed;
+                    *state.error.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(err.clone()); // unwrap_or: poisoned lock still holds the last consistent state
+                    *state.status.write().unwrap_or_else(std::sync::PoisonError::into_inner) = MigrationStatus::Failed; // unwrap_or: poisoned lock still holds the last consistent state
                     return Err(err);
                 }
             };
@@ -460,7 +460,7 @@ impl MigrationEngine {
             }
         }
 
-        *state.status.write().unwrap() = MigrationStatus::Completed;
+        *state.status.write().unwrap_or_else(std::sync::PoisonError::into_inner) = MigrationStatus::Completed; // unwrap_or: poisoned lock still holds the last consistent state
         Ok(())
     }
 
