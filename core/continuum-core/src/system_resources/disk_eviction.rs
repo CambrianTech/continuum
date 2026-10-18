@@ -1934,6 +1934,26 @@ mod tests {
                 "airc#1390/#155: same sweep as airc-board-cache — one file per room, the \
                  room's posts; rebuilt on the next read",
             ),
+            // airc's own state (card 0af5d5ec). Deferred, never owned by a continuum
+            // delete: every byte's safety is a fact only airc holds — which worktree
+            // carries unpushed work, which store pages are free, which log the daemon
+            // still writes. Each owner drains through airc.
+            (
+                "airc-worktrees",
+                "186ee967: AircWorktreePool — the broker runs airc's own drain (`airc work \
+                 cleanup --force`: Merged/Closed cards in every subscribed room, airc#1574), \
+                 never a dirty or unpushed worktree, never a continuum rm",
+            ),
+            (
+                "airc-store",
+                "airc bdf34c4c: retention reclaims the pages it frees (the pass removes rows \
+                 but reports `reclaim None`); the event store is never deleted from outside",
+            ),
+            (
+                "airc-daemon-log",
+                "airc 551fe5ae: the daemon bounds its own log (rotate at a cap, one \
+                 predecessor) and writes it in its own home, not the spawning scope's",
+            ),
             (
                 "kv-pages",
                 "#155: broker-reachable pool keyed on slot-pool residency; the \
