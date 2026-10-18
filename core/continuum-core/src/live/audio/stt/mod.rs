@@ -197,7 +197,7 @@ impl Default for STTRegistry {
 // ============================================================================
 
 /// Initialize the global STT registry with default adapters
-pub fn init_registry() {
+pub fn init_registry() -> Arc<RwLock<STTRegistry>> {
     let registry = STT_REGISTRY.get_or_init(|| {
         let mut reg = STTRegistry::new();
 
@@ -222,17 +222,15 @@ pub fn init_registry() {
         "STT: Registry initialized with {} adapters",
         registry.read().adapters.len()
     );
+    registry.clone()
 }
 
 /// Get the global registry
 pub fn get_registry() -> Arc<RwLock<STTRegistry>> {
-    STT_REGISTRY.get().cloned().unwrap_or_else(|| {
-        init_registry();
-        STT_REGISTRY
-            .get()
-            .cloned()
-            .expect("STT_REGISTRY must be set after init_registry()")
-    })
+    match STT_REGISTRY.get() {
+        Some(registry) => registry.clone(),
+        None => init_registry(),
+    }
 }
 
 /// Check if STT is initialized (convenience function)

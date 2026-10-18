@@ -133,17 +133,14 @@ static AVATAR_REGISTRY: OnceCell<Arc<RwLock<RenderBackendRegistry>>> = OnceCell:
 
 /// Get the global avatar backend registry.
 pub fn get_registry() -> Arc<RwLock<RenderBackendRegistry>> {
-    AVATAR_REGISTRY.get().cloned().unwrap_or_else(|| {
-        init_registry();
-        AVATAR_REGISTRY
-            .get()
-            .cloned()
-            .expect("AVATAR_REGISTRY must be set after init_registry()")
-    })
+    match AVATAR_REGISTRY.get() {
+        Some(registry) => registry.clone(),
+        None => init_registry(),
+    }
 }
 
 /// Initialize the global avatar backend registry with default backends.
-pub fn init_registry() {
+pub fn init_registry() -> Arc<RwLock<RenderBackendRegistry>> {
     use super::backends::{Live2DBackend, ProceduralBackend};
 
     AVATAR_REGISTRY.get_or_init(|| {
@@ -174,7 +171,8 @@ pub fn init_registry() {
             reg.backends.len()
         );
         Arc::new(RwLock::new(reg))
-    });
+    })
+    .clone()
 }
 
 #[cfg(test)]
