@@ -193,10 +193,6 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// Read every `.rs` file under `root`, pre-split into production and test halves.
-///
-/// Unreadable files are skipped rather than failing the scan: a hygiene guard must
-/// not turn a transient IO error into a red build that says nothing about hygiene.
 /// The PRODUCTION half of a source file (see [`SourceFile::production`]): everything
 /// before its first `#[cfg(test)]` that is CODE, not prose. Matching the raw string
 /// would truncate at the first doc comment that merely MENTIONS test-gating, and module
@@ -218,6 +214,10 @@ pub fn production_half(src: &str) -> String {
     }
 }
 
+/// Read every `.rs` file under `root`, pre-split into production and test halves.
+///
+/// Unreadable files are skipped rather than failing the scan: a hygiene guard must
+/// not turn a transient IO error into a red build that says nothing about hygiene.
 pub fn collect_files(root: &Path) -> Vec<SourceFile> {
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
@@ -566,9 +566,6 @@ mod tests {
         assert_eq!(comment, None);
     }
 
-    /// What this catches: the production/test split silently swallowing the whole
-    /// file (or none of it), which would make every rule vacuously green or wildly
-    /// noisy. The split is an approximation and this pins WHICH approximation.
     // what this catches (card 0af5d5ec): a test module moved to its own file, marked
     // `#![cfg(test)]`, read as production, so its unwraps and spawns counted against the
     // ratchets and every "split the monolith by moving its tests" looked like growth.
@@ -582,6 +579,9 @@ mod tests {
         assert_eq!(production_half(prose), prose, "a mention in a comment is not the marker");
     }
 
+    /// What this catches: the production/test split silently swallowing the whole
+    /// file (or none of it), which would make every rule vacuously green or wildly
+    /// noisy. The split is an approximation and this pins WHICH approximation.
     #[test]
     fn production_half_stops_at_the_first_cfg_test() {
         let root = crate_src_root();
