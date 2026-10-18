@@ -27,6 +27,7 @@
 pub mod boundary_serialization;
 pub mod derived_bounds;
 pub mod grab_bag;
+pub mod file_size;
 pub mod identity_discipline;
 pub mod layer_discipline;
 pub mod production_reachability;

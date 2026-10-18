@@ -166,10 +166,12 @@ impl PrefillWindow {
     }
 }
 
-/// The last [`TURNS_KEPT`] turns' prefilled tokens, and whether each was cold (no cache hit).
+/// The last [`TURNS_KEPT`] turns' prompt split: tokens served from the lane's KV cache and
+/// tokens re-read. The one engine-ring record of it; the knee and the render budget both
+/// read here.
 #[derive(Debug, Default)]
 pub struct TurnPrefill {
-    turns: std::collections::VecDeque<(u32, bool)>,
+    turns: std::collections::VecDeque<(u32, u32)>,
 }
 
 impl TurnPrefill {
@@ -177,11 +179,11 @@ impl TurnPrefill {
         if self.turns.len() == TURNS_KEPT {
             self.turns.pop_front();
         }
-        self.turns.push_back((prefilled, cached == 0));
+        self.turns.push_back((cached, prefilled));
     }
     /// Median prefilled tokens per turn; `None` with no turns.
     pub fn median(&self) -> Option<u32> {
-        let mut v: Vec<u32> = self.turns.iter().map(|(p, _)| *p).collect();
+        let mut v: Vec<u32> = self.turns.iter().map(|(_, p)| *p).collect();
         if v.is_empty() {
             return None;
         }
@@ -192,7 +194,14 @@ impl TurnPrefill {
         self.turns.len()
     }
     pub fn cold(&self) -> usize {
-        self.turns.iter().filter(|(_, cold)| *cold).count()
+        self.turns.iter().filter(|(cached, _)| *cached == 0).count()
+    }
+    /// The fraction of prompt tokens the kept turns served from cache; `None` with no turns.
+    pub fn cache_fraction(&self) -> Option<f64> {
+        let (cached, total) = self.turns.iter().fold((0u64, 0u64), |(c, t), (tc, tp)| {
+            (c + u64::from(*tc), t + u64::from(*tc) + u64::from(*tp))
+        });
+        (total > 0).then(|| cached as f64 / total as f64)
     }
 }
 
@@ -260,6 +269,12 @@ pub fn tighter_knee(decode: Option<u32>, prefill: Option<u32>) -> Option<u32> {
 
 /// The generation seam: one turn's cache split (fed beside `citizen_health::note_generation`).
 /// Both 0 = the lane reported no timings: an absence, never a datum.
+/// The fraction of prompt tokens the recent turns served from the lanes' KV cache: what a
+/// prompt's time-to-first-token does NOT pay. `None` until a generation reported timings.
+pub fn cache_fraction() -> Option<f64> {
+    TURNS.lock().cache_fraction()
+}
+
 pub fn note_turn(cached: u32, prefilled: u32) {
     if cached == 0 && prefilled == 0 {
         return;
@@ -456,5 +471,11 @@ mod tests {
         turns.note(0, 30_000);
         assert_eq!(turns.median(), Some(1_000));
         assert_eq!((turns.turns(), turns.cold()), (6, 1));
+        // what this catches: the render budget reading the cache split from a surface-ring
+        // ledger (`modules::citizen_health`, an upward import the layering ratchet counted);
+        // the engine ring's own turn record is the one owner. 100k cached of 135k total.
+        let f = turns.cache_fraction().expect("six turns carry a split");
+        assert!((f - 100_000.0 / 135_000.0).abs() < 1e-9, "{f}");
+        assert_eq!(TurnPrefill::default().cache_fraction(), None, "no turns: no fraction, never 0%");
     }
 }

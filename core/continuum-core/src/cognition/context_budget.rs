@@ -271,7 +271,7 @@ fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefil
     // so each cancel shrinks the next prompt until one completes and re-measures for real.
     // The failure becomes the evidence. Card a2578811; not in this change.
     let rate = crate::inference::prefill_rate::measured_rate_for(&model);
-    let affordable = Self::affordable_for_rate(rate, served, audience, crate::modules::citizen_health::prompt_cache_fraction());
+    let affordable = Self::affordable_for_rate(rate, served, audience, crate::inference::prefill_knee::cache_fraction());
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
     let shape = ((served as u64) << 32)
         | (affordable as u64) << 3
