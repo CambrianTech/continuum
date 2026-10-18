@@ -20,7 +20,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 /// the batch split lowers it. **This number may only ever go DOWN.** A split by owner lowers
 /// it; raising it is growing the monolith.
 #[cfg(test)]
-const BASELINE_LINES_OVER: usize = 160_594;
+// 159,615 after card 0af5d5ec moved disk_eviction.rs's 1,143-line test module to
+// disk_eviction/tests.rs (#![cfg(test)]): disk_eviction.rs fell from 2,426 to 1,283 lines.
+const BASELINE_LINES_OVER: usize = 159_615;
 
 pub struct FileSize;
 

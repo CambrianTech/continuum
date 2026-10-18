@@ -69,7 +69,10 @@ const SHAPES: &[&str] = &[
 /// `#[cfg(test)]` had been hiding — see `scan`.)
 #[cfg(test)]
 // 2,203 on canary 4b6a66a6e: #5164 (+3) merged after #5153 set 2,200 on its own head.
-const BASELINE_UNJUSTIFIED: usize = 2_203;
+// 2,139 after card 0af5d5ec: not code removed, a miscount ended. Files that ARE test
+// modules (`#![cfg(test)]`: contracts/chain_tests.rs, orm/derive_test.rs) were read as
+// production; `production_half` now reads them as test code.
+const BASELINE_UNJUSTIFIED: usize = 2_139;
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).
