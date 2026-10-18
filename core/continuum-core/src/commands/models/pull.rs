@@ -505,7 +505,11 @@ impl ModelsPull {
                 gguf_path = Some(dl); // shard 1 (sorted) is llama.cpp's load entrypoint
             }
         }
-        let gguf_path = gguf_path.expect("expand_shard_set never returns empty");
+        let Some(gguf_path) = gguf_path else {
+            return Err(CommandError::Internal(
+                "shard expansion produced no files to download".to_string(),
+            ));
+        };
         let mmproj_path = match &mmproj_file {
             Some(f) => Some(download_with_retry(&repo, &repo_id, f, None).await?),
             None => None,

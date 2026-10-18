@@ -219,7 +219,7 @@ pub trait CommandSpec {
 /// adapters. Keep schema generation identical for native and provided commands.
 pub fn input_schema<P: schemars::JsonSchema>() -> serde_json::Value {
     let mut schema = serde_json::to_value(schemars::schema_for!(P))
-        .expect("typed command schema must serialize");
+        .expect("typed command schema must serialize"); // JUSTIFIED: schemars RootSchema is plain data; converting it to a Value cannot fail
     flatten_singleton_all_of(&mut schema);
     schema
 }

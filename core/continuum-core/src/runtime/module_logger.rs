@@ -29,24 +29,30 @@ impl ModuleLogger {
     /// Create a logger for any component (adapters, libraries, etc.)
     /// This is the general-purpose constructor for non-module code.
     pub fn for_component(component_name: &str) -> Self {
-        let home = dirs::home_dir().expect("Failed to resolve home directory");
-        let log_dir = home
-            .join(".continuum")
-            .join("jtag")
-            .join("logs")
-            .join("system")
-            .join("modules");
-        let log_path = log_dir.join(format!("{}.log", component_name));
+        let file_name = format!("{}.log", component_name);
+        // No resolvable home means no log file: the logger still works, it just has
+        // nowhere durable to write (never fall back to the checkout/current dir).
+        let log_dir = dirs::home_dir().map(|home| {
+            home.join(".continuum")
+                .join("jtag")
+                .join("logs")
+                .join("system")
+                .join("modules")
+        });
+        let log_path = match &log_dir {
+            Some(dir) => dir.join(&file_name),
+            None => PathBuf::from(&file_name),
+        };
 
-        // Ensure directory exists
-        let _ = fs::create_dir_all(&log_dir);
-
-        // Open log file (append mode)
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .ok();
+        // Ensure directory exists, then open the log file (append mode)
+        let file = log_dir.and_then(|dir| {
+            let _ = fs::create_dir_all(&dir);
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)
+                .ok()
+        });
 
         Self {
             module_name: component_name.to_string(),

@@ -156,11 +156,11 @@ impl ProbeRouterLayer {
     /// `RecvError::Lagged` from `recv()`.
     pub fn subscribe(&self, class: &str) -> broadcast::Receiver<ProbeEvent> {
         // Fast path: class already has a sender.
-        if let Some(sender) = self.routes.read().unwrap().get(class) {
+        if let Some(sender) = self.routes.read().unwrap_or_else(std::sync::PoisonError::into_inner).get(class) { // unwrap_or: poisoned lock still holds the last consistent state
             return sender.subscribe();
         }
         // Slow path: create the channel.
-        let mut routes = self.routes.write().unwrap();
+        let mut routes = self.routes.write().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         let sender = routes
             .entry(class.to_string())
             .or_insert_with(|| broadcast::channel(self.capacity).0);
@@ -171,7 +171,7 @@ impl ProbeRouterLayer {
     /// have had one at some point — channels persist for the
     /// router's lifetime).
     pub fn known_classes(&self) -> Vec<String> {
-        self.routes.read().unwrap().keys().cloned().collect()
+        self.routes.read().unwrap_or_else(std::sync::PoisonError::into_inner).keys().cloned().collect() // unwrap_or: poisoned lock still holds the last consistent state
     }
 
     /// Send a [`ProbeEvent`] to the class's broadcast channel if any
@@ -181,7 +181,7 @@ impl ProbeRouterLayer {
     /// a channel with no receivers is a HashMap miss + early return,
     /// no allocation.
     fn fan_out(&self, event: ProbeEvent) -> usize {
-        let routes = self.routes.read().unwrap();
+        let routes = self.routes.read().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         let Some(sender) = routes.get(&event.class) else {
             return 0;
         };

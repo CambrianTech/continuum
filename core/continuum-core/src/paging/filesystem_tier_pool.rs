@@ -116,7 +116,7 @@ impl FilesystemTierPool {
     /// stale or missing, we re-walk; on success the snapshot is
     /// installed for subsequent reads.
     fn refresh(&self) -> DirSnapshot {
-        let mut guard = self.snapshot.lock().unwrap();
+        let mut guard = self.snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         if let Some(snap) = guard.as_ref() {
             if let Ok(age) = SystemTime::now().duration_since(snap.captured_at) {
                 if age.as_millis() < SNAPSHOT_TTL_MS {
@@ -133,7 +133,7 @@ impl FilesystemTierPool {
     /// directory (e.g., after eviction) so the next read sees the
     /// updated state.
     fn invalidate(&self) {
-        *self.snapshot.lock().unwrap() = None;
+        *self.snapshot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None; // unwrap_or: poisoned lock still holds the last consistent state
     }
 }
 

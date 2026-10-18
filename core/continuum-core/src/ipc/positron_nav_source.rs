@@ -712,7 +712,7 @@ impl NavProjectorRegistry {
         let mut spawned = self
             .spawned
             .lock()
-            .expect("nav projector registry lock poisoned");
+            .unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the spawned-projector set
         if !spawned.insert(citizen) {
             return;
         }

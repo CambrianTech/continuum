@@ -130,7 +130,7 @@ pub async fn run_consolidation_pass(
 
 fn ms_to_rfc3339(ms: u64) -> String {
     DateTime::from_timestamp_millis(ms as i64)
-        .unwrap_or_else(|| DateTime::from_timestamp_millis(0).unwrap())
+        .unwrap_or(DateTime::UNIX_EPOCH) // unwrap_or: out-of-range timestamps render as the epoch
         .to_rfc3339()
 }
 

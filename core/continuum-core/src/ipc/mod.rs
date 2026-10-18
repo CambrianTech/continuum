@@ -3436,12 +3436,22 @@ pub fn start_server(
         // Together) plug in here as their impls land — same pattern,
         // gate on the matching `*_API_KEY` secret.
         if crate::secrets::get_secret("OPENAI_API_KEY").is_some() {
-            ft_registry.register(std::sync::Arc::new(OpenAIFineTuningAdapter::new()));
-            log_info!(
-                "ipc",
-                "server",
-                "GenomeModule: registered OpenAIFineTuningAdapter"
-            );
+            match OpenAIFineTuningAdapter::new() {
+                Ok(adapter) => {
+                    ft_registry.register(std::sync::Arc::new(adapter));
+                    log_info!(
+                        "ipc",
+                        "server",
+                        "GenomeModule: registered OpenAIFineTuningAdapter"
+                    );
+                }
+                Err(e) => log_error!(
+                    "ipc",
+                    "server",
+                    "GenomeModule: OpenAIFineTuningAdapter not registered: {}",
+                    e
+                ),
+            }
         }
 
         // LocalCandleFineTuner always registered. The skeleton

@@ -570,8 +570,13 @@ async fn emit_once(
     // Substrate-owned type: a serialize failure is a bug, not a
     // runtime condition (same discipline as
     // `continuum_positron::StateBuilder::build`).
-    let payload = serde_json::to_value(&update)
-        .expect("AircPresenceUpdate must serialize — bug, not a runtime error");
+    let payload = match serde_json::to_value(&update) {
+        Ok(payload) => payload,
+        Err(e) => {
+            crate::clog_error!("presence: AircPresenceUpdate failed to serialize: {e}");
+            return directory_changed;
+        }
+    };
     bus.publish_async_only(PRESENCE_UPDATED, payload);
     *last_published = Some(update);
     directory_changed

@@ -330,7 +330,7 @@ impl RecipeExperienceSource {
         recipes: impl Iterator<Item = ExperienceRecipe>,
     ) -> Vec<crate::experience::recipe::CitizenRecipe> {
         let default_purpose = Self::shipped_purpose(shipped::CHAT)
-            .expect("embedded chat recipe must exist — build-time authoring bug");
+            .expect("embedded chat recipe must exist — build-time authoring bug"); // JUSTIFIED: embedded constant, build-time authoring property
         recipes
             .filter(|r| r.purpose == default_purpose)
             .last()
@@ -365,7 +365,7 @@ impl RecipeExperienceSource {
         .into_iter()
         .map(|json| {
             ExperienceRecipe::from_json(json)
-                .expect("embedded experience recipe must be valid JSON")
+                .expect("embedded experience recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
         })
     }
 

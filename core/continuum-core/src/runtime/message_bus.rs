@@ -195,7 +195,7 @@ impl MessageBus {
     pub fn find_recent_event(&self, pattern: &str) -> Option<BusEvent> {
         let now = Instant::now();
         let ttl = std::time::Duration::from_secs(RECENT_EVENT_TTL_SECS);
-        let mut buf = self.recent_events.lock().unwrap();
+        let mut buf = self.recent_events.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         // Search from newest to oldest (VecDeque: back = newest)
         let found_idx = buf
             .iter()
@@ -218,7 +218,7 @@ impl MessageBus {
     fn record_recent(&self, event: &BusEvent) {
         let now = Instant::now();
         let ttl = std::time::Duration::from_secs(RECENT_EVENT_TTL_SECS);
-        let mut buf = self.recent_events.lock().unwrap();
+        let mut buf = self.recent_events.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or: poisoned lock still holds the last consistent state
         // Sweep expired events from the front (oldest first, O(1) each)
         while let Some(front) = buf.front() {
             if now.duration_since(front.at) >= ttl {
