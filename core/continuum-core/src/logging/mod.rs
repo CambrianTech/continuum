@@ -97,6 +97,10 @@ impl GlobalLogger {
         self.emit(LogLevel::Info, "INFO", category, component, message);
     }
 
+    pub fn warn(&self, category: &str, component: &str, message: &str) {
+        self.emit(LogLevel::Warn, "WARN", category, component, message);
+    }
+
     pub fn error(&self, category: &str, component: &str, message: &str) {
         self.emit(LogLevel::Error, "ERROR", category, component, message);
     }
