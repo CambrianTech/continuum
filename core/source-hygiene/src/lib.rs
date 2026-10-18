@@ -28,6 +28,7 @@ pub mod boundary_serialization;
 pub mod derived_bounds;
 pub mod grab_bag;
 pub mod identity_discipline;
+pub mod layer_discipline;
 pub mod production_reachability;
 pub mod tenant_neutrality;
 pub mod test_mod_singularity;

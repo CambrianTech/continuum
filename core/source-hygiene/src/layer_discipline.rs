@@ -1,0 +1,156 @@
+//! The one architectural invariant, as a ratchet: a module imports only its own ring or
+//! the rings below it. See `docs/architecture/MICROKERNEL-DECOMPOSITION.md` for the
+//! rings, the measurement this baseline came from, and the cut order that lowers it.
+//!
+//! Why a ratchet and not a rule with zero tolerance: on canary `bc42092af` (2026-10-18)
+//! the core carried 256 upward imports across 73 module pairs (`cognition` → `modules` in
+//! 27 files, `persona` → `modules` in 20, `runtime` → `sdk_codegen` in 7, ...). A rule that
+//! fails on all of them today is a rule nobody runs. A baseline that may only FALL is a
+//! rule with teeth on day one, the same shape as `unwrap_justification`.
+//!
+//! What counts: one violation per (file, imported module) where the file's top-level
+//! module sits in a LOWER ring than the module it names with `crate::<mod>::`. Counted over
+//! the whole file (tests included): a test that reaches upward still couples the compile
+//! unit, and the crate split that this invariant exists for cannot cut through it.
+
+use super::{SourceFile, SourceRule, Violation};
+
+/// Ring 0, the kernel: the machine. Nothing about models, minds, rooms or commands.
+const KERNEL: &[&str] = &[
+    "time", "identity", "fs_portable", "paths", "concurrency", "paging", "logging", "orm",
+    "system_resources", "runtime", "governor", "capacity", "resources", "gpu",
+];
+/// Ring 1, the engine: serving. Knows the kernel.
+const ENGINE: &[&str] = &[
+    "inference", "inference_capability", "model_registry", "ai", "live", "media", "sensory",
+    "tool_parsing",
+];
+/// Ring 2, the mind: the citizen. Knows the engine and the kernel.
+const MIND: &[&str] = &[
+    "cognition", "persona", "genome", "memory", "rag", "perception", "experience", "recipe",
+    "context", "vdd",
+];
+/// Ring 3, the surface: how the outside reaches in. Knows everything below.
+const SURFACE: &[&str] = &[
+    "commands", "ipc", "routing", "sdk_codegen", "airc", "http", "modules", "interface",
+    "contracts", "events", "forge", "provisioning", "comms", "ffi", "bin",
+];
+
+/// The ring a top-level module lives in, or `None` for a module the table has not placed
+/// (a new module is placed by editing the table, never by the ratchet guessing).
+pub fn ring_of(module: &str) -> Option<u8> {
+    [KERNEL, ENGINE, MIND, SURFACE]
+        .iter()
+        .position(|ring| ring.contains(&module))
+        .map(|r| r as u8)
+}
+
+/// Upward imports when the ratchet landed (canary `bc42092af`, 2026-10-18): 256 across 73
+/// module pairs. **This number may only ever go DOWN.** Each cut in the decomposition plan
+/// lowers it; raising it to green a build is defeating the invariant.
+#[cfg(test)]
+const BASELINE_UPWARD_IMPORTS: usize = 256;
+
+/// The top-level module of a scanned file: the first path component under `src/`.
+fn module_of(file: &SourceFile) -> Option<&str> {
+    let first = file.rel.split('/').next()?;
+    Some(first.strip_suffix(".rs").unwrap_or(first))
+}
+
+pub struct LayerDiscipline;
+
+impl SourceRule for LayerDiscipline {
+    fn name(&self) -> &'static str {
+        "layer-discipline"
+    }
+
+    fn check(&self, file: &SourceFile) -> Vec<Violation> {
+        let Some(own) = module_of(file).and_then(ring_of) else {
+            return Vec::new();
+        };
+        let mut seen: Vec<&str> = Vec::new();
+        let mut out = Vec::new();
+        for (line_no, line) in file.raw.lines().enumerate() {
+            let mut rest = line;
+            while let Some(at) = rest.find("crate::") {
+                rest = &rest[at + "crate::".len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_lowercase() || c == '_'))
+                    .unwrap_or(rest.len());
+                let dep = &rest[..end];
+                if !rest[end..].starts_with("::") || seen.contains(&dep) {
+                    continue;
+                }
+                if ring_of(dep).is_some_and(|r| r > own) {
+                    // `dep` borrows from `line`, which borrows from `file.raw`: it lives as
+                    // long as `file`, so holding it across the loop is sound.
+                    seen.push(dep);
+                    out.push(Violation {
+                        rule: "layer-discipline",
+                        file: file.rel.clone(),
+                        line: line_no + 1,
+                        source: format!("ring {own} imports ring {} `crate::{dep}::`", ring_of(dep).unwrap_or(own)), // unwrap_or: `is_some_and` above proved it is Some
+                    });
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scan;
+
+    // what this catches: a kernel or engine file reaching UP into a mind or surface module
+    // (a fact owned too high, a verb owned too high, or a module in the wrong ring). The
+    // one line of code below the ring table is the architecture; everything else follows.
+    #[test]
+    fn a_lower_ring_importing_a_higher_ring_is_one_violation_per_module() {
+        let f = SourceFile::for_test(
+            "runtime/registry.rs",
+            "use crate::sdk_codegen::input_schema;\nfn f() { crate::routing::x(); crate::routing::y(); crate::time::now(); }\n",
+        );
+        let v = LayerDiscipline.check(&f);
+        let named: Vec<&str> = v.iter().map(|x| x.source.as_str()).collect();
+        assert_eq!(v.len(), 2, "sdk_codegen and routing once each, never time: {named:?}");
+        assert!(named.iter().any(|s| s.contains("`crate::sdk_codegen::`")));
+        assert!(named.iter().any(|s| s.contains("`crate::routing::`")));
+        // Downward and sideways are the architecture, not a violation.
+        let ok = SourceFile::for_test("commands/x.rs", "use crate::cognition::a; use crate::runtime::b; use crate::ipc::c;\n");
+        assert!(LayerDiscipline.check(&ok).is_empty());
+        // A module the table has not placed raises nothing: placing it is an edit to the
+        // table, with a reviewer, never a guess by the ratchet.
+        let unplaced = SourceFile::for_test("somewhere_new/x.rs", "use crate::ipc::c;\n");
+        assert!(LayerDiscipline.check(&unplaced).is_empty());
+    }
+
+    // what this catches: the invariant moving the wrong way. Every cut in
+    // MICROKERNEL-DECOMPOSITION.md lowers this count; a PR that raises it has put a fact
+    // or a verb in a ring above its owner. If this fails because you lowered the count,
+    // lower `BASELINE_UPWARD_IMPORTS` and take the win.
+    #[test]
+    fn upward_imports_never_rise() {
+        let violations = scan(&[&LayerDiscipline]);
+        let count = violations.len();
+        let mut pairs = std::collections::BTreeMap::<(String, String), usize>::new();
+        for v in &violations {
+            let from = v.file.split('/').next().unwrap_or("?").to_string(); // unwrap_or: a rel path always has a first component
+            let to = v.source.split('`').nth(1).unwrap_or("?").to_string(); // unwrap_or: the source line is built by `check` with the backticked path
+            *pairs.entry((from, to)).or_default() += 1;
+        }
+        eprintln!("upward imports: {count} across {} module pairs (baseline {BASELINE_UPWARD_IMPORTS})", pairs.len());
+        let mut worst: Vec<_> = pairs.into_iter().collect();
+        worst.sort_by(|a, b| b.1.cmp(&a.1));
+        for ((from, to), n) in worst.iter().take(8) {
+            eprintln!("  {from} -> {to}: {n} files");
+        }
+        assert!(
+            count <= BASELINE_UPWARD_IMPORTS,
+            "upward imports rose to {count} (baseline {BASELINE_UPWARD_IMPORTS}). A lower ring now \
+             names a higher ring: move the fact or verb down to its owner, or place the module \
+             in its ring. Never raise the baseline."
+        );
+    }
+}
