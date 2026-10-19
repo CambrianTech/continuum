@@ -157,6 +157,16 @@ Apply continual refinement to ALL work, not only tests or CI. Look for reusable 
 
 Existing review must ask: Where does this behavior already exist? Can the shared function/adapter serve these callers? Which duplicate paths disappear? What evidence verifies the affected callers? Record concrete answers when applicable; do not create a new ceremonial CI gate. Exceptions require a concrete technical reason in the change, not an assumption that adjacent code is untouchable.
 
+## Joel: build as if you were the AI in the system (2026-10-13)
+
+Before any change, picture yourself as the persona living inside Continuum. What tools, context and errors would YOU need to do real work, the way a good agent environment gives you read/shell/search with honest truncation and clear errors? Build that, once, in shared code.
+
+- **Don't hand-code her problems.** When a persona stumbles (a wrong id, a malformed call, a loop), she reads the error, uses her tools and learns, as any AI does. Add substrate code only for what normal AI tooling has, or what is broken for everyone (authorization, deploys, data loss, a wrong verb). Push back when a review expands a small fix into a framework for one incident.
+- **No undue hurdles.** A step a normal tool would not require (an extra verb to open her own output, a full UUID where "latest" is obvious, identity or worktree ceremony) is removed, not documented.
+- **Ask why it exists.** Before hardening or polishing anything: is it half-built work someone abandoned, and does it belong in prod at all? Half-built and unused is deleted, not hardened. An unenforced declaration is enforced or deleted.
+- **Good code is shared code.** Most tool code has been written before, and has a pattern and an owner (positron, runtime, sdk_codegen, orm). Search for the pattern BEFORE writing a helper; if copies exist, extract them into one shared type in the same change (see "Refine shared code wherever it lives" above).
+- **Python is never load-bearing.** Use it for your own throwaway work. Never put it in a substrate or serving path: it takes systems down under load and cannot run at the edge.
+
 ## Joel: ORM-only storage access
 
 Use the repository's ORM-backed, responsibility-owning storage adapters for application code, diagnostics, replay/bookmarks, and acceptance scripts. Do not add raw SQL or direct sqlite3 queries. Reuse typed entity/store operations; preserve read-only semantics for diagnostics and do not run migrations implicitly during an observation. This applies across AIRC and Continuum.
