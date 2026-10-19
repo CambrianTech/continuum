@@ -92,8 +92,9 @@ pub fn stamp_examples(params: &mut serde_json::Value, task: Option<&CardTask>) {
 }
 
 /// What one training job was trained on, read from its own examples. Built only by
-/// [`trained`]: its fields are private, so no caller can hand the judge a hand-made clean one.
-#[derive(Debug, Default, PartialEq, Eq)]
+/// [`trained`] (no `Default`, private fields), so a computed result cannot be edited clean.
+/// It describes the examples it was given: the caller must pass the job's complete set.
+#[derive(Debug, PartialEq, Eq)]
 pub struct Trained {
     tasks: BTreeSet<TaskIdentity>,
     /// Instance ids of tasks whose fix she reviewed (their set is not in a review title).
@@ -119,7 +120,11 @@ impl Trained {
 /// or an unlinked producer's `source` with no card. Anything else is unknown.
 pub fn trained(examples: &[TrainingExample]) -> Trained {
     use crate::persona::training_producer::UNLINKED_SOURCES;
-    let mut out = Trained::default();
+    let mut out = Trained {
+        tasks: BTreeSet::new(),
+        reviewed: BTreeSet::new(),
+        unknown: 0,
+    };
     for metadata in examples.iter().map(|e| e.metadata.as_ref()) {
         let field = metadata.and_then(|m| m.get(TASK_METADATA_KEY));
         let read = field.map(|value| serde_json::from_value::<CardTask>(value.clone())); // read back from the job's request.json on disk
