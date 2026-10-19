@@ -70,7 +70,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::genome::fine_tuning::types::{JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingJobRequest, TrainingSource};
+use crate::genome::fine_tuning::types::{JobHandle, LoRAHyperparams, ScheduleParams, TrainingExample, TrainingSource};
 use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, PerKeyGate, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 
