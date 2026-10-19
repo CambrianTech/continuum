@@ -38,6 +38,50 @@ and extend current types rather than introducing parallel registries or managers
 
 ## Measurements are vectors; decisions have contextual objectives
 
+### Initial heterogeneous fleet (owner inventory, 2026-10-02)
+
+This is a validation fleet, not a placement table or a source of hardware defaults.
+Discover actual devices, backend support, free capacity and callable endpoints at
+runtime; reported inventory does not authorize work on a node.
+
+| Owner-reported node | Known inventory | Verify before allocation |
+|---|---|---|
+| M5 Mac (described by owner as Mac Pro) | 64 GB RAM | Exact model, usable unified memory, backend and measured serving/training capacity |
+| Intel Mac | 32 GB RAM, 4 GB GPU | GPU identity, supported backend, device-local fit and measured CPU/GPU performance |
+| M2 Air | Memory not specified | Available memory, thermal/sustained performance and owner power policy |
+| iPhone(s) | Models/capacity not specified | Supported execution surface, foreground/background lifecycle, battery, thermal and network constraints |
+| BIGGIEDESK Windows | Two 1080 Ti cards plus a lesser GPU | Per-device memory and backend support; separate cards are not automatically one shared-memory GPU |
+| Additional Windows GPU | One 1080 may be in another machine or added to BIGGIEDESK | Discover its actual host/topology after installation; do not count it twice |
+| Bigmama Windows | RTX 5090, 64 GB system RAM | Actual GPU memory, current serving load, reservations and callable capabilities |
+
+Persona residence, inference, learning, rendering, simulations and live 3D/AR/VR
+experiences submit demand through the same existing activity/governor contract.
+Shared capacity does not mean identical deadlines: an interactive frame or audio
+turn has a different latency budget from a training batch or offline render.
+Preserve persona identity/history while execution moves; residence is not an
+exclusive claim on a whole GPU. Reuse compatible hot state when permitted.
+
+Compare candidate plans using measured quality, useful-result latency, resource
+occupancy, transfer, energy and monetary cost. Use resource shadow prices (λ)
+for scarcity and explicit currency bids/offers for exchange, with budget and
+permission gates. Do not permanently label a phone as a sensor, a Mac as a
+coordinator or the 5090 as the only inference node. A device can contribute any
+advertised, validated capability within its owner's limits.
+
+For live worlds, place latency-critical work near its consumer when measurements
+justify it; keep asynchronous asset generation, training and offline rendering
+eligible for remote execution. Measure actual Wi-Fi/LAN/WAN behavior, queueing
+and cancellation rather than inferring speed from the network label. Respect
+thermal/battery changes and preserve interactive reservations under background
+load. A disappearing phone or peer invalidates its offers without losing the
+activity's durable state.
+
+Validate first with addressed commands and whole-request inference, then mixed
+interactive/background activity. Retain request/result/completion receipts and
+resource-release evidence; compare cold/warm runs and peer-loss recovery. Larger
+distributed-model plans must still pass the per-stage fit and communication gates
+below. This inventory does not claim any node is installed or any route is proven.
+
 Represent useful characteristics numerically without collapsing them into one
 permanent "intelligence score." Preserve the underlying observations and units.
 An activity chooses an objective over the measurements; different activities can
@@ -121,6 +165,31 @@ Research precedents, not Continuum performance receipts:
 [speculative decoding](https://arxiv.org/abs/2211.17192).
 
 ## Candidate selection algorithm
+
+### Cold start: capability priors, then measured refinement
+
+A new node or workload has no execution history. It must not wait for a benchmark
+campaign before contributing. Seed estimates from discovered backend support,
+usable memory, device topology, model/artifact sizes, expected workspace and KV
+requirements, and workload class. These are versioned priors with uncertainty,
+not measurements or promises. Unknown fields stay unknown; use bounded probes
+where a missing fact is required for safe admission. An estimate cannot override
+actual fit checks, owner permissions, spending limits or backend compatibility.
+
+Prefer reversible initial placements with explicit reservations and bounded work.
+As ordinary execution produces receipts, update predicted latency, throughput,
+memory peaks, transfer costs and useful outcomes for the relevant hardware/backend/
+model/workload context. Retain sample counts and uncertainty; do not generalize
+one warm inference result into a universal capability rating. A joining node,
+changed device, backend update, competing workload or departing peer invalidates
+the affected observations and offers rather than rebuilding the whole policy.
+
+Use confidence-aware comparisons and bounded exploration within the activity's
+budget. Hysteresis and switching cost let allocations settle instead of chasing
+every sample. Priors may generalize from supported hardware characteristics;
+they must not name the demo machines, assume a particular GPU generation is
+present, depend on node arrival order or reserve fixed roles for a model family.
+Experiments on the initial fleet teach the policy; the fleet is not the policy.
 
 Operate through the existing governor and command/handle/event substrate. Replan
 on relevant demand, pressure, availability, completion or evidence changes;
