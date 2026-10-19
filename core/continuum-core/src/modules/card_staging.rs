@@ -212,45 +212,18 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     })
     .await
     .unwrap_or_else(|e| Err(format!("worktree task panicked: {e}"))); // unwrap_or_else: a panicked blocking task is a staging failure, never a crash
-    // A fresh worktree has EMPTY submodule paths (core/vendor/llama.cpp): a build
-    // there dies in cmake and a symlink workaround breaks git status (IntelMac +
-    // M5, three times, 2026-09-05). Initialise them here, bounded, with a named
-    // outcome — a worktree whose vendor is empty is not Ready.
+
+    // Submodules are initialised by airc's ensure_card_clone (bounded, borrowing each one's
+    // objects from its own mirror, airc #1591) on every clone it creates or migrates; a
+    // failure there arrives here as stage "worktree". A second pass here was one owner too
+    // many, and its tokio timeout abandoned the git child instead of killing it (card 84d3bcd8).
     let staged = match outcome {
         Ok(path) => {
-            let path_for_init = path.clone();
-            let init = tokio::time::timeout(
-                std::time::Duration::from_secs(600),
-                tokio::task::spawn_blocking(move || {
-                    std::process::Command::new("git")
-                        .args(["-C", &path_for_init.to_string_lossy(), "submodule", "update", "--init", "--recursive"])
-                        .output()
-                        .map_err(|e| e.to_string())
-                        .and_then(|o| {
-                            if o.status.success() {
-                                Ok(())
-                            } else {
-                                Err(String::from_utf8_lossy(&o.stderr).trim().to_string())
-                            }
-                        })
-                }),
-            )
-            .await;
-            match init {
-                Ok(Ok(Ok(()))) => {
-                    // A branch cut here from the clone's HEAD: if another node already
-                    // pushed this card's branch, her work is there — fetch it and stand
-                    // at its tip before her first turn (card 73eefbbb).
-                    crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
-                    Staging::Ready { path }
-                }
-                Ok(Ok(Err(error))) => Staging::Failed { stage: "submodules", error },
-                Ok(Err(join)) => Staging::Failed { stage: "submodules", error: format!("init task panicked: {join}") },
-                Err(_) => Staging::Failed {
-                    stage: "submodules",
-                    error: "git submodule update --init --recursive did not finish within 600 s".to_string(),
-                },
-            }
+            // A branch cut here from the clone's HEAD: if another node already
+            // pushed this card's branch, her work is there — fetch it and stand
+            // at its tip before her first turn (card 73eefbbb).
+            crate::persona::workspace_transfer::arrive_for(path.clone(), branch.clone(), card.card_id.as_uuid()).await;
+            Staging::Ready { path }
         }
         Err(error) => Staging::Failed { stage: "worktree", error },
     };
