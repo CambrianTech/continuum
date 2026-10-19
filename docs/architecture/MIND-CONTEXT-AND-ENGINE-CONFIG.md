@@ -149,6 +149,34 @@ lease. Phase-specific transient resources release at a backend-confirmed safe fr
 KV/state residency lasts until its own eviction/release boundary. These are different
 lifetimes, not two queues serializing the same turn.
 
+### Evidence schema to agree before implementation
+
+These are proposed additions to the existing engine report, not a second probe service.
+Source inspected: engine revision `50b02b8bb55102665500327b2152fe7e3348e1bc`.
+
+| Evidence | Minimum identity and meaning |
+|---|---|
+| Device snapshot | Engine build/probe version, stable device identity when available, sample time, free/total memory, backend type, allocator/buffer capabilities. Unknown identity remains explicit. |
+| Operation support | Model/operation signature including dtype and shape constraints, device, supported/unsupported/unknown, reason. This describes eligibility, not speed or actual kernel selection. |
+| Resolved plan | Configuration identity and input snapshot identities, required choices, selected alternatives and reasons, residency/compute commitments. |
+| Adoption receipt | Engine instance identity, resolved-plan identity, actual placement/allocation and execution evidence; each observation says whether it is selected configuration or measured execution. |
+| Continuation receipt | View and engine epochs, model/tokenizer/template/adapter identities, source/artifact identities for multimodal spans, accepted token frontier and state handle, reused/new/replayed counts and miss reason. |
+
+The fork already exposes native primitives in `ggml/include/ggml-backend.h`:
+`ggml_backend_dev_get_props` supplies memory, type and allocator/asynchrony capabilities;
+`ggml_backend_dev_supports_op` takes an actual tensor operation, rather than a universal
+device feature flag; `ggml_backend_dev_supports_buft` reports buffer compatibility.
+Use these sources for the typed report. They do not prove tensor-unit selection or
+latency. A backend-specific execution receipt may still be needed for that claim.
+The current server's weight-buffer and memory-breakdown fields are measured allocations;
+retain them instead of inventing duplicate placement estimates.
+
+A memory snapshot is not a reservation. The admission owner must validate/commit against
+current pressure before launch; a changed budget returns a typed replan/refusal outcome.
+The plan cannot manufacture stable device identity from a marketing name. Likewise a
+state handle is not transferable across engine instances unless its compatibility and
+restore contract explicitly establish that transfer.
+
 ## Tests are contracts
 
 - A required capability is resolved and adopted, or the launch refuses with its cause.
