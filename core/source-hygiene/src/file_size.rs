@@ -37,7 +37,7 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 158,221 after card 32d2abbb moved the training-job directory layout and its reader out of
 // modules/training_trigger.rs into genome/fine_tuning/job_dir.rs.
 // 157,971 (with #5185) after card 67af4fca moved the credit stamp (CreditRole, OutcomeStamp, CapturedCredit,
-// SettlementVerdict) out of persona/training_producer.rs into training_producer/stamp.rs.
+// SettlementOutcome) out of persona/training_producer.rs into training_producer/stamp.rs.
 // 157,645 after card a0790c4b moved persona/viewstate_rag.rs's test module to
 // persona/viewstate_rag/tests.rs (#![cfg(test)]): #5015 had grown it to 1,458 lines and turned canary red.
 // 157,618 after consolidating the f32 cosine kernel into cognition/embedding/similarity.rs.

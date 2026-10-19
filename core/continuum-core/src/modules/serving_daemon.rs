@@ -1386,7 +1386,7 @@ impl ServingDaemonModule {
     /// [`Self::compute_plan`]; the next tick replans if it changes.
     pub fn set_lane_demand(&self, demand: u32) {
         // Register the demand state process-globally the first time boot sets it, so a
-        // measurement preemption lease (quiesce_all / quiesce_others) can drop the
+        // measurement preemption lease (quiesce_all / lease_measured_work) can drop the
         // warm-slot demand to the ACTIVE (non-quiesced) count for its duration and
         // release on drop — without threading a ServingDaemon handle into the persona
         // registry. Idempotent: `set` after the first call is a no-op.
@@ -1404,7 +1404,7 @@ impl ServingDaemonModule {
 /// The lane-demand authority: one BASE (the boot-wired persona floor) plus a registry of
 /// measurement OVERRIDES, with the effective value recomputed on every change — never a
 /// swap/restore pair. The naive swap/restore version had a real interleaving bug: with two
-/// overlapping leases (eval's `quiesce_all` + a solve's `quiesce_others`), the first drop
+/// overlapping leases (eval's `quiesce_all` + a solve's `lease_measured_work`), the first drop
 /// restored the pre-lease value OVER the still-held second lease, and the second drop then
 /// restored the FIRST lease's override — leaving the whole fleet's demand stuck at 1 with
 /// nobody quiesced until the (boot-only) `set_lane_demand` ever ran again. Order-independent
@@ -8391,7 +8391,7 @@ pub(crate) mod tests {
         );
 
         // Overlap: eval quiesce_all (active 0 → floored 1), then a solve's
-        // quiesce_others (active 1) while the first is still held.
+        // lease_measured_work (active 1) while the first is still held.
         let eval = state.acquire(0);
         assert_eq!(cell.load(Ordering::Relaxed), 1);
         let solve = state.acquire(1);

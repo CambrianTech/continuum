@@ -6003,7 +6003,7 @@ impl ActionCommand for BenchmarkFetch {
         const ROWS_PER_PAGE: u64 = 100;
         let estimated = u64::from(spec.tasks) * EST_BYTES_PER_ROW;
         let page_bytes = ROWS_PER_PAGE * EST_BYTES_PER_ROW;
-        let plan = crate::cognition::bench_staging::plan_against_governor(estimated, page_bytes);
+        let plan = crate::cognition::measurement_staging::plan_against_governor(estimated, page_bytes);
         if let Some(why) = plan.explain_refusal() {
             crate::probe!(
                 class = "benchmark.staging.refused",
@@ -6014,12 +6014,12 @@ impl ActionCommand for BenchmarkFetch {
             );
             return Err(CommandError::Denied(why));
         }
-        let staging = crate::cognition::bench_staging::staging_area();
+        let staging = crate::cognition::measurement_staging::staging_area();
         // Declare the plan's PEAK, not the suite size — for a streamed plan those differ by the
         // whole point of streaming, and reporting the suite would have the governor evicting a
         // peer to make room for bytes staging is never going to hold.
         staging.hold(plan.peak_bytes());
-        let streaming = matches!(plan, crate::cognition::bench_staging::StagingPlan::Streamed { .. });
+        let streaming = matches!(plan, crate::cognition::measurement_staging::StagingPlan::Streamed { .. });
         crate::probe!(
             class = "benchmark.staging.plan",
             benchmark = spec.name,

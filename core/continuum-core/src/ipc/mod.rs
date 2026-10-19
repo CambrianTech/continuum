@@ -2150,8 +2150,8 @@ pub fn start_server(
     // first. Until this existed, a benchmark and a live call simply raced `malloc` — which is
     // exactly how staging OOMed this machine on 2026-08-19.
     resource_daemon.add_consumer(Arc::new(
-        crate::cognition::bench_staging::StagingConsumer::new(
-            crate::cognition::bench_staging::staging_area(),
+        crate::cognition::measurement_staging::StagingConsumer::new(
+            crate::cognition::measurement_staging::staging_area(),
         ),
     ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
