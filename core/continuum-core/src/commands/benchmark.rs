@@ -2845,7 +2845,6 @@ mod tests {
         }
     }
 
-
     use super::*;
 
     fn citizen(name: &str) -> (String, uuid::Uuid) {
@@ -3881,8 +3880,6 @@ mod swe_grade_tests {
     }
 
 }
-
-
 
 /// Resolve a solver to the ONE matching `citizens/peers/<uuid>/` directory. Accepts a
 /// citizen NAME (resolved through the live roster — the SAME `get_by_agent_name` identity
