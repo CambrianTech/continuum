@@ -2458,7 +2458,7 @@ mod tests {
             artifact: TrainingArtifact { model_id: "gene".into(), local_path: None, format: Default::default(), metrics: Default::default() },
         });
         let parked: Vec<usize> = vec![0, 1, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15];
-        let jd = crate::modules::training_trigger::job_dir_under(artifacts.path(), "test-p", "code", job);
+        let jd = crate::genome::fine_tuning::job_dir::job_dir_under(artifacts.path(), "test-p", "code", job);
         std::fs::create_dir_all(jd.join("adapters")).unwrap();
         std::fs::write(jd.join("adapters/adapter.gguf"), b"gene").unwrap();
         std::fs::write(jd.join("partition.json"), serde_json::json!({"window": 40704, "sent": [2, 3, 7], "parked": parked, "rows": []}).to_string()).unwrap();

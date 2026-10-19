@@ -34,9 +34,11 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 158,283 after card 573cc58a moved persona_workspace.rs's 1,995-line test module to
 // cognition/persona_workspace/tests.rs (#![cfg(test)]): persona_workspace.rs fell from 4,380 to 2,370 lines.
 // 158,255: both card 573cc58a splits measured together on canary 16a075c71.
-// 158,005 after card 67af4fca moved the credit stamp (CreditRole, OutcomeStamp, CapturedCredit,
+// 158,221 after card 32d2abbb moved the training-job directory layout and its reader out of
+// modules/training_trigger.rs into genome/fine_tuning/job_dir.rs.
+// 157,971 (with #5185) after card 67af4fca moved the credit stamp (CreditRole, OutcomeStamp, CapturedCredit,
 // SettlementVerdict) out of persona/training_producer.rs into training_producer/stamp.rs.
-const BASELINE_LINES_OVER: usize = 158_005;
+const BASELINE_LINES_OVER: usize = 157_971;
 
 pub struct FileSize;
 
