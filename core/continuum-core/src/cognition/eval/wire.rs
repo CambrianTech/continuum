@@ -55,12 +55,13 @@ pub struct CognitionEvalParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub eval_set: Option<String>,
-    /// The training job directory of the `gene` under test: the A/B then runs only on the
-    /// tasks of `eval_set` that job never trained on (`cognition::held_out::for_job`), and is
-    /// refused when that cannot be known. Requires `gene` and a named `eval_set`.
+    /// Run the A/B only on the tasks of the gym `eval_set` that the `gene`'s whole training
+    /// lineage never trained on (`cognition::held_out::for_eval`): its job is found from the
+    /// gene's own artifact, never supplied beside it. Refused, with the reason, when that
+    /// cannot be known, when tasks are inline, or when `gene` or `eval_set` is missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
-    pub held_out_of_job: Option<String>,
+    pub held_out: Option<bool>,
     /// Measure THIS base model through the full loop, in its OWN ephemeral lane, without
     /// re-homing or disturbing the living persona (#59). The clean same-model control:
     /// hold the harness fixed, vary the model. Ignored when a `gene` is set (a gene names

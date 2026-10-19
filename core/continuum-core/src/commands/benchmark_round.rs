@@ -412,7 +412,7 @@ impl ActionCommand for BenchmarkRound {
             room_id: round_room.map(|r| r.to_string()),
             tasks: Some(tasks),
             eval_set: Some(p.benchmark.clone()),
-            held_out_of_job: None,
+            held_out: None,
             base_model_id: None,
             reviewers: None,
             max_acts: None,

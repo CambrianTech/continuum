@@ -2152,6 +2152,7 @@ impl CognitionEval {
         // its line number — never silently dropped. A vanished task would shrink the
         // gym and report a clean score over fewer tasks than intended: the same
         // invisible-degraded-mode as a fallback, which the resolver's fail-loud kills.
+        let tasks_inline = p.tasks.is_some();
         let mut tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
@@ -2160,13 +2161,8 @@ impl CognitionEval {
                 crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
             crate::cognition::gym::parse_tasks(&text, &origin).map_err(CommandError::Invalid)?
         };
-        if let Some(job) = p.held_out_of_job.as_deref() {
-            let (Some(_), Some(set)) = (&p.gene, p.eval_set.as_deref()) else {
-                return Err(CommandError::Invalid(
-                    "heldOutOfJob judges a gene: it needs `gene` and a named `evalSet`".into(),
-                ));
-            };
-            tasks = crate::cognition::held_out::for_job(set, tasks, std::path::Path::new(job))
+        if p.held_out.unwrap_or(false) { // unwrap_or: an omitted heldOut is the ordinary A/B over every task
+            tasks = crate::cognition::held_out::for_eval(p.gene.as_ref(), p.eval_set.as_deref(), tasks_inline, tasks)
                 .map_err(CommandError::Invalid)?;
         }
         // Every code task grades hands. See `require_hands_for_code` — applied HERE, after both
