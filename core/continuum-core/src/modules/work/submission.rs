@@ -751,7 +751,7 @@ pub struct WorkSubmitResult {
 ///   runs the grade (grade-on-done). The verdict posts to the room. The bench card's own text says
 ///   the same, so this must never contradict it (#4954: the first wording said "no state you set
 ///   triggers it", which is false here);
-/// - any other card is graded when a reviewer's verdict passes the submission.
+/// - any other card is ordinary work, never graded: it is done when a peer's review passes it.
 /// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
 /// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
 pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
@@ -1666,7 +1666,7 @@ mod tests {
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
         let handoff = Some(airc_lib::WorkCardId::new());
         let reviewed = super::next_after_submission(Some(id), &[], false, handoff).expect("submitted");
-        assert!(reviewed.contains("reviewer's verdict") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
+        assert!(reviewed.contains("Await the review") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
         assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff), Some(reviewed.clone()), "an unknown verdict is still waiting");
         assert!(super::next_after_submission(Some(id), &[], false, None).unwrap().contains("no review handoff is recorded"));
         let back = super::next_after_submission(Some(id), &[Failed], true, None).expect("sent back");
