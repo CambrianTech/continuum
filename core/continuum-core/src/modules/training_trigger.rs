@@ -706,50 +706,14 @@ impl TrainingTriggerState {
 
 // ─── Module ──────────────────────────────────────────────────────────
 
-/// Consume the existing typed command envelope. Only an explicit refusal is
-/// evidence that retry is safe; malformed/transport responses may follow creation.
-/// Where a native job's directory lives when the request named no `local_artifact_dir`
-/// — the same rule as `native_jobs::job_dir_for`, from the ledger's fields.
-pub(crate) fn default_job_dir(persona_name: &str, trait_kind: &str, local_id: Uuid) -> Option<std::path::PathBuf> {
-    Some(job_dir_under(&genome_root()?, persona_name, trait_kind, local_id))
-}
-
-/// Where this node keeps its persona genomes (and their job directories).
-pub(crate) fn genome_root() -> Option<std::path::PathBuf> {
-    dirs::home_dir().map(|home| home.join(".continuum/genome"))
-}
-
-/// A job's directory under a genome root: THE one layout of persona/trait/job.
-pub(crate) fn job_dir_under(root: &std::path::Path, persona_name: &str, trait_kind: &str, local_id: Uuid) -> std::path::PathBuf {
-    root
-        .join(persona_name.replace(['/', ' '], "_"))
-        .join(trait_kind.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect::<String>())
-        .join(local_id.to_string())
-}
+// The job directory layout and its one reader live with the jobs (genome::fine_tuning::job_dir,
+// card 32d2abbb); the trigger reads through them like every other caller.
+use crate::genome::fine_tuning::job_dir::{default_job_dir, genome_root, job_dir_under, read_job_request};
 
 /// PURE over the job directory: the `genome/job-create` params that re-create a job from
 /// its own `request.json` (the flattened `TrainingJobRequest` the trainer was handed,
 /// with the adapter's admission fields alongside, which the request type ignores).
 /// `None` when there is nothing on disk to resume from.
-/// A job's own request, read from its directory as the trigger first sent it. THE one
-/// reader of a job's `request.json` (the resume and `genome/training-trigger/return`).
-pub(crate) fn read_job_request(dir: &std::path::Path) -> Result<TrainingJobRequest, String> {
-    let path = dir.join("request.json");
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let spec: Value = serde_json::from_str(&text).map_err(|e| format!("{}: not JSON: {e}", path.display()))?;
-    let mut request: TrainingJobRequest =
-        serde_json::from_value(spec.clone()).map_err(|e| format!("{}: not a training request: {e}", path.display()))?;
-    // The spec on disk is the PLANNER's: the adapter replaced `baseModel` with the
-    // trainable HF base (hf_source) and kept the registry id in `canonicalBase`.
-    // job-create takes the registry id, so the resume must too. Measured on the 5090
-    // 2026-10-05: all five killed-by-reboot jobs failed to resume with "cannot resolve
-    // hf_source for 'Qwen/Qwen3.8-27B'": the HF id fed back where a registry id belongs.
-    if let Some(canonical) = spec.get("canonicalBase").and_then(Value::as_str).filter(|s| !s.trim().is_empty()) {
-        request.base_model = canonical.to_string();
-    }
-    Ok(request)
-}
-
 pub(crate) fn resumable_request(dir: &std::path::Path, provider: &str, dispatch_id: Uuid) -> Result<Value, String> {
     let mut request = read_job_request(dir)?;
     // The dead job's latest checkpoint, when it got that far: the re-created job
@@ -792,6 +756,8 @@ pub(crate) enum Created {
     Held(Took),
 }
 
+/// Consume the existing typed command envelope. Only an explicit refusal is
+/// evidence that retry is safe; malformed/transport responses may follow creation.
 fn decode_job_create(response: Value) -> Result<Created, DispatchFailure> {
     use crate::commands::genome::job_create::JobCreateOutcome;
     if response

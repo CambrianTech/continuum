@@ -28,7 +28,8 @@ use uuid::Uuid;
 use super::submit::{return_request, ReturnScope, SubmitOutcome};
 use crate::genome::fine_tuning::TrainingJobBoard;
 use crate::genome::fine_tuning::engine_lora_adapter::read_partition;
-use crate::modules::training_trigger::{genome_root, job_dir_under, read_job_request, TrainingTriggerState};
+use crate::genome::fine_tuning::job_dir::{genome_root, job_dir_under, read_job_request};
+use crate::modules::training_trigger::TrainingTriggerState;
 use crate::sdk_codegen::CommandError;
 
 /// `genome/training-trigger/return` input.
