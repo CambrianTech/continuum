@@ -420,21 +420,6 @@ impl<V: RagRenderable + RoomScopedView> ViewStateRagSource<V> {
     }
 }
 
-/// Fingerprint of a unit list — the sequence identity a continuation offset
-/// indexes into. Each unit is length-prefixed before hashing so the encoding is
-/// injective over arbitrary rendered text: `["ab","c"]` and `["a","bc"]` join to
-/// the same bytes but must not hash equal, because an offset valid for one list
-/// is NOT valid for the other.
-fn list_fingerprint(units: &[String]) -> String {
-    use sha2::Digest;
-    let mut hasher = sha2::Sha256::new();
-    for unit in units {
-        hasher.update(unit.len().to_be_bytes());
-        hasher.update(unit.as_bytes());
-    }
-    format!("{:x}", hasher.finalize())
-}
-
 #[async_trait]
 impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
     fn source_id(&self) -> &'static str {
@@ -469,10 +454,6 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             _ => Vec::new(),
         };
         let total = units.len();
-        // The identity of the list this offset indexes into, stamped onto the
-        // cursor so a resume can tell an unchanged list from one that churned
-        // (see `deliver_continuation`). Computed before `pack` moves `units`.
-        let list_fp = list_fingerprint(&units);
         let (items, tokens_used, next) = self.pack(units, budget, 0);
         RagDelivery {
             source_id: V::KIND.to_string(),
@@ -484,13 +465,11 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             continuation: (next < total).then(|| ContinuationCursor {
                 persona_id: _ctx.persona_id,
                 source_id: V::KIND.to_string(),
-                // The resume state is the next unit index PLUS the room it indexes
-                // into PLUS a fingerprint of the list itself — an offset without its
-                // room is only meaningful while the source reads one room forever
-                // (the assumption #3862 removed), and one without its list's identity
-                // silently skips a peer when the roster churns between mint and resume
-                // (bc66becf; db0aa5b2 was this shape on the wall).
-                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx), "list": list_fp }),
+                // The resume state is the next unit index PLUS the room it
+                // indexes into — an offset without its room is only meaningful
+                // while the source reads one room forever, which is exactly the
+                // assumption #3862 removed.
+                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx) }),
             }),
             resolution_used: resolution,
         }
@@ -544,28 +523,6 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         if from >= total {
             return None;
         }
-        // The offset indexes THIS list only if the list is unchanged since mint.
-        // Roster and bench churn between mint and resume — a peer leaving, a row
-        // dropping out before `from` — shifts every later unit left by one and the
-        // same offset skips exactly one person who is still in the room (bc66becf;
-        // db0aa5b2 was this shape on the wall). Refusal costs one re-read cycle from
-        // the top: bounded, self-healing, never skips. A cursor without a `list`
-        // stamp predates this field and is refused once — migration by refusal,
-        // not guessing, exactly as an unstamped room is treated above.
-        let turn_fp = list_fingerprint(&units);
-        let stamped_fp =
-            cursor.opaque.get("list").cloned().unwrap_or(serde_json::Value::Null);
-        if stamped_fp != serde_json::Value::String(turn_fp.clone()) {
-            crate::probe!(
-                class = "rag.continuation.list_changed",
-                source = %V::KIND,
-                persona_id = %_ctx.persona_id,
-                cursor_list = %stamped_fp,
-                turn_list = %turn_fp,
-                "refused to resume a continuation whose unit list churned — the offset would skip one"
-            );
-            return None;
-        }
         let (items, tokens_used, next) = self.pack(units, budget, from);
         if items.is_empty() {
             return None;
@@ -577,7 +534,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
             continuation: (next < total).then(|| ContinuationCursor {
                 persona_id: _ctx.persona_id,
                 source_id: V::KIND.to_string(),
-                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx), "list": turn_fp }),
+                opaque: serde_json::json!({ "next": next, "room": Self::cursor_room(_ctx) }),
             }),
             resolution_used: ResolutionPreference::Raw,
         })
@@ -1165,95 +1122,6 @@ mod tests {
             .await
             .expect("same-room resume must still work");
         assert!(!resumed.items.is_empty());
-    }
-
-    /// what this catches (bc66becf; sibling of db0aa5b2 on the wall): a continuation
-    /// resumed positionally into a list that CHURNED between mint and resume. The
-    /// offset `next` indexes whatever unit list is re-computed at resume time — if a
-    /// peer left (or a row dropped out) before it, every later unit shifts left by one
-    /// and the same offset skips exactly one person who is still in the room. The
-    /// cursor therefore carries a fingerprint of the list it indexes into
-    /// (`list_fingerprint`), and resuming into a churned list is refused: dropping one
-    /// continuation costs a re-read from the top — bounded, self-healing, never skips.
-    ///
-    /// Fixture note, same lesson as the cross-room test above: for a positional resume
-    /// to skip someone, the removal must sit at or before the offset. The list is
-    /// name-ordered (units sorts by display_name), so the peer dropped here — Anwen —
-    /// sits at index 1, ahead of this fixture's offset (k=2 under an 8-token budget):
-    /// pre-fix the same index resumed past Aoife and she was never delivered; now it
-    /// must refuse.
-    #[tokio::test]
-    async fn a_continuation_is_refused_when_the_roster_churns_before_its_offset() {
-        let rooms = roster_registry(&["Anwen", "Asha", "Anon", "Aoife"]);
-        let source: ViewStateRagSource<RosterViewState> =
-            ViewStateRagSource::per_room(Arc::clone(&rooms));
-
-        // A tight budget yields a cursor with units left over; the offset is read from
-        // it, so the test holds for whatever `pack` decides fits under 8 tokens.
-        let first = source.deliver(&ctx(), 8, ResolutionPreference::Raw).await;
-        let cursor = first.continuation.expect("a partial delivery must offer a cursor");
-
-        // Churn: one peer leaves before the offset. Re-storing the room's view without
-        // her is exactly what `positron_source::sink` does on every roster update.
-        let builder = StateBuilder::standalone();
-        rooms.for_room(Uuid::from_u128(ROOM)).store(builder.session(RosterViewState {
-            room_id: Uuid::from_u128(ROOM),
-            roster: vec![
-                crate::ipc::positron_source::test_roster_slot(
-                    Uuid::from_u128(2),
-                    "Asha",
-                    SenderKind::Agent,
-                ),
-                crate::ipc::positron_source::test_roster_slot(Uuid::from_u128(3), "Anon", SenderKind::Agent),
-                crate::ipc::positron_source::test_roster_slot(
-                    Uuid::from_u128(4),
-                    "Aoife",
-                    SenderKind::Agent,
-                ),
-            ],
-        }));
-
-        // Pre-fix this resumed from the same index into [Asha, Anon, Aoife] and
-        // silently dropped whoever sat at that position; now it must refuse.
-        assert!(
-            source.deliver_continuation(&ctx(), cursor, 500).await.is_none(),
-            "a churned list must not be indexed positionally — the offset would skip one"
-        );
-    }
-
-    /// what this catches: the other direction of the fingerprint guard. A continuation
-    /// resumed into an UNCHANGED list must land exactly where it left off — everyone at
-    /// or after the offset present, nobody before it re-appearing (resuming from zero
-    /// would re-ground peers the first delivery already spent). A guard that also
-    /// refused stable resumes would cost a re-read every turn and starve long rosters.
-    #[tokio::test]
-    async fn a_continuation_resumes_exactly_where_it_left_off_when_the_list_is_stable() {
-        let names = ["Anwen", "Asha", "Anon", "Aoife"];
-        let source: ViewStateRagSource<RosterViewState> =
-            ViewStateRagSource::per_room(roster_registry(&names));
-
-        let first = source.deliver(&ctx(), 8, ResolutionPreference::Raw).await;
-        let cursor = first.continuation.expect("a partial delivery must offer a cursor");
-        let k = cursor.opaque["next"].as_u64().expect("cursor carries next") as usize;
-
-        let resumed = source
-            .deliver_continuation(&ctx(), cursor, 500)
-            .await
-            .expect("an unchanged list must still resume");
-        let joined: String = resumed.items.iter().map(|i| i.content.clone()).collect::<Vec<_>>().join("\n");
-
-        // `units` renders name-ordered — it sorts by display_name so the prompt's line
-        // order stays stable for KV reuse — so the expectation must come from THAT
-        // order, not fixture insertion order (which put Anon after this offset and
-        // failed CI; the resumed tail was correctly Aoife, Asha).
-        let mut ordered = names.to_vec();
-        ordered.sort_unstable();
-        for name in &ordered[k..] {
-            assert!(joined.contains(name), "a peer at or after the offset must resume: {joined}");
-        }
-        for name in &ordered[..k] {
-            assert!(!joined.contains(name), "a peer before the offset must not re-appear: {joined}");
-        }
     }
 
     /// what this catches (review of #3879): an INSERTING read. `for_room` creates
