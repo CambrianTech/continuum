@@ -16,6 +16,8 @@ pub struct Event {
     pub source: SourceId,
     pub version: u32,
     pub text: String,
+    /// The source ended with this notice; turnover drops it entirely.
+    pub retired: bool,
 }
 
 /// What [`Epoch::observe`] did with a source's current rendering.
@@ -57,7 +59,24 @@ impl Epoch {
             self.superseded_chars += self.events[i].text.len();
         }
         let version = latest.map_or(0, |i| self.events[i].version + 1);
-        self.events.push(Event { source, version, text });
+        self.events.push(Event { source, version, text, retired: false });
+        Observed::Appended { version }
+    }
+
+    /// A source ended (a view closed, a result was revoked from her view): append a short
+    /// superseding notice instead of deleting its block, so the prefix never moves. Removal of
+    /// the tokens themselves happens at the next turnover; a privacy revocation that cannot
+    /// wait for it is the caller's reason to turn over now.
+    pub fn retire(&mut self, source: SourceId, notice: String) -> Observed {
+        let Some(i) = self.events.iter().rposition(|e| e.source == source) else {
+            return Observed::Unchanged;
+        };
+        if self.events[i].retired {
+            return Observed::Unchanged;
+        }
+        self.superseded_chars += self.events[i].text.len();
+        let version = self.events[i].version + 1;
+        self.events.push(Event { source, version, text: notice, retired: true });
         Observed::Appended { version }
     }
 
@@ -78,7 +97,7 @@ impl Epoch {
         // One pass from the end: the first time a source is seen there is its latest version.
         let mut seen = std::collections::HashSet::new();
         let mut events: Vec<Event> =
-            self.events.iter().rev().filter(|e| seen.insert(&e.source)).cloned().collect();
+            self.events.iter().rev().filter(|e| seen.insert(&e.source) && !e.retired).cloned().collect();
         events.reverse();
         Epoch { id: next_id, head: self.head.clone(), events, superseded_chars: 0 }
     }
@@ -126,6 +145,37 @@ mod tests {
         assert_eq!(e.observe(src("kanban"), "v1".into()), Observed::Unchanged);
         assert_eq!(e.observe(src("kanban"), "v2".into()), Observed::Appended { version: 1 });
         assert_eq!(e.superseded_chars(), 2);
+    }
+
+    // what this catches: a whole-block source (open views, working memory) re-appending all of
+    // itself when one item changes. Keyed per item, an act appends only what changed: replayed
+    // on the M5's captures, whole-block keys grew the view ~19k chars per act.
+    #[test]
+    fn per_item_sources_append_only_the_item_that_changed() {
+        let mut e = Epoch::new(1, vec![]);
+        for view in ["a.rs", "b.rs", "c.rs"] {
+            e.observe(src(&format!("open-views/{view}")), format!("{view} v1 {}", "x".repeat(1000)));
+        }
+        let before: usize = e.render().map(str::len).sum();
+        e.observe(src("open-views/a.rs"), "a.rs v1 ".to_string() + &"x".repeat(1000));
+        e.observe(src("open-views/b.rs"), "b.rs v2".into());
+        e.observe(src("open-views/c.rs"), "c.rs v1 ".to_string() + &"x".repeat(1000));
+        let after: usize = e.render().map(str::len).sum();
+        assert_eq!(after - before, "b.rs v2".len(), "only the changed view was appended");
+    }
+
+    // what this catches: a closed view still read as open (no change appended), or a close
+    // that rewrites the prefix to drop the view.
+    #[test]
+    fn retiring_a_source_appends_its_notice_and_turnover_drops_it() {
+        let mut e = Epoch::new(1, vec![]);
+        e.observe(src("open-views/a.rs"), "a.rs contents".into());
+        let before = joined(&e);
+        assert_eq!(e.retire(src("open-views/a.rs"), "[closed a.rs]".into()), Observed::Appended { version: 1 });
+        assert!(joined(&e).starts_with(&before));
+        assert_eq!(e.retire(src("open-views/never-opened"), "[closed]".into()), Observed::Unchanged);
+        assert_eq!(e.retire(src("open-views/a.rs"), "[closed a.rs]".into()), Observed::Unchanged, "retired once");
+        assert_eq!(e.turn_over(2).render().count(), 0, "a retired source leaves nothing behind");
     }
 
     // what this catches: a turnover that loses a source, keeps a stale version, or reorders.
