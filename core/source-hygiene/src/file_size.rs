@@ -26,7 +26,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // (#![cfg(test)]): lane_args.rs fell from 1,198 to 722 lines.
 // 159,447 after card 3026b83e moved SurfaceReason and the tool-surface receipt out of the
 // deliberation faculty into cognition/tool_surface.rs.
-const BASELINE_LINES_OVER: usize = 159_447;
+// 159,419 after card b406e901 moved ModelBinding out of the deliberation faculty into
+// cognition/model_binding.rs.
+const BASELINE_LINES_OVER: usize = 159_419;
 
 pub struct FileSize;
 
