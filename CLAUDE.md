@@ -34,6 +34,24 @@ done until its gate is met on the live node and the change is MERGED.
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
 | 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md` | see table below |
 
+**Order of work, now** (10-19; work down it, never stop at a wait; a wait means start the
+next line; update this list when a line lands or its order changes):
+
+| # | Line | Owner | Next action | Done when |
+|---|---|---|---|---|
+| 1 | The build loop: split the 687,676-line monolith; builds off the serving node; batch, never restart a build | Fable (cuts), Codex (crate graph) | time check with Bevy/LiveKit features off vs on; first cut by that measure | edit-to-checked < 2 min on the M5 |
+| 2 | A mind's context as an epoch materialization; the growing log last (reuse 35% -> 90%) | Fable + Codex | sign #5188, then the materializer | live reuse >= 80%, fresh tokens per act ~1-3k |
+| 3 | `EngineConfig` and KV capacity from #5188's contract; a scratch slot; host cache sized to a state | Fable | resolve-then-adopt owner in inference/planning | no queue wait for a ready mind; warm-ahead running |
+| 4 | Engine flags (tensor API, no CPU fallback, draft placement) | Fable | the after-receipt (deployed e678bb30c) | receipt posted on 9b9f3b59 |
+| 5 | Core CPU waste: vector corpus (race, BLAS, cascade), cosine owner, rayon, tree walks | Codex | cosine patch, then the revisioned corpus | idle-core sample near zero |
+| 6 | Every fast-path miss loud (24 found) | Cormac | top three: rejected restore, unrecorded backend, unpinned turns | each miss class has a fixture |
+| 7 | Delete dead code (~10.7k lines) and migrate duplicates (home path, token estimators) | Fable (batch running), Cormac (home path) | land the batch; claim the home path | rg evidence clean, build time before/after |
+| 8 | No SQL outside the ORM (epoch watermark) | unowned | claim card bbc5b0b6 | no rusqlite outside orm/ |
+| 9 | MTP draft KV at ~5.1k tokens | Cormac | size draft ctx from the slot | no draft decode failure on long turns |
+| 10 | Prefill during the tool call; the instant voice | Fable, Codex | after lines 2-3 | submit-to-first-token per act |
+| 11 | Learned policies (eviction, warming, checkpoints) on our own receipts | open | after line 2's validator | each beats its constant in offline replay |
+| 12 | Land the unwrap sweeps; Atlas silent; Aiko's gaps | Fable | after line 7 | merged |
+
 **Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
 fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
 `docs/planning/SPEED-BRAINSTORM.md` before and while you work:
