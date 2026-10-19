@@ -437,23 +437,8 @@ pub(super) fn job_dir_for(request: &TrainingJobRequest, local_id: Uuid) -> PathB
     if let Some(dir) = &request.local_artifact_dir {
         return dir.join(local_id.to_string());
     }
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")); // Preserve the existing MLX current-directory job-root fallback when no home is available.
-    home.join(".continuum/genome")
-        .join(request.persona_name.replace(['/', ' '], "_"))
-        .join(sanitize(&request.trait_kind))
-        .join(local_id.to_string())
-}
-
-fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
+    let root = super::job_dir::genome_root().unwrap_or_else(|| PathBuf::from(".continuum/genome")); // Preserve the existing MLX current-directory job-root fallback when no home is available.
+    super::job_dir::job_dir_under(&root, &request.persona_name, &request.trait_kind, local_id)
 }
 
 /// The learning rate a LoRA run takes when its request names none, for EVERY backend (the

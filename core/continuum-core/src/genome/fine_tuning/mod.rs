@@ -88,6 +88,7 @@ pub mod byte_tokenizer;
 pub mod coordinator;
 pub mod job_actor;
 pub mod job_board;
+pub mod job_dir;
 pub mod local_candle_adapter;
 pub mod lora_module;
 pub mod mlx_lora_adapter;
