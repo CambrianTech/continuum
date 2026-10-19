@@ -68,7 +68,8 @@ const SHAPES: &[&str] = &[
 /// **This number may only ever go DOWN.** A single total, not a per-file map,
 /// for the same reason as the unwrap ratchet: pressure on the whole surface.
 #[cfg(test)]
-const BASELINE_UNJUSTIFIED: usize = 239;
+// 237 after card 0af5d5ec: the same `#![cfg(test)]` files stop counting as production.
+const BASELINE_UNJUSTIFIED: usize = 237;
 
 pub struct BoundarySerialization;
 

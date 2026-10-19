@@ -20,7 +20,16 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 /// the batch split lowers it. **This number may only ever go DOWN.** A split by owner lowers
 /// it; raising it is growing the monolith.
 #[cfg(test)]
-const BASELINE_LINES_OVER: usize = 160_566;
+// 159,615 after card 0af5d5ec moved disk_eviction.rs's 1,143-line test module to
+// disk_eviction/tests.rs (#![cfg(test)]): disk_eviction.rs fell from 2,426 to 1,283 lines.
+// 159,463 after card 5b497852 moved lane_args.rs's 477-line test module to lane_args/tests.rs
+// (#![cfg(test)]): lane_args.rs fell from 1,198 to 722 lines.
+// 159,447 after card 3026b83e moved SurfaceReason and the tool-surface receipt out of the
+// deliberation faculty into cognition/tool_surface.rs.
+// 159,419 after card b406e901 moved ModelBinding out of the deliberation faculty into
+// cognition/model_binding.rs.
+// 159,391 after persona admission permit extraction (PR5176).
+const BASELINE_LINES_OVER: usize = 159_391;
 
 pub struct FileSize;
 

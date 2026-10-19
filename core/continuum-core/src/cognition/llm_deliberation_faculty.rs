@@ -87,30 +87,7 @@ pub fn relaxed_decoding() -> DecodingHandle {
     Arc::new(ArcSwap::from_pointee(None))
 }
 
-/// The live model binding for the deliberation faculty: the inference adapter,
-/// the model to request, and the served context window — the three facts that
-/// MUST move together when the served model re-homes. A `serving/pin` swap (or a
-/// grid failover onto another node) means a new adapter (new `base_url` /
-/// `default_model`), a new requested model (the single-resident guard checks it),
-/// AND a new context window (the new GGUF's `n_ctx`) — as ONE atomic unit. A torn
-/// read (new model + stale window, or new adapter + stale model) is exactly the
-/// silent wrong-brain that [[fallbacks-are-illegal-fail-loud]] forbids, so all
-/// three ride ONE [`ArcSwap`], loaded once per turn.
-pub struct ModelBinding {
-    /// The inference adapter, leased per call. `Arc` so the whole cycle shares the
-    /// one served-model backend (one base model, N persona lanes — the
-    /// INFERENCE-LANES-REALISTIC shape).
-    pub adapter: Arc<dyn AIProviderAdapter>,
-    /// Which model to ask for (`None` → the adapter's own default). The gateway's
-    /// single-resident guard checks this against the resident model and refuses a
-    /// mismatch LOUD, so it must move in lockstep with `adapter`.
-    pub model: Option<String>,
-    /// The effective served context window in tokens (task #50). The deliberation
-    /// prompt + completion reserve MUST fit this or the gateway 500s; it is sized
-    /// from the SAME binding so a re-home to a smaller window can never leave the
-    /// prompt sized for the old one.
-    pub context_window: u32,
-}
+pub use super::model_binding::ModelBinding;
 
 struct ActiveVisualFeedback {
     seq: u64,
@@ -710,7 +687,7 @@ impl LlmDeliberationFaculty {
         // Either way calls map back to canonical commands on return (ONE section:
         // [`crate::cognition::tool_dialect`]). [[joel-boundary-design-values]]
         let style =
-            crate::cognition::tool_dialect::offer_style_for(self.binding.load().model.as_deref());
+            crate::cognition::tool_dialect::offer_style_for(Some(self.binding.load().requested_model()));
         // The native surface is the DERIVED, bounded agentic core — every command that
         // declares `native: true` at its own site (~a dozen tools), projected once by
         // `native_tool_specs()`. It is offered in FULL, always, in the model's wire dialect.
@@ -1530,11 +1507,7 @@ impl LlmDeliberationFaculty {
         // ([`output_allowance`]); its bound was already decided by [`reply_claim`].
         kind: TurnKind,
     ) -> TextGenerationRequest {
-        let rate = binding
-            .model
-            .as_deref()
-            .map(crate::inference::decode_knee::rate_for)
-            .unwrap_or(crate::inference::decode_knee::MeasuredRate::UNKNOWN); // unwrap_or: no model bound = no rate known; the need term alone bounds
+        let rate = crate::inference::decode_knee::rate_for(binding.requested_model());
         let need = self
             .working_set
             .as_ref()
@@ -1909,6 +1882,7 @@ impl LlmDeliberationFaculty {
             ctx_floor,
             after_framing,
             tool_tokens,
+            surface_reason,
         } = composition;
         // Offered trailing content before fitting, not an additional claimant.
         // Its retained portion is already included in conversation_tokens; list
@@ -1919,6 +1893,9 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && c.trailing)
             .map(|c| est_tokens(&c.content))
             .sum();
+        let affordable_tokens = super::tool_surface::over_affordable_receipt(
+            &self.persona_name, surface_reason, tool_tokens, framing_tokens, context_window,
+        );
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
             // whose entire context vanished must say so, not render silently empty
@@ -1937,6 +1914,8 @@ impl LlmDeliberationFaculty {
                 after_framing,
                 tool_tokens,
                 registry_tool_tokens = self.describe_tool_tokens(),
+                surface_reason = ?surface_reason,
+                affordable_tokens = ?affordable_tokens,
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
                 dropped = %ws
@@ -2052,6 +2031,10 @@ impl LlmDeliberationFaculty {
             // Actual selected schemas, not the full registry's withheld cost.
             tool_tokens,
             registry_tool_tokens = self.describe_tool_tokens(),
+            // Which arm selected that surface, and the prompt the lane affords: the two
+            // numbers a 10k-token surface on a 2.8k-affordable lane is read against.
+            surface_reason = ?surface_reason,
+            affordable_tokens = ?affordable_tokens,
             // The pool the budget is subtracted FROM, read from the local that
             // actually holds it. First written as
             // `framing + conversation + budget` — a RECONSTRUCTION from the
@@ -2373,10 +2356,13 @@ impl LlmDeliberationFaculty {
     /// Use the captured request binding: a degraded serving snapshot may temporarily
     /// clear active_model while this same model still owns the pending turn.
     fn latency_fill_cap(
-        model: Option<&str>,
+        model: &str,
         rate_for: impl FnOnce(&str) -> crate::inference::prefill_rate::MeasuredRate,
     ) -> (usize, crate::inference::prefill_rate::MeasuredRate) {
-        let rate = model.map(rate_for).unwrap_or(crate::inference::prefill_rate::MeasuredRate::UNKNOWN); // No bound model means no attributable rate; retain the existing unmeasured allowance.
+        // `model` is the one the request carries (`ModelBinding::requested_model`), never
+        // absent: an unbound spawn binding keyed nothing and fell to the unmeasured floor
+        // (card b406e901; Fable on #5130).
+        let rate = rate_for(model);
         (
             crate::inference::prefill_rate::latency_fill_cap(PREFILL_TARGET_SECONDS, rate),
             rate,
@@ -2418,7 +2404,7 @@ impl LlmDeliberationFaculty {
         // model come from the same atomic snapshot (no torn read across a re-home).
         let binding = self.binding.load();
         let (window, calibration) = self.prompt_fit(&binding);
-        self.prompt_view_with_feedback(ws, window, calibration, binding.model.as_deref())
+        self.prompt_view_with_feedback(ws, window, calibration, binding.requested_model())
     }
 
     fn prompt_fit(&self, binding: &ModelBinding) -> (u32, PromptCalibration) {
@@ -2432,7 +2418,7 @@ impl LlmDeliberationFaculty {
     /// Fixture view against an explicit window, without a prior provider observation.
     #[cfg(test)]
     fn prompt_view_within(&self, ws: &Workspace, context_window: u32) -> DeliberationPromptView {
-        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default(), self.binding.load().model.as_deref())
+        self.prompt_view_with_feedback(ws, context_window, PromptCalibration::default(), self.binding.load().requested_model())
     }
 
     /// Every reply carries the engine's own count of the prompt it was sent: retain that
@@ -2482,7 +2468,7 @@ impl LlmDeliberationFaculty {
         ws: &Workspace,
         context_window: u32,
         calibration: PromptCalibration,
-        model: Option<&str>,
+        model: &str,
     ) -> DeliberationPromptView {
         self.prompt_view_with_visual_feedback(ws, context_window, calibration, None, model)
     }
@@ -2493,7 +2479,7 @@ impl LlmDeliberationFaculty {
         context_window: u32,
         calibration: PromptCalibration,
         visual: Option<&ActiveVisualFeedback>,
-        model: Option<&str>,
+        model: &str,
     ) -> DeliberationPromptView {
         // THE REPLY'S CLAIM ([`reply_claim`]): what she is expected to write, at the
         // priority this turn gives it. It competes in the window's one allocation below;
@@ -3021,6 +3007,7 @@ impl LlmDeliberationFaculty {
                 ctx_floor,
                 after_framing,
                 tool_tokens: selected.tokens,
+                surface_reason: selected.reason,
             },
         );
 
@@ -4081,37 +4068,7 @@ impl LlmDeliberationFaculty {
     }
 }
 
-/// Chars-per-token assumed by the window guard. Deliberately CONSERVATIVE (3,
-/// not the substrate-wide ~4 used for RAG sizing): here a wrong estimate is not
-/// a slightly-off budget but a hard llama-server 500 ("Context size has been
-/// exceeded") that mutes the persona for the whole tick. The deliberation prompt
-/// carries UUID-dense rosters, structured engram observations, and code, which
-/// tokenize far denser than English — so we OVER-count tokens to stay safely
-/// under `n_ctx`. The completion reserve absorbs the remaining slack.
-/// How many tool categories the bookmarked menu may OPEN (list their verbs inline)
-/// WHY a turn's tool surface is what it is.
-///
-/// Carried alongside the cost because the cost alone cannot be interpreted: see
-/// [`SelectedSurface::demand_tokens`], where two of these arms want different
-/// numbers from the same selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SurfaceReason {
-    /// She has no native specs at all — nothing to offer, nothing to price.
-    NoTools,
-    /// The whole registry fit its share of the served window and was offered.
-    Full,
-    /// A WORK turn takes her hands for FOCUS. The full surface was never wanted
-    /// on this turn, so nothing was truncated and nothing was lost.
-    HandsForWork,
-    /// The full surface did NOT fit its share of the served window. She wanted it
-    /// and the window refused it — this arm is a truncation, the others are not.
-    HandsForBudget,
-    /// The ROOM's recipe declares affordances, and they selected the surface (S1).
-    /// Not a truncation: the recipe is the rule, and a rule is never a loss —
-    /// `demand_tokens` prices what was sent. The discovery pair rides along so a
-    /// withheld verb stays one `commands/list` away.
-    RoomAffordances,
-}
+pub(crate) use super::tool_surface::SurfaceReason;
 
 /// The tool surface a turn actually sends, its cost, and why it is that surface.
 ///
@@ -4464,6 +4421,9 @@ struct ContextComposition {
     ctx_floor: usize,
     after_framing: usize,
     tool_tokens: usize,
+    /// WHY the surface priced in `tool_tokens` is the one sent: the receipt that says which
+    /// arm put a 38-tool surface on a CPU lane (card 3026b83e).
+    surface_reason: SurfaceReason,
 }
 
 /// A borrowed selection of whole source content or its declared atomic prefix.
@@ -4878,10 +4838,7 @@ impl LlmDeliberationFaculty {
         if images.is_empty() {
             return Ok(None);
         }
-        let model = binding
-            .model
-            .as_deref()
-            .unwrap_or_else(|| binding.adapter.default_model()); // Omitted model selects the same provider default used by request construction.
+        let model = binding.requested_model();
         let native = binding
             .adapter
             .model_metadata(model)
@@ -5036,7 +4993,7 @@ impl LlmDeliberationFaculty {
         let mut rejected_measured_tokens = None;
         let mut request_template: Option<TextGenerationRequest> = None;
         let mut view = self.prompt_view_with_visual_feedback(
-            ws, fit_window, calibration, visual.as_ref(), binding.model.as_deref(),
+            ws, fit_window, calibration, visual.as_ref(), binding.requested_model(),
         );
         let mut gen_await_ms = 0u64;
         // The allowance the request actually carried (set where it is built, read at the seam).
@@ -8757,7 +8714,7 @@ mod tests {
                 8192,
                 PromptCalibration::default(),
                 Some(&visual),
-                binding.model.as_deref(),
+                binding.requested_model(),
             );
             assert!(seen.capacity_error.is_none());
             assert_ne!(seen.input_identity, view.input_identity);
@@ -8811,7 +8768,7 @@ mod tests {
             legacy_memory.restore(legacy_snapshot);
             let legacy_faculty = LlmDeliberationFaculty::new(persona, "Atlas", "You are Atlas.", Arc::new(HeuristicInferenceAdapter::new()))
                 .with_context_window(8192).with_working_memory(legacy_memory);
-            let legacy_view = legacy_faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&visual), binding.model.as_deref());
+            let legacy_view = legacy_faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&visual), binding.requested_model());
             assert!(legacy_view.protocol_error.is_none());
             let legacy_wire = crate::inference::request_body::wire_messages(&legacy_view.messages, None, true, false, "llama-server");
             assert!(legacy_wire.iter().all(|m| m.get("tool_calls").is_none()));
@@ -8819,7 +8776,7 @@ mod tests {
             let missing = faculty.active_visual_feedback_at(&binding, home.path().join("absent-images"))
                 .await.unwrap().unwrap();
             assert!(matches!(&missing.parts[0].1, ContentPart::Text { text } if text.contains("No pixels attached")));
-            let failed = faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&missing), binding.model.as_deref());
+            let failed = faculty.prompt_view_with_visual_feedback(&ws, 8192, PromptCalibration::default(), Some(&missing), binding.requested_model());
             assert_ne!(failed.input_identity, seen.input_identity);
             assert!(failed.user_text().contains("capture or inspect the image again"));
             // Preserve a real batch including error and historical skipped receipts.
@@ -8936,7 +8893,7 @@ mod tests {
                 8192,
                 PromptCalibration::default(),
                 Some(&visual),
-                binding.model.as_deref(),
+                binding.requested_model(),
             );
             assert!(scoped
                 .messages
@@ -8944,7 +8901,7 @@ mod tests {
                 .all(|m| !matches!(&m.content, MessageContent::Parts(_))));
             wm.set_scope(Some("native-workspace".into()));
             let returned = faculty.prompt_view_with_visual_feedback(
-                &ws, 8192, PromptCalibration::default(), Some(&visual), binding.model.as_deref(),
+                &ws, 8192, PromptCalibration::default(), Some(&visual), binding.requested_model(),
             );
             let returned_wire = crate::inference::request_body::wire_messages(&returned.messages, None, true, false, "llama-server");
             let at = returned_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
@@ -9828,16 +9785,15 @@ mod tests {
             // captured request model's measured fill allowance on a retry.
             use crate::inference::prefill_rate::{MeasuredRate, RateSource};
             let measured = MeasuredRate { tps: Some(28.4), source: RateSource::Fresh };
-            let (cap, retained) = LlmDeliberationFaculty::latency_fill_cap(Some("bound-model"), |model| {
+            let (cap, retained) = LlmDeliberationFaculty::latency_fill_cap("bound-model", |model| {
                 assert_eq!(model, "bound-model", "look up the request binding, not current serving readiness");
                 measured
             });
             assert_eq!(retained, measured);
             assert_eq!(cap, (PREFILL_TARGET_SECONDS as f64 * 28.4).floor() as usize);
-            let (_, unbound) = LlmDeliberationFaculty::latency_fill_cap(None, |_| {
-                panic!("an absent request model must not borrow another active model's rate")
-            });
-            assert_eq!(unbound, MeasuredRate::UNKNOWN);
+            // An absent request model is unrepresentable: the key is always the model the
+            // request carries (`ModelBinding::requested_model`), so no other model's rate
+            // can be borrowed (card b406e901).
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let mut history: Vec<ChatMessage> = (0..40)

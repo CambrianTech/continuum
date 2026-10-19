@@ -577,6 +577,8 @@ function New-CoreServiceRelease {
         Get-CoreEngineReceipt -Directory $publishedEngine | Out-Null
     }
     # The CLI this release installs is the one that knows the lane records' contract.
+    # Every path below can reuse the service slot, including kept/explicit engines.
+    Retire-CorePreviousSelectionForSlot -InstallRoot $InstallRoot -Slot $slot -Descriptor $descriptor -DamagedOnly
     $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent }
         elseif ($kept = Get-CoreKeptEngineSlot -ArtifactDirectory $ArtifactDirectory -Descriptor $descriptor) { $kept }
         else {
