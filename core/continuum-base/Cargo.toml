@@ -10,6 +10,10 @@ dirs = "5.0"
 tracing.workspace = true
 uuid.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# fs_portable's Windows file-system calls (Win32 file info / flush).
+windows-sys = { version = "0.60", features = ["Win32_Storage_FileSystem", "Win32_Foundation"] }
+
 [features]
 # Fault injection and helpers for tests in this crate and its dependents; never in a release.
 test-fixtures = []
