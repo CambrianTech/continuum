@@ -1,6 +1,19 @@
 # AGENTS.md — entry point for Codex and other agent runtimes
 
-## ⛳ THE PLAN — read before every change (Joel, 2026-10-18)
+## ⛳ THE PLAN — read before every change (Joel, 2026-10-18; the path added 10-19)
+
+**What we are building** (Joel, 10-19): persistent, multi-activity minds with agency,
+first-class citizens across the grid, useful and fun, fast and learning, on any hardware,
+eventually autonomous without Claude's or Joel's help. A coding and speed advantage over
+Hermes and over Claude itself is what makes it spread. Every goal below serves that.
+
+**The path, in order; each step is a number on the live node, and each rests on the one before:**
+1. **Fast:** median act under 60 s at four residents. The lever is a small, cached prompt
+   (tool working sets, goal 10; stable prefix order; sticky ring collapse).
+2. **Useful:** a resident's first merged PR, then one a day.
+3. **Learning:** a reviewed correction kept across restart on unseen tasks (goal 8).
+4. **Organic:** she picks and finishes her own work, and one scheduler serves every mind
+   on every node with no hand tuning (goal 9).
 
 The project degraded in the week of 2026-10-12 while every part stayed green. This is the
 whole plan. Each item has a GATE (a number that says done or not) and an OWNER. Nothing is
@@ -16,6 +29,8 @@ done until its gate is met on the live node and the change is MERGED.
 | 6 | Microkernel | `layer_discipline` (256 upward imports on 10-18) falls; crates by device target; edit-to-proven <15 min | Sneasel — proposed |
 | 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number | Sneasel |
 | 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama — proposed |
+| 9 | One scheduler, the whole grid | every mind on every node (residents and minds leased in from other nodes) is served by ONE RTOS scheduler: one measured activity temperature per mind is its priority, aging means no mind is ever starved, hot minds keep warm KV and cooling minds page to RAM; windows never shrink to seat more (two per lane, turns past that) | Codex — proposed (card b4eed65c) |
+| 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
 
 **Rules for every change, no exceptions:**
 - **Merged or it does not exist.** A branch is not done. A green test is not done.
