@@ -499,10 +499,9 @@ pub enum Verdict {
     Dropping { dropped: u64, generations: u64 },
     /// Acts without writes: reading and re-orienting, never delivering.
     Reading { acts: u64 },
-    /// Residents, and no acts observed in the window. Observational only: zero acts does
-    /// not say why (she may hold a card while inference, tools or context stall), so the
-    /// line names no cause. No benchmark round is "owed" an idle roster (no harness, Joel
-    /// 2026-10-19, card a00ab1a6).
+    /// Residents, no acts observed in the window. Observational only: zero acts names no
+    /// cause (she may hold a card while inference, tools or context stall), and no
+    /// benchmark round is "owed" an idle roster (no harness, Joel 2026-10-19).
     Idle { resident: u64 },
     /// Writes happen, but too few for the roster: fewer than one write per
     /// [`RESIDENTS_PER_WRITE_HOUR`] residents in the hour.
