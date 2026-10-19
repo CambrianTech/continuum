@@ -2715,11 +2715,10 @@ impl LlmDeliberationFaculty {
         let fixed_cost = claim(framing_tokens.saturating_add(selected.tokens));
         let required_cost = claim(required_tokens);
         let mut reply = reply;
-        // The reply never takes from required content: its floor is what the window
-        // leaves after framing, tools and the required input.
-        reply.floor_tokens = reply
-            .floor_tokens
-            .min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
+        // The reply never takes from required content: its floor is what the window leaves
+        // after framing, tools and the required input. Its UNCLIPPED floor is her need.
+        let reply_need = reply.floor_tokens;
+        reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
         reply.min_tokens = reply.floor_tokens;
         let fixed_claim = |id: &str, tokens: u32| crate::persona::rag_budget::RagSourceBudget {
             source_id: id.to_owned(),
@@ -2761,7 +2760,7 @@ impl LlmDeliberationFaculty {
             reply,
         ];
         let plan = crate::persona::rag_budget::flex_allocate(context_window, &claims);
-        let budget_floor = super::window_allocator::turn_need(&claims);
+        let budget_floor = super::window_allocator::turn_need(&claims).saturating_sub(claims[4].floor_tokens).saturating_add(reply_need);
         // Whatever no claim took is hers to write with, up to the runaway bound.
         let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant
