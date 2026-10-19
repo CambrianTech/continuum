@@ -22,7 +22,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 #[cfg(test)]
 // 159,615 after card 0af5d5ec moved disk_eviction.rs's 1,143-line test module to
 // disk_eviction/tests.rs (#![cfg(test)]): disk_eviction.rs fell from 2,426 to 1,283 lines.
-const BASELINE_LINES_OVER: usize = 159_615;
+// 159,463 after card 5b497852 moved lane_args.rs's 477-line test module to lane_args/tests.rs
+// (#![cfg(test)]): lane_args.rs fell from 1,198 to 722 lines.
+const BASELINE_LINES_OVER: usize = 159_463;
 
 pub struct FileSize;
 
