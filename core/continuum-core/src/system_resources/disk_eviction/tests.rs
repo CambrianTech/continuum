@@ -25,6 +25,21 @@
     }
     use super::*;
 
+    /// A build-cache pool whose every host input is the fixture's: no measured volume
+    /// (the explicit budget governs), an idle node, and its own empty serving custody.
+    /// `CargoTargetPool::new` wires the live ones — the disk monitor's published sample
+    /// of the runner's real volumes, the running core's citizens, and any pin another
+    /// test published — so a fixture built on it tests the machine, not the pool (card
+    /// c4d84be3: two of these failed on the M5 and passed on an idle box). A test that
+    /// is ABOUT one of those inputs sets that field after this.
+    fn fixture_pool(tracked: Arc<TrackedDir>, budget_bytes: u64) -> CargoTargetPool {
+        let mut pool = CargoTargetPool::new(tracked, budget_bytes);
+        pool.volume_sample = |_| None;
+        pool.citizen_quiescence = |_| Ok(());
+        pool.active_artifacts = Arc::new(ActiveArtifactSet::default());
+        pool
+    }
+
     // what this catches (2026-09-18, the 5090 at 95 % with both cargo caches "within
     // budget"): a cache pool on a critical volume reads AT LEAST the volume's
     // pressure, so the broker's act line is crossed by the volume filling — not only
@@ -78,7 +93,7 @@
             std::fs::write(out.parent().unwrap().join("output"), format!("{}{generation}\n", custody::METADATA)).unwrap();
         }
         let mut child = std::process::Command::new(&sleeper).arg("30").spawn().expect("spawn the sleeper");
-        let pool = CargoTargetPool::new(tracked.clone(), 1);
+        let pool = fixture_pool(tracked.clone(), 1);
         // Ask for more than the first two rungs hold, so the ladder reaches debug/.
         let freed = pool.evict_at_least(100_000);
         assert!(!tmp.path().join("debug/incremental").exists(), "the first rung still cuts");
@@ -110,10 +125,9 @@
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
         let usage_before = tracked.bytes();
-        let mut pool = CargoTargetPool::new(tracked.clone(), 1);
-        // This fixture owns its serving custody too: another serving test may publish
-        // an unresolved global pin, which correctly refuses every production candidate.
-        pool.active_artifacts = Arc::new(ActiveArtifactSet::default());
+        // The fixture owns its serving custody: another serving test may publish an
+        // unresolved global pin, which correctly refuses every production candidate.
+        let pool = fixture_pool(tracked.clone(), 1);
 
         // Small want: the incremental rung (4000 B) alone satisfies it.
         let freed = pool.evict_at_least(1000);
@@ -173,7 +187,7 @@
     fn held_cargo_lock_blocks_eviction_entirely() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
-        let mut pool = CargoTargetPool::new(tracked, 1);
+        let mut pool = fixture_pool(tracked, 1);
 
         let build_holds_lock = try_exclusive_flock(&tmp.path().join(".cargo-lock"))
             .expect("test takes the lock first");
@@ -247,7 +261,7 @@
         let closure_bytes = dir_size_bytes(&certified) + std::fs::metadata(&cargo_output).unwrap().len();
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
         tracked.set_bytes(dir_size_bytes(tmp.path()));
-        let mut pool = CargoTargetPool::new(tracked.clone(), 1);
+        let mut pool = fixture_pool(tracked.clone(), 1);
         pool.volume_sample = critical_fixture_volume;
         let active = Arc::new(ActiveArtifactSet::default());
         pool.active_artifacts = active.clone();
@@ -337,7 +351,7 @@
             panic!("create redirected profile fixture: {error}");
         }
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
-        let pool = CargoTargetPool::new(tracked, 1);
+        let pool = fixture_pool(tracked, 1);
         assert_eq!(pool.evict_at_least(u64::MAX), 0);
         assert!(!outside.path().join(".cargo-lock").exists(), "refuse before creating custody through a redirect");
         #[cfg(unix)]
@@ -356,7 +370,7 @@
         std::fs::rename(&parent, tmp.path().join("parent-before")).unwrap();
         std::fs::create_dir_all(outside.path().join("cache/release/incremental")).unwrap();
         symlink(outside.path(), &parent).unwrap();
-        assert_eq!(CargoTargetPool::new(remembered, 1).evict_at_least(u64::MAX), 0,
+        assert_eq!(fixture_pool(remembered, 1).evict_at_least(u64::MAX), 0,
             "a formerly physical root cannot acquire a new destination through its ancestor");
         assert!(!outside.path().join("cache/.cargo-lock").exists());
     }
@@ -379,7 +393,7 @@
         std::fs::create_dir_all(tmp.path().join("debug/deps")).unwrap();
         std::fs::write(tmp.path().join("debug/deps/libwebrtc_sys.rlib"), vec![7u8; 4096]).unwrap();
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
-        let freed = CargoTargetPool::new(tracked, 1).evict_at_least(u64::MAX);
+        let freed = fixture_pool(tracked, 1).evict_at_least(u64::MAX);
         assert!(freed >= 4096, "the real artifact beside the link is reclaimed: freed {freed}");
         assert!(!tmp.path().join("debug/deps/libwebrtc_sys.rlib").exists());
         assert!(include.join("peer_connection_factory.rs").symlink_metadata().is_err(), "the link itself is unlinked");
@@ -393,7 +407,7 @@
     #[test]
     fn pressure_is_budget_relative() {
         let tracked = TrackedDir::new("cargo-target", PathBuf::from("/tmp/none"));
-        let pool = CargoTargetPool::new(tracked.clone(), 50_000);
+        let pool = fixture_pool(tracked.clone(), 50_000);
         assert_eq!(pool.pressure(), 0.0, "unscanned = not under management");
 
         tracked.set_bytes(75_000); // scanner measured 1.5× the budget
@@ -431,7 +445,7 @@
         // Measured critical volume admits the broker independently of any
         // process-global monitor updates from concurrently running tests.
         let budget = tracked.bytes() / 2;
-        let mut pool = CargoTargetPool::new(tracked.clone(), budget);
+        let mut pool = fixture_pool(tracked.clone(), budget);
         pool.volume_sample = critical_fixture_volume;
         let pool = Arc::new(pool);
 
@@ -746,8 +760,8 @@
             let shared = TrackedDir::new("cargo-target", tmp.path().join(&names[0]));
             let worktree = TrackedDir::new("cargo-target", tmp.path().join(&names[1]));
 
-            let a = CargoTargetPool::new(shared, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
-            let b = CargoTargetPool::new(worktree, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
+            let a = fixture_pool(shared, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
+            let b = fixture_pool(worktree, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
 
             assert!(a.tier_name().starts_with("disk-cargo-target:"));
             assert!(b.tier_name().starts_with("disk-cargo-target:"));
