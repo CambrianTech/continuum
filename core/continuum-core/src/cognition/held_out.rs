@@ -210,10 +210,11 @@ mod tests {
         let mut examples: Vec<TrainingExample> =
             serde_json::from_value(ordinary["examples"].clone()).expect("examples");
         examples.push(example(json!({"source": "live-turn"})));
-        assert!(held_out("s", &[task("t1")], &trained(&examples)).is_known_clean());
+        let set = [task("t1")];
+        assert!(held_out("s", &set, &trained(&examples)).is_known_clean());
 
         examples.push(example(json!({"cardId": "legacy"})));
-        let judged = held_out("s", &[task("t1")], &trained(&examples));
+        let judged = held_out("s", &set, &trained(&examples));
         assert_eq!(judged.unknown, 1);
         assert!(!judged.is_known_clean());
     }
