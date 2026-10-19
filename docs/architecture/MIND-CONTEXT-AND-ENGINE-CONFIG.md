@@ -49,8 +49,48 @@ slot affinity (§3.2); both were built, and the render kept finding new ways to 
   differently when a chat template re-renders, so the materializer owns tokenization of
   its prefix.
 
-Within an epoch every act prefills only what was appended. Her slot's KV is the
-materialization of the epoch. Prefix reuse is structural, not tuned.
+Within an epoch the logical input adds only new segments. Backend reuse is measured
+against its accepted token frontier; it may also replay a checkpoint tail. Her slot's
+KV and recurrent state materialize that frontier, not merely a history event count.
+
+### Continuation contract (Codex)
+
+The existing cognition workspace owns the materialization; existing durable history
+and experience remain the history owners. Do not add another event database. A segment
+names its source event/version, dependencies and exact token span. Cache representations
+once and share handles, including between consumers of the same perception artifact.
+
+A continuation receipt binds the materialization epoch, engine epoch, exact model,
+tokenizer, template and adapter identities, accepted token frontier, and recurrent/KV
+state identity. Event and token frontiers differ: template boundaries, multimodal inputs
+and speculative acceptance are not one-token-per-event operations. Retain the accepted
+output exactly; cancellation must reconcile the recorded prefix with the engine state.
+Already spoken output belongs in the continuing conversation. Private reasoning is not
+published merely because its token identity is retained by the backend.
+
+In the inspected fork, `tools/server/server-context.cpp` around 3780 selects reuse using
+the common token prefix and retained memory position; hybrid/SWA rollback can restore a
+checkpoint or reset to zero. Around 4144 checkpoints explicitly precede the current decode
+batch. Live append from the accepted frontier can avoid rollback; reconstructed chat that
+omits or reformats output cannot assume that. Record new-token prefill and replay-token
+prefill separately. Cheap append is a contract to demonstrate, not a zero-replay promise.
+
+Superseding an observation need not rewrite history: append its versioned replacement when
+the old observation can remain visibly historical. Start a new epoch when the model view
+must remove or replace prior tokens. An action validates its required dependency versions
+before committing effects; merely appending a correction does not validate an old plan.
+Privacy revocation invalidates affected views/caches immediately and follows the existing
+retention/deletion policy; append-only history is not a prohibition on authorized erasure.
+
+### Small windows and limited memory
+
+The same contract applies on a phone and a large GPU. Allocate a bounded view from the
+existing measured memory and context budget; keep durable source artifacts outside that
+view. Compaction publishes a replacement epoch with source references, unresolved work
+and provenance retained, rather than silently trimming the head. Reserve capacity for the
+next action/result through the existing common budget owner. Measure epoch turnover cost,
+replayed tokens and useful-response latency under pressure. Do not introduce a fixed
+phone context cap, fixed turnover interval or universal minimum residency count.
 
 ### What this deletes (to confirm while designing)
 
@@ -70,33 +110,64 @@ engine's `auto`, a hung device probe moved a 27B lane to the CPU, and an explici
 - **One typed `EngineConfig`**, derived from (a) what the engine REPORTS about the device
   through a query, never a parsed log (KV-CACHE-ECONOMY §6b) and never a chip name, and
   (b) the seated minds and the measured memory budget.
-- **It covers every launch decision**: compute features the device reports, placement of
-  base and draft, one KV pool, slots = seated minds + 1, checkpoint spacing.
+- **It covers every launch decision**: supported compute operations/dtypes, placement of
+  base and draft, KV layout, sequence capacity and checkpoint policy. Sequence capacity
+  and active compute capacity differ. An extra slot needs a declared purpose and memory
+  budget; `seated minds + 1` is not a universal rule.
 - **The engine's own startup receipt is checked against it.** Any mismatch refuses the
   launch, with its cause. There is no fallback path: a miss is a failure.
 - **The engine's continuous batching is the decode scheduler.** The core keeps every
-  mind's slot warm and feeds it. One admission owner, not two in series (today:
+  admitted resident's state warm when its budget permits and feeds it. One admission owner, not two in series (today:
   `resource_admission` and `turn_admission`).
+
+### Owner and capability contract (Codex)
+
+Put the resolved serving configuration under existing `inference/planning`. Canonical
+model metadata, engine capability evidence, measured resource budget and workload demand
+are inputs. Existing serving and KV planners contribute facts/constraints to that owner;
+they do not independently overwrite resolved choices. `lane_args` serializes the result,
+`llama_server` launches it, and `backend_receipt` checks observed adoption. No sixth policy
+layer or duplicate device classifier. Trace each migrated decision and remove its old
+default/override in the same change.
+
+Capabilities distinguish compiled support, support for this operation/model/dtype/device,
+selected configuration, and observed execution. A `has_tensor` boolean cannot express
+that contract. Unknown or unsupported REQUIRED capability refuses with a typed cause.
+Optional alternatives are chosen explicitly during resolution with their reason; never
+silently substitute CPU or a smaller model after launching. A cache miss with a valid
+recovery path is an observable recovery, not automatically a failed conversation.
+
+The inspected `/props` implementation (`get_res_props`, around 5161) reports total slots,
+weight buffers, memory breakdown, build info and chat-template capabilities. It does not
+provide the complete compute-operation capability matrix needed here. Extend the engine's
+typed report, with a prelaunch probe form where selection depends on capabilities and a
+postlaunch realized-config receipt. Do not infer adoption from flags or log substrings.
+
+Admission owns resource commitments, while continuous batching schedules admitted
+sequences. Independent CPU/I/O/tool/artifact preparation does not hold a whole-turn GPU
+lease. Phase-specific transient resources release at a backend-confirmed safe frontier;
+KV/state residency lasts until its own eviction/release boundary. These are different
+lifetimes, not two queues serializing the same turn.
 
 ## Tests are contracts
 
-- A capability the engine reports is used, or the launch refuses.
+- A required capability is resolved and adopted, or the launch refuses with its cause.
 - Appending an event never changes the token prefix of the current epoch.
 - A new epoch records its invalidation exactly once.
-- Every fast-path miss surfaces as a failure with its cause.
+- Every reuse miss reports its cause, replay cost and recovery outcome.
+- Cancellation preserves the accepted frontier; incompatible minds/adapters cannot reuse state.
+- Resolve, serialize, launch and observe agree on the same configuration identity.
+- Late artifacts retain source identity; effects reject changed required dependencies.
 
 Machine numbers belong in receipts on the cards, never in tests.
 
 ## Open questions (Codex)
 
-1. Codex's corrections 2 and 3 (pending).
-2. Do appends land past the fork's last recurrent checkpoint cheaply on hybrid models, or
+1. Do appends land past the fork's last recurrent checkpoint cheaply on hybrid models, or
    does checkpoint spacing (today `--checkpoint-min-step 4028`) bound reuse per act?
-3. Does llama-server expose device capabilities (tensor API, bf16, flash-attention kinds)
-   through an endpoint, or does the fork need one?
-4. Where does `EngineConfig` live: beside `ModelFootprint`, or as the serving daemon's
-   single input?
-5. A small window (a 24 GB Pro, a phone): how often must an epoch turn over, and what does
+2. Which backend APIs can populate each required operation capability, and how are unknown
+   values represented before load? The current props fields alone are insufficient.
+3. A small window (a 24 GB Pro, a phone): how often must an epoch turn over, and what does
    that cost per act?
 
 ## Build order
