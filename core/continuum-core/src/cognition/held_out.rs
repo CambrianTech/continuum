@@ -132,20 +132,29 @@ pub fn trained(examples: &[TrainingExample]) -> Trained {
     out
 }
 
-/// The tasks of `set` a gene trained as `trained` may be judged on.
+/// The tasks of `set` a gene trained as `trained` may be judged on. The tasks are reachable
+/// only through [`HeldOut::known_clean`], so no caller can take them from a set whose
+/// contamination is unknown (Astra on #5183).
 #[derive(Debug)]
 pub struct HeldOut<'a> {
-    pub tasks: Vec<&'a EvalTask>,
+    tasks: Vec<&'a EvalTask>,
     /// Tasks of the set left out because the gene trained on them.
     pub excluded: usize,
     /// Carried from [`Trained::unknown`]: non-zero means contamination cannot be ruled out.
     pub unknown: usize,
 }
 
-impl HeldOut<'_> {
-    /// Known clean: every trained example named its task, so nothing held out was seen.
-    pub fn is_known_clean(&self) -> bool {
-        self.unknown == 0
+impl<'a> HeldOut<'a> {
+    /// The tasks a held-out result may be claimed on, when every trained example recorded its
+    /// task; otherwise `Err` with how many did not, which the caller reports instead of a
+    /// lift. It proves the RECORDED training provenance only: not that a lesson's text never
+    /// mentions a benchmark task.
+    pub fn known_clean(&self) -> Result<&[&'a EvalTask], usize> {
+        if self.unknown == 0 {
+            Ok(self.tasks.as_slice())
+        } else {
+            Err(self.unknown)
+        }
     }
 }
 
@@ -215,14 +224,15 @@ mod tests {
         let judged = held_out("coursework-0123456789ab", &set, &trained);
         assert_eq!(
             judged
-                .tasks
+                .known_clean()
+                .expect("every trained example recorded its task")
                 .iter()
                 .map(|t| t.id.as_str())
                 .collect::<Vec<_>>(),
             ["t1", "t3"]
         );
         assert_eq!(judged.excluded, 1);
-        assert!(judged.is_known_clean());
+        assert!(judged.known_clean().is_ok());
         assert_eq!(
             held_out("coursework-ffffffffffff", &set, &trained).excluded,
             0,
@@ -242,7 +252,7 @@ mod tests {
             example(json!({"task": "notATask"})),
             example(json!({"source": lesson})),
         ];
-        assert!(held_out("s", &set, &trained(&clean)).is_known_clean());
+        assert!(held_out("s", &set, &trained(&clean)).known_clean().is_ok());
 
         let mut legacy = json!({"examples": [{"prompt": "p", "completion": "c", "metadata": {"cardId": "b", "task": "notATask"}}]});
         stamp_examples(&mut legacy, None);
@@ -268,7 +278,7 @@ mod tests {
                 "{:?} must read as unknown",
                 unknown.metadata
             );
-            assert!(!judged.is_known_clean());
+            assert_eq!(judged.known_clean().err(), Some(1));
         }
 
         let mut mixed = clean;
@@ -293,12 +303,13 @@ mod tests {
         let judged = held_out("any-set", &set, &trained(&reviewed));
         assert_eq!(
             judged
-                .tasks
+                .known_clean()
+                .expect("every trained example recorded its task")
                 .iter()
                 .map(|t| t.id.as_str())
                 .collect::<Vec<_>>(),
             ["t1"]
         );
-        assert!(judged.is_known_clean());
+        assert!(judged.known_clean().is_ok());
     }
 }
