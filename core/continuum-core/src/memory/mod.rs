@@ -44,7 +44,7 @@ pub use consolidation_threshold::{AdaptiveConsolidationThreshold, ConsolidationT
 pub use consolidator::{ConsolidationMetrics, Consolidator, ConsolidatorStats};
 pub use conversation_summary::{ConversationSummary, RecallMode};
 pub use corpus::MemoryCorpus;
-pub use embedding::{cosine_similarity, DeterministicEmbeddingProvider, EmbeddingProvider};
+pub use embedding::{DeterministicEmbeddingProvider, EmbeddingProvider};
 pub use raw_adapter::RawMemoryAdapter;
 pub use recall::{MultiLayerRecall, RecallLayer, RecallQuery, ScoredMemory};
 pub use types::*;

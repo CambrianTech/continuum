@@ -144,35 +144,8 @@ pub async fn measure_unrelated_null(provider: &dyn EmbeddingProvider) -> (f32, f
     (mean, std)
 }
 
-/// Cosine similarity in `[-1, 1]` (≈`[0,1]` for non-negative vectors). Returns
-/// 0.0 for a length mismatch or a zero vector — a relevance score of "no signal",
-/// never a panic.
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-    let mut dot = 0.0f32;
-    let mut na = 0.0f32;
-    let mut nb = 0.0f32;
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        na += a[i] * a[i];
-        nb += b[i] * b[i];
-    }
-    // Reject zero AND non-finite norms. A future EmbeddingProvider (neural/grid)
-    // could return a NaN/Inf component; without this the `== 0.0` guard passes,
-    // cosine returns NaN, and a NaN salience poisons the arbiter's sort
-    // (every partial_cmp → Equal = arbitrary order). Fail to "no signal", never NaN.
-    if !na.is_finite() || !nb.is_finite() || na == 0.0 || nb == 0.0 {
-        return 0.0;
-    }
-    let sim = dot / (na.sqrt() * nb.sqrt());
-    if sim.is_finite() {
-        sim
-    } else {
-        0.0
-    }
-}
+mod similarity;
+pub use similarity::cosine_similarity;
 
 /// Bootstrap embedder: hashing-trick term-frequency vectors. Lowercase, split on
 /// non-alphanumeric, hash each token into one of `DIM` buckets, count, then
