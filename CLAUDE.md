@@ -51,6 +51,14 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
 - **Merged or it does not exist.** A branch is not done. A green test is not done.
 - **No step on the path without architectural purity** (Joel, 10-19): every change leaves its area more modular, with concerns separated, by owner, and the verbs as functions in their own subtree, so compile and runtime speed improve with it. A feature that adds a special case or a parallel path moves the path backward, however fast it makes one number.
 - **Plumbing once, then short blocks** (Joel, from his real-time CV/ML engines): the CBAR substrate is a graphics pipeline. It has fixed stages, buffers owned once and passed by handle, double-buffered snapshots, the core submitting work and the engine doing it, and nothing running between turns. Features are short functional blocks wired by events; the optimizations live in the substrate, once, so every block gets them.
+- **Clean as you go, everyone, every edit** (Joel, 10-19: "kick some ass now and clean up as we
+  go... delete old shit. Everything left confuses and eats compiler time"):
+  - a separate thought gets its own small file and module; assume many files, not big ones;
+  - whatever you touch you decompose and compress: smaller, simpler, the smell removed;
+  - dead code is deleted in the same change (no caller outside its own tests = gone);
+  - a duplicate is MIGRATED to the best form: pick the best implementation, move every caller
+    to it, delete the rest in the same change; never leave two hanging;
+  - report what you removed (lines, files) beside what you added.
 - **Ballpark math** (Joel, 10-19: Carmack's shift-and-add z divide, fast shaders): spend only
   the precision the consumer can perceive. Coarse first, exact only for the few candidates
   that matter; estimate where the estimate decides the same way; a polynomial with the gist
