@@ -73,6 +73,12 @@ claim is proven by a validator that runs in seconds on far smaller sizes, on eve
 
 ## Ballpark math (add your tricks)
 
+- **Cascade: quick and dirty for a rough pool, precise later** (Joel). A cheap pass narrows,
+  the expensive pass runs only on the survivors, and the validator measures what the cheap
+  pass loses. Already proven here: MTP draft then 27B verify; the amygdala's instant voice
+  then the 27B. Next: recall (coarse score, exact top few), tool and gene selection (cheap
+  signature filter, precise judgement), prefix matching (hash compare, tokens only where
+  the hashes match).
 - Similarity in a hot loop (Joel: "I'd use Manhattan distance sometimes"), cheapest first,
   each with its recall vs exact cosine measured by the validator: normalize once at insert so
   cosine is a plain dot product (no sqrt or divide in the loop); Manhattan (L1) on int8 codes,
