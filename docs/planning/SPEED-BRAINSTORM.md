@@ -73,6 +73,13 @@ claim is proven by a validator that runs in seconds on far smaller sizes, on eve
 
 ## Ballpark math (add your tricks)
 
+- Similarity in a hot loop (Joel: "I'd use Manhattan distance sometimes"), cheapest first,
+  each with its recall vs exact cosine measured by the validator: normalize once at insert so
+  cosine is a plain dot product (no sqrt or divide in the loop); Manhattan (L1) on int8 codes,
+  where SAD instructions (ARM UABD/UDOT, x86 vpsadbw) do 16-64 dimensions per instruction;
+  binary codes with popcount (Hamming), 32x less memory traffic, as the coarse pass with exact
+  f32 reranking the top few; many queries at once as one GPU matmul, once the batch beats the
+  dispatch cost.
 - Token counts from a calibrated chars-per-token ratio, recalibrated from the engine's counts.
 - Polynomial or table approximations for decay, salience and temperature curves.
 - Integer/fixed-point where floats buy nothing; bit tricks where a divide or sqrt sits in a
