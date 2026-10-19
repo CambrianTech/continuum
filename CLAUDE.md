@@ -34,7 +34,9 @@ done until its gate is met on the live node and the change is MERGED.
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
 | 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md` | see table below |
 
-**Goal 11 workstreams** (10-19; each card carries its receipts):
+**Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
+fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
+`docs/planning/SPEED-BRAINSTORM.md` before and while you work:
 
 | Workstream | Validator (seconds, any machine) | Card | Owner |
 |---|---|---|---|
