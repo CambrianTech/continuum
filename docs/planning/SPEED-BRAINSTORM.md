@@ -78,6 +78,45 @@ claim is proven by a validator that runs in seconds on far smaller sizes, on eve
 - Integer/fixed-point where floats buy nothing; bit tricks where a divide or sqrt sits in a
   hot loop.
 
+## Learned, not tuned: reinforcement learning on our own receipts
+
+Every decision we hand-tune with a constant already logs its reward: prefill ms, warm or cold
+restore (`inference.restored_turn`), tokens reused vs replayed, queue wait, act latency. So
+each can be a policy learned from that reward, trained and checked OFFLINE first by replaying
+captured probes and prompts against the candidate policy (counterfactual seconds saved), then
+tried live with a before/after receipt.
+
+- **Eviction / paging:** which mind's KV leaves the GPU, to RAM or disk, and when (the bandit
+  eviction designed in KV-CACHE-ECONOMY; today a closure seam at `inference/slots.rs:619`).
+  Reward: prefill seconds avoided per byte of residency.
+- **Predictive warming:** restore the mind most likely to act next before her turn (designed
+  in INFERENCE-SCHEDULING-AND-SCARCITY, not built). Reward: restore time hidden.
+- **Checkpoint placement:** where to keep recurrent-state checkpoints on hybrid models so a
+  divergence rolls back the least (today only at user-message starts, every ~4k tokens; the
+  cold restores diverge at token ~574). Reward: replayed tokens per act.
+- **Epoch turnover:** when to compact a mind's view into a new epoch. Reward: useful-response
+  latency over the next N acts, against the one-time replay cost.
+- **Prefill-ahead:** whether to prefill during a tool call, given how long the tool usually runs.
+- **Temperature scheduling:** the one scheduler's priority per mind (goal 9), learned from
+  which minds' acts produce writes, reviews and merges, never from a role.
+- **Draft head:** calibrate the MTP draft on our own minds' outputs (acceptance 0.71-0.85
+  today; a tuned draft is about 10% decode per the shared-base-layer doc).
+- **Coarse-to-exact cutoffs:** how many coarse candidates the exact pass reranks, learned
+  from the recall it costs.
+
+## Built and not finished: take these to the finish line (inventory 10-19)
+
+| Built | What is missing | Where |
+|---|---|---|
+| In-place `/learn` on the slot that served the reply (fork) | the core never calls it | fork `server-context.cpp:902-910` |
+| Warm-ahead restore | needs a scratch slot; skipped at 2 lanes | `openai_adapter.rs:1178` |
+| Host prompt cache | 5.5 GiB holds 1-2 states of 2.3-3.7 GiB; 259 evictions | `lane_args.rs:256` |
+| Checkpoint sidecars with each page | 1.4-1.9 GB each, restore p90 8.4 s | fork `server-context.cpp:2919` |
+| Unified KV (`-kvu`) in the fork | the core passes explicit `--parallel`, which turns it off | `lane_args.rs` base_invocation |
+| `--cache-reuse 256` | disabled by the engine on this hybrid model; misleading flag | `lane_args.rs:327` |
+| Mixed-adapter batching (SGMV) designed | `are_lora_equal` still clears a slot on a different gene | fork `server-context.cpp:1693-1706` |
+| Shared base KV for the common head | designed, never built | KV-CACHE-AS-SHARED-BASE-LAYER |
+
 ## Ideas from anyone (append below)
 
 - 
