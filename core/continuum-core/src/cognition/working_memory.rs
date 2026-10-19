@@ -894,16 +894,9 @@ impl WorkingMemory {
             let tail = a.to_string();
             // A receipt can contain several operations. Retain their typed names
             // in order instead of attributing the whole batch to its first call.
-            let mut label = String::new();
-            for act in &acts {
-                if !label.is_empty() {
-                    label.push_str(", ");
-                }
-                label.push_str(&act.call.name);
-            }
-            if label.is_empty() {
-                label.push_str("unrecorded");
-            }
+            let label = crate::cognition::act_observe::render_pointer_invocations(
+                acts.iter().map(|act| &act.call), &self.budget(),
+            );
             let children: Vec<String> = acts
                 .iter()
                 .filter_map(|act| act.output.result.custody.handle().map(str::to_owned))
@@ -3213,7 +3206,7 @@ mod tests {
         // #2 is the active result: it renders whole as the full-result message below, so
         // the ring shows only #1 rather than paying for #2 twice.
         let expected = vec![
-            format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output] same result"),
+            format!("[result #1; room {room_a}; operation code/search(); code/read(); output handle: tool/output search-output] same result"),
         ];
         let messages = wm.recent_results_messages();
         assert_eq!(
@@ -3227,7 +3220,7 @@ mod tests {
             .expect("test: latest receipt is active");
         assert_eq!(
             wm.full_result_message(seq, &full),
-            format!("Full result of your most recent action (#2; room {room_b}; operation code/run):\nsame result")
+            format!("Full result of your most recent action (#2; room {room_b}; operation code/run()):\nsame result")
         );
 
         let encoded = serde_json::to_value(wm.snapshot()).expect("test: snapshot serializes");
@@ -3255,7 +3248,7 @@ mod tests {
         }
         restored.record_settlement("reported", None);
         assert!(restored.recent_results_messages().join("\n").contains(
-            &format!("[result #1; room {room_a}; operation code/search, code/read; output handle: tool/output search-output — collapsed]")
+            &format!("[result #1; room {room_a}; operation code/search(); code/read(); output handle: tool/output search-output — collapsed]")
         ));
 
         // Regression 735a3183: Kimi's 274-line read disappeared after a poll;
