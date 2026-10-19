@@ -35,6 +35,15 @@ impl LazyValue {
     }
 }
 
+/// A failed initializer is retryable; a type mismatch is a caller contract violation.
+#[derive(Debug, thiserror::Error)]
+pub enum ComputeError<E> {
+    #[error("shared computation failed: {0}")]
+    Initialize(E),
+    #[error("shared computation type mismatch for {scope}/{key}")]
+    TypeMismatch { scope: String, key: String },
+}
+
 /// Shared compute cache with two-level scoping: scope -> key -> value.
 ///
 /// Scopes isolate caches per context (e.g., per persona, per session).
@@ -75,15 +84,7 @@ impl SharedCompute {
         T: Any + Send + Sync + 'static,
         F: std::future::Future<Output = T>,
     {
-        let lazy = {
-            let scope_map = self.cache.entry(scope.to_string()).or_default();
-            let entry = scope_map
-                .entry(key.to_string())
-                .or_insert_with(|| Arc::new(LazyValue::new()));
-            Arc::clone(entry.value())
-        };
-        // Only the cell survives the lookup. Computing may await another key
-        // in this scope; retaining either map guard would block that lookup.
+        let lazy = self.cell(scope, key);
 
         let any_arc = lazy
             .cell
@@ -97,6 +98,46 @@ impl SharedCompute {
             .clone()
             .downcast::<T>()
             .expect("SharedCompute type mismatch: same (scope, key) used with different types")
+    }
+
+    fn cell(&self, scope: &str, key: &str) -> Arc<LazyValue> {
+        let scope_map = self.cache.entry(scope.to_string()).or_default();
+        let entry = scope_map
+            .entry(key.to_string())
+            .or_insert_with(|| Arc::new(LazyValue::new()));
+        Arc::clone(entry.value())
+        // Both map guards end here; initialization may depend on another key.
+    }
+
+    /// Share a successful value without retaining initialization failures.
+    /// Cancellation or an error leaves the cell available for another caller.
+    /// Invalidation detaches this cell just as for `get_or_compute`.
+    pub async fn get_or_try_compute<T, E, F>(
+        &self,
+        scope: &str,
+        key: &str,
+        compute: F,
+    ) -> Result<Arc<T>, ComputeError<E>>
+    where
+        T: Any + Send + Sync + 'static,
+        F: std::future::Future<Output = Result<T, E>>,
+    {
+        let lazy = self.cell(scope, key);
+        let value = lazy
+            .cell
+            .get_or_try_init(|| async {
+                compute
+                    .await
+                    .map(|value| Arc::new(value) as Arc<dyn Any + Send + Sync>)
+            })
+            .await
+            .map_err(ComputeError::Initialize)?;
+        Arc::clone(value)
+            .downcast::<T>()
+            .map_err(|_| ComputeError::TypeMismatch {
+                scope: scope.to_owned(),
+                key: key.to_owned(),
+            })
     }
 
     /// Get a cached value without computing.
@@ -170,6 +211,34 @@ pub fn global() -> Arc<SharedCompute> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // What this catches: a transient source failure must not poison a shared artifact forever.
+    #[tokio::test]
+    async fn failed_initialization_retries_and_type_errors_reach_the_caller() {
+        let compute = SharedCompute::new();
+        let failed = compute
+            .get_or_try_compute::<u32, _, _>("s", "k", async { Err("offline") })
+            .await;
+        assert!(matches!(failed, Err(ComputeError::Initialize("offline"))));
+        assert!(compute.get::<u32>("s", "k").is_none());
+        let value = compute
+            .get_or_try_compute("s", "k", async { Ok::<_, &str>(7u32) })
+            .await;
+        assert!(matches!(value.as_deref(), Ok(7)));
+        let cached = compute
+            .get_or_try_compute::<u32, _, _>("s", "k", async { Err("must not run") })
+            .await;
+        assert!(matches!((&value, &cached), (Ok(a), Ok(b)) if Arc::ptr_eq(a, b)));
+        let wrong = compute
+            .get_or_try_compute("s", "k", async { Ok::<_, &str>("different type") })
+            .await;
+        assert!(matches!(wrong, Err(ComputeError::TypeMismatch { .. })));
+        compute.invalidate("s", "k");
+        let fresh = compute
+            .get_or_try_compute("s", "k", async { Ok::<_, &str>(9u32) })
+            .await;
+        assert!(matches!(fresh.as_deref(), Ok(9)));
+    }
 
     #[tokio::test]
     async fn test_compute_once() {
