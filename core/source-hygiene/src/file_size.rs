@@ -38,9 +38,11 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // modules/training_trigger.rs into genome/fine_tuning/job_dir.rs.
 // 157,971 (with #5185) after card 67af4fca moved the credit stamp (CreditRole, OutcomeStamp, CapturedCredit,
 // SettlementVerdict) out of persona/training_producer.rs into training_producer/stamp.rs.
-// 157,608 after card 9f0ba854 moved the cognition/eval command's wire contract (params and
+// 157,645 after card a0790c4b moved persona/viewstate_rag.rs's test module to
+// persona/viewstate_rag/tests.rs (#![cfg(test)]): #5015 had grown it to 1,458 lines and turned canary red.
+// 157,282 (on canary 719eed2c7) after card 9f0ba854 moved the cognition/eval command's wire contract (params and
 // results) out of cognition/eval.rs into cognition/eval/wire.rs.
-const BASELINE_LINES_OVER: usize = 157_608;
+const BASELINE_LINES_OVER: usize = 157_282;
 
 pub struct FileSize;
 
