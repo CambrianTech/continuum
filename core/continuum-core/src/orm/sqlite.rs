@@ -159,6 +159,12 @@ impl SqliteAdapter {
         self.declared.read().ok()?.get(collection).cloned()
     }
 
+    /// The writer connection, for an in-`orm/` migration that must run its statements in
+    /// one transaction on the same file ([`super::legacy_grant_watermark`]).
+    pub(super) fn writer(&self) -> Result<Arc<Mutex<Connection>>, String> {
+        self.get_writer()
+    }
+
     /// Get writer connection for mutations
     fn get_writer(&self) -> Result<Arc<Mutex<Connection>>, String> {
         self.writer

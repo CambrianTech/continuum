@@ -34,6 +34,7 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use crate::orm::legacy_grant_watermark::{self, LegacyWatermarkImportError};
 use crate::orm::query::{QueryBuilder, QueryOperator};
 use crate::orm::{Entity, OrmEntity, OrmStore, OrmStoreError, SqliteAdapter, StorageAdapter};
 
@@ -48,16 +49,22 @@ pub enum WatermarkDecision {
 
 /// A watermark-store failure. Fail-CLOSED: the caller treats this as a deny, never
 /// as "accept" — losing the anti-replay state must never open the replay window.
-#[derive(Debug, Clone)]
-pub struct WatermarkError(pub String);
-
-impl std::fmt::Display for WatermarkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "epoch watermark store error: {}", self.0)
-    }
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum WatermarkError {
+    /// The watermark database could not be opened.
+    #[error("open epoch watermark store {path}: {detail}")]
+    Open { path: std::path::PathBuf, detail: String },
+    /// The pre-ORM watermark in the same file could not be carried forward; the store
+    /// refuses to open rather than start with an empty watermark.
+    #[error("carry the legacy epoch watermark forward: {0}")]
+    LegacyImport(#[source] LegacyWatermarkImportError),
+    /// An epoch the store cannot hold exactly (above 2^53).
+    #[error("epoch {0} exceeds the exactly-stored range (2^53)")]
+    EpochOutOfRange(u64),
+    /// The ORM store failed a read or write.
+    #[error("epoch watermark store error: {0}")]
+    Store(String),
 }
-
-impl std::error::Error for WatermarkError {}
 
 /// Atomic, persistable per-grantee epoch high-water mark.
 #[async_trait]
@@ -173,10 +180,25 @@ impl OrmEpochWatermark {
     /// Open (creating if absent) the watermark database at `path` — the grant
     /// watermark of one airc home. Runs once at boot, not on the dispatch path.
     pub async fn open(path: &std::path::Path) -> Result<Self, WatermarkError> {
-        let adapter = SqliteAdapter::open(path)
+        let adapter = Arc::new(SqliteAdapter::open(path).await.map_err(|detail| WatermarkError::Open {
+            path: path.to_path_buf(),
+            detail,
+        })?);
+        let watermark = Self::over(Arc::clone(&adapter) as Arc<dyn StorageAdapter>).await?;
+        // The entity table exists now; carry any pre-ORM watermark in the same file into
+        // it, or refuse to open. Never start empty over a node's real anti-replay state.
+        if let Some(rows) = legacy_grant_watermark::import(&adapter, GrantEpochWatermark::COLLECTION, MAX_EXACT_EPOCH)
             .await
-            .map_err(|e| WatermarkError(format!("open {}: {e}", path.display())))?;
-        Self::over(Arc::new(adapter)).await
+            .map_err(WatermarkError::LegacyImport)?
+        {
+            crate::probe!(
+                class = "grant.watermark.migrated",
+                rows = rows,
+                path = %path.display(),
+                "the pre-ORM grant epoch watermark was carried into the ORM store and its table dropped"
+            );
+        }
+        Ok(watermark)
     }
 
     /// The watermark over an already-open ORM adapter.
@@ -189,7 +211,7 @@ impl OrmEpochWatermark {
 }
 
 fn store_error(e: OrmStoreError) -> WatermarkError {
-    WatermarkError(e.to_string())
+    WatermarkError::Store(e.to_string())
 }
 
 #[async_trait]
@@ -201,9 +223,7 @@ impl EpochWatermarkStore for OrmEpochWatermark {
         now_ms: u64,
     ) -> Result<WatermarkDecision, WatermarkError> {
         if epoch > MAX_EXACT_EPOCH {
-            return Err(WatermarkError(format!(
-                "epoch {epoch} exceeds the exactly-stored range (2^53)"
-            )));
+            return Err(WatermarkError::EpochOutOfRange(epoch));
         }
         let store = self.store.lock().await;
         let id = grantee.as_uuid();
@@ -324,6 +344,66 @@ mod tests {
         );
     }
 
+    // what this catches: a deploy must not reset anti-replay. The pre-ORM table in the
+    // same file is carried into the ORM store on first open (the HIGHER epoch wins over
+    // a row the ORM store already holds) and then dropped; a replay below a carried
+    // epoch is still superseded, and a second open has nothing left to import.
+    #[tokio::test]
+    async fn legacy_watermark_is_carried_forward_and_its_table_dropped() {
+        use crate::orm::legacy_grant_watermark::fixture;
+        use serde_json::json;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("grant_watermark.sqlite");
+        let (kept_higher, carried, fresh) = (peer(1), peer(2), peer(3));
+        {
+            let store = OrmEpochWatermark::open(&path).await.expect("open");
+            store.check_and_advance(kept_higher, 12, 50).await.unwrap();
+            store.check_and_advance(fresh, 7, 50).await.unwrap();
+        }
+        fixture::write_legacy(
+            &path,
+            &[
+                (&kept_higher.as_uuid().to_string(), json!(9), 100),
+                (&carried.as_uuid().to_string(), json!(20), 100),
+                (&fresh.as_uuid().to_string(), json!(30), 100),
+            ],
+        );
+        let store = OrmEpochWatermark::open(&path).await.expect("open imports");
+        assert!(!fixture::legacy_table_exists(&path), "the legacy table is dropped");
+        let decide = |g, e| store.check_and_advance(g, e, 200);
+        assert_eq!(decide(kept_higher, 11).await.unwrap(), WatermarkDecision::Superseded, "the ORM's higher 12 is kept");
+        assert_eq!(decide(carried, 19).await.unwrap(), WatermarkDecision::Superseded, "a carried epoch survives");
+        assert_eq!(decide(carried, 20).await.unwrap(), WatermarkDecision::Accepted);
+        assert_eq!(decide(fresh, 29).await.unwrap(), WatermarkDecision::Superseded, "the legacy's higher 30 wins");
+        drop(store);
+        let again = OrmEpochWatermark::open(&path).await.expect("a second open has nothing to import");
+        assert_eq!(again.check_and_advance(carried, 19, 300).await.unwrap(), WatermarkDecision::Superseded);
+    }
+
+    // what this catches: a legacy row that cannot be carried exactly refuses the open
+    // (fail loud), and the import rolls back whole: the legacy table is still there for
+    // a human to repair, and the store never starts empty over it.
+    #[tokio::test]
+    async fn a_corrupt_legacy_watermark_refuses_the_open() {
+        use crate::orm::legacy_grant_watermark::{fixture, LegacyWatermarkImportError};
+        use serde_json::json;
+        for (grantee, epoch) in [
+            ("not-a-uuid".to_string(), json!(3)),
+            (peer(4).as_uuid().to_string(), json!(-1)),
+            (peer(5).as_uuid().to_string(), json!("seven")),
+        ] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let path = dir.path().join("grant_watermark.sqlite");
+            fixture::write_legacy(&path, &[(&peer(6).as_uuid().to_string(), json!(5), 100), (&grantee, epoch, 100)]);
+            let refused = OrmEpochWatermark::open(&path).await;
+            assert!(
+                matches!(refused, Err(WatermarkError::LegacyImport(LegacyWatermarkImportError::CorruptRow { .. }))),
+                "open must refuse a corrupt legacy row, got {refused:?}"
+            );
+            assert!(fixture::legacy_table_exists(&path), "the failed import rolled back whole");
+        }
+    }
+
     // what this catches: an epoch the ORM's Number column cannot hold exactly is
     // refused (fail closed), never rounded into a value a replay could slip under.
     #[tokio::test]
@@ -364,43 +444,57 @@ mod tests {
     }
 
     // what this catches: under concurrent presentation of many epochs for the SAME
-    // grantee, the store's critical section keeps the watermark monotonic — every
-    // outcome is a clean Accepted/Superseded, the final watermark is the max epoch
-    // presented, and it is still the max after a reopen. Without the lock two
-    // read-then-write accepts interleave and a lower epoch overwrites a higher one.
+    // grantee, the store's critical section keeps the watermark monotonic. Two grantees
+    // cover both halves of the read-then-write: `seeded` already has a row, so every
+    // accept is find-then-UPDATE and a missing lock shows as a LOST UPDATE (a lower
+    // epoch overwriting a higher one, so the max no longer supersedes max-1); `fresh`
+    // has none, so racing first accepts are find-then-INSERT and a missing lock shows as
+    // a failed decision (duplicate primary key). A barrier releases every task at once
+    // so the reads interleave before the writes; the watermark is checked after a reopen.
+    // Mutation receipt (lock released before the read, 2026-10-19): see the PR body.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_same_grantee_epochs_stay_monotonic() {
         const N: u64 = 64;
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("grant_watermark.sqlite");
         let store = Arc::new(OrmEpochWatermark::open(&path).await.expect("open"));
-        let g = peer(42);
+        let (seeded, fresh) = (peer(42), peer(43));
+        store.check_and_advance(seeded, 0, 1).await.expect("seed");
         // Interleave high and low epochs so a lost update would leave a low epoch.
         let order: Vec<u64> = (1..=N / 2).flat_map(|i| [N + 1 - i, i]).collect();
+        let presentations: Vec<(PeerId, u64)> =
+            order.iter().flat_map(|&e| [(seeded, e), (fresh, e)]).collect();
+        let barrier = Arc::new(tokio::sync::Barrier::new(presentations.len()));
         let mut handles = Vec::new();
-        for epoch in order {
-            let store = Arc::clone(&store);
+        for (grantee, epoch) in presentations {
+            let (store, barrier) = (Arc::clone(&store), Arc::clone(&barrier));
             handles.push(tokio::spawn(async move {
-                store.check_and_advance(g, epoch, 100).await.expect("decision")
+                barrier.wait().await;
+                (grantee, store.check_and_advance(grantee, epoch, 100).await)
             }));
         }
+        let mut failed = Vec::new();
         for h in handles {
-            let out = h.await.expect("task");
-            assert!(matches!(
-                out,
-                WatermarkDecision::Accepted | WatermarkDecision::Superseded
-            ));
+            let (grantee, out) = h.await.expect("task");
+            if let Err(e) = out {
+                failed.push((grantee, e));
+            }
         }
         drop(store);
         let reopened = OrmEpochWatermark::open(&path).await.expect("reopen");
         assert_eq!(
-            reopened.check_and_advance(g, N - 1, 200).await.unwrap(),
+            reopened.check_and_advance(seeded, N - 1, 200).await.unwrap(),
             WatermarkDecision::Superseded,
-            "the max epoch is the durable watermark"
+            "lost update: the max epoch {N} is not the durable watermark"
         );
+        assert!(failed.is_empty(), "concurrent decisions failed: {failed:?}");
         assert_eq!(
-            reopened.check_and_advance(g, N, 201).await.unwrap(),
-            WatermarkDecision::Accepted
+            reopened.check_and_advance(fresh, N - 1, 200).await.unwrap(),
+            WatermarkDecision::Superseded,
+            "the max epoch is the durable watermark for a grantee first seen concurrently"
         );
+        for g in [seeded, fresh] {
+            assert_eq!(reopened.check_and_advance(g, N, 201).await.unwrap(), WatermarkDecision::Accepted);
+        }
     }
 }

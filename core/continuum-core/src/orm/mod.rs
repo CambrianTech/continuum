@@ -23,6 +23,7 @@
 pub mod adapter;
 pub mod connection_manager;
 pub mod entity;
+pub mod legacy_grant_watermark;
 pub mod migration;
 pub mod postgres;
 pub mod query;
