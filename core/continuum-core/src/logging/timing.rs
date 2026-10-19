@@ -1,4 +1,3 @@
-use super::LogLevel;
 /// Performance timing utilities for continuum-core
 ///
 /// User requirement: "we are gonna time the shit out of it"
