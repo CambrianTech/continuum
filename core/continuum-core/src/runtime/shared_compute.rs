@@ -155,10 +155,10 @@ impl SharedCompute {
     /// Invalidate a specific cached value.
     /// Existing readers may finish with the detached cell; subsequent lookups
     /// use a new cell. An old completion cannot repopulate the cache.
-    pub fn invalidate(&self, scope: &str, key: &str) {
-        if let Some(scope_map) = self.cache.get(scope) {
-            scope_map.remove(key);
-        }
+    pub fn invalidate(&self, scope: &str, key: &str) -> bool {
+        self.cache
+            .get(scope)
+            .is_some_and(|scope_map| scope_map.remove(key).is_some())
     }
 
     /// Invalidate all cached values for a scope.
@@ -364,9 +364,9 @@ mod tests {
         for invalidate_scope in [false, true] {
             let compute = SharedCompute::new();
             let (send, receive) = tokio::sync::oneshot::channel::<i32>();
-            let mut first = Box::pin(compute.get_or_compute("s", "a", async {
+            let mut first = Box::pin(compute.get_or_try_compute("s", "a", async {
                 match receive.await {
-                    Ok(value) => value,
+                    Ok(value) => Ok::<_, &str>(value),
                     Err(error) => panic!("test sender dropped: {error}"),
                 }
             }));
@@ -375,22 +375,26 @@ mod tests {
                 compute.cache.try_get_mut("s"),
                 dashmap::try_result::TryResult::Present(_)
             ));
-            let mut reader = Box::pin(compute.get_or_compute("s", "a", async { 99 }));
+            let mut reader =
+                Box::pin(compute.get_or_try_compute("s", "a", async { Ok::<_, &str>(99) }));
             assert!(futures::poll!(&mut reader).is_pending());
             if invalidate_scope {
                 compute.invalidate_scope("s");
             } else {
                 compute.invalidate("s", "a");
             }
-            let fresh = compute.get_or_compute("s", "a", async { 2 }).await;
+            let fresh = compute
+                .get_or_try_compute("s", "a", async { Ok::<_, &str>(2) })
+                .await;
             assert!(send.send(1).is_ok());
             let old = first.await;
-            assert_eq!(*old, 1);
-            assert!(Arc::ptr_eq(&old, &reader.await));
-            assert!(Arc::ptr_eq(
-                &fresh,
-                &compute.get_or_compute("s", "a", async { 3 }).await
-            ));
+            assert!(matches!(old.as_deref(), Ok(1)));
+            let reader = reader.await;
+            assert!(matches!((&old, &reader), (Ok(a), Ok(b)) if Arc::ptr_eq(a, b)));
+            let cached = compute
+                .get_or_try_compute("s", "a", async { Ok::<_, &str>(3) })
+                .await;
+            assert!(matches!((&fresh, &cached), (Ok(a), Ok(b)) if Arc::ptr_eq(a, b)));
         }
     }
 }
