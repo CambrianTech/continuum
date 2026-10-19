@@ -69,7 +69,6 @@ macro_rules! stack {
 
 #[cfg(test)]
 mod tests {
-    use continuum_base::{probe, time_probe, time_sync};
     // The macros expand to tracing::event! / tracing::info_span! calls
     // that the tracing test subscriber can capture. Testing here is
     // verifying that the macros COMPILE and PARSE correctly with the
