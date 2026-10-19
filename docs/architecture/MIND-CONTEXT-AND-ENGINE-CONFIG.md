@@ -30,6 +30,14 @@ architecture." The receipts that day, on the M5 (one 27B, four residents):
 | Queue wait for the GPU | ~0 for one user | 0-20 min, acts cancelled | fail |
 | Act end to end | ~10-40 s | 5-20 min | fail |
 
+The mechanism, from the live `delib.prompt.reuse_split` probe (10-19 15:11-15:27Z): every act
+first differs where the old prompt had the results ring's "Older results, collapsed to
+pointers" index and the new one has a fresh `[result #N]`. The ring sits mid-prompt (message
+17 / 32) and grows by one result per act ahead of its index, so everything after it
+re-prefills: 16,669-28,803 tokens per act, while the cache holds only the 7,452 / 15,066
+tokens before it (the nearest checkpoint). A log that grows each act must be the last
+segment; that is what the epoch materialization makes structural.
+
 The engine is not the bottleneck; what we feed it is. Published reference:
 github.com/eltoncarr/mac-mini-benchmarks. The "inference" rows describe any chat agent
 that appends to one conversation against llama.cpp; no tool-specific number was found.
