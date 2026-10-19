@@ -395,6 +395,12 @@ impl Confinement {
             }
         }
 
+        // A resident's card checkout is a clone that borrows objects from this node's repo
+        // mirror through its alternates (card d166e4f2). Her git reads those objects, so each
+        // mirror's objects directory is a READ-only root: never a write root, and nothing else
+        // of the mirror (refs, config, hooks). Every write she makes lands in her own .git.
+        read.extend(mirror_object_dirs(home));
+
         let mut deny = self.credential_roots();
 
         canonical_all(&mut write);
@@ -407,6 +413,22 @@ impl Confinement {
         AllowList { write, read, deny, listable }
     }
 
+}
+
+/// The objects directory of every repo mirror under `~/.airc/mirrors/<owner>/<repo>.git`,
+/// the only part of a mirror a card clone's alternates read (card d166e4f2). Listed at
+/// materialize time, like `~/.continuum` above, so a mirror created after this spawn is
+/// granted to the next one.
+fn mirror_object_dirs(home: &Path) -> Vec<PathBuf> {
+    let Ok(owners) = std::fs::read_dir(home.join(".airc").join("mirrors")) else {
+        return Vec::new();
+    };
+    owners
+        .flatten()
+        .filter_map(|owner| std::fs::read_dir(owner.path()).ok())
+        .flat_map(|repos| repos.flatten().map(|repo| repo.path().join("objects")))
+        .filter(|objects| objects.is_dir())
+        .collect()
 }
 
 /// Replace every granted root that CONTAINS a carve-out by its children minus the
@@ -857,5 +879,53 @@ mod tests {
             assert!(!stdout.contains(&format!("LEAK-{tag}")), "{tag} leaked: stdout={stdout}");
         }
         assert!(stderr.contains("Operation not permitted"), "the refusal is the OS's: stderr={stderr}");
+    }
+
+    // what this catches (card d166e4f2, kernel-level): a resident's card checkout is a clone
+    // that borrows objects from the node's mirror. Under the real `sandbox-exec` her git must
+    // READ the borrowed objects (log of the base) and COMMIT into her own .git, while a write
+    // into the shared mirror is refused by the OS. Without the read-only mirror root the log
+    // fails; with a write grant the mirror could be corrupted for every other card.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn on_macos_a_card_clone_reads_its_mirror_and_commits_but_cannot_write_the_mirror() {
+        let me = uuid::Uuid::from_u128(8);
+        let home = home_with(&[".zshrc"]);
+        let h = home.path().canonicalize().expect("test: canonical");
+        let git = |dir: &Path, args: &[&str]| {
+            let out = std::process::Command::new("git").current_dir(dir).args(args).output().expect("test: git");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let seed = h.join("seed");
+        std::fs::create_dir_all(&seed).expect("test: seed dir");
+        git(&seed, &["init", "--quiet", "--initial-branch=canary"]);
+        std::fs::write(seed.join("lib.rs"), "fn a() {}\n").expect("test: write");
+        git(&seed, &["add", "."]);
+        git(&seed, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "--quiet", "-m", "base"]);
+        let mirror = h.join(".airc/mirrors/o/r.git");
+        std::fs::create_dir_all(mirror.parent().expect("test: parent")).expect("test: mirrors dir");
+        git(&h, &["clone", "--quiet", "--mirror", "--no-hardlinks", seed.to_str().expect("utf8"), mirror.to_str().expect("utf8")]);
+        let ws = h.join(".airc/worktrees/cd34ef56");
+        std::fs::create_dir_all(ws.parent().expect("test: parent")).expect("test: worktrees dir");
+        git(&h, &["clone", "--quiet", "--shared", mirror.to_str().expect("utf8"), ws.to_str().expect("utf8")]);
+
+        let c = Confinement::for_caller(&h, &h.join(".continuum"), &me.to_string(), &ws);
+        let script = format!(
+            "git -C '{ws}' log --format=BASE-%s -1 && \
+             echo b >> '{ws}/lib.rs' && git -C '{ws}' -c user.email=t@t -c user.name=t commit --quiet -am mine && echo COMMITTED; \
+             (touch '{mirror}/objects/forged' && echo LEAK-MIRROR-WRITE); echo done",
+            ws = ws.display(),
+            mirror = mirror.display(),
+        );
+        let (mut cmd, receipt) = confined_command(&c, Path::new("/bin/sh"), &["-c".into(), script.into()], None, None);
+        assert!(receipt.is_enforced(), "{receipt:?}");
+        let out = cmd.output().await.expect("test: spawn");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(stdout.contains("BASE-base"), "her git reads the borrowed objects: stdout={stdout} stderr={stderr}");
+        assert!(stdout.contains("COMMITTED"), "her commit lands in her own .git: stdout={stdout} stderr={stderr}");
+        assert!(!stdout.contains("LEAK-MIRROR-WRITE"), "the shared mirror is read-only to her: stdout={stdout}");
+        assert!(stderr.contains("Operation not permitted"), "the refusal is the OS's: stderr={stderr}");
+        assert!(!mirror.join("objects/forged").exists());
     }
 }

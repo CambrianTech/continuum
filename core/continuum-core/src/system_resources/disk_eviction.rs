@@ -1281,3 +1281,5 @@ impl ResourcePool for NvmeServingTierPool {
 
 // The tests gate themselves (`#![cfg(test)]` in tests.rs), so the scanner reads the file as test code.
 mod tests;
+// The cache-class eviction decisions the tests check (`#![cfg(test)]` in the file).
+mod eviction_decisions;

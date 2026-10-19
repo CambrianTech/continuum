@@ -178,15 +178,30 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     let spec_repo = card.repo.clone();
     let clone_for_spawn = clone.clone();
     let branch_for_spawn = branch.clone();
+    // A card's checkout is its OWN repository (card d166e4f2, Joel: "do it right"). The
+    // registry clone is the deploy checkout here, and a worktree of it registered every
+    // resident's card in the deploy repo's .git, which git under confinement could only reach
+    // through a write grant on that .git (#5116, not merged). Instead the node keeps a
+    // precious bare mirror (no inode shared with the deploy repo, objects never pruned) and
+    // each card clones from it with borrowed objects. Her git then needs only her own
+    // checkout plus a READ-only root on <mirror>/objects (confinement.rs).
     let outcome = tokio::task::spawn_blocking(move || {
-        airc_lib::work_worktree::ensure_worktree(&airc_lib::work_worktree::WorktreeSpec {
+        let mirror = airc_lib::work_worktree::ensure_mirror(&spec_repo, &clone_for_spawn)?;
+        airc_lib::work_worktree::ensure_card_clone(&airc_lib::work_worktree::WorktreeSpec {
             repo: &spec_repo,
             card_id: spec_card,
-            clone_path: &clone_for_spawn,
+            clone_path: &mirror,
             branch: &branch_for_spawn,
             start_point: None,
         })
-        .map(|o| o.path().to_path_buf())
+        .map(|outcome| {
+            // A held linked worktree replaced by a card clone (airc #1582): said once, with
+            // where the old tree went, so a resident's moved checkout is never a mystery.
+            if let airc_lib::work_worktree::WorktreeOutcome::Migrated { path, retired } = &outcome {
+                crate::probe!(class = "card.checkout.migrated", card = %spec_card, path = %path.display(), retired = %retired.display(), "linked card worktree replaced by a card clone; old tree kept aside");
+            }
+            outcome.path().to_path_buf()
+        })
     })
     .await
     .unwrap_or_else(|e| Err(format!("worktree task panicked: {e}"))); // unwrap_or_else: a panicked blocking task is a staging failure, never a crash

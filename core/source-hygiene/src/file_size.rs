@@ -29,6 +29,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 159,419 after card b406e901 moved ModelBinding out of the deliberation faculty into
 // cognition/model_binding.rs.
 // 159,391 after persona admission permit extraction (PR5176).
+// 159,277 after card 573cc58a moved the cache-class eviction decisions out of
+// disk_eviction/tests.rs (1,145 lines) into disk_eviction/eviction_decisions.rs.
 const BASELINE_LINES_OVER: usize = 159_391;
 
 pub struct FileSize;
