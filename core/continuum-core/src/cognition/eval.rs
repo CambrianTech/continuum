@@ -4250,27 +4250,23 @@ async fn perception_grade(
             )
         }
     };
-    // Absolutize a workspace-relative target to a `file://` URL. She wrote her UI through
-    // `code/write`, whose hands were rooted at `workspace_root` when the caller pinned one
-    // (the from-scratch build path: a clean per-benchmark dir) — so grade the file THERE,
-    // not at the core cwd. Without a pin she uses the default root (core cwd) exactly as the
-    // hands do. Writer and grader MUST agree on the root or a correct artifact scores a false
-    // zero (the #49 dual-root gap). An explicit URL passes through untouched.
+    // Absolutize a workspace-relative target to a `file://` URL at the root her hands wrote
+    // through `code/write`: the task's pin or the run's resolved root (the explicit pin, or the
+    // #312 per-run clone every tool-bearing exam gets). Writer and grader MUST agree on the root
+    // or a correct artifact scores a false zero (the #49 dual-root gap). A UI-checked task needs
+    // hands, so it always has a resolved root; without one there is no root to grade at, and it
+    // is said by name, never guessed from the core's cwd, which is not where any hands act
+    // (card 58f533fd). An explicit URL passes through untouched.
     let target_url = if target.contains("://") {
         target.to_string()
     } else {
-        let base = match workspace_root {
-            Some(root) => std::path::PathBuf::from(root),
-            None => match std::env::current_dir() {
-                Ok(cwd) => cwd,
-                Err(e) => {
-                    return (
-                        false,
-                        format!("could not resolve workspace cwd for target '{target}': {e}"),
-                    )
-                }
-            },
+        let Some(root) = workspace_root else {
+            return (
+                false,
+                format!("cannot grade '{target}': the exam resolved no workspace root, so there is no root her hands wrote it under"),
+            );
         };
+        let base = std::path::PathBuf::from(root);
         format!(
             "file://{}/{}",
             base.display(),
