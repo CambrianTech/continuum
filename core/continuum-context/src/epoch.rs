@@ -10,12 +10,25 @@
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SourceId(pub String);
 
+/// What a block holds: plain text, or a caller's richer rendering (a role-tagged message).
+/// The epoch compares blocks for equality and counts their characters; nothing else.
+pub trait Block: Clone + PartialEq {
+    /// Characters this block costs the view, the unit [`Epoch::superseded_chars`] counts.
+    fn chars(&self) -> usize;
+}
+
+impl Block for String {
+    fn chars(&self) -> usize {
+        self.len()
+    }
+}
+
 /// One rendered block: what a source said, and which of its versions this is.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Event {
+pub struct Event<T = String> {
     pub source: SourceId,
     pub version: u32,
-    pub text: String,
+    pub text: T,
     /// The source ended with this notice; turnover drops it entirely.
     pub retired: bool,
 }
@@ -30,17 +43,17 @@ pub enum Observed {
 }
 
 /// A mind's view for one epoch.
-#[derive(Clone, Debug, Default)]
-pub struct Epoch {
+#[derive(Clone, Debug)]
+pub struct Epoch<T = String> {
     id: u64,
-    head: Vec<String>,
-    events: Vec<Event>,
+    head: Vec<T>,
+    events: Vec<Event<T>>,
     superseded_chars: usize,
 }
 
-impl Epoch {
+impl<T: Block> Epoch<T> {
     /// A fresh epoch whose stable head (identity, policy, tool schemas) never changes within it.
-    pub fn new(id: u64, head: Vec<String>) -> Self {
+    pub fn new(id: u64, head: Vec<T>) -> Self {
         Self { id, head, events: Vec::new(), superseded_chars: 0 }
     }
 
@@ -50,13 +63,13 @@ impl Epoch {
 
     /// Record a source's current rendering. Appends only when it differs from that source's
     /// latest version; never edits an earlier block.
-    pub fn observe(&mut self, source: SourceId, text: String) -> Observed {
+    pub fn observe(&mut self, source: SourceId, text: T) -> Observed {
         let latest = self.events.iter().rposition(|e| e.source == source);
         if let Some(i) = latest {
             if self.events[i].text == text {
                 return Observed::Unchanged;
             }
-            self.superseded_chars += self.events[i].text.len();
+            self.superseded_chars += self.events[i].text.chars();
         }
         let version = latest.map_or(0, |i| self.events[i].version + 1);
         self.events.push(Event { source, version, text, retired: false });
@@ -67,22 +80,41 @@ impl Epoch {
     /// superseding notice instead of deleting its block, so the prefix never moves. Removal of
     /// the tokens themselves happens at the next turnover; a privacy revocation that cannot
     /// wait for it is the caller's reason to turn over now.
-    pub fn retire(&mut self, source: SourceId, notice: String) -> Observed {
+    pub fn retire(&mut self, source: SourceId, notice: T) -> Observed {
         let Some(i) = self.events.iter().rposition(|e| e.source == source) else {
             return Observed::Unchanged;
         };
         if self.events[i].retired {
             return Observed::Unchanged;
         }
-        self.superseded_chars += self.events[i].text.len();
+        self.superseded_chars += self.events[i].text.chars();
         let version = self.events[i].version + 1;
         self.events.push(Event { source, version, text: notice, retired: true });
         Observed::Appended { version }
     }
 
     /// The view in order: the head, then every event as it arrived.
-    pub fn render(&self) -> impl Iterator<Item = &str> {
-        self.head.iter().map(String::as_str).chain(self.events.iter().map(|e| e.text.as_str()))
+    pub fn render(&self) -> impl Iterator<Item = &T> {
+        self.head.iter().chain(self.events.iter().map(|e| &e.text))
+    }
+
+    /// The events after the head, in render order.
+    pub fn events(&self) -> &[Event<T>] {
+        &self.events
+    }
+
+    /// The sources whose latest version is still live (observed, not retired), each once.
+    pub fn live_sources(&self) -> Vec<SourceId> {
+        let mut latest = std::collections::HashMap::new();
+        for e in &self.events {
+            latest.insert(&e.source, e.retired);
+        }
+        latest.into_iter().filter(|(_, retired)| !retired).map(|(s, _)| s.clone()).collect()
+    }
+
+    /// The characters the whole view costs, superseded versions included.
+    pub fn chars(&self) -> usize {
+        self.render().map(Block::chars).sum()
     }
 
     /// Characters held by versions a later version superseded: the price of never rewriting.
@@ -93,10 +125,10 @@ impl Epoch {
     /// The next epoch: the same head, then only the latest version of each source, in the
     /// order those latest versions arrived. The caller decides WHEN (a budget, a revocation,
     /// a stale prerequisite); this only says WHAT the compacted view is.
-    pub fn turn_over(&self, next_id: u64) -> Epoch {
+    pub fn turn_over(&self, next_id: u64) -> Epoch<T> {
         // One pass from the end: the first time a source is seen there is its latest version.
         let mut seen = std::collections::HashSet::new();
-        let mut events: Vec<Event> =
+        let mut events: Vec<Event<T>> =
             self.events.iter().rev().filter(|e| seen.insert(&e.source) && !e.retired).cloned().collect();
         events.reverse();
         Epoch { id: next_id, head: self.head.clone(), events, superseded_chars: 0 }
@@ -112,14 +144,14 @@ mod tests {
     }
 
     fn joined(e: &Epoch) -> String {
-        e.render().collect::<Vec<_>>().join("\n")
+        e.render().map(String::as_str).collect::<Vec<_>>().join("\n")
     }
 
     // what this catches: any act that rewrites an earlier block, which made every restored KV
     // page cold on the M5 (10-19: the results ring mid-prompt re-prefilled 17-29k tokens per act).
     #[test]
     fn within_an_epoch_every_act_only_appends() {
-        let mut e = Epoch::new(1, vec!["identity".into(), "tools".into()]);
+        let mut e = Epoch::<String>::new(1, vec!["identity".into(), "tools".into()]);
         let acts: [&[(&str, &str)]; 4] = [
             &[("kanban", "board v1"), ("ring", "result 1")],
             &[("kanban", "board v1"), ("ring", "result 1\nresult 2")],
@@ -140,7 +172,7 @@ mod tests {
     // what this catches: re-sending an unchanged block as new tokens.
     #[test]
     fn an_unchanged_source_appends_nothing() {
-        let mut e = Epoch::new(1, vec![]);
+        let mut e = Epoch::<String>::new(1, vec![]);
         assert_eq!(e.observe(src("kanban"), "v1".into()), Observed::Appended { version: 0 });
         assert_eq!(e.observe(src("kanban"), "v1".into()), Observed::Unchanged);
         assert_eq!(e.observe(src("kanban"), "v2".into()), Observed::Appended { version: 1 });
@@ -152,15 +184,15 @@ mod tests {
     // on the M5's captures, whole-block keys grew the view ~19k chars per act.
     #[test]
     fn per_item_sources_append_only_the_item_that_changed() {
-        let mut e = Epoch::new(1, vec![]);
+        let mut e = Epoch::<String>::new(1, vec![]);
         for view in ["a.rs", "b.rs", "c.rs"] {
             e.observe(src(&format!("open-views/{view}")), format!("{view} v1 {}", "x".repeat(1000)));
         }
-        let before: usize = e.render().map(str::len).sum();
+        let before: usize = e.chars();
         e.observe(src("open-views/a.rs"), "a.rs v1 ".to_string() + &"x".repeat(1000));
         e.observe(src("open-views/b.rs"), "b.rs v2".into());
         e.observe(src("open-views/c.rs"), "c.rs v1 ".to_string() + &"x".repeat(1000));
-        let after: usize = e.render().map(str::len).sum();
+        let after: usize = e.chars();
         assert_eq!(after - before, "b.rs v2".len(), "only the changed view was appended");
     }
 
@@ -168,7 +200,7 @@ mod tests {
     // that rewrites the prefix to drop the view.
     #[test]
     fn retiring_a_source_appends_its_notice_and_turnover_drops_it() {
-        let mut e = Epoch::new(1, vec![]);
+        let mut e = Epoch::<String>::new(1, vec![]);
         e.observe(src("open-views/a.rs"), "a.rs contents".into());
         let before = joined(&e);
         assert_eq!(e.retire(src("open-views/a.rs"), "[closed a.rs]".into()), Observed::Appended { version: 1 });
@@ -181,7 +213,7 @@ mod tests {
     // what this catches: a turnover that loses a source, keeps a stale version, or reorders.
     #[test]
     fn turnover_keeps_only_each_sources_latest_version_in_arrival_order() {
-        let mut e = Epoch::new(1, vec!["head".into()]);
+        let mut e = Epoch::<String>::new(1, vec!["head".into()]);
         e.observe(src("kanban"), "board v1".into());
         e.observe(src("ring"), "r1".into());
         e.observe(src("kanban"), "board v2".into());
@@ -189,5 +221,18 @@ mod tests {
         assert_eq!(next.id(), 2);
         assert_eq!(next.render().collect::<Vec<_>>(), ["head", "r1", "board v2"]);
         assert_eq!(next.superseded_chars(), 0);
+    }
+
+    // what this catches: a turnover that keeps a source the mind no longer perceives (a
+    // result from another worktree, a closed view): the caller retires what `live_sources`
+    // names and the current render no longer offers.
+    #[test]
+    fn live_sources_names_each_observed_source_once_and_never_a_retired_one() {
+        let mut e = Epoch::<String>::new(1, vec![]);
+        e.observe(src("kanban"), "v1".into());
+        e.observe(src("kanban"), "v2".into());
+        e.observe(src("ring/#1"), "r1".into());
+        e.retire(src("ring/#1"), String::new());
+        assert_eq!(e.live_sources(), [src("kanban")]);
     }
 }
