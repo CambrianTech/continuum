@@ -109,10 +109,10 @@ pub enum GovernorMode {
     /// default: the box serves its whole population fairly.
     #[default]
     Balanced,
-    /// Maximize benchmark capacity: protect the serving lane's full footprint, drop every
+    /// Serving-only: protect the serving lane's full footprint, drop every
     /// OTHER consumer's floor to zero so their `Graceful` leases reclaim and the GPU frees
-    /// for the run. Vision + embedding + media all yield to the benchmark.
-    BenchmarkMax,
+    /// for the run. Vision + embedding + media all yield to serving.
+    ServingOnly,
     /// Development simulation: protect serving AND embedding (recall is load-bearing for a
     /// coding persona's cognition every turn), but yield vision + realtime + other.
     DevSim,
@@ -152,7 +152,7 @@ impl GovernorMode {
             // Everyone protected — nobody starved.
             GovernorMode::Balanced => true,
             // Only the serving lane; everything else yields to the benchmark.
-            GovernorMode::BenchmarkMax => role == ConsumerRole::Serving,
+            GovernorMode::ServingOnly => role == ConsumerRole::Serving,
             // Serving + recall embedding; vision / realtime / other yield.
             GovernorMode::DevSim => matches!(role, ConsumerRole::Serving | ConsumerRole::Embedding),
         }
@@ -203,7 +203,7 @@ mod tests {
     // leave the run oversubscribed (the live wedge this targets).
     #[test]
     fn benchmark_max_protects_only_serving_and_yields_the_rest() {
-        let fs = GovernorMode::BenchmarkMax.floors(&box_demands());
+        let fs = GovernorMode::ServingOnly.floors(&box_demands());
         assert_eq!(
             floor_of(&fs, "serving").floor_bytes,
             22_000,
@@ -282,7 +282,7 @@ mod tests {
         ];
         for mode in [
             GovernorMode::Balanced,
-            GovernorMode::BenchmarkMax,
+            GovernorMode::ServingOnly,
             GovernorMode::DevSim,
         ] {
             let fs = mode.floors(&donated);
@@ -307,11 +307,11 @@ mod tests {
     fn decision_is_a_pure_function_of_the_local_view() {
         let d = box_demands();
         assert_eq!(
-            GovernorMode::BenchmarkMax.floors(&d),
-            GovernorMode::BenchmarkMax.floors(&d)
+            GovernorMode::ServingOnly.floors(&d),
+            GovernorMode::ServingOnly.floors(&d)
         );
         assert_eq!(
-            GovernorMode::BenchmarkMax.floors(&[]),
+            GovernorMode::ServingOnly.floors(&[]),
             Vec::<PolicyFloor>::new()
         );
     }
