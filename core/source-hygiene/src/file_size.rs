@@ -24,7 +24,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // disk_eviction/tests.rs (#![cfg(test)]): disk_eviction.rs fell from 2,426 to 1,283 lines.
 // 159,463 after card 5b497852 moved lane_args.rs's 477-line test module to lane_args/tests.rs
 // (#![cfg(test)]): lane_args.rs fell from 1,198 to 722 lines.
-const BASELINE_LINES_OVER: usize = 159_463;
+// 159,447 after card 3026b83e moved SurfaceReason and the tool-surface receipt out of the
+// deliberation faculty into cognition/tool_surface.rs.
+const BASELINE_LINES_OVER: usize = 159_447;
 
 pub struct FileSize;
 
