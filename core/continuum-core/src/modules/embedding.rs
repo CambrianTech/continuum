@@ -143,7 +143,7 @@ fn simd_l2_norm(v: &[f32]) -> f32 {
     s.sqrt()
 }
 
-pub use crate::cognition::embedding::cosine_similarity;
+use crate::cognition::embedding::cosine_similarity;
 
 /// Compute pairwise cosine similarity matrix in parallel.
 /// Returns flattened lower-triangular matrix (excluding diagonal) as Vec<f32>.

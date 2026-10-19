@@ -10,7 +10,6 @@
 //! model.
 //!
 //! This module now owns only:
-//! - [`cosine_similarity`] — re-export of the canonical relevance math for recall.
 //! - [`DeterministicEmbeddingProvider`] — a deterministic, word-overlap-sensitive
 //!   test embedder that implements the canonical async trait (so semantic recall
 //!   can be exercised without a model or a network round-trip).
@@ -24,7 +23,6 @@ use async_trait::async_trait;
 
 // ─── Vector Math ───────────────────────────────────────────────────────────────
 
-pub use crate::cognition::embedding::cosine_similarity;
 
 // ─── Deterministic Embedding Provider (for testing) ───────────────────────────
 
@@ -114,6 +112,7 @@ impl EmbeddingProvider for DeterministicEmbeddingProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::embedding::cosine_similarity;
 
     #[test]
     fn test_cosine_similarity_identical() {
