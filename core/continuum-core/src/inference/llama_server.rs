@@ -5870,7 +5870,7 @@ impl LlamaServerProcess {
                     class = "serving.backend_probe_timeout",
                     bin = %bin,
                     "`--list-devices` did not answer in 10 s — backend initialisation hangs on \
-                     this host; the lane serves on the CPU and says so"
+                     this host; the GPU lane is refused (never moved to the CPU) and retried"
                 );
                 None
             }
@@ -5902,9 +5902,10 @@ impl LlamaServerProcess {
                 );
                 return Err(LlamaServerError::Spawn(reason.clone()));
             }
-            crate::inference::backend_receipt::BackendVerdict::ProbeHung => {
-                // Last flag wins in llama-server's parser: pin the lane to the CPU.
-                invocation.constrain_to_cpu();
+            // Measured M5 Pro 2026-10-19, same binary and 5,490-token prompt, arms
+            // interleaved: prefill 1,163 / 1,153 tok/s without, 2,185 / 1,478 with.
+            crate::inference::backend_receipt::BackendVerdict::Gpu { device } if device.starts_with("MTL") => {
+                invocation.use_metal_matrix_units(std::env::var_os("GGML_METAL_TENSOR_ENABLE").is_some());
             }
             crate::inference::backend_receipt::BackendVerdict::Gpu { .. }
             | crate::inference::backend_receipt::BackendVerdict::CpuByPlan => {}
@@ -5918,6 +5919,7 @@ impl LlamaServerProcess {
             "GGML_MOE_PLAN_FILE",
             "GGML_MOE_TRACE_FILE",
             "LLAMA_TRACE",
+            "GGML_METAL_TENSOR_ENABLE",
             "CUDA_VISIBLE_DEVICES",
             "CUDA_DEVICE_ORDER",
         ]
@@ -7303,7 +7305,6 @@ mod tests {
             Path::new("/fixture/unused-plan").as_os_str(),
             true,
         );
-        invocation.constrain_to_cpu();
         let launched = invocation.clone();
         process.record_verified_target(&generation, &launch_target, &invocation, None, &process.engine_bin().unwrap(), 11008, 4);
         // A later resolved choice cannot mutate the already verified generation.

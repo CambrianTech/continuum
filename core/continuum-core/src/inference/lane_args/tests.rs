@@ -304,11 +304,6 @@
             ..LaneOptions::default()
         });
         assert!(!cpu_serve.has("--no-repack"), "{:?}", cpu_serve.args);
-        // A probe that constrains an assembled GPU training lane to CPU owes it too, once.
-        let mut constrained = on;
-        constrained.constrain_to_cpu();
-        constrained.constrain_to_cpu();
-        assert_eq!(constrained.args.iter().filter(|a| *a == "--no-repack").count(), 1);
     }
 
     // what this catches: GPU offload left to the backend's default. Metal defaults to
@@ -325,16 +320,26 @@
             ..LaneOptions::default()
         });
         assert_eq!(cpu.value_of("--n-gpu-layers"), Some("0"));
-        // A hung backend probe constrains the already assembled GPU invocation.
-        // Preserve its last-wins ordering in the receipt as well as the command.
-        let original = gpu.args.clone();
-        let mut constrained = gpu;
-        constrained.constrain_to_cpu();
-        assert_eq!(&constrained.args[..original.len()], &original);
-        assert_eq!(
-            &constrained.args[original.len()..],
-            &["--n-gpu-layers", "0"]
-        );
+        assert_eq!(gpu.args.iter().filter(|a| *a == "--n-gpu-layers").count(), 1, "one placement, never a later override");
+        // The MTP draft is placed the same way, never left to the engine's `auto` fit.
+        let draft = std::path::Path::new("/m/mtp-x.gguf");
+        let gpu_draft = inv(2, 8192).with_options(&LaneOptions { mtp_draft: Some(draft), ..LaneOptions::default() });
+        assert_eq!(gpu_draft.value_of("--spec-draft-ngl"), Some(ALL_GPU_LAYERS));
+        let cpu_draft = inv(2, 8192).with_options(&LaneOptions { mtp_draft: Some(draft), cpu_only: true, ..LaneOptions::default() });
+        assert_eq!(cpu_draft.value_of("--spec-draft-ngl"), Some("0"));
+    }
+
+    // what this catches: a Metal lane launched without the GPU matrix units (opt-in in our
+    // engine build), which ran the M5's prefill at about half speed.
+    #[test]
+    fn a_metal_lane_asks_for_the_matrix_units_and_an_operator_value_wins() {
+        let mut lane = LaneInvocation::default();
+        lane.use_metal_matrix_units(false);
+        assert!(lane.envs.iter().any(|(k, v)| k == "GGML_METAL_TENSOR_ENABLE" && v == "1"));
+        let mut operator = LaneInvocation::default();
+        operator.use_metal_matrix_units(true);
+        assert!(operator.envs.is_empty());
+        assert_eq!(operator.inherited_env_keys, ["GGML_METAL_TENSOR_ENABLE"]);
     }
 
     // what this catches: THE 2026-08-20 SPAWN FAILURE, as a test instead of an outage.
@@ -474,3 +479,4 @@
             .with_options(&LaneOptions { max_ubatch: Some(1 << 20), ..Default::default() });
         assert_eq!(j.value_of("--ubatch-size"), Some("2048"));
     }
+
