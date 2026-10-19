@@ -265,7 +265,7 @@ async fn head_sha(root: &Path) -> Option<String> {
 }
 
 /// Does the working tree differ from HEAD (tracked edits or untracked files)?
-async fn is_dirty(root: &Path) -> Result<bool, String> {
+pub(crate) async fn is_dirty(root: &Path) -> Result<bool, String> {
     run_git(root, &["status", "--porcelain", "--untracked-files=all"]).await.map(|s| !s.trim().is_empty())
 }
 

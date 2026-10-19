@@ -431,6 +431,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // index, the log's one rotated predecessor (airc 551fe5ae).
         TrackedDir::with_companions("airc-store", home.join(".airc/events.sqlite"), &["-wal", "-shm"]),
         TrackedDir::with_companions("airc-daemon-log", home.join(".airc/airc-daemon.log"), &[".1"]),
+        // The node's bare repo mirrors that residents' card clones borrow objects from
+        // (card d166e4f2). One per repo; it grows with the repo's history and is never
+        // pruned (preciousObjects), so its size is the class to watch.
+        TrackedDir::new("airc-mirrors", home.join(".airc/mirrors")),
         TrackedDir::new("logs", home.join(".continuum/logs")),
         TrackedDir::new("probes", home.join(".continuum/probes")),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
