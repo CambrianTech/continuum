@@ -1079,7 +1079,7 @@ pub fn start_server(
     // condition we can recover from.
     let registry_started = std::time::Instant::now();
     let registry_init = crate::model_registry::init_global();
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.registry_init",
         outcome = if registry_init.is_ok() { "ok" } else { "error" },
         ms = registry_started.elapsed().as_millis() as u64,
@@ -1276,7 +1276,7 @@ pub fn start_server(
     let model_catalog = Arc::new(crate::model_registry::live::ModelCatalog::from_registry(
         crate::model_registry::global(),
     ));
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.stretch",
         stretch = "serving_span",
         step = "model_catalog",
@@ -1319,7 +1319,7 @@ pub fn start_server(
         // contention looks like.
         let t_gpu = std::time::Instant::now();
         let detected_monitor = crate::gpu::monitor::detect();
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.stretch",
             stretch = "serving_span",
             step = "gpu_monitor_detect",
@@ -1457,7 +1457,7 @@ pub fn start_server(
     ));
     // Training admission reads governed memory under this gate (aae8af55).
     crate::modules::serving_daemon::LifecycleGate::set_global(serving_daemon.lifecycle_gate());
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.stretch",
         stretch = "serving_span",
         step = "serving_daemon_new",
@@ -1966,7 +1966,7 @@ pub fn start_server(
                                 )
                                 .await
                             {
-                                Ok(_) => crate::probe!(
+                                Ok(_) => continuum_base::probe!(
                                     class = "live.call.citizens_populated",
                                     call_id = %call,
                                     participants = n,
@@ -2045,7 +2045,7 @@ pub fn start_server(
                             )
                             .await
                         {
-                            Ok(_) => crate::probe!(
+                            Ok(_) => continuum_base::probe!(
                                 class = "live.stt.utterance_to_room",
                                 room = %room,
                                 speaker = %speaker,
@@ -2088,7 +2088,7 @@ pub fn start_server(
         });
     }
     {
-        let port = crate::config_env::read("CONTINUUM_CALL_WS")
+        let port = continuum_base::config_env::read("CONTINUUM_CALL_WS")
             .and_then(|s| s.trim().parse::<u16>().ok())
             .unwrap_or(8790);
         let addr = format!("127.0.0.1:{port}");
@@ -2452,7 +2452,7 @@ pub fn start_server(
         let mut last = std::time::Instant::now();
         move |step: &'static str, next: &'static str| {
             let now = std::time::Instant::now();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "boot.stretch",
                 stretch = "persona_host_setup",
                 step = step,
@@ -2757,7 +2757,7 @@ pub fn start_server(
         // Persona floor — how many citizens to host (read early: it is ALSO the
         // serving plan's lane DEMAND, so it must be set before the first
         // compute_plan; see below for the full doc).
-        let persona_floor = crate::config_env::read("CONTINUUM_PERSONA_FLOOR")
+        let persona_floor = continuum_base::config_env::read("CONTINUUM_PERSONA_FLOOR")
             .and_then(|v| v.trim().parse::<usize>().ok())
             .filter(|&n| n >= 1)
             .unwrap_or(1);
@@ -2948,11 +2948,11 @@ pub fn start_server(
             let none_local = crate::model_registry::catalog::models()
                 .iter()
                 .all(|m| crate::model_registry::artifacts::resolve_gguf_for_model(m).is_none());
-            let opted_out = crate::config_env::read("CONTINUUM_NO_AUTO_PULL")
+            let opted_out = continuum_base::config_env::read("CONTINUUM_NO_AUTO_PULL")
                 .is_some_and(|v| v == "1");
             if none_local && !opted_out {
                 const FIRST_BOOT_MODEL: &str = "continuum-ai/qwen3.5-4b-code-forged-GGUF";
-                crate::probe!(
+                continuum_base::probe!(
                     class = "boot.first_model_pull",
                     model = FIRST_BOOT_MODEL,
                     "fresh install: no local GGUF anywhere — boot pulls the first-boot                      default so citizens are never mute on a stranger's machine"
@@ -3019,7 +3019,7 @@ pub fn start_server(
                     crate::persona::grid_roster_memory::team_elsewhere_at(
                         &home,
                         crate::persona::operator_peer::operator_airc().map(|a| a.peer_id().as_uuid()),
-                        crate::time::EpochMs::now().millis(),
+                        continuum_base::time::EpochMs::now().millis(),
                     )
                 })
             });
@@ -3065,7 +3065,7 @@ pub fn start_server(
             // the concurrency for diagnosis; a probe does. This pins whether the reconciler is
             // even alive after a reboot-with-adopted-lane, how many passes it makes, and what
             // it saw each pass — the exact seam three indirect hypotheses could not resolve.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.host.reconciler_started",
                 population = provider.identities_available(),
                 "hosting reconciler task alive — entering the plan-edge loop"
@@ -3115,7 +3115,7 @@ pub fn start_server(
                     None => true,
                 };
                 if pass_row_due {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.host.reconciler_pass",
                         pass = pass,
                         plan_ready = plan_ready,
@@ -3154,7 +3154,7 @@ pub fn start_server(
                         None => true,
                     };
                     if ready_row_due {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.host.await_ready",
                             pass = pass,
                             decode_ready = decode_ready,
@@ -3179,7 +3179,7 @@ pub fn start_server(
                             // failed attempt leaves its cursor at the end. Nothing was hosted
                             // (booted is false), so start the draw over.
                             provider.rewind();
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.host.provider_rewound",
                                 attempt,
                                 population = provider.identities_available(),
@@ -3388,7 +3388,7 @@ pub fn start_server(
                     Some(active.clone()),
                     snap.served_context_window,
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.rehome",
                     model = %active,
                     context_window = snap.served_context_window,
@@ -3435,7 +3435,7 @@ pub fn start_server(
         // adapters (Mistral, Anthropic, Fireworks, DeepSeek,
         // Together) plug in here as their impls land — same pattern,
         // gate on the matching `*_API_KEY` secret.
-        if crate::secrets::get_secret("OPENAI_API_KEY").is_some() {
+        if continuum_base::secrets::get_secret("OPENAI_API_KEY").is_some() {
             ft_registry.register(std::sync::Arc::new(OpenAIFineTuningAdapter::new()));
             log_info!(
                 "ipc",
@@ -3591,7 +3591,7 @@ pub fn start_server(
     runtime.register(grid_module);
 
     // Initialize modules (runs async init in sync context)
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "construct_modules",
         ms = phase_started.elapsed().as_millis() as u64,
@@ -3607,7 +3607,7 @@ pub fn start_server(
         // and the SIGNAL handlers run the parallel save-and-join broadcast
         // before exit — a stop finally saves, a boot finally loads, both
         // receipted per node (boot.load_state / shutdown.step).
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.phase",
             phase = "initialize",
             ms = phase_started.elapsed().as_millis() as u64,
@@ -3615,7 +3615,7 @@ pub fn start_server(
         );
         let load_started = std::time::Instant::now();
         runtime.load_all_state().await;
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.phase",
             phase = "load_state",
             ms = load_started.elapsed().as_millis() as u64,
@@ -3782,14 +3782,14 @@ pub fn start_server(
                     )
                     .await
                     {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "node.command_pump.boot_failed",
                             error = %e.to_string(),
                             "the node cannot answer cross-grid commands this boot — minds seated here by its beacon will time out until it can"
                         );
                     }
                 }
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "node.command_pump.boot_failed",
                     error = %e.to_string(),
                     "no continuum home for the node pump's state — the node cannot answer cross-grid commands this boot"
@@ -3826,7 +3826,7 @@ pub fn start_server(
     // gates exactly one statement, and gating the probe left the Unix bind
     // compiling on Windows (the windows-msvc check caught it on the rebase).
     #[cfg(unix)]
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "post_init_to_bind",
         ms = phase_started.elapsed().as_millis() as u64,
@@ -3837,7 +3837,7 @@ pub fn start_server(
     #[cfg(unix)]
     let listener = UnixListener::bind(socket_path)?;
     #[cfg(unix)]
-    crate::probe!(
+    continuum_base::probe!(
         class = "boot.phase",
         phase = "bind",
         ms = bind_started.elapsed().as_millis() as u64,
@@ -3867,7 +3867,7 @@ pub fn start_server(
     // The watch supersedes the previous oneshot parameter — any number
     // of late or eager subscribers can attach via `subscribe_ready()`.
     let _ = ipc_ready_tx().send(true);
-    crate::probe!(
+    continuum_base::probe!(
         class = "ready.observed",
         module = "ipc-server",
         socket = socket_path
@@ -4402,7 +4402,7 @@ pub fn start_server(
         // `#[cfg(unix)]`-gated with the Unix bind (the windows-msvc fix on #3714),
         // so on Windows the stretch after load_state — where BigMama's boot spent
         // 108 unattributed seconds and used to die — had no row at all (2026-09-05).
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.phase",
             phase = "post_init_to_bind",
             ms = phase_started.elapsed().as_millis() as u64,
@@ -4410,7 +4410,7 @@ pub fn start_server(
         );
         let bind_started = std::time::Instant::now();
         let listener = TcpListener::bind(&bind_addr)?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "boot.phase",
             phase = "bind",
             ms = bind_started.elapsed().as_millis() as u64,

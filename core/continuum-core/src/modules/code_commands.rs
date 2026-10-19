@@ -208,7 +208,7 @@ async fn ensure_citizen_layer_from_base(
                 // so the bench board re-reads it on the event, never on a clock
                 // (card f860e59c). The layer root maps to all of her instances.
                 crate::code::workspace_events::note_written(&layer);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "workspace.layer.sync",
                     peer = %peer,
                     summary = %report.summary,
@@ -271,7 +271,7 @@ async fn ensure_citizen_layer_from_base(
     // copy so its objects are shared too. Bounded and named: a layer without the vendor
     // tree still gives her hands (the core serves inference, not her checkout).
     let vendor = init_vendor_submodule(&layer, &repo_root).await;
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.layer.provision",
         peer = %peer,
         base = %base.display(),
@@ -322,7 +322,7 @@ async fn protect_shared_objects(base: &std::path::Path) {
         return;
     }
     let set = run_git(base, &["config", "extensions.preciousObjects", "true"]).await.is_ok();
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.layer.base_protected",
         base = %base.display(),
         set,
@@ -372,7 +372,7 @@ async fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path
     }
     .await;
     match outcome {
-        Ok(summary) => crate::probe!(
+        Ok(summary) => continuum_base::probe!(
             class = "workspace.layer.objects_shared",
             layer = %layer.display(),
             summary = %summary,
@@ -674,7 +674,7 @@ impl ActionCommand for CodeWrite {
         let out = engine
             .write_in(&p.file_path, &p.content, p.description.as_deref(), &scope)
             .map_err(engine_err);
-        crate::probe!(
+        continuum_base::probe!(
             class = "code.write.landed",
             path = %p.file_path,
             existed = before.is_some(),
@@ -1880,7 +1880,7 @@ impl ActionCommand for CodeReleaseHands {
         if released {
             self.state.finish_release(&who);
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "code.hands.released",
             caller = key.caller.as_str(),
             context = %context.id(),
@@ -2035,7 +2035,7 @@ impl ActionCommand for CodeCreateWorkspace {
                 // pre-fix and passes post-fix through her exact edit semantics.
                 // PYTHONPATH precedes the venv's .pth entries, so her tree wins.
                 shell.set_env("PYTHONPATH".to_string(), p.workspace_root.clone());
-                crate::probe!(
+                continuum_base::probe!(
                     class = "code.workspace.path_prepend",
                     caller = who.as_str(),
                     prepend = prepend.as_str(),

@@ -34,7 +34,7 @@
 //!
 //! See: docs/architecture/UNIFIED-PAGING.md
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -34,7 +34,7 @@
 //! 3. **Era.** Both the dependency graph AND the interpreter have one. 2014 code does
 //!    `from collections import Mapping`, deleted in 3.10; no pin rescues that.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -163,7 +163,7 @@ impl SweInstance {
             .into_iter()
             .partition(|id| !is_unsatisfiable_test_id(id));
         if !dropped.is_empty() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.dataset.unsatisfiable_ids",
                 instance = %instance_id,
                 field = %field,
@@ -710,7 +710,7 @@ fn persist_verdict(
             .append(true)
             .open(&history)
             .and_then(|mut f| writeln!(f, "{line}"));
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.downgrade_refused",
             instance = verdict.instance_id.as_str(),
             f2p = format!("{}/{}", verdict.f2p_passed, verdict.f2p_total),
@@ -1092,7 +1092,7 @@ pub(crate) async fn run_env(
     match out.ended {
         crate::inference::lane_process::Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout.bytes, stderr: out.stderr.bytes }),
         crate::inference::lane_process::Ended::TimedOut { unconfirmed } => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.subprocess.ceiling",
                 program = %program,
                 ceiling_s = SUBPROCESS_CEILING.as_secs(),
@@ -1399,7 +1399,7 @@ fn era_checkout_fixups(instance: &SweInstance, repo_dir: &Path) {
 ";
     let patched = src.replacen(anchor, replacement, 1);
     if std::fs::write(&cp, patched).is_ok() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.env.checkout_fixup",
             instance = %instance.instance_id,
             fixup = "cloudpickle-py38-codetype",
@@ -1709,7 +1709,7 @@ async fn ensure_test_extra(
     )
     .await;
     let ok = matches!(&outcome, Ok(o) if o.status.success());
-    crate::probe!(
+    continuum_base::probe!(
         class = "swe.env.test_extra",
         extra = %extra,
         installed = ok,
@@ -2735,7 +2735,7 @@ async fn era_pinned_uv_install(
         // failure recorded as the instance's env verdict, card cffc9c5e again. A step
         // change in unmatched failures is how that drift is seen the day it lands.
         let matched = network_failure_signature(&stderr);
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.env.install_failed",
             signature_matched = matched,
             tail = ?tail,
@@ -2808,7 +2808,7 @@ async fn era_pinned_uv_install(
 }
 
 fn which(bin: &str) -> Option<String> {
-    crate::shell_portable::locate_executable(bin)
+    continuum_base::shell_portable::locate_executable(bin)
         .map(|path| path.to_string_lossy().into_owned())
 }
 
@@ -4022,7 +4022,7 @@ impl Drop for GradeCheckoutHold {
         let remove = move || {
             if let Err(e) = std::fs::remove_dir_all(&dir) {
                 if e.kind() != std::io::ErrorKind::NotFound {
-                    crate::probe!(class = "swe.grade_checkout_release_failed", dir = %dir.display(), error = %e);
+                    continuum_base::probe!(class = "swe.grade_checkout_release_failed", dir = %dir.display(), error = %e);
                 }
             }
         };
@@ -4052,7 +4052,7 @@ fn sweep_orphan_grade_checkouts(root: &Path, live: &std::collections::HashSet<St
         }
     }
     if removed > 0 {
-        crate::probe!(class = "swe.grade_checkouts_swept", root = %root.display(), removed = removed);
+        continuum_base::probe!(class = "swe.grade_checkouts_swept", root = %root.display(), removed = removed);
     }
     removed
 }
@@ -4210,7 +4210,7 @@ pub async fn grade(instance: &SweInstance, model_patch: Option<&str>) -> SweVerd
         PristineGate::Holds { pristine_green } => {
             verdict.gate_ok = true;
             if !pristine_green.is_empty() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.grade.pristine_green",
                     instance = instance.instance_id.as_str(),
                     already = %format!("{pristine_green:?}"),

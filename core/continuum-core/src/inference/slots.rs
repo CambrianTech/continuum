@@ -313,7 +313,7 @@ async fn seed_state_samples_with(
         match &*seeding {
             Some((reading, read)) if reading == dir => read.clone(),
             Some((reading, _)) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.kv_page.seed_busy",
                     dir = %dir.display(),
                     reading = %reading.display(),
@@ -329,7 +329,7 @@ async fn seed_state_samples_with(
         }
     };
     if let Guarded::TimedOut = guarded(crate::system_resources::disk_pressure::REPORTER_TIMEOUT, reading).await {
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.seed_pending",
             dir = %dir.display(),
             "the saved pages are still being read; this sizing uses the estimate, the next one the pages",
@@ -356,7 +356,7 @@ fn spawn_state_read(
             .and_then(|states| states)
         {
             Ok(states) => seed_dir_in(&mut RECENT_STATE_BYTES.lock(), &dir, states),
-            Err(error) => crate::probe!(
+            Err(error) => continuum_base::probe!(
                 class = "inference.kv_page.seed_failed",
                 dir = %dir.display(),
                 error = %error,
@@ -460,7 +460,7 @@ pub fn trim_page_store_after_save(just_saved: &str) {
     let (removed, freed, kept) =
         trim_page_store(&dir, just_saved, KV_PAGE_STORE_MAX_BYTES, KV_PAGE_MIN_AGE_MS);
     if removed > 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.store_trimmed",
             dir = %dir.display(),
             removed = removed as u64,
@@ -554,7 +554,7 @@ pub fn trim_page_store(
     let pages = match pages_in(dir) {
         Ok(pages) => pages,
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.store_unreadable",
                 dir = %dir.display(),
                 error = %error,
@@ -620,7 +620,7 @@ impl KvSlotPool {
             // later drop-in behind this same closure seam.
             eviction_priority: Arc::new(|view, lease: &Arc<KvSlotLease>| {
                 let tokens = lease.tail_tokens.load(Ordering::Relaxed).max(1);
-                let now_ms = crate::time::EpochMs::read().map_or(view.last_access_at, crate::time::EpochMs::millis); // engine has no view of a just-inserted key: fall back to its own stamp
+                let now_ms = continuum_base::time::EpochMs::read().map_or(view.last_access_at, continuum_base::time::EpochMs::millis); // engine has no view of a just-inserted key: fall back to its own stamp
                 let stale_hours =
                     now_ms.saturating_sub(view.last_access_at) / (3600 * 1000);
                 let cost = (tokens >> stale_hours.min(20)) as i64;
@@ -758,7 +758,7 @@ impl KvSlotPool {
                     // Nothing to evict: every lease is pinned by an in-flight turn. Said as
                     // what it is (it read "engine evicted" with evicted_count 0, Fable on the
                     // M5); the caller waits for a release rather than running unpinned.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "inference.slot_affinity.all_pinned",
                         persona = %key.persona,
                         room = %key.room,
@@ -766,7 +766,7 @@ impl KvSlotPool {
                     );
                     return None;
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.slot_affinity.evicted",
                     evicted_count = evicted,
                     "all slots held — engine evicted the least-valuable activity; its \
@@ -791,7 +791,7 @@ impl KvSlotPool {
                 .await;
             match res {
                 Ok(lease) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "inference.slot_affinity.pinned",
                         persona = %key.persona,
                         room = %key.room,
@@ -944,7 +944,7 @@ impl KvSlotPool {
         if let Err(error) = ledger.write(generation, keys) {
             // The in-memory set stays authoritative for this process; only a restart
             // loses the eligibility the file would have carried.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.ledger_unwritten",
                 path = %ledger.path.display(),
                 error = %error,
@@ -1033,7 +1033,7 @@ impl SavedLedger {
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, bytes)?;
-        crate::fs_portable::replace::replace_file(&tmp, &self.path)?;
+        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)?;
         *written = generation;
         Ok(())
     }
@@ -1046,7 +1046,7 @@ impl SavedLedger {
             return std::collections::HashSet::new();
         };
         let unread = |why: &str| {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.ledger_unread",
                 path = %self.path.display(),
                 why = why,
@@ -1303,7 +1303,7 @@ impl EngineGeneration {
             let state = endpoint.state.lock();
             if state.generation.as_ref().is_some_and(|g| g.id == self.id) {
                 state.ready.send_replace(false);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.kv_engine.exited",
                     generation = %self.id,
                     "owned engine exit observed; endpoint admissions remain closed"
@@ -1320,7 +1320,7 @@ impl EndpointSlots {
         let mut state = self.state.lock();
         state.paging_uncertain = true;
         state.ready.send_replace(false);
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.uncertain",
             "paging completion unverified; endpoint requires verified engine replacement"
         );
@@ -1385,7 +1385,7 @@ impl EndpointSlots {
                     return Err("serving endpoint closed while a turn waited for readiness".into())
                 }
                 Err(_) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "inference.admission.refused_after_hold",
                         held_ms = held.elapsed().as_millis() as u64,
                         reopened,
@@ -1400,7 +1400,7 @@ impl EndpointSlots {
             match self.admit().await {
                 Ok(admission) => {
                     if waited {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.admission.held",
                             held_ms = held.elapsed().as_millis() as u64,
                             reopened,
@@ -1718,7 +1718,7 @@ impl EndpointTransition {
         // when nothing was carried.
         if let (Some(dir), Some(fingerprint)) = (contract.page_dir.as_ref(), contract.fingerprint()) {
             let loaded = pool.attach_ledger(SavedLedger::in_dir(dir, fingerprint), !carried);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.ledger_attached",
                 endpoint = root,
                 carried = carried,
@@ -1731,7 +1731,7 @@ impl EndpointTransition {
         state.pool_generation = Some(generation.id);
         state.contract = Some(contract);
         state.ready.send_replace(true);
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_engine.ready",
             endpoint = root,
             generation = %generation.id,
@@ -1815,7 +1815,7 @@ impl SlotDirectory {
             return false; // a response from an old incarnation cannot authorize its successor
         }
         if !matches!(state.page_admission, Some(Ok(_))) {
-            crate::probe!(class = "inference.kv_page.capability",
+            continuum_base::probe!(class = "inference.kv_page.capability",
                 governed = matches!(&admission, Ok(Some(_))),
                 refused = admission.is_err(),
                 "page-write negotiation; legacy and remote ownership remain unactivated");

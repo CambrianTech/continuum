@@ -3,7 +3,7 @@
 //! Multi-participant audio mixing with mix-minus support.
 //! Each participant hears everyone except themselves.
 
-use crate::audio_constants::AUDIO_FRAME_SIZE;
+use continuum_base::audio_constants::AUDIO_FRAME_SIZE;
 use crate::live::audio::vad::{ProductionVAD, VADError};
 use crate::runtime::handle::Handle;
 use crate::{clog_debug, clog_info, clog_warn};
@@ -79,7 +79,7 @@ const AI_RING_BUFFER_SECONDS: usize = 60;
 
 /// Ring buffer size for AI audio (samples)
 const AI_RING_BUFFER_SIZE: usize =
-    crate::audio_constants::AUDIO_SAMPLE_RATE as usize * AI_RING_BUFFER_SECONDS;
+    continuum_base::audio_constants::AUDIO_SAMPLE_RATE as usize * AI_RING_BUFFER_SECONDS;
 
 /// Participant audio stream - zero allocations on hot path
 pub struct ParticipantStream {
@@ -235,7 +235,7 @@ impl ParticipantStream {
                         self.display_name,
                         samples.len() - samples_to_write,
                         samples.len(),
-                        self.ai_ring_available as f32 / crate::audio_constants::AUDIO_SAMPLE_RATE as f32,
+                        self.ai_ring_available as f32 / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as f32,
                         AI_RING_BUFFER_SECONDS
                     );
                 }
@@ -255,7 +255,7 @@ impl ParticipantStream {
                         samples_to_write,
                         self.ai_ring_available,
                         self.ai_ring_available as f32
-                            / crate::audio_constants::AUDIO_SAMPLE_RATE as f32
+                            / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as f32
                     );
                 }
             }
@@ -288,7 +288,7 @@ impl ParticipantStream {
                 Ok(Some(complete_sentence)) => {
                     // Complete sentence ready for transcription
                     let duration_ms = (complete_sentence.len() as f32
-                        / crate::audio_constants::AUDIO_SAMPLE_RATE as f32)
+                        / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as f32)
                         * 1000.0;
                     clog_info!(
                         "📤 Complete sentence ready for {} ({} samples, {:.0}ms)",
@@ -429,7 +429,7 @@ impl AudioMixer {
 
     /// Create mixer with default settings (uses audio_constants)
     pub fn default_voice() -> Self {
-        use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
+        use continuum_base::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
         Self::new(AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE)
     }
 
@@ -673,7 +673,7 @@ impl AudioMixer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
+    use continuum_base::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::live::audio::pcm::is_silence;
     use test_utils::*;
 

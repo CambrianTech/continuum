@@ -260,12 +260,11 @@ mod tests {
 
     use super::*;
 
+    // A fresh directory per call: a per-process counter under the shared temp dir collided
+    // with files earlier runs left behind (found when this module left continuum-core).
     fn tmp_config() -> PathBuf {
-        // Unique per test via thread id + a counter — no Date/rand needed.
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("continuum-config-env-test-{n}/config.env"))
+        let dir = tempfile::tempdir().expect("a temp dir for a config test");
+        dir.keep().join("config.env")
     }
 
     /// What this catches: the file has to reach a CHILD PROCESS, not just answer one key. A core

@@ -3013,7 +3013,7 @@ fn apply_runtime_library_path(cmd: &mut std::process::Command) -> Result<(), Str
 /// The candidate's provenance probe and the actual launch need the same loader
 /// environment. Configure only the child; never export into the calling shell.
 fn apply_core_runtime_env(cmd: &mut std::process::Command) -> Result<(), String> {
-    for (k, v) in continuum_core::config_env::read_all() {
+    for (k, v) in continuum_base::config_env::read_all() {
         cmd.env(k, v);
     }
     apply_runtime_library_path(cmd)
@@ -3138,7 +3138,7 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
     };
     let claim = deploy_claim::read(&root);
     let alive = claim.as_ref().is_some_and(|c| pid_alive(c.pid));
-    let now = continuum_core::time::EpochMs::now().millis();
+    let now = continuum_base::time::EpochMs::now().millis();
     match deploy_claim::with_wait(deploy_claim::decide(claim.as_ref(), alive, now), deploy_claim::read_waiting(&root).as_ref(), now) {
         // A deploy waiting on CI has swapped nothing: the installed core is the running build.
         DeployGate::Clear | DeployGate::Waiting { .. } => Ok(()),
@@ -3199,7 +3199,7 @@ impl DeployClaimGuard {
         use continuum_cli_lifecycle::deploy_claim::{self, DeployClaim, CLAIM_RENEW_EVERY_MS};
         let root = continuum_root().ok()?;
         let pid = std::process::id() as i32;
-        let started = continuum_core::time::EpochMs::now().millis();
+        let started = continuum_base::time::EpochMs::now().millis();
         let claim = DeployClaim {
             pid,
             started_ms: started,
@@ -3222,7 +3222,7 @@ impl DeployClaimGuard {
                             match stopped.recv_timeout(std::time::Duration::from_millis(CLAIM_RENEW_EVERY_MS)) {
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                                     let working = deploy_working(&mut sys, pid);
-                                    if !deploy_claim::renew(&renew_root, pid, continuum_core::time::EpochMs::now().millis(), working) {
+                                    if !deploy_claim::renew(&renew_root, pid, continuum_base::time::EpochMs::now().millis(), working) {
                                         return; // no longer ours (or unwritable): stop renewing
                                     }
                                 }
@@ -3561,7 +3561,7 @@ impl ConsumeLedger {
             serde_json::to_writer(&mut file, self).map_err(|error| format!("encode deploy ledger: {error}"))?; // boundary: durable lifecycle receipt
             file.flush().and_then(|_| file.sync_all()).map_err(|error| format!("sync deploy ledger: {error}"))?;
             drop(file);
-            continuum_core::fs_portable::durable_rename(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
+            continuum_base::fs_portable::durable_rename(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
             Ok(())
         })();
         if result.is_err() { let _ = std::fs::remove_file(&temporary); }
@@ -3918,7 +3918,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
     // built from this install must track this clone, not the dir it was compiled in. Read
     // mode records nothing; a converged write records the same value it already reads.
     if !check {
-        let recorded = continuum_core::config_env::read(continuum_core::runtime::tracked_checkout::TRACK_REPO_DIR_KEY);
+        let recorded = continuum_base::config_env::read(continuum_core::runtime::tracked_checkout::TRACK_REPO_DIR_KEY);
         if recorded.as_deref() != Some(&*repo.to_string_lossy()) {
             continuum_core::runtime::tracked_checkout::record(&repo)?;
             println!("  core: recorded {} as the tracked checkout (config.env)", repo.display());
@@ -4677,7 +4677,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     // checking out a new tip under it dooms its build (card 634f644d). Only a dead owner's
     // claim is swept (by `reboot` itself).
     let gate = continuum_root()
-        .map(|root| continuum_cli_lifecycle::deploy_claim::in_flight(&root, continuum_core::time::EpochMs::now().millis()))
+        .map(|root| continuum_cli_lifecycle::deploy_claim::in_flight(&root, continuum_base::time::EpochMs::now().millis()))
         .ok(); // no root = no claim file = nothing in flight
     if let Some(continuum_cli_lifecycle::deploy_claim::DeployGate::Abandoned { pid, age_ms, .. }) = gate
         .as_ref()
@@ -4968,7 +4968,7 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
                 // it before the install).
                 if let Ok(root) = continuum_root() {
                     let pid = std::process::id() as i32;
-                    let now = continuum_core::time::EpochMs::now().millis();
+                    let now = continuum_base::time::EpochMs::now().millis();
                     let _ = continuum_cli_lifecycle::deploy_claim::renew(&root, pid, now, true);
                     if let Err(e) = continuum_cli_lifecycle::deploy_claim::mark_waiting(&root, pid, now) {
                         deploy_note(&format!(
@@ -5257,8 +5257,8 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
     }
     // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
     // GNU tar never reads the drive letter as a host (Fable on #4834).
-    let members = continuum_core::shell_portable::tar_on(&archive, "-tzf")?.output().map_err(|e| format!("listing archive: {e}"))?;
-    let details = continuum_core::shell_portable::tar_on(&archive, "-tvzf")?.output().map_err(|e| format!("listing archive types: {e}"))?;
+    let members = continuum_base::shell_portable::tar_on(&archive, "-tzf")?.output().map_err(|e| format!("listing archive: {e}"))?;
+    let details = continuum_base::shell_portable::tar_on(&archive, "-tvzf")?.output().map_err(|e| format!("listing archive types: {e}"))?;
     if !members.status.success() || !details.status.success() { return Err("Cannot inspect published archive before extraction".into()); }
     continuum_cli_lifecycle::prebuilt_artifact::archive_members_verdict(&String::from_utf8_lossy(&members.stdout), &String::from_utf8_lossy(&details.stdout), platform)?;
     let expanded = archive_expanded_bytes(&String::from_utf8_lossy(&details.stdout))?;
@@ -5271,7 +5271,7 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
         }
         error => error,
     })?;
-    let status = continuum_core::shell_portable::tar_on(&archive, "-xzf")?
+    let status = continuum_base::shell_portable::tar_on(&archive, "-xzf")?
         .status()
         .map_err(|e| format!("tar: {e}"))?;
     if !status.success() {
@@ -5370,7 +5370,7 @@ fn tip_age_secs(repo: &Path, tip: &str) -> u64 {
         .ok()
         .and_then(|s| s.trim().parse::<u64>().ok());
     // A clock before 1970 reads as the epoch, so every tip is "new" and the consumer waits.
-    let now = continuum_core::time::EpochMs::now().secs();
+    let now = continuum_base::time::EpochMs::now().secs();
     committed.map(|c| now.saturating_sub(c)).unwrap_or(0) // unwrap_or: an unreadable commit time waits, it does not compile early
 }
 
@@ -6271,11 +6271,11 @@ fn build_env_cuda(repo: &Path) -> Result<BuildEnvCuda, String> {
 }
 
 fn locate_bash() -> Result<PathBuf, String> {
-    // Body moved to `continuum_core::shell_portable` — a private `fn` here could
+    // Body moved to `continuum_base::shell_portable` — a private `fn` here could
     // not be reused, so `code/shell` (a persona's HANDS) grew the identical
     // WSL-shim bug one directory away and stayed broken after this was fixed.
     // A portability decision belongs in exactly one place.
-    continuum_core::shell_portable::locate_bash()
+    continuum_base::shell_portable::locate_bash()
 }
 
 /// What the CALLER needs out of a launch — not what happens to be on disk.
@@ -7703,7 +7703,7 @@ async fn desktop_receipt_line() -> String {
     // background" was a promise nothing kept: the M5 printed it on eight consecutive
     // deploys (2026-09-26) while the core booted `desktop.dm.unconfigured` each time.
     let configured = std::env::var("CONTINUUM_UI_DIST").ok().filter(|v| !v.trim().is_empty()).is_some()
-        || continuum_core::config_env::read("CONTINUUM_UI_DIST").is_some();
+        || continuum_base::config_env::read("CONTINUUM_UI_DIST").is_some();
     desktop_receipt(desktop_answering().await, configured, desktop_port())
 }
 
@@ -8962,7 +8962,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let log = dir.path().join("deploy.log");
         std::fs::write(&log, "seed\n").expect("seed");
-        let bash = continuum_core::shell_portable::locate_bash().expect("Git bash is a build prerequisite on Windows");
+        let bash = continuum_base::shell_portable::locate_bash().expect("Git bash is a build prerequisite on Windows");
         let status = std::process::Command::new(bash)
             .args(["-c", "echo from-bash"])
             .stdin(Stdio::null())

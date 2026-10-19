@@ -27,7 +27,7 @@ use crate::runtime::{
     CommandResult, LateBound, ModuleConfig, ModuleContext, ModuleLogger, ModulePriority,
     ServiceModule,
 };
-use crate::secrets::get_secret;
+use continuum_base::secrets::get_secret;
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use serde_json::Value;
@@ -391,7 +391,7 @@ impl AIProviderModule {
                                         ),
                                     );
                                 } else {
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "ai.gateway_resync",
                                         base_url = want.0.as_str(),
                                         model = short,
@@ -401,7 +401,7 @@ impl AIProviderModule {
                                 synced = Some(want);
                             }
                             Err(e) => {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "ai.gateway_resync_retry",
                                     base_url = want.0.as_str(),
                                     error = e.as_str(),
@@ -678,7 +678,7 @@ impl AIProviderModule {
         // the gateway is absent — a missing gateway fails loud at select(), it does not
         // get papered over with local inference ([[no-fallbacks-ever]]).
         let local_llama_opt_in =
-            crate::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() == Some("1");
+            continuum_base::config_env::read("CONTINUUM_LOCAL_LLAMA").as_deref() == Some("1");
         if let Some(reg_arc) = crate::model_registry::try_global().filter(|_| local_llama_opt_in) {
             for model_meta in reg_arc.models_for_provider(crate::inference::LLAMACPP_PROVIDER_ID) {
                 let Some(gguf_path) = model_meta.gguf_local_path.clone() else {

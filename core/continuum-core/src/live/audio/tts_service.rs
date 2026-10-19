@@ -151,7 +151,7 @@ mod tests {
         );
         assert_eq!(
             synthesis.sample_rate,
-            crate::audio_constants::AUDIO_SAMPLE_RATE
+            continuum_base::audio_constants::AUDIO_SAMPLE_RATE
         );
         assert!(synthesis.duration_ms > 500, "Sentence should be >500ms");
 

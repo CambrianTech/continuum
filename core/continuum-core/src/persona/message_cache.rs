@@ -278,7 +278,7 @@ impl Default for ContentDeduplicator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::EpochMs;
+    use continuum_base::time::EpochMs;
 
     fn make_msg(sender_type: SenderCategory, timestamp_ms: u64) -> CachedMessage {
         CachedMessage {

@@ -1,7 +1,7 @@
 //! Public submission/review commands on the existing work owner. Artifact
 //! references carry content identity; publication does not imply blob verification.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::*;
 use crate::persona::training_producer::reviewed::{self, SubmissionSelection};
 use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
@@ -188,7 +188,7 @@ async fn room_of_card(
             if let Some(room) = holders.next() {
                 if let Some(other) = holders.next() {
                     // a card is on exactly one board; two is a fault worth seeing, not a choice
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.room.card_on_two_boards",
                         verb,
                         card_id = %short8(id.as_uuid()),
@@ -200,7 +200,7 @@ async fn room_of_card(
                 if let Some(asked) = named {
                     let wanted = asked.trim_start_matches('#');
                     if wanted != room.name && wanted != room.channel.as_uuid().to_string() {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "work.room.from_card",
                             verb,
                             card_id = %short8(id.as_uuid()),
@@ -252,7 +252,7 @@ async fn room_of_card(
 /// (BigMama on #4836). See and act now read one record.
 fn followed_room(recorded: &[crate::persona::held_claims::HeldClaim], raw_card: &str) -> Option<airc_lib::Room> {
     let ids: Vec<Uuid> = recorded.iter().map(|h| h.card_id).collect();
-    let id = crate::id_resolve::resolve(raw_card, &ids, "card").ok()?;
+    let id = continuum_base::id_resolve::resolve(raw_card, &ids, "card").ok()?;
     recorded.iter().find(|h| h.card_id == id).map(|h| h.room.clone())
 }
 
@@ -317,7 +317,7 @@ fn same_submission(earlier: impl IntoIterator<Item = SubmissionKey>, this: &Subm
 /// short form (`card d61513e4`), which is the only form she has in front of her.
 ///
 /// Three properties, and they are why this is not a tolerant deserializer:
-/// - **Strict.** [`crate::id_resolve::resolve_handle`], not the repairing `resolve`. A
+/// - **Strict.** [`continuum_base::id_resolve::resolve_handle`], not the repairing `resolve`. A
 ///   malformed id is refused, and every supplied digit is kept so a collision can be
 ///   disambiguated by typing more of it.
 /// - **Scoped.** Candidates are supplied by the caller from the ONE room's board it has
@@ -330,7 +330,7 @@ fn resolve_shown(raw: &str, candidates: &[uuid::Uuid], label: &str) -> Result<Uu
     if raw.is_empty() {
         return Err(CommandError::Invalid(format!("a {label} id is required")));
     }
-    crate::id_resolve::resolve_handle(raw, candidates, label).map_err(CommandError::Invalid)
+    continuum_base::id_resolve::resolve_handle(raw, candidates, label).map_err(CommandError::Invalid)
 }
 
 /// What a submit is made of when the citizen only names her card: her checkout for
@@ -382,7 +382,7 @@ async fn stage_for_owner_on_demand(
     let card_uuid = card.card_id.as_uuid();
     match crate::modules::card_staging::stage_for_card(&home, runtime.persona_id(), card).await {
         Staging::Ready { path } => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.submit.staged_on_demand",
                 card_id = %short8(card_uuid),
                 path = %path.display(),
@@ -418,12 +418,12 @@ async fn renew_owner_lease(airc: &airc_lib::Airc, card: &airc_lib::WorkCard, cla
         })
         .await
     {
-        Ok(()) => crate::probe!(
+        Ok(()) => continuum_base::probe!(
             class = "work.submit.lease_renewed_by_act",
             card_id = %short8(card.card_id.as_uuid()),
             "the owner's lease had lapsed between wakes — her submit renewed it"
         ),
-        Err(error) => crate::probe!(
+        Err(error) => continuum_base::probe!(
             class = "work.submit.lease_renewal_refused",
             card_id = %short8(card.card_id.as_uuid()),
             error = %error,
@@ -567,7 +567,7 @@ fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_w
     }
     match best {
         Some((ahead, mb)) if ahead > 0 => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.submit.base_past_upstream",
                 created = %&created[..created.len().min(9)],
                 base = %&mb[..mb.len().min(9)],
@@ -869,7 +869,7 @@ impl ActionCommand for WorkSubmit {
             && p.base_sha.is_some()
             && p.instance.is_some();
         if matches!(&p.artifact, Some(a) if is_placeholder_hash(&a.hash)) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.submit.placeholder_artifact",
                 card = %card_uuid,
                 "artifact.hash was a placeholder (zeros / a manual blank) — deriving the real one from her checkout"
@@ -897,7 +897,7 @@ impl ActionCommand for WorkSubmit {
             let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo)).await?;
             (d.instance, d.base_sha, d.artifact)
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "work.submit.shaped",
             card = %card_uuid,
             instance = %instance,
@@ -963,7 +963,7 @@ impl ActionCommand for WorkSubmit {
             base_sha,
             artifact,
             publisher: airc.peer_id(),
-            submitted_at_ms: crate::time::EpochMs::now().millis(),
+            submitted_at_ms: continuum_base::time::EpochMs::now().millis(),
         };
         candidate
             .validate_for_card(card)
@@ -1300,7 +1300,7 @@ impl ActionCommand for WorkReview {
             }
         };
         let review_id = p.review_id.unwrap_or_else(Uuid::new_v4); // unwrap_or: minted here when she named none — the id is ours to give
-        crate::probe!(
+        continuum_base::probe!(
             class = "work.review.shaped",
             review_card = %short8(review_uuid),
             card = %card_id,

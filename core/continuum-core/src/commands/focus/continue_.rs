@@ -11,7 +11,7 @@
 //!
 //! Keyed on the AUTHENTICATED caller, like `focus/nudge`: she writes her own mind only.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;

@@ -193,7 +193,7 @@ pub const ERROR_KIND_CAPACITY_PARKED: &str = "CapacityParked";
 /// The decision could not be made: a typed refusal the trigger retries on the next fill,
 /// probed so a bucket that keeps refusing is readable.
 fn refused_decision(error_kind: &str, request: &TrainingJobRequest, error: &str) -> Result<JobCreateOutcome, crate::sdk_codegen::CommandError> {
-    crate::probe!(
+    continuum_base::probe!(
         class = "genome.decision.refused",
         persona = %request.persona_name,
         trait_kind = %request.trait_kind,
@@ -351,7 +351,7 @@ crate::action_command! {
                 source_url: None,
             };
             let embedder = crate::cognition::embedding::resolve_recall_embedder_local().await;
-            match crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, crate::time::EpochMs::now().millis())
+            match crate::genome::signature::GeneSignature::mint(&texts, corpus, &embedder, continuum_base::time::EpochMs::now().millis())
                 .await
             {
                 Ok(sig) => Some(sig),
@@ -411,7 +411,7 @@ crate::action_command! {
             // A pre-1970 clock reads 0: every tally falls outside its window (not measured,
             // which never halts training) and every open trial reads live (held, never
             // forked beside).
-            let now_ms = crate::time::EpochMs::now().millis();
+            let now_ms = continuum_base::time::EpochMs::now().millis();
             let hers = |t: &&crate::genome::gene_trial::GeneTrial| t.persona_id == watched_persona_id;
             // Residency is HERS: a gene her work holds open or promoted on this base. The
             // node's manifest carries every citizen's genes; a teammate's promoted gene near
@@ -486,7 +486,7 @@ crate::action_command! {
                 in_flight.as_ref(),
                 on_trial.as_ref(),
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "genome.decision",
                 persona = %p.request.persona_name,
                 trait_kind = %p.request.trait_kind,
@@ -516,7 +516,7 @@ crate::action_command! {
         match &decision {
             // A competence already training is never minted twice.
             Some(Decision::Join { job, similarity }) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "genome.joined",
                     persona = %p.request.persona_name,
                     trait_kind = %p.request.trait_kind,
@@ -529,7 +529,7 @@ crate::action_command! {
             }
             // A competence already being judged in her work is never forked beside its trial.
             Some(Decision::Await { trial, similarity }) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "genome.awaited",
                     persona = %p.request.persona_name,
                     trait_kind = %p.request.trait_kind,
@@ -559,7 +559,7 @@ crate::action_command! {
                         match pulled {
                             Ok(r) => std::path::PathBuf::from(r.path),
                             Err(e) => {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "genome.reuse.refused",
                                     persona = %p.request.persona_name,
                                     trait_kind = %p.request.trait_kind,
@@ -575,10 +575,10 @@ crate::action_command! {
                 let adopted = adoption
                     .as_ref()
                     .map_err(Clone::clone)
-                    .and_then(|a| a.adopt(watched_persona_id, &p.request.trait_kind, &path, &p.request.base_model, crate::time::EpochMs::now().millis()));
+                    .and_then(|a| a.adopt(watched_persona_id, &p.request.trait_kind, &path, &p.request.base_model, continuum_base::time::EpochMs::now().millis()));
                 match adopted {
                     Ok(trial) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "genome.reused",
                             persona = %p.request.persona_name,
                             trait_kind = %p.request.trait_kind,
@@ -593,7 +593,7 @@ crate::action_command! {
                         return without_job(Took::Reused { trial: trial.id, gene: gene.clone() });
                     }
                     Err(refusal) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "genome.reuse.refused",
                             persona = %p.request.persona_name,
                             trait_kind = %p.request.trait_kind,
@@ -609,7 +609,7 @@ crate::action_command! {
             // request (the trainer warm-starts if it can, and says so if it cannot) and
             // on the signature the child is adopted with.
             Some(Decision::Fork { parent, similarity }) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "genome.forked",
                     persona = %p.request.persona_name,
                     trait_kind = %p.request.trait_kind,
@@ -626,7 +626,7 @@ crate::action_command! {
             // The room confirms what she expects here: memories suffice. No gene, and the
             // bucket keeps its examples for the fill after her surprise rises.
             Some(Decision::Nothing { why: crate::genome::competence::NothingBecause::SurpriseLow { s } }) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "genome.unsurprised",
                     persona = %p.request.persona_name,
                     trait_kind = %p.request.trait_kind,
@@ -834,7 +834,7 @@ mod tests {
         }
         fn open_trial(&self, state: crate::genome::gene_trial::TrialState) -> crate::genome::gene_trial::GeneTrial {
             let trials = self.trials();
-            let t = trials.open(self.persona, &self.request.trait_kind, &self.gene_path, &self.request.base_model, crate::time::EpochMs::now().millis()).unwrap();
+            let t = trials.open(self.persona, &self.request.trait_kind, &self.gene_path, &self.request.base_model, continuum_base::time::EpochMs::now().millis()).unwrap();
             if state != crate::genome::gene_trial::TrialState::Trial {
                 let mut all = trials.load().unwrap();
                 all[0].state = state;
@@ -924,7 +924,7 @@ mod tests {
         let w = decision_world().await;
         let activity = uuid::Uuid::new_v4();
         let mine = uuid::Uuid::new_v4();
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         let mind = tempfile::tempdir().unwrap();
         let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(w.persona), mind.path(), 1_000, now);
         region.join(activity, "career-wrangler");

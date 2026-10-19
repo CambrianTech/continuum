@@ -94,7 +94,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         // no way to distinguish "died silently" from "parked silently" without
         // reading source. A background task whose silence is ambiguous is a
         // task that cannot be operated ([[launch-and-pray-is-the-defect]]).
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.resume_watch_started",
             unworked = crate::cognition::bench_round::total_unworked_cards() as u64,
             "boot resume watch running — parks announce themselves below"
@@ -102,7 +102,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
         loop {
             let queued = crate::cognition::bench_round::total_unworked_cards() as u32;
             if queued > 0 {
-                let now_ms = crate::time::EpochMs::now().millis(); // recency stamp is display-only for demand entries
+                let now_ms = continuum_base::time::EpochMs::now().millis(); // recency stamp is display-only for demand entries
                 crate::cognition::working_set::global().record(regime_id, REGIME_WINDOW, now_ms);
             }
             // THE LEASE IS FOR DETACHED SOLVES ONLY (2026-09-14). `quiesce_lane_demand`
@@ -126,7 +126,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                             // The pinned per-lane floor rides WITH the lane ask:
                             // lanes multiply only while each fits a real solve.
                             crate::cognition::serving_plan::set_solve_window_floor(REGIME_WINDOW);
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "bench.round.lane_demand",
                                 lanes = want as u64,
                                 queued = queued as u64,
@@ -141,14 +141,14 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
             attempt += 1;
             let fast = attempt <= RESUME_RETRIES;
             if attempt == RESUME_RETRIES + 1 {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.slow_watch",
                     "fast resume window spent — degrading to a standing 5-minute watch \
                      (the round can no longer be silently becalmed)"
                 );
             }
             // Park 1: serving decode-verified (same primitive dispatch parks on).
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.resume_parking",
                 park = "serving",
                 attempt = attempt as u64,
@@ -158,7 +158,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 .await
                 .is_none()
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.resume_blocked",
                     reason = "serving",
                     attempt = attempt as u64,
@@ -170,7 +170,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 continue;
             }
             // Park 2: residency (a service loop, not mere registration — #455).
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.resume_parking",
                 park = "residency",
                 attempt = attempt as u64,
@@ -187,7 +187,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 tokio::time::sleep(RESIDENCY_POLL).await;
             };
             if !resident {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.resume_blocked",
                     reason = "residency",
                     attempt = attempt as u64,
@@ -247,7 +247,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                     tokio::time::sleep(SLOW_WATCH).await;
                     continue;
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.becalmed",
                     unworked = due.len() as u64,
                     "Working round with unworked cards, serving ready, citizens \
@@ -260,7 +260,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                     .or_else(|| registry.any_live_citizen())
                     .map(|rt| rt.airc().clone());
                 let Some(airc) = airc else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "bench.round.resume_blocked",
                         reason = "no_citizen_runtime",
                         card_id = %next.card,
@@ -276,7 +276,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                 if let Some(state) = board_state_of(&airc, next.run_room, next.card).await {
                     match state {
                         BoardCardState::Terminal(s) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "bench.round.reconciled",
                                 card_id = %next.card,
                                 state = %s,
@@ -294,7 +294,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                             // several spaced attempts (~5 min of misses) does Absent
                             // mean gone. Terminal reads stay immediate — a state is
                             // positive evidence.
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "bench.round.reconciled",
                                 card_id = %next.card,
                                 state = "absent",
@@ -308,7 +308,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                             continue;
                         }
                         BoardCardState::Absent => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "bench.round.reconcile_deferred",
                                 card_id = %next.card,
                                 attempt = attempt as u64,
@@ -320,7 +320,7 @@ pub fn spawn_boot_resume(registry: PersonaAircRuntimeRegistry) {
                         BoardCardState::Workable => {}
                     }
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.resumed",
                     card_id = %next.card,
                     assignee = %next.assignee,
@@ -433,14 +433,14 @@ async fn release_surplus_holds(registry: &crate::persona::PersonaAircRuntimeRegi
                 "released by the reconciler: one card per citizen — she keeps {kept8}"
             );
             match runtime.release_card(c.card_id, claim_id, &reason).await {
-                Ok(()) => crate::probe!(
+                Ok(()) => continuum_base::probe!(
                     class = "persona.work.surplus_hold_released",
                     persona_id = %persona_id,
                     card = %id8,
                     kept = %kept8,
                     "a citizen held more than one work card — the surplus went back on the deck"
                 ),
-                Err(error) => crate::probe!(
+                Err(error) => continuum_base::probe!(
                     class = "persona.work.surplus_hold_release_failed",
                     persona_id = %persona_id,
                     card = %id8,
@@ -625,7 +625,7 @@ async fn sync_round_bundles(registry: &crate::persona::PersonaAircRuntimeRegistr
             Err(e) => {
                 crate::cognition::bench_round::requeue_bundle_dirty(dirty.round_id);
                 failed += 1;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "activity.state.save_failed",
                     kind = KIND,
                     room = %dirty.run_room_name,
@@ -673,7 +673,7 @@ async fn sync_round_bundles(registry: &crate::persona::PersonaAircRuntimeRegistr
                         match crate::cognition::bench_round::restore_round_from_bundle(&bundle) {
                             Ok(Some(_)) => restored += 1,
                             Ok(None) => {}
-                            Err(e) => crate::probe!(
+                            Err(e) => continuum_base::probe!(
                                 class = "activity.state.restore_failed",
                                 kind = KIND,
                                 room = %child.name,
@@ -687,7 +687,7 @@ async fn sync_round_bundles(registry: &crate::persona::PersonaAircRuntimeRegistr
         }
     }
     if published + deferred + failed + restored + unread > 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "activity.state.pass",
             kind = KIND,
             published,
@@ -716,7 +716,7 @@ const IDLE_CLAIM_RELEASE_MS: u64 = 3 * 60 * 60 * 1000;
 /// it again. Review cards are never released here (their lifetime is the gate's).
 async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::PersonaAircRuntimeRegistry) {
     use crate::persona::airc_citizen::AircCitizen as _;
-    let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock releases nothing (every claim reads fresh)
+    let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-1970 reads 0: a pre-epoch clock releases nothing (every claim reads fresh)
     let (mut settled, mut released, mut unread, mut release_failed) = (0u64, 0u64, 0u64, 0u64);
     let mut boards: std::collections::HashMap<uuid::Uuid, Vec<airc_lib::WorkCard>> = std::collections::HashMap::new();
     for (room_id, card, instance) in crate::cognition::bench_round::unsettled_cards() {
@@ -762,7 +762,7 @@ async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::Per
         if crate::cognition::bench_round::is_terminal_card_state(&state) {
             crate::cognition::bench_round::settle_card_direct(card, &state);
             settled += 1;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.settled_from_board",
                 card = %card.to_string().chars().take(8).collect::<String>(),
                 instance = %instance,
@@ -791,7 +791,7 @@ async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::Per
         match rt.release_card(on_board.card_id, claim_id, &reason).await {
             Ok(()) => {
                 released += 1;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.work.released_idle_claim",
                     persona = %rt.agent_name(),
                     card = %card.to_string().chars().take(8).collect::<String>(),
@@ -802,7 +802,7 @@ async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::Per
             }
             Err(e) => {
                 release_failed += 1;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.work.release_idle_failed",
                     persona = %rt.agent_name(),
                     card = %card.to_string().chars().take(8).collect::<String>(),
@@ -813,7 +813,7 @@ async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::Per
         }
     }
     if settled + released + unread + release_failed > 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.board_pass",
             settled,
             released,

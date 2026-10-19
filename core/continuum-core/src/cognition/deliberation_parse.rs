@@ -48,7 +48,7 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>, present: &[Str
     // prompt echo of 2026-09-05 (cognition::framing_echo). Silenced HERE, at the
     // one point model text becomes a Speak decision, with the reason kept.
     if let Some(marker) = super::framing_echo::echoes_turn_framing(trimmed, own_name) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.framing_echo",
             marker = marker,
             chars = trimmed.chars().count() as u64,
@@ -60,7 +60,7 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>, present: &[Str
     // gate keys on HER name; this keys on everyone else's she can see. Same seam,
     // same remedy: a pass with the reason kept, never a post under another citizen.
     if let Some(peer) = super::framing_echo::claims_a_present_peers_name(trimmed, own_name, present) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.identity_claim",
             claimed = %peer,
             own = own_name.unwrap_or("?"),
@@ -84,7 +84,7 @@ pub fn decision_from_response(text: &str, own_name: Option<&str>, present: &[Str
     // decision: every path that turns model text into a Speak inherits it, which is why
     // it does not go at the faculty's verdict (my first draft, the shallow call site).
     if let Some(marker) = super::not_speech::is_not_speech(trimmed) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.not_speech",
             marker = marker,
             chars = trimmed.chars().count() as u64,
@@ -161,7 +161,7 @@ fn probe_label_stripped_into_silence(raw: &str, cleaned: &str) {
     if !label_strip_caused_silence(raw, cleaned) {
         return;
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.parse.label_stripped_into_silence",
         raw_head = %raw.trim().chars().take(120).collect::<String>(),
         cleaned_head = %cleaned.chars().take(120).collect::<String>(),

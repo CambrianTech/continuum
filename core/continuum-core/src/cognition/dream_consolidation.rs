@@ -453,7 +453,7 @@ impl SemanticDistiller {
         // without this; the distiller path has no prompt-capture yet).
         if !prior_beliefs.is_empty() {
             let tail = raw.lines().last().unwrap_or("").trim();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "dream.review.raw_tail",
                 persona = ?persona_id,
                 tail = %&tail[..tail.len().min(120)],
@@ -835,7 +835,7 @@ impl DreamConsolidationRegion {
                 return false;
             }
             if receipts.pending.len() >= REVIEW_BOUNDARY_CAPACITY {
-                crate::probe!(class = "dream.review_boundary_deferred", persona = %persona,
+                continuum_base::probe!(class = "dream.review_boundary_deferred", persona = %persona,
                     acceptance = %acceptance, "receipt scheduling cache full; durable acceptance remains retryable");
                 return false;
             }
@@ -843,7 +843,7 @@ impl DreamConsolidationRegion {
         };
         if inserted {
             self.review_boundary_wake.send_replace(());
-            crate::probe!(class = "dream.review_boundary_pending", persona = %persona,
+            continuum_base::probe!(class = "dream.review_boundary_pending", persona = %persona,
                 acceptance = %acceptance, "accepted review queued at the existing consolidation owner");
         }
         inserted
@@ -887,7 +887,7 @@ impl DreamConsolidationRegion {
         let (store, storage_available) = match self.source.review_boundary_store(persona_id) {
             Ok(store) => (store, true),
             Err(error) => {
-                crate::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = %error,
+                continuum_base::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = %error,
                     "resident credit storage unavailable; retained boundaries will retry");
                 (None, false)
             }
@@ -927,7 +927,7 @@ impl DreamConsolidationRegion {
                         }
                     }
                     error => {
-                        crate::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = ?error,
+                        continuum_base::probe!(class = "dream.review_recovery_deferred", persona = %persona_id, error = ?error,
                             "accepted credit remains durable; existing governor retries recovery");
                     }
                 }
@@ -965,10 +965,10 @@ impl DreamConsolidationRegion {
         // rehearsed knowledge (high access_count) stays strong.
         let decay = crate::persona::decay_tick::apply_decay_sweep(
             reflector.admission.recall_metadata(),
-            crate::time::EpochMs::now().millis(),
+            continuum_base::time::EpochMs::now().millis(),
         );
         if decay.engrams_decayed > 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "hippocampus.decay",
                 persona = %persona_id,
                 scanned = decay.engrams_scanned,
@@ -1020,7 +1020,7 @@ impl DreamConsolidationRegion {
         if crate::cognition::eval::live_eval_run_id().is_some()
             || !crate::cognition::eval::detached_evals_in_flight().is_empty()
         {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "dream.deferred_for_exam",
                 persona = %persona_id,
                 "measured round in flight — dream deferred (slot KV courtesy)"
@@ -1108,9 +1108,9 @@ impl DreamConsolidationRegion {
                     crate::inference::measured_hold::subscribe()
                         .borrow()
                         .is_some(),
-                    crate::time::EpochMs::now().millis(),
+                    continuum_base::time::EpochMs::now().millis(),
                 ) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "dream.awaiting_boredom",
                         persona = %persona_id,
                         "dream pass parked on HER activity gate — arises only in her sustained idle"
@@ -1118,7 +1118,7 @@ impl DreamConsolidationRegion {
                 }
             }
             if trigger == DreamTrigger::CardBoundary {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "dream.card_boundary",
                     persona = %persona_id,
                     "a settled card is a consolidation boundary — one bounded pass, no boredom wait, not paged out by her next act"
@@ -1148,7 +1148,7 @@ impl DreamConsolidationRegion {
                         .await
                     }
                     other => {
-                        crate::probe!(class = "dream.review_boundary_retry", persona = %persona_id,
+                        continuum_base::probe!(class = "dream.review_boundary_retry", persona = %persona_id,
                             acceptances = boundary_ids.len(), timed_out = other.is_err(),
                             "unfinished episode clusters retain their boundary for the existing governor");
                     }
@@ -1187,7 +1187,7 @@ impl DreamConsolidationRegion {
                     reviewed,
                 ) => {}
                 _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "dream.paged_out",
                         persona = %persona_id,
                         "activity arrived mid-dream — dream cancelled and discarded (re-dreamable)"
@@ -1222,7 +1222,7 @@ impl DreamConsolidationRegion {
         // — the lane stays free for reactive responding + real work rather than
         // a back-to-back review storm (see REVIEW_ONLY_COOLDOWN_MS). The first
         // pass (no prior timestamp) is always allowed.
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         if let Some(&last) = self.last_review_ms.lock().unwrap().get(&persona_id) {
             if now.saturating_sub(last) < REVIEW_ONLY_COOLDOWN_MS {
                 return None;
@@ -1264,7 +1264,7 @@ impl DreamConsolidationRegion {
             tokio::select! {
                 _ = review_pass(reflector, persona_id, beliefs, reviewed) => {}
                 _ = crate::cognition::activity_gate::wait_for_engagement_of(persona_id) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "dream.review_paged_out",
                         persona = %persona_id,
                         "activity arrived mid-review: the review is cancelled and its beliefs stay unreviewed for the next pass"
@@ -1298,7 +1298,7 @@ impl DreamConsolidationRegion {
         permit: &mut Option<DreamPermit>,
     ) -> Option<TickOutcome> {
         // Rest gate — trickle, never storm (a pass launches a training job).
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         let last = self
             .last_consolidated_ms
             .lock()
@@ -1361,7 +1361,7 @@ impl DreamConsolidationRegion {
                     if let Some(ts) = v.get("latest_consolidated_ts").and_then(|t| t.as_str()) {
                         watermark.lock().unwrap().insert(persona_id, ts.to_string());
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "dream.consolidate_received",
                         persona = %persona_id,
                         consolidated = v.get("consolidated").and_then(|c| c.as_u64()).unwrap_or(0),
@@ -1400,7 +1400,7 @@ async fn finish_review_boundaries(
         )
         .await
         {
-            crate::probe!(class = "dream.review_completion_deferred", persona = %persona, error = ?error,
+            continuum_base::probe!(class = "dream.review_completion_deferred", persona = %persona, error = ?error,
                 "processed boundary remains pending until its durable receipt is acknowledged");
             return;
         }
@@ -1413,7 +1413,7 @@ async fn finish_review_boundaries(
                     receipts.completed.pop_front();
                 }
                 receipts.completed.push_back(*review);
-                crate::probe!(class = "dream.review_boundary_processed", persona = %persona,
+                continuum_base::probe!(class = "dream.review_boundary_processed", persona = %persona,
                     acceptance = %review, eligible_clusters,
                     "eligible episode clusters processed; not a training or adoption receipt");
             }
@@ -1509,7 +1509,7 @@ async fn dream_pass(
             };
             let rotating = reflector.admission.semantic_beliefs_oldest_excluding(
                 &already,
-                crate::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
+                continuum_base::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
                 ROTATING_REVIEW_PER_PASS,
             );
             let mut seen = reviewed.lock().unwrap();
@@ -1630,7 +1630,7 @@ async fn dream_pass(
         .unwrap_or_default();
     let backlog = reflector.admission.semantic_beliefs_oldest_excluding(
         &already,
-        crate::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
+        continuum_base::time::EpochMs::now().millis().saturating_sub(REVIEW_MIN_AGE_MS),
         REVIEW_ONLY_BATCH,
     );
     if !backlog.is_empty() {
@@ -1687,14 +1687,14 @@ fn apply_supersessions(reflector: &PersonaReflector, persona_id: Uuid, supersede
     if superseded.is_empty() {
         return;
     }
-    let now = crate::time::EpochMs::now().millis();
+    let now = continuum_base::time::EpochMs::now().millis();
     for id in superseded {
         reflector
             .admission
             .recall_metadata()
             .demote_to_floor(*id, now);
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "hippocampus.supersede",
         persona = %persona_id,
         superseded = superseded.len(),
@@ -1957,7 +1957,7 @@ fn semantic_engram(fact: &DistilledFact) -> Engram {
             parent_engram_id: fact.source_ids.first().copied().unwrap_or_else(Uuid::nil),
         },
         recall_keys: fact.tags.clone(),
-        admitted_at_ms: crate::time::EpochMs::now().millis(),
+        admitted_at_ms: continuum_base::time::EpochMs::now().millis(),
         trust_state_at_admission: TrustState::SelfTrust,
         admission_trace_id: None,
     }

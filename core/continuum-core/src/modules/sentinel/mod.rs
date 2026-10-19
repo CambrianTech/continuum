@@ -202,7 +202,7 @@ impl SentinelModule {
             sentinel_type: sentinel_type.clone(),
             status: SentinelStatus::Running,
             progress: 0,
-            start_time: crate::time::EpochMs::now().millis(),
+            start_time: continuum_base::time::EpochMs::now().millis(),
             end_time: None,
             exit_code: None,
             error: None,
@@ -345,7 +345,7 @@ impl SentinelModule {
 
             // Update handle status
             if let Some(mut entry) = sentinels.get_mut(&handle_id_clone) {
-                let now = crate::time::EpochMs::now().millis();
+                let now = continuum_base::time::EpochMs::now().millis();
 
                 let (final_status, error_msg) = match result {
                     Ok((exit_code, _output)) => {
@@ -708,7 +708,7 @@ impl SentinelModule {
             sentinel_type: "pipeline".to_string(),
             status: SentinelStatus::Running,
             progress: ((cp.step_index as f64 / cp.pipeline.steps.len() as f64) * 100.0) as u8,
-            start_time: crate::time::EpochMs::now().millis(),
+            start_time: continuum_base::time::EpochMs::now().millis(),
             end_time: None,
             exit_code: None,
             error: None,
@@ -891,7 +891,7 @@ impl SentinelModule {
                 };
                 entry.handle.exit_code = Some(if failed { 1 } else { 0 });
                 entry.handle.end_time = Some(
-                    crate::time::EpochMs::now().millis(),
+                    continuum_base::time::EpochMs::now().millis(),
                 );
                 if let Some(ref err) = error_msg {
                     entry.handle.error = Some(err.clone());
@@ -1021,7 +1021,7 @@ impl SentinelModule {
     /// Reap completed/failed sentinels older than REAP_AGE_SECS from the registry.
     /// Prevents the DashMap from growing forever.
     pub fn reap_dead(&self) {
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
 
         let mut reaped = Vec::new();
         for entry in self.sentinels.iter() {
@@ -1122,7 +1122,7 @@ impl ServiceModule for SentinelModule {
                                     let (cancel_tx, _cancel_rx) = tokio::sync::mpsc::channel(1);
                                     let (completion_tx, completion_rx) =
                                         tokio::sync::watch::channel(false);
-                                    let now = crate::time::EpochMs::now().millis();
+                                    let now = continuum_base::time::EpochMs::now().millis();
                                     let handle = SentinelHandle {
                                         id: handle_id.clone(),
                                         sentinel_type: "pipeline".to_string(),

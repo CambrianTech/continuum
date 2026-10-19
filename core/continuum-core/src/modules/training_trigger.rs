@@ -368,21 +368,21 @@ impl TrainingTriggerState {
             return;
         }
         let Some(root) = genome_root() else {
-            crate::probe!(class = "training.job.remainder_unrooted", jobs = completed.len() as u64, "no home: completed jobs cannot be found to return what they parked");
+            continuum_base::probe!(class = "training.job.remainder_unrooted", jobs = completed.len() as u64, "no home: completed jobs cannot be found to return what they parked");
             return;
         };
         let mut retry = Vec::new();
         for job in completed {
             match return_parked_remainder(self, board, &root, &job).await {
                 Ok(Remainder::Nothing | Remainder::AlreadyReturned) => {}
-                Ok(Remainder::Submitted(outcome)) if outcome.success => crate::probe!(
+                Ok(Remainder::Submitted(outcome)) if outcome.success => continuum_base::probe!(
                     class = "training.job.remainder_returned",
                     job = %job.local_id,
                     persona = %job.persona_name,
                     "a completed job's parked examples went back to her bucket, whole; the next dispatch re-plans them"
                 ),
                 Ok(Remainder::Submitted(outcome)) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.remainder_refused",
                         job = %job.local_id,
                         error = ?outcome.error,
@@ -391,14 +391,14 @@ impl TrainingTriggerState {
                     retry.push(job);
                 }
                 // A malformed record is refused loudly and not retried: retrying reads the same bytes.
-                Err(error @ crate::sdk_codegen::CommandError::Invalid(_)) => crate::probe!(
+                Err(error @ crate::sdk_codegen::CommandError::Invalid(_)) => continuum_base::probe!(
                     class = "training.job.remainder_invalid",
                     job = %job.local_id,
                     error = %error,
                     "a completed job's partition does not match its request; its parked examples stay in its directory for a human"
                 ),
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.remainder_failed",
                         job = %job.local_id,
                         error = %error,
@@ -424,7 +424,7 @@ impl TrainingTriggerState {
             return;
         }
         let Some(root) = genome_root() else {
-            crate::probe!(class = "training.job.refusal_return_unrooted", jobs = failed.len() as u64, "no home: refused jobs cannot be found to return");
+            continuum_base::probe!(class = "training.job.refusal_return_unrooted", jobs = failed.len() as u64, "no home: refused jobs cannot be found to return");
             return;
         };
         for job in failed {
@@ -439,7 +439,7 @@ impl TrainingTriggerState {
             };
             if let Returnable::EngineRefused(refusal) = &returnable {
                 if !refusal_has_smaller_rung(refusal) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.refusal_at_floor",
                         job = %id,
                         chunk = refusal.chunk as u64,
@@ -450,20 +450,20 @@ impl TrainingTriggerState {
                 }
             }
             match crate::commands::training_trigger::return_::return_job(self, board, &root, id).await {
-                Ok(outcome) if outcome.success => crate::probe!(
+                Ok(outcome) if outcome.success => continuum_base::probe!(
                     class = "training.job.refusal_returned",
                     job = %id,
                     persona = %job.persona_name,
                     why = ?returnable,
                     "a job that ended without training (engine refusal or replaced lane) handed its examples back to her bucket; the next dispatch re-plans"
                 ),
-                Ok(outcome) => crate::probe!(
+                Ok(outcome) => continuum_base::probe!(
                     class = "training.job.refusal_return_refused",
                     job = %id,
                     error = ?outcome.error,
                     "the return of a refused job was refused; its examples stay in its directory"
                 ),
-                Err(error) => crate::probe!(
+                Err(error) => continuum_base::probe!(
                     class = "training.job.refusal_return_failed",
                     job = %id,
                     error = %error,
@@ -484,7 +484,7 @@ impl TrainingTriggerState {
             return; // not installed yet: try again next tick, the orphans wait on the board
         };
         let board = crate::genome::fine_tuning::job_board::TrainingJobBoard::global();
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         // the held ones whose time to ask again has come, and (once) the boot's orphans
         let mut due = self.take_due_orphans(now);
         if !self.resumed_orphans.swap(true, Ordering::AcqRel) {
@@ -497,7 +497,7 @@ impl TrainingTriggerState {
             // the first run may still be training in. One rule: `permits_resume`.
             let answer = self.reattach(&executor, &orphan).await;
             if let Err(error) = &answer {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.reattach_unanswered",
                     local_id = %orphan.local_id,
                     error = %error,
@@ -519,7 +519,7 @@ impl TrainingTriggerState {
             let origin = board.resume_origin(orphan.local_id);
             let attempt = board.resume_attempts(origin) + 1;
             if attempt > crate::genome::fine_tuning::job_board::MAX_RESUMES {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.resume_refused",
                     origin = %origin,
                     local_id = %orphan.local_id,
@@ -529,7 +529,7 @@ impl TrainingTriggerState {
                 continue;
             }
             let Some(dir) = default_job_dir(&orphan.persona_name, &orphan.trait_kind, orphan.local_id) else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.not_resumable",
                     local_id = %orphan.local_id,
                     error = "no home directory: the job directory cannot be found",
@@ -541,7 +541,7 @@ impl TrainingTriggerState {
             let params = match resumable_request(&dir, &orphan.provider_id, dispatch_id) {
                 Ok(params) => params,
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.not_resumable",
                         local_id = %orphan.local_id,
                         dir = %dir.display(),
@@ -560,7 +560,7 @@ impl TrainingTriggerState {
                     // Her trial file could not be read: nothing is returned or journaled
                     // blind; the orphan stays for the next restart, which reads again.
                     if matches!(took, Took::TrialFileUnreadable) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "training.job.resume_deferred",
                             origin = %origin,
                             from = %orphan.local_id,
@@ -594,7 +594,7 @@ impl TrainingTriggerState {
                             Took::TrialFileUnreadable => {} // guarded above: never reaches a resubmit
                         }
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.resume_joined",
                         origin = %origin,
                         from = %orphan.local_id,
@@ -605,7 +605,7 @@ impl TrainingTriggerState {
                 }
                 Ok(Created::Job(handle, provider)) => {
                     board.journal_resumed(origin, orphan.local_id, handle.local_id, attempt);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.resumed",
                         origin = %origin,
                         from = %orphan.local_id,
@@ -616,7 +616,7 @@ impl TrainingTriggerState {
                     );
                 }
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.job.resume_failed",
                         origin = %origin,
                         local_id = %orphan.local_id,

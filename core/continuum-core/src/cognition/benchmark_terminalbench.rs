@@ -483,7 +483,7 @@ pub async fn materialize_gym(limit: Option<usize>) -> Result<TerminalBenchMateri
         &lines,
         &adapter_fingerprint(),
     )?;
-    crate::probe!(
+    continuum_base::probe!(
         class = "benchmark.terminalbench.materialized",
         converted = converted,
         skipped = skipped.len(),

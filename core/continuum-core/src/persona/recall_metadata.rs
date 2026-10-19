@@ -65,7 +65,7 @@
 //!   protection rule (high embedding-distance outliers get a
 //!   grace window to prove worth before they're forgotten).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use dashmap::DashMap;

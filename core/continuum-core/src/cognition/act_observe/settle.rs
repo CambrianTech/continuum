@@ -7,7 +7,7 @@
 //! and the eval driver (`drive_to_settle`, which loops because the grader replaces
 //! the metronome). Live and eval make a turn the IDENTICAL way; only pacing differs.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -80,7 +80,7 @@ async fn until_act_stalls<F: std::future::Future>(
                 extensions += 1;
                 previous = now;
                 deadline += bound;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "settle.tick.extended",
                     slot = pinned.as_ref().map(|p| p.slot as u64).unwrap_or(0), // probe field: extension implies a pinned slot
                     extensions = extensions as u64,
@@ -336,7 +336,7 @@ async fn settle_to_outcome(
     // connected in the one path I happened to wire by hand
     // ([[an-absence-is-an-unfinished-measurement]]). An `ambient` row is not a fault;
     // it is an idle tick whose stimulus the projection layer discarded.
-    crate::probe!(
+    continuum_base::probe!(
         class = "engram.chain.rooted",
         cause = burst.cause.as_str(),
         room = %room_id,
@@ -438,7 +438,7 @@ async fn settle_to_outcome(
         // room. Only after an act: a turn that has not acted yet is the settle's business
         // as a whole turn, and is never admitted once the door has closed.
         if acts > 0 && crate::cognition::turn_ingress::is_closing() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "cognition.turn.ended_for_stop",
                 room = %room_id,
                 acts = acts,
@@ -523,7 +523,7 @@ async fn settle_to_outcome(
                                 crate::ipc::positron_presence::is_human_peer(message.peer_id),
                             ),
                         );
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.turn.input_perceived",
                             persona = %body.persona_id,
                             active_room = %room_id,
@@ -596,7 +596,7 @@ async fn settle_to_outcome(
                 // stopwatch is visible to her" was unprovable from the live
                 // stream the day it shipped ([[observability-as-substrate]]).
                 let probe_budget_fact = |milestone: &str| {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act_budget.fact",
                         persona = body.persona_name.as_str(),
                         milestone = milestone,
@@ -664,7 +664,7 @@ async fn settle_to_outcome(
             !framing.workspace_deliverable || mutated_yet || acts < discovery_budget;
         if !discovery_open && acts < max_acts && stuck < STUCK_LIMIT && !saturation_probed {
             saturation_probed = true;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.settle.discovery_saturated",
                 room_id = %room_id,
                 acts = acts,
@@ -677,7 +677,7 @@ async fn settle_to_outcome(
         }
         let may_act = acts < max_acts && stuck < STUCK_LIMIT && discovery_open;
         let act_started = std::time::Instant::now();
-        crate::probe!(
+        continuum_base::probe!(
             class = "settle.tick.start",
             room = %room_id,
             acts_so_far = acts as u64,
@@ -707,7 +707,7 @@ async fn settle_to_outcome(
         {
             Ok(r) => r,
             Err(_) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "settle.tick.deadline",
                     room = %room_id,
                     acts_so_far = acts as u64,
@@ -776,7 +776,7 @@ async fn settle_to_outcome(
                 // how many lanes were free while she waited — so "8 acts, 0 writes"
                 // can never again read as eight turns of work when two of them were a
                 // mind parked at the serving gate.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.act.lane_starved",
                     persona = who.as_str(),
                     room_id = %room_id,
@@ -789,7 +789,7 @@ async fn settle_to_outcome(
                 );
                 crate::modules::citizen_health::note_lane_starved();
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.act.pace",
                 room_id = %room_id,
                 act = acts,
@@ -857,7 +857,7 @@ async fn settle_to_outcome(
                                  {NARRATION_BUDGET} plans in a row); no act of mine has changed a \
                                  file in this workspace yet."
                             ));
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.settle.no_deliverable",
                                 persona = %body.persona_name,
                                 room_id = %room_id,
@@ -927,7 +927,7 @@ async fn settle_to_outcome(
                                 "[no-deliverable] {acts} actions taken on this task; no act \
                                  of mine has changed a file in this workspace yet."
                             ));
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.act.no_deliverable_yet",
                                 persona = %body.persona_name,
                                 room_id = %room_id,
@@ -947,7 +947,7 @@ async fn settle_to_outcome(
                 }
                 prior_evidence = evidence;
                 if stuck >= STUCK_LIMIT {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.settle.stuck_backstop",
                         room_id = %room_id,
                         acts = acts,
@@ -1030,7 +1030,7 @@ async fn settle_to_outcome(
                 // Earlier dispatched work keeps the existing continuation policy;
                 // its original input must not be replayed as a new request.
                 if act_class == ActClass::LaneStarved {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.lane_starved",
                         room_id = %room_id,
                         act = acts,
@@ -1065,7 +1065,7 @@ async fn settle_to_outcome(
                 // as before.
                 if delib_retries < DELIBERATION_RETRY_BUDGET {
                     delib_retries += 1;
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.settle.deliberation_retry",
                         room_id = %room_id,
                         acts = acts,
@@ -1175,7 +1175,7 @@ pub async fn settle_step(
     // included, and the loop folds them together.
     let step_receipts: Vec<crate::cognition::provenance::GenerationReceipt> =
         ws.generation_receipts().cloned().collect();
-    crate::probe!(
+    continuum_base::probe!(
         class = "cognition.cycle.cost",
         room = %room_id,
         cycle_ms,
@@ -1204,7 +1204,7 @@ pub async fn settle_step(
         // 2026-08-29: 18 solve attempts died on this path in six hours with ZERO
         // probe trail — the lane OOM'd every deep prefill and the harness read
         // silence. A failed generation is a loud event or it is an invisible one.
-        crate::probe!(
+        continuum_base::probe!(
             class = "settle.inference_failed",
             room = %room_id,
             error = &error.to_string()[..error.to_string().len().min(160)],
@@ -1298,7 +1298,7 @@ pub async fn settle_step(
                          not read from the workspace. Only a tool result can show \
                          real file contents.",
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.unverified_artifact",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -1323,7 +1323,7 @@ pub async fn settle_step(
                          but a stage direction is words only — no tool ran, no file \
                          exists. To actually do it I must call a tool."
                     });
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.unfulfilled_promise",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -1352,7 +1352,7 @@ pub async fn settle_step(
                          report acts that actually ran, and own my compositions \
                          as my own work.",
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.confabulated_execution",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -1374,7 +1374,7 @@ pub async fn settle_step(
                          unobserved. Only a tool result (run, test, read, screenshot) \
                          can show what actually happened.",
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.unobserved_mutation",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -1401,7 +1401,7 @@ pub async fn settle_step(
                     crate::cognition::deliberation_budget::draft_peer_echo(&text, &peer_turns)
                 {
                     body.working_memory.record_fact(&fact);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.draft_peer_echo",
                         persona = %body.persona_name,
                         room_id = %room_id,
@@ -1425,7 +1425,7 @@ pub async fn settle_step(
                          If that work happened in a past session it is unverified now \
                          — only reading or running the file can show its real state."
                     ));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.unacted_claim",
                         persona = %body.persona_name,
                         room_id = %room_id,

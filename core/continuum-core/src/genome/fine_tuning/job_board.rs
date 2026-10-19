@@ -57,7 +57,7 @@
 //! the tick. A subsequent tick can never re-handle the same completed job because
 //! it is already gone. A terminal event leaves the board exactly once.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -237,7 +237,7 @@ fn take_ledger_ownership(ledger: &Path) -> Option<std::fs::File> {
     match file.try_lock() {
         Ok(()) => Some(file),
         Err(std::fs::TryLockError::WouldBlock) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.ledger_owned_elsewhere",
                 lock = %lock_path.display(),
                 "another live board owns this job ledger; this one reads it and never reconciles it"
@@ -455,7 +455,7 @@ impl TrainingJobBoard {
                     Err(error) => {
                         malformed += 1;
                         if self.quarantined.insert(line_offset, ()).is_none() {
-                            crate::probe!(class = "training.journal.corrupt",
+                            continuum_base::probe!(class = "training.journal.corrupt",
                                 offset = line_offset, error = %error,
                                 "unreadable journal row retained; recovery advances with explicit uncertainty");
                         }

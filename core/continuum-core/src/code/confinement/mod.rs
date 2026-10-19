@@ -540,7 +540,7 @@ pub fn command_for(
     };
     let (cmd, receipt) = confined_command(confinement, program, args, cwd, cargo_grant);
     match &receipt {
-        Enforcement::Enforced { mechanism } => crate::probe!(
+        Enforcement::Enforced { mechanism } => continuum_base::probe!(
             class = "shell.confinement",
             who = %who,
             mechanism = %mechanism,
@@ -548,7 +548,7 @@ pub fn command_for(
             workspace = %confinement.workspace().display(),
             "a citizen's child is confined to her roots"
         ),
-        Enforcement::Unavailable { reason } => crate::probe!(
+        Enforcement::Unavailable { reason } => continuum_base::probe!(
             class = "shell.confinement.unavailable",
             who = %who,
             reason = %reason,

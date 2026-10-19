@@ -565,7 +565,7 @@ pub(crate) fn huggingface_cache_root() -> Option<PathBuf> {
     let hf_home = std::env::var("HF_HOME")
         .ok()
         .filter(|s| !s.trim().is_empty())
-        .or_else(|| crate::config_env::read("HF_HOME").filter(|s| !s.trim().is_empty()));
+        .or_else(|| continuum_base::config_env::read("HF_HOME").filter(|s| !s.trim().is_empty()));
     if let Some(hf_home) = hf_home {
         return Some(PathBuf::from(hf_home).join("hub"));
     }

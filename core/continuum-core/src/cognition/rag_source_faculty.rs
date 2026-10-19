@@ -118,7 +118,7 @@ pub type Clock = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 fn wall_clock() -> Clock {
     Arc::new(|| {
-        crate::time::EpochMs::now().millis()
+        continuum_base::time::EpochMs::now().millis()
     })
 }
 
@@ -299,7 +299,7 @@ impl RagSourceFaculty {
             *c
         };
         if streak.is_power_of_two() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "rag.coldstart.absent",
                 source = self.source.source_id(),
                 persona_id = %self.persona_id,
@@ -345,7 +345,7 @@ impl RagSourceFaculty {
             g.take(&room).unwrap_or(0)
         };
         if streak > 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "rag.coldstart.restored",
                 source = self.source.source_id(),
                 persona_id = %self.persona_id,

@@ -182,7 +182,7 @@ pub(crate) async fn warm_ahead(
         admission.uncommitted = None;
     }
     if let Some(slot) = admission.slot {
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_warm_ahead",
             persona = %key.persona,
             room = %key.room,
@@ -299,7 +299,7 @@ async fn admit(
             );
         };
         if waited {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.slot_affinity.waited",
                 persona = %k.persona,
                 room = %k.room,
@@ -536,7 +536,7 @@ pub(crate) async fn kv_page_action(
         match crate::inference::slots::directory().page_admission_path(root) {
             Ok(path) => path,
             Err(reason) => {
-                crate::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
+                continuum_base::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
                     reason = %reason, "page save refused before any checkpoint file write");
                 return PageOutcome::Rejected;
             }
@@ -607,7 +607,7 @@ async fn kv_page_action_with_capacity(
         match admission {
             Ok(bytes) => payload["admitted_bytes"] = json!(bytes),
             Err(reason) => {
-                crate::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
+                continuum_base::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
                     reason = %reason, "page save refused before any checkpoint file write");
                 return PageOutcome::Rejected;
             }
@@ -627,7 +627,7 @@ async fn kv_page_action_with_capacity(
             }
         },
         |busy_checkpoints| {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.busy_not_dead",
                 action = %action,
                 slot = slot as u64,
@@ -681,7 +681,7 @@ async fn kv_page_action_with_capacity(
     if ok {
         KV_PAGE_SWITCH_MS.note(ms);
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "inference.kv_page.action",
         action = %action,
         slot = slot as u64,

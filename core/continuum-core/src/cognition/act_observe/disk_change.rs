@@ -83,7 +83,7 @@ pub(crate) fn checkout_fingerprint(root: &Path) -> Option<u64> {
 pub(crate) async fn fingerprint_at(root: Option<std::path::PathBuf>) -> Option<u64> {
     let root = root?;
     // timed: two bounded git reads per side, on every act batch; the cost is a probe, not a guess
-    crate::time_probe!(
+    continuum_base::time_probe!(
         "act.disk_fingerprint",
         tokio::task::spawn_blocking(move || checkout_fingerprint(&root))
     )

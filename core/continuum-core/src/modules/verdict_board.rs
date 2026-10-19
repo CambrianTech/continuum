@@ -136,7 +136,7 @@ pub async fn reconcile_verdicted() -> FollowTally {
         tally.failed += t.failed;
     }
     if tally != FollowTally::default() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.reconciled",
             closed = tally.closed,
             review_closed = tally.review_closed,
@@ -157,7 +157,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
     }
     let short = |c: &Uuid| c.to_string().chars().take(8).collect::<String>();
     let Some(airc) = crate::persona::operator_peer::operator_airc() else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.board_close_failed",
             instance = verdict.instance_id.as_str(),
             card = "-",
@@ -195,7 +195,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         if mode == FollowMode::Reconcile {
             continue;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.card_informed",
             instance = verdict.instance_id.as_str(),
             card = %short(&card),
@@ -225,7 +225,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                     Ok(()) => {
                         tally.review_closed += 1;
                         tally.closed += 1;
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark.verdict.review_closed",
                             instance = verdict.instance_id.as_str(),
                             card = %short(&card),
@@ -235,7 +235,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                         say_in_card_room(verdict, card, &airc, &BoardMove::Closed).await;
                         continue;
                     }
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                         class = "benchmark.verdict.board_close_failed",
                         instance = verdict.instance_id.as_str(),
                         card = %short(&review),
@@ -261,7 +261,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
         .await
         {
             Ok(()) if verdict.resolved => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.verdict.board_closed",
                     instance = verdict.instance_id.as_str(),
                     card = %short(&card),
@@ -271,7 +271,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                 BoardMove::Closed
             }
             Ok(()) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.verdict.returned_to_holder",
                     instance = verdict.instance_id.as_str(),
                     card = %short(&card),
@@ -281,7 +281,7 @@ pub async fn follow_with(verdict: &SweVerdict, mode: FollowMode) -> FollowTally 
                 BoardMove::ReturnedToHolder
             }
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.verdict.board_close_failed",
                     instance = verdict.instance_id.as_str(),
                     card = %short(&card),
@@ -316,7 +316,7 @@ async fn say_in_card_room(
 ) {
     let short = card.to_string().chars().take(8).collect::<String>();
     let Some(room) = crate::cognition::bench_round::room_for_card(card) else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.line_not_posted",
             instance = verdict.instance_id.as_str(),
             card = %short,
@@ -334,7 +334,7 @@ async fn say_in_card_room(
         HolderRead::Held(h) => (Some(h), false),
         HolderRead::Unheld => (None, false),
         HolderRead::Unavailable(why) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.verdict.holder_unavailable",
                 instance = verdict.instance_id.as_str(),
                 card = %short,
@@ -352,7 +352,7 @@ async fn say_in_card_room(
             let alias = match operator.peer_alias(airc_core::PeerId::from_uuid(id)).await {
                 Ok(alias) => alias,
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.verdict.holder_name_unavailable",
                         instance = verdict.instance_id.as_str(),
                         card = %short,
@@ -374,7 +374,7 @@ async fn say_in_card_room(
         .map(|rt| rt.airc().clone())
         .unwrap_or_else(|| operator.clone()); // unwrap_or: no live citizen other than the holder → the operator speaks (never the holder herself)
     match crate::persona::airc_citizen::publish_text_in_room(&voice, room, &line).await {
-        Ok(_) => crate::probe!(
+        Ok(_) => continuum_base::probe!(
             class = "benchmark.verdict.line_posted",
             instance = verdict.instance_id.as_str(),
             card = %short,
@@ -383,7 +383,7 @@ async fn say_in_card_room(
             resolved = verdict.resolved,
             "the room heard the verdict"
         ),
-        Err(e) => crate::probe!(
+        Err(e) => continuum_base::probe!(
             class = "benchmark.verdict.line_not_posted",
             instance = verdict.instance_id.as_str(),
             card = %short,
@@ -444,7 +444,7 @@ async fn holder_of(
         return HolderRead::Unavailable("board read failed");
     };
     let board = board.snapshot();
-    let Ok(now) = crate::time::EpochMs::read() else {
+    let Ok(now) = continuum_base::time::EpochMs::read() else {
         return HolderRead::Unavailable("clock before the epoch");
     };
     let now_ms = now.millis();

@@ -12,7 +12,7 @@
 //!
 //! Priority: Realtime — voice operations are time-critical.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::live::audio::buffer::AudioBufferPool;
 use crate::live::audio::resource_lifecycle::AudioResourceLifecycle;
 use crate::live::session::voice_service::VoiceService;
@@ -177,7 +177,7 @@ async fn perception_ingest_drain(
 
         // Fan out: each viewer's PerceptionBuffer coalesces the frame + fires a gated
         // async warm; compute-once/share-many means one describe across all viewers.
-        crate::probe!(
+        continuum_base::probe!(
             class = "live.perception.admitted",
             call_id = frame.call_id.as_str(),
             speaker = frame.speaker_id.as_str(),
@@ -676,7 +676,7 @@ impl ServiceModule for VoiceModule {
 
                 let sample_count = samples.len();
                 let duration_ms =
-                    (sample_count as u64 * 1000) / crate::audio_constants::AUDIO_SAMPLE_RATE as u64;
+                    (sample_count as u64 * 1000) / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as u64;
 
                 self.state
                     .livekit_manager
@@ -752,7 +752,7 @@ impl ServiceModule for VoiceModule {
                     "voice_transcribe",
                     "Transcribing {} samples ({:.1}s)",
                     samples.len(),
-                    samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64
+                    samples.len() as f64 / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as f64
                 );
 
                 let transcript = stt_service::transcribe_speech_async(&samples, language)
@@ -929,7 +929,7 @@ impl ServiceModule for VoiceModule {
                     "voice_transcribe_with_adapter",
                     "Transcribing {} samples ({:.1}s) with adapter '{}'",
                     samples.len(),
-                    samples.len() as f64 / crate::audio_constants::AUDIO_SAMPLE_RATE as f64,
+                    samples.len() as f64 / continuum_base::audio_constants::AUDIO_SAMPLE_RATE as f64,
                     adapter_name
                 );
 
@@ -1017,7 +1017,7 @@ impl ServiceModule for VoiceModule {
                     .map_err(|e| format!("Invalid noise type: {}", e))?;
 
                 let gen = TestAudioGenerator::default();
-                let duration_samples = (crate::audio_constants::AUDIO_SAMPLE_RATE as u64
+                let duration_samples = (continuum_base::audio_constants::AUDIO_SAMPLE_RATE as u64
                     * duration_ms as u64
                     / 1000) as usize;
 
@@ -1041,7 +1041,7 @@ impl ServiceModule for VoiceModule {
                     "samples": samples.len(),
                     "duration_ms": duration_ms,
                     "noise_type": noise_type.label(),
-                    "sample_rate": crate::audio_constants::AUDIO_SAMPLE_RATE,
+                    "sample_rate": continuum_base::audio_constants::AUDIO_SAMPLE_RATE,
                 })))
             }
 
@@ -1109,11 +1109,11 @@ impl ServiceModule for VoiceModule {
                     let mut transcripts = joined.transcription_rx;
                     let mut pcm = synthesis.samples.clone();
                     pcm.extend(std::iter::repeat(0i16).take(
-                        (crate::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
+                        (continuum_base::audio_constants::AUDIO_SAMPLE_RATE as usize) * 2,
                     ));
-                    for chunk in pcm.chunks(crate::audio_constants::AUDIO_FRAME_SIZE) {
+                    for chunk in pcm.chunks(continuum_base::audio_constants::AUDIO_FRAME_SIZE) {
                         let mut frame = chunk.to_vec();
-                        frame.resize(crate::audio_constants::AUDIO_FRAME_SIZE, 0);
+                        frame.resize(continuum_base::audio_constants::AUDIO_FRAME_SIZE, 0);
                         self.state.call_manager.push_audio(&handle, frame).await;
                         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                     }
@@ -1159,7 +1159,7 @@ impl ServiceModule for VoiceModule {
                 // that this synthesized nonce survived the audio path.
                 let matched = hits >= 2 && lower.contains(word) && !transcript.contains('\t');
                 let leg = if room_leg { "room" } else { "engine" };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "live.selftest",
                     adapter = adapter.unwrap_or("active"), // safe: no adapter = the active one, a display label
                     leg = leg,

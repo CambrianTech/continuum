@@ -41,7 +41,7 @@ impl MlxLoraFineTuner {
     /// (`MLX_PYTHON`), falling back to the unsloth-studio env that
     /// ships `mlx_lm` on this machine class.
     pub fn new() -> Self {
-        let python = crate::config_env::read(MLX_PYTHON_KEY)
+        let python = continuum_base::config_env::read(MLX_PYTHON_KEY)
             .map(PathBuf::from)
             .unwrap_or_else(default_mlx_python);
         Self {
@@ -141,7 +141,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
                 .join(".continuum/genome/models/mlx-q4")
                 .join(train_base.replace('/', "_"));
             if q4.join("config.json").exists() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "genome.train.base",
                     base = %train_base,
                     local_q4 = %q4.display(),

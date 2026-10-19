@@ -61,7 +61,7 @@
 //! local AuthPolicy → local module → reply. Symmetric with the
 //! AircTransport's outbound path.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use airc_core::{Body, PeerId, TranscriptEvent};
@@ -300,7 +300,7 @@ impl CommandRequestHandler {
         // sees the reply before the last chunk.
         drop(guard);
         match drain.await {
-            Ok(published) => crate::probe!(
+            Ok(published) => continuum_base::probe!(
                 class = "airc.command.streamed",
                 path = %parsed.request.path,
                 correlation = %stream_id,
@@ -548,7 +548,7 @@ impl ConsumerAdapter for CommandRequestHandler {
         // particular is not a peer RPC (only kind=peer is wired) — both are ignored
         // by name, never answered.
         if !addressed_to(&envelope.target, self.airc.peer_id()) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "airc.command.request_not_for_me",
                 target = ?envelope.target,
                 me = %self.airc.peer_id().0,
@@ -560,7 +560,7 @@ impl ConsumerAdapter for CommandRequestHandler {
         // inbound peer commands was the refusal, so a request that was ACCEPTED left no
         // row and silence read as ambiguous. Now every accepted request says who was
         // asked, by whom, and what — the receipt the grid's first hop was missing.
-        crate::probe!(
+        continuum_base::probe!(
             class = "airc.command.request_accepted",
             target = ?envelope.target,
             me = %self.airc.peer_id().0,
@@ -577,7 +577,7 @@ impl ConsumerAdapter for CommandRequestHandler {
         // the question "did anything ever land?" stayed unanswerable for a day
         // because landing is silent. `correlation` is the join key: it is the same
         // uuid the CALLER awaits on, so both sides of a grid turn can be matched.
-        crate::probe!(
+        continuum_base::probe!(
             class = "airc.command.accepted",
             path = %parsed.request.path,
             kind = %parsed.request.kind,
@@ -639,7 +639,7 @@ impl ConsumerAdapter for CommandRequestHandler {
                 },
             ),
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "airc.command.completed",
             path = %parsed.request.path,
             caller = %parsed.caller_peer_id.0,

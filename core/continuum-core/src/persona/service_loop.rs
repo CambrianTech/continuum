@@ -41,7 +41,7 @@
 //!   through the [`PersonaConversation`] trait. The trait is the
 //!   substrate's IPC boundary; tests stub it without any daemon.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::ai::adapter::AIProviderAdapter;
 use crate::persona::supervisor::HostedPersona;
 use crate::persona::work_burst::{held_work_burst, own_recent_thoughts, work_board_anchor};
@@ -596,7 +596,7 @@ async fn serve_persona_loop_inner(
             continue;
         }
         if let Wake::Mind { why, room } = &wake {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.turn.mind_wake",
                 persona = %ctx.identity.agent_name,
                 why = *why,
@@ -625,7 +625,7 @@ async fn serve_persona_loop_inner(
                 // Her own wake under the lease is skipped like a beat; it is not lost:
                 // a due continuation or a loud room re-yields on her next mind check.
                 Wake::Tick | Wake::Mind { .. } | Wake::Idle => continue,
-                Wake::Msg(_) | Wake::Retry(_) => crate::probe!(
+                Wake::Msg(_) | Wake::Retry(_) => continuum_base::probe!(
                     class = "persona.quiesced.directed_served",
                     "quiesced citizen serving an inbound turn — leases suspend wandering, never reachability"
                 ),
@@ -648,7 +648,7 @@ async fn serve_persona_loop_inner(
         // `continue` at the end of the tick arm included. A manual decrement would have to
         // be repeated at each of them, and would be missed at the next one added.
         let Some(_turn) = crate::cognition::turn_ingress::admit() else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.ingress.closed",
                 persona = ctx.identity.peer_id.as_uuid().to_string(),
                 "turn ingress closed for shutdown — this citizen takes no further turns and leaves her loop"
@@ -726,7 +726,7 @@ async fn serve_persona_loop_inner(
                             EpochMs::now().millis(), // pre-1970 reads 0: clock before the epoch = 0
                         )
                     {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.selftick.starved",
                             yields_since_last_report = yields,
                             total_yields =
@@ -848,7 +848,7 @@ async fn serve_persona_loop_inner(
             let perceived_only = before - qualifying.len();
             if perceived_only > 0 {
                 outcome.turns_skipped += perceived_only;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.wake.agent_lines_perceived_only",
                     persona_id = %self_id,
                     lines = perceived_only as u64,
@@ -872,7 +872,7 @@ async fn serve_persona_loop_inner(
         };
         if coalesced > 0 {
             outcome.turns_skipped += coalesced;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.wake.coalesced",
                 persona_id = %self_id,
                 coalesced = coalesced,
@@ -938,7 +938,7 @@ async fn serve_persona_loop_inner(
                     );
                 }
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.turn.deferred_loop_filler",
                 persona = %ctx.identity.agent_name,
                 lamport = msg.lamport,
@@ -996,7 +996,7 @@ async fn serve_persona_loop_inner(
             ctx.identity.peer_id.as_uuid(),
             EpochMs::now().millis(),
         );
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.turn.start",
             persona = %ctx.identity.agent_name,
             persona_id = %ctx.identity.peer_id.as_uuid(),
@@ -1292,7 +1292,7 @@ async fn serve_persona_loop_inner(
                 let _genome_pin = {
                     let pin = crate::genome::gene_trial::GenomeRestore::snapshot(std::sync::Arc::clone(&cycle));
                     if let Some(genes) = crate::genome::gene_trial::live_genes(ctx.identity.peer_id.as_uuid()) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.genome.turn_genes",
                             persona = %ctx.identity.agent_name,
                             room = %turn_room,
@@ -1402,7 +1402,7 @@ async fn serve_persona_loop_inner(
                     None => false,
                 };
                 if holds_work && !attention.requires_priority() {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.turn.work_holder_bypasses_ambient_permit",
                         persona = %ctx.identity.agent_name,
                         "a mind holding a card goes straight to the lane gate — the ambient anti-stampede permit is for minds deciding whether a room line is theirs"
@@ -1414,7 +1414,7 @@ async fn serve_persona_loop_inner(
                     match crate::cognition::resource_admission::try_hold_ambient_turn() {
                         Some(permit) => Some(permit),
                         None => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.turn.ambient_yielded",
                                 persona = %ctx.identity.agent_name,
                                 lamport = msg.lamport,
@@ -1522,7 +1522,7 @@ async fn serve_persona_loop_inner(
                 // conversation" and submit the turn immediately (Astra/S6 on 799b8fe9).
                 turn_credit = held_card.credit.clone();
                 turn_generation_receipts = settled_receipts;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.hook.directed_turn",
                     persona = %ctx.identity.agent_name,
                     acts = turn_act_count as u64,
@@ -1545,7 +1545,7 @@ async fn serve_persona_loop_inner(
                 // numbers the eval gym accumulates per task. Observability only; the
                 // turn proceeds identically whether or not anyone is watching.
                 if let Some(m) = turn_metrics {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.turn.metrics",
                         persona = %ctx.identity.agent_name,
                         lamport = msg.lamport,
@@ -1563,7 +1563,7 @@ async fn serve_persona_loop_inner(
                     }
                     crate::cognition::act_observe::SettleStep::Spoke(text) => text,
                     crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.turn.acted",
                             persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
@@ -1580,7 +1580,7 @@ async fn serve_persona_loop_inner(
                         // Every turn ends on a probe (Kimi, 5090, 2026-10-04: a turn on an
                         // addressed line ended with no outcome on the probe stream, so a
                         // chosen silence and a failed act read the same).
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.turn.act_unfulfilled",
                             persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
@@ -1610,7 +1610,7 @@ async fn serve_persona_loop_inner(
                             Some(r) => (r.starts_with(crate::cognition::workspace::GATE_REFUSAL_PREFIX), r),
                             None => (false, "no-decision"),
                         };
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.turn.silent",
                             persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
@@ -1647,7 +1647,7 @@ async fn serve_persona_loop_inner(
                             error = %error,
                             "deliberation inference FAILED — skipping turn (not a chosen silence)"
                         );
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.turn.inference_failed",
                             persona = %ctx.identity.agent_name,
                             lamport = msg.lamport,
@@ -1675,7 +1675,7 @@ async fn serve_persona_loop_inner(
                     lamport = msg.lamport,
                     "no WorkspaceCycle registered — spawn wiring bug; dropping turn (no respond() fallback)"
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.turn.error",
                     persona = %ctx.identity.agent_name,
                     lamport = msg.lamport,
@@ -1693,7 +1693,7 @@ async fn serve_persona_loop_inner(
         // peers with JSON (observed live). Treat it as silence — the deliberation
         // already executes real calls internally; only prose is a contribution.
         if crate::ai::json_in_prompt_tools::parse_tool_call(&response_text).is_some() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.turn.raw_envelope_withheld",
                 persona = %ctx.identity.agent_name,
                 lamport = msg.lamport,
@@ -1725,7 +1725,7 @@ async fn serve_persona_loop_inner(
             // RTOS-debugger breakpoint: cognition succeeded, airc
             // publish failed. Distinct error stage from
             // `stage="respond"`.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.turn.error",
                 persona = %ctx.identity.agent_name,
                 lamport = msg.lamport,
@@ -1766,7 +1766,7 @@ async fn serve_persona_loop_inner(
         // a separate timing probe per stage. Per Joel
         // [[jtag-probes-are-rtos-debugger]]: "timing of anything,
         // so we can hunt down bottlenecks."
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.turn.spoke",
             persona = %ctx.identity.agent_name,
             lamport = msg.lamport,
@@ -2164,7 +2164,7 @@ fn append_ring_anchor_if_starved(
     let room_recent = crate::cognition::deliberation_budget::recent_room_speech(room);
     let run = ring_echo_run(&own, &room_recent);
     if run >= PATTERN_FIRES_BEFORE_ANCHOR {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.pattern.ring_anchor",
             peer = %peer,
             room = %room,
@@ -2188,7 +2188,7 @@ fn push_work_board_anchor(
 ) {
     let anchor = work_board_anchor(deliveries);
     if anchor.is_empty() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.pattern.anchor_silent",
             "board source did not deliver this turn — anchor withheld rather than asserting \
              an empty board she cannot verify (2026-08-06 six-turn loop)",
@@ -2760,7 +2760,7 @@ async fn run_self_cycle(
         Some(citizen) => match super::work_focus::focus_room(citizen.as_ref()).await {
             Ok(room) => room,
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.selftick.focus_unavailable",
                     persona = %ctx.identity.agent_name,
                     error = %error,
@@ -2773,7 +2773,7 @@ async fn run_self_cycle(
     } };
     if let Some(room) = focus_room {
         if room != ctx.identity.default_room {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.focused",
                 persona = %ctx.identity.agent_name,
                 room = %room,
@@ -2931,7 +2931,7 @@ async fn run_self_cycle(
                 .unwrap_or(true) // unwrap_or: an unreadable board counts as claimable so the pull tries, never silently skips
         })
         .any(|item| identity.mentions(&item.content));
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.selftick.perceive",
         persona = %ctx.identity.agent_name,
         addressed,
@@ -2960,7 +2960,7 @@ async fn run_self_cycle(
         focus.wakes_on(ctx.identity.default_room, addressed, now_ms)
     };
     if !wakes {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.selftick.muted",
             persona = %ctx.identity.agent_name,
             room = %ctx.identity.default_room,
@@ -3055,7 +3055,7 @@ async fn run_self_cycle(
     // separates a cold boot from a lane that HAS served and dropped, which the empty
     // snapshot itself cannot say (`ready_verified_at_ms` is erased by `empty()`).
     if !crate::inference::llama_server::current_serving().is_live() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.selftick.awaiting_serving",
             persona = %ctx.identity.agent_name,
             served_before = crate::inference::llama_server::has_reconciled(),
@@ -3096,7 +3096,7 @@ async fn run_self_cycle(
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return false;
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.spoke",
                 persona = %ctx.identity.agent_name,
                 response_len = text.len(),
@@ -3104,7 +3104,7 @@ async fn run_self_cycle(
             );
         }
         crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.acted",
                 persona = %ctx.identity.agent_name,
                 tools = calls.len(),
@@ -3121,7 +3121,7 @@ async fn run_self_cycle(
                 error = %error,
                 "self-cycle deliberation inference FAILED — sleeping this tick (not a chosen silence)"
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.selftick.inference_failed",
                 persona = %ctx.identity.agent_name,
                 error = %error,

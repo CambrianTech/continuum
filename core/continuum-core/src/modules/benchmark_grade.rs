@@ -178,14 +178,14 @@ fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value)
                     .or_else(|| reg.any_live_citizen())
                     .map(|rt| rt.airc().clone());
                 let Some(airc) = airc else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "bench.round.follow_on_blocked",
                         card_id = %next.card,
                         "next card is due but no live citizen can carry the dispatch —                          the boot-resume edge retries"
                     );
                     return;
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.round.follow_on",
                     settled = %settled_uuid,
                     next_card = %next.card,
@@ -221,14 +221,14 @@ fn on_card_state_changed(registry: &PersonaAircRuntimeRegistry, payload: &Value)
 
     let registry = registry.clone();
     tokio::spawn(async move {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark_grade.start",
             card_id = %card_id,
             room_id = %room_id.map(|r| r.to_string()).unwrap_or_default(),
             "grade-on-done fired — reading the card's own room board"
         );
         if let Err(e) = grade_card(&registry, &card_id, room_id).await {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark_grade.error",
                 card_id = %card_id,
                 error = %e,
@@ -338,7 +338,7 @@ async fn grade_card(
 
     // Post the verdict into the CARD'S room as a participant — the run room the
     // citizens are standing in, not the grading citizen's current room.
-    crate::probe!(
+    continuum_base::probe!(
         class = "benchmark_grade.verdict",
         card_id = %card_id,
         room_id = %room_id,
@@ -397,7 +397,7 @@ pub(crate) async fn grade_submission(
     let patch = match crate::media::artifact::read_text_blob(&patch) {
         Ok(p) => p,
         Err(why) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.grade.submission_unreadable",
                 instance = %instance,
                 hash = %patch_hash,
@@ -407,7 +407,7 @@ pub(crate) async fn grade_submission(
             return;
         }
     };
-    crate::probe!(class = "benchmark.grade.submission", instance = %instance, room_id = %room_id, "grading a hand-in");
+    continuum_base::probe!(class = "benchmark.grade.submission", instance = %instance, room_id = %room_id, "grading a hand-in");
     match grade_swe(SweGradeParams {
         instance: instance.clone(),
         dataset: Some(dataset.to_string()),
@@ -424,7 +424,7 @@ pub(crate) async fn grade_submission(
                 crate::cognition::swe_verdict_sweep::record_refusal(&instance, err, None);
                 let msg = format!("🧪 [bench {bench}] {instance} — grade could not run (infra, not a score): {err}");
                 if let Err(e) = crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &msg).await {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.grade.submission_unposted",
                         instance = %instance,
                         error = %e,
@@ -433,7 +433,7 @@ pub(crate) async fn grade_submission(
                 }
             }
         }
-        Err(e) => crate::probe!(
+        Err(e) => continuum_base::probe!(
             class = "benchmark.grade.submission_failed",
             instance = %instance,
             error = ?e,
@@ -620,7 +620,7 @@ async fn grade_gym_card(
             .map_err(|e| format!("record gym verdict for {task_id}: {e}"))?;
     }
 
-    crate::probe!(
+    continuum_base::probe!(
         class = "benchmark_grade.verdict",
         card_id = %task_id,
         room_id = %room_id,
@@ -788,7 +788,7 @@ async fn sweep_lapsed_bench_cards(
         .subscription_set()
         .await
         .map_err(|e| format!("subscription set: {e}"))?;
-    let now_ms = crate::time::EpochMs::read().map_err(|e| e.to_string())?.millis();
+    let now_ms = continuum_base::time::EpochMs::read().map_err(|e| e.to_string())?.millis();
 
     let mut closed = 0usize;
     for room in set.all().map(|sub| sub.as_room()) {
@@ -816,7 +816,7 @@ async fn sweep_lapsed_bench_cards(
             let verdict = sweep_verdict(&card.state, hold, presence, artifact);
             if verdict == SweepVerdict::Reopen {
                 let room_id = room.channel.as_uuid();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark_grade.sweep_reopened",
                     card_id = %card.card_id.as_uuid(),
                     room_id = %room_id,
@@ -842,7 +842,7 @@ async fn sweep_lapsed_bench_cards(
                         if let Err(e) =
                             crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &note).await
                         {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "benchmark_grade.sweep_note_failed",
                                 card_id = %card.card_id.as_uuid(),
                                 error = %e,
@@ -850,7 +850,7 @@ async fn sweep_lapsed_bench_cards(
                             );
                         }
                     }
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                         class = "benchmark_grade.sweep_reopen_failed",
                         card_id = %card.card_id.as_uuid(),
                         error = %e,
@@ -868,7 +868,7 @@ async fn sweep_lapsed_bench_cards(
                 .map(|e| now_ms.saturating_sub(e))
                 .unwrap_or(u64::MAX); // no expiry recorded = not renewing = gradeable
             if presence == OwnerPresence::Resident && resident_owner_still_working(lapsed_for_ms) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark_grade.sweep_deferred_owner_online",
                     card_id = %card.card_id.as_uuid(),
                     owner = %owner.as_uuid(),
@@ -881,7 +881,7 @@ async fn sweep_lapsed_bench_cards(
                 continue;
             }
             let room_id = room.channel.as_uuid();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark_grade.sweep_close",
                 card_id = %card.card_id.as_uuid(),
                 room_id = %room_id,
@@ -920,7 +920,7 @@ async fn sweep_lapsed_bench_cards(
                         crate::persona::airc_citizen::publish_text_in_room(&airc, room_id, &note)
                             .await
                     {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark_grade.sweep_note_failed",
                             card_id = %card.card_id.as_uuid(),
                             error = %e,
@@ -929,7 +929,7 @@ async fn sweep_lapsed_bench_cards(
                     }
                 }
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark_grade.sweep_close_failed",
                         card_id = %card.card_id.as_uuid(),
                         room_id = %room_id,

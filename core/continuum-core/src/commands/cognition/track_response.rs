@@ -51,7 +51,7 @@ crate::action_command! {
     params: TrackResponseParams,
     output: TrackResponseResult,
     run(this, _ctx, p) => {
-        let now_ms = crate::time::EpochMs::read().map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?.millis();
+        let now_ms = continuum_base::time::EpochMs::read().map_err(|e| CommandError::Internal(format!("system clock before UNIX epoch: {e}")))?.millis();
 
         let mut persona = this.state.get_or_create_persona(p.persona_id);
         persona.rate_limiter.track_response(p.room_id, now_ms);

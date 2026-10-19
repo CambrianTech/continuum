@@ -208,7 +208,7 @@ impl PersonaAircRuntimeRegistry {
                 });
                 crate::persona::airc_citizen::AircCitizen::own_task(runtime_arc.as_ref(), task);
             }
-            Err(_) => crate::probe!(
+            Err(_) => continuum_base::probe!(
                 class = "training.credit.reconcile_deferred",
                 persona = %agent_name,
                 "registered outside a runtime — reviews already on her boards settle on the next live verdict"

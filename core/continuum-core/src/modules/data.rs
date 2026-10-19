@@ -571,7 +571,7 @@ impl ServiceModule for DataModule {
         // (training.credit.stage_failed ×2 per act turn, 0 staged). A conflict is a
         // boot failure, never a warning: two shapes for one collection is a bug.
         let registered = wire_substrate_orm_entities()?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "orm.substrate_entities.registered",
             registered = registered as u64,
             "Rust-authored ORM entities registered before the first ensure-schema"

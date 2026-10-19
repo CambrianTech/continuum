@@ -52,7 +52,7 @@
 //!   than paginates; pagination can be added later without changing the seam if
 //!   boards grow past a single budget.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
 use airc_lib::AircError;
@@ -186,7 +186,7 @@ impl RoomBoardReader for airc_lib::Airc {
                 // mark drowned the ledger in nothing.
                 let mark_due = board_read_mark_due(id);
                 if mark_due {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "board.read.phase",
                         room = %id,
                         phase = "resolve_room",
@@ -201,7 +201,7 @@ impl RoomBoardReader for airc_lib::Airc {
                 };
                 let resolve_ms = resolve_started.elapsed().as_millis() as u64;
                 if mark_due || resolve_ms > SLOW_BOARD_READ_MS {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "board.read.phase",
                         room = %id,
                         phase = "project_board",
@@ -218,7 +218,7 @@ impl RoomBoardReader for airc_lib::Airc {
                 .await?;
                 let project_ms = project_started.elapsed().as_millis() as u64;
                 if mark_due || resolve_ms + project_ms > SLOW_BOARD_READ_MS {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "board.read.phase",
                     room = %id,
                     phase = "complete",
@@ -481,7 +481,7 @@ impl RoomBoardSource {
         let turn_room = ctx.airc_room.as_ref().map(|r| r.as_uuid());
         let effective_room = match turn_room {
             Some(t) if t.is_nil() => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "rag.room_gate.abstain",
                     source = SOURCE_ID,
                     bound_room = ?self.room_id,
@@ -533,7 +533,7 @@ impl RoomBoardSource {
         let mut dropped: usize = 0;
         // One clock reading per delivery — every lease judgment in this block
         // (held / lapsed / available) agrees on the same instant.
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
 
         // YOUR-WORK SALIENCE (2026-07-11, "did they wander off and forget they
         // can work on things?"): all three personas held claimed cards, zero
@@ -891,7 +891,7 @@ mod tests {
             owner,
             claim_provenance: None,
             claim_id: claimed.then(|| airc_work::ClaimId::from_uuid(uuid::Uuid::new_v4())),
-            claim_expires_at_ms: claimed.then(|| crate::time::EpochMs::now().millis() + 60_000),
+            claim_expires_at_ms: claimed.then(|| continuum_base::time::EpochMs::now().millis() + 60_000),
             last_heartbeat_at_ms: None,
             pull_request: None,
             created_by: airc_core::PeerId::new(),
@@ -1160,7 +1160,7 @@ mod tests {
             CardState::Claimed,
             Some(airc_core::PeerId::from_uuid(me)),
         );
-        held.claim_expires_at_ms = Some(crate::time::EpochMs::now().millis() + 60_000);
+        held.claim_expires_at_ms = Some(continuum_base::time::EpochMs::now().millis() + 60_000);
         let open_a = card("Claimable one", CardState::Open, None);
         let open_b = card("Claimable two", CardState::Open, None);
 
@@ -1252,7 +1252,7 @@ mod tests {
     async fn a_peers_card_names_the_peer_live_and_lapsed_never_bare_hex() {
         let asha = airc_core::PeerId::new();
         let mut live = card("Wire the projector", CardState::InProgress, Some(asha));
-        live.claim_expires_at_ms = Some(crate::time::EpochMs::now().millis() + 60_000);
+        live.claim_expires_at_ms = Some(continuum_base::time::EpochMs::now().millis() + 60_000);
         let mut lapsed = card("Windows blocker #1", CardState::Claimed, Some(asha));
         lapsed.claim_expires_at_ms = Some(1_000_000); // 1970-adjacent — long expired
 

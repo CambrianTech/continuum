@@ -266,7 +266,7 @@ impl Registry {
                         .await
                         .map_err(|error| format!("Cargo root resolution worker failed: {error}"))?;
                         let (result, worked) = outcome;
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "disk.root.resolution",
                             path = %probe_path.display(),
                             kind = %kind,
@@ -301,7 +301,7 @@ impl Registry {
             // Keep the shared in-flight worker: another request must not create
             // another stuck filesystem thread for the same unavailable root.
             Guarded::TimedOut => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "disk.root.resolution.pending",
                     path = %path.display(),
                     bound_ms = bound.as_millis() as u64,

@@ -606,7 +606,7 @@ static LAST_TURN_MS: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| parking_lot::Mutex::new(std::collections::HashMap::new()));
 
 static BOOT_MS: std::sync::LazyLock<u64> = std::sync::LazyLock::new(|| {
-    crate::time::EpochMs::now().millis() // pre-1970 reads 0: a pre-epoch clock reads as boot at 0 — every mind then counts as starving at most once
+    continuum_base::time::EpochMs::now().millis() // pre-1970 reads 0: a pre-epoch clock reads as boot at 0 — every mind then counts as starving at most once
 });
 
 /// Stamp that `persona` started a turn now (any kind).
@@ -766,7 +766,7 @@ pub async fn hold_ambient_turn_for(
     .await
     {
         Ok(permit) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "admission.lane.idle_share",
                 persona = %persona,
                 waited_ms = started.elapsed().as_millis() as u64,
@@ -953,7 +953,7 @@ impl LaneAdmission {
             permit.forget();
             installed.store(count - 1, Ordering::Release);
             drop(_guard);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "admission.lane.shrink_debt",
                 pool = ?budget,
                 desired = target as u64,
@@ -1068,7 +1068,7 @@ impl LaneAdmission {
         );
         drop(_guard);
         if after != before {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "admission.lane.resized",
                 desired = lanes as u64,
                 installed = after.1 as u64,
@@ -1170,7 +1170,7 @@ impl LaneAdmission {
                         };
                         match lent {
                             Some(lane) => {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "admission.lane.reserve_lent_to_work",
                                     expected_ms = expected_occupancy.map(|d| d.as_millis() as u64).unwrap_or(0), // unwrap_or: lendable implies Some; 0 cannot occur
                                     budget_ms = budget.as_millis() as u64,
@@ -1196,7 +1196,7 @@ impl LaneAdmission {
                 .await
             }
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "admission.lane.granted",
             persona = ?persona,
             waited_ms = queued_at.elapsed().as_millis() as u64,
@@ -1261,7 +1261,7 @@ impl LaneAdmission {
                 }
             } else if !yielded {
                 yielded = true;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "admission.lane.ambient_yielded_to_work",
                     work_waiting = self.work_waiting.load(Ordering::Acquire) as u64,
                     "an ambient turn stands aside — a held card is waiting for the lane"

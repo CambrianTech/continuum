@@ -420,7 +420,7 @@ impl ModelsPull {
             // this code — and now that the progress ledger reports real throughput, it can be
             // tuned from evidence instead of argued about.
             const DEFAULT_PARALLEL_CHUNKS: usize = 8;
-            let parallel_chunks = crate::config_env::read("CONTINUUM_HF_PARALLEL_CHUNKS")
+            let parallel_chunks = continuum_base::config_env::read("CONTINUUM_HF_PARALLEL_CHUNKS")
                 .and_then(|v| v.trim().parse::<usize>().ok())
                 .filter(|n| *n >= 1 && *n <= 64)
                 .unwrap_or(DEFAULT_PARALLEL_CHUNKS);

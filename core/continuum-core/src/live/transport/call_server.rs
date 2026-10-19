@@ -3,7 +3,7 @@
 //! Handles live audio/video calls over WebSocket.
 //! Each call has multiple participants, audio is mixed with mix-minus.
 
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::live::audio::capabilities::ModelCapabilityRegistry;
 use crate::live::audio::mixer::{AudioMixer, ParticipantStream};
 use crate::live::audio::router::{AudioRouter, RoutedParticipant};
@@ -161,7 +161,7 @@ pub struct AudioConfig {
 
 impl Default for AudioConfig {
     fn default() -> Self {
-        use crate::audio_constants::{
+        use continuum_base::audio_constants::{
             AUDIO_CHANNEL_CAPACITY, AUDIO_FRAME_DURATION_MS, AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE,
         };
         // Sample rate and frame size from audio constants (single source of truth)
@@ -454,7 +454,7 @@ impl CallManager {
             // debug affordance — it used to auto-start and mask the real avatar with
             // 160x120 color bars for every native client. Set CONTINUUM_CALL_TEST_PATTERN=1
             // to bring it back for plumbing checks on a call with no real source.
-            if crate::config_env::read("CONTINUUM_CALL_TEST_PATTERN")
+            if continuum_base::config_env::read("CONTINUUM_CALL_TEST_PATTERN")
                 .map(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
                 .unwrap_or(false)
             {
@@ -848,7 +848,7 @@ impl CallManager {
                     if let (Some(user_id), Some(display_name), Some(speech_samples)) =
                         (result.user_id, result.display_name, result.speech_samples)
                     {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "live.stt.speech_ended",
                             module = "live",
                             call_id = call_id.as_str(),
@@ -875,7 +875,7 @@ impl CallManager {
                                         speech_samples,
                                     )
                                     .await;
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "live.stt.transcribed",
                                         module = "live",
                                         call_id = room.as_str(),
@@ -893,7 +893,7 @@ impl CallManager {
                             }
                             Err(_) => {
                                 // Queue full - drop this audio to stay current
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "live.stt.refused",
                                     module = "live",
                                     call_id = call_id.as_str(),
@@ -1101,7 +1101,7 @@ impl CallManager {
             .entry((call_id.to_string(), user_id.to_string(), reason))
             .or_insert_with(|| super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1)));
         if let Some(sum) = t.record(1, 0) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "live.stt.audio_dropped",
                 module = "live",
                 call_id = call_id,
@@ -1130,7 +1130,7 @@ impl CallManager {
             .entry((source, user_id.to_string()))
             .or_insert_with(|| super::pump_tally::PumpTally::new(std::time::Duration::from_secs(1)));
         if let Some(sum) = t.record(samples.len() as u64, peak) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "live.stt.level",
                 module = "live",
                 source = source,
@@ -1811,7 +1811,7 @@ pub async fn start_call_server(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
+    use continuum_base::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::live::audio::mixer::test_utils::*;
     use crate::live::audio::pcm::base64_encode_i16;
 

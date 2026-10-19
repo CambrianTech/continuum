@@ -548,7 +548,7 @@ impl InferenceHandleModule {
         if let Some(coordinator) = &self.coordinator {
             let persona = PeerId::from_uuid(params.persona_id.unwrap_or_else(Uuid::new_v4));
             let task = params.task.unwrap_or(TaskKind::Chat);
-            let now_ms = crate::time::EpochMs::now().millis();
+            let now_ms = continuum_base::time::EpochMs::now().millis();
             let lane_req = OpenLaneRequest {
                 persona,
                 task,

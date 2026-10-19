@@ -395,7 +395,7 @@ impl PersonaSpawnerModule {
         static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
         let shape = ((unbounded as u64) << 32) | seats as u64;
         if seats < unbounded && LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.roster.bounded",
                 population = unbounded as u64,
                 lanes = lanes.unwrap_or(0) as u64, // unwrap_or: 0 = no lane known (then nothing is bounded; unreachable here)
@@ -596,7 +596,7 @@ async fn draw_intents(
             // boot failure for a node that was fully staffed, and the host drained six
             // live citizens as "partial". The shortfall is the plan's business either way.
             if !intents.is_empty() || already_hosted > 0 {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.host.provider_filled_fewer_seats",
                     seats = required,
                     filled = intents.len(),
@@ -620,7 +620,7 @@ async fn draw_intents(
         // excludes her (`plan()`), so the loop never asks the provider for a seat it
         // cannot fill.
         if crate::persona::resting_seat::is_resting(&intent.agent_name) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.host.resting",
                 agent = %intent.agent_name,
                 "resting seat: identity drawn is paged out until a change — seat goes to the next one"
@@ -631,7 +631,7 @@ async fn draw_intents(
         // orders the roster — team first — but seats the whole population (below).
         if let Some(h) = hold.as_ref().filter(|h| h.exclusive) {
             if !h.allows(&intent.agent_name) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.host.held_out",
                     agent = %intent.agent_name,
                     reason = %h.reason,
@@ -642,7 +642,7 @@ async fn draw_intents(
         }
         crate::persona::resting_seat::note_seated(
             &intent.agent_name,
-            crate::time::EpochMs::now().millis(),
+            continuum_base::time::EpochMs::now().millis(),
         );
         intents.push(intent);
     }

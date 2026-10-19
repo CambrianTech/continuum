@@ -42,7 +42,7 @@
 //! persona at boot, before any of them have necessarily attached to
 //! their rooms yet.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::persona::airc_citizen::AircCitizen;
 use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
 use airc_core::TranscriptEvent;
@@ -85,7 +85,7 @@ struct MindFeed {
 impl MindFeed {
     fn boot(persona: Uuid) -> Option<Self> {
         let Some(dir) = crate::persona::perception_feed::mind_dir(persona) else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "mind.feed.unbooted",
                 persona = %persona,
                 "no persistent home: her perception region cannot load her durable state"
@@ -356,7 +356,7 @@ async fn catch_up_from_store(
         }
     }
     if let Some((room, floor_ms, newest_ms, count, peer, head, was_seen)) = sample {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.inbound.catch_up_page_sample",
             room = %room,
             floor_ms = floor_ms,
@@ -372,7 +372,7 @@ async fn catch_up_from_store(
     // WHICH ROOMS SHE PAGES, and which come back empty — the run room missing
     // from this list (or listed and empty) is the difference between "the store
     // catch-up works" and "she cannot hear the room she is working in".
-    crate::probe!(
+    continuum_base::probe!(
         class = "persona.inbound.catch_up_rooms",
         rooms = %room_list,
         empty = %empty.join(","),
@@ -380,7 +380,7 @@ async fn catch_up_from_store(
         "the rooms this tick paged, and the ones whose page held no conversation"
     );
     if failed > 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.inbound.catch_up_page_failed",
             failed = failed as u64,
             paged = paged as u64,
@@ -522,7 +522,7 @@ impl AircPersonaConversation {
             .and_then(|r| r.get(persona))
             .map(|rt| rt.agent_name().to_string())
         else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "mind.feed.unbooted",
                 persona = %persona,
                 "her runtime is not registered: no name to detect mentions with; the region waits for the next membership read"
@@ -590,7 +590,7 @@ impl AircPersonaConversation {
             }
         } else {
             self.stop_stream();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.inbound.no_rooms",
                 persona = %self.own_peer_id,
                 "no subscribed rooms — perception waits for a membership change"
@@ -705,7 +705,7 @@ impl AircPersonaConversation {
                             }
                         }
                         None => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.inbound.pump_ended",
                                 persona = %persona,
                                 "the daemon stream ended under the pump — re-opening it"
@@ -725,7 +725,7 @@ impl AircPersonaConversation {
                     _ = tokio::time::sleep_until(next_catch_up) => {
                         next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
                         let (paged, admitted) = catch_up_from_store(&*runtime, &seen, &tx).await;
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.inbound.catch_up_tick",
                             persona = %persona,
                             rooms_paged = paged as u64,
@@ -736,7 +736,7 @@ impl AircPersonaConversation {
                             return; // inbox gone
                         }
                         if live_stream_missed(live_since_tick, admitted, first_tick) {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.inbound.stream_dead",
                                 persona = %persona,
                                 admitted = admitted as u64,
@@ -794,7 +794,7 @@ async fn reopen_live_stream(
         }
         match runtime.subscribe_all_rooms().await {
             Ok(next) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.inbound.stream_reopened",
                     persona = %persona,
                     reason = reason,
@@ -806,7 +806,7 @@ async fn reopen_live_stream(
             }
             Err(e) => {
                 *attempt = attempt.saturating_add(1);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.inbound.stream_reopen_failed",
                     persona = %persona,
                     attempt = *attempt,
@@ -817,7 +817,7 @@ async fn reopen_live_stream(
                     // The one branch that leaves a citizen without a live path for
                     // good — the condition card e592b633 was filed about. Say it
                     // in its own class, not buried in the retry rows.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.inbound.pump_gave_up",
                         persona = %persona,
                         attempts = *attempt,
@@ -949,7 +949,7 @@ impl AircPersonaConversation {
                 Polled::Event(ev) => {
                     match ev {
                         None => {
-                            crate::probe!(
+                            continuum_base::probe!(
                             class = "persona.inbound.stream_ended",
                                         persona = %self.own_peer_id,
                                         "airc subscribe stream ended unrecoverably — airc-lib dropped \
@@ -995,7 +995,7 @@ impl AircPersonaConversation {
                 // projector live and never her raw_event) could not be split into "not in
                 // her set" vs "in her set, not delivered".
                 let attached = self.rooms.as_deref().unwrap_or_default(); // unwrap_or_default: refresh_membership just set it; none = an empty set, reported as 0
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.inbound.resubscribed",
                     persona = %self.own_peer_id,
                     reason = reason,
@@ -1040,7 +1040,7 @@ impl AircPersonaConversation {
                             // cancellation must not skip an unqueued receipt.
                             self.last_lamport = event.lamport;
                         }
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.inbound.rejoin_replayed",
                             persona = %self.own_peer_id,
                             scanned,
@@ -1050,7 +1050,7 @@ impl AircPersonaConversation {
                              admitted by the existing replay watermark"
                         );
                     }
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                     class = "persona.inbound.rejoin_page_failed",
                                 persona = %self.own_peer_id,
                                 error = %e,
@@ -1101,7 +1101,7 @@ impl PersonaConversation for AircPersonaConversation {
         };
         self.last_lamport = cutoff;
         self.initial_watermark = Some(cutoff);
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.inbound.primed",
             persona = %self.own_peer_id,
             subscribed = active,
@@ -2209,7 +2209,7 @@ impl AircPersonaConversation {
             Some(b) if b.as_text().is_some() => "text",
             Some(_) => "json",
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.inbound.raw_event",
             persona = %self.own_peer_id,
             from_peer = %event.peer_id,
@@ -2265,7 +2265,7 @@ impl AircPersonaConversation {
         let message = match attention.perception {
             Ok(message) => message,
             Err(reason) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.inbound.filtered_non_turn",
                     persona = %self.own_peer_id, from_peer = %event.peer_id,
                     body_kind, event_kind, body_preview, reason,
@@ -2275,7 +2275,7 @@ impl AircPersonaConversation {
             }
         };
         if let Some(work) = &message.work {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.inbound.work_fact",
                 persona = %self.own_peer_id, from_peer = %event.peer_id,
                 room = %event.room_id, work = ?work,
@@ -2297,7 +2297,7 @@ impl AircPersonaConversation {
         // failure reads as "the citizen chose not to work"
         // ([[an-absence-is-an-unfinished-measurement]]).
         if message.peer_id == self.own_peer_id {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.inbound.skipped_self_authored",
                 persona = %self.own_peer_id,
                 from_peer = %event.peer_id,

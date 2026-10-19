@@ -80,7 +80,7 @@ pub struct CeilingEvidence {
 /// it is the operator's existing VRAM headroom, the same fraction the pin fit-gate uses
 /// to answer "can this model physically fit". A prior should sit UNDER the truth.
 fn prior_fraction() -> f64 {
-    crate::config_env::vram_headroom() as f64
+    continuum_base::config_env::vram_headroom() as f64
 }
 
 /// Pick the best available ceiling, and say which rung it came from.

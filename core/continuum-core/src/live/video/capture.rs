@@ -10,7 +10,7 @@
 //! Thread safety: All state behind Arc<Mutex<>> — multiple agents can query concurrently.
 //! Frame processing runs on tokio::spawn_blocking (CPU-bound I420→RGBA→JPEG conversion).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use image::{ImageBuffer, RgbaImage};
 use livekit::prelude::*;
 use std::collections::HashMap;

@@ -1,6 +1,6 @@
 //! The existing deliberation capture owner: borrowed request submission before
 //! inference, then a small terminal record. Playback reads never run cognition.
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
 use serde::Serialize;
 use std::path::Path;

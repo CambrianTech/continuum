@@ -39,7 +39,7 @@
 //!   "deliberately deferred" list. Lands in PR-4 alongside the
 //!   GenomeRegion + Op type definitions.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use async_trait::async_trait;
 use parking_lot::RwLock;
 use std::collections::HashMap;

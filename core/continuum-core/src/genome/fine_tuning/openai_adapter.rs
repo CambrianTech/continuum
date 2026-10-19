@@ -34,7 +34,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::secrets::get_secret;
+use continuum_base::secrets::get_secret;
 
 use super::adapter::{FineTuningAdapter, FineTuningCapabilities, FineTuningError, TrainerHardware};
 use super::types::{

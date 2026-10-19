@@ -132,7 +132,7 @@ fn say_anomaly(name: &str, pid: u32, rss_bytes: u64, total_bytes: u64) {
         Ok(handle) => {
             handle.spawn(async move { crate::modules::grid::say_in_org_room(&line).await });
         }
-        Err(_) => crate::probe!(
+        Err(_) => continuum_base::probe!(
             class = "memory.pressure.anomaly_not_said",
             process = %name,
             "no async runtime on the monitor thread — the anomaly stays in the probe only"
@@ -852,7 +852,7 @@ impl MemoryPressureMonitor {
         let total_budgeted = consumers.iter().map(|c| c.budget_bytes).sum();
         let total_used = consumers.iter().map(|c| c.used_bytes).sum();
 
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
 
         MemoryBudgetSnapshot {
             level: pressure_snap.level,
@@ -974,7 +974,7 @@ impl MemoryPressureMonitor {
             let should_probe = consecutive_at_level == 1
                 || (level.to_u8() >= PressureLevel::High.to_u8() && st.log_counter.is_multiple_of(30));
             if should_probe {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "memory.pressure",
                     level = %level,
                     pressure_pct = (pressure * 100.0) as u64,
@@ -1018,7 +1018,7 @@ impl MemoryPressureMonitor {
                             continue;
                         }
                         named += 1;
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "memory.pressure.anomaly",
                             process = %name,
                             pid = pid.as_u32(),
@@ -1041,7 +1041,7 @@ impl MemoryPressureMonitor {
                                     if Some(p.pid) == self_pid || p.name.contains("llama-server") {
                                         continue;
                                     }
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "memory.pressure.anomaly",
                                         process = %p.name,
                                         pid = p.pid,
@@ -1054,7 +1054,7 @@ impl MemoryPressureMonitor {
                             }
                             // A read that could not complete is said, never an empty list
                             // (card c7ae34b2) — the anomaly is UNKNOWN this window, not absent.
-                            Err(why) => crate::probe!(
+                            Err(why) => continuum_base::probe!(
                                 class = "memory.pressure.anomaly_unreadable",
                                 why = %why,
                                 "the process table could not be read this window — no anomaly claim either way"
@@ -1189,7 +1189,7 @@ impl MemoryPressureMonitor {
             };
 
             // Build the snapshot.
-            let now_ms = crate::time::EpochMs::now().millis();
+            let now_ms = continuum_base::time::EpochMs::now().millis();
             let snapshot = PressureSnapshot {
                 level,
                 pressure,
@@ -1271,7 +1271,7 @@ impl Daemon for MemoryPressureMonitor {
     async fn tick(&self) {
         if let Some(fds) = crate::system_resources::fd_gauge::FdReading::take() {
             if fds.is_high() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "process.open_fds.high",
                     open = fds.open,
                     soft_limit = fds.soft_limit.unwrap_or(0), // unwrap_or: is_high needs a limit; 0 never reaches here
@@ -1279,7 +1279,7 @@ impl Daemon for MemoryPressureMonitor {
                     "the core's descriptor table is past half its limit — the next pipe or socket fails with EBADF; find the leak before the node goes dark"
                 );
             } else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "process.open_fds",
                     open = fds.open,
                     soft_limit = fds.soft_limit.unwrap_or(0), // unwrap_or: 0 = unlimited or unreadable

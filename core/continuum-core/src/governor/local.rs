@@ -166,7 +166,7 @@ impl LocalSubstrateGovernor {
                 cascade_transition_count: 0,
                 recent_signals: Vec::with_capacity(RECENT_SIGNALS_CAPACITY),
                 current_step: initial_step,
-                last_step_change_ms: crate::time::EpochMs::now().millis(),
+                last_step_change_ms: continuum_base::time::EpochMs::now().millis(),
                 thresholds: CascadeThresholds::default(),
                 pending_speculation_retreat: false,
             }),
@@ -232,7 +232,7 @@ impl LocalSubstrateGovernor {
             .lock()
             .expect("LocalSubstrateGovernor candidates mutex poisoned");
         let selected = select_policy(&candidates, &hw)?;
-        let new_policy = crate::governor::into_governor_policy(selected.clone(), hw, crate::time::EpochMs::now().millis());
+        let new_policy = crate::governor::into_governor_policy(selected.clone(), hw, continuum_base::time::EpochMs::now().millis());
         drop(candidates);
 
         // PR-3c4: refresh BASE policy too. New hardware = new canonical
@@ -253,7 +253,7 @@ impl LocalSubstrateGovernor {
                 .lock()
                 .expect("LocalSubstrateGovernor snapshot mutex poisoned");
             state.current_step = 0;
-            state.last_step_change_ms = crate::time::EpochMs::now().millis();
+            state.last_step_change_ms = continuum_base::time::EpochMs::now().millis();
             state.pending_speculation_retreat = false;
         }
 
@@ -284,7 +284,7 @@ impl SubstrateGovernor for LocalSubstrateGovernor {
         //   transformations symmetric + reversible)
         // - Restore-speculation-one-step-later: on retreat, keep
         //   speculation at the higher-step value for one more cycle
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         let mut new_policy_to_publish: Option<GovernorPolicy> = None;
 
         {

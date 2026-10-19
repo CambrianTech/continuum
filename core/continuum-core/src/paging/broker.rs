@@ -343,7 +343,7 @@ impl PressureBroker {
         };
         let mut bytes_freed = 0u64;
         let mut pools_acted: Vec<String> = Vec::new();
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
         for (pre_pressure, pool) in act_on {
             let want = evict_amount_for(pool.as_ref());
             let freed = pool.evict_at_least(want);

@@ -475,7 +475,7 @@ impl PlacementSwitch {
         if let Some(home) = &self.home {
             let over = PersonaModelOverride::new_remote(model, Some("placement:fleet".to_string()), now_ms, &peer.to_string());
             if let Err(e) = over.write(home) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.override_unpersisted",
                     persona = %self.persona_name,
                     error = %e,
@@ -548,7 +548,7 @@ impl PlacementSwitch {
         if !(first || dropped_lane) {
             return;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.placement.seat_retired",
             persona = %self.persona_name,
             peer = %peer,
@@ -569,7 +569,7 @@ impl PlacementSwitch {
         *self.peer.write().unwrap_or_else(|p| p.into_inner()) = None; // JUSTIFIED unwrap_or_else: a poisoned lock still holds the value; the switch is bookkeeping, never truth
         if let Some(home) = &self.home {
             if let Err(e) = PersonaModelOverride::clear(home) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.override_unpersisted",
                     persona = %self.persona_name,
                     error = %e,
@@ -586,7 +586,7 @@ impl PlacementSwitch {
                 match self.local_factory.build_adapter(&self.profile).await {
                     Ok(a) => Some(a),
                     Err(e) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.placement.no_home_lane",
                             persona = %self.persona_name,
                             error = %e,
@@ -626,7 +626,7 @@ impl PlacementSwitch {
         match mv {
             PlacementMove::Stay => None,
             PlacementMove::Park { reason } => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.parked",
                     persona = %self.persona_name,
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
@@ -644,7 +644,7 @@ impl PlacementSwitch {
                 }
                 self.set_seat(Seat::Home, now_ms);
                 crate::modules::citizen_health::note_move(false);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.fell_home",
                     persona = %self.persona_name,
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
@@ -671,7 +671,7 @@ impl PlacementSwitch {
             PlacementMove::ReturnRemote => {
                 self.set_seat(Seat::Remote, now_ms);
                 crate::modules::citizen_health::note_move(false);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.placement.returned",
                     persona = %self.persona_name,
                     peer = %self.peer().map(|p| p.to_string()).unwrap_or_default(), // JUSTIFIED unwrap_or_default: probe label only
@@ -986,7 +986,7 @@ pub async fn follow_the_fleet(
         // refused: the next tick asks again, and the act-end sync retries the push.
         if moves_between_machines(&mv, seat_is_self) {
             if let Some(why) = crate::persona::workspace_transfer::move_blocker_bounded(sw.persona_id()).await {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.deferred_unpushed",
                     persona = %sw.persona_name(),
                     peer = %peer,
@@ -1010,7 +1010,7 @@ pub async fn follow_the_fleet(
                 None => Err("no airc handle for her — cannot ask the seat".to_string()),
             };
             match asked {
-                Ok(g) if g.granted => crate::probe!(
+                Ok(g) if g.granted => continuum_base::probe!(
                     class = "placement.return.leased",
                     persona = %sw.persona_name(),
                     peer = %peer,
@@ -1020,7 +1020,7 @@ pub async fn follow_the_fleet(
                     "the seat granted her slot back — returning"
                 ),
                 Ok(g) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "placement.return.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -1032,7 +1032,7 @@ pub async fn follow_the_fleet(
                     mv = PlacementMove::Stay;
                 }
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "placement.return.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -1073,7 +1073,7 @@ pub async fn follow_the_fleet(
         if o.beacon_age_ms > REMOTE_SEAT_FRESH_MS {
             continue; // a dark seat is the fall-home story, not a full one
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "placement.return.withheld",
             peer = %peer,
             minds = minds,
@@ -1092,7 +1092,7 @@ pub async fn follow_the_fleet(
             // A spill is a move between machines too (card 73eefbbb): same gate, before
             // the seat is asked for a grant that a deferral would waste.
             if let Some(why) = crate::persona::workspace_transfer::move_blocker_bounded(mind).await {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.deferred_unpushed",
                     persona = %sw.persona_name(),
                     peer = %peer,
@@ -1112,7 +1112,7 @@ pub async fn follow_the_fleet(
             let grant = match asked {
                 Ok(g) if g.granted => g,
                 Ok(g) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "placement.spill.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -1126,7 +1126,7 @@ pub async fn follow_the_fleet(
                     continue;
                 }
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "placement.spill.refused",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -1136,7 +1136,7 @@ pub async fn follow_the_fleet(
                     continue;
                 }
             };
-            crate::probe!(
+            continuum_base::probe!(
                 class = "placement.spill.leased",
                 persona = %sw.persona_name(),
                 peer = %peer,
@@ -1150,7 +1150,7 @@ pub async fn follow_the_fleet(
             match sw.go_remote(peer, &model, now_ms) {
                 Ok(()) => {
                     crate::modules::citizen_health::note_move(false);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.placement.offloaded",
                         persona = %sw.persona_name(),
                         peer = %peer,
@@ -1165,7 +1165,7 @@ pub async fn follow_the_fleet(
                         grant.free_slots_live, grant.lane_wait_p50_ms, grant.lane_wait_samples
                     ));
                 }
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "persona.placement.offload_failed",
                     persona = %sw.persona_name(),
                     peer = %peer,
@@ -1232,7 +1232,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         // gate, asked BEFORE the reservation so a deferral never burns a grant. A better
         // seat is still there next tick; her unpushed work is not recoverable.
         if let Some(blocked) = crate::persona::workspace_transfer::move_blocker_bounded(mind).await {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "placement.move.deferred_unpushed",
                 persona = %sw.persona_name(),
                 peer = %seat.node,
@@ -1250,7 +1250,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
             }
             sw.come_home_for_good(now_ms);
             crate::modules::citizen_health::note_move(true);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "placement.move.opportunity",
                 persona = %sw.persona_name(),
                 from = %from,
@@ -1276,7 +1276,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         match asked {
             Ok(g) if g.granted => {}
             Ok(g) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.opportunity_refused",
                     persona = %sw.persona_name(),
                     to = %seat.node,
@@ -1287,7 +1287,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
                 continue;
             }
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.opportunity_refused",
                     persona = %sw.persona_name(),
                     to = %seat.node,
@@ -1300,7 +1300,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
         match sw.go_remote(seat.node, &target_plan.model_id, now_ms) {
             Ok(()) => {
                 crate::modules::citizen_health::note_move(true);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "placement.move.opportunity",
                     persona = %sw.persona_name(),
                     from = %from,
@@ -1317,7 +1317,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
                     sw.persona_name(), seat.node, why.as_str(), target_plan.model_id, target_plan.lanes, target_plan.window / 1000
                 ));
             }
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 class = "persona.placement.offload_failed",
                 persona = %sw.persona_name(),
                 peer = %seat.node,

@@ -12,7 +12,7 @@
 //! supplies the per-tick world-state (the consolidated burst), the persona
 //! supplies the unified memory + identity + faculties.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
@@ -271,7 +271,7 @@ fn give_fork_its_own_hands(cfg: &mut PersonaBrainConfig, persona_id: Uuid) {
         None => {
             cfg.tool_executor = None;
             cfg.grounding_sources.retain(|g| !g.requires_hands);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "workspace.fork_without_hands",
                 persona = %persona_id,
                 "these hands can't open a context of their own, so the fork runs without hands rather than borrowing hers"
@@ -380,7 +380,7 @@ fn assemble_workspace_cycle(
             // mis-filed into a room she may never have spoken in. See
             // OwnSpeechPersisted — hydrate_speech_rings re-seeds with rooms.
             OwnSpeechPersisted::Legacy(flat) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.volatile.own_speech_legacy_dropped",
                     persona = %cfg.persona_name,
                     dropped = flat.len(),
@@ -389,7 +389,7 @@ fn assemble_workspace_cycle(
                 );
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.volatile.restored",
             persona = %cfg.persona_name,
             entries = n,
@@ -971,7 +971,7 @@ fn note_acting_root_in(
     // The map she perceives is the place of the hands she is focused on; an eval or a fork
     // placing its own hands changes nothing she perceives.
     let marked = context == focus_of(persona_id) && crate::persona::grounding_invalidation::mark_workspace_map_dirty(persona_id);
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.acting_root",
         persona_id = %persona_id,
         context = %context.map(|c| c.id().to_string()).unwrap_or_else(|| "live".to_string()), // unwrap_or_else: no context = her live hands, named
@@ -1090,7 +1090,7 @@ async fn bind_held_card(
                     ),
                 }
                 if !matches!(verdict, Some(None)) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.claim.gone_on_wake",
                         peer = %peer_id,
                         card = %believed,
@@ -1196,7 +1196,7 @@ pub(crate) async fn bind_card(
         // NOT a silent `?`. The ambiguous case has always been probed; the
         // not-found case was the one that said nothing, which is why this went
         // unnoticed until a citizen's commit turned up in the wrong tree.
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.work.checkout_unresolved",
             peer = %peer_id,
             card = %focus.card_id.as_uuid(),
@@ -1216,7 +1216,7 @@ pub(crate) async fn bind_card(
     // Her default hands stay home; no turn moves another's hands, so concurrent turns can't
     // split her shell from her code tools (Kimi #11697, card 2d58192d).
     let Some(claim) = focus.claim_id else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.work.claim_unknown",
             peer = %peer_id,
             card = %focus.card_id.as_uuid(),
@@ -1231,7 +1231,7 @@ pub(crate) async fn bind_card(
     let lease = match crate::code::hands::admit(context) {
         Ok(lease) => lease,
         Err(why) => {
-            crate::probe!(class = "persona.work.hands_closing", peer = %peer_id, card = %focus.card_id.as_uuid(), why = %why, "the claim's hands are closing; nothing acts on the card this turn");
+            continuum_base::probe!(class = "persona.work.hands_closing", peer = %peer_id, card = %focus.card_id.as_uuid(), why = %why, "the claim's hands are closing; nothing acts on the card this turn");
             return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());
         }
     };
@@ -1259,7 +1259,7 @@ pub(crate) async fn bind_card(
             let branch = crate::modules::card_staging::card_branch(focus);
             body.working_memory.pin_fact_for_turns("rooted", &rooted_notice(&focus.repo.to_string(), &ws, &branch), 3);
             mark_told(peer_id, &ws);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.work.root_moved",
                 peer = %peer_id,
                 card = %focus.card_id.as_uuid(),
@@ -1364,7 +1364,7 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
     // ended without reaching the model and the carry still ran git on each one, 374 ms
     // a time, 33 times per resident per 5 min, committed=false pushed=false throughout.
     if acts == 0 {
-        crate::probe!(
+        continuum_base::probe!(
             class = "workspace.push.skipped_no_act",
             persona = %hands.persona_name,
             "turn took no act: the card's checkout is as it was, nothing to carry"
@@ -1482,7 +1482,7 @@ pub(crate) async fn root_acting_workspace(
     if let Some(body) = cycle.acting() {
         body.working_memory.set_scope(Some(root.to_string()));
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.rooted",
         persona = %hands.persona_name,
         root = %root,
@@ -1520,7 +1520,7 @@ pub(crate) async fn end_acting_context(
             Ok(lease) => {
                 crate::persona::workspace_transfer::sync_after_act_for(std::sync::Arc::new(lease), hands.persona_id, &hands.persona_name, root, card).await;
             }
-            Err(why) => crate::probe!(
+            Err(why) => continuum_base::probe!(
                 class = "workspace.sync_refused",
                 persona = %hands.persona_name,
                 card = %card,
@@ -1607,7 +1607,7 @@ pub(crate) async fn close_acting_context(hands: &ActingHands) -> Result<(), Cont
     }
     note_acting_root_in(hands.persona_id, hands.context, None);
     hands.working_memory.set_scope(None);
-    crate::probe!(
+    continuum_base::probe!(
         class = "workspace.context_closed",
         persona = %hands.persona_name,
         context = %context.id(),
@@ -1709,7 +1709,7 @@ impl PersonaWorkspaceRegistry {
 
         // 1. Full UUID (race-safe passthrough) or short-id prefix against the
         //    forkable set — the shared id normalization primitive.
-        if let Ok(id) = crate::id_resolve::resolve(id_or_name, &ids, "persona") {
+        if let Ok(id) = continuum_base::id_resolve::resolve(id_or_name, &ids, "persona") {
             return Ok(PeerId::from_uuid(id));
         }
 
@@ -1869,7 +1869,7 @@ impl PersonaWorkspaceRegistry {
         let save_one = |id: Uuid, memory: Arc<WorkingMemory>| {
             let started = std::time::Instant::now();
             let result = save_volatile(id, reason, staged_deadline, &memory);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.volatile.checkpoint",
                 persona_id = %id,
                 outcome = if result.is_ok() { "ok" } else { "error" },
@@ -1930,7 +1930,7 @@ impl PersonaWorkspaceRegistry {
                         })
                         .collect()
                 });
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.volatile.seam",
                     residents = count,
                     failed = results.iter().filter(|(_, r)| r.is_err()).count(),
@@ -2129,7 +2129,7 @@ impl PersonaWorkspaceRegistry {
         let mut rehomed = 0usize;
         for (id, entry) in cycles.iter() {
             if remote.contains(id) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.rehome.kept_remote",
                     persona_id = %id,
                     "re-home skipped: her brain runs on a remote lane, the local model is not hers"

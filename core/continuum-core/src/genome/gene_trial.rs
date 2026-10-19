@@ -287,7 +287,7 @@ pub fn live_genes(persona: Uuid) -> Option<Vec<ActiveAdapterRequest>> {
     match store.load() {
         Ok(trials) => Some(genes_for_turn(&trials, persona, &base)),
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "genome.trial.unreadable",
                 persona = %persona,
                 error = error.as_str(),
@@ -331,11 +331,11 @@ pub fn credit_settled_card(persona: Uuid, card: Uuid, passed: bool, turns: &[Car
     let Some(store) = GeneTrials::default_store() else {
         return;
     };
-    let now_ms = crate::time::EpochMs::now().millis();
+    let now_ms = continuum_base::time::EpochMs::now().millis();
     let decided = match store.credit_card(persona, card, passed, turns, now_ms) {
         Ok(d) => d,
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "genome.trial.unreadable",
                 persona = %persona,
                 error = error.as_str(),
@@ -356,7 +356,7 @@ pub fn credit_settled_card(persona: Uuid, card: Uuid, passed: bool, turns: &[Car
 fn apply_decision(t: &GeneTrial, now_ms: u64) {
     if matches!(t.state, TrialState::Retired | TrialState::Expired) {
         if let Err(error) = crate::forge::adapter_manifest::unregister(&t.path) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "genome.trial.unregister_failed",
                 gene = t.alias.as_str(),
                 error = error.as_str(),
@@ -373,7 +373,7 @@ fn apply_decision(t: &GeneTrial, now_ms: u64) {
             std::fs::OpenOptions::new().create(true).append(true).open(&path)?.write_all(line.as_bytes())
         });
         if let Err(error) = written {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "genome.trial.ledger_unwritten",
                 gene = t.alias.as_str(),
                 error = %error,
@@ -382,7 +382,7 @@ fn apply_decision(t: &GeneTrial, now_ms: u64) {
         }
     }
     let verdict = t.verdict.as_ref();
-    crate::probe!(
+    continuum_base::probe!(
         class = "genome.trial.decided",
         persona = %t.persona_id,
         gene = t.alias.as_str(),

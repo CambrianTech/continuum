@@ -339,7 +339,7 @@ pub fn spawn_room_set_fold(
                     });
                 }
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "nav.room_registry_seed_failed",
                         error = format!("{error}"),
                         "durable room-registry seed unavailable — nav degrades to \

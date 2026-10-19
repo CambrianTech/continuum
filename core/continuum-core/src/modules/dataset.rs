@@ -892,7 +892,7 @@ impl Default for DatasetModule {
             // nothing persists, and says so once. Every command path resolves the root itself
             // and fails loud.
             service: Arc::new(DatasetService::new(default_datasets_root().unwrap_or_else(|e| {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "dataset.root.unresolved",
                     error = e.to_string().as_str(),
                     "no continuum home: dataset/* writes land in the temp dir and will not survive a boot"

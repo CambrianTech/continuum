@@ -8,7 +8,7 @@
 //! Each item carries all data needed for TS processing after dequeue.
 //! Serialization via to_json() sends full item data through IPC.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::channel_types::{ActivityDomain, QueueItemBehavior};
 use super::types::SenderType;
 use serde::{Deserialize, Serialize};

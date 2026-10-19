@@ -14,7 +14,7 @@
 //! (`fork_eval_cycle_with_adapter` → `drive_to_settle`), minus the grader — the external harness
 //! grades. One drive, two consumers (eval scores; agent/solve emits a patch).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -437,7 +437,7 @@ impl ActionCommand for AgentSolve {
                     let mut this_attempt = inner.clone();
                     this_attempt.task = next_task.clone();
                     this_attempt.prev_failed_patch_sha = prev_patch_sha.clone();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.attempt.start",
                         run_id = %run_id,
                         attempt,
@@ -470,7 +470,7 @@ impl ActionCommand for AgentSolve {
                                      never a capability verdict"
                                 )
                             };
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "benchmark.stall",
                                 run_id = %run_id,
                                 attempt,
@@ -539,7 +539,7 @@ impl ActionCommand for AgentSolve {
                             if r.infra_error.is_some() || (r.acts == 0 && r.patch.is_empty()) {
                                 if infra_void_retries < INFRA_VOID_RETRIES_MAX {
                                     infra_void_retries += 1;
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "benchmark.attempt.infra_void",
                                         run_id = %run_id,
                                         attempt,
@@ -551,7 +551,7 @@ impl ActionCommand for AgentSolve {
                                     tokio::time::sleep(std::time::Duration::from_secs(90)).await;
                                     continue;
                                 }
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "benchmark.attempt.infra_void",
                                     run_id = %run_id,
                                     attempt,
@@ -626,7 +626,7 @@ impl ActionCommand for AgentSolve {
                                                          have no evidence behind it"
                                                     );
                                                 } else {
-                                                    crate::probe!(
+                                                    continuum_base::probe!(
                                                         class = "benchmark.patch.kept",
                                                         run_id = %run_id,
                                                         attempt,
@@ -691,7 +691,7 @@ impl ActionCommand for AgentSolve {
                                     // the verdict so no consumer has to scrape a file to tell a
                                     // capability zero from an absent measurement.
                                     let ungradeable = g.error.is_some();
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "benchmark.attempt.end",
                                         run_id = %run_id,
                                         instance = %instance,
@@ -710,7 +710,7 @@ impl ActionCommand for AgentSolve {
                                         failed_tests = %g.failed_tests.join(","),
                                         "solve attempt graded — the verdict, on the wire"
                                     );
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "benchmark.autograde",
                                         run_id = %run_id,
                                         instance = %instance,
@@ -739,7 +739,7 @@ impl ActionCommand for AgentSolve {
                                         && !patch_sha256.is_empty()
                                         && prev_patch_sha.as_deref() == Some(patch_sha256.as_str());
                                     if identical_resubmit {
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             class = "benchmark.resubmit.identical",
                                             run_id = %run_id,
                                             instance = %instance,
@@ -947,7 +947,7 @@ impl ActionCommand for AgentSolve {
                                                     )
                                                     .await
                                                     {
-                                                        Ok(_) => crate::probe!(
+                                                        Ok(_) => continuum_base::probe!(
                                                             class = "team.review.requested",
                                                             run_id = %run_id,
                                                             instance = %instance,
@@ -955,7 +955,7 @@ impl ActionCommand for AgentSolve {
                                                             mates = %mates.join(","),
                                                             "failed attempt published a solver-voiced review request — the review-landing event"
                                                         ),
-                                                        Err(e) => crate::probe!(
+                                                        Err(e) => continuum_base::probe!(
                                                             class = "team.review.request_failed",
                                                             run_id = %run_id,
                                                             instance = %instance,
@@ -971,7 +971,7 @@ impl ActionCommand for AgentSolve {
                                 Err(e) => {
                                     // A failed GRADE is not a failed solve — surface it
                                     // loud on its own channel; the solve result stands.
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "benchmark.autograde",
                                         run_id = %run_id,
                                         instance = %instance,
@@ -1120,7 +1120,7 @@ async fn advance_round_after_non_settling(run_id: &str) {
         .or_else(|| reg.any_live_citizen())
         .map(|rt| rt.airc().clone())
     else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.advance_blocked",
             card_id = %next.card,
             "the next card is due after a non-settling run, but no live citizen can \
@@ -1128,7 +1128,7 @@ async fn advance_round_after_non_settling(run_id: &str) {
         );
         return;
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "bench.round.advanced",
         finished = %card,
         next_card = %next.card,
@@ -1179,7 +1179,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
     let no_patch = decision == CardCloseDecision::NoPatch;
     let cache_repoint_failed = decision == CardCloseDecision::CacheRepointFailed;
     if no_patch {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             reason = "no_patch",
@@ -1189,7 +1189,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
         return;
     }
     if cache_repoint_failed {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             reason = "cache_repoint_failed",
@@ -1202,7 +1202,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
         return;
     }
     if !verdict_is_real && !env_absent {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             "no verdict on disk at all (infra died before grading) — this run does \
@@ -1232,7 +1232,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
         // killed at the dispatch seam instead: dispatch skips instances whose
         // env failed THIS boot's prewarm, so a still-broken card idles quietly
         // and a healed one re-fires with zero operator action.
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             reason = "env_absent",
@@ -1264,7 +1264,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
         .or_else(|| reg.any_live_citizen())
         .map(|rt| rt.airc().clone());
     let Some(airc) = airc else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             "no live citizen to author the close — the lapse sweeper will close it"
@@ -1273,7 +1273,7 @@ async fn close_claim_card_if_graded(run_id: &str) {
     };
     let card_id = airc_work::WorkCardId::from_uuid(card_uuid);
     let Some(room) = crate::modules::work::room_holding_card(&airc, card_id).await else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             "no subscribed room's board holds the card — cannot place the close"
@@ -1290,13 +1290,13 @@ async fn close_claim_card_if_graded(run_id: &str) {
         )
         .await
     {
-        Ok(_) => crate::probe!(
+        Ok(_) => continuum_base::probe!(
             class = "benchmark.card.closed_by_harness",
             run_id = %run_id,
             card_id = %card_uuid,
             "final verdict on disk — harness closed the card; the round settles on              this event (last card → Done)"
         ),
-        Err(e) => crate::probe!(
+        Err(e) => continuum_base::probe!(
             class = "benchmark.card.close_skipped",
             run_id = %run_id,
             error = %e.to_string(),
@@ -1516,7 +1516,7 @@ impl AgentSolve {
         // 8-char short ids, so accept the id a caller was shown — a clean UUID passes
         // straight through, a short/mistyped form expands against the live persona registry
         // (the ONE shared id_resolve primitive), instead of failing "is not a UUID".
-        let persona_uuid = crate::id_resolve::resolve(
+        let persona_uuid = continuum_base::id_resolve::resolve(
             p.persona_id.as_str().trim(),
             &crate::persona::card::ids(),
             "persona",
@@ -1547,7 +1547,7 @@ impl AgentSolve {
         // a Connection-refused death mid-generation. `.ok()` because the semaphore is never
         // closed; binding to `_solve_permit` keeps the permit alive across the drive.
         let _solve_permit = solve_admission().acquire().await.ok();
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "admission.acquired",
@@ -1593,7 +1593,7 @@ impl AgentSolve {
             crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global().map(
                 |reg| {
                     let lease = reg.quiesce_others_than(&participants);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.solve.phase",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "quiesce_others",
@@ -1619,7 +1619,7 @@ impl AgentSolve {
             .await;
             match outcome {
                 crate::inference::llama_server::SnapshotSettle::Resettled { lanes, window } => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.solve.phase",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "serving_resettled",
@@ -1632,7 +1632,7 @@ impl AgentSolve {
                     );
                 }
                 crate::inference::llama_server::SnapshotSettle::Unchanged => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.solve.phase",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         phase = "serving_unchanged",
@@ -1644,7 +1644,7 @@ impl AgentSolve {
                 }
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "lane_acquire.start",
@@ -1660,7 +1660,7 @@ impl AgentSolve {
         {
             Ok(lane) => lane?,
             Err(_) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.solve.phase",
                     run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                     phase = "lane_acquire.timeout",
@@ -1677,7 +1677,7 @@ impl AgentSolve {
                 )));
             }
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "lane_acquire.done",
@@ -1709,7 +1709,7 @@ impl AgentSolve {
                 p.task.trim()
             ),
         ));
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "fork.start",
@@ -1756,7 +1756,7 @@ impl AgentSolve {
         //     lifted out BEFORE the cycle is consumed, and every exit path below returns her
         //     to her own workspace. Without that, #312: after a flask solve, Anwen's LIVE
         //     self was still running `code/read(src/flask/app.py)` in her room hours later.
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "fork.done",
@@ -1770,7 +1770,7 @@ impl AgentSolve {
             p.scored.unwrap_or(false),
         )
         .await?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.solve.phase",
             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
             phase = "hands.rooted",
@@ -1864,7 +1864,7 @@ impl AgentSolve {
                         None => None,
                     };
                     let room = spawned.unwrap_or_else(crate::identity::ActivityRoom::mint); // spawn failed → LAST-RESORT id-only mint, probed above
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "agent.solve.room_minted",
                         run_id = %p.run_id.clone().unwrap_or_default(), // display-only field in a probe line, never routed
                         persona_id = %p.persona_id,
@@ -1983,7 +1983,7 @@ impl AgentSolve {
                         .map(|s| s.to_string_lossy().to_string())
                 })
                 .flatten();
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.solve.phase",
                 run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                 phase = "drive.start",
@@ -2029,7 +2029,7 @@ impl AgentSolve {
                                     // "never pulsed", which DENIES a renewal — the conservative
                                     // direction, and the same state as no stamp at all. A wall
                                     // clock behind the epoch must not hand out lease extensions.
-                                    crate::time::EpochMs::now().millis(),
+                                    continuum_base::time::EpochMs::now().millis(),
                             );
                             // Best-effort by construction: a failed pulse must never
                             // disturb the work it is only reporting on.
@@ -2080,7 +2080,7 @@ impl AgentSolve {
                 && settled.acts + 1 < max_acts
             {
                 let remaining = max_acts - settled.acts;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.empty_diff_redrive",
                     run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                     acts_used = settled.acts,
@@ -2133,7 +2133,7 @@ impl AgentSolve {
                 };
                 if p.prev_failed_patch_sha.as_deref() == Some(sha.as_str()) {
                     let remaining = max_acts - settled.acts;
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.identical_diff_redrive",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         patch_sha256 = %sha,
@@ -2196,7 +2196,7 @@ impl AgentSolve {
                 }
                 let tests = mapped_test_files(&workspace, &files_changed);
                 if tests.is_empty() {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.verifier.no_mapping",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                         files = %files_changed.join(","),
@@ -2225,7 +2225,7 @@ impl AgentSolve {
                 .await
                 {
                     Ok(out) if out.status.success() => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark.verifier.green",
                             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             tests = %tests.join(","),
@@ -2250,7 +2250,7 @@ impl AgentSolve {
                             .chars()
                             .rev()
                             .collect();
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark.verifier.fail",
                             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             tests = %tests.join(","),
@@ -2284,7 +2284,7 @@ impl AgentSolve {
                         .await;
                     }
                     Err(e) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "benchmark.verifier.error",
                             run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
                             error = %e,

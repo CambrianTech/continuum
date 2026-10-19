@@ -33,7 +33,7 @@
 //! concern: one struct, one entry point, one typed result. IPC boot
 //! shrinks to ~10 lines that construct + call the supervisor.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::persona::airc_persona_conversation::AircPersonaConversation;
 use crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry;
 use crate::persona::identity_provider::PersonaIdentityProvider;
@@ -110,7 +110,7 @@ pub async fn spawn_persona_service(
                 .await;
         match outcome {
             Ok(Err(reason)) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.service_loop.failed",
                     persona = %persona_name,
                     persona_id = %persona_id,
@@ -134,7 +134,7 @@ pub async fn spawn_persona_service(
                     "Persona service_loop aborted with panic: {}",
                     panic_msg
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.service_loop.aborted",
                     persona = %persona_name,
                     persona_id = %persona_id,
@@ -426,7 +426,7 @@ impl PersonaSpawnSupervisor {
         entry.attempts = entry.attempts.saturating_add(1);
         let delay = backoff_delay(entry.attempts);
         entry.until_ms = now.saturating_add(delay.as_millis() as u64);
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.host.slot_backoff",
             persona_id = %persona_id,
             attempts = entry.attempts,
@@ -497,7 +497,7 @@ impl PersonaSpawnSupervisor {
             return; // poisoned = a prior panic mid-insert; skip the probe, never the filter
         };
         if guard.insert((agent.to_string(), hold.until_ms)) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.host.held_out",
                 agent = agent,
                 reason = hold.reason.as_str(),

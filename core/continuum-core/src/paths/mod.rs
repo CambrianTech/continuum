@@ -155,7 +155,7 @@ fn configured(key: &str) -> Option<std::path::PathBuf> {
     std::env::var_os(key)
         .filter(|v| !v.is_empty())
         .map(std::path::PathBuf::from)
-        .or_else(|| crate::config_env::read(key).filter(|v| !v.is_empty()).map(Into::into))
+        .or_else(|| continuum_base::config_env::read(key).filter(|v| !v.is_empty()).map(Into::into))
 }
 
 /// PURE: [`shared_cargo_target_dir`] from its inputs (an empty value is unset).

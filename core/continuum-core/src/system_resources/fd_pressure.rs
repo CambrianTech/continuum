@@ -10,7 +10,7 @@
 //!
 //! The pool's "bytes" are descriptors: the broker's arithmetic is unit-agnostic
 //! (usage/capacity), and a descriptor freed is the quantity this tier owns.
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
@@ -46,7 +46,7 @@ impl FdRelief for DaemonRestartRelief {
                 std::thread::sleep(std::time::Duration::from_secs(1));
                 let after = open_fds().unwrap_or(before); // unwrap_or: unreadable after = nothing freed
                 let freed = before.saturating_sub(after) as u64;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "process.fds.owner_acted",
                     action = "daemon_restart",
                     before,
@@ -57,7 +57,7 @@ impl FdRelief for DaemonRestartRelief {
                 ReliefOutcome { action: "daemon_restart", freed }
             }
             crate::airc::daemon_supervisor::Restart::Failed(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "process.fds.owner_exhausted",
                     reason = %e,
                     open = before,
@@ -103,7 +103,7 @@ impl ResourcePool for FdPressurePool {
         let now = EpochMs::now().millis();
         let last = self.last_acted_ms.load(Ordering::SeqCst);
         if last != 0 && now.saturating_sub(last) < self.cooldown_ms {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "process.fds.owner_cooling",
                 since_ms = now.saturating_sub(last),
                 cooldown_ms = self.cooldown_ms,

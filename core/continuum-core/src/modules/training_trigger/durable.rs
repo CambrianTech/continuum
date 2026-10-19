@@ -587,7 +587,7 @@ fn append_batch(
 /// strip; the same number job-create decides on, read here so a fill that would only
 /// come back unsurprised is never dispatched.
 fn unsurprised(persona: Uuid) -> Option<f32> {
-    let now_ms = crate::time::EpochMs::now().millis(); // pre-epoch clock: every tally reads outside its window = not measured
+    let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-epoch clock: every tally reads outside its window = not measured
     crate::persona::perception_feed::awareness_of(persona, now_ms)
         .and_then(|a| a.verdict_surprise())
         .map(|v| v.s)
@@ -1092,7 +1092,7 @@ impl TrainingTriggerState {
         let all = match trials.load() {
             Ok(all) => all,
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.trigger.trial_file_unreadable",
                     persona = %key.persona_id,
                     trait_kind = %key.trait_kind,
@@ -1102,7 +1102,7 @@ impl TrainingTriggerState {
                 return Err(());
             }
         };
-        let now_ms = crate::time::EpochMs::now().millis(); // pre-epoch clock: every landed gene reads as settling, the conservative side
+        let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-epoch clock: every landed gene reads as settling, the conservative side
         Ok(all
             .iter()
             .find(|t| t.persona_id == key.persona_id && t.alias == key.trait_kind && t.base_model_id == key.base_model && t.is_settling(now_ms))
@@ -1152,7 +1152,7 @@ impl TrainingTriggerState {
             // pending too). With no measured rate, the bucket's own threshold calibrates.
             let batch = match budget_split(batch, &key.base_model) {
                 (taken, Some(rest)) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.trigger.batch_budgeted",
                         persona = %key.persona_id,
                         trait_kind = %key.trait_kind,
@@ -1275,7 +1275,7 @@ impl TrainingTriggerState {
                 if !wait.wakes(free, engine.as_deref()) {
                     return Ok(DispatchResult::Empty);
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.dispatch.capacity_woke",
                     dispatch = %id,
                     window = u64::from(wait.window),
@@ -1390,7 +1390,7 @@ impl TrainingTriggerState {
         self.active_dispatches.remove(key);
         let returned = (*active.batch).clone();
         self.buckets.insert(key.clone(), returned);
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.trigger.held",
             persona = %key.persona_id,
             trait_kind = %key.trait_kind,
@@ -1509,7 +1509,7 @@ impl TrainingTriggerState {
                 })
                 .await?;
             if let DispatchResult::Failed { kind, error } = result {
-                crate::probe!(class = "training.recovery.pending", persona = %report_key.persona_id,
+                continuum_base::probe!(class = "training.recovery.pending", persona = %report_key.persona_id,
                     trait_kind = %report_key.trait_kind, kind, error = %error,
                     "accepted training remains owned by the durable trigger");
             }
@@ -1758,7 +1758,7 @@ impl TrainingTriggerState {
                         evidence: evidence.clone(),
                         reason: reason.clone(),
                         resolved_by,
-                        decided_at_ms: crate::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its decision and evidence
+                        decided_at_ms: continuum_base::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its decision and evidence
                     });
                     "retried by operator decision, outcome unconfirmed"
                 } else {
@@ -1795,7 +1795,7 @@ impl TrainingTriggerState {
                         journal_cursor: active.journal_cursor,
                     }),
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.trigger.dispatch_resolved",
                     persona = %key.persona_id,
                     trait_kind = %key.trait_kind,
@@ -1866,7 +1866,7 @@ impl TrainingTriggerState {
                 self.finish_dispatch(key, &active, handle, provider)
                     .await
                     .map_err(|e| ("PersistenceFailed", e))?;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.trigger.dispatch_resolved",
                     persona = %key.persona_id,
                     trait_kind = %key.trait_kind,
@@ -2028,7 +2028,7 @@ impl TrainingTriggerState {
             examples,
             reason: reason.clone(),
             retired_by,
-            retired_at_ms: crate::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its rows and reason
+            retired_at_ms: continuum_base::time::EpochMs::now().millis(), // a clock before 1970 stamps 0: the receipt still names its rows and reason
         };
         store
             .retirements
@@ -2050,7 +2050,7 @@ impl TrainingTriggerState {
         report.retirement_ids.push(retirement_id);
         // The cache is rebuilt from the rows, never edited in place.
         self.restore_pending_bucket(key).await?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.trigger.retired",
             persona = %key.persona_id,
             trait_kind = %key.trait_kind,

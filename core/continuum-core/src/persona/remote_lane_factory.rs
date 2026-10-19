@@ -208,7 +208,7 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
         // assignment to honour: retire it and bear her at home.
         if crate::persona::self_peer::is_this_node(peer) {
             let cleared = PersonaModelOverride::clear(&home).map_err(|e| e.to_string());
-            crate::probe!(
+            continuum_base::probe!(
                 class = "persona.placement.seat_retired",
                 persona = %profile.persona_name,
                 peer = %peer,
@@ -244,14 +244,14 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
             }
             let updated = learned_over.clone().with_context_window(window);
             match updated.write(&learned_home) {
-                Ok(()) => crate::probe!(
+                Ok(()) => continuum_base::probe!(
                     class = "remote_lane.window_learned",
                     persona = %learned_name,
                     window = window,
                     was = ?learned_over.remote_context_window,
                     "the responder serves a different window than her override recorded — record updated; takes effect at her next re-host"
                 ),
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "remote_lane.window_learn_failed",
                     persona = %learned_name,
                     window = window,
@@ -266,7 +266,7 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
             .with_persona(profile.persona_name.clone())
             .with_window_sink(window_sink);
 
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.adapter.remote_lane",
             persona = %profile.persona_name,
             persona_id = %profile.persona_id,

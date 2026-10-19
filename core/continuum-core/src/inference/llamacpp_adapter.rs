@@ -885,7 +885,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // vars so the operator filtering on
             // `class=="inference.generate.enter"` has the request
             // fingerprint without grepping logs.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.generate.enter",
                 model = request.model.as_deref().unwrap_or("?"),
                 persona_id = request.persona_id.as_deref().unwrap_or(""),
@@ -959,7 +959,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // but cumulative across thousands of turns it can shadow real
         // bottlenecks. Bracketing it lets the operator subtract it
         // from `inference.forward.*` cleanly.
-        let prompt = crate::time_sync!("inference.render_chat", {
+        let prompt = continuum_base::time_sync!("inference.render_chat", {
             llama::render_chat(template.as_deref(), &messages, true)
         })?;
 
@@ -1033,7 +1033,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // 2026-06-06 baseline). `time_probe!` wraps the JoinHandle
             // future cleanly across the `.await`.
             let genes_for_closure = requested_genes;
-            crate::time_probe!(
+            continuum_base::time_probe!(
                 "inference.forward.text",
                 tokio::task::spawn_blocking(move || {
                     let stop_refs: Vec<&str> =
@@ -1100,7 +1100,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // scheduler batching for media) so the timing here is
             // direct end-to-end. Separate seam from the text path so
             // operators can `jq` text-only vs mtmd cost distinctly.
-            crate::time_probe!(
+            continuum_base::time_probe!(
                 "inference.forward.multimodal",
                 tokio::task::spawn_blocking(move || {
                     let stop_refs: Vec<&str> =
@@ -1147,7 +1147,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         if tokens > 0 {
             crate::inference::llama_server::note_real_decode();
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.generate.exit",
             model = backend.model_id(),
             tokens_out = tokens,
@@ -1176,7 +1176,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 estimated_cost: None,
             },
             response_time_ms: elapsed.as_millis() as u64,
-            request_id: format!("llamacpp-{}", crate::time::EpochMs::now().millis()),
+            request_id: format!("llamacpp-{}", continuum_base::time::EpochMs::now().millis()),
             content: None,
             tool_calls: None,
             // TODO: if this in-process backend serves a reasoning model (qwen3 etc.)
@@ -1271,7 +1271,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     for attempt in 0..2u8 {
                         match daemon.acquire_guarded(&req) {
                             Ok(guard) => {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "embed.vram.leased",
                                     consumer = EMBED_LANE_CONSUMER_ID,
                                     bytes = EMBED_LANE_VRAM_BYTES,
@@ -1283,7 +1283,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                                 break;
                             }
                             Err(LeaseError::InsufficientCapacity { available, .. }) => {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "embed.vram.refused",
                                     requested = EMBED_LANE_VRAM_BYTES,
                                     available = available,
@@ -1346,7 +1346,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             api_available: healthy,
             response_time_ms: 0,
             error_rate: 0.0,
-            last_checked: crate::time::EpochMs::now().millis(),
+            last_checked: continuum_base::time::EpochMs::now().millis(),
             message: Some(if healthy {
                 "in-process llama.cpp backend ready".to_string()
             } else {

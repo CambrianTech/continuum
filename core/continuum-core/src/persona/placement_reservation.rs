@@ -24,7 +24,7 @@
 //! No new primitive: the lease registry, the airc command envelope, and the admission
 //! gauges already existed; this composes them into the grant.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 
 use schemars::JsonSchema;
@@ -174,7 +174,7 @@ pub fn grant(mind: Uuid, requester: Uuid, now_ms: u64) -> PlacementReservationRe
     let free_before_grants = lanes.saturating_sub(busy_slots());
     let wait = crate::cognition::resource_admission::leased_in_wait_p50_ms();
     let report = decide_grant(&mut ledger(), mind, requester, free_before_grants, wait, now_ms);
-    crate::probe!(
+    continuum_base::probe!(
         class = "placement.reserve.decided",
         mind = %mind,
         requester = %requester,
@@ -221,7 +221,7 @@ pub async fn request_reservation(
             let mut faults = ASK_BACKOFF.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: same map, same reason — a fault row written into a poisoned map still expires by time
             note_ask_fault(&mut faults, peer, now);
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "placement.reserve.backoff",
             peer = %peer,
             mind = %mind,

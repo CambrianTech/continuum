@@ -599,7 +599,7 @@ pub fn analyze_burst(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::EpochMs;
+    use continuum_base::time::EpochMs;
     use crate::persona::message_cache::{CachedMessage, SenderCategory};
     use crate::rag::RagEngine;
     use std::sync::Arc;

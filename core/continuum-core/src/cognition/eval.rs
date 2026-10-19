@@ -26,7 +26,7 @@
 //! [`cognition/trace`]: super::introspect_commands::CognitionTrace
 //! [`cognition/prompt`]: super::introspect_commands::CognitionPrompt
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use crate::cognition::learning_policy::LearningPolicy;
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -262,9 +262,9 @@ where
     // queued behind a wedged bringup was indistinguishable from one that never
     // asked — gate_wait with no matching gate_held IS the "parked on the mutex"
     // receipt.
-    crate::probe!(class = "eval.lane.acquire", step = "gate_wait", key = %key, "cold-spawn gate: waiting");
+    continuum_base::probe!(class = "eval.lane.acquire", step = "gate_wait", key = %key, "cold-spawn gate: waiting");
     let _gate = EVAL_LANE_SPAWN_GATE.lock().await;
-    crate::probe!(class = "eval.lane.acquire", step = "gate_held", key = %key, "cold-spawn gate: held");
+    continuum_base::probe!(class = "eval.lane.acquire", step = "gate_held", key = %key, "cold-spawn gate: held");
     // Re-check under the gate — a racer for the same key may have spawned it while we
     // waited, in which case we share theirs and skip a redundant cold-load.
     if let Some(existing) = lookup_warm_eval_lane(key) {
@@ -544,7 +544,7 @@ async fn await_eval_lane_memory_headroom(footprint: Option<u64>) -> Result<(), C
                 // real cause was a lane that could never fit sent a reader looking at the
                 // pressure monitor for 3 minutes (M5, 2026-08-04) while the answer was in
                 // `e` the whole time. Whatever we are waiting OUT is the thing to name.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "eval.lane.pressure_defer",
                     level = ?crate::system_resources::MemoryPressureMonitor::current_level(),
                     refusal = %e,
@@ -1141,7 +1141,7 @@ async fn share_live_serving_lane_from_snapshot(
         Ok(Ok(())) => {}
         Ok(Err(_)) => return None,
         Err(_) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.lane.acquire",
                 step = "share_check_timeout",
                 model = %base.id,
@@ -1158,7 +1158,7 @@ async fn share_live_serving_lane_from_snapshot(
             base.id
         ),
     );
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.lane.shared",
         model = %base.id,
         base_url = %snap.base_url,
@@ -1289,7 +1289,7 @@ fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String
             String::from_utf8_lossy(&out.stderr).trim()
         ));
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.workspace.provisioned",
         root = root.display().to_string().as_str(),
         "exam world provisioned — CoW clone of the shared checkout, removed when the run ends"
@@ -1396,7 +1396,7 @@ fn sweep_orphan_eval_roots(parent: &std::path::Path, keep: &std::path::Path) {
             continue;
         }
         match std::fs::remove_dir_all(&path) {
-            Ok(()) => crate::probe!(
+            Ok(()) => continuum_base::probe!(
                 class = "eval.workspace.orphan_swept",
                 root = path.display().to_string().as_str(),
                 "orphaned exam world from a killed process removed — Drop cannot run \
@@ -2450,7 +2450,7 @@ impl CognitionEval {
         let _fleet_lease = match crate::persona::PersonaAircRuntimeRegistry::try_global() {
             Some(r) => {
                 let lease = r.quiesce_all();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "eval.quiesce",
                     personas = lease.count(),
                     "eval-preemption lease: fleet quiesced for the measurement"
@@ -2458,7 +2458,7 @@ impl CognitionEval {
                 Some(lease)
             }
             None => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "eval.quiesce.absent",
                     "eval-preemption: no global roster published — fleet NOT quiesced; measurement may be GPU-contended"
                 );
@@ -2886,7 +2886,7 @@ impl CognitionEval {
             // so an inert edit is unrecoverable here for the same reason as `benchmark/swe-solve`.
             crate::cognition::persona_workspace::root_acting_workspace(&cycle, root, &[], true)
                 .await?;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.hands_rooted",
                 root = %root,
                 explicit = %p.workspace_root.is_some(),
@@ -3129,7 +3129,7 @@ impl CognitionEval {
                                         &sp.content,
                                         crate::cognition::working_memory::DispatchStatus::Done,
                                     );
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "eval.help.voice_folded",
                                         room = %room,
                                         sender = %who,
@@ -3362,7 +3362,7 @@ impl LessonSink {
             Ok(crate::persona::engram::AdmissionDecision::Admit { .. })
         ) {
             self.admitted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.lesson.streamed",
                 task = %task.id,
                 ok = result.ok,
@@ -4014,7 +4014,7 @@ pub(crate) fn emit_eval_phase(phase: &str, detail: &str) {
             }),
         );
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.phase",
         phase = phase,
         detail = detail,
@@ -4099,7 +4099,7 @@ fn dod_output_is_infra(exit_code: Option<i32>, out: &str) -> bool {
 }
 
 async fn run_dod(root: Option<&std::path::Path>, cmd: &str) -> DodVerdict {
-    let bash = match crate::shell_portable::locate_bash() {
+    let bash = match continuum_base::shell_portable::locate_bash() {
         Ok(bash) => bash,
         Err(why) => {
             return DodVerdict::InfraError(format!(
@@ -4150,7 +4150,7 @@ pub(crate) async fn run_held_out(root: Option<&std::path::Path>, t: &EvalTask, v
         (_, visible) => return visible,
     };
     let held = run_dod(root, cmd).await;
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.task.held_out",
         task = %t.id,
         passed = held.passed(),
@@ -4551,7 +4551,7 @@ fn hang_backstop_outcome(
     room: crate::identity::ActivityRoom,
     window: std::time::Duration,
 ) -> crate::cognition::act_observe::SettleOutcome {
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.task.hang_backstop",
         task = %task_id,
         backstop_s = window.as_secs(),
@@ -4634,7 +4634,7 @@ fn report_task_graded(
         .ok()
         .and_then(|g| g.as_ref().and_then(|m| m.run_id.clone()))
         .unwrap_or_default(); // sync/handleless run: empty = "no round", honest for a probe field
-    crate::probe!(
+    continuum_base::probe!(
         class = "eval.task",
         task = task_id,
         run_id = %run_id,
@@ -4779,7 +4779,7 @@ async fn run_pass(
         // HERE — grades already streamed stay; the terminal row marks the pause.
         if let Some(rid) = live_eval_run_id() {
             if eval_run_cancelled(&rid) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "eval.run.cancelled",
                     run_id = %rid,
                     graded = results.len() as u64,
@@ -4793,7 +4793,7 @@ async fn run_pass(
         // latencies — which needs an exact start signal, not an inference from
         // the previous grade's absence (Joel 2026-08-23: a stalled task must be
         // known in minutes, adaptively, "better fix" than a fixed window).
-        crate::probe!(
+        continuum_base::probe!(
             class = "eval.task.started",
             task = %t.id,
             "task drive begins — elapsed-vs-round-median verdicts key on this row"
@@ -5142,7 +5142,7 @@ async fn run_pass(
             settled.decision,
             crate::cognition::workspace::Decision::Pass { .. }
         ) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.task.declined_redrive",
                 task = %t.id,
                 "directed exam question was DECLINED (settled PASS) — re-driving once with an answer-required nudge"
@@ -5226,7 +5226,7 @@ async fn run_pass(
                     DodVerdict::InfraError(m) => {
                         // The grader itself broke — do NOT re-drive (nothing to fix) and
                         // do NOT score as a miss; mark it infra and leave the loop.
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "eval.task.dod_infra",
                             task = %t.id,
                             "definition-of-done could not RUN — harness/infra fault, not scored as a model miss"
@@ -5252,7 +5252,7 @@ async fn run_pass(
                 }
                 redrive_round += 1;
                 {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "eval.task.red_build_redrive",
                         task = %t.id,
                         round = redrive_round as u64,
@@ -5323,7 +5323,7 @@ Fix the workspace and finish —                              the grade reads th
             if infra_reason.is_none() {
                 infra_reason = Some(reason.clone());
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "eval.task.infra_fault",
                 task = %t.id,
                 cause = %reason,
@@ -5437,7 +5437,7 @@ Fix the workspace and finish —                              the grade reads th
                     if let Err(e) = copied {
                         tracing::warn!(task = %t.id, error = %e, "graded solution not preserved");
                     } else {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "eval.artifact.preserved",
                             task = %t.id,
                             path = %dst.display(),

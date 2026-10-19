@@ -881,7 +881,7 @@ impl LlmDeliberationFaculty {
             .map(|(_, spec)| spec.clone())
             .collect();
         if granted == 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.surface.room_affordances_unmatched",
                 persona = %self.persona_name,
                 room = %ws.activity_room_id,
@@ -1005,7 +1005,7 @@ impl LlmDeliberationFaculty {
             return;
         }
         let tools = self.describe_tool_tokens();
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.window.cannot_host_tools",
             persona = %self.persona_name,
             window = window,
@@ -1181,7 +1181,7 @@ impl LlmDeliberationFaculty {
         // today that diagnosis ran on the BID capture, which is not the wire,
         // and misled twice. Off (unset) = zero cost, zero IO — the Noop default
         // every capture sink owes the hot path.
-        if let Some(dir) = crate::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
+        if let Some(dir) = continuum_base::config_env::read("SERVING_WIRE_CAPTURE_DIR") {
             append_wire_capture(std::path::Path::new(&dir), self.persona_id, &self.persona_name, ws.room_id, &request);
         }
         // MEASURED-HOLD DEFER, ABOVE the admission gates (2026-08-29). The adapter's
@@ -1192,7 +1192,7 @@ impl LlmDeliberationFaculty {
         // the hold. Priority inversion; the solve's tick 2 waited forever on a
         // permit a deferred dream held. Defer FIRST, holding nothing; the adapter
         // seam stays as the backstop for entry paths that skip these gates.
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.defer.entered",
             persona = %self.persona_name,
             directed = ws.directed_at_self(),
@@ -1208,7 +1208,7 @@ impl LlmDeliberationFaculty {
             )
             .await;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.defer.passed",
             persona = %self.persona_name,
             "past the pre-gate defer — admission gates next"
@@ -1263,7 +1263,7 @@ impl LlmDeliberationFaculty {
             let turn_bound = crate::inference::turn_bound::from_expectation(expected_turn);
             let (lane_bound, lane_bound_source) =
                 crate::inference::turn_bound::effective_bound_with_source(lane_bound, turn_bound);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.gate.lane_wait",
                 persona = %self.persona_name,
                 directed = ws.directed_at_self(),
@@ -1321,7 +1321,7 @@ impl LlmDeliberationFaculty {
                     lane = crate::cognition::resource_admission::acquire_serving_lane(Some(self.persona_id), priority, expected) => Some(lane),
                     _ = tokio::time::sleep(lane_bound) => None,
                     _ = crate::cognition::directed_pending::wait(self.persona_id) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "delib.gate.yielded_to_directed",
                             persona = %self.persona_name,
                             "parked self-work lane wait yielded: a directed line is pending"
@@ -1343,7 +1343,7 @@ impl LlmDeliberationFaculty {
             // generation was dispatched, so it is a WAIT, not an act, and her act
             // budget survives it intact.
             let Some(_lane) = lane_or_starved else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.act.lane_starved",
                     persona = %self.persona_name,
                     directed = ws.directed_at_self(),
@@ -1399,10 +1399,10 @@ impl LlmDeliberationFaculty {
             // generation is her thinking this instant, the strongest witness there is.
             crate::persona::cognition_pulse::touch(
                 self.persona_id,
-                crate::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
+                continuum_base::time::EpochMs::now().millis(), // pre-1970 reads 0: a pre-1970 clock stamps 0, which DENIES renewal — the conservative direction, same as no stamp
             );
             crate::ipc::vitals_emitter::record_reasoning(self.persona_id);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.gate.lane_acquired",
                 persona = %self.persona_name,
                 "lane admission granted — prefill slot next"
@@ -1413,7 +1413,7 @@ impl LlmDeliberationFaculty {
             // for the 2026-07-16 compute-buffer OOM. Same fit rule the capacity sim proves;
             // no pressure → target == lanes → this never waits. Released with the block.
             let _prefill = crate::cognition::prefill_throttle::acquire_prefill_slot().await;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.gate.prefill_acquired",
                 persona = %self.persona_name,
                 "prefill slot granted — issuing the model call"
@@ -1514,7 +1514,7 @@ impl LlmDeliberationFaculty {
             .and_then(|reg| reg.need_of(self.persona_id));
         let derived = output_allowance(kind, rate.tps, need, allowance);
         let max_tokens = derived.allowance;
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.turn.output_allowance",
             persona = %self.persona_name,
             kind = kind.label(),
@@ -1715,7 +1715,7 @@ impl LlmDeliberationFaculty {
         ) else {
             return decision;
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.speech.parroted_perception",
             persona = %self.persona_name,
             echoed_fact = %echoed.chars().take(120).collect::<String>(),
@@ -1758,7 +1758,7 @@ impl LlmDeliberationFaculty {
         {
             return None;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "persona.verdict.yield_turn",
             persona = %self.persona_name,
             "she yielded the turn through the structured verb — silent Pass, no room message"
@@ -1902,7 +1902,7 @@ impl LlmDeliberationFaculty {
             // (the silver-harbor failure class: recall surfaced with the winning
             // bid, yet [recall] never reached the prompt; WHERE it vanished was
             // undebuggable without this seam probe).
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.context.render",
                 persona = %self.persona_name,
                 budget_tokens = 0usize,
@@ -2019,7 +2019,7 @@ impl LlmDeliberationFaculty {
         // contribution can silently vanish between attention and the prompt.
         // Glass box: what recall/grounding WON upstream must be attributable
         // HERE if it never renders (#130).
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.context.render",
             persona = %self.persona_name,
             budget_tokens,
@@ -2131,7 +2131,7 @@ impl LlmDeliberationFaculty {
                     }
                     Some(k) => format!("dropped {worst_sal:.2} while keeping {k:.2}"),
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.context.salience_inversion",
                     persona = %self.persona_name,
                     dropped_faculty = %worst_name,
@@ -2336,7 +2336,7 @@ impl LlmDeliberationFaculty {
         let expected = self.expected_occupancy();
         let bound = crate::inference::turn_bound::from_expectation(expected);
         if let (Some(expected), Some(bound)) = (expected, bound) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.turn.bound",
                 persona = %self.persona_name,
                 expected_secs = expected.as_secs(),
@@ -2453,7 +2453,7 @@ impl LlmDeliberationFaculty {
             (engine_cached_tokens as usize).min(view.history_tokens),
             std::sync::atomic::Ordering::Relaxed,
         );
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.prompt.density",
             persona = %self.persona_name,
             estimated_prompt_tokens = view.estimated_prompt_tokens,
@@ -2594,7 +2594,7 @@ impl LlmDeliberationFaculty {
         let grounding_budget = after_reserves.saturating_sub(required_payload);
         let payload_overflow = required_payload.saturating_sub(after_reserves);
         if payload_overflow > 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.payload.over_window",
                 persona = %self.persona_name,
                 required_payload,
@@ -2629,7 +2629,7 @@ impl LlmDeliberationFaculty {
         let mut grounding = match GroundingPlan::within_budget(ws, grounding_budget) {
             Fitted::Whole(plan) => plan,
             Fitted::Reduced { plan, wanted } => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.grounding.shed",
                     persona = %self.persona_name,
                     wanted_tokens = wanted,
@@ -2767,7 +2767,7 @@ impl LlmDeliberationFaculty {
             .saturating_add(plan.unallocated)
             .min(reply_runaway)
             .max(1) as usize;
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.window.flex",
             persona = %self.persona_name,
             context_window,
@@ -2798,7 +2798,7 @@ impl LlmDeliberationFaculty {
         let fill_budget = required_tokens.saturating_add(latency_fill_cap);
         if window_msg_budget > fill_budget {
             let shed = all_messages.shed_preview(latency_fill_cap);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.fill.latency_capped",
                 persona = %self.persona_name,
                 window_budget = window_msg_budget,
@@ -2869,7 +2869,7 @@ impl LlmDeliberationFaculty {
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly (registry keeps peaks, not a time series)
             );
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.turn.demand",
             persona = %self.persona_name,
             demand_tokens,
@@ -2896,7 +2896,7 @@ impl LlmDeliberationFaculty {
         // direction included, and before this there was no line to read it from.
         if capacity_error.is_none() && fitted.receipt.dropped_messages > 0 {
             let r = fitted.receipt;
-            crate::probe!(
+            continuum_base::probe!(
                 class = if r.emptied() { "delib.fill.history_emptied" } else { "delib.fill.history_dropped" },
                 persona = %self.persona_name,
                 context_window,
@@ -2955,7 +2955,7 @@ impl LlmDeliberationFaculty {
                 // distinguishable, from the ledger alone, between "every turn was
                 // starved", "every turn emptied to the framing", and "this seam was
                 // never reached". One row per unheld turn, with the reason.
-                None => crate::probe!(
+                None => continuum_base::probe!(
                     class = "persona.need.unheld",
                     persona = %self.persona_name,
                     sent_tokens,
@@ -3608,7 +3608,7 @@ impl LlmDeliberationFaculty {
         let head: String = lines[..lines.len() - take].concat();
         let head_msg = ChatMessage::text("user", head);
         let tail_msg = ChatMessage::text("user", tail);
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.action_result.demoted",
             persona = %self.persona_name,
             window = window,
@@ -3645,7 +3645,7 @@ impl LlmDeliberationFaculty {
         demoted.reverse();
         if !demoted.is_empty() {
             let demoted_tokens = Self::messages_cost(&demoted);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.room_updates.demoted",
                 persona = %self.persona_name,
                 window = window,
@@ -3852,7 +3852,7 @@ impl LlmDeliberationFaculty {
                 // error carries the real requirement, which is the number the untruncated
                 // demand receipt feeds to `serving_plan` — so a window too small for one
                 // act gets PROVISIONED rather than silently trimmed forever.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.fill.evidence_cannot_fit",
                     persona = %self.persona_name,
                     verdict = evidence_fit.as_str(),
@@ -3874,7 +3874,7 @@ impl LlmDeliberationFaculty {
                 // Loud, but NOT a refusal — see [`EvidenceFit::TooLargeToCarry`]. The
                 // oversized member yields like any other optional turn and the rest of
                 // the drop proceeds; refusing here is the 836-refusals outage.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.fill.evidence_cannot_fit",
                     persona = %self.persona_name,
                     verdict = evidence_fit.as_str(),
@@ -4941,7 +4941,7 @@ impl LlmDeliberationFaculty {
                 || effective.saturating_sub(loaded.context_window) > deadband;
             if !adopt {
                 if effective != loaded.context_window {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "delib.window.held",
                         binding = loaded.context_window,
                         served = effective,
@@ -5006,7 +5006,7 @@ impl LlmDeliberationFaculty {
                 return Some(Contribution::deliberation_fault(error.clone()));
             }
             if let Some(error) = view.capacity_error {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.prompt.capacity",
                     persona = %self.persona_name,
                     required_tokens = error.required_tokens,
@@ -5108,7 +5108,7 @@ impl LlmDeliberationFaculty {
                     // did not get — reported apart because one field used to carry the full
                     // registry's cost beside a count of her hands, and reconciling the two
                     // gave a nonsense tokens-per-tool.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "delib.tool_surface.withheld",
                         persona = %self.persona_name,
                         offered = self.hands_specs.len() as u64,
@@ -5198,7 +5198,7 @@ impl LlmDeliberationFaculty {
                         calibration,
                         available: fit_window,
                     })));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "delib.prompt.refit",
                         persona = %self.persona_name,
                         requested_tokens = requested,
@@ -5297,7 +5297,7 @@ impl LlmDeliberationFaculty {
                 allowance,
             );
             if let super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.emission.think_budget_hit",
                     persona = %self.persona_name,
                     reasoning_tokens,
@@ -5306,7 +5306,7 @@ impl LlmDeliberationFaculty {
                 );
             }
             if stop == super::working_set::EmissionStop::CutMidThought {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "delib.emission.cut_mid_thought",
                     persona = %self.persona_name,
                     output_tokens = resp.usage.output_tokens,
@@ -5352,7 +5352,7 @@ impl LlmDeliberationFaculty {
                 use std::fmt::Write as _;
                 let _ = write!(map, "{label}:{end},");
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.segment.attribution",
                 persona = %self.persona_name,
                 cached_tokens = cached as u64,
@@ -5482,7 +5482,7 @@ impl LlmDeliberationFaculty {
                 gen_await_ms,
                 "empty completion surfaced as a FAULT (not a silent Pass)"
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.empty_completion",
                 persona = %self.persona_name,
                 reasoning_chars = reasoning_tokens,
@@ -5507,7 +5507,7 @@ impl LlmDeliberationFaculty {
             && resp.tool_calls.as_ref().is_none_or(|c| c.is_empty())
             && !resp.text.trim().is_empty()
         {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "delib.truncated_not_an_answer",
                 persona = %self.persona_name,
                 text_chars = resp.text.len(),
@@ -5637,7 +5637,7 @@ impl LlmDeliberationFaculty {
                     && !self.tools.is_empty()
                     && resp.reasoning.as_deref().is_some_and(|r| !r.trim().is_empty())
                 {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "persona.act.thought_cut",
                         persona = %self.persona_name,
                         reasoning_len = resp.reasoning.as_deref().map_or(0, str::len),
@@ -5658,7 +5658,7 @@ impl LlmDeliberationFaculty {
                             .last()
                     {
                         crate::cognition::tool_dialect::normalize_call(&mut call);
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.act.reasoning_lift",
                             persona = %self.persona_name,
                             tool = %call.name,
@@ -5682,7 +5682,7 @@ impl LlmDeliberationFaculty {
                     // never a model sniff. Bounded by `max_acts`; an identical repeat
                     // short-circuits via `all_calls_already_satisfied`.
                     if !reasoning.trim().is_empty() {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.act.think_only",
                             persona = %self.persona_name,
                             reasoning_len = reasoning.len(),
@@ -5836,7 +5836,7 @@ fn metrics_from(
     // should climb off the floor from the second act of a task onward, WITHOUT anyone
     // re-reading a capture by hand.
     if t.is_some() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "delib.generate.cache",
             persona = %persona,
             cached_tokens = m.cached_tokens,
@@ -5863,7 +5863,7 @@ fn append_wire_capture(dir: &std::path::Path, persona_id: Uuid, persona_name: &s
         return;
     }
     let row = serde_json::json!({
-        "ts_ms": crate::time::EpochMs::now().millis(),
+        "ts_ms": continuum_base::time::EpochMs::now().millis(),
         "persona": persona_name,
         "messages": request
             .messages

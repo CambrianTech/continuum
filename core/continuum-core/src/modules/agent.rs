@@ -687,7 +687,7 @@ async fn call_llm(
         AdapterRegistry, AnthropicAdapter, ChatMessage, MessageContent, OpenAICompatibleAdapter,
         TextGenerationRequest,
     };
-    use crate::secrets::get_secret;
+    use continuum_base::secrets::get_secret;
 
     // Build messages array for AI provider
     let messages: Vec<ChatMessage> = conversation

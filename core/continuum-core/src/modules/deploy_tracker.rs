@@ -22,7 +22,7 @@
 //! guess. `gh` manages its own rate-limiting, so the reqwest rate-limit primitive
 //! (`provisioning::rate_limit`, for direct HF calls) is not threaded here.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -162,7 +162,7 @@ impl GitGhDeploySource {
     /// `CONTINUUM_TRACK_BRANCH` (default `canary`). The checkout and the origin repo are
     /// read per tick, not here.
     fn from_env() -> Self {
-        let branch = crate::config_env::read("CONTINUUM_TRACK_BRANCH")
+        let branch = continuum_base::config_env::read("CONTINUUM_TRACK_BRANCH")
             .unwrap_or_else(|| "canary".to_string()); // unwrap_or_else: no branch configured = the canary default
         Self { branch }
     }
@@ -227,7 +227,7 @@ pub fn revision_checks(repo_dir: &std::path::Path, tip: &str) -> Result<Checks, 
     );
     let read = parse_tip_checks(check_runs, runs_out.stdout_if_ok());
     if read.excluded > 0 || !read.filtered {
-        crate::probe!(
+        continuum_base::probe!(
             class = "deploy.tip.checks",
             tip = tip,
             checks = ?read.checks,
@@ -296,8 +296,8 @@ fn read_hold(state_dir: &std::path::Path) -> Option<Hold> {
     let created_ms = std::fs::metadata(state_dir.join("deploy-hold"))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| crate::time::EpochMs::of(t).ok())
-        .map(crate::time::EpochMs::millis)
+        .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+        .map(continuum_base::time::EpochMs::millis)
         .unwrap_or(0); // unwrap_or: an unreadable mtime = epoch 0 = immediately stale, which is loud not silent
     Some(Hold { reason: text.trim().chars().take(200).collect(), created_ms, ttl_ms: None })
 }
@@ -456,7 +456,7 @@ impl ServiceModule for DeployTrackerModule {
                 clear_deploy_request(state_dir);
                 // The measured cost of this deploy lands on the actuation that produced it.
                 self.actuator.record_settled(&tip_sha, waited_ms);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.settled",
                     tip = tip_sha.as_str(),
                     running = running_sha(),
@@ -472,7 +472,7 @@ impl ServiceModule for DeployTrackerModule {
                 let mut last = self.stranded_reported.lock();
                 if last.as_deref() != Some(tip_sha.as_str()) {
                     *last = Some(tip_sha.clone());
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "deploy.stranded",
                         tip = tip_sha.as_str(),
                         running = running_sha(),
@@ -505,7 +505,7 @@ impl ServiceModule for DeployTrackerModule {
                 );
                 if let Some(req) = persisted.as_ref() {
                     write_deploy_request(state_dir, req);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "deploy.track.request_written",
                         tip = tip_sha.as_str(),
                         running = running_sha(),
@@ -528,14 +528,14 @@ impl ServiceModule for DeployTrackerModule {
                 // wanted but not taken is never silent: who owns the node instead, which
                 // attempt was launched and how, or which guard skipped it.
                 match outcome {
-                    ActuateOutcome::Deferred(owner) => crate::probe!(
+                    ActuateOutcome::Deferred(owner) => continuum_base::probe!(
                         class = "deploy.actuate.decision",
                         verdict = "deferred",
                         tip = tip_sha.as_str(),
                         owner = owner.name(),
                         "a deploy is wanted and another owner acts on this node — the core stands down"
                     ),
-                    ActuateOutcome::SpawnFailed { attempt, error } => crate::probe!(
+                    ActuateOutcome::SpawnFailed { attempt, error } => continuum_base::probe!(
                         class = "deploy.actuate.decision",
                         verdict = "spawn_failed",
                         tip = tip_sha.as_str(),
@@ -543,7 +543,7 @@ impl ServiceModule for DeployTrackerModule {
                         error = error.as_str(),
                         "the consumer could not be launched — see logs/deploy-actuate.log"
                     ),
-                    ActuateOutcome::Skipped(decision) => crate::probe!(
+                    ActuateOutcome::Skipped(decision) => continuum_base::probe!(
                         class = "deploy.actuate.decision",
                         verdict = "skipped",
                         tip = tip_sha.as_str(),
@@ -551,7 +551,7 @@ impl ServiceModule for DeployTrackerModule {
                         "this request was not actuated again this tick — its own bound or attempt cap decided"
                     ),
                     ActuateOutcome::Spawned { attempt, pid, mode, child } => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "deploy.actuate.decision",
                             verdict = "spawned",
                             tip = tip_sha.as_str(),
@@ -567,7 +567,7 @@ impl ServiceModule for DeployTrackerModule {
                             let tip = tip_sha.clone();
                             tokio::task::spawn_blocking(move || {
                                 let status = child.wait();
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "deploy.actuate.consumer_exited",
                                     tip = tip.as_str(),
                                     pid = pid.unwrap_or(0), // unwrap_or: a child always has a pid; 0 cannot occur here
@@ -588,7 +588,7 @@ impl ServiceModule for DeployTrackerModule {
                     let standing = read_deploy_request(state_dir);
                     if let Some(req) = continuum_cli_lifecycle::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
                         write_deploy_request(state_dir, &req);
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "deploy.track.request_moved_in_flight",
                             tip = tip_sha.as_str(),
                             running = running_sha(),
@@ -596,7 +596,7 @@ impl ServiceModule for DeployTrackerModule {
                         );
                     }
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.track.decision",
                     verdict = "build_in_flight",
                     deployable_tip = deployable_tip.as_deref().unwrap_or(""), // "" = not deployable yet
@@ -605,7 +605,7 @@ impl ServiceModule for DeployTrackerModule {
                 );
             }
             DeployVerdict::Held { reason, stale } => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.track.decision",
                     verdict = "held",
                     stale = *stale,
@@ -614,7 +614,7 @@ impl ServiceModule for DeployTrackerModule {
                 );
             }
             other => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "deploy.track.decision",
                     verdict = ?other,
                     running = running_sha(),

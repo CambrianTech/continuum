@@ -136,7 +136,7 @@ impl Drop for HoldLease {
             }
         });
         if let Some(h) = released {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.hold.released",
                 holder = %h.holder,
                 run_id = %h.run_id,
@@ -158,7 +158,7 @@ pub fn acquire(holder: Uuid, run_id: &str) -> HoldLease {
 fn acquire_in(c: &'static HoldCell, holder: Uuid, run_id: &str) -> HoldLease {
     let generation = c.generations.fetch_add(1, Ordering::Relaxed) + 1;
     if let Some(prev) = c.tx.borrow().as_ref() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.hold.replaced",
             prev_holder = %prev.holder,
             prev_run = %prev.run_id,
@@ -173,7 +173,7 @@ fn acquire_in(c: &'static HoldCell, holder: Uuid, run_id: &str) -> HoldLease {
         run_id: run_id.to_string(),
         generation,
     }));
-    crate::probe!(
+    continuum_base::probe!(
         class = "inference.hold.acquired",
         holder = %holder,
         run_id = %run_id,
@@ -262,7 +262,7 @@ async fn defer_in(
     }
     let started = std::time::Instant::now();
     let held_by = current_in(c).map(|h| h.run_id).unwrap_or_default();
-    crate::probe!(
+    continuum_base::probe!(
         class = "inference.hold.deferred",
         traffic = %class.as_str(),
         purpose = %purpose.unwrap_or("-"),
@@ -276,7 +276,7 @@ async fn defer_in(
     let mut rx = c.tx.subscribe();
     loop {
         if !should_defer(class, current_in(c).as_ref(), caller) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.hold.resumed",
                 traffic = %class.as_str(),
                 purpose = %purpose.unwrap_or("-"),
@@ -287,7 +287,7 @@ async fn defer_in(
         }
         let remaining = ceiling.saturating_sub(started.elapsed());
         if remaining.is_zero() || tokio::time::timeout(remaining, rx.changed()).await.is_err() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.hold.defer_ceiling",
                 traffic = %class.as_str(),
                 purpose = %purpose.unwrap_or("-"),

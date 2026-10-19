@@ -69,7 +69,7 @@ crate::action_command! {
             &signatures,
         )
         .map_err(|e| CommandError::Internal(e.to_string()))?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.model_selection",
             persona = %p.persona_id,
             source = %result.source,

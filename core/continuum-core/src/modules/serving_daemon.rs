@@ -23,7 +23,7 @@
 
 pub(crate) mod academy_batch;
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use super::serving_consumer::{FootprintFn, ServingConsumer, SERVING_CONSUMER_ID};
 use crate::capacity::placement::PlacementRequest;
 use crate::cognition::model_resolver::types::HwCapabilityTier;
@@ -1276,7 +1276,7 @@ impl ServingDaemonModule {
         let stored_pin = pin_store.load();
         let honoured = match stored_pin {
             None => {
-                crate::probe!(class = "serving.pin.none_stored", "no stored serving pin — the planner chooses");
+                continuum_base::probe!(class = "serving.pin.none_stored", "no stored serving pin — the planner chooses");
                 None
             }
             Some(pin) => {
@@ -1285,7 +1285,7 @@ impl ServingDaemonModule {
                     .get(&pin.model_id)
                     .is_some_and(|entry| entry.status.availability == Availability::Ready);
                 if servable {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.pin.restored",
                         model_id = %pin.model_id,
                         set_at_ms = pin.set_at_ms,
@@ -1293,7 +1293,7 @@ impl ServingDaemonModule {
                     );
                     Some(pin.model_id)
                 } else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.pin.unservable_ignored",
                         model_id = %pin.model_id,
                         set_at_ms = pin.set_at_ms,
@@ -1373,7 +1373,7 @@ impl ServingDaemonModule {
                 crate::capacity::host_cache_lease::StickyLease::new(HOST_CACHE_LEASE_BAND_DIVISOR),
             ),
             // Read ONCE here (single config entry point, no per-tick I/O). Off by default.
-            measure_force_expert_budget_bytes: crate::config_env::read(
+            measure_force_expert_budget_bytes: continuum_base::config_env::read(
                 "K3_MEASURE_FORCE_EXPERT_BUDGET_BYTES",
             )
             .and_then(|s| s.trim().parse::<u64>().ok()),
@@ -1545,7 +1545,7 @@ static LAST_LEASED_IN_PEAK: std::sync::atomic::AtomicU32 = std::sync::atomic::At
 fn note_leased_in_peak(peak: usize) -> usize {
     LAST_LEASED_IN_PEAK.store(peak.min(u32::MAX as usize) as u32, Ordering::Relaxed);
     let mut ring = LEASED_IN_PEAKS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
-    let floor = ring.observe(crate::time::EpochMs::now().millis(), peak as u64).min;
+    let floor = ring.observe(continuum_base::time::EpochMs::now().millis(), peak as u64).min;
     sustained_leased_in(ring.len(), floor as usize)
 }
 
@@ -1663,7 +1663,7 @@ impl ServingDaemonModule {
                 static SAID: parking_lot::Mutex<Option<String>> = parking_lot::Mutex::new(None);
                 let mut said = SAID.lock();
                 if said.as_deref() != Some(measured.as_str()) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.decode_knee.fallback",
                         remembered = model_for_knee.as_deref().unwrap_or("<none>"), // unwrap_or: nothing remembered is a name too
                         measured = measured.as_str(),
@@ -1702,7 +1702,7 @@ impl ServingDaemonModule {
         static LAST_CLAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
         let shape = ((lanes as u64) << 32) | clamped as u64;
         if LAST_CLAMP.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.decode_knee.clamped",
                 model = %model_for_knee.as_deref().unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,
@@ -1961,7 +1961,7 @@ impl ServingDaemonModule {
             self.catalog.clone(),
             self.subscribe_serving(),
         ));
-        crate::probe!(
+        continuum_base::probe!(
             class = "resources.footprint.wired",
             holder = "vision",
             source = "CatalogFootprintSource::vision",
@@ -2061,7 +2061,7 @@ impl ServingDaemonModule {
                     mode,
                     available / (1 << 30)
                 );
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.mode.transition",
                     to = ?mode,
                     from = was as u64,
@@ -2079,10 +2079,10 @@ impl ServingDaemonModule {
         let usable_bytes = self
             .budget_readings
             .lock()
-            .observe(crate::time::EpochMs::now().millis(), instant)
+            .observe(continuum_base::time::EpochMs::now().millis(), instant)
             .min;
         if usable_bytes != instant {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.budget.sustained",
                 instant_bytes = instant,
                 usable_bytes,
@@ -2364,7 +2364,7 @@ impl ServingDaemonModule {
         // Glass-box the K3 residency decision (Joel: the K3 path is observability-first).
         // Every load-bearing quantity a breakpoint would want: what fit, out of how many, on
         // what budget, and whether it moves the served process this tick.
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.k3_placement",
             model = model.id.as_str(),
             budget_bytes = budget,
@@ -2434,7 +2434,7 @@ impl ServingDaemonModule {
         let plan = crate::capacity::device_fit::plan_device_fit(&inputs, |usable| {
             crate::model_registry::artifacts::resolve_device_fit_override(&model_id, usable)
         });
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.device_fit",
             model = model.id.as_str(),
             resident_bytes,
@@ -2553,7 +2553,7 @@ impl ServingDaemonModule {
         if !self.engine_device_credit.record_discrete(pid, bytes) {
             return; // a steady engine: same reading, no probe (it allocates its buffers at launch)
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.credit.engine_device",
             pid = pid.map_or(0, u64::from),
             device_bytes = bytes.unwrap_or(0), // unwrap_or: probe label; `read` says whether a reading exists
@@ -2589,7 +2589,7 @@ impl ServingDaemonModule {
         let occupancy = self.engine_occupancy();
         let settling = crate::inference::engine_residency::released_within(now, crate::inference::lane_footprint::SAMPLE_EVERY_MS);
         if occupancy.holds() || settling {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.footprint.unmeasured",
                 leg = if occupancy.holds() { "resident_work" } else { "resident_work_settling" },
                 occupancy = %format!("{occupancy:?}"),
@@ -2654,7 +2654,7 @@ impl ServingDaemonModule {
                 // engine that answered WITHOUT `memory_breakdown` (one predating it) is measured
                 // by the delta; a breakdown or geometry that is present but unusable is no reading.
                 let Some(props) = engine_props().await else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.footprint.unmeasured",
                         leg = "engine_unanswered",
                         model = %active,
@@ -2666,7 +2666,7 @@ impl ServingDaemonModule {
                 use crate::inference::weight_residency::EngineContextReading;
                 match (EngineContextReading::of(&props), delta) {
                     (EngineContextReading::Invalid, _) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.footprint.unmeasured",
                             leg = "engine_breakdown_invalid",
                             model = %active,
@@ -2676,7 +2676,7 @@ impl ServingDaemonModule {
                         return;
                     }
                     (EngineContextReading::Read(ctx), _) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.footprint.device_residual",
                             model = %active,
                             engine_context_bytes = ctx.context_bytes,
@@ -2691,7 +2691,7 @@ impl ServingDaemonModule {
                     }
                     (EngineContextReading::Absent, Some(delta)) => ("device_delta", Some(delta), None),
                     (EngineContextReading::Absent, None) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.footprint.device_delta_unread",
                             baseline_bytes = baseline,
                             now_bytes = now,
@@ -2715,7 +2715,7 @@ impl ServingDaemonModule {
             // re-home path, reproduced on the deploy path. An absence stays an absence:
             // no `observe`, no record written, the previous record stands.
             Some(_) if live.host_prompt_cache_mib == 0 => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.footprint.unmeasured",
                     leg = "unknown_grant",
                     model = %active,
@@ -2741,7 +2741,7 @@ impl ServingDaemonModule {
             // reading replaces the estimate — the node climbs out without a hand on a file.
             Some(_) if !crate::inference::lane_footprint::window_measurable(live.served_context_window) => {
                 let retired = crate::inference::lane_footprint::retire(&active);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.footprint.unmeasured",
                     leg = "starved_window",
                     model = %active,
@@ -2799,7 +2799,7 @@ impl ServingDaemonModule {
                     host_cache_bytes,
                 );
                 let Ok(measured) = measured else {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.footprint.unmeasured",
                         leg = "residency_changed",
                         model = %active,
@@ -2810,7 +2810,7 @@ impl ServingDaemonModule {
                     );
                     return;
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.footprint.measured",
                     model = %active,
                     pid = pid as u64,
@@ -2832,7 +2832,7 @@ impl ServingDaemonModule {
             None => "could_not_look",
         };
         if outcome == "could_not_look" {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.footprint.measured",
                 model = %active,
                 pid = pid as u64,
@@ -3025,7 +3025,7 @@ impl ServingDaemonModule {
         let retention_x100 =
             crate::capacity::host_cache_lease::retention_tokens_x100(budget_bytes, per_token_ws);
         if retention_x100 < 100 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.moe_host_cache_retention",
                 model = active.as_str(),
                 budget_bytes,
@@ -3037,7 +3037,7 @@ impl ServingDaemonModule {
             );
         }
         match crate::capacity::plan_file::write_plan_file(&gb.plan, &doc) {
-            Ok(()) => crate::probe!(
+            Ok(()) => continuum_base::probe!(
                 class = "serving.moe_host_cache_lease",
                 model = active.as_str(),
                 budget_bytes,
@@ -3062,7 +3062,7 @@ impl ServingDaemonModule {
                 retention_x100 / 100,
                 retention_x100 % 100,
             ),
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 class = "serving.moe_host_cache_lease",
                 model = active.as_str(),
                 budget_bytes,
@@ -3131,7 +3131,7 @@ impl ServingDaemonModule {
                 &expert_pager_policy::division::CoverageModel::k3_measured(),
                 served.as_deref(),
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.division",
                 model = active,
                 tiers = n_tiers as u64,
@@ -3145,7 +3145,7 @@ impl ServingDaemonModule {
         }
         let act = guard.as_mut()?;
         if let Some(tok_s) = act.observe_tick(tokens_observed, std::time::Instant::now()) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.division_reward",
                 model = active,
                 served_tier = act.served_tier_label(),
@@ -3157,7 +3157,7 @@ impl ServingDaemonModule {
         }
         let (label, moved) = act.choose()?;
         if moved {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.division",
                 model = active,
                 chosen_tier = label.as_str(),
@@ -3204,7 +3204,7 @@ impl ServingDaemonModule {
             return;
         }
         self.plan_none_said_ms.store(now, Ordering::Release);
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.plan.none_with_live_lane",
             ticks,
             lane_pid = lane_pid as u64,
@@ -3229,7 +3229,7 @@ impl ServingDaemonModule {
         let step_kind = ReconcileStep::from_u8(self.reconcile_step.load(Ordering::Acquire));
         let step = step_kind.name();
         if reconcile_wedged_at(step_kind, age) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.reconcile.wedged",
                 skipped,
                 step,
@@ -3240,7 +3240,7 @@ impl ServingDaemonModule {
                  this step's await before touching the engine"
             );
         } else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.reconcile.busy",
                 skipped,
                 step,
@@ -3353,7 +3353,7 @@ impl ServingDaemonModule {
                     .map_err(|e| e.to_string()),
                     _ => Err("no live lane record or home to record the interruption in".to_string()),
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.reconcile.resident_engine_replaced",
                     occupancy = %format!("{occupancy:?}"),
                     told = %format!("{told:?}"),
@@ -3369,7 +3369,7 @@ impl ServingDaemonModule {
                 // one row a minute while held, not one a tick
                 if now.saturating_sub(LAST_HELD.load(Ordering::Relaxed)) >= 60_000 {
                     LAST_HELD.store(now, Ordering::Relaxed);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.reconcile.held_for_resident_work",
                         occupancy = %format!("{occupancy:?}"),
                         plan_model = planned.plan.as_ref().map(|p| p.base_model.model_id.as_str()).unwrap_or("<none>"), // unwrap_or: probe label for an empty plan
@@ -3461,7 +3461,7 @@ impl ServingDaemonModule {
                 })
                 .collect(),
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.adapters",
                     desired = desired.as_str(),
                     error = e.as_str(),
@@ -3538,7 +3538,7 @@ impl ServingDaemonModule {
                         .store(live.ready_verified_at_ms.unwrap_or(0), Ordering::Relaxed); // JUSTIFIED unwrap_or: `ready_edge` is true only for Some
                     self.rehome_cooldown.store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
                     self.reset_rehome_streak();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.reconcile.window",
                         decision = "ready-settling",
                         live_window = live.served_context_window,
@@ -3572,7 +3572,7 @@ impl ServingDaemonModule {
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
                         crate::modules::citizen_health::note_lanes(live.lanes as u64);
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.geometry.settled",
                             model,
                             per_slot_window = live.served_context_window as u64,
@@ -3630,7 +3630,7 @@ impl ServingDaemonModule {
                 let swap_prev = self.last_swap_used.swap(swap_now, Ordering::Relaxed);
                 if grow_refused_while_paging(live_space, plan_space, swap_prev, swap_now) {
                     self.reset_rehome_streak();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.reconcile.window",
                         decision = "refused_while_paging",
                         swap_prev_mb = swap_prev >> 20,
@@ -3751,7 +3751,7 @@ impl ServingDaemonModule {
                         0
                     };
                     if declined && decline_should_log(decline_ticks) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.reconcile.window",
                             decision = "declined",
                             live_window = live.served_context_window,
@@ -3788,7 +3788,7 @@ impl ServingDaemonModule {
                     && !hold_overridden_by_shortfall(live_space, gain)
                     && held_ticks < REHOME_HOLD_DEFER_TICKS
                 {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.reconcile.window",
                         decision = "declined",
                         live_window = live.served_context_window,
@@ -3815,7 +3815,7 @@ impl ServingDaemonModule {
                 // lane's whole decision history, not half of it.
                 if serving_held_steady() {
                     self.rehome_held_ticks.store(0, Ordering::Relaxed);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.reconcile.window",
                         decision = "re-homing_over_hold",
                         live_window = live.served_context_window,
@@ -3829,7 +3829,7 @@ impl ServingDaemonModule {
                         "a steady hold delays a re-home, never denies it — re-homing over the hold; the held work retries its flickered act",
                     );
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.reconcile.window",
                     decision = "re-homing",
                     live_window = live.served_context_window,
@@ -3886,7 +3886,7 @@ impl ServingDaemonModule {
             );
             match verdict {
                 ModelChangeGate::Defer { streak } => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.reconcile.model",
                         decision = "deferred",
                         live_model = live.active_model.as_deref().unwrap_or("<none>"),
@@ -3900,7 +3900,7 @@ impl ServingDaemonModule {
                     return None;
                 }
                 ModelChangeGate::Commit { streak } => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.reconcile.model",
                         decision = "swapping",
                         live_model = live.active_model.as_deref().unwrap_or("<none>"),
@@ -3918,7 +3918,7 @@ impl ServingDaemonModule {
         // tick's page seed reads too), each step that moved it reported here.
         let window = self.launch_window(&desired, served_ctx, lanes);
         if window.floored != window.sticky {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.reconcile.window",
                 decision = "wedge-heal-floor",
                 live_window = 0u32,
@@ -3930,7 +3930,7 @@ impl ServingDaemonModule {
             );
         }
         if window.served != window.floored {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.reconcile.window",
                 decision = "kept-window-exceeds-physical-fit",
                 kept_window = window.floored,
@@ -3953,7 +3953,7 @@ impl ServingDaemonModule {
             return None;
         }
         let Some(model) = resolved else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.reconcile",
                 desired = desired.as_str(),
                 "plan named a model the registry can't resolve — publishing degraded snapshot",
@@ -4124,7 +4124,7 @@ impl ServingDaemonModule {
             // re-homed at tick 3). A lane just launched is not evidence against itself.
             if matches!(outcome, EnsureOutcome::Spawned { .. }) {
                 rehome_cooldown.store(REHOME_COOLDOWN_TICKS, Ordering::Relaxed);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.reconcile.window",
                     decision = "spawn-settling",
                     plan_lanes = target.lanes,
@@ -4150,7 +4150,7 @@ impl ServingDaemonModule {
                     match server.served_context_window().await {
                         Ok(n) => n,
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "serving.reconcile",
                                 desired = desired.as_str(),
                                 error = %e,
@@ -4179,7 +4179,7 @@ impl ServingDaemonModule {
                     match server.served_lanes().await {
                         Ok(n) => published_lanes(Some(n), target.lanes),
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "serving.reconcile",
                                 desired = desired.as_str(),
                                 error = %e,
@@ -4250,7 +4250,7 @@ impl ServingDaemonModule {
                 let previous = say_on_change(&mut *LAST_DIVERGENCE.lock(), state);
                 if let Some(previous) = previous {
                     match speaking {
-                        Some((_, held, wanted, one_conversation)) => crate::probe!(
+                        Some((_, held, wanted, one_conversation)) => continuum_base::probe!(
                             class = "serving.prompt_cache.divergence",
                             model = target.model_id(),
                             held_mib = held as u64,
@@ -4266,7 +4266,7 @@ impl ServingDaemonModule {
                              `below_one_conversation`: true means the grant cannot retain a \
                              single prefix and reuse is structurally impossible, not merely poor"
                         ),
-                        None => crate::probe!(
+                        None => continuum_base::probe!(
                             class = "serving.prompt_cache.divergence_closed",
                             model = target.model_id(),
                             held_mib = launched_cache_mib as u64,
@@ -4305,7 +4305,7 @@ impl ServingDaemonModule {
                     let props = match server.multimodal_support().await {
                         Ok(p) => p,
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "serving.vision.props_unreadable",
                                 desired = desired.as_str(),
                                 error = %e,
@@ -4337,7 +4337,7 @@ impl ServingDaemonModule {
                     ) {
                         Ok(ready) => ready,
                         Err(why) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "serving.vision.not_ready",
                                 desired = desired.as_str(),
                                 why = why.as_str(),
@@ -4363,7 +4363,7 @@ impl ServingDaemonModule {
                         // memory is exactly the window they are missing. Drop it (RAII kills
                         // the child, RAM freed, the next plan grows the lane); it respawns on
                         // the first plan whose headroom is measured against a lane that holds.
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.vision.sidecar_yields_to_persona_floor",
                             served_window = served_window as u64,
                             persona_floor = persona_floor.unwrap_or(0) as u64, // unwrap_or: guarded by is_some_and
@@ -4384,7 +4384,7 @@ impl ServingDaemonModule {
                         // RAM freed, the next plan sees the room); it respawns
                         // on the first plan after the floor clears — sight
                         // returns with the idle era, like dreams.
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.vision.sidecar_yields_to_solves",
                             "solve floor standing — vision sidecar yields its budget to a second solve lane"
                         );
@@ -4398,7 +4398,7 @@ impl ServingDaemonModule {
                         let candidate = sidecar_candidate;
                         match &candidate {
                             Err(skipped) => {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "serving.vision.sidecar_no_candidate",
                                     skipped = skipped.join("; ").as_str(),
                                     "text-only mind and no on-disk VL row — personas \
@@ -4431,7 +4431,7 @@ impl ServingDaemonModule {
                                     physical,
                                 );
                                 let free = sidecar_admissible_bytes(live_free, planned_headroom, physical);
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "serving.vision.sidecar_headroom",
                                     live_free,
                                     live_free_after_floor = live_free.saturating_sub(host_os_floor_bytes(physical)),
@@ -4448,7 +4448,7 @@ impl ServingDaemonModule {
                                         } else {
                                             match sidecar::ensure_sidecar(&mut slot, cand).await {
                                                 Ok(lane) => {
-                                                    crate::probe!(
+                                                    continuum_base::probe!(
                                                     class = "serving.vision.sidecar_up",
                                                     model = lane.model_id.as_str(),
                                                     base_url = lane.base_url.as_str(),
@@ -4457,7 +4457,7 @@ impl ServingDaemonModule {
                                                 Some(lane)
                                             }
                                             Err(why) => {
-                                                crate::probe!(
+                                                continuum_base::probe!(
                                                     class = "serving.vision.sidecar_failed",
                                                     model = cand.model.id.as_str(),
                                                     why = why.as_str(),
@@ -4473,7 +4473,7 @@ impl ServingDaemonModule {
                                         need_bytes,
                                         free_bytes,
                                     } => {
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             class = "serving.vision.sidecar_no_budget",
                                             model = cand.model.id.as_str(),
                                             need_bytes,
@@ -4504,7 +4504,7 @@ impl ServingDaemonModule {
                 launched_cache_mib,
                 vision,
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.reconcile",
                 desired = desired.as_str(),
                 ready = snapshot.ready,
@@ -4635,7 +4635,7 @@ impl ServingDaemonModule {
         if real_fails >= HEALTH_FAILS_TO_RELAUNCH as u64 {
             crate::inference::llama_server::reset_real_decode_failures();
             self.health_fails.store(0, Ordering::Relaxed);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.health",
                 ok = false,
                 via = "real_turn_failures",
@@ -4670,7 +4670,7 @@ impl ServingDaemonModule {
             if since <= probe_window_ms {
                 *self.frozen_slots.lock() = None;
                 self.health_fails.store(0, Ordering::Relaxed);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.health",
                     ok = true,
                     via = "real_work",
@@ -4742,7 +4742,7 @@ impl ServingDaemonModule {
                                 false
                             };
                             if frozen {
-                                crate::probe!(class = "serving.health", ok = false, via = "frozen_processing_slot",
+                                continuum_base::probe!(class = "serving.health", ok = false, via = "frozen_processing_slot",
                                     unchanged_ms = FROZEN_ENGINE_MS,
                                     "same engine and processing task progress remained unchanged across the observation interval");
                                 Self::declare_lane_wedged(&force_relaunch, &serving_tx, bus.as_ref(), "frozen: unchanged processing task progress across the observation interval");
@@ -4767,7 +4767,7 @@ impl ServingDaemonModule {
         let live_pool = live_root.as_deref().and_then(|root| crate::inference::slots::directory().get(root)).flatten();
         if let Some(pool) = live_pool.as_ref() {
             if pool.smoke_would_overwrite_a_resident() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.health",
                     via = "skipped_resident_slot",
                     "no scratch slot and a resident is seated: the smoke probe would overwrite her KV and \
@@ -4811,7 +4811,7 @@ impl ServingDaemonModule {
                 Some(pool) => match pool.acquire_slot(0).await {
                     Ok(permit) if !pool.smoke_would_overwrite_a_resident() => Some(permit),
                     Ok(_) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.health",
                             via = "skipped_resident_slot",
                             under_permit = true,
@@ -4821,7 +4821,7 @@ impl ServingDaemonModule {
                         return;
                     }
                     Err(e) => {
-                        crate::probe!(class = "serving.health", via = "skipped_no_permit", error = %e, "the slot permit could not be taken; no probe this tick");
+                        continuum_base::probe!(class = "serving.health", via = "skipped_no_permit", error = %e, "the slot permit could not be taken; no probe this tick");
                         health_probing.store(false, Ordering::Release);
                         return;
                     }
@@ -4855,7 +4855,7 @@ impl ServingDaemonModule {
                 crate::inference::llama_server::SmokeMissVerdict::AliveViaSlotProgress
             ) {
                 health_fails.store(0, Ordering::Relaxed);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.health",
                     ok = true,
                     via = "slot_progress",
@@ -4881,7 +4881,7 @@ impl ServingDaemonModule {
                 inflight,
                 window,
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.health",
                 ok = false,
                 consecutive = n as u64,
@@ -4944,7 +4944,7 @@ impl ServingDaemonModule {
         let flipped = ServingSnapshot::degraded(reason.to_string());
         Self::emit_serving(bus, &flipped);
         let _ = serving_tx.send_replace(flipped);
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.health",
             action = "relaunch",
             reason = reason,
@@ -5106,7 +5106,7 @@ impl ServingDaemonModule {
                 parking_lot::Mutex::new(None);
             let now = Some((ledger_credited, planned));
             if say_on_change(&mut *LAST_BRANCH.lock(), now).is_some() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.plan.branch",
                     branch = if ledger_credited { "at_rest" } else { "stable" },
                     ledger_credited = ledger_credited,
@@ -5146,7 +5146,7 @@ impl ServingDaemonModule {
                     let key = (plan.base_model.model_id.clone(), plan.served_context_window, plan.lanes as u32);
                     let mut last = LAST_STARVED.lock();
                     if last.as_ref() != Some(&key) || retired {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.plan.below_persona_floor",
                             model = plan.base_model.model_id.as_str(),
                             lanes = plan.lanes as u64,
@@ -5206,7 +5206,7 @@ impl ServingDaemonModule {
                             parking_lot::Mutex::new(None);
                         let key = (floor.clone(), wanted.clone());
                         if LAST_REFUSED.lock().as_ref() != Some(&key) {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "serving.plan.demotion_refused",
                                 floor = floor.as_str(),
                                 wanted = wanted.as_str(),
@@ -5243,7 +5243,7 @@ impl ServingDaemonModule {
                                     geometry,
                                 ) {
                                     Some(plan) => {
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             class = "serving.plan.incumbent_adopted",
                                             model = inc,
                                             lanes = plan.lanes as u64,
@@ -5257,7 +5257,7 @@ impl ServingDaemonModule {
                                         );
                                         self.publish_plan_snapshot(intent_revision, Some(plan));
                                     }
-                                    None => crate::probe!(
+                                    None => continuum_base::probe!(
                                         class = "serving.plan.incumbent_unplannable",
                                         model = inc,
                                         physical_usable_gb =
@@ -5278,7 +5278,7 @@ impl ServingDaemonModule {
                     // floor's other half — count only models with a VIABLE served window, so
                     // the 4B whose weights fit but whose window is a dead 2048 stops out-ranking
                     // a serviceable 1.5B — stays card 48f5438a and is owned with its measurements.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.plan.cold_boot_below_floor_served",
                         floor = floor.as_str(),
                         wanted = wanted.as_str(),
@@ -5311,7 +5311,7 @@ impl ServingDaemonModule {
                             .fetch_add(1, Ordering::Relaxed)
                             .saturating_add(1);
                         if streak < DOWNSHIFT_SUSTAINED_TICKS {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "serving.plan",
                                 decision = "downshift-held",
                                 incumbent = incumbent.as_deref().unwrap_or("<none>"),
@@ -5384,7 +5384,7 @@ impl ServingDaemonModule {
                     }
                 };
                 if plan_probe_changed {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.plan",
                         base_model = plan.base_model.model_id.as_str(),
                         lanes = plan.lanes,
@@ -5441,7 +5441,7 @@ impl ServingDaemonModule {
                     // plan-fingerprint changed, so a standing condition emits at
                     // its transitions, not per tick (#399).
                     if (plan.lanes as u32) < demand.lanes {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.plan",
                             decision = "warm-slot-oversubscribed",
                             resident_personas = demand.lanes,
@@ -5480,7 +5480,7 @@ impl ServingDaemonModule {
                 // #415 decision on what a deadband means with no spike — but it can
                 // no longer happen invisibly.
                 if spike_of_served.is_none() && plan_probe_changed {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.plan.spike_missing",
                         base_model = plan.base_model.model_id.as_str(),
                         candidates = candidates.len(),
@@ -5511,7 +5511,7 @@ impl ServingDaemonModule {
                     }
                 };
                 if entered_empty {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.plan",
                         candidates = 0usize,
                         "no servable model on disk — serving plan empty",
@@ -5823,7 +5823,7 @@ pub fn live_host_budget(
         available_bytes: vram_ceiling,
         total_vram_bytes: vram_ceiling,
         perf_cores: perf_cores(),
-        budget_fraction: crate::config_env::vram_headroom(),
+        budget_fraction: continuum_base::config_env::vram_headroom(),
     })
 }
 
@@ -5864,7 +5864,7 @@ impl ServingSteadyHold {
     pub fn acquire(holder: impl Into<String>) -> Self {
         let holder = holder.into();
         let holds = SERVING_STEADY_HOLDS.fetch_add(1, Ordering::AcqRel) + 1;
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.lane.hold",
             action = "acquired",
             holder = %holder,
@@ -5878,7 +5878,7 @@ impl ServingSteadyHold {
 impl Drop for ServingSteadyHold {
     fn drop(&mut self) {
         let holds = SERVING_STEADY_HOLDS.fetch_sub(1, Ordering::AcqRel) - 1;
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.lane.hold",
             action = "released",
             holder = %self.holder,
@@ -5966,7 +5966,7 @@ static DEVICE_VRAM_TOTAL: AtomicU64 = AtomicU64::new(0);
 /// plan, so the very first tick already has a real number to stand on.
 pub fn seed_device_vram_prior(total_bytes: u64) {
     DEVICE_VRAM_TOTAL.store(total_bytes, Ordering::Relaxed);
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.vram_ceiling_prior.seeded",
         total_bytes = total_bytes,
         gib = format!("{:.2}", total_bytes as f64 / 1024.0 / 1024.0 / 1024.0).as_str(),
@@ -5984,7 +5984,7 @@ pub fn governed_host_budget(resource_daemon: &ResourceDaemon) -> HostBudget {
         available_bytes: available,
         total_vram_bytes: available,
         perf_cores: perf_cores(),
-        budget_fraction: plan_fraction(crate::config_env::vram_headroom()),
+        budget_fraction: plan_fraction(continuum_base::config_env::vram_headroom()),
     })
 }
 
@@ -6174,7 +6174,7 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
         .find(|k| k.kind == kind)
     {
         if row.capacity_bytes == 0 {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.vram_capacity_absent",
                 site = site,
                 kind = kind.label(),
@@ -6218,7 +6218,7 @@ fn governed_vram_ceiling_or_report(resource_daemon: &ResourceDaemon, site: &'sta
     // is the steady state and would drown the stream (#399). A prior in use is exactly
     // the condition an operator needs to see, so it always speaks.
     if reading.provenance != crate::resources::Provenance::Measured {
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.vram_ceiling_prior",
             site = site,
             bytes = reading.bytes,
@@ -6456,7 +6456,7 @@ fn derived_prompt_cache_mib(
             Some(value) => value,
             None => &tracing::field::Empty,
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.prompt_cache.derived",
             model = model_id,
             reason = decision.reason,
@@ -6832,7 +6832,7 @@ fn serve_host_bytes(
 /// Performance). One reader, cached by `config_env`.
 fn everyday_drive_mode() -> crate::provisioning::model_catalog::PowerMode {
     crate::provisioning::model_catalog::PowerMode::everyday_for_headroom(
-        crate::config_env::vram_headroom(),
+        continuum_base::config_env::vram_headroom(),
     )
 }
 
@@ -6992,7 +6992,7 @@ fn servable_candidates(
     // is none. A refusal list of one line per model beats an hour of elimination.
     if kept.is_empty() && !refused.is_empty() {
         for r in &refused {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.plan.candidate_refused",
                 model_id = %r.model_id,
                 reason = r.reason,
@@ -7042,7 +7042,7 @@ pub fn candidates_from_snapshot(snapshot: &CatalogSnapshot) -> Vec<ModelFootprin
                 // Once per model per process: the plan recomputes every few seconds
                 // and this fired per pass per mute row (228 rows / 12 min on the M5,
                 // 2026-09-07) — a fact about a catalog row, not about the pass.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.plan.candidate_cannot_speak",
                     model_id = %live.model.id,
                     "a Ready model with no text generation is not a base-model candidate (named once)"
@@ -7213,7 +7213,7 @@ fn snapshot_from_outcome(
                 // the honest answer is available — take it. Inventing a plausible
                 // number is the worse half of swallowing an error: it doesn't just
                 // hide the failure, it feeds fiction to every downstream reader.
-                ready_verified_at_ms: crate::time::EpochMs::read().ok().map(crate::time::EpochMs::millis),
+                ready_verified_at_ms: continuum_base::time::EpochMs::read().ok().map(continuum_base::time::EpochMs::millis),
                 active_model: Some(desired.to_string()),
                 ready: true,
                 base_url: serving_v1_url(),
@@ -7318,7 +7318,7 @@ impl ServiceModule for ServingDaemonModule {
         // reclaim record but the registry. Sweeping first frees that VRAM so the
         // new live lane comes up without competing against dead siblings.
         for outcome in crate::inference::lane_registry::sweep_orphans() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.lane_registry.sweep",
                 outcome = format!("{outcome:?}").as_str(),
                 "boot lane-registry sweep",
@@ -7342,7 +7342,7 @@ impl ServiceModule for ServingDaemonModule {
         // (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md). Auto-re-post belongs on
         // the benchmark side, consuming this report.
         for (run_id, instance) in crate::cognition::swe_bench::reap_orphaned_solve_runs() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.swe.orphan_reaped",
                 run_id = run_id.as_str(),
                 instance = instance.as_str(),
@@ -7356,7 +7356,7 @@ impl ServiceModule for ServingDaemonModule {
         // owns re-firing per BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon)
         // rejoins it. Only TTL-expired abandoned rounds are swept here.
         for (benchmark, remaining) in crate::cognition::bench_round::reap_orphaned_rounds() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.expired",
                 benchmark = benchmark.as_str(),
                 remaining = remaining,

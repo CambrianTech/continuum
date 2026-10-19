@@ -27,7 +27,7 @@
 //! socket is RE-RESOLVED on every attempt (`discover_airc_socket`), so a daemon that is
 //! installed, started, or moved after boot is found without a restart.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -147,7 +147,7 @@ pub async fn attach_until_live(
                 // `set` fails only if someone else won the race; either way the cell
                 // holds a live handle, which is the whole postcondition.
                 let _ = cell.set(Arc::new(airc));
-                crate::probe!(
+                continuum_base::probe!(
                     class = "airc.attach.live",
                     attempt = attempt as u64,
                     waited_ms = started.elapsed().as_millis() as u64,
@@ -162,7 +162,7 @@ pub async fn attach_until_live(
                 let now_ms = EpochMs::now().millis();
                 if should_report(last_report_ms, now_ms) {
                     last_report_ms = Some(now_ms);
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "airc.attach.still_unattached",
                         attempt = attempt as u64,
                         waited_ms = started.elapsed().as_millis() as u64,

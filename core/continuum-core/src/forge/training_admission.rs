@@ -99,7 +99,7 @@ pub(crate) async fn wait_for_training_memory_bound(
             Ok(hold) => hold,
             Err(refusal) => {
                 if serving_refusal_said != Some(refusal) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.admission.serving_busy",
                         consumer = consumer,
                         footprint_bytes = bytes,
@@ -160,7 +160,7 @@ pub(crate) async fn wait_for_training_memory_bound(
             Ok(guard) => return Ok(guard),
             Err(LeaseError::InsufficientCapacity { available, .. }) => {
                 if last_available != Some(available) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.admission.waiting",
                         consumer = consumer,
                         footprint_bytes = bytes,
@@ -191,7 +191,7 @@ pub(crate) fn acquire_training_memory(consumer: &str, bytes: u64) -> Result<Leas
     let guard = daemon
         .acquire_guarded(&request(consumer, bytes))
         .map_err(|error| format!("training memory admission refused: {error:?}"))?;
-    crate::probe!(
+    continuum_base::probe!(
         class = "training.admission",
         consumer = consumer,
         footprint_bytes = bytes,

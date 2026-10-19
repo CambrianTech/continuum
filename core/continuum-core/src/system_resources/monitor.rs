@@ -10,7 +10,7 @@
 //! The TypeScript ResourcePressureWatcher calls refresh() on its adaptive
 //! polling interval — same pattern as GpuPressureWatcher polling gpuPressure().
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;

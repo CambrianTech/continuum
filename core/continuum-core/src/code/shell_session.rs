@@ -188,7 +188,7 @@ impl CompiledSentinel {
 
     /// Classify a single output line. Returns None if the line should be suppressed.
     pub fn classify(&self, text: &str, stream: &str, line_num: u64) -> Option<ClassifiedLine> {
-        let ts = crate::time::EpochMs::now().millis();
+        let ts = continuum_base::time::EpochMs::now().millis();
 
         if self.rules.is_empty() {
             // No sentinel configured — pass everything through as Info
@@ -409,7 +409,7 @@ impl ShellSession {
             .ok_or_else(|| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?.to_owned();
 
         let execution_id = Uuid::new_v4().to_string();
-        let now_ms = crate::time::EpochMs::now().millis();
+        let now_ms = continuum_base::time::EpochMs::now().millis();
 
         let notify = Arc::new(Notify::new());
         let state = Arc::new(Mutex::new(ExecutionState {
@@ -454,7 +454,7 @@ impl ShellSession {
                     if let Ok(mut state) = state.lock() {
                         state.status = ShellExecutionStatus::Failed;
                         state.stderr_lines.push(format!("Cargo cache ownership: {error}"));
-                        state.finished_at = Some(crate::time::EpochMs::now().millis());
+                        state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                         state.process_ended = true; // admission refused before any child existed
                         state.output_notify.notify_one();
                     }
@@ -466,7 +466,7 @@ impl ShellSession {
                     state.status = ShellExecutionStatus::Failed;
                     state.stderr_lines.push("Shell has no process custody admission".into());
                     state.process_ended = true;
-                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                     state.output_notify.notify_one();
                 }
                 return;
@@ -488,7 +488,7 @@ impl ShellSession {
                 if let Ok(mut state) = state.lock() {
                     state.status = ShellExecutionStatus::Failed;
                     state.stderr_lines.push(format!("Shell process admission: {error}"));
-                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                     state.process_ended = true;
                     state.output_notify.notify_one();
                 }
@@ -644,7 +644,7 @@ impl ShellSession {
                 Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}"))
             })
             .collect::<Result<_, _>>()?;
-        let id = crate::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
+        let id = continuum_base::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
         self.executions.get(&id.to_string()).cloned()
             .ok_or_else(|| format!("No execution '{execution_id}' in this shell session"))
     }
@@ -695,7 +695,7 @@ impl ShellSession {
 
         // Signal kill — the tokio task will detect this and kill the child
         state.status = ShellExecutionStatus::Killed;
-        state.finished_at = Some(crate::time::EpochMs::now().millis());
+        state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
 
         // The execution's own task, which owns the child, sees the flag at its next poll and
         // kills the shell and everything it started. No second kill by stored pid.
@@ -775,7 +775,7 @@ impl ShellSession {
             if let Ok(mut state) = state_arc.lock() {
                 if state.status == ShellExecutionStatus::Running {
                     state.status = ShellExecutionStatus::Killed;
-                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 }
             }
         }
@@ -926,7 +926,7 @@ async fn run_shell_command(
     // execution goes through a shell. Observed live: two citizens cycling
     // through read-and-search all evening and never reaching execution. That
     // reads as an inert persona; it was a severed limb.
-    let bash = match crate::shell_portable::locate_bash() {
+    let bash = match continuum_base::shell_portable::locate_bash() {
         Ok(bash) => bash,
         Err(why) => {
             // Fail with the REASON, not with a spawn error from inside a child
@@ -935,7 +935,7 @@ async fn run_shell_command(
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("no usable shell: {why}"));
                 s.process_ended = true; // no child was spawned
-                s.finished_at = Some(crate::time::EpochMs::now().millis());
+                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 s.output_notify.notify_one();
             }
             return;
@@ -1054,7 +1054,7 @@ async fn run_shell_command(
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("Failed to spawn bash: {e}"));
-                s.finished_at = Some(crate::time::EpochMs::now().millis());
+                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 s.process_ended = true; // nothing started, so nothing is left running
                 s.output_notify.notify_one();
             }
@@ -1146,7 +1146,7 @@ async fn run_shell_command(
                         if s.status == ShellExecutionStatus::Running {
                             s.status = ShellExecutionStatus::TimedOut;
                             s.stderr_lines.push(format!("Timed out after {timeout}ms"));
-                            s.finished_at = Some(crate::time::EpochMs::now().millis());
+                            s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                             s.output_notify.notify_one();
                         }
                     }
@@ -1220,7 +1220,7 @@ async fn run_shell_command(
                 } else {
                     ShellExecutionStatus::Failed
                 };
-                s.finished_at = Some(crate::time::EpochMs::now().millis());
+                s.finished_at = Some(continuum_base::time::EpochMs::now().millis());
                 // Wake any blocked watch() calls to deliver final status
                 s.output_notify.notify_one();
                 // PUSHED COMPLETION (2026-08-24): a handed-back execution's

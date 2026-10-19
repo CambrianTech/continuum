@@ -59,7 +59,7 @@ pub async fn ensure_operator_peer(
     {
         Ok(rt) => {
             let rt = Arc::new(rt);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "operator.peer.online",
                 label = %label,
                 peer_id = %rt.airc().peer_id(),
@@ -108,7 +108,7 @@ pub async fn ensure_operator_peer(
                 .subscribe_room(crate::persona::airc_runtime::AIRC_LOBBY_ROOM)
                 .await
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "operator.peer.lobby_subscribe_failed",
                     error = %e.to_string(),
                     "operator self-peer could not subscribe the airc lobby — the human cannot be heard in #general until room/join"
@@ -135,7 +135,7 @@ pub async fn ensure_operator_peer(
             let project_bases: Vec<airc_lib::ChannelName> = match crate::persona::org_room::org_channel() {
                 Ok(org) => vec![org],
                 Err(absence) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "operator.peer.project_base_none",
                         why = %absence,
                         "no org room names this node — nothing to subscribe; project rooms root top-level until one is spawned with a parent"
@@ -145,12 +145,12 @@ pub async fn ensure_operator_peer(
             };
             for channel in project_bases.iter() {
                 match rt.subscribe_room(channel.as_str()).await {
-                    Ok(_) => crate::probe!(
+                    Ok(_) => continuum_base::probe!(
                         class = "operator.peer.project_base_subscribed",
                         room = %channel.as_str(),
                         "operator self-peer subscribed the project base room (the org room from the git remote)"
                     ),
-                    Err(e) => crate::probe!(
+                    Err(e) => continuum_base::probe!(
                         class = "operator.peer.project_base_subscribe_failed",
                         room = %channel.as_str(),
                         error = %e.to_string(),
@@ -162,7 +162,7 @@ pub async fn ensure_operator_peer(
                 .join_room(crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM)
                 .await
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "operator.peer.commons_join_failed",
                     error = %e.to_string(),
                     "operator self-peer could not join the citizens' commons — operator cards and room-scoped verbs land wherever the focus already was"
@@ -193,7 +193,7 @@ pub async fn ensure_operator_peer(
             // Three outcomes, three DIFFERENT facts, none collapsed: a room, no
             // default at all, or an unreadable subscription set.
             match rt.airc().peek_default_room().await {
-                Ok(Some(room)) => crate::probe!(
+                Ok(Some(room)) => continuum_base::probe!(
                     class = "operator.peer.room",
                     room = %room.name,
                     channel = %room.channel,
@@ -204,12 +204,12 @@ pub async fn ensure_operator_peer(
                 // specifically NOT the same row as a successful academy landing:
                 // the human has no room, so operator cards have nowhere
                 // predictable to go and the probes above say why.
-                Ok(None) => crate::probe!(
+                Ok(None) => continuum_base::probe!(
                     class = "operator.peer.room_unset",
                     commons = %crate::persona::airc_runtime::CITIZEN_COMMONS_ROOM,
                     "operator self-peer has NO default room after subscribe+join — both joins failed; operator cards have no predictable board"
                 ),
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "operator.peer.room_unresolved",
                     error = %e.to_string(),
                     "operator self-peer default room could not be READ — where operator cards land is UNKNOWN, which is not the same as unset"
@@ -221,7 +221,7 @@ pub async fn ensure_operator_peer(
             // Loud, not fatal: the substrate runs without an operator peer the
             // way it always has — verbs deny with the #27 message — but the
             // failure is a named probe, never silence.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "operator.peer.boot_failed",
                 label = %label,
                 error = %e.to_string(),
@@ -259,7 +259,7 @@ pub async fn ensure_agent_peer(
     {
         Ok(rt) => {
             let rt = Arc::new(rt);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "agent.peer.online",
                 peer_id = %rt.airc().peer_id(),
                 "agent self-peer online — agent-driven CLI sessions speak as Claude, never as the human"
@@ -267,7 +267,7 @@ pub async fn ensure_agent_peer(
             let _ = AGENT.set(rt);
         }
         Err(e) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "agent.peer.boot_failed",
                 error = %e.to_string(),
                 "agent self-peer failed to boot — agent sessions fall back to DENIAL on caller-less verbs, never to the human's identity"

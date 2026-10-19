@@ -272,7 +272,7 @@ fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefil
         | (rate.source as u64) << 1
         | (audience == crate::inference::prefill_rate::Audience::Unattended) as u64;
     if LAST.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
-        crate::probe!(
+        continuum_base::probe!(
             class = "cognition.budget.prefill_bound",
             model = %model,
             served_window = served as u64,

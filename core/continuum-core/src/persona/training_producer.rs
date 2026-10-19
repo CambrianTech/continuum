@@ -38,7 +38,7 @@
 //! steer the persona's behavior or output ([[no-hardcoded-heuristics-to-steer-cognition]]
 //! is about puppeting cognition; this is corpus hygiene).
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::{Arc, OnceLock};
 
 use serde_json::json;
@@ -399,7 +399,7 @@ impl TurnCreditCapture {
     ) -> Option<Self> {
         let credit = credit.filter(|credit| credit.is_card_linked())?;
         let Some(executor) = EXECUTOR.cloned() else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.stage_unavailable",
                 persona = %persona_id,
                 card = %credit.card_id,
@@ -501,7 +501,7 @@ impl TurnCreditCapture {
             Ok(_) => {
                 self.superseded.clear();
                 crate::modules::citizen_health::note_credit_staged();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.credit.staged",
                     persona = %self.persona_name,
                     card = %self.credit.card_id,
@@ -515,7 +515,7 @@ impl TurnCreditCapture {
                 true
             }
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.credit.stage_failed",
                     persona = %self.persona_name,
                     card = %self.credit.card_id,
@@ -631,7 +631,7 @@ pub fn produce_with_id(
     // path below), a lesson another citizen deliberately taught, or a curated/teacher
     // corpus. The whole recorded turn as the example is card ad107e18.
     let Some(credit) = credit.filter(|c| c.is_card_linked()) else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.example.unverified",
             persona = %persona_name,
             prompt_chars = prompt.len() as u64,
@@ -685,7 +685,7 @@ pub fn produce_with_id(
         )
         .await
         {
-            Ok(submission_id) => crate::probe!(
+            Ok(submission_id) => continuum_base::probe!(
                 class = "training.credit.staged",
                 replaced_partial = replaces.is_some(),
                 persona = %persona_name,
@@ -697,7 +697,7 @@ pub fn produce_with_id(
             // Best-effort: a staging failure must
             // never touch the turn that already happened. NAMED, not swallowed
             // — a turn that failed to stage is credit that silently vanished.
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 class = "training.credit.stage_failed",
                 persona = %persona_name,
                 card = %credit.card_id,
@@ -837,7 +837,7 @@ pub fn produce_speech_discipline(
         );
         return;
     };
-    crate::probe!(
+    continuum_base::probe!(
         class = "training.example.speech_discipline",
         persona = %persona_name,
         marker = marker,
@@ -986,7 +986,7 @@ async fn submit_plan(
     let params = build_submit_params(persona_id, &persona_name, &base_model, &plan, provenance);
     match submit_training(&conn, params).await {
         Ok(receipt) if receipt.success => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.example.produced",
                 persona = %persona_name,
                 domain = %plan.trait_kind,
@@ -1018,7 +1018,7 @@ async fn submit_plan(
             );
         }
         Ok(receipt) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.example.rejected",
                 persona = %persona_name,
                 domain = %plan.trait_kind,
@@ -1035,7 +1035,7 @@ async fn submit_plan(
             );
         }
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.example.failed",
                 persona = %persona_name,
                 domain = %plan.trait_kind,
@@ -1125,7 +1125,7 @@ async fn stage_credit<T: Transport>(
         prompt,
         completion,
         lived,
-        staged_at_ms: crate::time::EpochMs::now().millis(),
+        staged_at_ms: continuum_base::time::EpochMs::now().millis(),
         coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
         task: Some(credit.task.clone()),
         rejected_at_ms: None,
@@ -1211,7 +1211,7 @@ async fn read_lived(
     };
     match (&missing, calls.is_empty()) {
         (None, false) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.lived_read",
                 persona = %persona_name,
                 calls = calls.len() as u64,
@@ -1221,7 +1221,7 @@ async fn read_lived(
         }
         _ => {
             let reason = missing.unwrap_or_else(|| "the turn has no served call".into());
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.lived_unavailable",
                 persona = %persona_name,
                 reason = %reason,
@@ -1469,7 +1469,7 @@ pub(crate) async fn settle_card_credit_bound(
                 if binding.is_some() {
                     return Err(format!("attributed credit cannot be admitted: {e}"));
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.credit.settle_unreadable",
                     persona = %persona_name,
                     card = %card_id,
@@ -1489,7 +1489,7 @@ pub(crate) async fn settle_card_credit_bound(
         // on a lesson would be judged on that same lesson. The promotion gate judges real work
         // only; the lesson's passing turns still train below.
         if let Some(set) = rows.iter().find_map(|r| r.coursework_set.as_deref()) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.coursework_no_trial",
                 card = %card_id,
                 set = %set,
@@ -1512,7 +1512,7 @@ pub(crate) async fn settle_card_credit_bound(
                 PassAdmits::AfterFailure => {
                     let (rejected, admitted): (Vec<StagedCredit>, Vec<StagedCredit>) =
                         rows.into_iter().partition(|r| r.rejected_at_ms.is_some());
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.credit.rejected_excluded",
                         persona = %persona_name,
                         card = %card_id,
@@ -1537,7 +1537,7 @@ pub(crate) async fn settle_card_credit_bound(
         rows.sort_by_key(|r| r.staged_at_ms);
         for (row, dropped) in across_turns(&rows) {
             if let Some(reason) = dropped {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.credit.loop_dropped",
                     persona = %persona_name,
                     card = %card_id,
@@ -1550,7 +1550,7 @@ pub(crate) async fn settle_card_credit_bound(
             match settle_staged_row(&conn, &substrate, persona_id, &persona_name, row, passed).await {
                 Ok(true) => submitted += 1,
                 Ok(false) => {}
-                Err(error) => crate::probe!(
+                Err(error) => continuum_base::probe!(
                     class = "training.credit.settle_failed",
                     persona = %persona_name,
                     card = %card_id,
@@ -1567,7 +1567,7 @@ pub(crate) async fn settle_card_credit_bound(
                 let _ = region.consolidate_at_card_boundary(pid).await;
             });
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.credit.settled",
             persona = %persona_name,
             card = %card_id,
@@ -1675,7 +1675,7 @@ fn lived_examples(
     let metadata = example_metadata(plan, "card-credit");
     let kept = not_a_loop(calls);
     if kept.len() < calls.len() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.example.loop_dropped",
             card = %plan.stamp.map(|s| s.card_id).unwrap_or_default(), // unwrap_or_default: an unstamped plan has no card to name
             calls = calls.len() as u64,
@@ -1771,7 +1771,7 @@ async fn settle_staged_row<T: Transport, S: Transport>(
             // SAY IT. A staged credit that can never settle is a citizen's work
             // that will never reach her curriculum, and the old silent `None`
             // meant the only evidence was a row that sat still.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.settle_ineligible",
                 persona = %persona_name,
                 card = %row.card_id,
@@ -1786,7 +1786,7 @@ async fn settle_staged_row<T: Transport, S: Transport>(
         Ok(()) => {}
         Err(reviewed::CreditBindingError::Storage(error)) => return Err(error),
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.settle_overlap",
                 persona = %persona_name,
                 card = %row.card_id,
@@ -1807,7 +1807,7 @@ async fn settle_staged_row<T: Transport, S: Transport>(
         .as_ref()
         .is_none_or(|accepted| accepted.submission_id != row.id)
     {
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.credit.settle_deferred",
             persona = %persona_name,
             card = %row.card_id,
@@ -1824,7 +1824,7 @@ async fn settle_staged_row<T: Transport, S: Transport>(
     let dispatch_success = receipt.success;
     reviewed::accept_transfer(conn, persona_name, row.id, receipt).await?;
     clear_lived(substrate, persona_name, row).await;
-    crate::probe!(
+    continuum_base::probe!(
         class = "training.credit.transferred",
         persona = %persona_name,
         card = %row.card_id,
@@ -1876,7 +1876,7 @@ async fn mark_rejected<T: Transport>(conn: &Connection<T>, persona_name: &str, c
             .await
             .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
         if let Err(error) = marked {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.reject_mark_failed",
                 persona = %persona_name,
                 card = %card_id,
@@ -1915,7 +1915,7 @@ async fn clear_lived<S: Transport>(substrate: &Connection<S>, persona_name: &str
         .await
         .and_then(|result| storage_ok(&result, "data/update", StagedCredit::COLLECTION));
     if let Err(error) = cleared {
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.credit.lived_retained",
             persona = %persona_name,
             submission = %row.id,
@@ -1935,7 +1935,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
     let owned = match crate::persona::airc_runtime::scoped_board_owned_by(airc).await {
         Ok(owned) => owned,
         Err(error) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.reconcile_unreadable",
                 persona = %persona_name,
                 error = %error,
@@ -1948,7 +1948,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
     let conn = match reviewed::credit_connection(observer) {
         Ok(conn) => conn,
         Err(error) => {
-            crate::probe!(class = "training.credit.reconcile_unreadable", persona = %persona_name, error = %error,
+            continuum_base::probe!(class = "training.credit.reconcile_unreadable", persona = %persona_name, error = %error,
                 "no credit connection at registration: reviews already on her boards wait for the next live delivery");
             return;
         }
@@ -1966,7 +1966,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
                     boards.insert(room_id, (board, admission));
                 }
                 Err(error) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.credit.reconcile_unreadable",
                         persona = %persona_name,
                         room = %room_id,
@@ -1990,7 +1990,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
                 Err(error) => error.to_string(),
             };
             deferred += 1;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.credit.review_deferred",
                 persona = %persona_name,
                 review = %review_id.as_uuid(),
@@ -1999,7 +1999,7 @@ pub async fn reconcile_reviews(persona_name: &str, airc: &airc_lib::Airc) {
             );
         }
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "training.credit.reconciled",
         persona = %persona_name,
         cards,
@@ -2018,7 +2018,7 @@ pub fn settle_instance_credit(instance: &str, passed: bool) {
         return;
     }
     let Ok(handle) = tokio::runtime::Handle::try_current() else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.credit.settle_deferred",
             instance,
             "verdict written outside the runtime — its cards' staged credit settles on the next verdict of this instance"

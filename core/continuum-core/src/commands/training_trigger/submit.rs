@@ -444,7 +444,7 @@ async fn submit_batch_inner(state: &Arc<TrainingTriggerState>, p: SubmitParams, 
         if let Some(held_by) = state.held_for(&key).filter(|_| !replay) {
             let pending = state.buckets.get(&key).map(|b| b.examples.len()).unwrap_or(0); // unwrap_or: no bucket yet = nothing pending
             if pending >= crate::modules::training_trigger::MAX_HELD_EXAMPLES {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.trigger.held_full",
                     persona = %key.persona_id,
                     trait_kind = %key.trait_kind,
@@ -935,7 +935,7 @@ mod tests {
         let mine = Uuid::new_v4();
         let reviewer = Uuid::new_v4();
         // The real clock: a tally is read inside its window, at the snapshot's own time.
-        let now = crate::time::EpochMs::now().millis();
+        let now = continuum_base::time::EpochMs::now().millis();
         let mind = tempfile::tempdir().unwrap();
         let (mut region, _strip) = PerceptionRegion::boot(airc_core::PeerId::from_uuid(persona), mind.path(), 1_000, now);
         region.join(activity, "career-wrangler");
@@ -994,7 +994,7 @@ mod tests {
         let trial = trigger
             .state
             .test_trials
-            .open(persona, "test-trait", &gene, "synthetic", crate::time::EpochMs::now().millis())
+            .open(persona, "test-trait", &gene, "synthetic", continuum_base::time::EpochMs::now().millis())
             .expect("the trial file takes a trial");
         assert_eq!(trial.state, crate::genome::gene_trial::TrialState::Trial);
 

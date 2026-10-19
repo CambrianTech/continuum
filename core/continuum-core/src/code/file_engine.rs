@@ -6,7 +6,7 @@
 //! Thread safety: Each persona gets their own FileEngine instance.
 //! The underlying ChangeGraph and PathSecurity handle concurrency.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -445,7 +445,7 @@ impl FileEngine {
             // acts + filesChanged, so a solve that burns its whole act budget on refused edits
             // looks identical to one that never tried to edit at all (glass-boxed on
             // sympy-21379 v9: 30 acts, 0 files, no way to tell which). Probe both gates.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "code.edit.refused",
                 reason = "undefined_name",
                 path = %relative_path,
@@ -465,7 +465,7 @@ impl FileEngine {
             });
         }
         if !parses_clean(&abs_path, &new_content) && parses_clean(&abs_path, &old_content) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "code.edit.refused",
                 reason = "parse_break",
                 path = %relative_path,

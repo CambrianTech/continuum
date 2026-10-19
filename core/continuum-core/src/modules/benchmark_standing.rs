@@ -17,7 +17,7 @@
 //! BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md). Every skip states its reason as a
 //! probe; a silent autopilot would be the launch-and-pray shape all over again.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -169,7 +169,7 @@ impl BenchmarkStandingModule {
             // 2026-09-19: thirty hours, eight minds, ~3,500 pulls reading
             // `no_rounds_on_node`, the health line saying "owed: fewer seats").
             if !SAID_OFF.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "bench.standing.off",
                     benchmark = %cfg.benchmark,
                     "standing autopilot is OFF — no round will be dispatched on this node until \
@@ -179,7 +179,7 @@ impl BenchmarkStandingModule {
             return Ok(false);
         }
         if SAID_OFF.swap(false, std::sync::atomic::Ordering::Relaxed) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.standing.on",
                 benchmark = %cfg.benchmark,
                 "standing autopilot is ON again — the next tick with no working round dispatches"
@@ -213,7 +213,7 @@ impl BenchmarkStandingModule {
             .await
             .is_none()
         {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.standing.skipped",
                 reason = "serving",
                 "standing round: serving not decode-ready — retrying next tick"
@@ -222,7 +222,7 @@ impl BenchmarkStandingModule {
         }
         let residents = self.registry.resident_snapshot().await;
         if residents.is_empty() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.standing.skipped",
                 reason = "residency",
                 "standing round: no citizens resident — retrying next tick"
@@ -242,7 +242,7 @@ impl BenchmarkStandingModule {
             EpochMs::now().millis(),
         );
         if backlog > residents.len() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.standing.skipped",
                 reason = "backlog",
                 backlog = backlog as u64,
@@ -252,7 +252,7 @@ impl BenchmarkStandingModule {
             return Ok(false);
         }
         let Some(executor) = self.executor_slot.cloned() else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.standing.skipped",
                 reason = "no_executor",
                 "standing round: executor not installed yet — retrying next tick"
@@ -294,7 +294,7 @@ impl BenchmarkStandingModule {
         let mut next = cfg.clone();
         next.next_seed = seed + 1;
         save_config(&next)?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.standing.dispatched",
             benchmark = %next.benchmark,
             sample = next.sample as u64,
@@ -324,7 +324,7 @@ impl ServiceModule for BenchmarkStandingModule {
 
     async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
         let cfg = load_config();
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.standing.ready",
             enabled = cfg.enabled,
             benchmark = %cfg.benchmark,
@@ -337,7 +337,7 @@ impl ServiceModule for BenchmarkStandingModule {
     async fn tick(&self) -> Result<(), String> {
         // Never let one failed dispatch kill the tick loop — probe and retry.
         if let Err(e) = self.standing_check().await {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.standing.error",
                 error = %e,
                 "standing check failed — retrying next tick"

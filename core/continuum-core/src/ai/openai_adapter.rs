@@ -21,7 +21,7 @@ use std::collections::BTreeSet;
 use std::time::Instant;
 
 use crate::model_registry::{AuthKind, Capability};
-use crate::secrets::get_secret;
+use continuum_base::secrets::get_secret;
 use crate::{clog_info, clog_warn};
 
 use super::adapter::{
@@ -598,14 +598,14 @@ impl OpenAICompatibleAdapter {
             // 2026-08-21. A verdict about what a server IS must never be reached
             // while the server is mid-transition (#442's rule, one layer down).
             if props_status_proves_endpoint_absent(status) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.slot_affinity.unsupported",
                     status = status.as_u16() as u64,
                     "props endpoint absent — slot affinity latched OFF for this server",
                 );
                 dir.latch_unsupported(root);
             } else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.slot_affinity.deferred",
                     status = status.as_u16() as u64,
                     "props not ready (transient status) — affinity deferred, NOT latched; \
@@ -619,7 +619,7 @@ impl OpenAICompatibleAdapter {
             Err(_) => {
                 // A malformed body from a live server is also not proof of absence —
                 // mid-load llama-server can answer partial/HTML bodies. Defer, don't latch.
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.slot_affinity.deferred",
                     status = 200u64,
                     "props answered but body did not parse — affinity deferred, NOT latched",
@@ -675,7 +675,7 @@ impl OpenAICompatibleAdapter {
                 }
             },
         }};
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.ledger_adopted",
             adopted = adoption.is_ok(),
             loaded = adoption.unwrap_or(0) as u64, // probe field: 0 when nothing was adopted, `why` names the reason
@@ -1301,7 +1301,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                         if target > cur {
                             sem.add_permits(target - cur);
                             issued.store(target, std::sync::atomic::Ordering::SeqCst);
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "inference.permits.grown",
                                 from = cur as u64,
                                 to = target as u64,
@@ -1319,7 +1319,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                                 }
                             }
                             issued.store(target, std::sync::atomic::Ordering::SeqCst);
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "inference.permits.shrunk",
                                 from = cur as u64,
                                 to = target as u64,
@@ -1427,7 +1427,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         let request_id = request
             .request_id
             .clone()
-            .unwrap_or_else(|| format!("req-{}", crate::time::EpochMs::now().millis()));
+            .unwrap_or_else(|| format!("req-{}", continuum_base::time::EpochMs::now().millis()));
         let raw_model = request
             .model
             .as_deref()
@@ -1580,7 +1580,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 crate::inference::measured_hold::current().as_ref(),
                 hold_caller,
             ) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.hold.backoff",
                     traffic = %class.as_str(),
                     purpose = %request.purpose.as_deref().unwrap_or("-"),
@@ -1649,7 +1649,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // GLASS BOX (KV-reuse 0% hunt 2026-08-26): the whole cache-reuse win
             // rides on placement. Report class + room so a cached:0 streak names
             // WHICH activity thrashed — or which class strayed off scratch.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.slot_pin.decision",
                 persona = request.persona_id.as_deref(),
                 room = request.room_id.as_deref(),
@@ -1750,7 +1750,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // backend can't page LoRA or a requested adapter isn't loaded. `None` only
         // when nothing is loaded (omit the field, no probe penalty for non-LoRA).
         let active = request.active_adapters.as_deref().unwrap_or(&[]);
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.request.lora_resolve",
             adapters = active.len() as u64,
             "resolving genome adapters against the lane catalog"
@@ -1760,7 +1760,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 obj.insert("lora".to_string(), json!(entries));
             }
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.request.lora_resolved",
             "genome adapters resolved — shaping the rest of the request"
         );
@@ -1813,7 +1813,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 format!("{:x}", sha2::Sha256::digest(url.as_bytes()))
             }).collect();
         if !wire_image_hashes.is_empty() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.prompt.media_wire",
                 request_id = %request_id,
                 model = model,
@@ -1950,7 +1950,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // The output cap ended it on a HEALTHY lane — the allowance owns this, not
             // the backend. Surfaced so it is never silent, never charged to the lane.
             crate::inference::llama_server::RealDecodeOutcome::CappedBeforeOutput => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.lane.capped_before_output",
                     model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
                     response_time_ms,
@@ -1991,7 +1991,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // empty turn can never smear the local record.
                 // [[the-measurement-already-exists-and-nothing-consumes-it]]
                 crate::inference::llama_server::note_real_decode_failure();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "inference.lane.delivered_nothing",
                     model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
                     response_time_ms,
@@ -2029,7 +2029,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                     let input: Value = match serde_json::from_str(&t.arguments) {
                         Ok(v) => v,
                         Err(e) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "ai.tool_call.unparseable_args",
                                 tool = t.name.as_str(),
                                 error = e.to_string().as_str(),
@@ -2161,7 +2161,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // restores were warm (card 356ce732).
                 if admission.restored() {
                     if let Some(t) = &timing {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.restored_turn",
                             cached = t.cached_tokens,
                             prompt = t.prefill_tokens,
@@ -2273,7 +2273,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms: 0,
                 error_rate: 1.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("{} API key not configured", self.config.name)),
             };
         }
@@ -2306,7 +2306,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: true,
                 response_time_ms,
                 error_rate: 0.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("{} API is accessible", self.config.name)),
             },
             Ok(resp) => HealthStatus {
@@ -2314,7 +2314,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms,
                 error_rate: 1.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("{} returned {}", self.config.name, resp.status())),
             },
             Err(e) => HealthStatus {
@@ -2322,7 +2322,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 api_available: false,
                 response_time_ms,
                 error_rate: 1.0,
-                last_checked: crate::time::EpochMs::now().millis(),
+                last_checked: continuum_base::time::EpochMs::now().millis(),
                 message: Some(format!("{} error: {}", self.config.name, e)),
             },
         }

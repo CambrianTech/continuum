@@ -253,7 +253,7 @@ fn write_partition(job_dir: &Path, partition: &Partition) -> Result<(), String> 
     let tmp = path.with_extension("json.tmp");
     let text = serde_json::to_vec(partition).map_err(|e| e.to_string())?; // file on disk: the job dir's partition.json, read back by `return` after a restart
     std::fs::write(&tmp, text).map_err(|e| format!("{}: {e}", tmp.display()))?;
-    crate::fs_portable::replace::replace_file(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
+    continuum_base::fs_portable::replace::replace_file(&tmp, &path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
 /// What `job_dir` records about its partition. `Ok(None)` only when the file is confirmed absent
@@ -606,7 +606,7 @@ impl Footprints {
             FootprintRow {
                 engine: self.engine.clone(),
                 bytes,
-                measured_at_ms: crate::time::EpochMs::now().millis(),
+                measured_at_ms: continuum_base::time::EpochMs::now().millis(),
                 job: job.to_string(),
                 includes_context,
             },
@@ -617,7 +617,7 @@ impl Footprints {
         let tmp = self.path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(std::io::Error::other)?)?;
         // a scanner holding the new temp must not lose the measurement (the 5090, 2026-10-10)
-        crate::fs_portable::replace::replace_file(&tmp, &self.path)
+        continuum_base::fs_portable::replace::replace_file(&tmp, &self.path)
     }
 }
 
@@ -1237,14 +1237,14 @@ impl InPlaceRun for EngineRun {
             if settled {
                 let released = tokio::task::spawn_blocking(move || crate::inference::engine_residency::release(&path, &bound)).await;
                 if !matches!(released, Ok(Ok(_))) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.residency.release_failed",
                         job = %job,
                         "a settled run's engine binding could not be released; serving stays held on it until it can be"
                     );
                 }
             } else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.residency.kept_uncertain",
                     job = %job,
                     pid = bound.engine.pid as u64,
@@ -1257,11 +1257,11 @@ impl InPlaceRun for EngineRun {
         // the re-attach path that does not exist yet (see training_hold_store).
         if let Some(store) = store {
             let released = tokio::task::spawn_blocking(move || {
-                super::training_hold_store::release_job(&store, job, crate::time::EpochMs::now().millis())
+                super::training_hold_store::release_job(&store, job, continuum_base::time::EpochMs::now().millis())
             })
             .await;
             if !matches!(released, Ok(Ok(_))) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.hold.release_failed",
                     job = %job,
                     "a finished job's persisted pauses could not be released; they expire on their TTL"
@@ -1306,7 +1306,7 @@ impl EngineRun {
                 Err(e) => {
                     let status = self.status().await.ok();
                     match after_lost_post(status.as_ref(), |s| self.ours(s)) {
-                        LostPost::Watch => crate::probe!(
+                        LostPost::Watch => continuum_base::probe!(
                             class = "training.job.post_reconciled",
                             job = %self.job,
                             error = %e,
@@ -1370,7 +1370,7 @@ impl EngineRun {
                     if let Some(store) = &self.hold_store {
                         // Holds are created and expire in wall time, which a core restart keeps. A pre-1970
                         // clock reads 0 here: every hold reads as live, never as expired early.
-                        let now = crate::time::EpochMs::now().millis();
+                        let now = continuum_base::time::EpochMs::now().millis();
                         match super::training_hold_store::live_on(store, self.job, now).await {
                             Ok(persisted) => reasons.extend(persisted.into_iter().map(|h| h.reason)),
                             // unreadable intent holds: a paused job is never resumed on a guess
@@ -1382,7 +1382,7 @@ impl EngineRun {
                     // asked (a resume request clears pause_requested before the worker wakes)
                     let now_paused = s.paused;
                     if now_paused != was_paused {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = if now_paused { "training.run.paused" } else { "training.run.resumed" },
                             out = self.out.as_str(),
                             holds = reasons.join(",").as_str(),
@@ -1401,7 +1401,7 @@ impl EngineRun {
                     // never read as a zero share, and an old engine is told apart from a probe
                     // that never fired.
                     match (s.windows, s.windows_while_busy, s.yielded_ms) {
-                        (Some(windows), Some(busy), Some(yielded)) => crate::probe!(
+                        (Some(windows), Some(busy), Some(yielded)) => continuum_base::probe!(
                             class = "training.run.share",
                             out = self.out.as_str(),
                             reported = true,
@@ -1415,7 +1415,7 @@ impl EngineRun {
                             decode_tps_in_window = s.decode_tps_in_window.unwrap_or(-1.0), // -1 = not measured, never a 0 that reads as her stopping
                             "the in-engine run finished: how many windows it took beside busy serving, how long it yielded, and what it cost her decoding against the bound"
                         ),
-                        _ => crate::probe!(
+                        _ => continuum_base::probe!(
                             class = "training.run.share",
                             out = self.out.as_str(),
                             reported = false,
@@ -1438,7 +1438,7 @@ impl EngineRun {
                         // The job's examples belong back in her bucket so the next dispatch can
                         // step down; the trigger reads this to decide (card 2dfce676).
                         if let Err(e) = write_returnable(&self.job_dir, &Returnable::EngineRefused(Refusal { window: ran_window, chunk: ran_chunk, graph_bytes: grown, error: why.to_string() })) {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "training.job.refusal_unrecorded",
                                 job = %self.job,
                                 error = %e,
@@ -1453,7 +1453,7 @@ impl EngineRun {
                             .await
                             .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
                         match recorded {
-                            Ok(()) => crate::probe!(
+                            Ok(()) => continuum_base::probe!(
                                 class = "training.job.footprint_from_refusal",
                                 job = %self.job,
                                 window = ran_window as u64,
@@ -1462,7 +1462,7 @@ impl EngineRun {
                                 graph_bytes = grown,
                                 "the engine refused this shape's graph; its measured size is filed so the next dispatch chooses a smaller chunk"
                             ),
-                            Err(e) => crate::probe!(
+                            Err(e) => continuum_base::probe!(
                                 class = "training.job.footprint_unrecorded",
                                 job = %self.job,
                                 error = %e,
@@ -1556,7 +1556,7 @@ impl EngineLoraFineTuner {
         let bound = match crate::inference::engine_residency::all(store) {
             Ok(bound) => bound,
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.reattach.store_unreadable",
                     error = %error,
                     "engine bindings cannot be read at boot: ownership is unknown, so serving stays off every engine it guards"
@@ -1574,14 +1574,14 @@ impl EngineLoraFineTuner {
                     if let Ok(mut leases) = self.resident_leases.lock() {
                         leases.insert(work.job, guard);
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.reattach.lease_reclaimed",
                         job = %work.job,
                         bytes = work.reserved_bytes,
                         "a run bound to a live engine by a previous core: its lease is re-taken before anything can admit"
                     );
                 }
-                Err(error) => crate::probe!(
+                Err(error) => continuum_base::probe!(
                     class = "training.reattach.lease_refused",
                     job = %work.job,
                     bytes = work.reserved_bytes,
@@ -1630,7 +1630,7 @@ impl EngineLoraFineTuner {
                 if let Ok(mut leases) = self.resident_leases.lock() {
                     leases.remove(&job);
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.reattach.engine_gone",
                     job = %job,
                     released = matches!(released, Ok(Ok(true))),
@@ -1640,7 +1640,7 @@ impl EngineLoraFineTuner {
                 Ok(ReattachOutcome::EngineGone { reason })
             }
             Disposition::Uncertain(reason) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.reattach.uncertain",
                     job = %job,
                     pid = work.engine.pid as u64,
@@ -1655,7 +1655,7 @@ impl EngineLoraFineTuner {
                 };
                 let lease = self.resident_leases.lock().ok().and_then(|mut leases| leases.remove(&job));
                 if lease.is_none() {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "training.reattach.unleased",
                         job = %job,
                         "re-attached without a reclaimed lease: the run's memory is in use but not on the board"
@@ -1684,7 +1684,7 @@ impl EngineLoraFineTuner {
                 let handle = self.jobs.prepare(job, move |_progress| async move {
                     Ok(PreparedJob { execution: Execution::InPlace(Box::new(run)), finish })
                 });
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.reattach.attached",
                     job = %job,
                     "a run a previous core started is still this job's in its engine: watched again under the same id, never POSTed again"
@@ -1749,7 +1749,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             // an existing adapter (the fork's init file went in #19). The lineage is still
             // recorded on the child's signature; the weights are not inherited. The row
             // that says so is this probe, until the engine takes `init_adapter`.
-            crate::probe!(
+            continuum_base::probe!(
                 class = "genome.fork.cold_start",
                 persona = %request.persona_id,
                 trait_kind = %request.trait_kind,
@@ -1784,7 +1784,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             )));
         }
         let window = train_window(served_window);
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.job.window",
             requested = schedule.sequence_length as u64,
             served = u64::from(served_window),
@@ -1819,7 +1819,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         (body.exact, body.walk_host_budget_mib) =
             walk_request(crate::system_resources::memory_pressure::current_available_bytes());
         if !body.exact {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.exact_walk_skipped",
                 "the host memory monitor has not read the host: the job trains the plain (chunk-bounded) walk rather than an exact walk with no budget"
             );
@@ -1867,7 +1867,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // whole turns over one at 0.998 on a fraction of them (Joel: working training beats data
         // purity; she can unlearn).
         if body.exact && exact_ruled_out(&footprints.measured_rows_like(&family), need, governed_free) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.walk_plain",
                 job = %id,
                 needed = u64::from(need),
@@ -1888,7 +1888,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
         // prediction it is, and never as window_calculated's "what trains her examples whole". The window is set
         // either way: the probe changes, the flow does not.
         let no_fit = if let crate::inference::planning::training_plan::WindowFit::PredictedNoFit { predicted_at_floor } = plan.fit {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.no_window_fits_predicted",
                 job = %id,
                 needed = u64::from(need),
@@ -1902,7 +1902,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
             false
         };
         if window != body.window && !no_fit {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.window_calculated",
                 served = u64::from(body.window),
                 needed = u64::from(need),
@@ -1943,7 +1943,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                             governed_free,
                             engine_stamp: build.clone(),
                         };
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "training.job.capacity_parked",
                             job = %id,
                             window = u64::from(useful),
@@ -2020,7 +2020,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     .map(|r| r.tokens_full)
                     .min()
                     .unwrap_or(0); // probe field: 0 = nothing parked
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.partitioned",
                     job = %id,
                     window = u64::from(window),
@@ -2079,7 +2079,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     Some(bytes) => bytes,
                     None => daemon.available_for(&consumer, crate::resources::ResourceKind::Vram),
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.planned",
                     job = %id,
                     base = shape.model.as_str(),
@@ -2107,7 +2107,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                     out: out.clone(),
                     engine: chosen,
                     base_model: base_model.clone(),
-                    created_ms: crate::time::EpochMs::now().millis(),
+                    created_ms: continuum_base::time::EpochMs::now().millis(),
                     consumer: consumer.clone(),
                     reserved_bytes: bytes,
                     interrupted: None,
@@ -2128,7 +2128,7 @@ impl FineTuningAdapter for EngineLoraFineTuner {
                         // Nothing ran: the examples go back to her bucket and the next dispatch
                         // plans against the new lane (card 0b8de4da).
                         if let Err(e) = write_returnable(&bind_job_dir, &Returnable::LaneReplaced { error: error.clone() }) {
-                            crate::probe!(class = "training.job.returnable_unrecorded", error = %e, "the replaced lane could not be recorded; the examples wait for a manual return");
+                            continuum_base::probe!(class = "training.job.returnable_unrecorded", error = %e, "the replaced lane could not be recorded; the examples wait for a manual return");
                         }
                         return Err(error);
                     }
@@ -2221,7 +2221,7 @@ fn finish_run(
         // recorded under the depth the engine ACTUALLY adapted: an engine that
         // ignored top_layers measured a full-depth graph, and that number must never
         // be leased for a reduced-depth run (Codex on #27)
-        crate::probe!(
+        continuum_base::probe!(
             class = "training.job.examples_fit",
             job = %job,
             kept = status.examples.unwrap_or(0), // probe field: 0 = an engine that does not report it
@@ -2236,16 +2236,16 @@ fn finish_run(
                 Ok(Some(partition)) => {
                     let amended = with_run_skipped(partition, &status.skipped_indices);
                     if let Err(e) = write_partition(&spec.job_dir, &amended) {
-                        crate::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the run's skipped examples could not be parked; they remain in the job's request");
+                        continuum_base::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the run's skipped examples could not be parked; they remain in the job's request");
                     }
                 }
                 Ok(None) => {}
-                Err(e) => crate::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the partition could not be read, so the run's skipped examples could not be parked; they remain in the job's request"),
+                Err(e) => continuum_base::probe!(class = "training.job.partition_unamended", job = %job, error = %e, "the partition could not be read, so the run's skipped examples could not be parked; they remain in the job's request"),
             }
         }
         let adapted = effective_depth(status.layers_adapted, status.n_layer);
         if adapted != spec.shape.depth {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.depth_differs",
                 job = %job,
                 asked = spec.shape.depth.map_or(0, u64::from), // probe field: 0 = every block
@@ -2258,7 +2258,7 @@ fn finish_run(
         // 15k window must never be leased for a 61k one (Codex on #4498).
         let ran_window = status.window.filter(|w| *w > 0).unwrap_or(spec.shape.window);
         if ran_window != spec.shape.window {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "training.job.window_used",
                 job = %job,
                 sent = u64::from(spec.shape.window),
@@ -2282,7 +2282,7 @@ fn finish_run(
                 let _ = store.record_with(&asked_ran, grown, status.context_mib.is_some(), job); // best effort: the full-depth row below is the one that matters
             }
             if let Err(e) = store.record_with(&measured_shape, grown, status.context_mib.is_some(), job) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "training.job.footprint_unrecorded",
                     job = %job,
                     error = %e,
@@ -2294,7 +2294,7 @@ fn finish_run(
         // the measured cost of this run: what the next dispatch of this base is sized by
         if let Some(rates) = super::training_rate::TrainingRates::in_home() {
             if let Err(e) = rates.record(&spec.shape.model, ran_chunk, spec.corpus_chars, spec.epochs, wall_clock_ms, job) {
-                crate::probe!(class = "training.job.rate_unrecorded", job = %job, error = %e, "the run's measured cost could not be recorded; the next dispatch of this base calibrates at the bucket's threshold");
+                continuum_base::probe!(class = "training.job.rate_unrecorded", job = %job, error = %e, "the run's measured cost could not be recorded; the next dispatch of this base calibrates at the bucket's threshold");
             }
         }
         Ok(TrainingArtifact {
@@ -2372,7 +2372,7 @@ fn engine_example(e: &TrainingExample) -> EngineExample {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::time::EpochMs;
+    use continuum_base::time::EpochMs;
 
     // what this catches (Cormac's chain test on #4946, card 3cef97ef; job 97e081e2): the WHOLE
     // path of a POST lost after the engine took the run. The engine's answer outlasts the POST's

@@ -328,7 +328,7 @@ pub fn note_real_decode() {
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.
-    let Ok(since_epoch) = crate::time::EpochMs::read() else {
+    let Ok(since_epoch) = continuum_base::time::EpochMs::read() else {
         tracing::warn!(
             "system clock is before the UNIX epoch — cannot stamp this decode; \
              liveness will be judged from the previous stamp or by probing"
@@ -518,7 +518,7 @@ static LAST_REAL_PREFILL_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::A
 
 /// Record that a real generation's PREFILL advanced on the served lane.
 pub fn note_real_prefill_progress() {
-    let Ok(since_epoch) = crate::time::EpochMs::read() else {
+    let Ok(since_epoch) = continuum_base::time::EpochMs::read() else {
         // Same clock discipline as note_real_decode: 0 is the "never" sentinel,
         // an unreadable clock must not erase a real stamp.
         return;
@@ -547,7 +547,7 @@ fn ms_since_stamp(stamp: &std::sync::atomic::AtomicU64) -> Option<u64> {
     if last == 0 {
         return None;
     }
-    let now = crate::time::EpochMs::read().ok()?.millis();
+    let now = continuum_base::time::EpochMs::read().ok()?.millis();
     Some(now.saturating_sub(last))
 }
 
@@ -562,7 +562,7 @@ pub fn ms_since_real_decode() -> Option<u64> {
     // yield 0, i.e. "a token came out 0 ms ago" — an unreadable clock would present a
     // WEDGED lane as perfectly fresh, and the caller's documented fallback (probe it)
     // would never run. `None` already means "no usable evidence, go probe".
-    let now = crate::time::EpochMs::read().ok()?.millis();
+    let now = continuum_base::time::EpochMs::read().ok()?.millis();
     Some(now.saturating_sub(last))
 }
 
@@ -748,7 +748,7 @@ pub enum LanePlacement {
 /// with Metal OFF and records the decision here) pins every main lane to the CPU; anything
 /// else is the GPU. A decision, read from config, never a raw env var (concurrency guide).
 pub fn main_lane_placement() -> LanePlacement {
-    placement_from_config(crate::config_env::read("CONTINUUM_SERVING_PLACEMENT").as_deref())
+    placement_from_config(continuum_base::config_env::read("CONTINUUM_SERVING_PLACEMENT").as_deref())
 }
 
 /// Ask the serving binary, ONCE per process, which KV cache types its build accepts,
@@ -791,7 +791,7 @@ async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::proces
     if let Some(v) = support {
         crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.kv_cache.engine_support",
         bin = bin,
         outcome = outcome,
@@ -920,7 +920,7 @@ pub fn cold_expert_offload_ot(hot_layers: &[u32], n_layers: u32) -> Option<Strin
 /// substrate *thresholds*, which stay `const`. The value carries no `/v1`; we
 /// append `/v1` and `/health` as needed so there is one source of truth.
 pub fn serving_root() -> String {
-    if let Some(raw) = crate::config_env::read("LLAMA_SERVER_BASE_URL") {
+    if let Some(raw) = continuum_base::config_env::read("LLAMA_SERVER_BASE_URL") {
         let trimmed = raw.trim().trim_end_matches('/');
         // Accept a configured `.../v1` and normalize back to the root so callers
         // get a single canonical form regardless of how the operator wrote it.
@@ -1184,7 +1184,7 @@ pub fn sweep_stale_page_generations(current: &Path, protect: &[PathBuf]) -> usiz
             }
             let removed = std::fs::remove_dir_all(&stale).is_ok();
             swept += usize::from(removed);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.generation_swept",
                 dir = %stale.display(),
                 removed,
@@ -1404,7 +1404,7 @@ fn sweep_stale_page_generations_guarded_in(current: &Path, registry_dir: &Path) 
     let mut guard = PAGE_DIR_GUARD.lock();
     guard.collect_exited();
     if guard.has_unknown_retiring_dir() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "inference.kv_page.sweep_skipped",
             reason = "owned child exit unproven and page directory unknown",
             retiring_children = guard.retiring.len(),
@@ -1415,7 +1415,7 @@ fn sweep_stale_page_generations_guarded_in(current: &Path, registry_dir: &Path) 
     let records = match crate::inference::lane_registry::records_checked_in(registry_dir) {
         Ok(r) => r,
         Err(e) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.sweep_skipped",
                 reason = "lane registry unreadable",
                 error = e.to_string().as_str(),
@@ -1487,7 +1487,7 @@ pub(crate) fn engine_override() -> Option<String> {
     std::env::var("LLAMA_SERVER_BIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| crate::config_env::read("LLAMA_SERVER_BIN"))
+        .or_else(|| continuum_base::config_env::read("LLAMA_SERVER_BIN"))
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
@@ -1503,14 +1503,14 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
     let Ok(home) = crate::paths::continuum_home() else {
         return false; // no home: no slots to roll between
     };
-    let now_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch reads as age 0, which keeps a live claim blocking
+    let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch reads as age 0, which keeps a live claim blocking
     if continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks() {
         return false;
     }
     let failure_class = if matches!(error, LlamaServerError::Spawn(_)) { "spawn failed" } else { "readiness failed" };
     match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch_reason(&root, failure_class)) {
         Ok(Some((failed, restored))) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.engine.rolled_back",
                 failed = failed,
                 restored = restored,
@@ -1522,7 +1522,7 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
         }
         Ok(None) => false,
         Err(reason) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.engine.rollback_refused",
                 reason = reason.as_str(),
                 error = error.to_string().as_str(),
@@ -1544,13 +1544,13 @@ fn mark_engine_proven(program: Option<String>) {
     let root = match crate::inference::engine_slots::root(&home) {
         Ok(root) => root,
         Err(reason) => {
-            crate::probe!(class = "serving.engine.verify_mark_failed", reason = reason.as_str(), "payload location unavailable; engine proof was not written");
+            continuum_base::probe!(class = "serving.engine.verify_mark_failed", reason = reason.as_str(), "payload location unavailable; engine proof was not written");
             return;
         }
     };
     if let Some(slot) = crate::inference::engine_slots::slot_of(&root, Path::new(&program)) {
         if let Err(reason) = crate::inference::engine_slots::mark_verified(&root, slot) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.engine.verify_mark_failed",
                 slot = slot,
                 reason = reason.as_str(),
@@ -2238,13 +2238,13 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
 
 /// The operator-pinned EXTERNAL OpenAI-compatible serving endpoint ROOT
 /// (`http://host:port`, no `/v1`), if `LLAMA_SERVER_BASE_URL` is set in the
-/// config (read via [`crate::config_env::read`] — the `~/.continuum/config.env`
+/// config (read via [`continuum_base::config_env::read`] — the `~/.continuum/config.env`
 /// FILE, not a process env var). When set, this node does not own a local GPU
 /// serving lane; persona hosting adopts the pinned endpoint. `serving_root()`
 /// already resolves to this same value — this predicate just answers "is one
 /// pinned", the seam the hosting path branches on.
 pub fn external_serving_pin() -> Option<String> {
-    let raw = crate::config_env::read("LLAMA_SERVER_BASE_URL")?;
+    let raw = continuum_base::config_env::read("LLAMA_SERVER_BASE_URL")?;
     let trimmed = raw.trim().trim_end_matches('/');
     let root = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
     (!root.is_empty()).then(|| root.to_string())
@@ -2515,7 +2515,7 @@ where
                 match observed {
                     EngineProbe::Unreachable | EngineProbe::OperationEnded => return None,
                     EngineProbe::Condemned => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "inference.wait.engine_condemned",
                             busy_checkpoints,
                             "a wait reached its checkpoint on an engine the daemon is replacing — ending it so the relaunch's drain can finish"
@@ -2687,7 +2687,7 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
     // Reachability gate (see `external_health_ok` for why not a generation probe
     // against a deliberately-pinned, possibly-very-slow endpoint).
     if !external_health_ok(&root, &client).await {
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.external_probe",
             endpoint = root.as_str(),
             "pinned external serving endpoint is unreachable (/health) — \
@@ -2704,7 +2704,7 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
     {
         Ok(w) if w > 0 => w,
         _ => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.external_probe",
                 endpoint = root.as_str(),
                 "pinned external endpoint decodes but `/props` did not report an n_ctx window — \
@@ -2718,7 +2718,7 @@ pub async fn probe_external_serving(timeout: Duration) -> Option<ServingSnapshot
         .await
         .unwrap_or_else(|| "external-serving-lane".to_string());
 
-    crate::probe!(
+    continuum_base::probe!(
         class = "serving.external_adopt",
         endpoint = root.as_str(),
         model = active_model.as_str(),
@@ -3527,7 +3527,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 // Only an engine that cannot falls through to the relaunch.
                 match ctrl.adopt_genome_in_place(target).await {
                     Ok(GenomeInPlace::Adopted) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.genome.adopted_in_place",
                             model = target.model_id(),
                             from = active.len() as u64,
@@ -3539,7 +3539,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     Ok(GenomeInPlace::Busy) => {
                         // The set stands this tick, and the window, lane and engine checks
                         // below still run: a busy retire must not hide a starved lane.
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.genome.in_place_busy",
                             model = target.model_id(),
                             "a retiring gene is active in a turn in flight: the change waits a tick"
@@ -3548,7 +3548,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     }
                     Ok(GenomeInPlace::Unsupported) => false,
                     Err(e) => {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.genome.in_place_failed",
                             model = target.model_id(),
                             error = %e,
@@ -3736,7 +3736,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     served_window_n,
                 );
             if refused_trade {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.grow_refused_trade",
                     model = target.model_id(),
                     target_lanes = target.lanes,
@@ -3752,7 +3752,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             let gate_closed = crate::system_resources::is_memory_gate_closed();
             let refused_pressure = !refused_trade && grow_refused_by_memory_gate(gate_closed, window_ok, lanes_ok, cache_ok);
             if refused_pressure {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.grow_refused_memory_gate",
                     model = target.model_id(),
                     target_lanes = target.lanes,
@@ -3799,7 +3799,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             let engine_ok = engine_current || {
                 let mut tried = ENGINE_CONVERGE_TRIED.lock();
                 if tried.as_deref() == Some(pair.as_str()) {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.engine.converge_failed",
                         model = target.model_id(),
                         pair = pair.as_str(),
@@ -3815,7 +3815,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             };
             *ENGINE_STALE.lock() = (!engine_current).then(|| pair.clone());
             if !engine_ok {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.engine.converged",
                     model = target.model_id(),
                     from = served_engine.as_deref().unwrap_or(""), // probe field: engine_ok=false implies both are known
@@ -3827,7 +3827,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             if !engine_ok
                 || ((!window_ok || !lanes_ok || !sight_ok || !kv_ok || !cache_ok) && !refused_trade && !refused_pressure)
             {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.grow",
                     model = target.model_id(),
                     target_window = target.context_window,
@@ -3879,7 +3879,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 }
                 let after = ctrl.slots_activity_fingerprint().await;
                 if judge_smoke_miss(before, after) == SmokeMissVerdict::AliveViaSlotProgress {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.adopt_busy_alive",
                         model = target.model_id(),
                         owned = ctrl.owns_child(),
@@ -3889,7 +3889,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     );
                     return EnsureOutcome::AlreadyServing;
                 }
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.adopt_rejected",
                     model = target.model_id(),
                     owned = ctrl.owns_child(),
@@ -4471,7 +4471,7 @@ impl LlamaServerProcess {
                                 if self.owned_engine().as_ref() == Some(expected)
                                     && progress.observe(&sample, *pid, started.elapsed())
                                 {
-                                    crate::probe!(
+                                    continuum_base::probe!(
                                         class = "serving.load.progress",
                                         pid = *pid,
                                         elapsed_ms = started.elapsed().as_millis() as u64,
@@ -4675,7 +4675,7 @@ fn ephemeral_admission_refusal(
     resident: &[crate::inference::lane_registry::LaneRecord],
 ) -> Option<String> {
     let Some(authority) = LANE_ADMISSION.get() else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.lane.admission_unwired",
             model = target.model_id(),
             resident_ephemeral = resident.len(),
@@ -4760,7 +4760,7 @@ impl EphemeralServingLane {
         let permit = EPHEMERAL_SPAWN_GATE.lock().await;
         let resident = reconcile_ephemeral_census();
         if let Some(reason) = ephemeral_admission_refusal(target, &resident) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.lane.admission_refused",
                 model = target.model_id(),
                 resident_ephemeral = resident.len(),
@@ -5150,7 +5150,7 @@ impl LlamaServerControl for LlamaServerProcess {
             SmokeVerdict::ThinkStarved => {
                 self.smoke_proven_thinking
                     .store(true, std::sync::atomic::Ordering::Relaxed);
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.smoke.think_retry",
                     quick_tokens = tok,
                     reasoning_len = rlen as u64,
@@ -5301,7 +5301,7 @@ impl LlamaServerControl for LlamaServerProcess {
         } else {
             None
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.lane.idled",
             port,
             killed_own_child = had_own_child, // Legacy field: signal requested, not proof of exit.
@@ -5617,7 +5617,7 @@ impl LlamaServerProcess {
         let planned_kv_per_token = crate::cognition::serving_plan::footprint::footprint_for(&target.model)
             .map(|fp| fp.kv_per_token)
             .unwrap_or(0); // 0 = no footprint resolvable for this row; `answered` carries the absence
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.kv_cache.decided",
             model = %target.model.id,
             cache_type = %kv_plan.cache_type,
@@ -5674,14 +5674,14 @@ impl LlamaServerProcess {
             None
         };
         match decision {
-            MainLaneMmproj::Withhold => crate::probe!(
+            MainLaneMmproj::Withhold => continuum_base::probe!(
                 class = "serving.vision.mmproj_withheld",
                 model = %target.model.id,
                 "mmproj resolved but WITHHELD from the main lane (model row: \
                  mmproj_on_main_lane=false — multimodal disables cache_reuse); a \
                  sidecar VL candidate exists on this node and sight routes through it"
             ),
-            MainLaneMmproj::WearAsOnlyEyes => crate::probe!(
+            MainLaneMmproj::WearAsOnlyEyes => continuum_base::probe!(
                 class = "serving.vision.mmproj_on_main_lane_as_only_eyes",
                 model = %target.model.id,
                 "mmproj goes on the MAIN lane: the row prefers a sidecar but no other \
@@ -5810,7 +5810,7 @@ impl LlamaServerProcess {
                 })
                 .unwrap_or_default(), // unwrap_or: a binary that cannot answer --version fails at spawn below with its own error
             Err(_) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.version_probe_timeout",
                     bin = %bin,
                     "`--version` did not answer in 10 s — neither verified nor refused; launching anyway"
@@ -5818,14 +5818,14 @@ impl LlamaServerProcess {
                 String::new()
             }
         };
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.server_version",
             bin = %bin,
             version = %version.lines().next().unwrap_or("").trim(), // unwrap_or: no output = empty receipt, spawn reports the real failure
             "the serving binary named its build"
         );
         if is_debug_build(&version) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.debug_build_refused",
                 bin = %bin,
                 "refused to serve from a DEBUG build — build for speed"
@@ -5857,7 +5857,7 @@ impl LlamaServerProcess {
                 Some(crate::inference::backend_receipt::parse_list_devices(&text))
             }
             Ok(Err(e)) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.backend_probe_failed",
                     bin = %bin,
                     error = %e,
@@ -5866,7 +5866,7 @@ impl LlamaServerProcess {
                 None
             }
             Err(_) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.backend_probe_timeout",
                     bin = %bin,
                     "`--list-devices` did not answer in 10 s — backend initialisation hangs on \
@@ -5881,7 +5881,7 @@ impl LlamaServerProcess {
             receipt.as_ref(),
             cpu_by_plan,
         );
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.backend_receipt",
             bin = %bin,
             backend = verdict.backend_label(),
@@ -5894,7 +5894,7 @@ impl LlamaServerProcess {
         );
         match &verdict {
             crate::inference::backend_receipt::BackendVerdict::Refused { reason } => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.backend_refused",
                     bin = %bin,
                     reason = %reason,
@@ -6076,7 +6076,7 @@ impl LlamaServerProcess {
         // ([[fallbacks-are-illegal-fail-loud]]).
         if self.is_live_lane && !had_own_child && !restoring {
             let outcome = crate::inference::lane_pidfile::reclaim(port).await;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.lane_reclaim",
                 port = port,
                 outcome = format!("{outcome:?}").as_str(),
@@ -6102,7 +6102,7 @@ impl LlamaServerProcess {
             }
             match crate::inference::lane_process::pid_listening_on_port(port) {
                 Some(pid) if crate::inference::lane_process::is_llama_server(pid) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "serving.lane_kill_verify",
                         port = port,
                         holder_pid = pid,
@@ -6235,7 +6235,7 @@ impl LlamaServerProcess {
         self.install_child(child, generation.clone(), child_install, child_inputs);
         // Launch arguments are evidence of what we requested, not a readback of
         // cache capacity or occupancy. Adopted engines do not pass this seam.
-        crate::probe!(
+        continuum_base::probe!(
             class = "serving.prompt_cache.launch",
             model = target.model.id.as_str(),
             artifact = %gguf.display(),
@@ -6309,7 +6309,7 @@ impl LlamaServerProcess {
             match child_pid {
                 Some(pid) => {
                     if let Err(e) = crate::inference::lane_pidfile::write(pid) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "serving.lane_pidfile",
                             port = port,
                             error = e.to_string().as_str(),
@@ -6317,7 +6317,7 @@ impl LlamaServerProcess {
                         );
                     }
                 }
-                None => crate::probe!(
+                None => continuum_base::probe!(
                     class = "serving.lane_pidfile",
                     port = port,
                     "spawned child has no pid — orphan reclaim disarmed for this run",
@@ -6355,7 +6355,7 @@ impl LlamaServerProcess {
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
             if let Err(e) = page_dir_reservation.handoff(&rec) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.lane_registry",
                     port = port,
                     error = e.to_string().as_str(),
@@ -6380,7 +6380,7 @@ impl LlamaServerProcess {
             if let Some(pid) = child_pid {
                 crate::inference::lane_process::kill9(pid);
             }
-            crate::probe!(
+            continuum_base::probe!(
                 class = "serving.debug_build_refused",
                 bin = %prepared.engine_program,
                 "refused to serve from a DEBUG build (startup stderr) — build for speed"
@@ -6405,7 +6405,7 @@ impl LlamaServerProcess {
         } else if sweep_stale_page_generations_guarded(&slot_save_dir).is_some() {
             // swept (possibly zero) with a complete inventory
         } else {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "inference.kv_page.sweep_skipped",
                 reason = "a live lane's page dir is unknown (recorded before the field existed)",
                 "stale-generation sweep skipped — the live-lane inventory is incomplete"
@@ -6480,7 +6480,7 @@ impl LlamaServerProcess {
                 } else {
                     "offload banner: 0 layers on the GPU"
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.placement.refused",
                     port = port,
                     model = target.model_id(),
@@ -6500,7 +6500,7 @@ impl LlamaServerProcess {
                 )));
             }
             if let Some(r) = residency.as_ref() {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "serving.placement.measured",
                     port = port,
                     model = target.model_id(),

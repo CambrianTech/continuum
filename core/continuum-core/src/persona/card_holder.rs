@@ -190,7 +190,7 @@ pub fn standing_refusal_for_card(title: &str) -> Option<(String, String)> {
         std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
     // Poisoned or contended: the probe is the only thing at stake, never the decision.
     if PROBED.lock().is_ok_and(|mut seen| seen.insert(instance.clone())) {
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.pull_skipped_ungradeable",
             instance = %instance,
             reason = %reason,
@@ -328,7 +328,7 @@ impl CardHolder {
         // like any engineer, always"). No advice about whether to take it.
         let quiet = self
             .quiet_for_ms
-            .map(|ms| format!(", silent {}", crate::time::age::Age::from_millis(ms).span()))
+            .map(|ms| format!(", silent {}", continuum_base::time::age::Age::from_millis(ms).span()))
             .unwrap_or_default();
         let owner = match self.hold {
             Hold::Unclaimed => "unclaimed".to_string(),

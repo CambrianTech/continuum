@@ -18,7 +18,7 @@
 //! remote `Provisional` peer (who could otherwise spam claims). Board READS can
 //! open up later; writes stay trusted.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
 
@@ -131,7 +131,7 @@ pub(crate) async fn emit_card_state_changed(payload: Value, via: &'static str) {
     if !first_transition_sighting(&card_id, &state) {
         return;
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.card.state_changed.bridged",
         via = via,
         card_id = %card_id,
@@ -239,7 +239,7 @@ fn priority_str(p: Priority) -> &'static str {
 /// be accepted by the verbs that consume it (positron consistency).
 ///
 /// The prefix/near-miss decision + candidate resolution now live in the shared
-/// [`crate::id_resolve`] primitive (this was the proven outlier it was lifted
+/// [`continuum_base::id_resolve`] primitive (this was the proven outlier it was lifted
 /// from); here we supply the ONLY card-specific knowledge — the candidate set is
 /// the live board's card ids.
 async fn resolve_card_id(
@@ -247,7 +247,7 @@ async fn resolve_card_id(
     s: &str,
 ) -> Result<WorkCardId, CommandError> {
     // Fast path: a clean UUID needs no board read.
-    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
     let horizon = board_horizon(airc)
@@ -259,7 +259,7 @@ async fn resolve_card_id(
 /// Resolve against an already-read view, so reading a card need not fold the
 /// subscribed boards again after expanding its short id.
 fn resolve_card_id_in_boards(horizon: &BoardHorizon, s: &str) -> Result<WorkCardId, CommandError> {
-    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
         return Ok(WorkCardId::from_uuid(id));
     }
     let candidates: Vec<Uuid> = horizon
@@ -278,7 +278,7 @@ fn resolve_card_id_in_boards(horizon: &BoardHorizon, s: &str) -> Result<WorkCard
     if candidates.is_empty() {
         return Err(horizon.not_found("card", s));
     }
-    crate::id_resolve::resolve(s, &candidates, "card")
+    continuum_base::id_resolve::resolve(s, &candidates, "card")
         .map(WorkCardId::from_uuid)
         .map_err(CommandError::Invalid)
 }
@@ -294,7 +294,7 @@ async fn resolve_claim_id(
     airc: &std::sync::Arc<airc_lib::Airc>,
     s: &str,
 ) -> Result<ClaimId, CommandError> {
-    if let crate::id_resolve::IdMatch::Full(id) = crate::id_resolve::normalize(s) {
+    if let continuum_base::id_resolve::IdMatch::Full(id) = continuum_base::id_resolve::normalize(s) {
         return Ok(ClaimId::from_uuid(id));
     }
     let horizon = board_horizon(airc)
@@ -317,7 +317,7 @@ async fn resolve_claim_id(
     if candidates.is_empty() {
         return Err(horizon.not_found("claim", s));
     }
-    crate::id_resolve::resolve(s, &candidates, "claim")
+    continuum_base::id_resolve::resolve(s, &candidates, "claim")
         .map(ClaimId::from_uuid)
         .map_err(|e| CommandError::Invalid(claim_gone_hint(e)))
 }
@@ -597,7 +597,7 @@ pub(crate) async fn follow_card_room(
     if airc.join(&room_name).await.is_err() {
         return None;
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "work.followed_card_room",
         verb = verb,
         card_id = %short8(card_id.as_uuid()),
@@ -731,7 +731,7 @@ impl ActionCommand for WorkClaim {
                 if let Some((instance, reason)) =
                     crate::persona::card_holder::standing_refusal_for_card(&card.title)
                 {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.claim.refused_ungradeable",
                         card_id = %card_id.as_uuid(),
                         instance = %instance,
@@ -861,7 +861,7 @@ impl ActionCommand for WorkClaim {
                         airc.select_work_claim(card_id, claim_id).await
                             .map_err(|e| CommandError::Denied(e.to_string()))?;
                     }
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.claim",
                         card_id = %card_id.as_uuid(),
                         claimer = %caller_short,
@@ -934,7 +934,7 @@ impl ActionCommand for WorkClaim {
                     };
                     let driver = crate::cognition::bench_round::driver_for_card(card_id.as_uuid());
                     match (driver, &staging) {
-                        (WorkDriver::Citizen, _) => crate::probe!(
+                        (WorkDriver::Citizen, _) => continuum_base::probe!(
                             class = "work.claim.held",
                             card_id = %short8(card_id.as_uuid()),
                             claimer = %short8(claimer_peer.as_uuid()),
@@ -943,7 +943,7 @@ impl ActionCommand for WorkClaim {
                              loop; nothing detached fires"
                         ),
                         (WorkDriver::DetachedSolve, Staging::Failed { stage, error }) => {
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "work.claim.solve_withheld",
                                 card_id = %short8(card_id.as_uuid()),
                                 claimer = %short8(claimer_peer.as_uuid()),
@@ -980,7 +980,7 @@ impl ActionCommand for WorkClaim {
                         }
                     }
                 }
-                None => crate::probe!(
+                None => continuum_base::probe!(
                     class = "work.claim.unplaceable_card",
                     card_id = %short8(card_id.as_uuid()),
                     claimer = %short8(claimer_peer.as_uuid()),
@@ -1144,7 +1144,7 @@ pub fn spawn_env_prewarm_for_working_rounds() {
             let checkout = match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
                 Ok(dir) => dir,
                 Err(e) => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.env.prewarm_failed",
                         instance = %inst.instance_id,
                         stage = "checkout",
@@ -1158,7 +1158,7 @@ pub fn spawn_env_prewarm_for_working_rounds() {
             match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
                 Ok(_) => {
                     let healed = env_broken_this_boot().remove(&inst.instance_id).is_some();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.env.prewarmed",
                         instance = %inst.instance_id,
                         healed,
@@ -1167,7 +1167,7 @@ pub fn spawn_env_prewarm_for_working_rounds() {
                 }
                 Err(e) => {
                     env_broken_this_boot().insert(inst.instance_id.clone());
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.env.prewarm_failed",
                         instance = %inst.instance_id,
                         stage = "env",
@@ -1202,7 +1202,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     let _hands = match HandsLease::try_take(claimer.as_uuid()) {
         Some(lease) => lease,
         None => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.solve.hands_busy",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
@@ -1222,7 +1222,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         let subs = match airc.subscription_set().await {
             Ok(s) => s,
             Err(e) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.dispatch",
                     card_id = %card_id.as_uuid(),
                     claimer = %claimer,
@@ -1240,7 +1240,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         found
     };
     let Some(run_room) = run_room else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -1250,7 +1250,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         return;
     };
     let Ok(board) = airc.work_board_in(&run_room).await else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -1260,7 +1260,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     };
     let board = board.snapshot();
     let Some(card) = board.cards.iter().find(|c| c.card_id == card_id) else {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -1286,7 +1286,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     ) {
         crate::persona::staged_workspace::CardWorkspace::One { instance, path } => {
             if env_gate(&instance) {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.dispatch",
                     card_id = %card_id.as_uuid(),
                     instance = %instance,
@@ -1300,7 +1300,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         }
         // No staged checkout for her matching this card — an ordinary (non-SWE) claim.
         crate::persona::staged_workspace::CardWorkspace::None => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.dispatch",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
@@ -1309,7 +1309,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             return;
         }
         crate::persona::staged_workspace::CardWorkspace::Ambiguous { candidates } => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.dispatch",
                 card_id = %card_id.as_uuid(),
                 claimer = %claimer,
@@ -1367,7 +1367,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         .into_iter()
         .find(|(id, _)| id == &run_id)
     {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -1393,7 +1393,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             .and_then(|s| s.active_model)
             .unwrap_or_default(); // no recorded activity yet = first dispatch of this card; mint path follows
     if model.is_empty() {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -1415,7 +1415,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
     // real activity room, child of the run room, and record it.
     let solve_room = match crate::cognition::bench_round::card_activity(card_id.as_uuid()) {
         Some(mut act) => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.solve.room_rejoined",
                 card_id = %short8(card_id.as_uuid()),
                 claimer = %short8(claimer.as_uuid()),
@@ -1470,7 +1470,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                     // card ghost-settled. Until airc grows subscribe-without-
                     // focus (#290), the mint restores the pointer itself.
                     if let Err(e) = spawner.join(&run_room.name).await {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "work.solve.room_mint_failed",
                             card_id = %short8(card_id.as_uuid()),
                             error = %e.to_string(),
@@ -1487,7 +1487,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                         card_id.as_uuid(),
                         act.clone(),
                     ); // clone: probe below still reads the local
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.solve.room_minted",
                         card_id = %short8(card_id.as_uuid()),
                         claimer = %short8(claimer.as_uuid()),
@@ -1501,7 +1501,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                     // A mint failure must not strand the work invisible: fall back
                     // to the run room (a real activity, just coarser-grained) and
                     // say so. The next re-fire retries the mint.
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.solve.room_mint_failed",
                         card_id = %short8(card_id.as_uuid()),
                         claimer = %short8(claimer.as_uuid()),
@@ -1528,7 +1528,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
                     .and_then(|reg| reg.get(mate.as_uuid()))
             else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.team.join_skipped",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -1541,7 +1541,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                 continue;
             }
             if let Err(e) = rt.join_room(&team_room_name).await {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.team.join_failed",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -1571,7 +1571,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
                         .and_then(|reg| reg.any_live_citizen_other_than(Some(mate.as_uuid())))
                 });
             let Some(voice_rt) = voice_rt else {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.team.charge_unvoiced",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -1583,7 +1583,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             // Membership is what makes the room deliverable for the voice too
             // (idempotent; same rule as the kickoff's voice-join).
             if let Err(e) = voice_rt.join_room(&team_room_name).await {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "work.team.voice_join_failed",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -1612,14 +1612,14 @@ pub(crate) async fn dispatch_staged_swe_solve(
             )
             .await
             {
-                Ok(_) => crate::probe!(
+                Ok(_) => continuum_base::probe!(
                     class = "work.team.joined",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
                     room = %solve_room,
                     "teammate joined the solve room and holds the review charge"
                 ),
-                Err(e) => crate::probe!(
+                Err(e) => continuum_base::probe!(
                     class = "work.team.invite_failed",
                     card_id = %short8(card_id.as_uuid()),
                     mate = %short8(mate.as_uuid()),
@@ -1688,7 +1688,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
         .run(ctx, params)
         .await
     {
-        Ok(ack) => crate::probe!(
+        Ok(ack) => continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -1696,7 +1696,7 @@ pub(crate) async fn dispatch_staged_swe_solve(
             run_id = %ack.run_id.unwrap_or_default(),
             "claim dispatched a detached work session"
         ),
-        Err(e) => crate::probe!(
+        Err(e) => continuum_base::probe!(
             class = "benchmark.dispatch",
             card_id = %card_id.as_uuid(),
             claimer = %claimer,
@@ -2085,7 +2085,7 @@ impl ActionCommand for WorkState {
                 },
             )
             .await?;
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.state.held_through_claim",
                 card_id = %card_id.as_uuid(),
                 state = state_str(&state),
@@ -2190,8 +2190,8 @@ pub(crate) fn checkout_change(root: &std::path::Path) -> ChangeVerdict {
     let staged_ts = std::fs::metadata(root.join(".git"))
         .and_then(|m| m.modified())
         .ok()
-        .and_then(|t| crate::time::EpochMs::of(t).ok())
-        .map(crate::time::EpochMs::secs);
+        .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
+        .map(continuum_base::time::EpochMs::secs);
     change_verdict(porcelain, head_ts, staged_ts)
 }
 
@@ -2244,7 +2244,7 @@ pub(crate) async fn advance_card_state_effective(
         if let Some(root) = actor.and_then(crate::cognition::persona_workspace::acting_root_of) {
             match checkout_change(&root) {
                 ChangeVerdict::NoChange => {
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "work.review.refused_no_write",
                         card = %short8(card_id.as_uuid()),
                         persona = %actor.map(|a| a.to_string()).unwrap_or_default(),  // unwrap_or: probe label; actor is Some on this branch
@@ -2261,7 +2261,7 @@ pub(crate) async fn advance_card_state_effective(
                     ));
                 }
                 ChangeVerdict::Changed => {}
-                ChangeVerdict::CouldNotLook(reason) => crate::probe!(
+                ChangeVerdict::CouldNotLook(reason) => continuum_base::probe!(
                     class = "work.review.write_check_unknown",
                     card = %short8(card_id.as_uuid()),
                     root = %root.display(),
@@ -2288,7 +2288,7 @@ pub(crate) async fn advance_card_state_effective(
             if passed {
                 if let Some(parent_gate) = self::review_gate::room_review(airc, parent_id).await {
                     if parent_gate.outstanding() {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "work.review.awaiting_more",
                             parent = %short8(parent),
                             passed = parent_gate.passed as u64,
@@ -2310,7 +2310,7 @@ pub(crate) async fn advance_card_state_effective(
                         if parent_card.state != CardState::Review {
                             raw_advance(airc, parent_id, CardState::Review, via).await?;
                         }
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "work.review.passed_awaiting_merge",
                             review = %short8(card_id.as_uuid()),
                             parent = %short8(parent),
@@ -2326,7 +2326,7 @@ pub(crate) async fn advance_card_state_effective(
             } else {
                 CardState::InProgress
             };
-            crate::probe!(
+            continuum_base::probe!(
                 class = "work.review.verdict",
                 review = %short8(card_id.as_uuid()),
                 parent = %short8(parent),
@@ -2343,14 +2343,14 @@ pub(crate) async fn advance_card_state_effective(
     if finishing && via != VIA_VERDICT && gated {
         raw_advance(airc, card_id, CardState::Review, via).await?;
         match open_review_card(airc, card_id).await {
-            Ok(review) => crate::probe!(
+            Ok(review) => continuum_base::probe!(
                 class = "work.review.opened",
                 parent = %short8(card_id.as_uuid()),
                 review = %short8(review.as_uuid()),
                 "owner's done became review — a sibling review card is on the deck for a \
                  non-owner; only the reviewer's done closes this card"
             ),
-            Err(e) => crate::probe!(
+            Err(e) => continuum_base::probe!(
                 class = "work.review.open_failed",
                 parent = %short8(card_id.as_uuid()),
                 error = %e,
@@ -2550,13 +2550,13 @@ async fn release_live_claim_on_reopen(airc: &Arc<Airc>, card_id: WorkCardId, via
         })
         .await
     {
-        Ok(_) => crate::probe!(
+        Ok(_) => continuum_base::probe!(
             class = "work.reopen.claim_released",
             card = %card_id.as_uuid(),
             owner = %owner.as_uuid(),
             "reopen released the holder's live claim — the card is nobody's"
         ),
-        Err(error) => crate::probe!(
+        Err(error) => continuum_base::probe!(
             class = "work.reopen.claim_release_refused",
             card = %card_id.as_uuid(),
             owner = %owner.as_uuid(),
@@ -2669,7 +2669,7 @@ impl ActionCommand for WorkNote {
         // Stamped for the seam as written: the handoff record carries her ledger whole
         // without a wall read at stop time (card 49b5e806).
         crate::cognition::handoff::note_ledger(airc.peer_id().as_uuid(), &ledger);
-        crate::probe!(
+        continuum_base::probe!(
             class = "work.ledger.noted",
             card = %short8(card_id.as_uuid()),
             by = %short8(airc.peer_id().as_uuid()),
@@ -3532,8 +3532,8 @@ impl WorkGet {
         requested: &str,
         reader: Uuid,
     ) -> Result<WorkGetResult, CommandError> {
-        let exact = match crate::id_resolve::normalize(requested) {
-            crate::id_resolve::IdMatch::Full(id) => Some(WorkCardId::from_uuid(id)),
+        let exact = match continuum_base::id_resolve::normalize(requested) {
+            continuum_base::id_resolve::IdMatch::Full(id) => Some(WorkCardId::from_uuid(id)),
             _ => None,
         };
         let horizon = board_horizon_for_card(airc, exact)
@@ -4101,15 +4101,15 @@ mod tests {
 
     // what this catches: work/claim id resolution (#161) still rescues the exact
     // live corruptions after the prefix/near-miss logic moved to the shared
-    // crate::id_resolve primitive (#164). Regression pin for the CARD side: the two
+    // continuum_base::id_resolve primitive (#164). Regression pin for the CARD side: the two
     // glass-boxed 2026-07-13 corruptions (9-char first group; a 33-hex variant)
     // classify as a prefix on the intact leading-8 short id, and a bare 8-char short
     // id (what the board shows) does too — so resolve_card_id will expand them
     // against the live board. The pure primitive's full contract is tested in
-    // crate::id_resolve; this proves the card verb delegates to it correctly.
+    // continuum_base::id_resolve; this proves the card verb delegates to it correctly.
     #[test]
     fn card_ids_rescue_mistyped_forms_via_shared_id_resolve() {
-        use crate::id_resolve::{normalize, IdMatch};
+        use continuum_base::id_resolve::{normalize, IdMatch};
         assert!(matches!(
             normalize("d7cfe47e-8e39-41f5-bb2a-4e5d36e558e1"),
             IdMatch::Full(_)

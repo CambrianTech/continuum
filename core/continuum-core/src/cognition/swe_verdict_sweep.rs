@@ -46,7 +46,7 @@
 //! family: two citizens holding worked copies of one instance is ambiguity, and grading either
 //! would score one citizen's diff against the other's card, so it grades neither and says so.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::PathBuf;
 
 use crate::persona::staged_workspace::{grade_target, owners_of, GradeTarget};
@@ -232,7 +232,7 @@ pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
     // not hold its instance out of grading until the next boot's reaper (#4117 review).
     let (live, stale) = crate::cognition::swe_bench::in_flight_solve_runs_fresh();
     for (run_id, instance) in &stale {
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.stale_solve_ledger_ignored",
             run_id = run_id.as_str(),
             instance = instance.as_str(),
@@ -243,7 +243,7 @@ pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
         live.into_iter().map(|(_, instance)| instance).collect();
     for instance in all_staged_instances() {
         if in_flight.contains(&instance) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "benchmark.verdict.sweep_deferred_in_flight",
                 instance = instance.as_str(),
                 "a detached solve is running on this instance — not graded until it settles"
@@ -291,7 +291,7 @@ pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
                         .filter(|c| c.has_work && c.path != workspace)
                         .map(|c| c.path.display().to_string())
                         .collect();
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "benchmark.verdict.multiple_worked_copies",
                         instance = instance.as_str(),
                         graded = %workspace.display(),
@@ -302,7 +302,7 @@ pub fn pending_with_skipped() -> (Vec<PendingGrade>, usize) {
                 }
                 out.push(PendingGrade { instance, workspace, work_mtime_ms })
             }
-            SweepDecision::Ambiguous(paths) => crate::probe!(
+            SweepDecision::Ambiguous(paths) => continuum_base::probe!(
                 class = "benchmark.verdict.sweep_ambiguous",
                 instance = instance.as_str(),
                 candidates = paths.len(),
@@ -382,7 +382,7 @@ pub fn sweep_if_due() -> bool {
     let took = began.elapsed();
     let next_in = crate::runtime::daemon::paced_delay(SCAN_TICK, took);
     SCAN_NEXT_DUE_MS.store(scan_clock_ms().saturating_add(next_in.as_millis() as u64), Ordering::Relaxed);
-    crate::probe!(
+    continuum_base::probe!(
         class = "benchmark.verdict.scan",
         pending = work.len() as u64,
         skipped_refused = skipped_refused as u64,
@@ -411,14 +411,14 @@ pub async fn sweep() -> SweepReport {
         // Nothing to grade — said with the count that explains it, so "idle because
         // fifteen refusals stand" never reads as "idle because there is no work"
         // (Astra's review of #3859: the early return hid the new count).
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.verdict.sweep_idle",
             skipped_refused = skipped_refused as u64,
             "no pending citizen work to grade — the count says whether refusals are standing"
         );
         return report;
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "benchmark.verdict.sweep_start",
         skipped_refused = skipped_refused as u64,
         pending = work.len(),
@@ -454,7 +454,7 @@ pub async fn sweep() -> SweepReport {
                     .chars()
                     .take(160)
                     .collect();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.verdict.sweep_deferred_could_not_look",
                     instance = item.instance.as_str(),
                     reason = %reason,
@@ -480,7 +480,7 @@ pub async fn sweep() -> SweepReport {
                     .chars()
                     .take(160)
                     .collect();
-                crate::probe!(
+                continuum_base::probe!(
                     class = "benchmark.verdict.sweep_ungradeable",
                     instance = item.instance.as_str(),
                     reason = %reason,
@@ -506,7 +506,7 @@ pub async fn sweep() -> SweepReport {
             }
         }
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "benchmark.verdict.sweep_done",
         graded = report.graded,
         resolved = report.resolved,

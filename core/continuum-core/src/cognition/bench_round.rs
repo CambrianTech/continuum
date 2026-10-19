@@ -26,7 +26,7 @@
 //! decision is made once at dispatch and read later at claim time — in a different verb,
 //! on a different task, with nothing threaded between them.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{LazyLock, Mutex};
@@ -517,7 +517,7 @@ pub fn restore_round_from_bundle(bundle: &Value) -> Result<Option<Uuid>, String>
         return Ok(None);
     }
     let id = round.round_id;
-    crate::probe!(
+    continuum_base::probe!(
         class = "activity.state.restored",
         kind = "benchmark/round",
         round_id = %id,
@@ -582,7 +582,7 @@ fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
             let _ = std::fs::remove_file(entry.path());
             continue;
         }
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.reloaded",
             round_id = %round.round_id,
             benchmark = %round.benchmark,
@@ -848,7 +848,7 @@ pub fn seal_round(round_id: Uuid) {
     };
     let (benchmark, dispatched, driver) =
         (round.benchmark.clone(), round.dispatched(), round.driver);
-    crate::probe!(
+    continuum_base::probe!(
         class = "bench.round.staged",
         round_id = %round_id,
         benchmark = %benchmark,
@@ -859,7 +859,7 @@ pub fn seal_round(round_id: Uuid) {
     if dispatched == 0 {
         rounds.remove(&round_id);
         remove_round_file_in(&rounds_state_dir(), round_id);
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.done",
             round_id = %round_id,
             benchmark = %benchmark,
@@ -1302,7 +1302,7 @@ pub fn pause_round(round_id: Uuid) -> bool {
         Some(r) if r.stage == RoundStage::Working => {
             r.stage = RoundStage::Paused;
             persist_round_in(&rounds_state_dir(), r);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.paused",
                 round_id = %round_id,
                 "round paused — in-flight solves finish, driver edges hand out nothing"
@@ -1324,7 +1324,7 @@ pub fn resume_round(round_id: Uuid) -> Option<NextCard> {
         RoundStage::Paused => {
             r.stage = RoundStage::Working;
             persist_round_in(&rounds_state_dir(), r);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.resumed_by_operator",
                 round_id = %round_id,
                 "round resumed from pause — driver kicked"
@@ -1341,7 +1341,7 @@ pub fn resume_round(round_id: Uuid) -> Option<NextCard> {
         // round with a genuinely live run returns None and nothing double-
         // fires ([[launch-and-pray-is-the-defect-read-the-state-pipe-before-staging-work]]).
         RoundStage::Working => {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.kicked_while_working",
                 round_id = %round_id,
                 "working round kicked by operator — firing the next unworked card if any run is not already live"
@@ -1390,7 +1390,7 @@ pub fn reopen_card(card: Uuid) -> bool {
         return false;
     }
     persist_round_in(&rounds_state_dir(), round);
-    crate::probe!(
+    continuum_base::probe!(
         class = "bench.round.card_reopened",
         round_id = %round.round_id,
         card_id = %card,
@@ -1436,7 +1436,7 @@ pub fn observe_card_event(payload: &Value) {
         SettleOutcome::Settled { remaining } => {
             crate::modules::citizen_health::note_settle();
             persist_round_in(&rounds_state_dir(), round);
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.card_settled",
                 round_id = %round_id,
                 card_id = %card,
@@ -1448,7 +1448,7 @@ pub fn observe_card_event(payload: &Value) {
         SettleOutcome::RoundDone => {
             crate::modules::citizen_health::note_settle();
             let (dispatched, benchmark) = (round.dispatched(), round.benchmark.clone());
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.card_settled",
                 round_id = %round_id,
                 card_id = %card,
@@ -1456,7 +1456,7 @@ pub fn observe_card_event(payload: &Value) {
                 remaining = 0usize,
                 "round card settled"
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "bench.round.done",
                 round_id = %round_id,
                 benchmark = %benchmark,

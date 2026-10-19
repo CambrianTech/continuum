@@ -20,7 +20,7 @@
 //! `saves: ["<binding>", ...]` (see [`crate::recipe::types::RecipeStep::saves`]) —
 //! the framework saves, the activity declares what. Who reads it: whoever resumes
 //! the activity — the reconciler on boot, a peer node seating its residents.
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -118,7 +118,7 @@ impl ActivityStateStore for WallActivityStateStore {
             .publish_wall_post_in(room, ACTIVITY_STATE_WALL_CATEGORY.to_string(), body, None)
             .await
             .map_err(|e| format!("activity-state publish failed: {e}"))?;
-        crate::probe!(
+        continuum_base::probe!(
             class = "activity.state.saved",
             room = %room.name,
             kind = %kind,

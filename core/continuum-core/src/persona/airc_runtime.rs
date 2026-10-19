@@ -50,7 +50,7 @@
 //!   inside the `Airc` handle (delegating to airc-identity) — this
 //!   struct only holds the Arc.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -628,7 +628,7 @@ impl PersonaAircRuntime {
                 hb_airc.home(),
             );
             if recorded > 0 {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.claim.record_loaded",
                     agent_name = %hb_name,
                     recorded,
@@ -688,7 +688,7 @@ impl PersonaAircRuntime {
                         airc_lib::AgentAvailabilityState::Away
                     };
                     if last != Some(availability) {
-                        crate::probe!(
+                        continuum_base::probe!(
                             class = "persona.presence.availability",
                             persona_id = %hb_persona,
                             agent_name = %hb_name,
@@ -779,7 +779,7 @@ impl PersonaAircRuntime {
                                 // idle into the ledger (seen live 2026-08-21).
                                 // [[unknown-is-not-a-quantity]]: the unknown gets a
                                 // word, never a sentinel number.
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "persona.claim.renewal_skipped_idle",
                                     persona_id = %hb_persona,
                                     agent_name = %hb_name,
@@ -796,7 +796,7 @@ impl PersonaAircRuntime {
                         }
                         if renewal_denied {
                             renewal_denied = false;
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "persona.claim.renewal_resumed",
                                 persona_id = %hb_persona,
                                 agent_name = %hb_name,
@@ -875,13 +875,13 @@ impl PersonaAircRuntime {
                                     )
                                     .await
                                 {
-                                    Ok(_) => crate::probe!(
+                                    Ok(_) => continuum_base::probe!(
                                         class = "persona.claim.recovered",
                                         agent_name = %hb_name,
                                         card_id = %card.card_id.as_uuid(),
                                         "my own lapsed hold re-claimed before anyone else took it"
                                     ),
-                                    Err(error) => crate::probe!(
+                                    Err(error) => continuum_base::probe!(
                                         class = "persona.claim.recover_failed",
                                         agent_name = %hb_name,
                                         card_id = %card.card_id.as_uuid(),
@@ -970,7 +970,7 @@ impl PersonaAircRuntime {
                                             hb_airc.home(),
                                             h.card_id,
                                         );
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             class = "persona.claim.followed_settled",
                                             agent_name = %hb_name,
                                             card_id = %h.card_id,
@@ -1005,7 +1005,7 @@ impl PersonaAircRuntime {
                                     Ok(_) => {
                                         renewed += 1;
                                         crate::persona::held_claims::note_renewed(peer, h.card_id);
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             class = "persona.claim.renewed_followed",
                                             agent_name = %hb_name,
                                             card_id = %h.card_id,
@@ -1020,7 +1020,7 @@ impl PersonaAircRuntime {
                                             hb_airc.home(),
                                             h.card_id,
                                         );
-                                        crate::probe!(
+                                        continuum_base::probe!(
                                             class = "persona.claim.followed_renewal_refused",
                                             agent_name = %hb_name,
                                             card_id = %h.card_id,
@@ -1033,7 +1033,7 @@ impl PersonaAircRuntime {
                                 }
                             }
                             if renewed > 0 {
-                                crate::probe!(
+                                continuum_base::probe!(
                                     class = "persona.claim.renewed",
                                     persona_id = %hb_persona,
                                     agent_name = %hb_name,
@@ -1793,7 +1793,7 @@ pub(crate) async fn scoped_board_owned_by(
         {
             Ok(board) => board,
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.claim.board_room_unreadable",
                     room = %room.channel,
                     error = %error,
@@ -1829,7 +1829,7 @@ pub(crate) async fn scoped_board_owned_by(
                 }
             }
             Err(error) => {
-                crate::probe!(
+                continuum_base::probe!(
                     class = "persona.claim.board_room_unreadable",
                     room = %followed.room.channel,
                     error = %error,

@@ -4,7 +4,7 @@
 //! Runs on CPU with optional GPU acceleration.
 
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
-use crate::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use crate::live::audio::reloadable::ReloadableModel;

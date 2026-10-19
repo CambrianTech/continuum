@@ -47,7 +47,7 @@ pub fn path_for(repo: &str) -> Option<PathBuf> {
     if recorded.join(".git").is_dir() {
         return Some(recorded);
     }
-    crate::probe!(
+    continuum_base::probe!(
         class = "repo_registry.stale",
         repo = %repo,
         path = %recorded.display(),

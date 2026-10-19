@@ -294,7 +294,7 @@ impl<R: StagingResidency + 'static> ResourceConsumer for StagingConsumer<R> {
             ));
         }
         let freed = self.residency.release();
-        crate::probe!(
+        continuum_base::probe!(
             class = "benchmark.staging.reclaim",
             freed_bytes = freed,
             target_bytes = request.target_bytes,

@@ -51,7 +51,7 @@ impl std::fmt::Display for CheckoutError {
 /// `None` only when neither names a path (a binary built outside any checkout with nothing
 /// recorded) — the tracker then has no source, honestly.
 pub fn candidate() -> Option<PathBuf> {
-    crate::config_env::read(TRACK_REPO_DIR_KEY)
+    continuum_base::config_env::read(TRACK_REPO_DIR_KEY)
         .map(PathBuf::from)
         .or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -97,7 +97,7 @@ pub fn tracked_checkout() -> Result<Option<PathBuf>, CheckoutError> {
 /// `continuum install`'s core arm with the checkout it just deployed from, so a core built
 /// in a lease tracks the clone the lease came from, not the lease.
 pub fn record(durable: &Path) -> Result<(), String> {
-    crate::config_env::upsert(TRACK_REPO_DIR_KEY, &durable.to_string_lossy())
+    continuum_base::config_env::upsert(TRACK_REPO_DIR_KEY, &durable.to_string_lossy())
 }
 
 #[cfg(test)]

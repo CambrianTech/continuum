@@ -214,7 +214,7 @@ impl Runtime {
             .filter(|m| !m.config().event_subscriptions.is_empty())
             .map(|m| m.config().name)
             .collect();
-        crate::probe!(
+        continuum_base::probe!(
             class = "runtime.event_graph",
             modules = edges.len() as u64,
             declared_producers = edges.iter().filter(|e| !e.emits.is_empty()).count() as u64,
@@ -249,7 +249,7 @@ impl Runtime {
                 let started = std::time::Instant::now();
                 let attempt =
                     tokio::time::timeout(PER_MODULE_INIT_DEADLINE, module.initialize(&ctx)).await;
-                crate::probe!(
+                continuum_base::probe!(
                     class = "boot.module_init",
                     module = %name,
                     outcome = match &attempt { Ok(Ok(_)) => "ok", Ok(Err(_)) => "error", Err(_) => "timeout" },
@@ -325,23 +325,23 @@ impl Runtime {
         // Already-ready fast path — borrow_and_update marks the value
         // as seen so the subsequent `changed()` only fires on a NEW change.
         if *rx.borrow_and_update() {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "ready.observed",
                 module = module_name,
                 fast_path = true
             );
             return Ok(());
         }
-        crate::probe!(class = "ready.awaiting", module = module_name);
+        continuum_base::probe!(class = "ready.awaiting", module = module_name);
         loop {
             if rx.changed().await.is_err() {
                 let err =
                     format!("module '{module_name}' ready watch closed before publishing ready");
-                crate::probe!(class = "ready.watch_closed", module = module_name);
+                continuum_base::probe!(class = "ready.watch_closed", module = module_name);
                 return Err(err);
             }
             if *rx.borrow_and_update() {
-                crate::probe!(class = "ready.observed", module = module_name);
+                continuum_base::probe!(class = "ready.observed", module = module_name);
                 return Ok(());
             }
         }
@@ -376,7 +376,7 @@ impl Runtime {
                         "Starting tick loop for '{}' (interval: {:?})",
                         module_name, initial_interval
                     );
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "tick.spawn",
                         module = module_name,
                         interval_ms = initial_interval.as_millis() as u64
@@ -399,7 +399,7 @@ impl Runtime {
                                 "Tick loop for '{}' aborted with panic in runner: {:?}",
                                 module_name, panic
                             );
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "tick.aborted",
                                 module = module_name,
                                 reason = "runner_panic"
@@ -691,7 +691,7 @@ impl Runtime {
                     Ok(Err(_)) => "error",
                     Err(_) => "timeout",
                 };
-                crate::probe!(
+                continuum_base::probe!(
                     class = "boot.load_state",
                     module = %name,
                     outcome = outcome,
@@ -776,7 +776,7 @@ impl Runtime {
                             }
                         }
                     };
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "shutdown.step",
                         module = %name,
                         outcome = format!("{outcome:?}"),
@@ -940,7 +940,7 @@ async fn run_tick_loop_for(
                 consecutive_panics = 0;
                 warn!("Tick error in '{}': {}", module_name, e);
                 log.warn_fmt(format_args!("tick error: {e}"));
-                crate::probe!(
+                continuum_base::probe!(
                     class = "tick.error",
                     module = module_name,
                     error = %e
@@ -956,7 +956,7 @@ async fn run_tick_loop_for(
                 log.warn_fmt(format_args!(
                     "tick panicked ({consecutive_panics}/{TICK_QUARANTINE_AFTER}): {panic_msg}"
                 ));
-                crate::probe!(
+                continuum_base::probe!(
                     class = "tick.panic",
                     module = module_name,
                     count = consecutive_panics,
@@ -970,7 +970,7 @@ async fn run_tick_loop_for(
                     log.warn_fmt(format_args!(
                         "module quarantined after {TICK_QUARANTINE_AFTER} consecutive panics; tick loop exits"
                     ));
-                    crate::probe!(
+                    continuum_base::probe!(
                         class = "tick.quarantined",
                         module = module_name,
                         ticks_total = ticks_total
@@ -988,7 +988,7 @@ async fn run_tick_loop_for(
         // expose a setter for its period, and rebuilding is cheap on that slow path.
         let new_interval = module.tick_interval_now().unwrap_or(initial_interval);
         if new_interval != current_interval {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "tick.cadence_changed",
                 module = module_name,
                 old_ms = current_interval.as_millis() as u64,
@@ -1051,7 +1051,7 @@ pub(crate) async fn dispatch_with_panic_guard(
                 "Command '{}' panicked in module '{}': {}",
                 full_cmd, module_name, panic_msg
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "command.dispatch.panicked",
                 command = full_cmd,
                 module = module_name,
@@ -1086,7 +1086,7 @@ pub(crate) async fn dispatch_object_with_panic_guard(
                 "Command '{}' panicked in DynCommand object: {}",
                 name, panic_msg
             );
-            crate::probe!(
+            continuum_base::probe!(
                 class = "command.dispatch.panicked",
                 command = name,
                 reason = %panic_msg
@@ -1690,7 +1690,7 @@ impl ShutdownOperation {
                         // would leave every citizen refusing work with no stop behind it.
                         if !settle.is_zero() {
                             let s = crate::cognition::turn_ingress::settle(settle).await;
-                            crate::probe!(
+                            continuum_base::probe!(
                                 class = "cognition.turns.settled",
                                 in_flight_at_close = s.in_flight_at_close,
                                 cut = s.cut,

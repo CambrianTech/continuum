@@ -12,7 +12,7 @@
 //! the websocket store human eyes read AND the mind substrate a citizen's
 //! grounding reads, same revision in both.
 
-use crate::time::EpochMs;
+use continuum_base::time::EpochMs;
 use std::sync::{Mutex, OnceLock};
 
 use continuum_positron::canvas::{CanvasViewState, CanvasViewport};
