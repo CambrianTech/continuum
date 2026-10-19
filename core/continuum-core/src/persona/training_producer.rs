@@ -59,7 +59,7 @@ use crate::orm::OrmEntity;
 pub mod reviewed;
 pub mod graded;
 mod stamp;
-pub use stamp::{CapturedCredit, ClaimReceipt, CreditRole, OutcomeStamp, ServedProvenance, SettlementVerdict};
+pub use stamp::{CapturedCredit, ClaimReceipt, CreditRole, OutcomeStamp, ServedProvenance, SettlementOutcome};
 
 /// The substrate-wired [`CommandExecutor`] (the one `start_server` builds with the
 /// `GridTrustAuthPolicy` + interceptors), installed once at boot via
@@ -2503,7 +2503,7 @@ pub(crate) mod tests {
         // A PASSING verdict stamps and buckets on domain x role.
         let passed = captured
             .clone()
-            .settle(SettlementVerdict::from_activity(
+            .settle(SettlementOutcome::from_activity(
                 &crate::cognition::activity::Verdict::pass("tests pass on the staged checkout"),
             ))
             .expect("test: a captured claim receipt can be stamped");
@@ -2528,7 +2528,7 @@ pub(crate) mod tests {
         // must then be refused by the evidence floor. If `settle` hardcoded `true`,
         // this plans a bucket and the assertion below fails — that is the mutation.
         let failed = captured
-            .settle(SettlementVerdict::from_activity(
+            .settle(SettlementOutcome::from_activity(
                 &crate::cognition::activity::Verdict::fail("the patch did not apply"),
             ))
             .expect("test: a receipt stamps regardless of which way the verdict went");
@@ -2566,7 +2566,7 @@ pub(crate) mod tests {
         );
         assert!(
             claimless
-                .settle(SettlementVerdict::from_activity(
+                .settle(SettlementOutcome::from_activity(
                     &crate::cognition::activity::Verdict::pass("tests pass on the staged checkout")
                 ))
                 .is_none(),

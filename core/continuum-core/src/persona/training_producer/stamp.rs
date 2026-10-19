@@ -124,7 +124,7 @@ pub struct ClaimReceipt {
     pub role: CreditRole,
 }
 
-/// A REAL settlement verdict — the second fact, arriving later than [`CapturedCredit`].
+/// A REAL settlement outcome — the second fact, arriving later than [`CapturedCredit`].
 ///
 /// **A TERMINAL CARD STATE IS NOT A VERDICT.** `is_terminal_card_state` accepts
 /// `closed | done | merged`; `merged` implies success but `closed` covers abandonment,
@@ -132,7 +132,7 @@ pub struct ClaimReceipt {
 /// "succeeded" — the same conflation, one layer down. This type therefore carries a
 /// verdict a grader actually produced, and there is no constructor from a state name.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SettlementVerdict {
+pub struct SettlementOutcome {
     passed: bool,
     /// The judge's normalized score, kept for the staged record.
     score: f64,
@@ -142,7 +142,7 @@ pub struct SettlementVerdict {
     reason: String,
 }
 
-impl SettlementVerdict {
+impl SettlementOutcome {
     /// The ONLY constructor, and it takes an activity's ACTUAL judgment.
     ///
     /// Deliberately not `from_graded(bool)`: a bool is something a caller asserts,
@@ -174,7 +174,7 @@ impl SettlementVerdict {
 }
 
 impl CapturedCredit {
-    /// The ONLY way to obtain an [`OutcomeStamp`]. Consuming a [`SettlementVerdict`]
+    /// The ONLY way to obtain an [`OutcomeStamp`]. Consuming a [`SettlementOutcome`]
     /// is what makes "stamp a card that has not settled" not a bug you can write but
     /// a value you cannot produce — the same move as making an illegal state
     /// unrepresentable rather than guarding against it at every call site.
@@ -189,7 +189,7 @@ impl CapturedCredit {
     /// an input to construction, so no settlement — however well-verified — can
     /// supply one after the fact. A staged turn with no receipt expires
     /// unsubmitted rather than being credited on a later guess.
-    pub fn settle(self, verdict: SettlementVerdict) -> Option<OutcomeStamp> {
+    pub fn settle(self, verdict: SettlementOutcome) -> Option<OutcomeStamp> {
         let claim = self.claim?;
         Some(OutcomeStamp {
             card_id: self.card_id,
