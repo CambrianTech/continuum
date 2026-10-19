@@ -8,8 +8,9 @@ eventually autonomous without Claude's or Joel's help. A coding and speed advant
 Hermes and over Claude itself is what makes it spread. Every goal below serves that.
 
 **The path, in order; each step is a number on the live node, and each rests on the one before:**
-1. **Fast:** median act under 60 s at four residents. The lever is a small, cached prompt
-   (tool working sets, goal 10; stable prefix order; sticky ring collapse).
+1. **Fast:** median act under 60 s at four residents. The engine is already at published
+   speed for its chip (measured 10-19); everything past par is OURS (goal 11): what we feed
+   the engine, how we keep each mind's state warm, and what the CPU does around it.
 2. **Useful:** a resident's first merged PR, then one a day.
 3. **Learning:** a reviewed correction kept across restart on unseen tasks (goal 8).
 4. **Organic:** she picks and finishes her own work, and one scheduler serves every mind
@@ -31,6 +32,18 @@ done until its gate is met on the live node and the change is MERGED.
 | 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama — proposed |
 | 9 | One scheduler, the whole grid | every mind on every node (residents and minds leased in from other nodes) is served by ONE RTOS scheduler: one measured activity temperature per mind is its priority, aging means no mind is ever starved, hot minds keep warm KV and cooling minds page to RAM; windows never shrink to seat more (two per lane, turns past that) | Codex — proposed (card b4eed65c) |
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
+| 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md` | see table below |
+
+**Goal 11 workstreams** (10-19; each card carries its receipts):
+
+| Workstream | Validator (seconds, any machine) | Card | Owner |
+|---|---|---|---|
+| A mind's context is an epoch-versioned materialization; acts prefill only the appended tail | replay captured prompts, measure the token prefix shared by consecutive acts (35% today; append-only agents ~90%+) | 3c9fda87, design doc | Fable + Codex |
+| One `EngineConfig` from what the engine reports; one KV pool, a slot per mind, one admission owner | resolve-then-adopt contract on every node class; refuse on mismatch | 9b9f3b59, 172a886f | Fable + Codex |
+| Prefill during the tool call; the amygdala's instant voice | submit-to-first-token per act; stimulus-to-first-token | 377d4afa | Fable, Codex |
+| The core's CPU around inference: SQLite off async workers, no rayon spin, embeddings as one BLAS matrix, no tree re-walks or spawned ps | 10 s sample of an idle core is near zero; vector search at 1k/10k/100k, old vs new | 452b7885 | Codex (concurrency/CBAR) |
+| Every fast-path miss is a loud defect, never a quiet slower path | each miss class has a fixture that raises it | f3ba3b56 | Cormac |
+| Our fork's switching work (KV pages to disk, checkpoints, host cache) actually exercised | per-optimization probe on the live node | inventory in progress | Fable |
 
 **Rules for every change, no exceptions:**
 - **Merged or it does not exist.** A branch is not done. A green test is not done.
