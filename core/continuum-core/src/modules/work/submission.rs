@@ -757,7 +757,7 @@ pub struct WorkSubmitResult {
 pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
     let submission = short8(latest?);
     Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
-        format!("Submission {submission} passed review: the grade fired. Nothing more to do on this card.")
+        format!("Submission {submission} passed review: the card is done. Nothing more to do on it.")
     } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
         format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
     } else if graded_at_submit {
@@ -768,8 +768,8 @@ pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work:
         )
     } else if let Some(review) = review {
         format!(
-            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the reviewer's verdict: a pass \
-             grades it; a send-back appears in its reviews. Do not submit again unless it is sent back."
+            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the review: a pass \
+             completes it; a send-back appears in its reviews. Do not submit again unless it is sent back."
         )
     } else {
         format!("Submission {submission} is retained, but no review handoff is recorded. Retry work/submit with this same submission_id to establish review; do not publish a new candidate just to retry handoff.")
@@ -1672,7 +1672,7 @@ mod tests {
         let back = super::next_after_submission(Some(id), &[Failed], true, None).expect("sent back");
         assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
         let done = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff).expect("passed");
-        assert!(done.contains("passed review") && done.contains("grade fired"), "a pass outranks an earlier send-back: {done}");
+        assert!(done.contains("passed review") && done.contains("card is done"), "a pass outranks an earlier send-back: {done}");
         assert_eq!(super::next_after_submission(None, &[], true, None), None, "nothing submitted, nothing to say");
     }
 
