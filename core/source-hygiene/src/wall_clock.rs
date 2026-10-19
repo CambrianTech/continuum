@@ -19,7 +19,7 @@
 use super::{SourceFile, SourceRule, Violation};
 
 /// The module that owns the read.
-const OWNER: &str = "time/";
+const OWNER: &str = "continuum-base/time/";
 
 /// Lines a `SystemTime::now()` chain may span before its `UNIX_EPOCH`. The longest
 /// chain this replaced split its `.duration_since` onto the next line.
@@ -75,7 +75,14 @@ fn is_wrapper(lines: &[&str], i: usize) -> bool {
     }
     let body: Vec<&str> = lines[i + 1..].iter().take(2).map(|l| l.trim()).collect();
     let read = body.first().map(|l| l.split("//").next().unwrap_or("").trim()); // unwrap_or: split always yields one piece
-    let bare = ["EpochMs::now().millis()", "EpochMs::now().secs()", "crate::time::EpochMs::now().millis()", "crate::time::EpochMs::now().secs()"];
+    let bare = [
+        "EpochMs::now().millis()",
+        "EpochMs::now().secs()",
+        "crate::time::EpochMs::now().millis()",
+        "crate::time::EpochMs::now().secs()",
+        "continuum_base::time::EpochMs::now().millis()",
+        "continuum_base::time::EpochMs::now().secs()",
+    ];
     body.len() == 2 && read.is_some_and(|r| bare.contains(&r)) && body[1] == "}"
 }
 
@@ -86,7 +93,7 @@ mod tests {
 
     // what this catches: a new private clock, inline epoch read or chrono millis read
     // anywhere in continuum-core, tests included. Fix it by calling
-    // `crate::time::EpochMs::now()` (or `read()` / `now_or_latest()` when a broken
+    // `continuum_base::time::EpochMs::now()` (or `read()` / `now_or_latest()` when a broken
     // clock needs its own policy); never by raising a baseline.
     #[test]
     fn the_wall_clock_is_read_only_by_epoch_ms() {
@@ -131,6 +138,6 @@ mod tests {
         assert_eq!(flagged("a.rs", "e.last_active = SystemTime::now();"), 0, "a SystemTime value");
         assert_eq!(flagged("a.rs", "if let Ok(age) = SystemTime::now().duration_since(snap.captured_at) {"), 0);
         assert_eq!(flagged("a.rs", "// SystemTime::now().duration_since(UNIX_EPOCH)"), 0, "a comment");
-        assert_eq!(flagged("time/mod.rs", "Self::of(SystemTime::now())\nUNIX_EPOCH"), 0, "the owner");
+        assert_eq!(flagged("continuum-base/time/mod.rs", "Self::of(SystemTime::now())\nUNIX_EPOCH"), 0, "the owner");
     }
 }

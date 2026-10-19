@@ -557,7 +557,7 @@ impl<V: RagRenderable> RagSource for ViewStateRagSource<V> {
         let stamped_fp =
             cursor.opaque.get("list").cloned().unwrap_or(serde_json::Value::Null); // unwrap_or: an unstamped cursor is Null, never a fingerprint, so it is refused below by design
         if stamped_fp != serde_json::Value::String(turn_fp.clone()) {
-            crate::probe!(
+            continuum_base::probe!(
                 class = "rag.continuation.list_changed",
                 source = %V::KIND,
                 persona_id = %_ctx.persona_id,
