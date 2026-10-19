@@ -499,9 +499,10 @@ pub enum Verdict {
     Dropping { dropped: u64, generations: u64 },
     /// Acts without writes: reading and re-orienting, never delivering.
     Reading { acts: u64 },
-    /// Residents, no acts at all: nobody chose a card. Claiming is hers; nothing pulls
-    /// for her (since 2026-10-04) and nothing is owed to her but the board. No benchmark
-    /// round is "owed" an idle roster (no harness, Joel 2026-10-19, card a00ab1a6).
+    /// Residents, and no acts observed in the window. Observational only: zero acts does
+    /// not say why (she may hold a card while inference, tools or context stall), so the
+    /// line names no cause. No benchmark round is "owed" an idle roster (no harness, Joel
+    /// 2026-10-19, card a00ab1a6).
     Idle { resident: u64 },
     /// Writes happen, but too few for the roster: fewer than one write per
     /// [`RESIDENTS_PER_WRITE_HOUR`] residents in the hour.
@@ -603,7 +604,7 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
         Verdict::Reading { acts } => {
             format!("READING: {acts} acts, no writes — the progress note / governor owes a delivery")
         }
-        Verdict::Idle { resident } => format!("IDLE: {resident} resident, no acts — nobody chose a card"),
+        Verdict::Idle { resident } => format!("IDLE: {resident} resident, no acts observed in this window"),
         Verdict::Empty { lanes, lanes_granted } => format!(
             "EMPTY: no residents — {lanes} lanes offered, {lanes_granted} grants this hour"
         ),
