@@ -36,7 +36,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 158,255: both card 573cc58a splits measured together on canary 16a075c71.
 // 158,221 after card 32d2abbb moved the training-job directory layout and its reader out of
 // modules/training_trigger.rs into genome/fine_tuning/job_dir.rs.
-const BASELINE_LINES_OVER: usize = 158_221;
+// 157,971 (with #5185) after card 67af4fca moved the credit stamp (CreditRole, OutcomeStamp, CapturedCredit,
+// SettlementVerdict) out of persona/training_producer.rs into training_producer/stamp.rs.
+const BASELINE_LINES_OVER: usize = 157_971;
 
 pub struct FileSize;
 

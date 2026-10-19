@@ -79,13 +79,13 @@ pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathB
     // A benchmark REVIEW card's work is in the OWNER's checkout (the fix under review
     // lives there), so the reviewer's hands stand in it. One rule for every turn (card
     // fc9e9fd7: the held-work turn kept its own copy of this resolver).
-    if let Some(instance) = crate::commands::benchmark::parse_review_title(&card.title) {
+    if let Some(instance) = crate::cognition::bench_title::parse_review_title(&card.title) {
         let copies = crate::persona::staged_workspace::owners_of(&instance);
         if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
             return Some(copy.path.clone());
         }
     }
-    if let Some((bench, _)) = crate::commands::benchmark::parse_card_title(&card.title) {
+    if let Some((bench, _)) = crate::cognition::bench_title::parse_card_title(&card.title) {
         let spec = crate::commands::benchmark::known_benchmarks().iter().find(|s| s.name == bench)?;
         return if spec.swe_dataset().is_some() {
             crate::persona::staged_workspace::workspace_for_held_cards(peer, std::iter::once(card.title.as_str()))
@@ -135,7 +135,7 @@ pub fn is_card_branch(branch: &str) -> bool {
 /// there. A repo this node never checked out is cloned into a managed checkout first
 /// ([`ensure_managed_clone`]); a clone that fails is `Failed { stage: "clone" }`.
 pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCard) -> Staging {
-    if crate::commands::benchmark::parse_card_title(&card.title).is_some() {
+    if crate::cognition::bench_title::parse_card_title(&card.title).is_some() {
         return stage_for_claimer(home, claimer, &card.title).await;
     }
     let repo = card.repo.to_string();
@@ -442,7 +442,7 @@ pub(crate) fn gym_workspace(home: &Path, peer: Uuid) -> PathBuf {
 }
 
 pub async fn stage_for_claimer(home: &Path, claimer: Uuid, title: &str) -> Staging {
-    let Some((bench, task)) = crate::commands::benchmark::parse_card_title(title) else {
+    let Some((bench, task)) = crate::cognition::bench_title::parse_card_title(title) else {
         return Staging::Ordinary;
     };
     let workspace = gym_workspace(home, claimer);

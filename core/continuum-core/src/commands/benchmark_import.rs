@@ -17,9 +17,10 @@
 //! these two verbs go with it and the recipe's pipeline gets two steps shorter.
 
 use crate::commands::benchmark::{
-    known_benchmarks, parse_card_title, prepare_cards, CardSelection, CardWork, PreparedCard,
+    known_benchmarks, prepare_cards, CardSelection, CardWork, PreparedCard,
 };
 use crate::cognition::bench_round::WorkDriver;
+use crate::cognition::bench_title::parse_card_title;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 use async_trait::async_trait;
 use schemars::JsonSchema;
@@ -448,7 +449,8 @@ crate::register_command!(CourseworkImport);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::benchmark::{dispatch_card_title, dispatch_swe_card_body};
+    use crate::cognition::bench_title::dispatch_card_title;
+    use crate::commands::benchmark::dispatch_swe_card_body;
 
     // what this catches: a recipe-posted card and a dispatch-posted card must be the
     // SAME card to the grader, which keys on the title. `imported_from` recovers the
