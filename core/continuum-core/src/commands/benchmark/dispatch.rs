@@ -2,7 +2,6 @@
 
 use async_trait::async_trait;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
-use crate::cognition::swe_bench;
 use super::*;
 
 #[async_trait]

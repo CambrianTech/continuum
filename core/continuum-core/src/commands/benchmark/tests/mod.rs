@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::cognition::swe_bench::SweVerdict;
-use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
+use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError};
 
 mod dispatch;
 mod swe_grade;
