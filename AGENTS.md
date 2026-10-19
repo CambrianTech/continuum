@@ -34,6 +34,7 @@ done until its gate is met on the live node and the change is MERGED.
 
 **Rules for every change, no exceptions:**
 - **Merged or it does not exist.** A branch is not done. A green test is not done.
+- **No step on the path without architectural purity** (Joel, 10-19): every change leaves its area more modular, with concerns separated, by owner, and the verbs as functions in their own subtree, so compile and runtime speed improve with it. A feature that adds a special case or a parallel path moves the path backward, however fast it makes one number.
 - **Measure the live node before and after**: tool calls/h and seconds per act. Worse = fix it the same hour or back it out. One change per deploy.
 - **One owner per fact, no logic twice**: look up, never re-derive (model identity, rates, budgets).
 - **No constant where a measurement exists. No unwrap. Typed ids, never strings.**
