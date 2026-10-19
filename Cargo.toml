@@ -17,6 +17,7 @@ members = [
     # its only spawn wiring pointed at a dir that no longer exists.
     "core/continuum-cli-lifecycle",
     "core/continuum-tool-protocol",
+    "core/continuum-context",
     "core/continuum-core",
     "core/expert-pager-policy",
     "core/source-hygiene",
