@@ -40,7 +40,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // SettlementVerdict) out of persona/training_producer.rs into training_producer/stamp.rs.
 // 157,645 after card a0790c4b moved persona/viewstate_rag.rs's test module to
 // persona/viewstate_rag/tests.rs (#![cfg(test)]): #5015 had grown it to 1,458 lines and turned canary red.
-const BASELINE_LINES_OVER: usize = 157_645;
+// 157,278 (on canary 719eed2c7) after card 9f0ba854 moved the cognition/eval command's wire contract (params and
+// results) out of cognition/eval.rs into cognition/eval/wire.rs.
+const BASELINE_LINES_OVER: usize = 157_278;
 
 pub struct FileSize;
 

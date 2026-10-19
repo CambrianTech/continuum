@@ -200,6 +200,123 @@ pub fn held_out<'a>(set: &str, tasks: &'a [EvalTask], trained: &Trained) -> Held
     }
 }
 
+/// The directory of the training job that produced `artifact`: the nearest enclosing
+/// directory holding that job's own `request.json`. A trainer writes everything it makes
+/// inside its job directory (an adapter at `adapters/adapter.gguf`, a checkpoint, a gene
+/// converted beside its checkpoint), so this is custody evidence, not a caller's word.
+/// `None` for an artifact no job here produced (a gene pulled from a hub).
+fn job_of(artifact: &std::path::Path) -> Option<std::path::PathBuf> {
+    artifact
+        .ancestors()
+        .find(|dir| dir.join("request.json").is_file())
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Everything the gene at `gene` trained on: its own job's examples and every ancestor's (a
+/// parent gene it trained on top of, a checkpoint it resumed), each job found from its
+/// artifact by [`job_of`]. Refused when any link is unknown: a gene or ancestor with no job,
+/// a hub parent, or a job whose request carries no examples (Astra on #5187).
+fn lineage(gene: &std::path::Path) -> Result<Trained, String> {
+    use crate::genome::competence::GeneRef;
+    let mut out = Trained {
+        tasks: BTreeSet::new(),
+        reviewed: BTreeSet::new(),
+        unknown: 0,
+    };
+    let first = job_of(gene).ok_or_else(|| {
+        format!(
+            "{}: no training job here produced this gene, so what it trained on is unknown",
+            gene.display()
+        )
+    })?;
+    let mut pending = vec![first];
+    let mut visited = std::collections::BTreeSet::new();
+    while let Some(dir) = pending.pop() {
+        if !visited.insert(dir.clone()) {
+            continue;
+        }
+        let request = crate::genome::fine_tuning::job_dir::read_job_request(&dir)?;
+        if request.dataset.examples.is_empty() {
+            return Err(format!(
+                "{}: the job's request carries no examples, so what the gene trained on is unknown",
+                dir.display()
+            ));
+        }
+        let own = trained(&request.dataset.examples);
+        out.tasks.extend(own.tasks);
+        out.reviewed.extend(own.reviewed);
+        out.unknown += own.unknown;
+        let ancestors = [
+            match &request.parent {
+                None => None,
+                Some(GeneRef::Local { path }) => Some(path.clone()),
+                Some(hub @ GeneRef::Hub { .. }) => {
+                    return Err(format!(
+                        "{}: trained on top of {hub}, whose training is unknown here",
+                        dir.display()
+                    ))
+                }
+            },
+            request.resume_from.clone(),
+        ];
+        for artifact in ancestors.into_iter().flatten() {
+            let ancestor = job_of(&artifact).ok_or_else(|| {
+                format!(
+                    "{}: its ancestor {} has no training job here",
+                    dir.display(),
+                    artifact.display()
+                )
+            })?;
+            pending.push(ancestor);
+        }
+    }
+    Ok(out)
+}
+
+/// The held-out tasks of the gym `set` for the gene at `gene`: every task of the set its
+/// whole lineage never trained on. Refused (the reason, never a degraded set) when the lineage
+/// is unknown, when any trained example's task is unknown, or when nothing is left held out.
+fn for_gene(
+    set: &str,
+    tasks: Vec<EvalTask>,
+    gene: &std::path::Path,
+) -> Result<Vec<EvalTask>, String> {
+    let trained = lineage(gene)?;
+    let judged = held_out(set, &tasks, &trained);
+    let kept = judged.known_clean().map_err(|unknown| {
+        format!("{unknown} examples in the gene's lineage record no task, so no task of {set} is known held out")
+    })?;
+    if kept.is_empty() {
+        return Err(format!(
+            "the gene's lineage trained on all {} tasks of {set}: none is held out",
+            tasks.len()
+        ));
+    }
+    Ok(kept.iter().map(|task| (*task).clone()).collect())
+}
+
+/// The command boundary of a held-out A/B (`cognition/eval` with `heldOut`): the gene under
+/// test must name its on-disk artifact (its job is found from it, never supplied beside it),
+/// the tasks must come from the named gym (inline tasks carry only a label the caller wrote),
+/// and then [`for_gene`] decides. Each refusal names what is missing (Astra on #5187).
+pub fn for_eval(
+    gene: Option<&crate::cognition::eval::EvalGene>,
+    set: Option<&str>,
+    inline: bool,
+    tasks: Vec<EvalTask>,
+) -> Result<Vec<EvalTask>, String> {
+    let Some(gene) = gene.filter(|g| !g.path.is_empty()) else {
+        return Err("heldOut judges a gene: it needs `gene` with its on-disk `path`".into());
+    };
+    let Some(set) = set else {
+        return Err("heldOut is a claim about a set's tasks: it needs a named `evalSet`".into());
+    };
+    if inline {
+        return Err("heldOut refuses inline `tasks`: their set is only a label the caller supplied; name the gym in `evalSet`".into());
+    }
+    for_gene(set, tasks, std::path::Path::new(&gene.path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +458,109 @@ mod tests {
             ["t1"]
         );
         assert!(judged.known_clean().is_ok());
+    }
+
+    // what this catches (goal 8, Astra on #5187): a held-out A/B certifies a gene only from
+    // custody evidence. Its job is found from its own artifact, so an unrelated job cannot be
+    // passed beside it; a parent gene's training counts as its own; inline tasks cannot carry
+    // a set label of the caller's choosing; and every unknown is refused, never measured.
+    #[test]
+    fn a_gene_is_judged_on_what_its_whole_lineage_never_trained_on() {
+        use crate::genome::competence::GeneRef;
+        use crate::genome::fine_tuning::types::{TrainingDataset, TrainingSource};
+        let root = tempfile::tempdir().expect("a genome root");
+        // A job directory with its request, and the adapter its trainer wrote inside it.
+        let job = |name: &str, examples: Vec<TrainingExample>, parent: Option<GeneRef>| {
+            let dir = root.path().join(name);
+            std::fs::create_dir_all(dir.join("adapters")).expect("a job dir");
+            let dataset = TrainingDataset {
+                examples,
+                source: TrainingSource::OperatorCurated,
+                validation_split: 0.0,
+            };
+            let mut request = json!({
+                "personaId": "00000000-0000-0000-0000-000000000001", "personaName": "Kimi",
+                "baseModel": "base", "traitKind": "code/owner",
+                "dataset": serde_json::to_value(dataset).expect("a dataset"),
+            });
+            if let Some(parent) = parent {
+                request["parent"] = serde_json::to_value(parent).expect("a gene ref");
+            }
+            std::fs::write(dir.join("request.json"), request.to_string()).expect("request.json");
+            let gene = dir.join("adapters").join("adapter.gguf");
+            std::fs::write(&gene, b"gene").expect("the adapter");
+            gene
+        };
+        let gene = |path: &std::path::Path| crate::cognition::eval::EvalGene {
+            name: "g".into(),
+            path: path.display().to_string(),
+            scale: None,
+        };
+        let worked = |id: &str| example(json!({"task": {"task": {"set": "s", "task": id}}}));
+        let set = || vec![task("t1"), task("t2"), task("t3")];
+        let ids = |r: Result<Vec<EvalTask>, String>| -> Vec<String> {
+            r.expect("a held-out set")
+                .into_iter()
+                .map(|t| t.id)
+                .collect()
+        };
+
+        let a = job("a", vec![worked("t1")], None);
+        assert_eq!(
+            ids(for_eval(Some(&gene(&a)), Some("s"), false, set())),
+            ["t2", "t3"]
+        );
+        let b = job(
+            "b",
+            vec![worked("t2")],
+            Some(GeneRef::Local { path: a.clone() }),
+        );
+        assert_eq!(
+            ids(for_eval(Some(&gene(&b)), Some("s"), false, set())),
+            ["t3"],
+            "the parent's t1 counts too"
+        );
+
+        let stray = root.path().join("pulled.gguf");
+        std::fs::write(&stray, b"gene").expect("a gene from no job");
+        assert!(
+            for_eval(Some(&gene(&stray)), Some("s"), false, set()).is_err(),
+            "no job: unknown lineage"
+        );
+        assert!(
+            for_eval(Some(&gene(&a)), Some("s"), true, set()).is_err(),
+            "inline tasks: a caller's label"
+        );
+        assert!(for_eval(None, Some("s"), false, set()).is_err(), "no gene");
+        assert!(
+            for_eval(Some(&gene(&a)), None, false, set()).is_err(),
+            "no set"
+        );
+        let hub = job(
+            "c",
+            vec![worked("t1")],
+            Some(GeneRef::Hub {
+                repo: "o/gene".into(),
+            }),
+        );
+        assert!(
+            for_eval(Some(&gene(&hub)), Some("s"), false, set()).is_err(),
+            "a hub parent: unknown"
+        );
+        let empty = job("d", Vec::new(), None);
+        assert!(
+            for_eval(Some(&gene(&empty)), Some("s"), false, set()).is_err(),
+            "no examples"
+        );
+        let unrecorded = job("e", vec![worked("t1"), example(json!({}))], None);
+        assert!(
+            for_eval(Some(&gene(&unrecorded)), Some("s"), false, set()).is_err(),
+            "an unrecorded example"
+        );
+        let all = job("f", vec![worked("t1"), worked("t2"), worked("t3")], None);
+        assert!(
+            for_eval(Some(&gene(&all)), Some("s"), false, set()).is_err(),
+            "nothing held out"
+        );
     }
 }
