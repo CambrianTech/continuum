@@ -1,5 +1,7 @@
 # PERSONA COGNITION PIPELINE — READ THIS BEFORE TOUCHING THE BRAIN
 
+Related proposed contract: [Shared resident lifecycle](SHARED-RESIDENT-LIFECYCLE.md) covers engine ownership, admission, memory attribution, startup reconciliation and recovery for serving and learning. Its acceptance gates are not yet measured capabilities.
+
 **Stop. Read this doc end-to-end before editing any of:**
 
 - `core/continuum-core/src/persona/service_loop.rs`
