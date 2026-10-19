@@ -1,4 +1,3 @@
-pub mod client;
 /// Logging module for continuum-core
 ///
 /// Integrates with the existing logger worker via Unix socket.
@@ -27,7 +26,6 @@ pub mod client;
 pub mod timing;
 pub mod preview;
 
-pub use client::LoggerClient;
 pub use timing::TimingGuard;
 
 // Re-export macros (they're already at crate root via #[macro_export])
@@ -56,52 +54,12 @@ pub struct WriteLogPayload {
     pub args: Option<serde_json::Value>,
 }
 
-/// Global logger instance (lazy static)
-use std::sync::OnceLock;
-pub static LOGGER: OnceLock<LoggerClient> = OnceLock::new();
-
-/// Initialize the global logger (idempotent - safe to call multiple times)
-pub fn init_logger(socket_path: &str) -> Result<(), String> {
-    // If already initialized, just return success
-    if LOGGER.get().is_some() {
-        return Ok(());
-    }
-
-    let client = LoggerClient::new(socket_path)?;
-    LOGGER
-        .set(client)
-        .map_err(|_| "Logger already initialized".to_string())
-}
-
-/// Get the global logger instance
-pub fn logger() -> &'static LoggerClient {
-    LOGGER
-        .get()
-        .expect("Logger not initialized - call init_logger() first")
-}
-
 /// Log macros for convenience
 #[macro_export]
 macro_rules! log_debug {
     ($category:expr, $component:expr, $($arg:tt)*) => {
-        if let Some(logger) = $crate::logging::LOGGER.get() {
-            logger.log(
-                $category,
-                $crate::logging::LogLevel::Debug,
-                $component,
-                &format!($($arg)*),
-                None
-            );
-        } else {
-            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
-            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
-            // NATIVE server this arm is the only one that ever runs. Before this
-            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
-            // the SAME sink `clog_*` already writes to, so there is one file-logging
-            // truth rather than a third path.
-            if $crate::modules::logger::log_sink_ready() {
-                $crate::logging::write_log_direct($category, "DEBUG", $component, &format!($($arg)*));
-            }
+        if $crate::modules::logger::log_sink_ready() {
+            $crate::logging::write_log_direct($category, "DEBUG", $component, &format!($($arg)*));
         }
     };
 }
@@ -109,24 +67,8 @@ macro_rules! log_debug {
 #[macro_export]
 macro_rules! log_info {
     ($category:expr, $component:expr, $($arg:tt)*) => {
-        if let Some(logger) = $crate::logging::LOGGER.get() {
-            logger.log(
-                $category,
-                $crate::logging::LogLevel::Info,
-                $component,
-                &format!($($arg)*),
-                None
-            );
-        } else {
-            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
-            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
-            // NATIVE server this arm is the only one that ever runs. Before this
-            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
-            // the SAME sink `clog_*` already writes to, so there is one file-logging
-            // truth rather than a third path.
-            if $crate::modules::logger::log_sink_ready() {
-                $crate::logging::write_log_direct($category, "INFO", $component, &format!($($arg)*));
-            }
+        if $crate::modules::logger::log_sink_ready() {
+            $crate::logging::write_log_direct($category, "INFO", $component, &format!($($arg)*));
         }
     };
 }
@@ -134,24 +76,8 @@ macro_rules! log_info {
 #[macro_export]
 macro_rules! log_warn {
     ($category:expr, $component:expr, $($arg:tt)*) => {
-        if let Some(logger) = $crate::logging::LOGGER.get() {
-            logger.log(
-                $category,
-                $crate::logging::LogLevel::Warn,
-                $component,
-                &format!($($arg)*),
-                None
-            );
-        } else {
-            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
-            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
-            // NATIVE server this arm is the only one that ever runs. Before this
-            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
-            // the SAME sink `clog_*` already writes to, so there is one file-logging
-            // truth rather than a third path.
-            if $crate::modules::logger::log_sink_ready() {
-                $crate::logging::write_log_direct($category, "WARN", $component, &format!($($arg)*));
-            }
+        if $crate::modules::logger::log_sink_ready() {
+            $crate::logging::write_log_direct($category, "WARN", $component, &format!($($arg)*));
         }
     };
 }
@@ -159,24 +85,8 @@ macro_rules! log_warn {
 #[macro_export]
 macro_rules! log_error {
     ($category:expr, $component:expr, $($arg:tt)*) => {
-        if let Some(logger) = $crate::logging::LOGGER.get() {
-            logger.log(
-                $category,
-                $crate::logging::LogLevel::Error,
-                $component,
-                &format!($($arg)*),
-                None
-            );
-        } else {
-            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
-            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
-            // NATIVE server this arm is the only one that ever runs. Before this
-            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
-            // the SAME sink `clog_*` already writes to, so there is one file-logging
-            // truth rather than a third path.
-            if $crate::modules::logger::log_sink_ready() {
-                $crate::logging::write_log_direct($category, "ERROR", $component, &format!($($arg)*));
-            }
+        if $crate::modules::logger::log_sink_ready() {
+            $crate::logging::write_log_direct($category, "ERROR", $component, &format!($($arg)*));
         }
     };
 }
@@ -248,8 +158,6 @@ pub fn module_path_to_category(module_path: &str) -> &'static str {
         "system/ipc"
     } else if path.starts_with("concurrency::") {
         "system/concurrency"
-    } else if path.starts_with("ffi::") {
-        "system/ffi"
     } else if path.starts_with("runtime::") {
         "system/runtime"
     } else if path.starts_with("persona::") {

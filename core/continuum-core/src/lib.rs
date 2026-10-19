@@ -39,7 +39,6 @@ pub mod context;
 pub mod contracts;
 pub mod events;
 pub mod experience;
-pub mod ffi;
 pub mod forge;
 pub mod fs_portable;
 pub mod genome;
@@ -92,5 +91,5 @@ pub use persona::{
 // Easy logging macros - auto-route to proper log files based on module_path!()
 // Usage: clog_info!("Session started"); clog_warn!("Warning"); etc.
 pub use ipc::start_server;
-pub use logging::{extract_component, init_logger, logger, module_path_to_category, LogLevel};
+pub use logging::{extract_component, module_path_to_category, LogLevel};
 pub use rag::{LlmMessage, MessageRole, RagContext, RagEngine, RagOptions};
