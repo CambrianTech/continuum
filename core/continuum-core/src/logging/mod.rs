@@ -24,10 +24,12 @@ pub mod client;
 ///
 /// log_info!("personas/helper/cognition", "DecisionEngine", "Made decision: {}", decision);
 /// ```
+pub mod clog_layer;
 pub mod timing;
 pub mod preview;
 
 pub use client::LoggerClient;
+pub use clog_layer::CLOG_TARGET;
 pub use timing::TimingGuard;
 
 // Re-export macros (they're already at crate root via #[macro_export])
@@ -80,104 +82,70 @@ pub fn logger() -> &'static LoggerClient {
         .expect("Logger not initialized - call init_logger() first")
 }
 
-/// Log macros for convenience
+// ============================================================================
+// The macros are plain `tracing` events on `CLOG_TARGET`. They know nothing about
+// files: `clog_layer::ClogLayer`, installed once by `routing::install_probe_tracing`,
+// routes them to the per-category files. Category and component travel as fields when
+// the macro is given them; otherwise the layer derives both from the event's module path.
+// ============================================================================
+
+/// Log to an explicit category and component at debug level.
 #[macro_export]
 macro_rules! log_debug {
     ($category:expr, $component:expr, $($arg:tt)*) => {
-        if let Some(logger) = $crate::logging::LOGGER.get() {
-            logger.log(
-                $category,
-                $crate::logging::LogLevel::Debug,
-                $component,
-                &format!($($arg)*),
-                None
-            );
-        } else {
-            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
-            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
-            // NATIVE server this arm is the only one that ever runs. Before this
-            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
-            // the SAME sink `clog_*` already writes to, so there is one file-logging
-            // truth rather than a third path.
-            if $crate::modules::logger::log_sink_ready() {
-                $crate::logging::write_log_direct($category, "DEBUG", $component, &format!($($arg)*));
-            }
-        }
+        ::tracing::event!(
+            target: $crate::logging::CLOG_TARGET,
+            ::tracing::Level::DEBUG,
+            category = %$category,
+            component = %$component,
+            "{}",
+            format_args!($($arg)*)
+        )
     };
 }
 
+/// Log to an explicit category and component at info level.
 #[macro_export]
 macro_rules! log_info {
     ($category:expr, $component:expr, $($arg:tt)*) => {
-        if let Some(logger) = $crate::logging::LOGGER.get() {
-            logger.log(
-                $category,
-                $crate::logging::LogLevel::Info,
-                $component,
-                &format!($($arg)*),
-                None
-            );
-        } else {
-            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
-            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
-            // NATIVE server this arm is the only one that ever runs. Before this
-            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
-            // the SAME sink `clog_*` already writes to, so there is one file-logging
-            // truth rather than a third path.
-            if $crate::modules::logger::log_sink_ready() {
-                $crate::logging::write_log_direct($category, "INFO", $component, &format!($($arg)*));
-            }
-        }
+        ::tracing::event!(
+            target: $crate::logging::CLOG_TARGET,
+            ::tracing::Level::INFO,
+            category = %$category,
+            component = %$component,
+            "{}",
+            format_args!($($arg)*)
+        )
     };
 }
 
+/// Log to an explicit category and component at warn level.
 #[macro_export]
 macro_rules! log_warn {
     ($category:expr, $component:expr, $($arg:tt)*) => {
-        if let Some(logger) = $crate::logging::LOGGER.get() {
-            logger.log(
-                $category,
-                $crate::logging::LogLevel::Warn,
-                $component,
-                &format!($($arg)*),
-                None
-            );
-        } else {
-            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
-            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
-            // NATIVE server this arm is the only one that ever runs. Before this
-            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
-            // the SAME sink `clog_*` already writes to, so there is one file-logging
-            // truth rather than a third path.
-            if $crate::modules::logger::log_sink_ready() {
-                $crate::logging::write_log_direct($category, "WARN", $component, &format!($($arg)*));
-            }
-        }
+        ::tracing::event!(
+            target: $crate::logging::CLOG_TARGET,
+            ::tracing::Level::WARN,
+            category = %$category,
+            component = %$component,
+            "{}",
+            format_args!($($arg)*)
+        )
     };
 }
 
+/// Log to an explicit category and component at error level.
 #[macro_export]
 macro_rules! log_error {
     ($category:expr, $component:expr, $($arg:tt)*) => {
-        if let Some(logger) = $crate::logging::LOGGER.get() {
-            logger.log(
-                $category,
-                $crate::logging::LogLevel::Error,
-                $component,
-                &format!($($arg)*),
-                None
-            );
-        } else {
-            // NO LOGGER = NO SILENCE. `init_logger` has exactly one production
-            // caller (ffi/mod.rs — the legacy Node-embedding entry), so on the
-            // NATIVE server this arm is the only one that ever runs. Before this
-            // `else`, all 615 `log_*` call sites evaporated there. Falls through to
-            // the SAME sink `clog_*` already writes to, so there is one file-logging
-            // truth rather than a third path.
-            if $crate::modules::logger::log_sink_ready() {
-                $crate::logging::write_log_direct($category, "ERROR", $component, &format!($($arg)*));
-            }
-        }
+        ::tracing::event!(
+            target: $crate::logging::CLOG_TARGET,
+            ::tracing::Level::ERROR,
+            category = %$category,
+            component = %$component,
+            "{}",
+            format_args!($($arg)*)
+        )
     };
 }
 
@@ -264,118 +232,56 @@ pub fn extract_component(module_path: &str) -> &str {
     module_path.rsplit("::").next().unwrap_or(module_path)
 }
 
-// ============================================================================
-// Non-Blocking Logging — Uses LoggerModule's Optimized Writer
-// ============================================================================
-//
-// clog_* macros route to LoggerModule's queue_log() which:
-// - Uses bounded sync_channel with try_send (GUARANTEED non-blocking)
-// - Background writer with batching (250ms or 200 messages)
-// - Per-category rate limiting (100 msg/sec)
-// - File handle caching
-// - Proper directory routing
-//
-// If LoggerModule not initialized, messages silently dropped.
-// If channel full, messages silently dropped (NEVER blocks).
-
-use crate::modules::logger::{queue_log, LogLevel as ModuleLogLevel};
-
-/// Queue log entry via LoggerModule (NON-BLOCKING)
-#[inline]
-pub fn write_log_direct(category: &str, level: &str, component: &str, message: &str) {
-    let log_level = match level {
-        "DEBUG" => ModuleLogLevel::Debug,
-        "INFO" => ModuleLogLevel::Info,
-        "WARN" => ModuleLogLevel::Warn,
-        "ERROR" => ModuleLogLevel::Error,
-        _ => ModuleLogLevel::Info,
-    };
-    queue_log(category, log_level, component, message);
-}
-
-/// Easy info log — auto-routes by module_path!(), writes directly to files
-#[macro_export]
-macro_rules! clog_info {
-    ($($arg:tt)*) => {{
-        if $crate::modules::logger::log_sink_ready() {
-            let category = $crate::logging::module_path_to_category(module_path!());
-            let component = $crate::logging::extract_component(module_path!());
-            let message = format!($($arg)*);
-            $crate::logging::write_log_direct(category, "INFO", component, &message);
-        }
-    }};
-}
-
-/// Easy warn log — auto-routes by module_path!(), writes directly to files
-#[macro_export]
-macro_rules! clog_warn {
-    ($($arg:tt)*) => {{
-        if $crate::modules::logger::log_sink_ready() {
-            let category = $crate::logging::module_path_to_category(module_path!());
-            let component = $crate::logging::extract_component(module_path!());
-            let message = format!($($arg)*);
-            $crate::logging::write_log_direct(category, "WARN", component, &message);
-        }
-    }};
-}
-
-/// Easy error log — auto-routes by module_path!(), writes directly to files
-#[macro_export]
-macro_rules! clog_error {
-    ($($arg:tt)*) => {{
-        if $crate::modules::logger::log_sink_ready() {
-            let category = $crate::logging::module_path_to_category(module_path!());
-            let component = $crate::logging::extract_component(module_path!());
-            let message = format!($($arg)*);
-            $crate::logging::write_log_direct(category, "ERROR", component, &message);
-        }
-    }};
-}
-
-/// Easy debug log — auto-routes by module_path!(), writes directly to files
+/// Log at debug level, routed to the category derived from the caller's module path.
 #[macro_export]
 macro_rules! clog_debug {
-    ($($arg:tt)*) => {{
-        if $crate::modules::logger::log_sink_ready() {
-            let category = $crate::logging::module_path_to_category(module_path!());
-            let component = $crate::logging::extract_component(module_path!());
-            let message = format!($($arg)*);
-            $crate::logging::write_log_direct(category, "DEBUG", component, &message);
-        }
-    }};
+    ($($arg:tt)*) => {
+        ::tracing::event!(
+            target: $crate::logging::CLOG_TARGET,
+            ::tracing::Level::DEBUG,
+            "{}",
+            format_args!($($arg)*)
+        )
+    };
 }
 
-/// Log to explicit category (for cross-cutting concerns like personas, sentinels)
+/// Log at info level, routed to the category derived from the caller's module path.
 #[macro_export]
-macro_rules! clog_to {
-    ($category:expr, info, $($arg:tt)*) => {{
-        if $crate::modules::logger::log_sink_ready() {
-            let component = $crate::logging::extract_component(module_path!());
-            let message = format!($($arg)*);
-            $crate::logging::write_log_direct($category, "INFO", component, &message);
-        }
-    }};
-    ($category:expr, warn, $($arg:tt)*) => {{
-        if $crate::modules::logger::log_sink_ready() {
-            let component = $crate::logging::extract_component(module_path!());
-            let message = format!($($arg)*);
-            $crate::logging::write_log_direct($category, "WARN", component, &message);
-        }
-    }};
-    ($category:expr, error, $($arg:tt)*) => {{
-        if $crate::modules::logger::log_sink_ready() {
-            let component = $crate::logging::extract_component(module_path!());
-            let message = format!($($arg)*);
-            $crate::logging::write_log_direct($category, "ERROR", component, &message);
-        }
-    }};
-    ($category:expr, debug, $($arg:tt)*) => {{
-        if $crate::modules::logger::log_sink_ready() {
-            let component = $crate::logging::extract_component(module_path!());
-            let message = format!($($arg)*);
-            $crate::logging::write_log_direct($category, "DEBUG", component, &message);
-        }
-    }};
+macro_rules! clog_info {
+    ($($arg:tt)*) => {
+        ::tracing::event!(
+            target: $crate::logging::CLOG_TARGET,
+            ::tracing::Level::INFO,
+            "{}",
+            format_args!($($arg)*)
+        )
+    };
+}
+
+/// Log at warn level, routed to the category derived from the caller's module path.
+#[macro_export]
+macro_rules! clog_warn {
+    ($($arg:tt)*) => {
+        ::tracing::event!(
+            target: $crate::logging::CLOG_TARGET,
+            ::tracing::Level::WARN,
+            "{}",
+            format_args!($($arg)*)
+        )
+    };
+}
+
+/// Log at error level, routed to the category derived from the caller's module path.
+#[macro_export]
+macro_rules! clog_error {
+    ($($arg:tt)*) => {
+        ::tracing::event!(
+            target: $crate::logging::CLOG_TARGET,
+            ::tracing::Level::ERROR,
+            "{}",
+            format_args!($($arg)*)
+        )
+    };
 }
 
 #[cfg(test)]
