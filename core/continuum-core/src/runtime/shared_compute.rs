@@ -44,7 +44,7 @@ impl LazyValue {
 /// computed results that are shared via Arc (zero-copy).
 pub struct SharedCompute {
     /// scope -> (key -> LazyValue)
-    cache: DashMap<String, DashMap<String, LazyValue>>,
+    cache: DashMap<String, DashMap<String, Arc<LazyValue>>>,
 }
 
 impl Default for SharedCompute {
@@ -62,23 +62,28 @@ impl SharedCompute {
 
     /// Get a cached value, or compute and cache it.
     ///
-    /// The compute future runs at most once per (scope, key) pair.
+    /// Each cell retains one successful computation. A cancelled initializer
+    /// leaves the cell available for another caller to initialize.
     /// Concurrent callers with the same key will wait for the first computation
     /// to complete, then all receive the same Arc<T>.
     ///
     /// # Type Safety
     /// The caller must use the same type T for the same (scope, key) pair.
-    /// Mismatched types will return None (not panic).
+    /// Mismatched types panic.
     pub async fn get_or_compute<T, F>(&self, scope: &str, key: &str, compute: F) -> Arc<T>
     where
         T: Any + Send + Sync + 'static,
         F: std::future::Future<Output = T>,
     {
-        let scope_map = self.cache.entry(scope.to_string()).or_default();
-
-        let lazy = scope_map
-            .entry(key.to_string())
-            .or_insert_with(LazyValue::new);
+        let lazy = {
+            let scope_map = self.cache.entry(scope.to_string()).or_default();
+            let entry = scope_map
+                .entry(key.to_string())
+                .or_insert_with(|| Arc::new(LazyValue::new()));
+            Arc::clone(entry.value())
+        };
+        // Only the cell survives the lookup. Computing may await another key
+        // in this scope; retaining either map guard would block that lookup.
 
         let any_arc = lazy
             .cell
@@ -107,6 +112,8 @@ impl SharedCompute {
     }
 
     /// Invalidate a specific cached value.
+    /// Existing readers may finish with the detached cell; subsequent lookups
+    /// use a new cell. An old completion cannot repopulate the cache.
     pub fn invalidate(&self, scope: &str, key: &str) {
         if let Some(scope_map) = self.cache.get(scope) {
             scope_map.remove(key);
@@ -194,7 +201,18 @@ mod tests {
     async fn test_different_keys() {
         let compute = SharedCompute::new();
 
-        let r1: Arc<i32> = compute.get_or_compute("s", "a", async { 1 }).await;
+        // What this catches: a derived artifact must be able to request another
+        // artifact in its own scope without holding a map lock across await.
+        let r1: Arc<i32> = compute
+            .get_or_compute("s", "a", async {
+                // Fail without hanging on the old implementation's blocking lock.
+                assert!(matches!(
+                    compute.cache.try_get_mut("s"),
+                    dashmap::try_result::TryResult::Present(_)
+                ));
+                *compute.get_or_compute("s", "b", async { 2 }).await - 1
+            })
+            .await;
         let r2: Arc<i32> = compute.get_or_compute("s", "b", async { 2 }).await;
 
         assert_eq!(*r1, 1);
@@ -237,5 +255,73 @@ mod tests {
 
         compute.invalidate_scope("s");
         assert_eq!(compute.key_count("s"), 0);
+    }
+
+    // What this catches: suspended computation cannot block independent work,
+    // and same-key readers still share one initialized value after cancellation.
+    #[tokio::test]
+    async fn suspended_initialization_releases_maps_and_can_be_retried() {
+        let compute = SharedCompute::new();
+        let mut first = Box::pin(compute.get_or_compute("s", "a", std::future::pending::<i32>()));
+        assert!(futures::poll!(&mut first).is_pending());
+        {
+            let scope = compute.cache.try_get_mut("s");
+            let dashmap::try_result::TryResult::Present(scope) = scope else {
+                panic!("initializer retains the scope lock");
+            };
+            assert!(matches!(
+                scope.try_get_mut("a"),
+                dashmap::try_result::TryResult::Present(_)
+            ));
+        }
+        assert_eq!(*compute.get_or_compute("s", "b", async { 2 }).await, 2);
+        let mut second = Box::pin(compute.get_or_compute("s", "a", async { 3 }));
+        assert!(futures::poll!(&mut second).is_pending());
+        drop(first);
+        let result = second.await;
+        let cached = compute
+            .get_or_compute::<i32, _>("s", "a", async {
+                panic!("computed twice");
+            })
+            .await;
+        assert_eq!(*result, 3);
+        assert!(Arc::ptr_eq(&result, &cached));
+    }
+
+    // What this catches: invalidating in-flight work detaches its cell without
+    // cancelling existing readers or letting its late result overwrite new work.
+    #[tokio::test]
+    async fn invalidation_detaches_inflight_readers() {
+        for invalidate_scope in [false, true] {
+            let compute = SharedCompute::new();
+            let (send, receive) = tokio::sync::oneshot::channel::<i32>();
+            let mut first = Box::pin(compute.get_or_compute("s", "a", async {
+                match receive.await {
+                    Ok(value) => value,
+                    Err(error) => panic!("test sender dropped: {error}"),
+                }
+            }));
+            assert!(futures::poll!(&mut first).is_pending());
+            assert!(matches!(
+                compute.cache.try_get_mut("s"),
+                dashmap::try_result::TryResult::Present(_)
+            ));
+            let mut reader = Box::pin(compute.get_or_compute("s", "a", async { 99 }));
+            assert!(futures::poll!(&mut reader).is_pending());
+            if invalidate_scope {
+                compute.invalidate_scope("s");
+            } else {
+                compute.invalidate("s", "a");
+            }
+            let fresh = compute.get_or_compute("s", "a", async { 2 }).await;
+            assert!(send.send(1).is_ok());
+            let old = first.await;
+            assert_eq!(*old, 1);
+            assert!(Arc::ptr_eq(&old, &reader.await));
+            assert!(Arc::ptr_eq(
+                &fresh,
+                &compute.get_or_compute("s", "a", async { 3 }).await
+            ));
+        }
     }
 }
