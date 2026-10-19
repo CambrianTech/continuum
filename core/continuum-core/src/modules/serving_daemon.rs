@@ -7329,7 +7329,7 @@ impl ServiceModule for ServingDaemonModule {
                 instance = instance.as_str(),
                 needs_redispatch = true,
                 "benchmark run orphaned by a core restart — {instance} was NOT measured; \
-                 the benchmark-side boot resume rejoins its round and re-fires it",
+                 nothing re-fires it at boot; it is hers to pull again",
             );
         }
         // The ROUND half is now CONTINUITY (plan A5): a Working round SURVIVES the
