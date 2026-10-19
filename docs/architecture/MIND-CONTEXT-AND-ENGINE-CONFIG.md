@@ -19,6 +19,21 @@ architecture." The receipts that day, on the M5 (one 27B, four residents):
 | Engine prefill / decode on the 27B | 105-115 tok/s / 2-13 tok/s per request |
 | Same binary with the GPU matrix units enabled | prefill roughly doubled |
 
+### Where we fail, per act (M5 Pro 64 GB, Qwen3.8-27B Q4_K_M, 10-19)
+
+| Stage | Expected on this machine | Ours (13:48-14:48Z, d90006023) | Verdict |
+|---|---|---|---|
+| Prefill speed at depth | ~400 tok/s short, 190-250 at 64k (published, same model and chip, IQ3_S/Q8_0) | 107 tok/s per request, 2 concurrent | about par |
+| Decode speed | 10-20 tok/s, 23-29 with MTP (published, same) | 13.2 tok/s per request, 2 concurrent | about par per stream |
+| Prefix reuse per act | ~90%+ for an append-only chat loop (inference) | 35% | fail |
+| Fresh tokens per act | ~1-3k (inference) | 13-30k | fail, ~10x |
+| Queue wait for the GPU | ~0 for one user | 0-20 min, acts cancelled | fail |
+| Act end to end | ~10-40 s | 5-20 min | fail |
+
+The engine is not the bottleneck; what we feed it is. Published reference:
+github.com/eltoncarr/mac-mini-benchmarks. The "inference" rows describe any chat agent
+that appends to one conversation against llama.cpp; no tool-specific number was found.
+
 Each fix of the past week (sticky collapse, churn ordering, ring scope labels, a launcher
 env var, lane-queue aging) patched a symptom of two faults. This document names the two
 and the one owner each gets. It must hold on every machine we ship to: a 24 GB MacBook
