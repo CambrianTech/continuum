@@ -1532,9 +1532,10 @@ mod tests {
         use crate::persona::scripted_conversation::ScriptedConversation;
         use crate::persona::service_loop::PersonaConversation;
         use crate::persona::training_producer::{
-            tests::turn_capture, CapturedCredit, StagedCredit,
+            tests::turn_capture, CapturedCredit, StagedCredit, StagedCreditGeneration,
         };
 
+        use crate::orm::OrmEntity;
         let home = tempfile::tempdir().unwrap();
         let _home = crate::test_env::HomeGuard::set(home.path()).await;
         crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
@@ -1628,17 +1629,32 @@ mod tests {
             _ = &mut drive => panic!("driver must still be working after its fourth persisted act"),
             _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("fifth act never reached its pause"),
         }
-        let db = rusqlite::Connection::open_with_flags(
-            home.path()
-                .join(".continuum/personas/capture-owner/data/longterm.db"),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
-        let read = || -> StagedCredit {
-            let text: String = db.query_row("SELECT json_object('id',id,'cardId',card_id,'claimId',claim_id,'owner',owner,'role',json(role),'receipts',json(receipts),'served',json(served),'prompt',prompt,'completion',completion,'stagedAtMs',staged_at_ms) FROM staged_credit WHERE card_id=?", [card.to_string()], |row| row.get(0)).unwrap();
-            serde_json::from_str(&text).unwrap()
+        // Her staged credit, read back the way every other reader does: through the ORM.
+        let longterm: Arc<dyn crate::orm::StorageAdapter> = Arc::new(
+            crate::orm::SqliteAdapter::open(
+                &home
+                    .path()
+                    .join(".continuum/personas/capture-owner/data/longterm.db"),
+            )
+            .await
+            .expect("open her longterm store"),
+        );
+        let staged = crate::orm::OrmStore::<StagedCredit>::new(Arc::clone(&longterm))
+            .await
+            .expect("staged credit store");
+        let read = || async {
+            let mut rows = staged
+                .find_matching(
+                    crate::orm::QueryBuilder::new(StagedCredit::COLLECTION)
+                        .filter_eq("cardId", card.to_string())
+                        .build(),
+                )
+                .await
+                .expect("read staged credit");
+            assert_eq!(rows.len(), 1, "one staged credit row per card");
+            rows.remove(0).1
         };
-        let partial = read();
+        let partial = read().await;
         assert_eq!(
             partial.receipts.len(),
             4,
@@ -1674,7 +1690,7 @@ mod tests {
             "staging must not invent ownership or a verdict"
         );
         drop(drive); // Cancels the fifth act; the fourth-act durable row survives.
-        assert_eq!(read().id, partial.id);
+        assert_eq!(read().await.id, partial.id);
         let acts: Vec<_> = (0..8)
             .map(|n| {
                 (
@@ -1694,7 +1710,7 @@ mod tests {
             "duplicate child must roll back the replacement"
         );
         assert_eq!(
-            read().receipts,
+            read().await.receipts,
             partial.receipts,
             "rollback preserves the previous whole row"
         );
@@ -1708,7 +1724,7 @@ mod tests {
                 .record(&acts, &final_receipts, Some("honest final report"), true)
                 .await
         );
-        let finished = read();
+        let finished = read().await;
         assert_ne!(
             finished.id, partial.id,
             "changed content gets a new immutable revision"
@@ -1721,15 +1737,18 @@ mod tests {
                 .await
         );
         assert_eq!(
-            read().id,
+            read().await.id,
             finished.id,
             "identical retry reuses its revision identity"
         );
         assert_eq!(
-            db.query_row("SELECT count(*) FROM staged_credit_generation", [], |r| {
-                r.get::<_, usize>(0)
-            })
-            .unwrap(),
+            crate::orm::OrmStore::<StagedCreditGeneration>::new(Arc::clone(&longterm))
+                .await
+                .expect("generation store")
+                .find_all()
+                .await
+                .expect("read generations")
+                .len(),
             5
         );
         drop(capture);
@@ -1746,16 +1765,11 @@ mod tests {
         );
         assert!(other.record(&acts, &final_receipts, None, true).await);
         assert_eq!(
-            read().id,
+            read().await.id,
             finished.id,
             "same Persona's next turn cannot replace this card"
         );
-        assert_eq!(
-            db.query_row("SELECT count(*) FROM staged_credit", [], |r| r
-                .get::<_, usize>(0))
-                .unwrap(),
-            2
-        );
+        assert_eq!(staged.find_all().await.expect("read staged credits").len(), 2);
     }
 
     // what this catches: c5910be2 — an ordinary room drive could not see coaching

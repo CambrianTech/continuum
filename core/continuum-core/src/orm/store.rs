@@ -249,6 +249,24 @@ where
         })
     }
 
+    /// Delete every row in `ids` ATOMICALLY: all of them, or none. An empty set is a
+    /// no-op.
+    pub async fn delete_all(&self, ids: impl IntoIterator<Item = Uuid>) -> Result<(), OrmStoreError> {
+        let operations: Vec<BatchOperation> = ids
+            .into_iter()
+            .map(|id| BatchOperation {
+                operation_type: BatchOperationType::Delete,
+                collection: T::COLLECTION.to_string(),
+                id: Some(id.to_string()),
+                data: None,
+            })
+            .collect();
+        if operations.is_empty() {
+            return Ok(());
+        }
+        commit(&self.adapter, operations).await
+    }
+
     /// Delete a row. Returns `Ok(true)` if a row was deleted,
     /// `Ok(false)` if the id wasn't present.
     pub async fn delete(&self, id: Uuid) -> Result<bool, OrmStoreError> {
@@ -328,17 +346,11 @@ fn unwrap_storage<T>(
 /// at test-end cleans up cleanly (no `/tmp` accumulation).
 #[cfg(test)]
 pub(crate) async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
-    use crate::orm::adapter::AdapterConfig;
     use crate::orm::sqlite::SqliteAdapter;
-    let mut adapter = SqliteAdapter::new();
     let tmp = tempfile::tempdir().expect("tempdir");
-    let path = tmp.path().join("orm-store-test.sqlite");
-    let mut config = AdapterConfig::default();
-    config.connection_string = path.to_string_lossy().into_owned();
-    adapter
-        .initialize(config)
+    let adapter = SqliteAdapter::open(&tmp.path().join("orm-store-test.sqlite"))
         .await
-        .expect("adapter initialize");
+        .expect("adapter open");
     (Arc::new(adapter), tmp)
 }
 

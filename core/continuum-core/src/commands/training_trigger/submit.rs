@@ -644,7 +644,7 @@ mod tests {
     #[tokio::test]
     async fn keyed_acceptance_survives_restart_and_refuses_changed_replay() {
         use crate::commands::training_trigger::test_support::build_runtime;
-        use crate::orm::{adapter::AdapterConfig, SqliteAdapter, StorageAdapter};
+        use crate::orm::SqliteAdapter;
         let (adapter, dir) = crate::orm::store::fresh_adapter().await;
         let (first, first_exec) = build_runtime(adapter, false).await;
         let persona = Uuid::new_v4();
@@ -666,18 +666,9 @@ mod tests {
         }
         drop(first_exec);
         drop(first);
-        let mut adapter = SqliteAdapter::new();
-        adapter
-            .initialize(AdapterConfig {
-                connection_string: dir
-                    .path()
-                    .join("orm-store-test.sqlite")
-                    .to_string_lossy()
-                    .into_owned(),
-                ..Default::default()
-            })
+        let adapter = SqliteAdapter::open(&dir.path().join("orm-store-test.sqlite"))
             .await
-            .unwrap();
+            .expect("reopen the same database");
         let (next, executor) = build_runtime(Arc::new(adapter), false).await;
         crate::runtime::ServiceModule::tick(next.as_ref())
             .await
