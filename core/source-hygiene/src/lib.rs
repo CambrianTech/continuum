@@ -193,6 +193,27 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
     roots
 }
 
+/// The PRODUCTION half of a source file (see [`SourceFile::production`]): everything
+/// before its first `#[cfg(test)]` that is CODE, not prose. Matching the raw string
+/// would truncate at the first doc comment that merely MENTIONS test-gating, and module
+/// headers in this crate do exactly that, including this one. Found by the guard's own
+/// positive control: the naive form excluded nearly all of `source_hygiene/mod.rs` from
+/// its own scan, silently. Match by nature, never by name.
+///
+/// A file that IS a test module, moved out of its parent to shrink it, says so with the
+/// inner `#![cfg(test)]` on its first code line: the whole file is test code. Without
+/// this, every `mod tests;` split read as all-production and charged its unwraps and
+/// spawns to the ratchets (card 0af5d5ec, 2026-10-18).
+pub fn production_half(src: &str) -> String {
+    match src.lines().position(|l| {
+        let code = split_code_and_comment(l).0;
+        code.contains("#[cfg(test)]") || code.trim_start().starts_with("#![cfg(test)]")
+    }) {
+        Some(line_idx) => src.lines().take(line_idx).collect::<Vec<_>>().join("\n"),
+        None => src.to_string(),
+    }
+}
+
 /// Read every `.rs` file under `root`, pre-split into production and test halves.
 ///
 /// Unreadable files are skipped rather than failing the scan: a hygiene guard must
@@ -221,23 +242,7 @@ pub fn collect_files(root: &Path) -> Vec<SourceFile> {
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            // Split on the first `#[cfg(test)]` that is CODE, not prose. Matching
-            // the raw string would truncate at the first doc comment that merely
-            // MENTIONS test-gating — and module headers in this crate do exactly
-            // that, including this one. Found by the guard's own positive control:
-            // the naive form excluded nearly all of `source_hygiene/mod.rs` from
-            // its own scan, silently. Match by nature, never by name.
-            let production = match src
-                .lines()
-                .position(|l| split_code_and_comment(l).0.contains("#[cfg(test)]"))
-            {
-                Some(line_idx) => src
-                    .lines()
-                    .take(line_idx)
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                None => src.clone(),
-            };
+            let production = production_half(&src);
             out.push(SourceFile {
                 rel,
                 production,
@@ -559,6 +564,19 @@ mod tests {
         // An escaped quote must not end the string early.
         let (_, comment) = split_code_and_comment(r#"let s = "a\"// b";"#);
         assert_eq!(comment, None);
+    }
+
+    // what this catches (card 0af5d5ec): a test module moved to its own file, marked
+    // `#![cfg(test)]`, read as production, so its unwraps and spawns counted against the
+    // ratchets and every "split the monolith by moving its tests" looked like growth.
+    #[test]
+    fn a_file_marked_inner_cfg_test_has_no_production_half() {
+        let moved = "//! Tests for disk_eviction.\n#![cfg(test)]\nuse super::*;\nfn t() { x.unwrap(); }\n";
+        assert_eq!(production_half(moved), "//! Tests for disk_eviction.");
+        let inline = "fn real() {}\n#[cfg(test)]\nmod tests { fn t() { x.unwrap(); } }\n";
+        assert_eq!(production_half(inline), "fn real() {}");
+        let prose = "//! Mentions #![cfg(test)] in prose only.\nfn real() {}\n";
+        assert_eq!(production_half(prose), prose, "a mention in a comment is not the marker");
     }
 
     /// What this catches: the production/test split silently swallowing the whole
