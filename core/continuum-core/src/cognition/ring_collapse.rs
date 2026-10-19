@@ -120,8 +120,9 @@ mod tests {
         let mut sticky = StickyCollapse::default();
         let (mut history, pointers) = ring(4);
         let mut tokens: usize = history.iter().map(len).sum();
+        let budget = tokens - 10;
         // Over budget by a little: all four collapse, not just the oldest.
-        let open = sticky.apply(&mut history, pointers, &mut tokens, tokens - 10, len);
+        let open = sticky.apply(&mut history, pointers, &mut tokens, budget, len);
         assert!(open.is_empty());
         assert!(history.iter().all(|m| m.content_text().contains("collapsed")));
         // Next act, roomy: the same four are offered again and stay collapsed.
