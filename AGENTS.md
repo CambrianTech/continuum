@@ -59,6 +59,9 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
   - a duplicate is MIGRATED to the best form: pick the best implementation, move every caller
     to it, delete the rest in the same change; never leave two hanging;
   - report what you removed (lines, files) beside what you added.
+- **No SQL outside the ORM** (Joel, 10-19): data goes through the ORM / data layer only; no
+  `rusqlite`/`sqlx` connections, DDL or query strings anywhere else, tests included. A store
+  that needs persistence is an ORM entity behind its own trait.
 - **Ballpark math** (Joel, 10-19: Carmack's shift-and-add z divide, fast shaders): spend only
   the precision the consumer can perceive. Coarse first, exact only for the few candidates
   that matter; estimate where the estimate decides the same way; a polynomial with the gist
