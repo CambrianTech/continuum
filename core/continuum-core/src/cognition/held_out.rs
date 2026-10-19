@@ -200,6 +200,40 @@ pub fn held_out<'a>(set: &str, tasks: &'a [EvalTask], trained: &Trained) -> Held
     }
 }
 
+/// The held-out tasks of `set` for the gene a training job produced, read from that job's own
+/// `request.json` through the one reader. Refused (the reason, never a degraded set) when the
+/// request carries no examples, when any example's task is unknown, or when the gene trained
+/// on every task of the set: none of those can support a held-out lift.
+pub fn for_job(
+    set: &str,
+    tasks: Vec<EvalTask>,
+    job_dir: &std::path::Path,
+) -> Result<Vec<EvalTask>, String> {
+    let request = crate::genome::fine_tuning::job_dir::read_job_request(job_dir)?;
+    let examples = &request.dataset.examples;
+    if examples.is_empty() {
+        return Err(format!(
+            "{}: the job's request carries no examples, so what the gene trained on is unknown",
+            job_dir.display()
+        ));
+    }
+    let trained = trained(examples);
+    let judged = held_out(set, &tasks, &trained);
+    let kept = judged.known_clean().map_err(|unknown| {
+        format!(
+            "{unknown} of the job's {} examples record no task, so no task of {set} is known held out",
+            examples.len()
+        )
+    })?;
+    if kept.is_empty() {
+        return Err(format!(
+            "the gene trained on all {} tasks of {set}: none is held out",
+            tasks.len()
+        ));
+    }
+    Ok(kept.iter().map(|task| (*task).clone()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +375,57 @@ mod tests {
             ["t1"]
         );
         assert!(judged.known_clean().is_ok());
+    }
+
+    // what this catches (goal 8, card 9f0ba854): the A/B reads what a gene trained on from ITS
+    // OWN job, through the one request reader, and refuses rather than measuring when that
+    // cannot be known: no examples, an unrecorded example, or nothing left to hold out.
+    #[test]
+    fn a_job_names_the_tasks_its_gene_may_be_judged_on() {
+        use crate::genome::fine_tuning::types::{TrainingDataset, TrainingSource};
+        let write = |examples: Vec<TrainingExample>| {
+            let dir = tempfile::tempdir().expect("a job dir");
+            let dataset = TrainingDataset {
+                examples,
+                source: TrainingSource::OperatorCurated,
+                validation_split: 0.0,
+            };
+            let request = json!({
+                "personaId": "00000000-0000-0000-0000-000000000001", "personaName": "Kimi",
+                "baseModel": "base", "traitKind": "code/owner",
+                "dataset": serde_json::to_value(dataset).expect("a dataset"),
+            });
+            std::fs::write(dir.path().join("request.json"), request.to_string())
+                .expect("request.json");
+            dir
+        };
+        let worked = |id: &str| example(json!({"task": {"task": {"set": "s", "task": id}}}));
+        let set = || vec![task("t1"), task("t2")];
+
+        let job = write(vec![worked("t1")]);
+        let ids: Vec<String> = for_job("s", set(), job.path())
+            .expect("t2 is held out")
+            .into_iter()
+            .map(|t| t.id)
+            .collect();
+        assert_eq!(ids, ["t2"]);
+
+        assert!(
+            for_job("s", set(), write(Vec::new()).path()).is_err(),
+            "no examples: unknown"
+        );
+        assert!(
+            for_job(
+                "s",
+                set(),
+                write(vec![worked("t1"), example(json!({}))]).path()
+            )
+            .is_err(),
+            "an unrecorded example"
+        );
+        assert!(
+            for_job("s", set(), write(vec![worked("t1"), worked("t2")]).path()).is_err(),
+            "nothing held out"
+        );
     }
 }
