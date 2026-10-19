@@ -456,7 +456,7 @@ async fn release_surplus_holds(registry: &crate::persona::PersonaAircRuntimeRegi
 /// never a review card (they ride beside it) and never an ordinary project card.
 fn is_one_card_rule_card(title: &str) -> bool {
     crate::commands::benchmark::parse_review_title(title).is_none()
-        && crate::commands::benchmark::parse_card_title(title).is_some()
+        && crate::cognition::bench_title::parse_card_title(title).is_some()
 }
 
 /// A view of the current accepted claim; provenance comes from the durable board.

@@ -2371,7 +2371,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
     let (room, card) = card_in_subscribed_rooms(airc, parent)
         .await
         .ok_or_else(|| "parent card is on no subscribed room's board".to_string())?;
-    let Some((_, instance)) = crate::commands::benchmark::parse_card_title(&card.title) else {
+    let Some((_, instance)) = crate::cognition::bench_title::parse_card_title(&card.title) else {
         // A room's own card (not a bench card): its review card comes from the parent
         // itself, under the room's policy (card fa4aaaaa). The bench branch below is
         // unchanged.
