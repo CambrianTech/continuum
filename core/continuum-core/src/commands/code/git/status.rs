@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{blocking_git, workspace_root_for};
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::code::types::GitStatusInfo;
 use crate::modules::code::CodeState;
@@ -32,6 +32,6 @@ crate::action_command! {
     output: GitStatusInfo,
     run(this, ctx, _p) => {
         let root = workspace_root_for(&this.state, ctx).await?;
-        blocking_git(move || git_bridge::git_status(&root)).await
+        Ok(git_bridge::git_status(&root).await)
     }
 }

@@ -86,9 +86,12 @@ impl PeerNames for NoNames {
     }
 }
 
-/// Who holds a card, whether the hold is live, and how to say it to a reader.
+/// One card snapshot: lifecycle, holder, lease liveness, and its read-side projection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardHolder {
+    /// Lifecycle from the same card snapshot as the lease. Every projection uses
+    /// this state so a lapsed terminal claim cannot become an invitation to work.
+    pub state: airc_work::model::CardState,
     pub hold: Hold,
     /// The holder's peer id — carried even when lapsed, because "who WAS on
     /// this" is how a citizen knows whom to reach out to.
@@ -284,6 +287,7 @@ pub fn holder(
         .and(card.last_heartbeat_at_ms)
         .map(|at| now_ms.saturating_sub(at));
     CardHolder {
+        state: card.state,
         hold,
         owner,
         is_self,
@@ -312,8 +316,8 @@ impl CardHolder {
     ///
     /// The automatic PULL is a different question (which card should a scheduler hand
     /// her) and stays on [`claimable_by`]: it never takes a live hold from anyone.
-    pub fn claimable(&self, state: airc_work::model::CardState) -> bool {
-        !refused_by_claim(state)
+    pub fn claimable(&self) -> bool {
+        !refused_by_claim(self.state)
     }
 
     /// The holder phrase a citizen reads on a board line. Says WHO in every
@@ -326,20 +330,21 @@ impl CardHolder {
             .quiet_for_ms
             .map(|ms| format!(", silent {}", crate::time::age::Age::from_millis(ms).span()))
             .unwrap_or_default();
-        match self.hold {
+        let owner = match self.hold {
             Hold::Unclaimed => "unclaimed".to_string(),
             Hold::Held if self.is_self => "owner YOU".to_string(),
-            Hold::Held => format!(
-                "owner {}{quiet} — you can take it over (work/claim; the holder sees the release)",
-                self.display
-            ),
-            Hold::Lapsed if self.is_self => {
-                "claim lapsed (was YOURS) — claimable, resume it".to_string()
-            }
-            Hold::Lapsed => format!(
-                "claim lapsed (was {}{quiet}) — claimable",
-                self.display
-            ),
+            Hold::Held => format!("owner {}{quiet}", self.display),
+            Hold::Lapsed if self.is_self => "claim lapsed (was YOURS)".to_string(),
+            Hold::Lapsed => format!("claim lapsed (was {}{quiet})", self.display),
+        };
+        if !self.claimable() {
+            return owner;
+        }
+        match self.hold {
+            Hold::Held if !self.is_self => format!("{owner} — you can take it over (work/claim; the holder sees the release)"),
+            Hold::Lapsed if self.is_self => format!("{owner} — claimable, resume it"),
+            Hold::Lapsed => format!("{owner} — claimable"),
+            _ => owner,
         }
     }
 
@@ -363,16 +368,12 @@ impl CardHolder {
     ///
     /// So the tag follows the HOLD, and the column is shown after it when the two
     /// disagree — nothing is hidden, the actionable fact just comes first.
-    /// Terminal cards (`Merged` / `Closed`) are never claimable regardless of
-    /// lease and keep their own column verbatim.
-    pub fn state_tag(&self, card: &WorkCard) -> String {
-        let terminal = matches!(
-            card.state,
-            airc_work::model::CardState::Merged | airc_work::model::CardState::Closed
-        );
+    /// States refused by the claim verb (`Review` / `Merged` / `Closed`) keep
+    /// their own column regardless of lease, matching the holder phrase.
+    pub fn state_tag(&self) -> String {
         match self.hold {
-            Hold::Lapsed if !terminal => format!("CLAIMABLE (was {:?})", card.state),
-            _ => format!("{:?}", card.state),
+            Hold::Lapsed if self.claimable() => format!("CLAIMABLE (was {:?})", self.state),
+            _ => format!("{:?}", self.state),
         }
     }
 
@@ -507,13 +508,33 @@ mod tests {
                  test proves nothing"
             );
             assert!(
-                !h.claimable(state),
+                !h.claimable(),
                 "{state:?} is refused by work/claim but was advertised as claimable"
             );
             assert!(
                 !claimable_now(&c, now),
                 "{state:?} must not appear in the board's [available work] lead"
             );
+            // Regression: the count refused Closed/Review while the actual line
+            // still invited its former owner to resume or a peer to take over.
+            for reader in [owner.as_uuid(), uuid::Uuid::new_v4()] {
+                for expiry in [lapsed, now + 1_000] {
+                    c.claim_expires_at_ms = Some(expiry);
+                    let projection = holder(&c, reader, now, &NoNames);
+                    assert_eq!(projection.state_tag(), format!("{state:?}"));
+                    let text = projection.render();
+                    assert!(
+                        !text.contains("claimable")
+                            && !text.contains("take it over")
+                            && !text.contains("resume it"),
+                        "{state:?}: {text}"
+                    );
+                    assert_eq!(
+                        projection.owner, Some(owner),
+                        "lifecycle does not erase attribution"
+                    );
+                }
+            }
         }
 
         // Positive control: the SAME lapsed lease on a working card stays takeable,
@@ -575,7 +596,7 @@ mod tests {
         assert_eq!(h.hold, Hold::Lapsed);
         assert!(h.render().contains("Atlas"));
         assert!(h.render().contains("claimable"));
-        assert!(h.claimable(CardState::Claimed));
+        assert!(h.claimable());
     }
 
     #[test]
@@ -592,7 +613,7 @@ mod tests {
             h.render(),
             "claim lapsed (was YOURS) — claimable, resume it"
         );
-        assert!(h.claimable(CardState::Claimed));
+        assert!(h.claimable());
     }
 
     #[test]
@@ -606,14 +627,14 @@ mod tests {
         let c = card(Some(peer), true, Some(u64::MAX));
         let live = holder(&c, me, 1_000, &NoNames);
         assert_eq!(live.hold, Hold::Held);
-        assert!(live.claimable(CardState::Claimed));
+        assert!(live.claimable());
         assert!(live.render().contains("take it over"), "{}", live.render());
         assert!(!claimable_by(&c, 1_000, PeerId::new(), false), "the pull never takes a live hold");
 
         let open = holder(&card(None, false, None), me, 1_000, &NoNames);
         assert_eq!(open.hold, Hold::Unclaimed);
         assert_eq!(open.render(), "unclaimed");
-        assert!(open.claimable(CardState::Open));
+        assert!(open.claimable());
     }
 
     #[test]
@@ -625,7 +646,7 @@ mod tests {
         let me = uuid::Uuid::new_v4();
         let h = holder(&card(Some(peer), false, None), me, 1_000, &NoNames);
         assert_eq!(h.hold, Hold::Lapsed);
-        assert!(h.claimable(CardState::Claimed));
+        assert!(h.claimable());
     }
     // what this catches: the pull filter refusing cards that carry no standing refusal —
     // a non-bench title, and a bench title whose instance has no marker on this box.

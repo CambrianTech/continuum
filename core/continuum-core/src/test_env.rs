@@ -13,7 +13,9 @@
 //! [`HomeGuard::set`]; sync tests take [`with_test_home`]. Both pin all four
 //! variables to the same home (pin, never remove — removing a var does not isolate a
 //! test, it moves the read one layer down onto the real machine) and restore them on
-//! drop, panic included.
+//! drop, panic included. Real-toolchain fixtures use [`HomeGuard::preserve`]
+//! instead: rustup must inherit the installed home, not another fixture's tempdir.
+//! Acquire once at the fixture boundary; guards are exclusive, not reentrant.
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
@@ -30,6 +32,16 @@ pub(crate) struct HomeGuard {
 }
 
 impl HomeGuard {
+    /// Wait for home-mutating fixtures, then retain the restored process home
+    /// unchanged across async subprocess execution. Do not nest under another
+    /// HomeGuard: the fixture must choose either isolation or preservation.
+    pub(crate) async fn preserve() -> Self {
+        Self {
+            prior: Vec::new(),
+            _lock: HOME_ENV.clone().lock_owned().await,
+        }
+    }
+
     /// Take the lock from an async test (held across awaits).
     pub(crate) async fn set(home: &Path) -> Self {
         let lock = HOME_ENV.clone().lock_owned().await;
@@ -105,4 +117,33 @@ mod tests {
         let third = HomeGuard::set_blocking(dir.path());
         assert_eq!(third.prior, prior, "restored on unwind as well");
     }
+
+    // A reader must wait for a temporary home to be restored, and a writer must
+    // wait until the real-toolchain fixture releases it. Poll the actual futures
+    // under each owner: no scheduler sleeps or timing-dependent race assumption.
+    #[tokio::test]
+    async fn preserving_home_excludes_temporary_home_for_the_whole_fixture() {
+        let dir = tempfile::tempdir().unwrap();
+        let writer = HomeGuard::set(dir.path()).await;
+        let original = writer.prior.clone();
+        let reader = HomeGuard::preserve();
+        tokio::pin!(reader);
+        assert!(futures::poll!(&mut reader).is_pending());
+        drop(writer);
+        let reader = reader.await;
+        for (name, value) in &original {
+            assert_eq!(std::env::var_os(name), *value, "reader sees restored {name}");
+        }
+        let writer = HomeGuard::set(dir.path());
+        tokio::pin!(writer);
+        assert!(futures::poll!(&mut writer).is_pending());
+        for (name, value) in &original {
+            assert_eq!(std::env::var_os(name), *value, "pending writer cannot alter {name}");
+        }
+        drop(reader);
+        let writer = writer.await;
+        assert_eq!(std::env::var_os("HOME"), Some(dir.path().as_os_str().to_owned()));
+        drop(writer);
+    }
+
 }

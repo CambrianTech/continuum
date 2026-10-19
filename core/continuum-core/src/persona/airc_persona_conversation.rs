@@ -58,7 +58,7 @@ use uuid::Uuid;
 /// events).
 /// What a poll of the inbound stream produced.
 enum Polled {
-    Event(Option<Result<std::sync::Arc<TranscriptEvent>, airc_lib::LiveLag>>),
+    Event(Option<Result<AttentionEvent, airc_lib::LiveLag>>),
     Membership,
     Quiet,
 }
@@ -174,6 +174,40 @@ impl SeenRooms {
     }
 }
 
+/// One decoded attention envelope. The raw event stays owned until its async
+/// work bridge completes; routing-only traffic never occupies the attention FIFO.
+#[derive(Clone)]
+struct AttentionEvent {
+    event: Arc<TranscriptEvent>,
+    perception: Result<Arc<IncomingMessage>, &'static str>,
+}
+
+impl AttentionEvent {
+    fn classify(event: Arc<TranscriptEvent>) -> Option<Self> {
+        if crate::persona::airc_citizen::is_heartbeat(&event)
+            || crate::airc::realtime_wire::is_stream_chunk(&event)
+            || crate::airc::realtime_wire::is_command_frame(&event)
+        {
+            return None;
+        }
+        let perception = match crate::airc::realtime_wire::room_work_from_event(&event) {
+            Ok(Some(work)) => Ok(IncomingMessage {
+                event_id: event.event_id.as_uuid(), lamport: event.lamport,
+                peer_id: event.peer_id.as_uuid(), room_id: event.room_id.as_uuid(),
+                text: String::new(), media: Vec::new(), work: Some(work),
+            }),
+            Ok(None) => perceptual_from_event(&event),
+            Err(reason) => Err(reason),
+        }.map(Arc::new);
+        // Decode faults remain observable at the consumer. Known non-perception
+        // belongs to its existing durable/telemetry owner, not a citizen's queue.
+        match perception {
+            Err("non_chat_schema" | "no_continuum_body_hint" | "work_presence" | "work_lease_renewal") => None,
+            _ => Some(Self { event, perception }),
+        }
+    }
+}
+
 /// Page every subscribed room's durable tail and forward, into the inbox, the
 /// events the live stream never delivered (above the room's floor, not in the
 /// seen ring). Returns `(rooms paged, forwarded)`; `usize::MAX` forwarded means
@@ -181,18 +215,16 @@ impl SeenRooms {
 /// A forwarded line from outside the citizenry (or one naming nobody in
 /// particular — the turn decides mentions) raises the citizen's directed-pending
 /// flag so a parked self-work lane wait yields to it.
-fn signal_if_directed(own: uuid::Uuid, event: &airc_core::TranscriptEvent) {
-    let peer = event.peer_id.as_uuid();
-    if peer == own {
+fn signal_if_directed(own: uuid::Uuid, attention: &AttentionEvent) {
+    let Ok(message) = &attention.perception else { return; };
+    let peer = message.peer_id;
+    if peer == own || message.work.is_some() {
         return;
     }
     // Only a line that would ADMIT as a turn may raise the flag: the board's
     // System events ride the same stream from the same non-citizen peers and
     // are filtered at the door — on 8c6733c65 they kept the flag up for the
     // whole roster (25 turns, 25 yields, 0 lanes acquired).
-    let Ok(message) = perceptual_from_event(event) else {
-        return;
-    };
     // The SAME priority the loop head admits with (`TurnAttention`): a
     // human line or a line naming her. On 9e8320b60 this site still raised the
     // flag for every non-citizen line, so a holder parked in a lane wait yielded
@@ -219,7 +251,7 @@ use super::durable_history::event_from_row;
 async fn catch_up_from_store(
     runtime: &dyn AircCitizen,
     seen: &std::sync::Mutex<SeenRooms>,
-    tx: &tokio::sync::mpsc::Sender<Result<std::sync::Arc<TranscriptEvent>, airc_lib::LiveLag>>,
+    tx: &tokio::sync::mpsc::Sender<Result<AttentionEvent, airc_lib::LiveLag>>,
 ) -> (usize, usize) {
     let rooms = runtime.subscribed_rooms().await.unwrap_or_default(); // unwrap_or: an unreadable room list = nothing to catch up this tick
     let mut forwarded = 0usize;
@@ -295,17 +327,17 @@ async fn catch_up_from_store(
         for event in events {
             if event.occurred_at_ms <= floor_ms
                 || seen.lock().unwrap_or_else(|e| e.into_inner()).was_seen(room, event.event_id.as_uuid())  // poisoned lock = read the last state, same policy as every lock in this crate
-                || crate::persona::airc_citizen::is_heartbeat(&event)
-                || crate::airc::realtime_wire::is_stream_chunk(&event)
             {
                 continue;
             }
+            let Some(attention) = AttentionEvent::classify(Arc::new(event)) else { continue; };
+            let event = &attention.event;
             // A line the operator's `chat/send` persisted under its own message id
             // arrives live under the say's EVENT id: same peer, same text, two ids.
             // The fingerprint ring keeps it one turn.
-            let fingerprint = crate::airc::realtime_wire::room_turn_from_event(&event)
-                .ok()
-                .map(|(peer, text)| SeenRooms::fingerprint(peer, &text));
+            let fingerprint = attention.perception.as_ref().ok()
+                .filter(|message| message.work.is_none())
+                .map(|message| SeenRooms::fingerprint(message.peer_id, &message.render_content()));
             {
                 let mut s = seen.lock().unwrap_or_else(|e| e.into_inner()); // poisoned lock = read the last state, same policy as every lock in this crate
                 if let Some(fp) = fingerprint {
@@ -316,11 +348,10 @@ async fn catch_up_from_store(
                 }
                 s.note(room, event.event_id.as_uuid());
             }
-            let event = Arc::new(event);
-            if tx.send(Ok(Arc::clone(&event))).await.is_err() {
+            if tx.send(Ok(attention.clone())).await.is_err() {
                 return (paged, usize::MAX);
             }
-            signal_if_directed(runtime.peer_id(), &event);
+            signal_if_directed(runtime.peer_id(), &attention);
             forwarded += 1;
         }
     }
@@ -372,7 +403,7 @@ pub struct AircPersonaConversation {
     /// Input already perceived during work, still owned for later room attention.
     perceived_backlog: std::collections::VecDeque<Arc<IncomingMessage>>,
     /// A live event being admitted; retained across cancellation at the work bridge.
-    ready_event: Option<Arc<TranscriptEvent>>,
+    ready_event: Option<AttentionEvent>,
     /// The persona's own peer_id, captured at construction. Used by
     /// `next_message` to skip self-loop echoes WITHIN the projection
     /// — the service loop ALSO skips by persona's instance peer_id;
@@ -399,7 +430,7 @@ pub struct AircPersonaConversation {
     /// nobody polled for minutes, the daemon's queue filled, the subscriber was
     /// marked lagged and never recovered — the live plane looked dead).
     inbox: Option<
-        tokio::sync::mpsc::Receiver<Result<std::sync::Arc<TranscriptEvent>, airc_lib::LiveLag>>,
+        tokio::sync::mpsc::Receiver<Result<AttentionEvent, airc_lib::LiveLag>>,
     >,
     /// The drain task behind `inbox`; aborted and replaced on every re-open.
     pump: Option<tokio::task::JoinHandle<()>>,
@@ -572,7 +603,7 @@ impl AircPersonaConversation {
         if self
             .ready_event
             .as_ref()
-            .is_some_and(|event| !rooms.contains(&event.room_id.as_uuid()))
+            .is_some_and(|event| !rooms.contains(&event.event.room_id.as_uuid()))
         {
             self.ready_event = None;
         }
@@ -644,19 +675,15 @@ impl AircPersonaConversation {
                         Some(item) => {
                             live_since_tick = live_since_tick.saturating_add(1);
                             reopen_attempt = 0;
-                            if let Ok(ev) = &item {
-                                // These routing headers mean "not perception" in
-                                // admission and durable catch-up. Drop them BEFORE
-                                // the bounded attention inbox: a token flood must
-                                // not consume the ready-drain budget ahead of a
-                                // colleague's complete message. No body decode or
-                                // seen-ring churn for traffic we will never admit.
-                                if crate::persona::airc_citizen::is_heartbeat(ev)
-                                    || crate::airc::realtime_wire::is_stream_chunk(ev)
-                                    || crate::airc::realtime_wire::is_command_frame(ev)
-                                {
-                                    continue;
-                                }
+                            let item = match item {
+                                Ok(event) => match AttentionEvent::classify(event) {
+                                    Some(event) => Ok(event),
+                                    None => continue,
+                                },
+                                Err(error) => Err(error),
+                            };
+                            if let Ok(attention) = &item {
+                                let ev = &attention.event;
                                 let mut s = seen.lock().unwrap_or_else(|e| e.into_inner());  // poisoned lock = read the last state, same policy as every lock in this crate
                                 // Two sources may carry one event (the one feed and,
                                 // until it retires, the private subscription): admit once.
@@ -664,10 +691,8 @@ impl AircPersonaConversation {
                                     continue;
                                 }
                                 s.note(ev.room_id.as_uuid(), ev.event_id.as_uuid());
-                                if let Ok((peer, text)) =
-                                    crate::airc::realtime_wire::room_turn_from_event(ev)
-                                {
-                                    s.note_text(ev.room_id.as_uuid(), SeenRooms::fingerprint(peer, &text));
+                                if let Some(message) = attention.perception.as_ref().ok().filter(|m| m.work.is_none()) {
+                                    s.note_text(ev.room_id.as_uuid(), SeenRooms::fingerprint(message.peer_id, &message.render_content()));
                                 }
                                 drop(s);
                             }
@@ -848,7 +873,10 @@ impl AircPersonaConversation {
             // Closed receiver means fixed membership, matching the parked changed() branch below.
             {
                 if ready_scan_remaining == 0 {
-                    return Ok(None);
+                    // A scheduling slice is not an empty inbox. Yield cooperatively;
+                    // the caller's deadline may cancel us with ready_event retained.
+                    tokio::task::yield_now().await;
+                    ready_scan_remaining = CATCH_UP_PAGE;
                 }
             }
             // Rejoin-replayed turns first — they are OLDER than anything the live
@@ -1244,6 +1272,22 @@ mod tests {
         let mut rpc = event("RPC result, not speech");
         rpc.headers.insert(airc_protocol::HEADER_AIRC_CORRELATION_ID.into(), Uuid::new_v4().to_string());
         assert_eq!(crate::airc::realtime_wire::room_turn_from_event(&rpc), Err("command_frame"));
+        for _ in 0..CATCH_UP_PAGE * 2 {
+            let mut telemetry = event("");
+            telemetry.kind = airc_core::TranscriptKind::System;
+            let envelope = serde_json::from_value(serde_json::json!({
+                "eventId": telemetry.event_id.to_string(), "roomId": room.to_string(),
+                "sourceId": "grid-capacity", "createdAtMs": 1,
+                "delivery": "ephemeral_coalesced",
+                "payload": { "kind": "existing_schema", "payload": {
+                    "schema": "grid_capacity", "inline": {} }
+                }
+            })).unwrap();
+            telemetry.headers = crate::airc::realtime_wire::headers_for_envelope(&envelope);
+            telemetry.body = Some(crate::airc::realtime_wire::body_for_envelope(&envelope).unwrap());
+            assert!(matches!(perceptual_from_event(&telemetry), Err("non_chat_schema")));
+            frames.push(Ok(Arc::new(telemetry)));
+        }
         let mut control = event("");
         control.kind = airc_core::TranscriptKind::System;
         control.body = None;
@@ -1254,6 +1298,73 @@ mod tests {
         let presence = event("⚙ code/read fixture.rs ✓");
         assert!(matches!(perceptual_from_event(&presence), Err("work_presence")));
         frames.push(Ok(Arc::new(presence)));
+        // 2dcaacc1: typed claim renewals retain their durable board owner, but
+        // must not flood either the one feed or the live/catch-up attention
+        // classifier. A released claim is still a meaningful work fact.
+        let card_id = airc_work::WorkCardId::new();
+        let claim_id = airc_work::ClaimId::new();
+        for index in 0..CATCH_UP_PAGE * 2 {
+            let renewal = airc_work::WorkEvent::ClaimHeartbeat(airc_work::ClaimHeartbeat {
+                card_id, claim_id, owner: airc_core::PeerId::from_uuid(peer),
+                ttl_ms: 60_000, heartbeat_at_ms: index as u64,
+            });
+            let mut renewed = event("");
+            let (mut headers, body) = airc_work::encode_work_event(&renewal).unwrap();
+            // A routing hint cannot turn a decoded renewal into a task change.
+            headers.insert(airc_work::HEADER_FORGE_WORK_EVENT_KIND.into(), "card_state_changed".into());
+            renewed.headers = headers;
+            renewed.body = Some(body);
+            assert!(matches!(crate::persona::perception_feed::classify(&renewed),
+                crate::persona::perception_feed::Fed::NotPerception("work_lease_renewal")));
+            assert!(AttentionEvent::classify(Arc::new(renewed.clone())).is_none());
+            frames.push(Ok(Arc::new(renewed)));
+        }
+        let release = airc_work::WorkEvent::ClaimReleased(airc_work::ClaimReleased {
+            card_id, claim_id, owner: airc_core::PeerId::from_uuid(peer),
+            reason: Some("work remains available".into()), released_at_ms: 1,
+            taken_over_from: Some(airc_core::PeerId::from_uuid(own)),
+        });
+        let mut released = event("");
+        let (headers, body) = airc_work::encode_work_event(&release).unwrap();
+        released.headers = headers;
+        released.body = Some(body);
+        assert!(matches!(crate::persona::perception_feed::classify(&released),
+            crate::persona::perception_feed::Fed::OtherWork(_)));
+        assert!(AttentionEvent::classify(Arc::new(released)).is_some());
+        let mut work = event("");
+        work.kind = airc_core::TranscriptKind::System;
+        let (headers, body) = airc_work::encode_work_event(
+            &airc_work::WorkEvent::CardStateChanged(airc_work::CardStateChanged {
+                card_id: airc_work::WorkCardId::new(), state: airc_work::CardState::Open,
+                changed_by: airc_core::PeerId::from_uuid(peer), changed_at_ms: 1,
+            }),
+        ).unwrap();
+        work.headers = headers;
+        // Optional routing metadata must not gate valid work-bridge payloads.
+        work.headers.remove(airc_work::HEADER_FORGE_WORK_EVENT_KIND);
+        work.body = Some(body);
+        // Both bridge consumers accept valid body hints without a kind header.
+        // Exercise the review variant through the same admission owner too.
+        let media = serde_json::from_value(serde_json::json!({
+            "hash": "b".repeat(64), "size_bytes": 12
+        })).unwrap();
+        let review = airc_work::WorkEvent::WorkSubmissionReviewed(airc_work::WorkSubmissionReview {
+            review_id: airc_work::WorkReviewId::new(), card_id: airc_work::WorkCardId::new(),
+            submission_id: airc_work::SubmissionId::new(), artifact: media,
+            review_card_id: airc_work::WorkCardId::new(), review_claim_id: airc_work::ClaimId::new(),
+            reviewer: airc_core::PeerId::from_uuid(peer), outcome: airc_work::WorkReviewOutcome::Passed,
+            evidence: serde_json::from_value(serde_json::json!({ "hash": "c".repeat(64), "size_bytes": 12 })).unwrap(),
+            evidence_text: None, reviewed_at_ms: 1,
+        });
+        let mut review_event = event("");
+        let (mut headers, body) = airc_work::encode_work_event(&review).unwrap();
+        headers.remove(airc_work::HEADER_FORGE_WORK_EVENT_KIND);
+        review_event.headers = headers;
+        review_event.body = Some(body);
+        assert!(matches!(AttentionEvent::classify(Arc::new(review_event)).unwrap().perception.unwrap().work,
+            Some(crate::airc::realtime_wire::RoomWork::Reviewed { .. })));
+        let work_id = work.event_id.as_uuid();
+        frames.push(Ok(Arc::new(work)));
         let mut directed = event("@citizen Shared Cargo owner: please wait");
         directed.target = airc_core::MentionTarget::Peer(airc_core::PeerId::from_uuid(own));
         let directed = Arc::new(directed);
@@ -1273,35 +1384,37 @@ mod tests {
         let inbox = conversation.inbox.as_mut().unwrap();
         assert_eq!(
             inbox.len(),
-            3,
-            "control, durable presence and completed message reach intake"
+            2,
+            "work facts and completed input reach attention; telemetry and presence keep their durable owners"
         );
-        let forwarded_control = inbox.try_recv().unwrap().unwrap();
-        assert!(Arc::ptr_eq(&forwarded_control, &control));
         assert!(conversation
             .seen
             .lock()
             .unwrap()
             .was_seen(room, directed.event_id.as_uuid()));
         let perceived = conversation.perceive_ready().await.unwrap();
-        assert_eq!(perceived.len(), 1);
-        assert_eq!(perceived[0].event_id, directed.event_id.as_uuid());
-        assert_eq!(perceived[0].room_id, room);
-        assert_eq!(perceived[0].peer_id, peer);
-        assert!(perceived[0].text.contains("Shared Cargo owner"));
+        assert_eq!(perceived.len(), 2);
+        assert_eq!(perceived[0].event_id, work_id);
+        assert!(matches!(perceived[0].work, Some(crate::airc::realtime_wire::RoomWork::StateChanged { .. })));
+        assert_eq!(perceived[1].event_id, directed.event_id.as_uuid());
+        assert_eq!(perceived[1].room_id, room);
+        assert_eq!(perceived[1].peer_id, peer);
+        assert!(perceived[1].text.contains("Shared Cargo owner"));
 
-        // A page counts examined events, not stash/admit loop iterations.
-        // Fill its first N-1 positions with legitimate non-turn control traffic.
+        // Decode faults remain observable, but exhausting their scan slice must
+        // yield cooperatively, not pretend the next directed input does not exist.
         // Distinct events: the pump admits one event id once, so N copies of one
         // control frame would no longer fill N positions.
-        let mut page: Vec<_> = (0..CATCH_UP_PAGE - 1)
+        let mut page: Vec<_> = (0..CATCH_UP_PAGE * 2)
             .map(|_| {
                 let mut distinct = (*control).clone();
                 distinct.event_id = airc_core::EventId::new();
+                distinct.headers.insert(airc_work::HEADER_FORGE_WORK_EVENT_KIND.into(), "malformed-fixture".into());
+                assert!(matches!(AttentionEvent::classify(Arc::new(distinct.clone())).unwrap().perception, Err("work_event_decode_error")));
                 Ok(Arc::new(distinct))
             })
             .collect();
-        page.push(Ok(Arc::new(event("last event in one admission page"))));
+        page.push(Ok(Arc::new(event("directed input after more than one decode-fault page"))));
         let (drained, ready) = tokio::sync::oneshot::channel();
         conversation.install_stream(futures::stream::iter(page).chain(
             futures::stream::once(async move {
@@ -1311,7 +1424,7 @@ mod tests {
         ));
         tokio::time::timeout(std::time::Duration::from_secs(5), ready).await.unwrap().unwrap();
         let last = conversation.next_message_inner(false, false).await.unwrap().unwrap();
-        assert_eq!(last.text, "last event in one admission page");
+        assert_eq!(last.text, "directed input after more than one decode-fault page");
 
         // what this catches (5090, 2026-10-04): the one feed runs beside the private
         // subscription until that retires, so one event can arrive on both. The pump
@@ -1430,7 +1543,7 @@ mod tests {
                     text: format!("colleague input {index}"),
                 },
             );
-            tx.send(Ok(Arc::new(event))).await.unwrap();
+            tx.send(Ok(AttentionEvent::classify(Arc::new(event)).unwrap())).await.unwrap();
         }
         crate::cognition::directed_pending::signal(own);
         let batch = crate::cognition::directed_pending::observe(own);
@@ -1473,7 +1586,7 @@ mod tests {
             media: Vec::new(),
             text: "new steering after the drained batch".into(),
         });
-        tx.send(Ok(Arc::new(late))).await.unwrap();
+        tx.send(Ok(AttentionEvent::classify(Arc::new(late)).unwrap())).await.unwrap();
         crate::cognition::directed_pending::signal(own);
         crate::cognition::directed_pending::acknowledge(own, batch);
         tokio::time::timeout(
@@ -1821,6 +1934,11 @@ mod tests {
         let incoming = perceptual_from_event(&media_event).expect("caption turn");
         assert_eq!(incoming.text, row.text);
         assert_eq!(incoming.media.len(), 1);
+        let (sender, rendered) = crate::airc::realtime_wire::room_turn_from_event(&media_event).unwrap();
+        let attention = AttentionEvent::classify(Arc::new(media_event.clone())).unwrap();
+        let classified = attention.perception.unwrap();
+        assert_eq!(SeenRooms::fingerprint(sender, &rendered),
+            SeenRooms::fingerprint(classified.peer_id, &classified.render_content()));
         assert!(incoming.render_room_update().contains("contents not loaded"));
         let restored: IncomingMessage = serde_json::from_value(serde_json::to_value(&incoming).unwrap()).unwrap();
         assert_eq!(restored.media, incoming.media);
@@ -2074,46 +2192,18 @@ impl AircPersonaConversation {
         self.high_water_mark(2).await.unwrap_or(self.last_lamport) // unwrap_or: a failed page reads as not moved
     }
 
-    /// One live event through the door: heartbeat/chunk guards, the raw probe,
-    /// the work-bridge, the decoder, the self-filter, the lamport advance.
+    /// One classified event through the async bridge, diagnostics and self-filter.
+    /// The caller retains its envelope across cancellation until this completes.
     /// `Some(msg)` = a room turn to serve; `None` = consumed, keep polling.
     async fn admit_event(
         &mut self,
-        event: std::sync::Arc<TranscriptEvent>,
+        attention: AttentionEvent,
     ) -> Option<IncomingMessage> {
-        // Presence heartbeats are dropped HERE, not at subscribe time — the
-        // daemon inverted the subscribe-time filter (see `subscribe_every_room`),
-        // and a receive-side check is correct either way. Before any decode/probe.
-        if crate::persona::airc_citizen::is_heartbeat(&event) {
-            return None;
-        }
-        // A stream chunk is NEVER a room turn — skip it at the door, before the
-        // decode and before the raw-event line. Every persona's subscribe stream
-        // receives every OTHER persona's token fragments: measured live during a
-        // SWE solve, 2644 of 4776 filtered inbound events (55%) were chunks, fanned
-        // out identically to all four personas (1195 each) and decoded-then-discarded
-        // by each independently — O(personas x tokens) of work in the attention path
-        // of a persona who is trying to concentrate, plus 65% of the probe stream.
-        //
-        // Deliberately NOT probed: routine traffic taking its expected path is not an
-        // anomaly, and a probe here would rebuild the exact flood this removes. The
-        // decoder still classifies chunks as `stream_chunk` for any caller that
-        // reaches it by another route, so nothing goes dark — the reason string
-        // remains the single source of truth.
-        //
-        // This is the receive-side half. The events still cross the wire; not sending
-        // a peer's fragments to peers at all is airc-side (#275) and stays open.
-        if crate::airc::realtime_wire::is_stream_chunk(&event) {
-            return None;
-        }
-        // Every non-chunk event advances the rejoin-replay watermark, so a
-        // later reopen replays only what this stream genuinely never saw.
-        // #146 diagnostic: EVERY raw event this persona's subscribe
-        // stream yields, before any filter. If this probe never fires
-        // under a room burst, the stream is empty → airc-lib delivery
-        // gap. If it fires but perceptual/self drops it, the gap is
-        // continuum-side (decode/self-filter). One line per event,
-        // greppable by probe_class, cheap enough for a live stream.
+        let event = attention.event;
+        // #146 diagnostic: every classified envelope reaching attention. Absence
+        // is not evidence of a delivery gap: a healthy stream may contain only
+        // non-perceptual frames filtered by the shared admission boundary.
+        // Retained decode faults and self-filter outcomes remain observable here.
         let body_kind = match event.body.as_ref() {
             None => "none",
             Some(b) if b.as_text().is_some() => "text",
@@ -2124,7 +2214,7 @@ impl AircPersonaConversation {
             persona = %self.own_peer_id,
             from_peer = %event.peer_id,
             body_kind,
-            "persona subscribe stream yielded a raw event (#146)"
+            "classified attention envelope reached consumer (#146)"
         );
         // Card-state transitions bridge onto the internal bus HERE —
         // the persona subscribe streams are the only channel-complete
@@ -2172,85 +2262,26 @@ impl AircPersonaConversation {
                     .collect(),
             },
         };
-        // A typed work fact in the room is perception (EVENT-MIND.md §1b): a
-        // verdict, a card move, a submission, a claim. It becomes a labelled board
-        // fact in her burst, attributed to the actor, never dropped as
-        // `non_chat_schema`. Her own acts' echoes are skipped like her own words.
-        match crate::airc::realtime_wire::room_work_from_event(&event) {
-            Ok(Some(work)) => {
-                if event.peer_id.as_uuid() == self.own_peer_id {
-                    return None;
-                }
-                crate::probe!(
-                    class = "persona.inbound.work_fact",
-                    persona = %self.own_peer_id,
-                    from_peer = %event.peer_id,
-                    room = %event.room_id,
-                    work = ?work,
-                    "a typed work fact admitted as perception"
-                );
-                return Some(IncomingMessage {
-                    event_id: event.event_id.as_uuid(),
-                    lamport: event.lamport,
-                    peer_id: event.peer_id.as_uuid(),
-                    text: String::new(),
-                    media: Vec::new(),
-                    room_id: event.room_id.as_uuid(),
-                    work: Some(work),
-                });
-            }
-            Ok(None) => {}
+        let message = match attention.perception {
+            Ok(message) => message,
             Err(reason) => {
                 crate::probe!(
                     class = "persona.inbound.filtered_non_turn",
-                    persona = %self.own_peer_id,
-                    from_peer = %event.peer_id,
-                    body_kind,
-                    event_kind,
-                    body_preview,
-                    reason,
-                    "a work-hinted event FAILED to decode — a board fact may be unheard"
+                    persona = %self.own_peer_id, from_peer = %event.peer_id,
+                    body_kind, event_kind, body_preview, reason,
+                    "attention event FAILED to decode; source envelope retained through admission"
                 );
                 return None;
             }
-        }
-        let message = match perceptual_from_event(&event) {
-            Ok(message) => message,
-            Err(reason) => {
-                // A decode ERROR is loud — a message-shaped body we
-                // failed to read is exactly the #177 blindness this
-                // named-reason contract exists for. The two LEGIT
-                // non-turn shapes (event-bridge frames, presence,
-                // work-board events) flooded 38k INFO lines/day
-                // across the roster and drowned real signal — they
-                // stay observable at debug, counted by probe_class
-                // either way.
-                if reason == "envelope_decode_error" {
-                    crate::probe!(
-                        class = "persona.inbound.filtered_non_turn",
-                        persona = %self.own_peer_id,
-                        from_peer = %event.peer_id,
-                        body_kind,
-                        event_kind,
-                        body_preview,
-                        reason,
-                        "message-shaped event FAILED to decode — a peer may be structurally unheard (#177)"
-                    );
-                } else {
-                    crate::probe!(
-                        class = "persona.inbound.filtered_non_turn",
-                        persona = %self.own_peer_id,
-                        from_peer = %event.peer_id,
-                        body_kind,
-                        event_kind,
-                        body_preview,
-                        reason,
-                        "raw event was not a perceptual room turn — skipped (#146/#177)"
-                    );
-                }
-                return None;
-            }
         };
+        if let Some(work) = &message.work {
+            crate::probe!(
+                class = "persona.inbound.work_fact",
+                persona = %self.own_peer_id, from_peer = %event.peer_id,
+                room = %event.room_id, work = ?work,
+                "a typed work fact admitted as perception"
+            );
+        }
         // Skip our own turn, matched on the RESOLVED sender so a
         // self-authored chat_transcript is caught too — not just
         // a self `say()` (whose transport peer is us).
@@ -2277,6 +2308,6 @@ impl AircPersonaConversation {
             );
             return None;
         }
-        Some(message)
+        Some(Arc::unwrap_or_clone(message))
     }
 }

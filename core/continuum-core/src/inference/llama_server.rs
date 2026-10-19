@@ -114,6 +114,69 @@ fn ready_budget(base: Duration, loading_and_alive: bool) -> Duration {
     }
 }
 
+/// Measured loading work for one owned child. Labels and repeated samples do not
+/// renew the existing quiet allowance. After the last measured advance (including
+/// a stage reaching 1.0), unmeasured context initialization and warmup must finish
+/// within that same quiet allowance; a future shorter allowance must cover that tail.
+#[derive(Default)]
+struct ReadyLoadProgress {
+    stages: Vec<String>,
+    high: Vec<f64>,
+    last_advanced: Duration,
+}
+
+/// Existing native load callback snapshot carried by the health response.
+#[derive(serde::Deserialize)]
+struct LoadProgressSample {
+    pid: u32,
+    stages: Vec<String>,
+    current: String,
+    value: f64,
+}
+
+#[derive(serde::Deserialize)]
+struct LoadingHealth {
+    load_progress: Option<LoadProgressSample>,
+}
+
+impl ReadyLoadProgress {
+    fn observe(&mut self, sample: &LoadProgressSample, pid: u32, elapsed: Duration) -> bool {
+        if sample.pid != pid {
+            return false;
+        }
+        let stages = &sample.stages;
+        let Some(stage) = stages.iter().position(|name| name == &sample.current) else {
+            return false;
+        };
+        if stages.iter().any(|name| name.is_empty())
+            || stages
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != stages.len()
+        {
+            return false;
+        }
+        if self.stages.is_empty() {
+            self.stages = stages.clone();
+            self.high = vec![0.0; stages.len()];
+        } else if self.stages != *stages {
+            return false;
+        }
+        let value = sample.value;
+        if !value.is_finite() || !(0.0..=1.0).contains(&value) || value <= self.high[stage] {
+            return false;
+        }
+        self.high[stage] = value;
+        self.last_advanced = elapsed;
+        true
+    }
+
+    fn stalled(&self, elapsed: Duration, allowance: Duration) -> bool {
+        elapsed.saturating_sub(self.last_advanced) >= allowance
+    }
+}
+
 /// Poll cadence while waiting for `/health`. 503 → still loading, keep waiting.
 const READY_POLL: Duration = Duration::from_millis(500);
 
@@ -548,8 +611,8 @@ pub(crate) fn lane_grow_would_narrow_the_window(
 /// Only the lane and window axes are refused. A KV-type or sight relaunch is a
 /// DECISION change, not necessarily a larger footprint, and stays allowed. Pure, so the
 /// test does not touch the process-global gate.
-pub(crate) fn grow_refused_by_memory_gate(gate_closed: bool, window_ok: bool, lanes_ok: bool) -> bool {
-    gate_closed && (!window_ok || !lanes_ok)
+pub(crate) fn grow_refused_by_memory_gate(gate_closed: bool, window_ok: bool, lanes_ok: bool, cache_ok: bool) -> bool {
+    gate_closed && (!window_ok || !lanes_ok || !cache_ok)
 }
 
 /// Minimum completion tokens a healthy lane must produce on the decode smoke-probe.
@@ -704,20 +767,26 @@ async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::proces
     if ASKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
-    let probe = tokio::time::timeout(Duration::from_secs(10), command.arg("--help").output()).await;
+    command.arg("--help");
+    // owned (lane_process::run_owned): a help probe that hangs is ended with anything it started
+    let probe = crate::inference::lane_process::run_owned(command, Some(Duration::from_secs(10)), "engine-help-probe", std::sync::Arc::default()).await;
     let (outcome, support, error) = match probe {
-        Ok(Ok(out)) => {
-            let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-            text.push('\n');
-            text.push_str(&String::from_utf8_lossy(&out.stderr));
-            let _ = ENGINE_TRAIN_DIR.set(engine_help_lists_train_dir(&text));
-            match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
-                Some(v) => ("answered", Some(v), String::new()),
-                None => ("did_not_enumerate", None, String::new()),
+        Err(e) => ("probe_failed", None, e.to_string()),
+        Ok(out) => match (&out.ended, out.capture_note()) {
+            (crate::inference::lane_process::Ended::TimedOut { .. }, _) => ("probe_timeout", None, "no answer in 10 s".to_string()),
+            // help text that wasn't read whole can't say which values it lists
+            (_, Some(note)) => ("probe_failed", None, note),
+            (crate::inference::lane_process::Ended::Exited(_), None) => {
+                let mut text = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
+                text.push('\n');
+                text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));
+                let _ = ENGINE_TRAIN_DIR.set(engine_help_lists_train_dir(&text));
+                match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
+                    Some(v) => ("answered", Some(v), String::new()),
+                    None => ("did_not_enumerate", None, String::new()),
+                }
             }
-        }
-        Ok(Err(e)) => ("probe_failed", None, e.to_string()),
-        Err(_) => ("probe_timeout", None, "no answer in 10 s".to_string()),
+        },
     };
     if let Some(v) = support {
         crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);
@@ -1414,7 +1483,7 @@ fn server_bin() -> Result<String, LlamaServerError> {
 }
 
 /// `LLAMA_SERVER_BIN` (launch environment, then config): an operator's own engine.
-fn engine_override() -> Option<String> {
+pub(crate) fn engine_override() -> Option<String> {
     std::env::var("LLAMA_SERVER_BIN")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -1438,7 +1507,8 @@ fn roll_back_engine_after_failed_launch(error: &LlamaServerError) -> bool {
     if continuum_cli_lifecycle::deploy_claim::in_flight(&home, now_ms).blocks() {
         return false;
     }
-    match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch(&root)) {
+    let failure_class = if matches!(error, LlamaServerError::Spawn(_)) { "spawn failed" } else { "readiness failed" };
+    match crate::inference::engine_slots::root(&home).and_then(|root| crate::inference::engine_slots::rollback_after_failed_launch_reason(&root, failure_class)) {
         Ok(Some((failed, restored))) => {
             crate::probe!(
                 class = "serving.engine.rolled_back",
@@ -2263,6 +2333,9 @@ pub(crate) enum EngineProbe {
     /// dead, but a condemned engine is not worth waiting on: its relaunch cuts the work
     /// anyway, and the relaunch's drain waits for every admitted turn to let go.
     Condemned,
+    /// The exact observed paging operation failed or acknowledged cancellation.
+    /// This ends observation; it is never a successful HTTP completion receipt.
+    OperationEnded,
 }
 
 /// The engine this node serves is being replaced: the serving daemon admitted a lifecycle
@@ -2278,11 +2351,72 @@ pub(crate) fn engine_condemned() -> bool {
     SERVING_STATE.get().is_some_and(|rx| !rx.borrow().ready)
 }
 
+/// Capability discovery uses the same bounded props read as the managed lane.
+pub(crate) async fn engine_props(root: &str, client: &reqwest::Client) -> Result<serde_json::Value, LlamaServerError> {
+    let response = client.get(format!("{}/props", root.trim_end_matches('/')))
+        .timeout(PROBE_TIMEOUT).send().await
+        .map_err(|error| LlamaServerError::Unreachable(error.to_string()))?;
+    if !response.status().is_success() {
+        return Err(LlamaServerError::Unreachable(format!("status {}", response.status())));
+    }
+    response.json().await.map_err(|error| LlamaServerError::Unreachable(error.to_string()))
+}
+
 pub(crate) async fn engine_probe(root: &str, client: &reqwest::Client) -> EngineProbe {
     if engine_condemned() {
         return EngineProbe::Condemned;
     }
     engine_probe_within(root, client, PROBE_TIMEOUT).await
+}
+
+/// Interpret only the requested operation. A different restore on the same slot
+/// cannot keep this waiter alive, and a completed snapshot is not an HTTP receipt.
+fn restore_progress(body: &serde_json::Value, operation: uuid::Uuid, slot: u32) -> Option<EngineProbe> {
+    if body["operation_id"].as_str()?.parse::<uuid::Uuid>().ok()? != operation
+        || body["id_slot"].as_u64()? != u64::from(slot)
+        || body["action"].as_str()? != "restore"
+    {
+        return None;
+    }
+    let phase = body["phase"].as_u64()?;
+    if phase == 4 || phase == 5 {
+        return Some(EngineProbe::OperationEnded);
+    }
+    if phase > 3 { return None; }
+    let fingerprint = body["state_bytes"].as_u64()?
+        .saturating_add(body["sidecar_bytes"].as_u64()?)
+        .saturating_add(body["checkpoints"].as_u64()?)
+        .saturating_add(phase);
+    Some(EngineProbe::Progress(EngineProgress { fingerprint, any_processing: false }))
+}
+
+fn restore_probe_response(status: reqwest::StatusCode, body: &serde_json::Value, operation: uuid::Uuid, slot: u32) -> EngineProbe {
+    if !status.is_success() { return EngineProbe::Busy; }
+    // Older engines ignore the query and return the ordinary slots array. Only
+    // that capability shape permits legacy progress; an unknown/replaced UUID
+    // must never borrow progress from an unrelated operation.
+    if body.is_array() {
+        return slots_progress(body).map_or(EngineProbe::Busy, EngineProbe::Progress);
+    }
+    restore_progress(body, operation, slot).unwrap_or(EngineProbe::Busy)
+}
+
+pub(crate) async fn restore_probe(root: &str, client: &reqwest::Client, operation: uuid::Uuid, slot: u32) -> EngineProbe {
+    if engine_condemned() { return EngineProbe::Condemned; }
+    let response = client.get(format!("{root}/slots"))
+        .query(&[("operation_id", operation.to_string())])
+        .timeout(PROBE_TIMEOUT).send().await;
+    match response {
+        Ok(response) => {
+            let status = response.status();
+            match response.json::<serde_json::Value>().await {
+                Ok(body) => restore_probe_response(status, &body, operation, slot),
+                Err(_) => EngineProbe::Busy,
+            }
+        }
+        Err(error) if error.is_connect() && !error.is_timeout() => EngineProbe::Unreachable,
+        Err(_) => EngineProbe::Busy,
+    }
 }
 
 /// [`engine_probe`] with the timeout as a parameter, so a test can hold a socket open
@@ -2353,18 +2487,33 @@ where
     PF: std::future::Future<Output = EngineProbe>,
 {
     tokio::pin!(work);
-    let mut last = match progress().await {
+    // A probe is observation, never a suspension of the request it observes.
+    // In particular a terminal HTTP receipt wins over a simultaneous stale
+    // probe verdict; otherwise paging can quarantine work that already finished.
+    let initial = tokio::select! {
+        biased;
+        done = &mut work => return Some(done),
+        observed = progress() => observed,
+    };
+    let mut last = match initial {
         EngineProbe::Progress(p) => Some(p.fingerprint),
+        EngineProbe::OperationEnded => return None,
         EngineProbe::Busy | EngineProbe::Unreachable | EngineProbe::Condemned => None,
     };
     let mut busy_checkpoints: u64 = 0;
     let mut quiet_in_a_row: u32 = 0;
     loop {
         tokio::select! {
+            biased;
             done = &mut work => return Some(done),
             _ = tokio::time::sleep(bound) => {
-                match progress().await {
-                    EngineProbe::Unreachable => return None,
+                let observed = tokio::select! {
+                    biased;
+                    done = &mut work => return Some(done),
+                    observed = progress() => observed,
+                };
+                match observed {
+                    EngineProbe::Unreachable | EngineProbe::OperationEnded => return None,
                     EngineProbe::Condemned => {
                         crate::probe!(
                             class = "inference.wait.engine_condemned",
@@ -3562,6 +3711,20 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
             // exists for. A plan that keeps asking is now a probe line, not a relaunch.
             let served_window_n = served_window_probe.as_ref().ok().copied().unwrap_or(0); // unwrap_or: unreadable = 0 = no served window to compare against, same as window_ok's policy
             let served_lanes_n = served_lanes_probe.as_ref().ok().copied().unwrap_or(0); // unwrap_or: unreadable = 0 = no served lanes to compare against, same as lanes_ok's policy
+            // THE CACHE GRANT IS LAUNCH GEOMETRY TOO (card d7294f0b). `--cache-ram` is fixed
+            // at spawn. Kimi's node, 2026-10-15 07:37-07:39Z: the daemon found her adopted
+            // lane's 3,248 MiB grant held no measured state and decided "re-homing" twice,
+            // but this rail compared only model, genes, window, lanes, sight and the KV type,
+            // answered AlreadyServing, and every switch between minds stayed a full re-prefill.
+            // The daemon's own rule decides here too: relaunch only when the running grant
+            // holds no state and the target's would. Unknown (no argv) or drift is never one.
+            let page_dir = kv_page_dir(target.model_id(), served_window_n);
+            crate::inference::slots::seed_state_samples(&page_dir).await;
+            let cache_ok = !crate::inference::lane_args::cache_relaunch_owed(
+                running_kv.as_ref().and_then(|r| r.cache_ram_mib),
+                target.host_prompt_cache_mib,
+                crate::inference::slots::measured_state_bytes(&page_dir),
+            );
             let refused_trade = !lanes_ok
                 && window_ok
                 && sight_ok
@@ -3587,7 +3750,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 );
             }
             let gate_closed = crate::system_resources::is_memory_gate_closed();
-            let refused_pressure = !refused_trade && grow_refused_by_memory_gate(gate_closed, window_ok, lanes_ok);
+            let refused_pressure = !refused_trade && grow_refused_by_memory_gate(gate_closed, window_ok, lanes_ok, cache_ok);
             if refused_pressure {
                 crate::probe!(
                     class = "serving.grow_refused_memory_gate",
@@ -3662,7 +3825,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                 );
             }
             if !engine_ok
-                || ((!window_ok || !lanes_ok || !sight_ok || !kv_ok) && !refused_trade && !refused_pressure)
+                || ((!window_ok || !lanes_ok || !sight_ok || !kv_ok || !cache_ok) && !refused_trade && !refused_pressure)
             {
                 crate::probe!(
                     class = "serving.grow",
@@ -3674,6 +3837,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
                     lanes_ok,
                     sight_ok,
                     kv_ok,
+                    cache_ok,
                     planned_kv = %planned_kv.cache_type,
                     planned_flash_attn = planned_kv.flash_attn,
                     running_kv = running_kv.as_ref().map(|r| r.cache_type_or_default().to_string()).unwrap_or_default(), // unwrap_or_default: "" = the running decision is unknown (no live argv); kv_ok is then true
@@ -3990,23 +4154,7 @@ impl LlamaServerProcess {
     }
 
     async fn props_json(&self) -> Result<serde_json::Value, LlamaServerError> {
-        let url = format!("{}/props", self.root);
-        let resp = self
-            .client
-            .get(&url)
-            .timeout(PROBE_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
-        if !resp.status().is_success() {
-            return Err(LlamaServerError::Unreachable(format!(
-                "status {}",
-                resp.status()
-            )));
-        }
-        resp.json()
-            .await
-            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))
+        engine_props(&self.root, &self.client).await
     }
 
     /// Where the weights were ALLOCATED, from `/props` (`model_weight_buffers`).
@@ -4279,6 +4427,21 @@ impl LlamaServerProcess {
         };
         let health = format!("{}/health", self.root);
         let started = Instant::now();
+        let owned_loading = {
+            let child = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic mutating the owned child.
+            child.as_ref().and_then(|owned| {
+                owned.child.id().map(|pid| {
+                    (
+                        OwnedEngineIdentity {
+                            owner: Arc::downgrade(&self.child),
+                            generation: owned.generation.clone(),
+                        },
+                        pid,
+                    )
+                })
+            })
+        };
+        let mut progress = ReadyLoadProgress::default();
         // Assigned by every arm below before the deadline check reads it.
         let mut last: String;
         // Sticky: once the server has said it is loading, the finish of that load (the 200
@@ -4296,8 +4459,30 @@ impl LlamaServerProcess {
                     last = String::from("/health 200 but decode smoke-probe failed");
                 }
                 Ok(resp) => {
-                    seen_loading |= resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE;
+                    let loading = resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE;
+                    seen_loading |= loading;
                     last = format!("status {}", resp.status());
+                    if loading {
+                        if let Some((expected, pid)) = &owned_loading {
+                            if let Ok(LoadingHealth {
+                                load_progress: Some(sample),
+                            }) = resp.json::<LoadingHealth>().await
+                            {
+                                if self.owned_engine().as_ref() == Some(expected)
+                                    && progress.observe(&sample, *pid, started.elapsed())
+                                {
+                                    crate::probe!(
+                                        class = "serving.load.progress",
+                                        pid = *pid,
+                                        elapsed_ms = started.elapsed().as_millis() as u64,
+                                        stage = %sample.current,
+                                        value = sample.value,
+                                        "owned model loading made measured progress; retaining the existing stall allowance"
+                                    );
+                                }
+                            }
+                        }
+                    }
                 }
                 Err(e) => last = e.to_string(),
             }
@@ -4315,7 +4500,7 @@ impl LlamaServerProcess {
                 )));
             }
             let budget = ready_budget(budget, seen_loading && self.owns_child());
-            if started.elapsed() >= budget {
+            if progress.stalled(started.elapsed(), budget) {
                 // Even a non-exiting HANG now surfaces the stderr state: an empty log
                 // fingerprints "child emitted nothing before it stopped" — the diagnostic
                 // that was missing when this masked as a bare 240s /health timeout. The
@@ -4325,8 +4510,12 @@ impl LlamaServerProcess {
                 // (no exit status). Glass-boxed 2026-07-28: a second 24B eval lane co-resident
                 // with the live 24B lane was jetsam-killed with 9.6 GB free.
                 return Err(LlamaServerError::NotReady(
-                    budget,
-                    format!("{last} — last stderr:\n{}", self.stderr_log_tail()),
+                    started.elapsed(),
+                    format!(
+                        "{last}; measured load progress quiet for {:?} (allowance {budget:?}) — last stderr:\n{}",
+                        started.elapsed().saturating_sub(progress.last_advanced),
+                        self.stderr_log_tail()
+                    ),
                 ));
             }
             tokio::time::sleep(READY_POLL).await;
@@ -4429,10 +4618,11 @@ pub enum LaneAdmission {
 /// `resident` is the verified-live ephemeral census at decision time — the authority
 /// never has to re-derive it, and cannot disagree with the caller about what is
 /// already running.
-pub type LaneAdmissionAuthority =
-    Arc<dyn Fn(&ServingTarget, &[crate::inference::lane_registry::LaneRecord]) -> LaneAdmission
+pub type LaneAdmissionAuthority = Arc<
+    dyn Fn(&ServingTarget, &[crate::inference::lane_registry::LaneRecord]) -> LaneAdmission
         + Send
-        + Sync>;
+        + Sync,
+>;
 
 static LANE_ADMISSION: OnceLock<LaneAdmissionAuthority> = OnceLock::new();
 
@@ -4838,7 +5028,10 @@ impl LlamaServerControl for LlamaServerProcess {
 
     async fn served_engine_build(&self) -> Result<Option<String>, LlamaServerError> {
         let body = self.props_json().await?;
-        Ok(body.get("build_info").and_then(|v| v.as_str()).map(str::to_string))
+        Ok(body
+            .get("build_info")
+            .and_then(|v| v.as_str())
+            .map(str::to_string))
     }
 
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
@@ -6560,6 +6753,74 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_header_wait_rides_a_moving_engine_and_ends_on_a_quiet_one() {
         let bound = std::time::Duration::from_secs(300);
+        // c610ef8f: only counters from this exact restore hold its waiter. A
+        // completed snapshot cannot replace the pending terminal HTTP receipt.
+        let operation = uuid::Uuid::new_v4();
+        let snapshot = |bytes, phase| serde_json::json!({
+            "operation_id": operation, "id_slot": 0, "action": "restore",
+            "phase": phase, "state_bytes": bytes, "sidecar_bytes": 0, "checkpoints": 0,
+        });
+        assert!(restore_progress(&snapshot(1, 1), uuid::Uuid::new_v4(), 0).is_none());
+        assert!(restore_progress(&snapshot(1, 1), operation, 1).is_none());
+        // Replaced/unknown operations cannot inherit another slot's moving
+        // counters. Legacy compatibility is restricted to a successful array.
+        let legacy = serde_json::json!([{"id_task": 9, "is_processing": true}]);
+        assert!(matches!(restore_probe_response(reqwest::StatusCode::OK, &legacy, operation, 0), EngineProbe::Progress(_)));
+        for (status, body) in [
+            (reqwest::StatusCode::NOT_FOUND, legacy),
+            (reqwest::StatusCode::OK, snapshot(900, 2)),
+        ] {
+            let unknown = restore_probe_response(status, &body, uuid::Uuid::new_v4(), 0);
+            assert_eq!(unknown, EngineProbe::Busy);
+            assert_eq!(wait_while_engine_progresses(std::future::pending::<()>(), bound, 1,
+                || async { unknown }, |_| {}).await, None);
+        }
+        let completed = restore_progress(&snapshot(100, 3), operation, 0).unwrap();
+        assert_eq!(wait_while_engine_progresses(std::future::pending::<()>(), bound, 1,
+            || async { completed }, |_| {}).await, None);
+        for phase in [4, 5] {
+            let ended = restore_progress(&snapshot(100, phase), operation, 0).unwrap();
+            let started = tokio::time::Instant::now();
+            assert_eq!(wait_while_engine_progresses(std::future::pending::<()>(), bound, 1,
+                || async { ended }, |_| {}).await, None);
+            assert_eq!(started.elapsed(), Duration::ZERO);
+        }
+        let mut bytes = 0;
+        let progressing = || {
+            bytes += 1;
+            let receipt = restore_progress(&snapshot(bytes, 2), operation, 0).unwrap();
+            async move { receipt }
+        };
+        let terminal = async { tokio::time::sleep(bound * 5).await; "HTTP receipt" };
+        assert_eq!(wait_while_engine_progresses(terminal, bound, 1, progressing, |_| {}).await,
+            Some("HTTP receipt"));
+        // Card 198ffe08: a slow initial/checkpoint probe must not stop polling
+        // work or discard its terminal receipt when the probe later reports dead.
+        for slow_initial in [true, false] {
+            let mut calls = 0;
+            let slow_probe = || {
+                calls += 1;
+                let slow = slow_initial || calls > 1;
+                async move {
+                    if slow {
+                        tokio::time::sleep(bound * 3).await;
+                        EngineProbe::Unreachable
+                    } else {
+                        EngineProbe::Busy
+                    }
+                }
+            };
+            let completes_after = if slow_initial { bound / 2 } else { bound + bound / 2 };
+            let work = async {
+                tokio::time::sleep(completes_after).await;
+                "terminal receipt"
+            };
+            let started = tokio::time::Instant::now();
+            assert_eq!(wait_while_engine_progresses(work, bound, 1, slow_probe, |_| {}).await,
+                Some("terminal receipt"));
+            assert_eq!(started.elapsed(), completes_after,
+                "completion must not wait for the unrelated probe deadline");
+        }
         let moving = std::sync::atomic::AtomicU64::new(0);
         let advancing = || {
             let n = moving.fetch_add(2048, std::sync::atomic::Ordering::Relaxed);
@@ -8135,12 +8396,61 @@ mod tests {
     #[test]
     fn a_loading_engine_of_ours_is_not_a_failed_one() {
         assert_eq!(ready_budget(READY_TIMEOUT, true), EPHEMERAL_READY_TIMEOUT);
-        assert!(ready_budget(READY_TIMEOUT, true) > Duration::from_secs(92), "the measured first load fits");
-        assert_eq!(ready_budget(READY_TIMEOUT, false), READY_TIMEOUT, "silence or an adopted process keeps the tight budget");
+        assert!(
+            ready_budget(READY_TIMEOUT, true) > Duration::from_secs(92),
+            "the measured first load fits"
+        );
+        assert_eq!(
+            ready_budget(READY_TIMEOUT, false),
+            READY_TIMEOUT,
+            "silence or an adopted process keeps the tight budget"
+        );
         assert_eq!(
             ready_budget(EPHEMERAL_READY_TIMEOUT, true),
             EPHEMERAL_READY_TIMEOUT,
             "never shorter than the caller's own budget"
+        );
+        // Regression: total cold load may exceed 240s while measured work advances.
+        // Repeated 503, stage labels, wrong children and warmup silence earn no time.
+        assert!(
+            serde_json::from_str::<LoadingHealth>(r#"{"error":{"code":503}}"#)
+                .expect("older engine health shape")
+                .load_progress
+                .is_none()
+        );
+        assert!(
+            serde_json::from_str::<LoadingHealth>(r#"{"load_progress":{"pid":"wrong"}}"#).is_err()
+        );
+        let mut progress = ReadyLoadProgress::default();
+        let sample = |pid, current, value| {
+            serde_json::from_value::<LoadProgressSample>(serde_json::json!({
+                "pid": pid, "stages": ["weights", "vision"], "current": current, "value": value,
+            }))
+            .expect("native snapshot shape")
+        };
+        let seconds = Duration::from_secs;
+        assert!(!progress.observe(&sample(7, "weights", 0.0), 7, seconds(100)));
+        assert!(progress.stalled(seconds(240), EPHEMERAL_READY_TIMEOUT));
+        assert!(progress.observe(&sample(7, "weights", 0.5), 7, seconds(200)));
+        assert!(!progress.stalled(seconds(300), EPHEMERAL_READY_TIMEOUT));
+        assert!(!progress.observe(&sample(7, "weights", 0.5), 7, seconds(300)));
+        assert!(!progress.observe(&sample(7, "weights", 0.4), 7, seconds(300)));
+        assert!(!progress.observe(&sample(8, "weights", 1.0), 7, seconds(300)));
+        assert!(!progress.observe(&sample(7, "vision", 0.0), 7, seconds(300)));
+        assert!(!progress.observe(&sample(7, "vision", 1.1), 7, seconds(300)));
+        let mut changed = sample(7, "vision", 0.5);
+        changed.stages.reverse();
+        assert!(!progress.observe(&changed, 7, seconds(300)));
+        assert_eq!(
+            progress.last_advanced,
+            seconds(200),
+            "rejected samples cannot renew the allowance"
+        );
+        assert!(progress.observe(&sample(7, "vision", 1.0), 7, seconds(400)));
+        assert!(!progress.stalled(seconds(639), EPHEMERAL_READY_TIMEOUT));
+        assert!(
+            progress.stalled(seconds(640), EPHEMERAL_READY_TIMEOUT),
+            "unmeasured warmup stays bounded"
         );
     }
 
@@ -8294,7 +8604,17 @@ mod tests {
         }
         /// Model an engine launched with this KV decision (read off its argv in production).
         fn launched_with(mut self, cache_type: Option<&str>, flash_attn: bool) -> Self {
-            self.launched_kv = Some(crate::inference::lane_process::LaunchKv { cache_type: cache_type.map(str::to_string), flash_attn });
+            self.launched_kv = Some(crate::inference::lane_process::LaunchKv { cache_type: cache_type.map(str::to_string), flash_attn, cache_ram_mib: None });
+            self
+        }
+        /// Model an engine launched on THIS KV decision with a `--cache-ram` grant of `mib`.
+        fn launched_with_cache(mut self, mib: u32) -> Self {
+            let planned = crate::cognition::kv_cache_plan::resolve();
+            self.launched_kv = Some(crate::inference::lane_process::LaunchKv {
+                cache_type: planned.launcher_cache_type().map(str::to_string),
+                flash_attn: planned.flash_attn,
+                cache_ram_mib: Some(mib),
+            });
             self
         }
         /// Model a child we spawned ourselves (trusted without a per-tick probe).
@@ -8586,11 +8906,12 @@ mod tests {
     // and nothing is refused while the gate is open.
     #[test]
     fn a_closed_memory_gate_refuses_a_lane_or_window_grow() {
-        assert!(grow_refused_by_memory_gate(true, true, false), "more lanes through a closed gate");
-        assert!(grow_refused_by_memory_gate(true, false, true), "a wider window through a closed gate");
-        assert!(grow_refused_by_memory_gate(true, false, false), "both");
-        assert!(!grow_refused_by_memory_gate(true, true, true), "geometry matches: a KV/sight relaunch is not a grow");
-        assert!(!grow_refused_by_memory_gate(false, false, false), "an open gate refuses nothing");
+        assert!(grow_refused_by_memory_gate(true, true, false, true), "more lanes through a closed gate");
+        assert!(grow_refused_by_memory_gate(true, false, true, true), "a wider window through a closed gate");
+        assert!(grow_refused_by_memory_gate(true, false, false, true), "both");
+        assert!(grow_refused_by_memory_gate(true, true, true, false), "a bigger host cache through a closed gate (card d7294f0b)");
+        assert!(!grow_refused_by_memory_gate(true, true, true, true), "geometry matches: a KV/sight relaunch is not a grow");
+        assert!(!grow_refused_by_memory_gate(false, false, false, false), "an open gate refuses nothing");
     }
 
     #[tokio::test]
@@ -8724,6 +9045,36 @@ mod tests {
         // Unknown launch (no argv): not a mismatch.
         let unknown = FakeControl::probe(Ok(Some("coder-14b".into()))).owned();
         assert_eq!(ensure_model_serving(&unknown, &target("coder-14b"), false).await, EnsureOutcome::AlreadyServing);
+    }
+
+    // what this catches (card d7294f0b, Kimi's node 2026-10-15 07:37-07:39Z): the daemon decided a
+    // cache re-home for an adopted lane whose --cache-ram held no measured state, and this rail
+    // answered AlreadyServing because it never compared the grant. With a measured state between
+    // the running grant and the target's, the lane relaunches; an unknown grant, or a target that
+    // could not hold the state either, still adopts.
+    #[tokio::test]
+    async fn an_adopted_lane_whose_cache_holds_no_state_relaunches_onto_one_that_does() {
+        const MIB: u64 = 1024 * 1024;
+        let id = "cache-grant-d7294f0b"; // its own page dir: the state samples are process-wide
+        let t = target(id);
+        crate::inference::slots::note_state_bytes(&kv_page_dir(id, t.context_window), 3_800 * MIB);
+        let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
+        assert_eq!(
+            ensure_model_serving(&starved, &t, false).await,
+            EnsureOutcome::Spawned { model: id.into() },
+            "a 3,248 MiB grant holds no 3,800 MiB state and the target's 4,096 does"
+        );
+        assert_eq!(starved.serves.load(Ordering::SeqCst), 1);
+        let unknown = FakeControl::probe(Ok(Some(id.into()))).owned();
+        assert_eq!(ensure_model_serving(&unknown, &t, false).await, EnsureOutcome::AlreadyServing, "no argv: an unknown grant is not a mismatch");
+        let futile = ServingTarget { host_prompt_cache_mib: 3_500, ..t.clone() };
+        let starved = FakeControl::probe(Ok(Some(id.into()))).owned().launched_with_cache(3_248);
+        assert_eq!(
+            ensure_model_serving(&starved, &futile, false).await,
+            EnsureOutcome::AlreadyServing,
+            "a relaunch whose grant holds no state either is not owed"
+        );
+        assert_eq!(starved.serves.load(Ordering::SeqCst), 0);
     }
 
     // what this catches: #175 self-heal. A child WE OWN that is compute-wedged (decode

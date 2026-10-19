@@ -72,18 +72,17 @@ fn probe_client() -> &'static reqwest::Client {
 pub(crate) struct FillReceipt<'a> {
     pub model: &'a str,
     pub prompt_tokens: usize,
-    pub image_quote: Option<ImageQuote<'a>>,
+    pub prompt_quote: Option<PromptQuote<'a>>,
 }
 
-/// Request-specific authority for the engine's multimodal counter. The adapter
+/// Request-specific authority for the engine's finalized-prompt counter. The adapter
 /// supplies this only for its managed local engine, not every OpenAI-compatible
 /// provider or every gateway that happens to serve one resident model.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct ImageQuote<'a> {
+pub(crate) struct PromptQuote<'a> {
     pub client: &'a reqwest::Client,
     pub dedicated_lane: bool,
     pub caller: &'a str,
-    pub patience: std::time::Duration,
     pub reply: u32,
     pub request_id: &'a str,
 }
@@ -121,30 +120,39 @@ pub(crate) async fn send_with_lane_retry(
     // listening yet; 503 = listening but still loading). One counter, so the total
     // time this call can spend waiting on a relaunching lane stays bounded.
     let mut relaunch_retries: u32 = 0;
+    // Prompt counting is pre-stream wire work, governed by the same measured
+    // bound as headers. Queue admission and KV paging have already completed;
+    // closed-endpoint readiness patience must not debit those waits from a quote
+    // that has not started (fe7960bf: healthy paging left a zero quote timeout).
+    // Keep one cumulative quote allowance across retries and their backoff; do not
+    // rearm a fresh quote allowance for each replacement engine.
     let quote_started = Instant::now();
     let response = loop {
-        if let Some(quote) = fill.image_quote {
+        if let Some(quote) = fill.prompt_quote {
             // A transport retry may reach a replacement engine. Re-count the
             // same prepared body on EVERY attempt; never reuse its predecessor's
             // template/projector count. A failed quote refuses this attempt.
             super::serving_guard::guard_resident_model(
                 cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Estimated(0), quote.caller,
             ).await?;
-            fill.prompt_tokens = super::serving_guard::quote_image_prompt(
+            let count_started = Instant::now();
+            fill.prompt_tokens = super::serving_guard::quote_prompt(
                 quote.client,
                 &request_builder,
-                quote.patience.saturating_sub(quote_started.elapsed()),
+                header_bound.saturating_sub(quote_started.elapsed()),
             ).await?;
+            let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
             super::serving_guard::guard_resident_model(
                 cfg, quote.dedicated_lane, fill.model, super::serving_guard::PromptCount::Measured { prompt: fill.prompt_tokens, reply: quote.reply }, quote.caller,
             ).await?;
             crate::probe!(
-                class = "inference.prompt.image_quote",
+                class = "inference.prompt.prompt_quote",
                 request_id = quote.request_id,
                 model = fill.model,
                 input_tokens = fill.prompt_tokens as u64,
+                elapsed_ms = count_elapsed_ms,
                 attempt = relaunch_retries,
-                "selected engine counted the finalized image-bearing prompt"
+                "selected engine counted the finalized prompt"
             );
         }
         let send_start = Instant::now();
@@ -277,20 +285,8 @@ pub(crate) async fn send_with_lane_retry(
                 continue;
             }
             Err(e) => {
-                // reqwest::Error's top-level Display often collapses the
-                // real cause (timeout vs connect vs body-write) into a
-                // generic "error sending request" string. Walk the error
-                // source chain so the log shows the actual terminal
-                // reason — critical for debugging stalls where the
-                // outer message alone is useless.
-                let mut chain: Vec<String> = vec![e.to_string()];
-                let mut cur: &dyn std::error::Error = &e;
-                while let Some(src) = cur.source() {
-                    chain.push(src.to_string());
-                    cur = src;
-                }
                 return Err(InferenceError::Unavailable(format!(
-                    "{} POST failed after {}ms{}: {} (kind: timeout={}, connect={}, request={}, body={})",
+                    "{} POST failed after {}ms{}: {}",
                     cfg.name,
                     send_start.elapsed().as_millis(),
                     if relaunch_retries > 0 {
@@ -300,11 +296,7 @@ pub(crate) async fn send_with_lane_retry(
                     } else {
                         String::new()
                     },
-                    chain.join(" -> "),
-                    e.is_timeout(),
-                    e.is_connect(),
-                    e.is_request(),
-                    e.is_body()
+                    crate::ai::inference_error::transport_diagnostic(&e)
                 )));
             }
         }

@@ -58,8 +58,7 @@ pub async fn execute(
     let mut command = Command::new(&actual_cmd);
     command
         .args(&actual_args)
-        .current_dir(&work_dir)
-        .kill_on_drop(true);
+        .current_dir(&work_dir);
 
     // Set interpolated environment variables on the child process
     if let Some(env_map) = env {
@@ -69,43 +68,57 @@ pub async fn execute(
         }
     }
 
-    let output = tokio::time::timeout(Duration::from_secs(timeout_secs), command.output()).await;
+    // owned (lane_process::run_owned): at the bound, or when the pipeline is dropped, the step's
+    // command and everything it started are ended; kill_on_drop ended only the direct child
+    let output = crate::inference::lane_process::run_owned(command, Some(Duration::from_secs(timeout_secs)), "sentinel-shell", std::sync::Arc::default()).await;
 
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    match output {
-        Ok(Ok(output)) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-            let exit_code = output.status.code().unwrap_or(-1);
-            let success = if allow_failure { true } else { exit_code == 0 };
-
-            Ok(StepResult {
-                step_index: index,
-                step_type: "shell".to_string(),
-                success,
-                duration_ms,
-                output: Some(stdout.clone()),
-                error: if success { None } else { Some(stderr) },
-                exit_code: Some(exit_code),
-                data: json!({
-                    "stdout": stdout,
-                    "stderr": String::from_utf8_lossy(&output.stderr),
-                    "exitCode": exit_code,
-                }),
-            })
+    use crate::inference::lane_process::Ended;
+    let output = match output {
+        Ok(output) => output,
+        Err(e) => return Err(step_err(pipeline_ctx.handle_id, &format!("Shell step failed to execute '{actual_cmd}'"), e)),
+    };
+    let note = output.capture_note(); // its output isn't whole: said beside the result, never hidden
+    let status = match output.ended {
+        Ended::Exited(status) => status,
+        Ended::TimedOut { ref unconfirmed } => {
+            // what it wrote before the bound stays in the error, and teardown it couldn't
+            // confirm is named, never claimed complete (Codex root on #5035)
+            let mut why = format!("timed out after {timeout_secs}s");
+            if !unconfirmed.is_empty() {
+                why.push_str(&format!("; not confirmed gone: {unconfirmed:?}"));
+            }
+            for (name, read) in [("stdout", &output.stdout), ("stderr", &output.stderr)] {
+                if !read.bytes.is_empty() {
+                    why.push_str(&format!("\n{name} before the bound:\n{}", String::from_utf8_lossy(&read.bytes).trim_end()));
+                }
+            }
+            return Err(step_err(pipeline_ctx.handle_id, "Shell step", why));
         }
-        Ok(Err(e)) => Err(step_err(
-            pipeline_ctx.handle_id,
-            &format!("Shell step failed to execute '{actual_cmd}'"),
-            e,
-        )),
-        Err(_) => Err(step_err(
-            pipeline_ctx.handle_id,
-            "Shell step",
-            format!("timed out after {timeout_secs}s"),
-        )),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout.bytes).to_string();
+    let mut stderr = String::from_utf8_lossy(&output.stderr.bytes).to_string();
+    if let Some(note) = note {
+        stderr.push_str(&format!("\n[{note}]"));
     }
+    let exit_code = status.code().unwrap_or(-1); // unwrap_or: killed by a signal has no exit code; -1 names that
+    let success = if allow_failure { true } else { exit_code == 0 };
+
+    Ok(StepResult {
+        step_index: index,
+        step_type: "shell".to_string(),
+        success,
+        duration_ms,
+        output: Some(stdout.clone()),
+        error: if success { None } else { Some(stderr.clone()) },
+        exit_code: Some(exit_code),
+        data: json!({
+            "stdout": stdout,
+            "stderr": stderr,
+            "exitCode": exit_code,
+        }),
+    })
 }
 
 #[cfg(test)]

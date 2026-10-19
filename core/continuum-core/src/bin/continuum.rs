@@ -40,6 +40,7 @@ use continuum_cli_lifecycle::deploy_provenance::{
 use serde_json::Value;
 
 use continuum_cli_lifecycle::owned_engines;
+use continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError;
 use owned_engines::owned_engine_candidate;
 
 #[cfg(windows)]
@@ -59,6 +60,9 @@ use continuum_cli_lifecycle::launchd;
 #[cfg(windows)]
 #[path = "continuum/elevated_teardown.rs"]
 mod elevated_teardown;
+#[cfg(windows)]
+#[path = "continuum/container_maintenance.rs"]
+mod container_maintenance;
 // The service host's one drop of privilege (S4U ignores RunLevel); Windows-only like its caller.
 #[cfg(windows)]
 use continuum_cli_lifecycle::unelevated_service;
@@ -180,6 +184,10 @@ async fn run() -> Result<(), CliError> {
                 eprintln!("{}", VerbError::NoIdleSlot);
                 std::process::exit(3);
             }
+            Err(VerbError::DeferredFailedAttempt(reason)) => {
+                eprintln!("{reason}");
+                std::process::exit(4);
+            }
             Err(e) => return Err(CliError::Command(e.to_string())),
         }
     }
@@ -187,8 +195,33 @@ async fn run() -> Result<(), CliError> {
         let code = installed_service(args.collect()).await?;
         std::process::exit(code);
     }
+    // The selected release's installer uses the same capacity authority as its
+    // download/extraction path, including when the destination is another volume.
+    if first == "artifact-capacity" {
+        let values: Vec<String> = args.collect();
+        if values.len() == 1 && values[0] == "--protocol" {
+            println!("1");
+            return Ok(());
+        }
+        if values.len() != 2 {
+            return Err(CliError::Command("artifact-capacity requires <destination> <projected-bytes>".into()));
+        }
+        let bytes = values[1].parse::<u64>().map_err(|error| CliError::Command(error.to_string()))?;
+        if let Err(error) = continuum_core::paths::artifacts::check_capacity(Path::new(&values[0]), bytes).await {
+            // boundary: selected-artifact installer capacity protocol, not a diagnostic parser.
+            println!("{}", serde_json::to_string(&error).map_err(|error| CliError::Command(error.to_string()))?); // boundary: CLI stdout wire consumed by installer capacity admission
+            std::process::exit(4);
+        }
+        return Ok(());
+    }
     if first == "prepare-prebuilt" {
         return prepare_prebuilt(args.collect()).await.map_err(CliError::Command);
+    }
+    if first == "container-maintenance" {
+        #[cfg(windows)]
+        return container_maintenance::run(args.collect()).await.map_err(CliError::Command);
+        #[cfg(not(windows))]
+        return Err(CliError::Command("legacy container maintenance requires Windows kernel custody".into()));
     }
     if first == "service-host" {
         let code = service_host(args.collect()).await?;
@@ -216,7 +249,7 @@ async fn run() -> Result<(), CliError> {
             }
             start(flags.iter().any(|a| a == "--force")).await
         }
-        "reboot" | "restart" => reboot(RebootOptions::parse(args)?).await,
+        "reboot" | "restart" => reboot(RebootOptions::parse(args)?).await.map_err(|error| error.to_string()),
         // The typed boot plan (BOOT-IS-A-TYPED-PLAN.md, slice 1): deterministic
         // runtime bring-up of an ALREADY-BUILT binary — lane adopt-or-reap,
         // transport, core launch + #194 verify, optional Beside rails — one
@@ -1219,6 +1252,17 @@ async fn require_service_medium() -> Result<Option<i32>, String> {
     Ok(Some(code))
 }
 
+/// The runtime launcher starts media before service-host can lower privileges.
+/// A prebuilt reboot already owns the install lease: refuse here instead of
+/// recursively relaunching the CLI and deadlocking on that same lease.
+#[cfg(any(windows, test))]
+fn require_prebuilt_runtime_medium(integrity: Result<u32, String>, marker: bool) -> Result<(), String> {
+    if continuum_cli_lifecycle::installed_release::needs_medium_relaunch(integrity, marker)? {
+        return Err("explicit prebuilt reboot must run from a normal-user terminal; no shutdown or media launch was performed".into());
+    }
+    Ok(())
+}
+
 /// Fixed protected task action: verify normal-user integrity BEFORE reading the
 /// caller-owned selection. Core and deploy share this boundary and receipt owner.
 async fn installed_service(args: Vec<String>) -> Result<i32, String> {
@@ -1238,6 +1282,7 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         let executable = std::env::current_exe().map_err(|e|e.to_string())?;
         let envelope = installed_release::Envelope { schema:2, active_release:args[1].clone(), bootstrap:executable.to_string_lossy().into_owned() };
         envelope.validate(&home,&program_files,&sid)?;
+        let startup = supervisor_install::maintenance::StartupPermit::acquire(&home).await?;
         let path = Path::new(&envelope.active_release);
         let text = installed_release::read_receipt(path)?;
         let payload = continuum_core::paths::payload_root(&home)?;
@@ -1246,13 +1291,7 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         let mut command = if args[0] == "core" {
             // The validated launcher owns media startup as well as the core host.
             // Select it only after the shared Medium gate and receipt validation.
-            let mut command = std::process::Command::new(PreparedCoreService::shell()?);
-            command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "RemoteSigned", "-File", &release.launcher,
-                "-ExecutablePath", &release.cli, "-CorePath", &release.artifact,
-                "-SocketPath", &release.socket, "-EnginePath", &release.engine,
-                "-LogDirectory", &release.log_directory]);
-            if let Some(root) = &release.eye_root { command.args(["-EyeRoot", root]); }
-            command
+            installed_runtime_command(&PreparedCoreService::shell()?, release, Path::new(&release.artifact), &release.socket)
         } else {
             let mut command = std::process::Command::new(&release.cli);
             command.arg("deploy-consume");
@@ -1267,6 +1306,7 @@ async fn installed_service(args: Vec<String>) -> Result<i32, String> {
         // selected generation remains valid. The installing parent checks its SHA.
         if installed_release::read_receipt(path)? != text { return Err("active release changed during supervisor selection".into()); }
         let tree = continuum_cli_lifecycle::windows_launch::spawn_owned_logged(&command,&log,&log,0x0800_0000).map_err(|e|e.to_string())?;
+        drop(startup); // Maintenance must drain this already-created child.
         let status = tree.wait().await.map_err(|e|e.to_string())?;
         drop(selected);
         Ok(status.code().unwrap_or(1)) // No normal exit code means the supervised child failed.
@@ -1702,11 +1742,11 @@ impl PreparedCoreService {
     /// `--prebuilt <slot>` — the old files move aside as `.prev.exe` (a running exe can
     /// be renamed, never overwritten), the new ones copy in, and the slot's CLI follows
     /// the core so the two never drift (#422's STALE CLI). Nothing here stops the core.
-    async fn stage(built: &PrebuiltCore, socket: &str) -> Result<PrebuiltCore, String> {
+    async fn stage(built: &PrebuiltCore, socket: &str) -> Result<PrebuiltCore, PublishedCoreError> {
         #[cfg(not(any(windows, target_os = "macos")))]
         {
             let _ = (built, socket);
-            Err("reboot --service is supported only on Windows and macOS".to_string())
+            Err("reboot --service is supported only on Windows and macOS".into())
         }
         #[cfg(target_os = "macos")]
         {
@@ -1724,10 +1764,10 @@ impl PreparedCoreService {
                 return Err(format!(
                     "staged artifact reports build {sha}, the warm build was {} — refusing the handoff",
                     built.build_sha
-                ));
+                ).into());
             }
             println!("✓ staged build {} into the launchd slot: {}", built.build_sha, staged.display());
-            PrebuiltCore::from_report(staged, sha, None)
+            PrebuiltCore::from_report(staged, sha, None).map_err(Into::into)
         }
         #[cfg(windows)]
         {
@@ -1736,7 +1776,7 @@ impl PreparedCoreService {
             let repo = tracked_repo_dir()?;
             let source = built.path.parent().ok_or("prebuilt artifact has no directory")?;
             let existing = Self::query().await?.runtime_paths_resolve()?;
-            let receipt = WarmBuildReceipt::create()?;
+            let receipt = WarmBuildReceipt::create().map_err(PublishedCoreError::OperationalBlocked)?;
             let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
             let engine_stage = if source.join("engine/engine-install.json").is_file() {
                 format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}'; Copy-CorePublishedEngine -RepoRoot '{repo}' -ArtifactDirectory '{source}' -InstallDirectory (Split-Path $r.engine)", repo=quote(&repo), source=quote(source))
@@ -1744,14 +1784,16 @@ impl PreparedCoreService {
                 format!("$r=New-CoreServiceRelease -RepoRoot '{repo}' -ArtifactDirectory '{source}' -EnginePath '{engine}'", repo=quote(&repo), source=quote(source), engine=quote(Path::new(&existing.engine)))
             };
             let script = format!(
-                "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; . '{repo}/tools/scripts/lib/windows-prebuilt.ps1'; $env:CONTINUUM_CORE_SOCKET='{socket}'; {engine_stage}; Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' -WorkingDirectory (Split-Path $r.artifact); [IO.File]::WriteAllText('{receipt}', $r.artifact)",
+                "$ErrorActionPreference='Stop'; . '{repo}/tools/scripts/lib/install-common.ps1'; . '{repo}/tools/scripts/lib/windows-service.ps1'; . '{repo}/tools/scripts/lib/win-modules.ps1'; . '{repo}/tools/scripts/lib/windows-prebuilt.ps1'; $env:CONTINUUM_CORE_SOCKET='{socket}'; try {{ {engine_stage}; Register-CoreServiceRelease -Release $r -RepoRoot '{repo}' -WorkingDirectory (Split-Path $r.artifact); [IO.File]::WriteAllText('{receipt}', $r.artifact) }} catch {{ $failure = Get-CoreDeploymentFailure -ErrorRecord $_; [IO.File]::WriteAllText('{receipt}', ($failure | ConvertTo-Json -Depth 8 -Compress), (New-Object Text.UTF8Encoding $false)); throw }}",
                 repo=quote(&repo), socket=socket.replace('\'', "''"), receipt=quote(&receipt.0),
             );
-            Self::run_installer_script(&script)?;
-            let staged_path=resolve_service_path(receipt.artifact()?)?;
+            if let Err(reason) = Self::run_installer_script(&script) {
+                return Err(receipt.classify_deployment_failure(reason));
+            }
+            let staged_path=resolve_service_path(receipt.artifact().map_err(PublishedCoreError::OperationalBlocked)?)?;
             let sha=binary_build_sha(&staged_path).await?;
             if !sha_matches(&sha,&built.build_sha) { return Err("staged core revision differs from validated prebuilt".into()); }
-            PrebuiltCore::from_report(staged_path,sha,None)
+            PrebuiltCore::from_report(staged_path,sha,None).map_err(Into::into)
         }
     }
 
@@ -2049,16 +2091,38 @@ impl WarmBuildReceipt {
         Ok(report.strip_prefix("SKIP: ").map(|reason| reason.trim().to_string()))
     }
 
-    fn artifact(&self) -> Result<PathBuf, String> {
+    fn read_report(&self) -> Result<String, String> {
         use std::io::Read;
         const MAX_RECEIPT_BYTES: u64 = 16 * 1024;
         let mut report = String::new();
         std::fs::File::open(&self.0)
             .and_then(|file| file.take(MAX_RECEIPT_BYTES + 1).read_to_string(&mut report))
             .map_err(|e| format!("cannot read warm-build receipt: {e}"))?;
+        if report.len() > MAX_RECEIPT_BYTES as usize { return Err("warm build receipt exceeds its existing boundary".into()); }
+        Ok(report)
+    }
+
+    #[cfg(any(windows, test))]
+    fn deployment_failure(&self) -> Result<Option<PublishedCoreError>, String> {
+        let report = self.read_report()?;
+        if report.is_empty() { return Ok(None); }
+        // boundary: this invocation's installer writes the typed failure only on error.
+        serde_json::from_str(&report).map(Some).map_err(|error| format!("invalid installer failure receipt: {error}"))
+    }
+
+    #[cfg(any(windows, test))]
+    fn classify_deployment_failure(&self, original: String) -> PublishedCoreError {
+        match self.deployment_failure() {
+            Ok(Some(failure)) => failure,
+            Ok(None) => PublishedCoreError::OperationalBlocked(format!("{original}; installer failure classification receipt is empty; no build failure charged")),
+            Err(error) => PublishedCoreError::OperationalBlocked(format!("{original}; {error}; installer failure classification unavailable; no build failure charged")),
+        }
+    }
+
+    fn artifact(&self) -> Result<PathBuf, String> {
+        let report = self.read_report()?;
         let path = report.strip_suffix('\n').unwrap_or(&report); // No optional framing newline means the entire report is the path.
-        if report.len() > MAX_RECEIPT_BYTES as usize
-            || path.is_empty()
+        if path.is_empty()
             || path.contains(['\n', '\r', '\0'])
             || !Path::new(path).is_absolute()
         {
@@ -2179,7 +2243,7 @@ async fn prepare_warm_build(mut cmd: std::process::Command) -> Result<PrebuiltCo
 
 /// Rebuild source by default, or hand off to an explicitly validated prebuilt
 /// core. Both use the same leases, selective teardown and deploy verification.
-async fn reboot(options: RebootOptions) -> Result<(), String> {
+async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreError> {
     // macOS: a registered launchd job owns the launch (a1bd8b58). `--service` is implied
     // by its presence, so a bare `continuum reboot` stages + kickstarts instead of
     // spawning an orphan beside the supervisor. `CONTINUUM_FROM_SOURCE` opts out.
@@ -2270,7 +2334,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 .map(|p| p.to_string())
                 .collect::<Vec<_>>()
                 .join(",")
-        ));
+        ).into());
     }
     // Benchmark guard — the same lease, one level up. A detached `benchmark/swe-solve` is a
     // tokio task inside the core, so a swap kills it with no child process to notice and no
@@ -2290,7 +2354,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                 .map(|(run, inst)| format!("{run} on {inst}"))
                 .collect::<Vec<_>>()
                 .join(", ")
-        ));
+        ).into());
     }
     // Eval-run guard — the third lease, same shape. cognition/eval runs had NO
     // on-disk in-flight signal until 2026-08-23 (the marker in each eval world),
@@ -2307,7 +2371,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             "eval run(s) in flight ({}) — a reboot would kill them mid-exam. Wait for them, \
              or rerun with `continuum reboot --force` if losing the runs is acceptable.",
             evals.join(", ")
-        ));
+        ).into());
     }
     if !evals.is_empty() {
         println!(
@@ -2467,7 +2531,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
                     // (82af11f5) exists to end. Say so and leave the running core standing.
                     return Err(format!(
                         "reboot --service: no artifact to hand the supervisor — {why}; the running core stands"
-                    ));
+                    ).into());
                 }
                 println!("▶ no warm build: {why} — stopping first, then building")
             }
@@ -2490,7 +2554,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
             "$ErrorActionPreference='Stop'; . '{repo_arg}/tools/scripts/lib/windows-service.ps1'; . '{repo_arg}/tools/scripts/lib/win-modules.ps1'; Get-CoreEngineDrift -Directory '{directory}' -Requirement (Get-CoreEngineRequirement -RepoRoot '{repo_arg}')"
         )).await?;
         if !drift.is_empty() {
-            return Err(format!("prepared engine changed before stop: {drift}"));
+            return Err(format!("prepared engine changed before stop: {drift}").into());
         }
         let candidate = prebuilt
             .as_ref()
@@ -2541,17 +2605,54 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         let selection = continuum_core::inference::engine_slots::HandoffSelection::capture(&root, Path::new(&release.engine))?;
         selected.engine_selection = Some(selection);
         let promotion = async {
-            let promoted = PreparedCoreService::prepare_engine(&repo, true).await?
-                .ok_or("published engine promotion returned no receipt")?;
-            if promoted.0 != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
-            selected.engine_selection.as_ref().ok_or("missing captured engine selection")?.confirm()
+            let promoted = PreparedCoreService::prepare_engine(&repo, true).await?;
+            if PreparedCoreService::query().await?.description != selected.task.description {
+                return Err("installed release changed during published engine preparation".into());
+            }
+            let selection = selected.engine_selection.as_ref().ok_or("missing captured engine selection")?;
+            match promoted {
+                Some((description, _)) => {
+                    if description != selected.task.description { return Err("installed release changed during published engine promotion".into()); }
+                    selection.confirm()
+                }
+                None => selection.confirm_preserved(),
+            }
         }.await;
-        if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await); }
+        if let Err(failed) = promotion { return Err(selected.unwind_engine_promotion(failed).await.into()); }
     }
+    // Explicit core-only prebuilt runs borrow the installed runtime closure.
+    // Resolve and pin it BEFORE drain: a missing companion is not permission
+    // to run source builders after the current core has stopped.
+    #[cfg(windows)]
+    let prebuilt_runtime = if !requested_source_build && !options.service {
+        require_prebuilt_runtime_medium(unelevated_service::token_integrity(), std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some())?;
+        if let Some(task) = PreparedCoreService::query_optional().await? {
+            let envelope = task.installed.as_ref().ok_or("core-only prebuilt launch requires a sealed installed runtime; update the legacy installer before stopping the core")?;
+            let home = continuum_core::paths::continuum_home()?;
+            let payload = continuum_core::paths::payload_root(&home)?;
+            let sid = supervisor_install::caller_sid().await?;
+            let text = continuum_cli_lifecycle::installed_release::read_receipt(Path::new(&envelope.active_release))?;
+            let selected = continuum_cli_lifecycle::installed_release::validate_receipt(&text, &home, &payload, &sid)?;
+            if selected.release.socket != socket { return Err("installed runtime socket differs from the requested prebuilt handoff".into()); }
+            PreparedCoreService::shell()?;
+            Some(selected)
+        } else {
+            let home = continuum_core::paths::continuum_home()?;
+            match std::fs::symlink_metadata(home.join("install-active.json")) {
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Ok(_) => return Err("an installed runtime receipt exists without its registered task; refusing bare prebuilt fallback".into()),
+                Err(error) => return Err(format!("cannot inspect installed runtime receipt before prebuilt launch: {error}").into()),
+            }
+        }
+    } else { None };
+    #[cfg(windows)]
+    let _prebuilt_startup = if !requested_source_build && !options.service {
+        Some(supervisor_install::maintenance::StartupPermit::acquire(&continuum_core::paths::continuum_home()?).await?)
+    } else { None };
     if let Err(failed) = stop_with_authority(true, options.operator_present).await {
         #[cfg(windows)]
-        if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await); }
-        return Err(failed);
+        if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await.into()); }
+        return Err(failed.into());
     }
     // macOS retains its existing post-stop slot replacement contract.
     #[cfg(not(windows))]
@@ -2576,6 +2677,10 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
     let source = prebuilt
         .as_ref()
         .map_or(LaunchSource::FromSource, LaunchSource::Prebuilt);
+    #[cfg(windows)]
+    let source = if !requested_source_build && !options.service {
+        LaunchSource::ExplicitPrebuilt(prebuilt.as_ref().ok_or("explicit prebuilt artifact was lost before launch")?, prebuilt_runtime.as_ref().map(|runtime| &runtime.release))
+    } else { source };
     let secs = match service {
         Some(service) => service.launch(&old).await?,
         None => launch_core(&old, source).await?,
@@ -2601,7 +2706,7 @@ async fn reboot(options: RebootOptions) -> Result<(), String> {
         locate_start_script().is_ok(),
         matches!(cli_self_build(std::env::consts::OS), CliSelfBuild::Rebuild),
     );
-    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await
+    verify_deployed_build_against(rebuilt_cli, prebuilt.as_ref()).await.map_err(Into::into)
 }
 
 /// Prove the running core is built from the source this deploy shipped — the honest half of
@@ -2645,22 +2750,27 @@ async fn restored_build_identity(slot: &Path) -> Result<String, String> {
 /// for good (IntelMac, 50 min, 2026-09-05). `what` names the caller in the error. The one
 /// read both the deploy receipt and the rollback's identity check use.
 async fn running_core_build_sha(what: &str) -> Result<Option<String>, String> {
+    let reply = running_core_provenance("ping", what).await?;
+    Ok(reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string))
+}
+
+async fn running_core_provenance(command: &str, what: &str) -> Result<Value, String> {
     let socket = socket_path();
     let reply = tokio::time::timeout(
         std::time::Duration::from_secs(30),
         connection()
             .commands()
-            .execute_value("ping", Value::Object(Default::default())),
+            .execute_value(command, Value::Object(Default::default())),
     )
     .await
     .map_err(|_| {
         format!(
-            "{what}: the core on {socket} accepted the socket but did not answer `ping` \
+            "{what}: the core on {socket} accepted the socket but did not answer `{command}` \
              within 30 s — mid-boot (retry) or wedged (read boot.phase / boot.module_init)"
         )
     })?
     .map_err(|e| format!("{what}: no core answering on {socket}: {e}"))?;
-    Ok(reply.get("buildSha").and_then(|v| v.as_str()).map(str::to_string))
+    Ok(reply)
 }
 
 /// `rebuilt_cli` says whether THIS invocation replaced the installed CLI — true from
@@ -2775,10 +2885,9 @@ fn resolve_core_artifact() -> Result<PathBuf, String> {
         }
         return Err(format!("CONTINUUM_CORE_BIN={explicit} is not a file"));
     }
-    let home = home_dir()?;
-    let target = std::env::var("CARGO_TARGET_DIR").ok();
+    let target = continuum_core::paths::cargo::target_dir(&std::env::current_dir().map_err(|error| error.to_string())?)?;
     let payload = continuum_core::paths::payload_root(&continuum_core::paths::continuum_home()?)?;
-    let candidates = core_artifact_candidates(&home, &payload, target.as_deref());
+    let candidates = core_artifact_candidates(&target, &payload);
     candidates
         .iter()
         .find(|p| p.is_file())
@@ -2798,22 +2907,19 @@ fn resolve_core_artifact() -> Result<PathBuf, String> {
 
 /// The ordered candidate list behind [`resolve_core_artifact`] — pure (paths in, paths out)
 /// so the shared resolution ORDER is pinned by a unit test against install-service.sh.
-fn core_artifact_candidates(home: &str, payload: &Path, cargo_target_dir: Option<&str>) -> Vec<PathBuf> {
+fn core_artifact_candidates(target: &Path, payload: &Path) -> Vec<PathBuf> {
     let exe = if cfg!(windows) {
         "continuum-core-server.exe"
     } else {
         "continuum-core-server"
     };
-    let target = cargo_target_dir
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("{home}/.continuum/cache/cargo-target"));
     let mut out = Vec::new();
     if !cfg!(windows) {
         out.push(PathBuf::from("/usr/local/bin").join(exe));
     }
     out.push(payload.join("bin").join(exe));
-    out.push(PathBuf::from(&target).join("release").join(exe));
-    out.push(PathBuf::from(&target).join("debug").join(exe));
+    out.push(target.join("release").join(exe));
+    out.push(target.join("debug").join(exe));
     out
 }
 
@@ -2919,6 +3025,38 @@ fn direct_core_command(artifact: &Path, socket: &str) -> std::process::Command {
     let mut cmd = std::process::Command::new(artifact);
     cmd.arg(socket);
     cmd
+}
+
+/// One installed runtime launch contract: the sealed launcher starts media and
+/// service-host owns the browser. A developer core override changes only the
+/// already-validated core executable, not the companion or engine selection.
+#[cfg(any(windows, test))]
+fn installed_runtime_command(
+    shell: &Path,
+    release: &continuum_cli_lifecycle::installed_release::Release,
+    artifact: &Path,
+    socket: &str,
+) -> std::process::Command {
+    let mut command = std::process::Command::new(shell);
+    command.args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-ExecutionPolicy", "RemoteSigned", "-File", &release.launcher,
+        "-ExecutablePath", &release.cli, "-CorePath"]);
+    command.arg(artifact).args(["-SocketPath", socket, "-EnginePath", &release.engine,
+        "-LogDirectory", &release.log_directory]);
+    if let Some(root) = &release.eye_root { command.args(["-EyeRoot", root]); }
+    command
+}
+
+#[cfg(any(windows, test))]
+fn explicit_prebuilt_command(
+    candidate: &PrebuiltCore,
+    socket: &str,
+    runtime: Option<&continuum_cli_lifecycle::installed_release::Release>,
+    shell: &Path,
+) -> std::process::Command {
+    match runtime {
+        Some(release) => installed_runtime_command(shell, release, &candidate.path, socket),
+        None => direct_core_command(&candidate.path, socket),
+    }
 }
 
 /// Read the child's effective environment, including config.env assignments and
@@ -3032,21 +3170,7 @@ fn deploy_gate(verb: &str) -> Result<(), String> {
 /// The installer's existing Windows exclusion, held through the reboot handoff.
 #[cfg(windows)]
 fn take_install_lease(root: &Path) -> Result<std::fs::File, String> {
-    use std::os::windows::fs::OpenOptionsExt;
-    std::fs::create_dir_all(root)
-        .map_err(|e| format!("cannot create install lease directory: {e}"))?;
-    std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .share_mode(0)
-        .open(root.join("install.lock"))
-        .map_err(|e| {
-            format!(
-                "another installer/reboot holds the install lease, or it cannot be acquired: {e}"
-            )
-        })
+    continuum_cli_lifecycle::supervisor_install::maintenance::take_install_lease(root)
 }
 
 /// RAII deploy claim: published for the length of a swap, released on EVERY exit path
@@ -3256,11 +3380,26 @@ fn record_repo_checkout() {
 // Unix as a new process group — unless the bash tracker's agent still owns the node.
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct DeployConsumeOptions {}
+struct DeployConsumeOptions {
+    retry_resource: Option<(String, String)>,
+    protocol: bool,
+}
 
 impl DeployConsumeOptions {
-    fn parse(args: impl Iterator<Item = String>) -> Result<Self, String> {
-        for arg in args {
+    fn parse(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
+        if let Some(arg) = args.next() {
+            if arg == "--protocol" && args.next().is_none() {
+                return Ok(Self { protocol: true, ..Self::default() });
+            }
+            if arg == "--retry-resource" {
+                let build = args.next().ok_or("--retry-resource requires exact build and saved-condition sha256")?;
+                let digest = args.next().ok_or("--retry-resource requires saved-condition sha256")?;
+                if args.next().is_some() || build.len() != 40 || !build.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    || digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err("--retry-resource requires exactly one full build SHA and condition SHA256".into());
+                }
+                return Ok(Self { retry_resource: Some((build, digest)), ..Self::default() });
+            }
             if matches!(arg.as_str(), "--install" | "--uninstall") {
                 // ONE registrar for the consumer's task: `continuum install --supervisor`
                 // registers it S4U beside ContinuumCore. The unelevated `--install` of
@@ -3352,26 +3491,81 @@ fn consume_attempts_path() -> Result<PathBuf, String> {
 ///
 /// A ledger in the old per-request shape (`{tip, failures}`) names the request, not the
 /// build that failed, so its failures cannot be attributed: it reads as none.
-#[derive(Debug, Default, PartialEq)]
+#[derive(Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 struct ConsumeLedger {
+    #[serde(default, rename = "failures_by_build")]
     failures: std::collections::BTreeMap<String, u32>,
+    #[serde(default)]
+    resource_deferrals: std::collections::BTreeMap<String, continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral>,
 }
 
 impl ConsumeLedger {
-    fn read(path: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else { return Self::default() };
-        let failures = v
-            .get("failures_by_build")
-            .and_then(|m| m.as_object())
-            .map(|m| m.iter().filter_map(|(k, n)| Some((k.clone(), n.as_u64()? as u32))).collect())
-            .unwrap_or_default(); // unwrap_or_default: an old-shape or malformed ledger counts as no failures, never as give-up
-        Self { failures }
+    /// The existing consumer owns its ledger for the command's lifetime. The OS
+    /// releases this nonblocking lease on crash; cooperating retries cannot race
+    /// its writer. Older binaries require the explicit rollout/quiescence guard.
+    fn take_lease(path: &Path) -> Result<std::fs::File, String> {
+        use fs2::FileExt;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("create consumer ledger directory: {error}"))?;
+        }
+        let lease = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            .open(path.with_extension("lock")).map_err(|error| format!("open consumer lease: {error}"))?;
+        lease.try_lock_exclusive().map_err(|error| format!("another deploy consumer/retry owns the ledger, or its lease is unavailable: {error}"))?;
+        Ok(lease)
     }
 
-    fn write(&self, path: &Path) {
-        let body = serde_json::json!({ "failures_by_build": self.failures });
-        let _ = std::fs::write(path, body.to_string());
+    fn condition_digest(condition: &continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral) -> Result<String, String> {
+        use sha2::{Digest, Sha256};
+        let bytes = serde_json::to_vec(condition).map_err(|error| format!("encode resource condition: {error}"))?; // boundary: exact retry receipt digest
+        Ok(format!("{:x}", Sha256::digest(bytes)))
+    }
+
+    /// Caller holds the consumer lease and has refused any older live deploy owner.
+    /// Compare against a fresh disk read, then atomically preserve every other entry.
+    fn retry_resource(path: &Path, build: &str, expected: &str, owner_active: bool) -> Result<(), String> {
+        if owner_active { return Err("a deploy owner is active; resource retry refused".into()); }
+        let mut ledger = Self::read(path)?;
+        let condition = ledger.resource_deferrals.get(build).ok_or("this exact build has no saved resource condition")?;
+        if Self::condition_digest(condition)? != expected {
+            return Err("saved resource condition changed; retry digest does not match".into());
+        }
+        ledger.resource_deferrals.remove(build);
+        // Keep an explicit empty receipt rather than a remove: compare-and-clear is
+        // one durable replacement even when this was the final resource condition.
+        ledger.write(path)
+    }
+
+    fn read(path: &Path) -> Result<Self, String> {
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(format!("cannot read deploy resource/failure ledger {}: {error}; preserved", path.display())),
+        };
+        let invalid = |error| format!("invalid deploy resource/failure ledger {}: {error}; preserve evidence and repair before retry", path.display());
+        let value: Value = serde_json::from_str(&text).map_err(|error| invalid(format!("{error}")))?; // boundary: durable lifecycle receipt
+        if value.get("failures_by_build").is_none() && value.get("resource_deferrals").is_none() {
+            if value.get("tip").is_some_and(Value::is_string) && value.get("failures").and_then(Value::as_u64).is_some() {
+                return Ok(Self::default()); // The documented old per-request shape attributes no build.
+            }
+            return Err(invalid("unrecognized receipt shape".into()));
+        }
+        serde_json::from_value(value).map_err(|error| invalid(format!("{error}"))) // boundary: validated lifecycle receipt
+    }
+
+    fn write(&self, path: &Path) -> Result<(), String> {
+        use std::io::Write;
+        let temporary = path.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| -> Result<(), String> {
+            let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)
+                .map_err(|error| format!("create deploy ledger replacement: {error}"))?;
+            serde_json::to_writer(&mut file, self).map_err(|error| format!("encode deploy ledger: {error}"))?; // boundary: durable lifecycle receipt
+            file.flush().and_then(|_| file.sync_all()).map_err(|error| format!("sync deploy ledger: {error}"))?;
+            drop(file);
+            continuum_core::fs_portable::durable_rename(&temporary, path).map_err(|error| format!("replace deploy ledger: {error}"))?;
+            Ok(())
+        })();
+        if result.is_err() { let _ = std::fs::remove_file(&temporary); }
+        result
     }
 
     fn failures(&self, build: &str) -> u32 {
@@ -3398,14 +3592,19 @@ impl ConsumeLedger {
     /// an older one deployed, Astra review of #5011).
     fn landed(&mut self, build: &str) {
         self.failures.remove(build);
+        self.resource_deferrals.remove(build); // Actual successful handoff supersedes only this build's condition.
     }
 
     /// Persist, or remove the file when nothing is left to remember.
-    fn save(&self, path: &Path) {
-        if self.failures.is_empty() {
-            let _ = std::fs::remove_file(path);
+    fn save(&self, path: &Path) -> Result<(), String> {
+        if self.failures.is_empty() && self.resource_deferrals.is_empty() {
+            match std::fs::remove_file(path) {
+                Ok(()) => Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                Err(error) => Err(format!("remove empty deploy ledger: {error}")),
+            }
         } else {
-            self.write(path);
+            self.write(path)
         }
     }
 
@@ -3814,7 +4013,7 @@ async fn install_core(check: bool) -> Result<supervisor_install::ArmReport, Stri
         require_engine_receipt: true,
         ..options
     };
-    reboot(options).await?;
+    reboot(options).await.map_err(|error| error.to_string())?;
     #[cfg(windows)]
     {
         let drift = PreparedCoreService::engine_drift(&repo).await?;
@@ -3842,11 +4041,8 @@ async fn prepared_install_core(repo: &Path, head: &str) -> Result<Option<PathBuf
     if !git_in(repo, &["status", "--porcelain", "--untracked-files=normal"])?.is_empty() {
         return Ok(None);
     }
-    let target = match std::env::var("CARGO_TARGET_DIR") {
-        Ok(target) => target,
-        Err(_) => format!("{}/.continuum/cache/cargo-target", home_dir()?),
-    };
-    let cli = Path::new(&target).join("release/continuum.exe");
+    let target = continuum_core::paths::cargo::target_dir(repo)?;
+    let cli = target.join("release/continuum.exe");
     let Ok(cli_sha) = binary_build_sha(&cli).await else { return Ok(None) };
     if !continuum_cli_lifecycle::deploy_tracker::same_commit(&cli_sha, head) {
         return Ok(None);
@@ -4342,6 +4538,70 @@ fn consumer_uses_service(os: &str) -> bool {
     os == "windows"
 }
 
+/// Missing capability is a rollout refusal, never permission to clear a condition.
+fn retry_launcher(ping: &Value) -> Result<PathBuf, String> {
+    use continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL;
+    if ping.get("deployConsumerProtocol").and_then(Value::as_u64) != Some(u64::from(CONSUMER_LEASE_PROTOCOL)) {
+        return Err("resource retry requires a running core with the cooperating consumer lease protocol; finish the supported rollout and quiesce older consumers first".into());
+    }
+    ping.get("deployConsumerCli").and_then(Value::as_str).map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .ok_or_else(|| "resource retry cannot prove the active launcher CLI (external, legacy or unreadable ownership)".into())
+}
+
+async fn verify_consumer_protocol(cli: &Path) -> Result<(), String> {
+    let mut command = supervisor_install::quiet_command(cli);
+    command.args(["deploy-consume", "--protocol"]).stdin(Stdio::null());
+    let mut command = tokio::process::Command::from(command);
+    command.kill_on_drop(true);
+    // Same bounded startup diagnostic as the existing live-core provenance probe.
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+        .await.map_err(|_| "consumer protocol probe exceeded the existing 30s provenance bound".to_string())?
+        .map_err(|e| format!("cannot verify consumer protocol at {}: {e}", cli.display()))?;
+    let expected = continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL.to_string();
+    if !output.status.success() || String::from_utf8_lossy(&output.stdout).trim() != expected {
+        return Err(format!("registered consumer {} does not declare the cooperating lease protocol; finish its supported rollout before retry", cli.display()));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn retry_task_matches(report: &supervisor_install::TaskReport, envelope: &continuum_cli_lifecycle::installed_release::Envelope, mode: &str, sid: &str) -> bool {
+    report.present && report.enabled && report.actions == 1
+        && report.command.eq_ignore_ascii_case(&envelope.bootstrap)
+        && report.arguments == envelope.arguments(mode) && report.user_sid == sid
+}
+
+#[cfg(windows)]
+async fn verify_registered_consumer(root: &Path) -> Result<continuum_cli_lifecycle::installed_release::ValidatedRelease, String> {
+    use continuum_cli_lifecycle::installed_release;
+    let sid = supervisor_install::caller_sid().await?;
+    let program_files = PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);
+    let mut selected = None;
+    let mut selected_text = None;
+    for (task, mode) in [(supervisor_install::CORE_TASK, "core"), (supervisor_install::DEPLOY_TASK, "deploy")] {
+        let report = supervisor_install::task_report(task).await?;
+        let envelope = installed_release::envelope(&report.description)?
+            .ok_or_else(|| format!("{task} has a legacy/unreadable launcher; complete supervisor rollout before retry"))?;
+        envelope.validate(root, &program_files, &sid)?;
+        if !retry_task_matches(&report, &envelope, mode, &sid) {
+            return Err(format!("{task} does not match its registered supervisor authority; preserve resource conditions"));
+        }
+        let text = installed_release::read_receipt(Path::new(&envelope.active_release))?;
+        if selected_text.as_ref().is_some_and(|previous| previous != &text) {
+            return Err("registered release changed while verifying consumer rollout".into());
+        }
+        if selected.is_none() {
+            let payload = continuum_core::paths::payload_root(root)?;
+            let release = installed_release::validate_receipt(&text, root, &payload, &sid)?;
+            verify_consumer_protocol(Path::new(&release.release.cli)).await?;
+            selected = Some(release); // retain sealed payload pins through compare-and-clear
+            selected_text = Some(text);
+        }
+    }
+    selected.ok_or_else(|| "registered consumer release is absent".into())
+}
+
 /// The consumer follows the REQUEST, not a tip it once read: while it waits on CI for one
 /// tip the tracker keeps writing newer requests beside it, and on canary GitHub keeps the
 /// running build and only the newest QUEUED push (older queued pushes are dropped and show
@@ -4349,7 +4609,32 @@ fn consumer_uses_service(os: &str) -> bool {
 /// will never exist held the M5 at a stale core for two hours on 2026-10-04 while three
 /// built tips went by. A pass that finds its request superseded starts over on the new one.
 async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
-    let DeployConsumeOptions {} = options;
+    if options.protocol {
+        println!("{}", continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL); // boundary: read-only CLI capability wire for retry rollout admission
+        return Ok(());
+    }
+    let attempts_path = consume_attempts_path()?;
+    let _consumer_lease = ConsumeLedger::take_lease(&attempts_path)?;
+    if let Some((build, digest)) = options.retry_resource {
+        let root = continuum_root()?;
+        #[cfg(windows)]
+        let _install_lease = take_install_lease(&root)?;
+        // Supported launchers must have completed the cooperating-protocol rollout.
+        // Previously launched old consumers must be quiesced by their lifecycle owner;
+        // this lease cannot exclude arbitrary manually launched noncooperating binaries.
+        let cli = retry_launcher(&running_core_provenance("deploy/consumer-capability", "resource retry rollout").await?)?;
+        verify_consumer_protocol(&cli).await?;
+        #[cfg(windows)]
+        let _registered_release = verify_registered_consumer(&root).await?;
+        let claim_path = continuum_cli_lifecycle::deploy_claim::claim_path(&root);
+        if claim_path.exists() && continuum_cli_lifecycle::deploy_claim::read(&root).is_none() {
+            return Err("deploy claim is unreadable; preserve it and resolve ownership before resource retry".into());
+        }
+        let owner_active = continuum_cli_lifecycle::deploy_claim::read(&root).is_some_and(|claim| pid_alive(claim.pid));
+        ConsumeLedger::retry_resource(&attempts_path, &build, &digest, owner_active)?;
+        println!("resource retry authorized for exact build {build}; other conditions and failure counts preserved; normal consumer will recheck admission");
+        return Ok(());
+    }
     loop {
         match deploy_consume_pass().await? {
             PassEnd::Superseded(new_tip) => {
@@ -4357,6 +4642,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
                 continue;
             }
             PassEnd::Done => return Ok(()),
+            PassEnd::ResourceBlocked(why) => return Err(why),
         }
     }
 }
@@ -4365,6 +4651,7 @@ async fn deploy_consume(options: DeployConsumeOptions) -> Result<(), String> {
 /// (Cormac's condition on #4750): a superseded pass charges no attempt to the old tip.
 enum PassEnd {
     Done,
+    ResourceBlocked(String),
     Superseded(String),
 }
 
@@ -4404,7 +4691,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
     }
     let build_in_flight = gate.as_ref().is_some_and(|g| g.excludes_deploy());
     let attempts_path = consume_attempts_path()?;
-    let mut ledger = ConsumeLedger::read(&attempts_path);
+    let mut ledger = ConsumeLedger::read(&attempts_path)?;
     // The tip's build key, read from the same checkout the tracker fetched into.
     let tip_build_key = tip.as_deref().and_then(|t| build_key_in(&repo, t));
     // Give-up is judged on the TIP's own build only: an older core that would not land
@@ -4488,7 +4775,7 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 // while an older one is out, and waiting only on the tip never deployed.
                 let newest_key = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
                 let candidates = ledger.admissible(deploy_candidates(&repo, running.as_deref(), &tip, &newest_key), &newest_key);
-                let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip).await;
+                let ci_core = ci_core_for(&repo, &candidates, &request_path, &tip, &mut ledger, &attempts_path).await;
                 if let CiCore::Built { key, .. } = &ci_core {
                     selected = Some(key.clone());
                     deployed = key.clone();
@@ -4516,10 +4803,12 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                         // commit's core serving a docs-only tip (card 9080ffb0).
                         core
                     }
+                    CiCore::ResourceBlocked(why) => return Ok(PassEnd::ResourceBlocked(why)),
                     CiCore::Refused(why) => return Err(why),
                     CiCore::Superseded(new_tip) => return Ok(PassEnd::Superseded(new_tip)),
                 };
-                install_ci_companions(&repo, &prebuilt)?;
+                let preparation_path = prebuilt.clone();
+                let companion_result = install_ci_companions(&repo, &prebuilt).await;
                 deploy_note(&format!(
                     "▶ deploy-consume: {} — reboot into {deployed}{} --prebuilt (the CI build)",
                     repo.display(),
@@ -4530,7 +4819,32 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                 let stage_prebuilt = true;
                 // install_ci_companions above already put this core's CLI on PATH.
                 let cli_installed = true;
-                reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await?;
+                let preparation = match companion_result {
+                    Ok(()) => reboot(RebootOptions { service, prebuilt: Some(prebuilt), stage_prebuilt, cli_installed, ..Default::default() }).await,
+                    Err(error) => Err(error),
+                };
+                let preparation = preparation.map_err(|error| match error {
+                    PublishedCoreError::OperationalBlocked(reason) | PublishedCoreError::CapabilityDeferred(reason) => PublishedCoreError::ResourceDeferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
+                        condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::OperationalUncertainty,
+                        path: preparation_path, projected_bytes: 0, reason,
+                    }),
+                    other => other,
+                });
+                match preparation {
+                    Ok(()) => {}
+                    Err(PublishedCoreError::ResourceDeferred(condition)) => {
+                        let digest = match ConsumeLedger::condition_digest(&condition) {
+                            Ok(digest) => digest,
+                            Err(reason) => return Ok(PassEnd::ResourceBlocked(reason)),
+                        };
+                        let reason = format!("prepared build {deployed} awaits destination resource admission: {}; explicit retry: continuum deploy-consume --retry-resource {deployed} {digest}", condition.reason);
+                        ledger.resource_deferrals.insert(deployed.clone(), condition);
+                        if let Err(reason) = ledger.save(&attempts_path) { return Ok(PassEnd::ResourceBlocked(reason)); }
+                        return Ok(PassEnd::ResourceBlocked(reason));
+                    }
+                    Err(PublishedCoreError::CapabilityDeferred(reason) | PublishedCoreError::OperationalBlocked(reason)) => return Ok(PassEnd::ResourceBlocked(reason)),
+                    Err(PublishedCoreError::Artifact(reason)) => return Err(reason),
+                }
                 Ok(PassEnd::Done)
             }
             .await;
@@ -4539,17 +4853,18 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
                     if let Some(build) = &selected {
                         ledger.landed(build); // a pass that handed off selected a build
                     }
-                    ledger.save(&attempts_path);
+                    ledger.save(&attempts_path)?;
                     let request = if deployed == tip { String::new() } else { format!(" (request {tip})") };
                     deploy_note(&format!("✓ deploy-consume: {deployed} handed off{request}"));
                 }
+                Ok(PassEnd::ResourceBlocked(why)) => deploy_note(&format!("deploy resource custody refused: {why}; no build failure charged")),
                 Ok(PassEnd::Superseded(_)) => {} // not this tip's failure; the outer loop follows the new request
                 Err(why) => {
                     // Charged to the build this pass tried: the tip's, or the older published
                     // core it fell back to. A failure before any build was chosen is the tip's.
                     let tip_build = tip_build_key.clone().unwrap_or_else(|| tip.clone()); // unwrap_or_else: no build key means the tip names its own core
                     let (tried, failures) = ledger.charge_failure(selected.as_deref(), &tip_build);
-                    ledger.save(&attempts_path);
+                    ledger.save(&attempts_path)?;
                     deploy_note(&format!(
                         "deploy-consume: attempt {failures} of {CONSUME_MAX_ATTEMPTS} for build {tried} (request {tip}) failed: {why}"
                     ));
@@ -4570,8 +4885,8 @@ async fn deploy_consume_pass() -> Result<PassEnd, String> {
 /// invalid artifact never authorizes a source build. `Superseded` = the request
 /// (`request_path`) no longer names `requested_tip`:
 /// the caller lists candidates again against the new tip.
-async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str) -> CiCore {
-    use continuum_cli_lifecycle::prebuilt_artifact::{newest_published, platform_key, when_artifact_missing, MissingArtifact};
+async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, requested_tip: &str, ledger: &mut ConsumeLedger, ledger_path: &Path) -> CiCore {
+    use continuum_cli_lifecycle::prebuilt_artifact::{select_published_core, platform_key, when_artifact_missing, MissingArtifact, PublishedCoreError, recheck_resource_deferral};
     let platform = platform_key(std::env::consts::OS, std::env::consts::ARCH);
     let newest = &candidates[0]; // deploy_candidates always puts the tip's key first
     let mut tick = tokio::time::interval(Duration::from_secs(60));
@@ -4583,30 +4898,58 @@ async fn ci_core_for(repo: &Path, candidates: &[String], request_path: &Path, re
         ) {
             return CiCore::Superseded(new_tip);
         }
+        let previous_conditions = ledger.resource_deferrals.clone();
+        for key in candidates {
+            let Some(deferred) = ledger.resource_deferrals.get(key).cloned() else { continue };
+            if deferred.condition != continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::VolumeCapacity {
+                continue; // A volume sample cannot authorize retry of an unmeasured filesystem refusal.
+            }
+            let measured = continuum_core::paths::artifacts::check_capacity(&deferred.path, deferred.projected_bytes).await;
+            let mut pending = Some((key.clone(), deferred));
+            if let Some(MissingArtifact::Refuse(why)) = recheck_resource_deferral(&mut pending, measured) {
+                return CiCore::Refused(why);
+            }
+            if let Some((_, updated)) = pending { ledger.resource_deferrals.insert(key.clone(), updated); }
+            else { ledger.resource_deferrals.remove(key); }
+        }
+        if ledger.resource_deferrals != previous_conditions {
+            if let Err(why) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(why); }
+        }
         let missing = match platform {
             None => when_artifact_missing(None, 0),
             Some(p) => {
-                let mut published = Vec::with_capacity(candidates.len());
-                for key in candidates {
-                    published.push(match ci_core_published(key, p).await {
-                        Ok(out) => out,
-                        Err(why) => {
-                            deploy_note(&format!("deploy-consume: could not ask CI whether {key} is out: {why}"));
-                            false
-                        }
-                    });
-                }
-                match newest_published(candidates, &published) {
+                let source = CiPublishedCore { repo, platform: p, deferred: &ledger.resource_deferrals };
+                match select_published_core(candidates, &source).await {
                     None => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
-                    Some(key) => match fetch_ci_core(repo, key, p).await {
+                    Some((key, artifact)) => match artifact {
                         Ok(Some(core)) => return CiCore::Built { core, key: key.to_string() },
                         // published a moment ago and gone now: the next tick asks again
                         Ok(None) => when_artifact_missing(Some(p), tip_age_secs(repo, newest)),
-                        Err(why) if key == newest.as_str() => MissingArtifact::Refuse(format!(
+                        Err(PublishedCoreError::ResourceDeferred(deferred)) => {
+                            let digest = match ConsumeLedger::condition_digest(&deferred) {
+                                Ok(digest) => digest,
+                                Err(why) => return CiCore::ResourceBlocked(why),
+                            };
+                            let why = format!("published build {key} awaits resource admission: {}; condition_sha256={digest}; explicit retry: continuum deploy-consume --retry-resource {key} {digest}", deferred.reason);
+                            let explicit_retry = deferred.condition != continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::VolumeCapacity;
+                            if ledger.resource_deferrals.get(&key) != Some(&deferred) {
+                                ledger.resource_deferrals.insert(key, deferred);
+                                if let Err(why) = ledger.save(ledger_path) { return CiCore::ResourceBlocked(why); }
+                            }
+                            if explicit_retry {
+                                // Release consumer custody so the explicit compare-and-clear
+                                // command can acquire it. A later automatic pass reads the
+                                // same durable condition and still cannot fetch this build.
+                                return CiCore::ResourceBlocked(why);
+                            }
+                            MissingArtifact::Wait(why)
+                        }
+                        Err(PublishedCoreError::CapabilityDeferred(why) | PublishedCoreError::OperationalBlocked(why)) => return CiCore::ResourceBlocked(why),
+                        Err(PublishedCoreError::Artifact(why)) if key == newest.as_str() => MissingArtifact::Refuse(format!(
                             "the CI build for {key} was refused: {why}; repair the prebuilt artifact before retrying; running core preserved"
                         )),
                         // an older core refused: keep waiting for the tip's, within its budget
-                        Err(why) => {
+                        Err(PublishedCoreError::Artifact(why)) => {
                             deploy_note(&format!("deploy-consume: the CI build for {key} was refused: {why}"));
                             when_artifact_missing(Some(p), tip_age_secs(repo, newest))
                         }
@@ -4686,10 +5029,43 @@ async fn ci_core_published(key: &str, platform: &str) -> Result<bool, String> {
     }
 }
 
+struct CiPublishedCore<'a> {
+    repo: &'a Path,
+    platform: &'a str,
+    deferred: &'a std::collections::BTreeMap<String, continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral>,
+}
+
+#[async_trait::async_trait]
+impl continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreSource for CiPublishedCore<'_> {
+    type Artifact = PathBuf;
+    fn deferred(&self, key: &str) -> Option<continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral> {
+        self.deferred.get(key).cloned()
+    }
+    async fn published(&self, key: &str) -> Result<bool, String> {
+        let result = ci_core_published(key, self.platform).await;
+        if let Err(why) = &result { deploy_note(&format!("deploy-consume: could not ask CI whether {key} is out: {why}")); }
+        result
+    }
+    async fn checks(&self, key: &str) -> Result<continuum_cli_lifecycle::deploy_tracker::Checks, String> {
+        let repo = self.repo.to_path_buf();
+        let revision = key.to_string();
+        let result = tokio::task::spawn_blocking(move || continuum_core::modules::deploy_tracker::revision_checks(&repo, &revision))
+            .await.map_err(|e| format!("revision-check task failed: {e}"))?;
+        match &result {
+            Ok(continuum_cli_lifecycle::deploy_tracker::Checks::Green) => {},
+            other => deploy_note(&format!("deploy-consume: published {key} is not authorized: {other:?}")),
+        }
+        result
+    }
+    async fn fetch(&self, key: &str) -> Result<Option<PathBuf>, continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError> {
+        fetch_ci_core(self.repo, key, self.platform).await
+    }
+}
 /// What the CI wait resolved to.
 enum CiCore {
     /// The extracted core, and the build key it is (the tip's, or an older published one).
     Built { core: PathBuf, key: String },
+    ResourceBlocked(String),
     Refused(String),
     Superseded(String),
 }
@@ -4722,7 +5098,19 @@ async fn node_gpu() -> continuum_cli_lifecycle::prebuilt_artifact::NodeGpu {
 
 /// `Ok(None)` when CI has published nothing for `tip` on `platform` (404); `Err` when what it
 /// published is not THE build for this node, or does not match its checksum.
-async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, String> {
+async fn fetch_ci_core(repo: &Path, tip: &str, platform: &str) -> Result<Option<PathBuf>, continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError> {
+    // A destination already below the shared free-space floor cannot accept any
+    // service payload. Refuse before archive I/O; this is only a lower bound,
+    // not a replacement for the installer's measured payload admission.
+    // Keep offline prepare-prebuilt independent: recovery artifacts can still
+    // be prepared on configured cold storage while the service volume is full.
+    #[cfg(windows)]
+    {
+        let home = continuum_core::paths::continuum_home()
+            .map_err(PublishedCoreError::OperationalBlocked)?;
+        let destination = continuum_core::paths::artifacts::service_destination(&home)?;
+        continuum_core::paths::artifacts::check_capacity(&destination, 0).await?;
+    }
     prepare_ci_core(repo, tip, platform, None, deploy_note).await
 }
 
@@ -4753,15 +5141,17 @@ async fn prepare_prebuilt(args: Vec<String>) -> Result<(), String> {
     let platform = continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH)
         .ok_or("No compatible prebuilt is published for this platform")?;
     let core = prepare_ci_core(repo, &tip, platform, Some(Path::new(&args[1])), prepare_note)
-        .await?.ok_or("The requested prebuilt is not published")?;
+        .await.map_err(|error| error.to_string())?.ok_or("The requested prebuilt is not published")?;
     println!("{}", serde_json::json!({"core": core, "git_sha": tip}));
     Ok(())
 }
 
-async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Option<&Path>, note: fn(&str)) -> Result<Option<PathBuf>, String> {
+async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Option<&Path>, note: fn(&str)) -> Result<Option<PathBuf>, continuum_cli_lifecycle::prebuilt_artifact::PublishedCoreError> {
     use continuum_cli_lifecycle::prebuilt_artifact::{gpu_verdict, manifest_url, manifest_verdict, ArtifactManifest};
     use sha2::{Digest, Sha256};
     use std::io::Write;
+    use continuum_core::paths::artifacts::{check_capacity, WriteAdmission, write_failure};
+    use continuum_cli_lifecycle::prebuilt_artifact::{PublishedCoreError, archive_expanded_bytes};
     let url = manifest_url(tip, platform).ok_or_else(|| format!("{tip} is not a full commit sha"))?;
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -4796,52 +5186,74 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
         .iter()
         .find(|lib| lib.contains(['/', '\\']) || lib.contains("..") || lib.is_empty())
     {
-        return Err(format!("runtime library name `{bad}` is not a plain file name"));
+        return Err(format!("runtime library name `{bad}` is not a plain file name").into());
     }
     if manifest.archive.contains(['/', '\\']) || manifest.archive.contains("..") {
-        return Err(format!("archive name `{}` is not a plain file name", manifest.archive));
+        return Err(format!("archive name `{}` is not a plain file name", manifest.archive).into());
     }
     if downloaded.is_some() {
         let expected = git_in(repo, &["rev-parse", "HEAD:core/vendor/llama.cpp"])?;
         continuum_cli_lifecycle::prebuilt_artifact::fresh_engine_verdict(&manifest, expected.trim())?;
     }
-    let root = PathBuf::from(home_dir()?).join(".continuum/cache/artifacts");
+    let root = continuum_core::paths::artifacts::root(Path::new(&home_dir()?))?;
+    check_capacity(&root, 0).await?;
     let dir = root.join(format!("{}-{}", &tip[..12], uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&root).map_err(|e| format!("cannot create {}: {e}", root.display()))?;
-    std::fs::create_dir(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    if let Err(error) = std::fs::create_dir_all(&root) { return Err(write_failure(&root, 0, error).await); }
+    if let Err(error) = std::fs::create_dir(&dir) { return Err(write_failure(&root, 0, error).await); }
     let mut preparation = CiArtifactPreparation { directory: dir.clone(), complete: false };
-    // Stream to disk while hashing: the archive is ~200 MB, and the weak nodes are the ones
-    // that need this path most.
+    // Stream to disk while hashing; actual response/source lengths, never a
+    // historical archive-size estimate, drive capacity admission.
     let archive_url = format!("{}/{}", url.rsplit_once('/').map(|(base, _)| base).unwrap_or(&url), manifest.archive);
     let archive = dir.join(&manifest.archive);
-    let mut file = std::fs::File::create(&archive).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
+    let mut file = match std::fs::File::create(&archive) { Ok(file) => file, Err(error) => return Err(write_failure(&root, 0, error).await) };
     let mut hasher = Sha256::new();
+    let mut compressed_bytes = 0u64;
+    let mut admission = WriteAdmission::observe(&root).await?;
     if let Some(source) = downloaded {
         use std::io::Read;
         let mut input = std::fs::File::open(source.join(&manifest.archive)).map_err(|e| format!("reading downloaded archive: {e}"))?;
+        let expected = input.metadata().map_err(|e| format!("measuring archive: {e}"))?.len();
+        admission.check(expected)?;
         let mut buffer = [0u8; 65536];
         loop {
             let count = input.read(&mut buffer).map_err(|e| format!("reading downloaded archive: {e}"))?;
             if count == 0 { break; }
+            compressed_bytes = compressed_bytes.checked_add(count as u64).ok_or("archive size overflow")?;
+            admission.before_write(count as u64).await.map_err(|error| match error {
+                PublishedCoreError::ResourceDeferred(mut condition) => { condition.projected_bytes = expected.max(compressed_bytes); PublishedCoreError::ResourceDeferred(condition) },
+                error => error,
+            })?;
             hasher.update(&buffer[..count]);
-            file.write_all(&buffer[..count]).map_err(|e| format!("staging archive: {e}"))?;
+            if let Err(error) = file.write_all(&buffer[..count]) {
+                let mut failure = write_failure(&root, expected.saturating_sub(compressed_bytes).saturating_add(count as u64), error).await;
+                if let PublishedCoreError::ResourceDeferred(condition) = &mut failure { condition.projected_bytes = expected.max(compressed_bytes); }
+                return Err(failure);
+            }
         }
     } else {
-    let mut resp = client
-        .get(&archive_url)
-        .send()
-        .await
-        .and_then(|r| r.error_for_status())
-        .map_err(|e| format!("fetching {archive_url}: {e}"))?;
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
-        hasher.update(&chunk);
-        file.write_all(&chunk).map_err(|e| format!("cannot write {}: {e}", archive.display()))?;
-    }
+        let mut resp = client.get(&archive_url).send().await.and_then(|r| r.error_for_status())
+            .map_err(|e| format!("fetching {archive_url}: {e}"))?;
+        let announced = resp.content_length();
+        if let Some(bytes) = announced { admission.check(bytes)?; }
+        while let Some(chunk) = resp.chunk().await.map_err(|e| format!("downloading {archive_url}: {e}"))? {
+            compressed_bytes = compressed_bytes.checked_add(chunk.len() as u64).ok_or("archive size overflow")?;
+            let retry_bytes = announced.unwrap_or(compressed_bytes).max(compressed_bytes);
+            admission.before_write(chunk.len() as u64).await.map_err(|error| match error {
+                PublishedCoreError::ResourceDeferred(mut condition) => { condition.projected_bytes = retry_bytes; PublishedCoreError::ResourceDeferred(condition) },
+                error => error,
+            })?;
+            hasher.update(&chunk);
+            if let Err(error) = file.write_all(&chunk) {
+                let mut failure = write_failure(&root, retry_bytes.saturating_sub(compressed_bytes).saturating_add(chunk.len() as u64), error).await;
+                if let PublishedCoreError::ResourceDeferred(condition) = &mut failure { condition.projected_bytes = retry_bytes; }
+                return Err(failure);
+            }
+        }
     }
     drop(file);
     let digest = format!("{:x}", hasher.finalize());
     if digest != manifest.sha256.to_ascii_lowercase() {
-        return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256));
+        return Err(format!("{} has sha256 {digest}, the manifest says {}", manifest.archive, manifest.sha256).into());
     }
     // Extracted beside the archive: `tar_on` runs from its directory, so Git for Windows'
     // GNU tar never reads the drive letter as a host (Fable on #4834).
@@ -4849,27 +5261,57 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
     let details = continuum_core::shell_portable::tar_on(&archive, "-tvzf")?.output().map_err(|e| format!("listing archive types: {e}"))?;
     if !members.status.success() || !details.status.success() { return Err("Cannot inspect published archive before extraction".into()); }
     continuum_cli_lifecycle::prebuilt_artifact::archive_members_verdict(&String::from_utf8_lossy(&members.stdout), &String::from_utf8_lossy(&details.stdout), platform)?;
+    let expanded = archive_expanded_bytes(&String::from_utf8_lossy(&details.stdout))?;
+    // Archive already occupies this volume; extraction is additional. On failure
+    // RAII removes it, so the next attempt must admit both coexisting payloads.
+    check_capacity(&root, expanded).await.map_err(|error| match error {
+        PublishedCoreError::ResourceDeferred(mut deferred) => {
+            deferred.projected_bytes = compressed_bytes.saturating_add(expanded);
+            PublishedCoreError::ResourceDeferred(deferred)
+        }
+        error => error,
+    })?;
     let status = continuum_core::shell_portable::tar_on(&archive, "-xzf")?
         .status()
         .map_err(|e| format!("tar: {e}"))?;
     if !status.success() {
-        return Err(format!("tar could not extract {}", archive.display()));
+        // External writers may consume space after admission. Re-sample through
+        // the same policy; capacity shortage is not a corrupt published build.
+        check_capacity(&root, expanded).await.map_err(|error| match error {
+            PublishedCoreError::ResourceDeferred(mut deferred) => {
+                deferred.projected_bytes = compressed_bytes.saturating_add(expanded);
+                deferred.reason = format!("tar exited {status}; subsequent conservative capacity check: {}", deferred.reason);
+                PublishedCoreError::ResourceDeferred(deferred)
+            }
+            error => error,
+        })?;
+        return Err(format!("tar could not extract {} (exit {status})", archive.display()).into());
     }
     let _ = std::fs::remove_file(&archive);
     let core = dir.join(format!("continuum-core-{platform}")).join(install_cli::cli_file_name("continuum-core-server"));
     if !core.is_file() {
-        return Err(format!("the archive has no {}", core.display()));
+        return Err(format!("the archive has no {}", core.display()).into());
     }
     // The bundled runtime travels with the core: staging copies what this file lists beside
     // the staged exe (`PreparedCoreService::stage`). A warm local build has no such file.
     if !manifest.runtime_libs.is_empty() {
         for lib in &manifest.runtime_libs {
             if !core.with_file_name(lib).is_file() {
-                return Err(format!("the archive lists runtime library {lib} but does not carry it"));
+                return Err(format!("the archive lists runtime library {lib} but does not carry it").into());
             }
         }
-        std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), manifest.runtime_libs.join("\n"))
-            .map_err(|e| format!("cannot record the runtime libraries beside {}: {e}", core.display()))?;
+        let runtime_manifest = manifest.runtime_libs.join("\n");
+        check_capacity(&root, runtime_manifest.len() as u64).await.map_err(|mut error| {
+            if let PublishedCoreError::ResourceDeferred(condition) = &mut error {
+                condition.projected_bytes = compressed_bytes.saturating_add(expanded).saturating_add(runtime_manifest.len() as u64);
+            }
+            error
+        })?;
+        if let Err(error) = std::fs::write(core.with_file_name(RUNTIME_LIBS_FILE), &runtime_manifest) {
+            let mut failure = write_failure(&root, runtime_manifest.len() as u64, error).await;
+            if let PublishedCoreError::ResourceDeferred(condition) = &mut failure { condition.projected_bytes = compressed_bytes.saturating_add(expanded).saturating_add(runtime_manifest.len() as u64); }
+            return Err(failure);
+        }
     }
     note(&format!("deploy-consume: CI build {tip} for {platform} verified (sha256 {digest})"));
     preparation.complete = true;
@@ -4880,14 +5322,16 @@ async fn prepare_ci_core(repo: &Path, tip: &str, platform: &str, downloaded: Opt
 /// What the warm build did besides the core, done for a CI core: the CLI on PATH follows the
 /// core, and the engine is rebuilt only when its stamp says the vendored fork moved
 /// (`install-llama-server.sh` is a no-op otherwise).
-fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), String> {
+async fn install_ci_companions(repo: &Path, core: &Path) -> Result<(), PublishedCoreError> {
     #[cfg(windows)]
     if !core.parent().is_some_and(|dir| dir.join("engine/engine-install.json").is_file()) {
         return Err("Published Windows release lacks its engine companion; no source build will be attempted".into());
     }
     let built_cli = core.with_file_name(install_cli::cli_file_name("continuum"));
     let cli = install_cli::cli_dir(Path::new(&home_dir()?)).join(install_cli::cli_file_name("continuum"));
-    install_cli::copy_with_retry(&built_cli, &cli, Duration::from_secs(10))?;
+    let bytes = std::fs::metadata(&built_cli).map_err(|e| PublishedCoreError::OperationalBlocked(format!("cannot measure CLI companion: {e}")))?.len();
+    continuum_core::paths::artifacts::check_capacity(&cli, bytes).await?;
+    install_cli::copy_with_retry(&built_cli, &cli, Duration::from_secs(10)).map_err(PublishedCoreError::OperationalBlocked)?;
     #[cfg(windows)]
     { let _ = repo; Ok(()) }
     #[cfg(not(windows))]
@@ -4977,36 +5421,33 @@ async fn prebuilt_checkout_sha(
     if let Some(git_dir) = git_dir {
         cmd.env("GIT_DIR", git_dir);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    // owned (lane_process::run_owned): a hung git is ended with anything it started
+    let output = continuum_core::inference::lane_process::run_owned(
+        tokio::process::Command::from(cmd),
+        Some(Duration::from_secs(30)),
+        "prebuilt-head-lookup",
+        std::sync::Arc::default(),
+    )
+    .await
+    .map_err(|e| format!("cannot read prebuilt checkout HEAD in {}: {e}", cwd.display()))?;
+    let status = match output.ended {
+        continuum_core::inference::lane_process::Ended::Exited(status) => status,
+        continuum_core::inference::lane_process::Ended::TimedOut { .. } => {
+            return Err(format!("prebuilt checkout HEAD lookup timed out in {}", cwd.display()))
+        }
+    };
+    if let Some(note) = output.capture_note() {
+        return Err(format!("cannot verify prebuilt checkout HEAD in {}: {note}", cwd.display()));
     }
-    let mut cmd = tokio::process::Command::from(cmd);
-    cmd.kill_on_drop(true);
-    let output = tokio::time::timeout(Duration::from_secs(30), cmd.output())
-        .await
-        .map_err(|_| {
-            format!(
-                "prebuilt checkout HEAD lookup timed out in {}",
-                cwd.display()
-            )
-        })?
-        .map_err(|e| {
-            format!(
-                "cannot read prebuilt checkout HEAD in {}: {e}",
-                cwd.display()
-            )
-        })?;
-    if !output.status.success() {
+    if !status.success() {
         return Err(format!(
             "cannot verify prebuilt checkout HEAD in {}: git exited {}: {}",
             cwd.display(),
-            output.status,
-            String::from_utf8_lossy(&output.stderr).trim(),
+            status,
+            String::from_utf8_lossy(&output.stderr.bytes).trim(),
         ));
     }
-    let head = String::from_utf8(output.stdout)
+    let head = String::from_utf8(output.stdout.bytes)
         .map_err(|e| format!("prebuilt checkout HEAD is not UTF-8: {e}"))?;
     let head = head.trim();
     if head.is_empty() {
@@ -5851,6 +6292,10 @@ enum LaunchSource<'a> {
     FromSource,
     /// A caller-selected artifact, validated before reboot's teardown.
     Prebuilt(&'a PrebuiltCore),
+    /// An explicitly supplied Windows core uses the installed runtime closure,
+    /// never the developer preparation script. The caller retains its file pins.
+    #[cfg(any(windows, test))]
+    ExplicitPrebuilt(&'a PrebuiltCore, Option<&'a continuum_cli_lifecycle::installed_release::Release>),
 }
 
 /// The resolved launch, given the policy and what actually exists on this machine.
@@ -5879,6 +6324,10 @@ fn plan_launch(
     have_script: bool,
     have_installed: bool,
 ) -> LaunchPlan {
+    #[cfg(any(windows, test))]
+    if matches!(policy, LaunchSource::ExplicitPrebuilt(..)) {
+        return LaunchPlan::Prebuilt;
+    }
     if matches!(policy, LaunchSource::Prebuilt(_)) {
         // The explicit command-line intent wins over inherited source/build env.
         return LaunchPlan::Prebuilt;
@@ -5930,7 +6379,13 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
     // default — the two callers want opposite things and neither should have to
     // infer the other's intent.
     let env_from_source = std::env::var("CONTINUUM_FROM_SOURCE").is_ok();
-    let (script, server_bin) = if matches!(policy, LaunchSource::Prebuilt(_)) {
+    #[cfg(any(windows, test))]
+    let explicit_prebuilt = matches!(policy, LaunchSource::ExplicitPrebuilt(..));
+    #[cfg(not(any(windows, test)))]
+    let explicit_prebuilt = false;
+    let (script, server_bin) = if explicit_prebuilt {
+        (None, None)
+    } else if matches!(policy, LaunchSource::Prebuilt(_)) {
         // Already prepared: an installed override may not redirect this explicit
         // artifact — but the source script, in PREBUILT MODE, is how the artifact
         // gets its launch environment (desktop dist, power assertion, airc daemon,
@@ -5947,10 +6402,15 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
     );
 
     let mut cmd = match plan {
-        LaunchPlan::Prebuilt => {
-            let LaunchSource::Prebuilt(candidate) = policy else {
-                unreachable!("only a validated prebuilt source selects this plan")
-            };
+        LaunchPlan::Prebuilt => match policy {
+            #[cfg(windows)]
+            LaunchSource::ExplicitPrebuilt(candidate, runtime) => {
+                eprintln!("▶ starting explicit prebuilt core: {} (build {}, no source builders; log: {logfile})", candidate.path.display(), candidate.build_sha);
+                explicit_prebuilt_command(candidate, &socket, runtime, &PreparedCoreService::shell()?)
+            }
+            #[cfg(all(test, not(windows)))]
+            LaunchSource::ExplicitPrebuilt(..) => unreachable!("Windows launch policy is exercised through command fixtures on this platform"),
+            LaunchSource::Prebuilt(candidate) => {
             match script.as_ref() {
                 // ONE start path (2026-09-16): the verified artifact launches THROUGH
                 // start-server.sh in prebuilt mode — every cargo build skipped, every
@@ -5979,7 +6439,9 @@ async fn launch_core(wait_for_death: &[i32], policy: LaunchSource<'_>) -> Result
                     direct_core_command(&candidate.path, &socket)
                 }
             }
-        }
+            }
+            _ => unreachable!("only a validated prebuilt source selects this plan"),
+        },
         LaunchPlan::Script => {
             let script = script.expect("plan_launch only picks Script when one was found");
             if env_from_source || policy == LaunchSource::FromSource {
@@ -6367,6 +6829,13 @@ enum GracefulStop {
 }
 
 impl GracefulStop {
+    fn require_durable(&self) -> Result<(), String> {
+        match self {
+            Self::Durable(_) | Self::NothingRunning => Ok(()),
+            other => Err(format!("maintenance refused without durable shutdown evidence: {other:?}; scheduler recovery remains required")),
+        }
+    }
+
     /// A legacy core cannot attest a final checkpoint. Keep it running until the
     /// operator can stop it explicitly and preserve/adopt its selected checkpoint.
     fn ensure_teardown_supported(&self, reboot: bool) -> Result<(), String> {
@@ -6780,7 +7249,7 @@ async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continuum_core::co
     Ok((pids == [target.pid as i32]).then_some(target))
 }
 
-async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget) -> Result<GracefulStop, String> {
+async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget, require_durable: bool) -> Result<GracefulStop, String> {
     use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
@@ -6798,6 +7267,9 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
     } else {
         GracefulStop::Incomplete(result.receipt.summary())
     };
+    if require_durable {
+        graceful.require_durable()?;
+    }
     let pid = target.pid as i32;
     let commit = ShutdownCommitParams {
         target,
@@ -6819,6 +7291,12 @@ async fn commit_graceful_shutdown(target: continuum_core::commands::system::shut
 
 /// `stop_with`, plus whether the operator can answer a required consent prompt.
 async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result<GracefulStop, String> {
+    stop_with_policy(keep_lanes, operator_present, false).await
+}
+
+// Maintenance may not turn a missing save receipt into permission to force an
+// exit. Ordinary stop keeps its existing explicit forced-stop behavior.
+async fn stop_with_policy(keep_lanes: bool, operator_present: bool, require_durable: bool) -> Result<GracefulStop, String> {
     // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
     // module's `save_state` — so before it, the core gets the chance to stop itself and
     // report what reached disk. The kill still runs afterwards either way: a core that
@@ -6832,16 +7310,22 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     // New Windows cores can exit after the CLI receives their save receipt.
     // Older builds and multi-core recovery keep the OS-capability/UAC path.
     let pids = cores_to_tear_down();
-    let target = if cfg!(windows) && keep_lanes {
+    let target = if cfg!(windows) && (keep_lanes || require_durable) {
         probe_shutdown_target(&pids).await?
     } else {
         None
     };
+    if require_durable && !pids.is_empty() && target.is_none() {
+        return Err("maintenance requires one receipt-bound shutdown generation; legacy or ambiguous cores remain running".into());
+    }
     let self_exited = target.as_ref().map(|target| target.pid as i32);
     let graceful = if let Some(target) = target {
-        commit_graceful_shutdown(target).await?
+        commit_graceful_shutdown(target, require_durable).await?
     } else {
         let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority)?;
+        if require_durable && may_drain.borrow_authority_for.is_some() {
+            return Err("maintenance requires owned durable shutdown authority; the legacy elevated stop cannot attest its save receipt".into());
+        }
         // BORROW THE PRIVILEGE BEFORE ANYTHING IS DRAINED, not after. `operator_present` is
         // INTENT; a consent can still be declined, time out, or land on a token that does not
         // hold the privilege either — and a drain already spent by then leaves exactly the
@@ -6876,6 +7360,9 @@ async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result
     // A third caller that wants lanes kept for some OTHER reason must pass the reboot-ness
     // separately rather than reuse this argument.
     graceful.ensure_teardown_supported(keep_lanes)?;
+    if require_durable {
+        graceful.require_durable()?;
+    }
     match &graceful {
         GracefulStop::Durable(summary) => println!("core stopped gracefully — {summary}"),
         GracefulStop::Incomplete(summary) => {
@@ -7260,6 +7747,9 @@ fn usage() -> String {
        continuum engine root                print the managed engine root\n  \
        continuum engine idle-slot           print the engine slot the next build goes into (exit 3: none idle, skip)\n  \
        continuum engine promote <slot> <commit:backend>\n                                       make a verified slot the current engine\n  \
+       continuum engine attempt <slot>       inspect admitted artifact and failure disposition\n  \
+       continuum deploy-consume --retry-resource <build-sha> <condition-sha256>\n                                       authorize one exact saved resource retry\n  \
+       continuum engine retry <slot> <commit:backend> <artifact-identity>\n                                       explicitly retry exactly that artifact\n  \
        continuum engine rollback <failed-slot>\n                                       put the previous engine back while <failed-slot> is current\n\
      \n\
      Desktop (the core serves it; no port to remember):\n  \
@@ -7441,8 +7931,8 @@ mod tests {
         for _ in 0..3 {
             ledger.record_failure("254d11e1c");
         }
-        ledger.write(&path);
-        let ledger = super::ConsumeLedger::read(&path);
+        ledger.write(&path).unwrap();
+        let ledger = super::ConsumeLedger::read(&path).unwrap();
         assert_eq!(ledger.failures("254d11e1c"), 3);
         assert_eq!(ledger.failures("34e8db15d"), 0, "the older build's failures are not the tip's");
         assert_eq!(
@@ -7472,8 +7962,8 @@ mod tests {
         }
         after.record_failure("254d11e1c");
         after.landed("254d11e1c");
-        after.save(&path);
-        let after = super::ConsumeLedger::read(&path);
+        after.save(&path).unwrap();
+        let after = super::ConsumeLedger::read(&path).unwrap();
         assert_eq!(after.failures("34e8db15d"), 3, "an exhausted build is not made eligible by another landing");
         assert_eq!(after.failures("254d11e1c"), 0);
         assert_eq!(
@@ -7484,14 +7974,85 @@ mod tests {
         let mut emptied = super::ConsumeLedger::default();
         emptied.record_failure("254d11e1c");
         emptied.landed("254d11e1c");
-        emptied.save(&path);
+        emptied.save(&path).unwrap();
         assert!(!path.exists(), "nothing left to remember removes the file");
         std::fs::write(&path, r#"{"failures":3,"tip":"34e8db15db2d543a5bb72ee599b74feef39ae7f8"}"#).unwrap(); // unwrap: test fixture write
-        assert_eq!(super::ConsumeLedger::read(&path), super::ConsumeLedger::default(), "an old per-request ledger names no build");
+        assert_eq!(super::ConsumeLedger::read(&path).unwrap(), super::ConsumeLedger::default(), "an old per-request ledger names no build");
+        // Resource refusal belongs to the exact artifact, not the changing tracker request.
+        let mut blocked = super::ConsumeLedger::default();
+        let condition = continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
+            condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::UnmeasuredFilesystem,
+            path: dir.clone(), projected_bytes: 123, reason: "filesystem quota refused while volume admission passed".into(),
+        };
+        blocked.resource_deferrals.insert("published-build".into(), condition.clone());
+        blocked.save(&path).unwrap();
+        let mut restarted = super::ConsumeLedger::read(&path).unwrap();
+        assert_eq!(restarted.resource_deferrals.get("published-build"), Some(&condition));
+        assert_eq!(restarted.failures("published-build"), 0, "resource deferral does not condemn the build");
+        restarted.landed("different-build");
+        restarted.save(&path).unwrap();
+        assert_eq!(super::ConsumeLedger::read(&path).unwrap().resource_deferrals.get("published-build"), Some(&condition), "another build landing and a new process preserve the condition");
+        let mut pending = Some(("published-build".into(), condition.clone()));
+        assert!(matches!(continuum_cli_lifecycle::prebuilt_artifact::recheck_resource_deferral(&mut pending, Ok(())), Some(continuum_cli_lifecycle::prebuilt_artifact::MissingArtifact::Wait(_))));
+        assert_eq!(pending.as_ref().map(|(_, value)| value), Some(&condition), "a volume-only success cannot clear quota uncertainty");
+        let lease = super::ConsumeLedger::take_lease(&path).unwrap();
+        assert!(super::ConsumeLedger::take_lease(&path).is_err(), "a concurrent consumer/retry cannot own the ledger");
+        let digest = super::ConsumeLedger::condition_digest(&condition).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        assert!(super::ConsumeLedger::retry_resource(&path, "published-build", &digest, true).is_err(), "older live deploy claim refuses retry");
+        assert!(super::ConsumeLedger::retry_resource(&path, "different-build", &digest, false).is_err());
+        assert!(super::ConsumeLedger::retry_resource(&path, "published-build", &"0".repeat(64), false).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original, "mismatch and active owner preserve exact receipt");
+        let mut changed = super::ConsumeLedger::read(&path).unwrap();
+        changed.resource_deferrals.get_mut("published-build").unwrap().projected_bytes += 1;
+        changed.write(&path).unwrap();
+        assert!(super::ConsumeLedger::retry_resource(&path, "published-build", &digest, false).is_err(), "stale digest cannot clear changed condition");
+        changed.resource_deferrals.insert("another-build".into(), condition.clone());
+        changed.record_failure("published-build");
+        changed.write(&path).unwrap();
+        let current_digest = super::ConsumeLedger::condition_digest(changed.resource_deferrals.get("published-build").unwrap()).unwrap();
+        super::ConsumeLedger::retry_resource(&path, "published-build", &current_digest, false).unwrap();
+        let retried = super::ConsumeLedger::read(&path).unwrap();
+        assert!(!retried.resource_deferrals.contains_key("published-build"));
+        assert_eq!(retried.resource_deferrals.get("another-build"), Some(&condition));
+        assert_eq!(retried.failures("published-build"), 1, "explicit resource retry never clears engineering failures");
+        drop(lease);
+        drop(super::ConsumeLedger::take_lease(&path).unwrap());
+        for corrupt in ["{", "{}", r#"{"resource_deferrals":{"build":{"condition":"invented","path":"x","projected_bytes":1,"reason":"unknown"}}}"#] {
+            std::fs::write(&path, corrupt).unwrap();
+            assert!(super::ConsumeLedger::read(&path).is_err(), "corrupt custody must not silently authorize retry");
+            assert!(super::ConsumeLedger::retry_resource(&path, "published-build", &digest, false).is_err());
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), corrupt);
+        }
+        assert!(blocked.write(&dir.join("missing-parent").join("ledger.json")).is_err(), "persistence failure is visible");
         let _ = std::fs::remove_dir_all(&dir);
         assert!(DeployConsumeOptions::parse(["--install".to_string()].into_iter()).is_err(), "the consumer's task has ONE registrar: continuum install --supervisor");
         assert!(DeployConsumeOptions::parse(std::iter::empty()).is_ok());
+        assert!(DeployConsumeOptions::parse(["--protocol".into()].into_iter()).unwrap().protocol);
+        assert!(DeployConsumeOptions::parse(["--protocol".into(), "extra".into()].into_iter()).is_err());
+        // Mixed-version rollout must fail closed before the saved condition is cleared.
+        assert!(super::retry_launcher(&serde_json::json!({"buildSha":"old"})).is_err());
+        assert!(super::retry_launcher(&serde_json::json!({"deployConsumerProtocol":0,"deployConsumerCli":path})).is_err());
+        assert!(super::retry_launcher(&serde_json::json!({"deployConsumerProtocol":1,"deployConsumerCli":null})).is_err());
+        assert!(super::retry_launcher(&serde_json::json!({"deployConsumerProtocol":1,"deployConsumerCli":"continuum"})).is_err());
+        assert_eq!(super::retry_launcher(&serde_json::json!({"deployConsumerProtocol":1,"deployConsumerCli":path})).unwrap(), path);
+        #[cfg(windows)]
+        {
+            let envelope = continuum_cli_lifecycle::installed_release::Envelope { schema: 2, active_release: "receipt".into(), bootstrap: "bootstrap.exe".into() };
+            let mut report = super::supervisor_install::TaskReport { present: true, enabled: true, actions: 1, command: envelope.bootstrap.clone(), arguments: envelope.arguments("deploy"), user_sid: "S-1-5-21".into(), ..Default::default() };
+            assert!(super::retry_task_matches(&report, &envelope, "deploy", "S-1-5-21"));
+            report.arguments = "deploy-consume".into();
+            assert!(!super::retry_task_matches(&report, &envelope, "deploy", "S-1-5-21"), "legacy direct task cannot satisfy the receipt guard");
+            report.arguments = envelope.arguments("deploy");
+            report.command = "other.exe".into();
+            assert!(!super::retry_task_matches(&report, &envelope, "deploy", "S-1-5-21"), "changed registration refuses");
+        }
+
+
         assert!(DeployConsumeOptions::parse(["--now".to_string()].into_iter()).is_err());
+        assert!(DeployConsumeOptions::parse(["--retry-resource".into(), "a".repeat(40), "b".repeat(64)].into_iter()).is_ok());
+        assert!(DeployConsumeOptions::parse(["--retry-resource".into(), "a".repeat(40)].into_iter()).is_err());
+        assert!(DeployConsumeOptions::parse(["--retry-resource".into(), "short".into(), "b".repeat(64)].into_iter()).is_err());
         // The consumer runs on every platform now (the core's actuator launches it); only
         // Windows needs `--service` — macOS promotes a bare reboot to launchd itself, and
         // `reboot` refuses the flag on Linux.
@@ -7514,6 +8075,9 @@ mod tests {
         assert!(error.contains("before teardown"));
         assert!(error.contains("checkpoint inspect"));
         assert!(error.contains("checkpoint adopt"));
+        // Maintenance must not inherit ordinary stop's permission to force an
+        // exit after a missing or incomplete save receipt (5120).
+        assert!(legacy.require_durable().is_err());
         for outcome in [
             GracefulStop::NothingRunning,
             GracefulStop::Durable("saved".into()),
@@ -7521,6 +8085,8 @@ mod tests {
             GracefulStop::NoAnswer("timed out".into()),
         ] {
             assert!(outcome.ensure_teardown_supported(true).is_ok());
+            assert_eq!(outcome.require_durable().is_ok(), matches!(outcome,
+                GracefulStop::NothingRunning | GracefulStop::Durable(_)));
         }
     }
 
@@ -8118,15 +8684,43 @@ mod tests {
     // Assert the production Command's path/argv/cwd, not a duplicate launch model.
     #[test]
     fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
+        // The launcher starts media before its service-host child runs. The
+        // pre-drain policy must therefore reject elevated/unknown callers,
+        // including a stale marker, without attempting recursive relaunch.
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x2000), false).is_ok());
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x2000), true).is_ok());
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), false).unwrap_err().contains("normal-user terminal"));
+        assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), true).is_err());
+        assert!(super::require_prebuilt_runtime_medium(Err("token unavailable".into()), false).is_err());
         let candidate = super::PrebuiltCore::from_report(
             std::path::PathBuf::from("verified release/core.exe"),
             "abc123f".into(),
             None,
         )
         .unwrap();
+        let runtime = continuum_cli_lifecycle::installed_release::Release {
+            artifact: "installed/core.exe".into(), socket: "registered socket".into(),
+            launcher: "sealed/run-service-hidden.ps1".into(), cli: "sealed/continuum.exe".into(),
+            engine: "sealed/engine-c/llama-server.exe".into(), log_directory: "service logs".into(),
+            eye_root: Some("installed browser assets".into()),
+        };
         for have_script in [false, true] {
             for have_installed in [false, true] {
                 for env_from_source in [false, true] {
+                    // Regression 337b2c67: exercise the SAME command constructor
+                    // as production, not only the pure plan followed by a
+                    // disconnected direct-command assertion. Neither inherited
+                    // source intent nor a discoverable script can build here.
+                    assert_eq!(super::plan_launch(super::LaunchSource::ExplicitPrebuilt(&candidate, Some(&runtime)), env_from_source, have_script, have_installed), super::LaunchPlan::Prebuilt);
+                    let command = super::explicit_prebuilt_command(&candidate, "socket from caller", Some(&runtime), std::path::Path::new("powershell.exe"));
+                    let args = command.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
+                    assert_eq!(command.get_program(), "powershell.exe");
+                    for pair in [
+                        ("-File", runtime.launcher.as_str()), ("-ExecutablePath", runtime.cli.as_str()),
+                        ("-CorePath", "verified release/core.exe"), ("-SocketPath", "socket from caller"),
+                        ("-EnginePath", runtime.engine.as_str()), ("-EyeRoot", "installed browser assets"),
+                    ] { assert!(args.windows(2).any(|args| args == [pair.0, pair.1]), "missing runtime argument {pair:?}: {args:?}"); }
+                    assert!(!args.iter().any(|arg| arg.contains("start-server") || arg == "cargo"));
                     assert_eq!(
                         super::plan_launch(
                             super::LaunchSource::Prebuilt(&candidate),
@@ -8139,7 +8733,7 @@ mod tests {
                 }
             }
         }
-        let cmd = super::direct_core_command(&candidate.path, "socket from caller");
+        let cmd = super::explicit_prebuilt_command(&candidate, "socket from caller", None, std::path::Path::new("powershell.exe"));
         assert_eq!(cmd.get_program(), candidate.path.as_os_str());
         assert_eq!(
             cmd.get_args().collect::<Vec<_>>(),
@@ -8396,6 +8990,23 @@ mod tests {
         let artifact = std::env::temp_dir().join("build cache 雪").join("core.exe");
         std::fs::write(&receipt.0, format!("{}\n", artifact.display())).unwrap();
         assert_eq!(receipt.artifact().unwrap(), artifact);
+        for failure in [
+            PublishedCoreError::Artifact("verified payload hash mismatch".into()),
+            PublishedCoreError::CapabilityDeferred("selected artifact lacks capacity protocol".into()),
+            PublishedCoreError::ResourceDeferred(continuum_cli_lifecycle::prebuilt_artifact::ResourceDeferral {
+                condition: continuum_cli_lifecycle::prebuilt_artifact::ResourceCondition::UnmeasuredFilesystem,
+                path: artifact.parent().unwrap().into(), projected_bytes: 123, reason: "quota refusal".into(),
+            }),
+        ] {
+            std::fs::write(&receipt.0, serde_json::to_vec(&failure).unwrap()).unwrap(); // boundary: fixture installer receipt
+            assert_eq!(receipt.deployment_failure().unwrap(), Some(failure));
+            assert!(receipt.artifact().is_err(), "resource refusal cannot become a selected artifact path");
+        }
+        std::fs::write(&receipt.0, "{broken").unwrap();
+        assert!(receipt.deployment_failure().is_err());
+        assert!(matches!(receipt.classify_deployment_failure("installer failed".into()), PublishedCoreError::OperationalBlocked(_)));
+        std::fs::write(&receipt.0, "").unwrap();
+        assert!(matches!(receipt.classify_deployment_failure("installer failed".into()), PublishedCoreError::OperationalBlocked(_)));
         drop(receipt);
         assert!(!receipt_path.exists());
 
@@ -9191,7 +9802,7 @@ mod tests {
     // "could not locate continuum-core-server" while a 2-day-old core kept serving).
     #[test]
     fn artifact_resolution_order_matches_install_service() {
-        let c = core_artifact_candidates("/home/u", Path::new("/home/u/.continuum"), None);
+        let c = core_artifact_candidates(Path::new("/home/u/.continuum/cache/cargo-target"), Path::new("/home/u/.continuum"));
         let shown: Vec<String> = c.iter().map(|p| p.display().to_string()).collect();
         #[cfg(not(windows))]
         assert_eq!(
@@ -9215,7 +9826,7 @@ mod tests {
             );
         }
         // explicit CARGO_TARGET_DIR overrides the default cache location
-        let c = core_artifact_candidates("/home/u", Path::new("/cold/payload"), Some("/tgt"));
+        let c = core_artifact_candidates(Path::new("/tgt"), Path::new("/cold/payload"));
         assert!(c.iter().any(|p| p.starts_with("/cold/payload/bin")));
         assert!(!c.iter().any(|p| p.starts_with("/home/u/.continuum/bin")));
         assert!(

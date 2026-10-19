@@ -79,6 +79,10 @@ pub struct ExecutionState {
     /// Why the task could NOT prove the child exited (its final `wait` failed). Never read as
     /// an exit: a release that meets it stays unresolved and keeps the context's handles.
     pub process_end_error: Option<String>,
+    /// What the shell had started that was still running after the kill, by identity. Not
+    /// assumed gone: a release re-kills and re-checks each one, and keeps the context while any
+    /// is still present.
+    pub unconfirmed_descendants: Vec<crate::inference::lane_process::ProcessIdentity>,
     /// Cursor: index of next stdout line to return on poll/watch.
     stdout_cursor: usize,
     /// Cursor: index of next stderr line to return on poll/watch.
@@ -88,6 +92,44 @@ pub struct ExecutionState {
     pub output_notify: Arc<Notify>,
     /// Compiled sentinel filter rules (empty = pass all lines through as Info).
     pub sentinel: CompiledSentinel,
+}
+
+// Process custody cannot live only in bounded shell history: GC may drop a
+// completed-looking execution whose descendants have not been confirmed ended.
+struct ShellCargoCustody {
+    state: Arc<Mutex<ExecutionState>>,
+    admission: Arc<super::hands::HandsLease>,
+    kept: crate::inference::lane_process::Kept,
+    completed: bool,
+}
+impl Drop for ShellCargoCustody {
+    fn drop(&mut self) {
+        let state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => {
+                self.admission.keep_unknown("shell process custody state is poisoned".into());
+                self.admission.keep_held(&[self.kept.clone()]);
+                return;
+            }
+        };
+        // Spawn and publishing its PID are synchronous, with no cancellation point.
+        if state.pid.is_none() { return; }
+        if !self.completed {
+            self.admission.keep_unknown("shell task cancelled before its process and output lifetime completed".into());
+            self.admission.keep_held(&[self.kept.clone()]);
+            return;
+        }
+        let end = crate::inference::lane_process::TreeEnd {
+            reaped: if state.process_ended && state.process_end_error.is_none() { Ok(()) }
+                else { Err(state.process_end_error.clone().unwrap_or_else(|| "shell task ended without confirming its child".into())) },
+            survivors: state.unconfirmed_descendants.clone(),
+            unwalked: None,
+        };
+        if !end.confirmed() {
+            self.admission.keep_unconfirmed(&end);
+            self.admission.keep_held(&[self.kept.clone()]);
+        }
+    }
 }
 
 impl std::fmt::Debug for ExecutionState {
@@ -249,12 +291,11 @@ impl ShellSession {
         // start script pins. A later explicit env set through the session still
         // overrides.
         let mut env = HashMap::new();
-        let shared_target = std::env::var("CARGO_TARGET_DIR")
-            .map(std::path::PathBuf::from)
-            .ok()
-            .or_else(|| dirs::home_dir().map(|h| h.join(".continuum/cache/cargo-target")));
+        let shared_target = crate::paths::shared_cargo_target_dir();
         if let Some(t) = shared_target {
-            env.insert("CARGO_TARGET_DIR".to_string(), t.display().to_string());
+            let value = t.into_os_string().into_string()
+                .map_err(|_| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?;
+            env.insert("CARGO_TARGET_DIR".to_string(), value);
         }
         Ok(Self {
             id: session_id.to_string(),
@@ -360,6 +401,13 @@ impl ShellSession {
         // Auto-GC: move completed executions to history before starting new one
         self.gc();
 
+        let target = match self.env.get("CARGO_TARGET_DIR").filter(|value| !value.is_empty()) {
+            Some(target) => crate::paths::cargo::resolve_target(Path::new(target), &self.cwd),
+            None => crate::paths::cargo::target_dir(&self.cwd)?,
+        };
+        let target_env = target.to_str()
+            .ok_or_else(|| "shell session environment requires a UTF-8 Cargo target; refusing to alter its native path".to_string())?.to_owned();
+
         let execution_id = Uuid::new_v4().to_string();
         let now_ms = crate::time::EpochMs::now().millis();
 
@@ -377,6 +425,7 @@ impl ShellSession {
             handed_back: false,
             process_ended: false,
             process_end_error: None,
+            unconfirmed_descendants: Vec::new(),
             stdout_cursor: 0,
             stderr_cursor: 0,
             output_notify: notify,
@@ -388,18 +437,62 @@ impl ShellSession {
 
         // Spawn the process in a tokio task
         let cwd = self.cwd.clone();
-        let env = self.env.clone();
+        let mut env = self.env.clone();
+        env.insert("CARGO_TARGET_DIR".to_string(), target_env);
         let cmd_str = command.to_string();
         let confinement = self.confinement.clone();
         let who = self.persona_id.clone();
 
+        // This task can outlive the command. Release must reach the existing
+        // shell kill path before waiting for the task's process/output lifetime.
+        let admission = super::hands::current().map(|lease| Arc::new(lease.process_custody()));
         rt_handle.spawn(async move {
-            run_shell_command(state, &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who).await;
+            let result = super::hands::admitted(admission, super::hands::scoped_admitted(async {
+            let cargo_grant = match crate::system_resources::disk_reporters::admit_cargo_target(&target, &cwd, confinement.as_ref()).await {
+                Ok(grant) => grant,
+                Err(error) => {
+                    if let Ok(mut state) = state.lock() {
+                        state.status = ShellExecutionStatus::Failed;
+                        state.stderr_lines.push(format!("Cargo cache ownership: {error}"));
+                        state.finished_at = Some(crate::time::EpochMs::now().millis());
+                        state.process_ended = true; // admission refused before any child existed
+                        state.output_notify.notify_one();
+                    }
+                    return;
+                }
+            };
+            let Some(admission) = super::hands::current() else {
+                if let Ok(mut state) = state.lock() {
+                    state.status = ShellExecutionStatus::Failed;
+                    state.stderr_lines.push("Shell has no process custody admission".into());
+                    state.process_ended = true;
+                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.output_notify.notify_one();
+                }
+                return;
+            };
+            let mut custody = ShellCargoCustody { state: state.clone(), admission, kept: cargo_grant.kept(), completed: false };
+            run_shell_command(
+                state.clone(),
+                &cmd_str, &cwd, &env, timeout_ms, confinement.as_ref(), &who, cargo_grant.grant(),
+            )
+            .await;
+            custody.completed = true;
             // A finished command may have written anywhere under its cwd (a build, a
             // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
             // not — observers re-read the workspace on this event instead of
             // polling it with git on a clock (card f860e59c).
             super::workspace_events::note_written(&cwd);
+            })).await;
+            if let Err(error) = result {
+                if let Ok(mut state) = state.lock() {
+                    state.status = ShellExecutionStatus::Failed;
+                    state.stderr_lines.push(format!("Shell process admission: {error}"));
+                    state.finished_at = Some(crate::time::EpochMs::now().millis());
+                    state.process_ended = true;
+                    state.output_notify.notify_one();
+                }
+            }
         });
 
         log_info!(
@@ -535,11 +628,6 @@ impl ShellSession {
         )
     }
 
-    /// Whether any execution in this session is still running.
-    pub fn has_running(&self) -> bool {
-        self.info().active_executions > 0
-    }
-
     /// Resolve a full execution ID or unique hex prefix in this session only.
     /// Used to await completion without holding the DashMap lock.
     pub fn get_execution_state(&self, execution_id: &str) -> Result<Arc<Mutex<ExecutionState>>, String> {
@@ -549,8 +637,12 @@ impl ShellSession {
         if self.history.iter().any(|entry| entry.execution_id == execution_id) {
             return Err(format!("Output for completed shell execution '{execution_id}' was evicted by the session retention limit; exit/timing metadata remains in shell history"));
         }
-        let candidates: Vec<Uuid> = self.executions.keys()
-            .map(|id| Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}")))
+        let candidates: Vec<Uuid> = self
+            .executions
+            .keys()
+            .map(|id| {
+                Uuid::parse_str(id).map_err(|e| format!("invalid stored execution handle: {e}"))
+            })
             .collect::<Result<_, _>>()?;
         let id = crate::id_resolve::resolve_handle(execution_id, &candidates, "shell execution")?;
         self.executions.get(&id.to_string()).cloned()
@@ -605,10 +697,8 @@ impl ShellSession {
         state.status = ShellExecutionStatus::Killed;
         state.finished_at = Some(crate::time::EpochMs::now().millis());
 
-        // Also send SIGKILL via the stored PID for immediate effect
-        if let Some(pid) = state.pid {
-            kill_process(pid);
-        }
+        // The execution's own task, which owns the child, sees the flag at its next poll and
+        // kills the shell and everything it started. No second kill by stored pid.
 
         log_info!(
             "code",
@@ -647,7 +737,9 @@ impl ShellSession {
             }).collect();
         // HashMap order must not choose which completed receipt is oldest.
         self.history.extend(completed);
-        self.history.sort_by(|a, b| (a.finished_at, &a.execution_id).cmp(&(b.finished_at, &b.execution_id)));
+        self.history.sort_by(|a, b| {
+            (a.finished_at, &a.execution_id).cmp(&(b.finished_at, &b.execution_id))
+        });
         if self.history.len() > max_entries {
             let drain_count = self.history.len() - max_entries;
             for entry in self.history.drain(..drain_count) {
@@ -684,9 +776,6 @@ impl ShellSession {
                 if state.status == ShellExecutionStatus::Running {
                     state.status = ShellExecutionStatus::Killed;
                     state.finished_at = Some(crate::time::EpochMs::now().millis());
-                    if let Some(pid) = state.pid {
-                        kill_process(pid);
-                    }
                 }
             }
         }
@@ -827,6 +916,7 @@ async fn run_shell_command(
     timeout_ms: Option<u64>,
     confinement: Option<&super::confinement::Confinement>,
     who: &str,
+    cargo_grant: Option<&super::confinement::CargoTargetGrant>,
 ) {
     // Resolve a REAL POSIX shell. `TokioCommand::new("bash")` finds
     // C:\Windows\System32\bash.exe on Windows — the WSL launcher, not a shell —
@@ -844,6 +934,7 @@ async fn run_shell_command(
             if let Ok(mut s) = state.lock() {
                 s.status = ShellExecutionStatus::Failed;
                 s.stderr_lines.push(format!("no usable shell: {why}"));
+                s.process_ended = true; // no child was spawned
                 s.finished_at = Some(crate::time::EpochMs::now().millis());
                 s.output_notify.notify_one();
             }
@@ -859,17 +950,36 @@ async fn run_shell_command(
     // shell resolves none). On Unix use `$SHELL` (the user's own shell) as a login
     // shell; fall back to the located POSIX bash. Windows keeps the located bash (the
     // shell_portable WSL-shim guard) — its env model differs and $SHELL is absent.
-    let (shell_bin, shell_flag): (PathBuf, &str) = if cfg!(windows) {
-        (bash, "-c")
+    //
+    // The ENVIRONMENT comes from the user's login shell; the LANGUAGE is always bash.
+    // Citizens (and every model) write bash: `echo '===' ; grep … | head`. Running that
+    // text in a login zsh broke whole commands on `==`/`=word` expansion ("zsh: ==
+    // not found", M5 2026-10-17, three residents, a lost turn each). So the login shell
+    // only loads the profile and then execs the located bash on the command, which
+    // travels in the environment (`CONTINUUM_SHELL_COMMAND`) so no quoting layer can
+    // mangle it.
+    let (shell_bin, shell_args): (PathBuf, Vec<std::ffi::OsString>) = if cfg!(windows) {
+        (bash, vec!["-c".into()])
     } else {
         match std::env::var("SHELL")
             .ok()
             .filter(|s| !s.is_empty() && Path::new(s).exists())
         {
-            Some(user_shell) => (PathBuf::from(user_shell), "-lc"),
-            None => (bash, "-lc"),
+            Some(user_shell) => (
+                PathBuf::from(user_shell),
+                vec![
+                    "-lc".into(),
+                    format!(
+                        "exec '{}' -c \"$CONTINUUM_SHELL_COMMAND\"",
+                        bash.display().to_string().replace('\'', "'\\''")
+                    )
+                    .into(),
+                ],
+            ),
+            None => (bash, vec!["-lc".into()]),
         }
     };
+    let command_in_env = shell_args.len() == 2;
 
     // Layer the per-task PATH prefix (the era venv's bin) ON TOP of the login-loaded
     // PATH. A login shell RE-SETS PATH from the profile, so an inherited PATH override
@@ -890,10 +1000,17 @@ async fn run_shell_command(
         confinement,
         who,
         &shell_bin,
-        &[shell_flag.into(), effective_command.clone().into()],
+        &if command_in_env {
+            shell_args.clone()
+        } else {
+            let mut a = shell_args.clone();
+            a.push(effective_command.clone().into());
+            a
+        },
+        Some(cwd),
+        cargo_grant,
     );
-    cmd.current_dir(cwd)
-        .stdout(std::process::Stdio::piped())
+    cmd.stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         // Don't inherit stdin — non-interactive
         .stdin(std::process::Stdio::null());
@@ -921,6 +1038,14 @@ async fn run_shell_command(
     for (k, v) in env {
         cmd.env(k, v);
     }
+    // The command text rides in the environment when a login shell hands it to bash
+    // (see `command_in_env` above); set last so no session variable can shadow it.
+    if command_in_env {
+        cmd.env("CONTINUUM_SHELL_COMMAND", &effective_command);
+    }
+
+    // Captured shell sessions are noninteractive; share the platform launch policy.
+    airc_core::process::configure_background(cmd.as_std_mut());
 
     // Spawn the child process
     let mut child = match cmd.spawn() {
@@ -992,6 +1117,7 @@ async fn run_shell_command(
 
     // Wait for process completion (with optional timeout and kill detection)
     let state_wait = state.clone();
+    let state_for_timed_kill = state.clone();
     let exit_status = if let Some(timeout) = timeout_ms {
         tokio::select! {
             // Branch 1: Process completes
@@ -1006,7 +1132,9 @@ async fn run_shell_command(
                     }
                 }
             }
-            // Branch 2: Timeout fires
+            // Branch 2: a kill was asked for (code/shell-kill, a session's end, a release)
+            _ = poll_kill_flag(state_for_timed_kill) => None,
+            // Branch 3: Timeout fires
             _ = tokio::time::sleep(Duration::from_millis(timeout)) => {
                 // Check if already killed
                 let already_done = state_wait.lock()
@@ -1014,7 +1142,6 @@ async fn run_shell_command(
                     .unwrap_or(false);
 
                 if !already_done {
-                    let _ = child.kill().await;
                     if let Ok(mut s) = state_wait.lock() {
                         if s.status == ShellExecutionStatus::Running {
                             s.status = ShellExecutionStatus::TimedOut;
@@ -1044,10 +1171,7 @@ async fn run_shell_command(
                 }
             }
             // Check kill flag periodically
-            _ = poll_kill_flag(state_for_kill) => {
-                let _ = child.kill().await;
-                None
-            }
+            _ = poll_kill_flag(state_for_kill) => None,
         }
     };
 
@@ -1056,17 +1180,30 @@ async fn run_shell_command(
     // flagged before the timeout fired, which used to skip the child entirely) signals the child
     // (harmless if it's already dead) and waits once more: only that wait's status proves the
     // reap, and its error is recorded as unproven, never as an exit (Astra on #5005).
-    let reaped: Result<(), String> = if exit_status.is_some() {
-        Ok(())
+    //
+    // THE ONE KILL (Astra on ea06701d): only this task, which owns the child, kills it. Everything
+    // the shell started is found while the shell is alive and still their parent, and killed
+    // deepest first, each only if its pid still names the same process; then the shell itself.
+    // What survives is recorded, never assumed gone, and a release re-checks it.
+    let crate::inference::lane_process::TreeEnd { reaped, survivors, unwalked } = if exit_status.is_some() {
+        crate::inference::lane_process::TreeEnd { reaped: Ok(()), survivors: Vec::new(), unwalked: None }
     } else {
-        let _ = child.start_kill();
-        child.wait().await.map(|_| ()).map_err(|e| format!("could not confirm the process exited: {e}"))
+        crate::inference::lane_process::end_tree(&mut child).await
+    };
+    // a tree that couldn't be walked is an unproven end, the same as an unproven reap
+    let reaped = match unwalked {
+        Some(why) => Err(match reaped {
+            Ok(()) => why,
+            Err(reap) => format!("{reap}; {why}"),
+        }),
+        None => reaped,
     };
     if let Ok(mut s) = state.lock() {
         match reaped {
             Ok(()) => s.process_ended = true,
             Err(why) => s.process_end_error = Some(why),
         }
+        s.unconfirmed_descendants = survivors;
     }
 
     // Wait for output readers to drain
@@ -1155,14 +1292,6 @@ async fn poll_kill_flag(state: Arc<Mutex<ExecutionState>>) {
         }
         tokio::time::sleep(KILL_POLL).await;
     }
-}
-
-/// Kill a process by PID (best-effort, Unix only).
-fn kill_process(pid: u32) {
-    // Use kill command — works on macOS and Linux, no extra deps
-    let _ = std::process::Command::new("kill")
-        .args(["-9", &pid.to_string()])
-        .output();
 }
 
 // ============================================================================
@@ -1281,6 +1410,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/main.ts"), "console.log('hello');").unwrap();
         let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(crate::system_resources::disk_reporters::prepare_writer_fixture());
         (dir, rt)
     }
 
@@ -1526,7 +1656,8 @@ mod tests {
             assert_eq!(poll.execution_id, exec_id);
             all_stdout.extend(poll.new_stdout);
             if poll.finished {
-                assert_eq!(poll.exit_code, Some(0));
+                assert_eq!(poll.exit_code, Some(0),
+                    "terminal poll status={:?} stderr={:?}", poll.status, poll.new_stderr);
                 break;
             }
         }
@@ -1566,6 +1697,54 @@ mod tests {
         let poll = session.poll(&exec_id).unwrap();
         assert!(poll.finished);
         assert_eq!(poll.status, ShellExecutionStatus::Killed);
+
+        // what this catches (card ea06701d; Astra's design): a kill that ended only `bash` and left
+        // what it started running (a pipeline, a test runner's workers, a backgrounded server).
+        // The execution's own task kills the shell's descendants deepest first, then the shell,
+        // and retains any unconfirmed descendant identities for later re-check. Unix: the
+        // grandchild's pid is written by the shell.
+        #[cfg(unix)]
+        {
+            let pidfile = dir.path().join("grandchild.pid");
+            let exec_id = session.execute("sleep 600 & echo $! > grandchild.pid; wait", None, rt.handle()).unwrap();
+            // 10 s is this test's bound on a shell writing one file, not a product timeout.
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            let grandchild: u32 = loop {
+                if let Some(pid) = std::fs::read_to_string(&pidfile).ok().and_then(|t| t.trim().parse().ok()) {
+                    break pid;
+                }
+                assert!(std::time::Instant::now() < deadline, "the shell never started its grandchild");
+                std::thread::sleep(KILL_POLL);
+            };
+            let identity = crate::inference::lane_process::ProcessIdentity {
+                pid: grandchild,
+                start_time: match crate::inference::engine_residency::probe_process(grandchild) {
+                    crate::inference::engine_residency::ProcessProbe::Present(start) => start,
+                    other => panic!("the grandchild is running before the kill: {other:?}"),
+                },
+            };
+            session.kill(&exec_id).unwrap();
+            let state = session.get_execution_state(&exec_id).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while !state.lock().unwrap().process_ended {
+                assert!(state.lock().unwrap().process_end_error.is_none(), "the shell's reap succeeds");
+                assert!(std::time::Instant::now() < deadline, "the killed shell is reaped");
+                std::thread::sleep(KILL_POLL);
+            }
+            // Regression for combined canary 8ea: direct-child reap does not imply that
+            // every signalled descendant has already exited at end_tree's snapshot.
+            // Observe those retained identities AND the independently witnessed child;
+            // never clear custody or send another signal to make this fixture pass.
+            let mut observed = state.lock().unwrap().unconfirmed_descendants.clone();
+            observed.push(identity);
+            loop {
+                let surviving = crate::inference::lane_process::still_present(&observed);
+                if surviving.is_empty() { break; }
+                assert!(std::time::Instant::now() < deadline,
+                    "the grandchild and recorded descendants must die with their shell: {surviving:?}");
+                std::thread::sleep(KILL_POLL);
+            }
+        }
     }
 
     #[test]
@@ -1607,11 +1786,35 @@ mod tests {
         assert!(receipt.lock().unwrap().stdout_lines.join("\n").contains("done"));
         assert_eq!(receipt.lock().unwrap().exit_code, Some(0));
 
+        // 5058: bounded history must not own an unresolved process's cache hold.
+        let context = crate::code::hands::HandsContext::fresh();
+        let admission = Arc::new(crate::code::hands::admit(context).unwrap());
+        let held = Arc::new(());
+        let witness = Arc::downgrade(&held);
+        receipt.lock().unwrap().unconfirmed_descendants.push(crate::inference::lane_process::ProcessIdentity { pid: 4242, start_time: 7 });
+        drop(ShellCargoCustody { state: receipt.clone(), admission: admission.clone(), kept: held, completed: true });
+        receipt.lock().unwrap().unconfirmed_descendants.clear();
+        drop(admission);
+        // A direct-child exit alone does not prove output-holding descendants
+        // ended when cancellation interrupts the remainder of the shell task.
+        let cancelled_context = crate::code::hands::HandsContext::fresh();
+        let cancelled_admission = Arc::new(crate::code::hands::admit(cancelled_context).unwrap());
+        let cancelled_hold = Arc::new(());
+        let cancelled_witness = Arc::downgrade(&cancelled_hold);
+        drop(ShellCargoCustody { state: receipt.clone(), admission: cancelled_admission.clone(), kept: cancelled_hold, completed: false });
+        drop(cancelled_admission);
+        assert!(!rt.block_on(crate::code::hands::close(cancelled_context)).unknown.is_empty());
+        crate::code::hands::retain_processes(cancelled_context, Vec::new());
+        assert!(cancelled_witness.upgrade().is_some(), "unknown output lifetime is not cleared by an empty known-descendant list");
+
         // Count eviction keeps only the newest terminal receipt, not running work.
         let running = session.execute("sleep 60", None, rt.handle()).unwrap();
         session.retain_completed(1, usize::MAX);
         assert_eq!(session.history().len(), 1);
         assert!(session.get_execution_state(&result.execution_id).is_err());
+        assert!(witness.upgrade().is_some(), "history eviction must not release unresolved process custody");
+        crate::code::hands::retain_processes(context, Vec::new());
+        assert!(witness.upgrade().is_none());
         assert!(session.get_execution_state(&running).is_ok());
         let retained_id = session.history()[0].execution_id.clone();
         assert!(session.get_execution_state(&retained_id).is_ok());

@@ -46,6 +46,7 @@ use crate::code::types::{
     DirEntry, ExistsResult, FsEntryKind, GlobResult, ListResult, ReadResult, SearchMatch,
     SearchResult, TreeResult, WriteResult,
 };
+use crate::code::git_bridge::{run_git, run_git_with_env};
 use crate::code::hands::HandsKey;
 use crate::code::{search, tree, EditMode, FileEngine, PathSecurity, ShellSession};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand, ToolVerdict};
@@ -79,7 +80,8 @@ fn read_scope_of(ctx: &Ctx, workspace: &std::path::Path) -> crate::code::path_se
         return ReadScope::Sandbox;
     }
     match confinement_of(ctx, workspace) {
-        None => ReadScope::Host,
+        None => ReadScope::Host { deny: Vec::new() },
+        Some(confinement) if confinement.reaches_host() => ReadScope::Host { deny: confinement.host_denials() },
         Some(confinement) => ReadScope::Confined(confinement.materialize()),
     }
 }
@@ -93,7 +95,7 @@ pub(crate) async fn resolve_readable_path(
     ctx: &Ctx,
     path: &str,
 ) -> Result<std::path::PathBuf, CommandError> {
-    let key = hands_key(ctx);
+    let key = hands_of(ctx);
     ensure_engine(state, &key).await?;
     let engine = state
         .file_engines
@@ -125,12 +127,12 @@ pub(crate) const LOCAL_OWNER: &str = "local-owner";
 /// bound to (`CallerIdentity::hands`, set by the kernel side, never by params). The one
 /// key every hands map uses; the caller alone stays the authorization identity
 /// ([`caller_id`]). See [`crate::code::hands`].
-pub(crate) fn hands_key(ctx: &Ctx) -> HandsKey {
+pub(crate) fn hands_of(ctx: &Ctx) -> HandsKey {
     HandsKey::new(caller_id(ctx), ctx.caller.as_ref().and_then(|c| c.hands))
 }
 
 /// Resolve (and provision on first use) the citizen LAYER for an identified peer
-/// caller: a copy-on-write clone of the shared base (the core's cwd — the repo)
+/// caller: a copy-on-write clone of the shared base (our recorded checkout, `repo_registry::own_checkout`)
 /// under `<continuum home>/citizens/peers/<peer>/workspace`.
 ///
 /// Joel 2026-07-10: "each persona is only the diff from the shared." On APFS
@@ -167,31 +169,30 @@ pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, Comma
         .join("workspace"))
 }
 
-pub(crate) fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
-    // The shared base is the core's cwd — OUR checkout. Resolve it ONCE here, then
-    // hand the provisioning body a concrete base so it is a pure function of
-    // (peer, base). That seam is why the citizen-layer test can inject a fake base
-    // WITHOUT mutating the process-global cwd: a test that chdir'd raced every
-    // parallel ts-rs `export_bindings_*` write (each resolves its relative
-    // `export_to` against the same process cwd, so a mid-run chdir sent those
-    // writes to `/protocol/...` and panicked the whole suite). #191.
-    let base = std::env::current_dir()
+pub(crate) async fn ensure_citizen_layer(peer: &str) -> Result<std::path::PathBuf, CommandError> {
+    // The shared base is OUR checkout, as this node recorded it (never the cwd: a
+    // launchd core runs in its data dir, card 2a2cd6f1). Resolved ONCE here, then handed
+    // to the provisioning body as a concrete base so it is a pure function of
+    // (peer, base): the seam that lets the citizen-layer test inject a fake base without
+    // touching process-global state (#191).
+    let base = crate::modules::repo_registry::own_checkout()
+        .await
         .map_err(|e| CommandError::Internal(format!("shared base unavailable: {e}")))?;
-    ensure_citizen_layer_from_base(peer, &base)
+    ensure_citizen_layer_from_base(peer, &base).await
 }
 
 /// Provision (or refresh) a peer's citizen layer, cloning from `base` — the shared
 /// checkout. Split out from [`ensure_citizen_layer`] so the base is an explicit
-/// argument (production passes the core's cwd; tests pass a scoped temp dir) rather
-/// than an implicit read of the process-global cwd. See the note above on why that
+/// argument (production passes our recorded checkout; tests pass a scoped temp dir)
+/// rather than an implicit read of process-global state. See the note above on why that
 /// matters for the parallel test suite.
-fn ensure_citizen_layer_from_base(
+async fn ensure_citizen_layer_from_base(
     peer: &str,
     base: &std::path::Path,
 ) -> Result<std::path::PathBuf, CommandError> {
     let layer = citizen_layer_path(peer)?;
     if layer.is_dir() {
-        share_layer_objects_with_base(&layer, base);
+        share_layer_objects_with_base(&layer, base).await;
         // Self-heal the stale-clone bug ([[citizen-workspaces-are-stale-one-time-
         // clones]]): the layer was a ONE-TIME CoW snapshot that never refreshed, so
         // personas drifted stale (one froze before the workers/→core/ restructure).
@@ -200,7 +201,7 @@ fn ensure_citizen_layer_from_base(
         // autocommits + merges, shared wins framework conflicts). Non-fatal: a sync
         // that fails logs LOUD but still returns the usable (if stale) workspace
         // rather than denying the persona her hands.
-        match crate::code::git_bridge::git_sync_from_shared(&layer, base) {
+        match crate::code::git_bridge::git_sync_from_shared(&layer, base).await {
             Ok(report) if report.synced => {
                 write_workspace_sync_note(&layer, &report.summary);
                 // The merge (and the note) rewrote her layer: announce it from the write
@@ -238,46 +239,38 @@ fn ensure_citizen_layer_from_base(
     // the base through `.git/objects/info/alternates`, so the layer's marginal disk is
     // her working tree plus her own commits. `git_sync_from_shared` (fetch + merge) is
     // unchanged — it never depended on the copy.
-    // The clone source is the base's repository ROOT: production hands the core's cwd
-    // (the checkout root), but a caller standing inside the tree (a test in
+    // The clone source is the base's repository ROOT: production hands our recorded
+    // checkout (its root), but a caller standing inside the tree (a test in
     // core/continuum-core) means the same repository, and `git clone` wants the root.
     // A base outside any repository is a loud error — a citizen layer without a
     // repository is not a workspace.
-    let toplevel = std::process::Command::new("git")
-        .current_dir(base)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|e| CommandError::Internal(format!("citizen layer: git rev-parse spawn failed: {e}")))?;
-    if !toplevel.status.success() {
-        return Err(CommandError::Internal(format!(
-            "citizen layer: base {} is not inside a git repository ({}) — a layer is a shared \
-             clone of the checkout and cannot be provisioned from a bare directory",
-            base.display(),
-            String::from_utf8_lossy(&toplevel.stderr).trim()
-        )));
-    }
-    let repo_root = std::path::PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
-    protect_shared_objects(&repo_root);
-    let out = std::process::Command::new("git")
-        .args(["clone", "--shared", "--quiet"])
-        .arg(&repo_root)
-        .arg(&layer)
-        .output()
-        .map_err(|e| CommandError::Internal(format!("citizen layer clone spawn failed: {e}")))?;
-    if !out.status.success() {
+    // This one call lifts the runner's discovery ceiling by name: finding the root from
+    // inside the tree IS the upward discovery.
+    let toplevel = run_git_with_env(base, &["rev-parse", "--show-toplevel"], &[("GIT_CEILING_DIRECTORIES", "")])
+        .await
+        .map_err(|e| {
+            CommandError::Internal(format!(
+                "citizen layer: base {} is not inside a git repository ({e}) — a layer is a shared \
+                 clone of the checkout and cannot be provisioned from a bare directory",
+                base.display()
+            ))
+        })?;
+    let repo_root = std::path::PathBuf::from(toplevel.trim());
+    protect_shared_objects(&repo_root).await;
+    let (source, target) = (repo_root.to_string_lossy(), layer.to_string_lossy());
+    if let Err(e) = run_git(&repo_root, &["clone", "--shared", "--quiet", &source, &target]).await {
         // Never leave a half-materialized layer for the next call to mistake
         // for a real one.
         let _ = std::fs::remove_dir_all(&layer);
         return Err(CommandError::Internal(format!(
-            "citizen layer shared clone failed for peer {peer} (base {}): {}",
-            base.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
+            "citizen layer shared clone failed for peer {peer} (base {}): {e}",
+            base.display()
         )));
     }
     // The vendored inference engine rides along as a submodule; reference the base's
     // copy so its objects are shared too. Bounded and named: a layer without the vendor
     // tree still gives her hands (the core serves inference, not her checkout).
-    let vendor = init_vendor_submodule(&layer, &repo_root);
+    let vendor = init_vendor_submodule(&layer, &repo_root).await;
     crate::probe!(
         class = "workspace.layer.provision",
         peer = %peer,
@@ -293,45 +286,24 @@ fn ensure_citizen_layer_from_base(
 }
 
 /// `git submodule update --init --reference <base>/<path>` for the vendored engine,
-/// bounded to ten minutes. Returns the named outcome for the probe: `shared`,
-/// `absent` (the base has no vendor tree — a test base), `failed: <why>`.
-fn init_vendor_submodule(layer: &std::path::Path, base: &std::path::Path) -> String {
+/// within its ten-minute bound (carried from the poll loop this replaced, unmeasured —
+/// card c1bdc29b measures the git bounds). The git and what it starts end at the bound.
+/// Returns the named outcome for the probe: `shared`, `absent` (the base has no vendor
+/// tree — a test base), `failed: <why>`.
+async fn init_vendor_submodule(layer: &std::path::Path, base: &std::path::Path) -> String {
     const VENDOR: &str = "core/vendor/llama.cpp";
+    const BOUND: Duration = Duration::from_secs(600);
     let reference = base.join(VENDOR);
     if !reference.join(".git").exists() && !reference.join("HEAD").exists() {
         return "absent".to_string();
     }
-    let mut child = match std::process::Command::new("git")
-        .current_dir(layer)
-        .args(["submodule", "update", "--init", "--quiet", "--reference"])
-        .arg(&reference)
-        .arg(VENDOR)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(e) => return format!("failed: spawn {e}"),
-    };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return "shared".to_string(),
-            Ok(Some(status)) => {
-                let mut err = String::new();
-                if let Some(mut e) = child.stderr.take() {
-                    use std::io::Read as _;
-                    let _ = e.read_to_string(&mut err);
-                }
-                return format!("failed: {status} {}", err.trim());
-            }
-            Ok(None) if std::time::Instant::now() >= deadline => {
-                let _ = child.kill();
-                return "failed: timed out after 600 s".to_string();
-            }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(200)),
-            Err(e) => return format!("failed: wait {e}"),
-        }
+    let reference = reference.to_string_lossy();
+    let args = ["submodule", "update", "--init", "--quiet", "--reference", &reference, VENDOR];
+    let deadline = tokio::time::Instant::now() + BOUND;
+    match crate::code::git_bridge::within(deadline, run_git(layer, &args)).await {
+        Ok(_) => "shared".to_string(),
+        Err(why) if crate::code::git_bridge::out_of_time(&why) => format!("failed: timed out after {} s: {why}", BOUND.as_secs()),
+        Err(why) => format!("failed: {why}"),
     }
 }
 
@@ -342,22 +314,14 @@ fn init_vendor_submodule(layer: &std::path::Path, base: &std::path::Path) -> Str
 /// `extensions.preciousObjects = true` makes gc/prune in the base refuse to drop
 /// objects. Idempotent; a failure to set it is loud and the provisioning stops,
 /// because a layer over an unprotected base is a repo-corruption timer, not a workspace.
-fn protect_shared_objects(base: &std::path::Path) {
-    let already = std::process::Command::new("git")
-        .current_dir(base)
-        .args(["config", "--get", "extensions.preciousObjects"])
-        .output()
-        .map(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "true")
-        .unwrap_or(false); // unwrap_or: a failed read means "not known to be set" — we set it below and check that
+async fn protect_shared_objects(base: &std::path::Path) {
+    let already = run_git(base, &["config", "--get", "extensions.preciousObjects"])
+        .await
+        .is_ok_and(|v| v.trim() == "true"); // a failed read means "not known to be set" — we set it below and check that
     if already {
         return;
     }
-    let set = std::process::Command::new("git")
-        .current_dir(base)
-        .args(["config", "extensions.preciousObjects", "true"])
-        .status()
-        .map(|st| st.success())
-        .unwrap_or(false); // unwrap_or: a spawn failure is a failure to set; named below
+    let set = run_git(base, &["config", "extensions.preciousObjects", "true"]).await.is_ok();
     crate::probe!(
         class = "workspace.layer.base_protected",
         base = %base.display(),
@@ -376,7 +340,7 @@ fn protect_shared_objects(base: &std::path::Path) {
 /// the base: write `alternates`, repack keeping only objects the base lacks, and drop
 /// the worktree metadata the copy inherited from the base. Idempotent (a layer that
 /// already names the base's objects is left alone); every outcome named in a probe.
-fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path) {
+async fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path) {
     let objects = layer.join(".git").join("objects");
     let alternates = objects.join("info").join("alternates");
     let base_objects = base.join(".git").join("objects");
@@ -384,22 +348,15 @@ fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path
         return;
     }
     let want = format!("{}\n", base_objects.display());
-    protect_shared_objects(base);
+    protect_shared_objects(base).await;
     if std::fs::read_to_string(&alternates).map(|s| s == want).unwrap_or(false) { // unwrap_or: no/unreadable alternates = not yet shared; the migration below writes it
         return;
     }
     let started = std::time::Instant::now();
-    let outcome = (|| -> Result<String, String> {
+    let outcome = async {
         std::fs::create_dir_all(objects.join("info")).map_err(|e| e.to_string())?;
         std::fs::write(&alternates, &want).map_err(|e| e.to_string())?;
-        let out = std::process::Command::new("git")
-            .current_dir(layer)
-            .args(["repack", "-a", "-d", "-l", "-q"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-        }
+        run_git(layer, &["repack", "-a", "-d", "-l", "-q"]).await?;
         // Worktree entries the copy inherited point at the BASE's trees, never hers.
         let mut dropped = 0usize;
         if let Ok(entries) = std::fs::read_dir(layer.join(".git").join("worktrees")) {
@@ -411,8 +368,9 @@ fn share_layer_objects_with_base(layer: &std::path::Path, base: &std::path::Path
                 }
             }
         }
-        Ok(format!("shared; foreign worktree entries dropped: {dropped}"))
-    })();
+        Ok::<_, String>(format!("shared; foreign worktree entries dropped: {dropped}"))
+    }
+    .await;
     match outcome {
         Ok(summary) => crate::probe!(
             class = "workspace.layer.objects_shared",
@@ -455,7 +413,7 @@ fn write_workspace_sync_note(layer: &std::path::Path, summary: &str) {
 }
 
 /// Lazily ensure a workspace [`FileEngine`] exists for `who`. The local operator
-/// (no peer identity) roots at the core's cwd — their own checkout. An
+/// (no peer identity) roots at our recorded checkout (`repo_registry::own_checkout`). An
 /// IDENTIFIED peer (persona or remote agent) roots at their citizen LAYER (see
 /// [`ensure_citizen_layer`]): writes land in their own copy-on-write clone, and
 /// the shared checkout is never writable through a peer's hands. Idempotent and
@@ -467,77 +425,50 @@ pub(crate) async fn ensure_engine(state: &CodeState, key: &HandsKey) -> Result<(
     let caller = key.caller.as_str();
     let map_key = key.map_key();
     let who = map_key.as_str();
-    let local = is_local_who(caller);
-    if local {
-        // A LOCAL identity's hands follow her held card (2026-09-12): the operator or
-        // the agent self-peer claims on the board, the claim stages a checkout, her
-        // `code/*` verbs root THERE — the rule a persona's held-work turn applies — and
-        // return to the core's cwd when the card is released. Only a CHANGE of card
-        // rooting evicts the cached engine (and its shell); an engine a caller pinned
-        // with `create-workspace` is otherwise left alone.
-        let card_root = card_root_of(caller).await;
-        let mut last = LAST_CARD_ROOT
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned marker still compares — the hands must move, never panic
-        if last.get(who).cloned().flatten() != card_root {
-            state.file_engines.remove(&who.to_string());
-            // Set aside, never drop: the same handle-keeping move as create-workspace.
-            let new_root = card_root
-                .clone()
-                .or_else(|| std::env::current_dir().ok())
-                .unwrap_or_default(); // unwrap_or_default: an unreadable cwd parks the old session and opens fresh
-            state.re_root_shell(who, &new_root);
-            crate::probe!(
-                class = "code.hands.rerooted",
-                who = who,
-                root = %card_root
-                    .as_ref()
-                    .map(|r| r.display().to_string())
-                    .unwrap_or_else(|| "cwd".to_string()), // unwrap_or_else: no card = the core's cwd, named
-                "a local identity's hands moved with her held card"
-            );
-            last.insert(who.to_string(), card_root);
-        }
-    }
     if state.file_engines.contains_key(who) {
         return Ok(());
     }
-    // An acting context's workspace is what it was rooted at (`create-workspace` through its
-    // own hands); it never falls back to her home layer, which would put a fork's edits on
-    // her desk. Fail closed and say so (Astra's review of #5005).
-    if key.context.is_some() {
-        return Err(CommandError::Invalid(
-            "these hands belong to an acting context (an eval or a fork) that has no workspace \
-             yet: it must be rooted with code/create-workspace before code tools run in it"
-                .into(),
-        ));
-    }
-    let root = if local {
-        match card_root_of(caller).await {
-            Some(root) => root,
-            None => std::env::current_dir().map_err(|e| {
-                CommandError::Internal(format!("workspace root unavailable: {e}"))
-            })?,
+    let local = is_local_who(caller);
+    let root = match key.context {
+        // An acting context's workspace is what it was rooted at; it never falls back to her
+        // home layer, which would put a fork's or a card's edits on her desk. Fail closed and
+        // say so (Astra on #5005 and #5026). A card whose hands couldn't be bound this turn
+        // lands here too: its stand-in context is never rooted.
+        Some(_) => {
+            return Err(CommandError::Invalid(
+                "these hands have no workspace: they belong to an eval or a fork not yet rooted, or \
+                 to a card whose checkout isn't on this node (or couldn't be bound) this turn. Code \
+                 tools can't act here; other tools can"
+                    .into(),
+            ))
         }
-    } else {
-        let citizen_root = ensure_citizen_layer(caller)?;
-        // Every citizen workspace is git-backed from birth
-        // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
-        // exists; otherwise init + root commit, so diff→share→apply works the
-        // moment a citizen first touches files. Glass-boxed 2026-07-11: three
-        // parallel Conway implementations across un-versioned workspaces had no
-        // consolidation path, and the team asked for one. Loud on failure — a
-        // workspace that silently can't version work is a quiet defect.
-        let initialized = crate::code::git_bridge::git_init_if_needed(&citizen_root)
-            .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
-        if initialized {
-            // init + root commit gave the workspace a HEAD — card f860e59c.
-            crate::code::workspace_events::note_written(&citizen_root);
+        // the local operator acts in OUR checkout, as recorded (never the cwd, card 2a2cd6f1)
+        None if local => crate::modules::repo_registry::own_checkout()
+            .await
+            .map_err(|e| CommandError::Internal(format!("workspace root unavailable: {e}")))?,
+        None => {
+            let citizen_root = ensure_citizen_layer(caller).await?;
+            // Every citizen workspace is git-backed from birth
+            // ([[workspace-is-a-cow-diff-from-shared-always-git]]): no-op when .git
+            // exists; otherwise init + root commit, so diff→share→apply works the
+            // moment a citizen first touches files. Glass-boxed 2026-07-11: three
+            // parallel Conway implementations across un-versioned workspaces had no
+            // consolidation path, and the team asked for one. Loud on failure — a
+            // workspace that silently can't version work is a quiet defect.
+            let initialized = crate::code::git_bridge::git_init_if_needed(&citizen_root)
+                .await
+                .map_err(|e| CommandError::Internal(format!("workspace git init failed: {e}")))?;
+            if initialized {
+                // init + root commit gave the workspace a HEAD — card f860e59c.
+                crate::code::workspace_events::note_written(&citizen_root);
+            }
+            citizen_root
         }
-        citizen_root
     };
     let security = PathSecurity::new(&root)
         .map_err(|e| CommandError::Internal(format!("workspace security init failed: {e}")))?;
+    // Every racer for one key computes the same root (a key's root is a function of the key),
+    // so the first insert wins and the rest are the same engine's twin, dropped.
     state
         .file_engines
         .entry(who.to_string())
@@ -561,16 +492,9 @@ fn is_local_who(who: &str) -> bool {
 /// scratch), never the live checkout (Astra's review of #5005). The caller's default context
 /// keeps the local identity's held-card lookup.
 pub(crate) async fn held_root_for(ctx: &Ctx) -> Option<std::path::PathBuf> {
-    let key = hands_key(ctx);
-    if let Ok(persona) = uuid::Uuid::parse_str(&key.caller) {
-        if let Some(root) = crate::cognition::persona_workspace::acting_root_in(persona, key.context) {
-            return Some(root);
-        }
-    }
-    if key.context.is_some() {
-        return None;
-    }
-    card_root_of(&key.caller).await
+    let key = hands_of(ctx);
+    let persona = uuid::Uuid::parse_str(&key.caller).ok()?;
+    crate::cognition::persona_workspace::acting_root_in(persona, key.context)
 }
 
 /// The prepared instance environment's python for the root these hands stand at
@@ -582,24 +506,6 @@ pub(crate) async fn held_env_python_for(ctx: &Ctx) -> Option<std::path::PathBuf>
     crate::persona::instance_env_fact::instance_python(&root)
 }
 
-/// The held-card checkout a local identity's hands stand in — BOARD-TRUE, read from her
-/// live claims on every provisioning (the same read a persona's held-work turn makes),
-/// never a note taken at claim time: a note dies with the process while the claim lives
-/// on the board (2026-09-12: the hands fell back to cwd after the first reboot).
-async fn card_root_of(who: &str) -> Option<std::path::PathBuf> {
-    use crate::persona::active_work_source::AircWorkReader as _;
-    let peer = uuid::Uuid::parse_str(who).ok()?;
-    let rt = crate::persona::operator_peer::local_runtime_of(peer)?;
-    let held = rt.active_claims().await.ok()?;
-    let card = crate::persona::work_focus::focus_workspace_card(held.iter())?;
-    crate::modules::card_staging::checkout_path_for(&peer, card)
-}
-
-/// The card rooting each local identity's engine was last built for — a change here
-/// is the only thing that evicts a cached engine.
-static LAST_CARD_ROOT: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, Option<std::path::PathBuf>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// Lazily ensure shell execution state exists for `who`, rooted at the
 /// caller's ENGINE root — the one workspace authority per caller (the operator's
@@ -610,17 +516,17 @@ static LAST_CARD_ROOT: std::sync::LazyLock<
 /// caller retains handles and configured cwd/env. Each command starts a fresh
 /// shell process: shell `cd`, assignments, exports and options do not flow back
 /// into this registry or into later calls.
-async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<(), CommandError> {
-    let key = hands_key(ctx);
+async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<String, CommandError> {
+    // The hands this call is bound to: the shell is provisioned in exactly those.
+    let key = &hands_of(ctx);
     let map_key = key.map_key();
     let who = map_key.as_str();
-    // The ENGINE decides the root and evicts a shell whose root moved (a held card
-    // claimed after the shell was opened) — so it runs first; a shell that survives
-    // it is current. Checking the shell first let a pre-claim `code/shell` pin the
-    // hands at the core's cwd for the session's whole life (2026-09-12, live).
-    ensure_engine(state, &key).await?;
+    // The ENGINE decides the root, once for these hands' life, and the shell opens there.
+    // Hands are never re-rooted (card fc9e9fd7), so a shell that exists stands at its
+    // engine's root.
+    ensure_engine(state, key).await?;
     if state.shell_sessions.contains_key(who) {
-        return Ok(());
+        return Ok(map_key);
     }
     let root = state
         .file_engines
@@ -636,19 +542,28 @@ async fn ensure_shell(state: &CodeState, ctx: &Ctx) -> Result<(), CommandError> 
         shell.confine(confinement);
     }
     state.shell_sessions.entry(who.to_string()).or_insert(shell);
-    Ok(())
+    Ok(map_key)
 }
 
 /// The confinement this caller's children and reads are held to: `None` for the
-/// operator (the core runs as the operator; the operator's hands are unconfined),
-/// `Some` for every citizen and peer, rooted at `workspace` (her engine root).
+/// operator, the whole host minus credentials for this node's own resident, and her
+/// workspace for a caller from outside this node (an airc peer, a socket).
+///
+/// This node's residents are not restricted (Joel 2026-10-17: "Don't restrict them. If she
+/// wants to write to my documents folder for no apparent reason so be it") EXCEPT the
+/// credential paths and other citizens' directories (Joel 2026-10-18: "keep creds
+/// off-limits"): she quotes tool output into rooms, and a room reaches every enrolled
+/// peer. Her shell also never inherits the core's secrets (`strip_secret_env`).
 pub(crate) fn confinement_of(ctx: &Ctx, workspace: &std::path::Path) -> Option<crate::code::confinement::Confinement> {
+    let resident = ctx.caller.as_ref().is_some_and(|c| c.source == crate::routing::auth_policy::CallerSource::LocalPersona);
     let trust = crate::routing::grid_trust_policy::caller_trust(ctx.caller.as_ref());
-    if trust == crate::modules::grid::node::TrustLevel::Owner {
+    if !resident && trust == crate::modules::grid::node::TrustLevel::Owner {
         return None;
     }
     let home = crate::paths::home_dir()?;
-    Some(crate::code::confinement::Confinement::for_caller(&home, &caller_id(ctx), workspace))
+    let continuum_root = crate::paths::continuum_home().ok()?;
+    let confinement = crate::code::confinement::Confinement::for_caller(&home, &continuum_root, &caller_id(ctx), workspace);
+    Some(if resident { confinement.reaching_host() } else { confinement })
 }
 
 /// How long `code/shell` waits INLINE for completion before handing back a handle
@@ -662,7 +577,7 @@ const DEFAULT_SHELL_WAIT_MS: u64 = 30_000;
 /// `DashMap` ref guard the caller borrows the engine through.
 macro_rules! engine {
     ($self:ident, $ctx:ident) => {{
-        let key = hands_key($ctx);
+        let key = hands_of($ctx);
         ensure_engine(&$self.state, &key).await?;
         $self
             .state
@@ -755,8 +670,9 @@ impl ActionCommand for CodeWrite {
         let before = std::fs::metadata(engine.workspace_root().join(&p.file_path))
             .ok()
             .map(|m| m.len());
+        let scope = read_scope_of(ctx, &engine.workspace_root());
         let out = engine
-            .write(&p.file_path, &p.content, p.description.as_deref())
+            .write_in(&p.file_path, &p.content, p.description.as_deref(), &scope)
             .map_err(engine_err);
         crate::probe!(
             class = "code.write.landed",
@@ -788,7 +704,7 @@ const EDIT_MODE_HELP: &str = "edit_mode must be ONE of (preferred = a tagged obj
 {\"type\":\"insert_at\",\"line\":N,\"content\":\"...\"} | \
 {\"type\":\"append\",\"content\":\"...\"}. A bare mode string (e.g. \"append\") with the fields at top level is also accepted.";
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
 pub struct CodeEditParams {
     /// Path to the file, relative to the workspace (repo) root.
     pub file_path: String,
@@ -832,6 +748,44 @@ pub struct CodeEditParams {
     pub description: Option<String>,
 }
 
+// Advertise one typed call shape; the serde structure above deliberately also accepts
+// legacy flat and alias forms. Deriving its schema would make the defaulted operation
+// optional (even `schemars(required)` cannot override serde(default) in schemars 0.8).
+// Keep compatibility parsing out of the native tool contract and recovery example.
+impl JsonSchema for CodeEditParams {
+    fn schema_name() -> String {
+        "CodeEditParams".into()
+    }
+
+    fn json_schema(generator: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+        CanonicalEdit::json_schema(generator)
+    }
+}
+
+/// The normalized edit consumed by the executor and advertised to callers.
+#[derive(JsonSchema)]
+struct CanonicalEdit {
+    /// Path relative to the workspace root.
+    file_path: String,
+    /// Operation to apply.
+    edit_mode: EditMode,
+    /// Optional note recorded in change history.
+    description: Option<String>,
+}
+
+impl TryFrom<CodeEditParams> for CanonicalEdit {
+    type Error = CommandError;
+
+    fn try_from(params: CodeEditParams) -> Result<Self, Self::Error> {
+        let edit_mode = normalize_edit_mode(&params)?;
+        Ok(Self {
+            file_path: params.file_path,
+            edit_mode,
+            description: params.description,
+        })
+    }
+}
+
 /// Normalize a (possibly mis-shaped) code/edit call into a real [`EditMode`]. Forgives the
 /// ways a model mis-calls the tool — glass-boxed live: a 14B sent `edit_mode:"append"` (bare
 /// variant string) with no nested fields. Order: (1) strict tagged object, unchanged; (2) a
@@ -842,7 +796,7 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
     // (1) Strict: already the tagged object — deserialize as-is (the preferred path, unchanged).
     if p.edit_mode.get("type").is_some() {
         return serde_json::from_value::<EditMode>(p.edit_mode.clone())
-            .map_err(|e| CommandError::Invalid(format!("code/edit: {e}. {EDIT_MODE_HELP}")));
+            .map_err(|e| CommandError::Arguments(format!("code/edit: {e}. {EDIT_MODE_HELP}")));
     }
     // A field pulled from top-level OR from an untyped edit_mode object (flat call shapes).
     let s = |top: &Option<String>, key: &str| -> Option<String> {
@@ -893,7 +847,7 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
         }
     });
     let miss =
-        |what: &str| CommandError::Invalid(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
+        |what: &str| CommandError::Arguments(format!("code/edit: needs `{what}`. {EDIT_MODE_HELP}"));
     match mode.as_deref().map(|m| m.trim().to_lowercase()).as_deref() {
         Some("search_replace") => Ok(EditMode::SearchReplace {
             search: search.ok_or_else(|| miss("search"))?,
@@ -918,7 +872,7 @@ fn normalize_edit_mode(p: &CodeEditParams) -> Result<EditMode, CommandError> {
             end_line: end_line.unwrap_or(u32::MAX),
             new_content: new_content.ok_or_else(|| miss("new_content"))?,
         }),
-        _ => Err(CommandError::Invalid(format!(
+        _ => Err(CommandError::Arguments(format!(
             "code/edit: could not determine the edit mode. {EDIT_MODE_HELP}"
         ))),
     }
@@ -961,9 +915,10 @@ impl ActionCommand for CodeEdit {
     async fn run(&self, ctx: &Ctx, p: CodeEditParams) -> Result<WriteResult, CommandError> {
         reject_placeholder_path(&p.file_path)?;
         let engine = engine!(self, ctx);
-        let mode = normalize_edit_mode(&p)?;
+        let edit = CanonicalEdit::try_from(p)?;
+        let scope = read_scope_of(ctx, &engine.workspace_root());
         engine
-            .edit(&p.file_path, &mode, p.description.as_deref())
+            .edit_in(&edit.file_path, &edit.edit_mode, edit.description.as_deref(), &scope)
             .map_err(engine_err)
     }
 }
@@ -1333,52 +1288,10 @@ impl ActionCommand for CodeSearch {
         matches.dedup_by(|a, b| a.file_path == b.file_path && a.line_number == b.line_number);
         matches.truncate(max as usize);
 
-        // OVERFLOW SUMMARY: a wall of matches is not an answer. Glass-boxed on
-        // SWE flask-4045 (2026-07-11): `pattern:"blueprint"` returned
-        // total_matches:101 as a truncated line-by-line dump, and the solver —
-        // told the truth but given no next step — re-issued the identical
-        // search 9× instead of advancing to read/edit. No mind, human or model,
-        // picks a next action from 101 raw hits; a human running grep eyeballs
-        // the FILE distribution and opens the hottest file. So above the
-        // threshold the result becomes that eyeball: one representative match
-        // per file (concrete, carryable paths — the next-step affordance), plus
-        // per-file counts and the narrow-or-read guidance in the note field.
-        // Counts stay truthful; only the rendering compresses.
-        // [[px-persona-experience-tools-as-good-ux]] (overflow → filter
-        // suggestions), same forgiveness family as the glob-shaped-pattern and
-        // empty-glob notes above.
-        const OVERFLOW_MATCHES: usize = 25;
+        // Preserve the caller-bounded result. The shared tool executor owns
+        // window-aware whole-or-handle delivery and durable expansion; compressing
+        // matches here would discard rows before that custody boundary sees them.
         let mut error = None;
-        if matches.len() > OVERFLOW_MATCHES {
-            let mut per_file: Vec<(String, u32, SearchMatch)> = Vec::new();
-            for m in matches.drain(..) {
-                match per_file.iter_mut().find(|(f, _, _)| *f == m.file_path) {
-                    Some((_, n, _)) => *n += 1,
-                    None => per_file.push((m.file_path.clone(), 1, m)),
-                }
-            }
-            per_file.sort_by(|a, b| b.1.cmp(&a.1));
-            let top: Vec<String> = per_file
-                .iter()
-                .take(10)
-                .map(|(f, n, _)| format!("{f} ({n})"))
-                .collect();
-            let files_total = per_file.len();
-            matches = per_file
-                .into_iter()
-                .take(10)
-                .map(|(_, _, first)| first)
-                .collect();
-            error = Some(format!(
-                "{total_matches} matches across {files_total} file(s) — too many to list \
-                 line-by-line, so this shows ONE representative match per file for the top \
-                 {} file(s) by match count: [{}]. Next: read the hottest file listed first above \
-                 (code/read file_path=...) or narrow the search (more specific `pattern`, \
-                 or `file_glob` limiting which files).",
-                matches.len(),
-                top.join(", "),
-            ));
-        }
 
         // Grounding for an empty search: a glob that matched ZERO files almost
         // always means the caller guessed a wrong path prefix (observed live —
@@ -1498,8 +1411,7 @@ impl ActionCommand for CodeShell {
         ctx: &Ctx,
         p: CodeShellParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
-        let who = hands_key(ctx).map_key();
-        ensure_shell(&self.state, ctx).await?;
+        let who = ensure_shell(&self.state, ctx).await?;
 
         // Start the command while briefly holding the shell entry, then DROP the
         // DashMap ref before awaiting — never hold a lock across `.await` (the
@@ -1578,10 +1490,11 @@ impl ActionCommand for CodeShellPoll {
         ctx: &Ctx,
         p: CodeShellPollParams,
     ) -> Result<ShellExecuteResponse, CommandError> {
-        let who = hands_key(ctx).map_key();
+        // The hands these hands reach: a handle from her claim A stays hers after her focus
+        // moved to claim B; an isolated eval reaches only itself (Astra on #5026).
         let state_arc = self
             .state
-            .with_execution(&who, &p.execution_id, |s, id| s.get_execution_state(id))
+            .with_execution(&hands_of(ctx), &p.execution_id, |s, id| s.get_execution_state(id))
             .map_err(execution_lookup_error)?;
         let s = state_arc
             .lock()
@@ -1638,9 +1551,8 @@ impl ActionCommand for CodeShellKill {
         ctx: &Ctx,
         p: CodeShellKillParams,
     ) -> Result<CodeShellKillResult, CommandError> {
-        let who = hands_key(ctx).map_key();
         self.state
-            .with_execution(&who, &p.execution_id, |s, id| s.kill(id))
+            .with_execution(&hands_of(ctx), &p.execution_id, |s, id| s.kill(id))
             .map_err(execution_lookup_error)?;
         Ok(CodeShellKillResult { killed: true })
     }
@@ -1751,7 +1663,7 @@ impl ActionCommand for CodeUndo {
         match p.change_id {
             Some(id) => {
                 let change_uuid = uuid::Uuid::parse_str(&id)
-                    .map_err(|e| CommandError::Invalid(format!("invalid change_id: {e}")))?;
+                    .map_err(|e| CommandError::Arguments(format!("invalid change_id: {e}")))?;
                 let reverted = engine
                     .undo(&change_uuid)
                     .map_err(engine_err)?;
@@ -1855,14 +1767,16 @@ impl ActionCommand for CodeReleaseHands {
     // as a tool; her fork's own hands send it when the fork is dropped.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "End the caller's current acting context (an eval's or a fork's own hands): drop its \
-         workspace engine and shells, killing anything still running. Refused for the caller's \
-         default (live) hands.";
+        "End the caller's current acting context (an eval's or a fork's own hands): kill what its \
+         shells still run, wait each one out, and only once every one is confirmed gone drop its \
+         workspace engine and shells (released: true). Otherwise they are kept and the unconfirmed \
+         pids are named (released: false), so a retry finds them. Refused for the caller's default \
+         (live) hands.";
     type Params = CodeReleaseHandsParams;
     type Output = ReleaseHandsResult;
 
     async fn run(&self, ctx: &Ctx, _p: CodeReleaseHandsParams) -> Result<ReleaseHandsResult, CommandError> {
-        let key = hands_key(ctx);
+        let key = hands_of(ctx);
         let Some(context) = key.context else {
             return Err(CommandError::Invalid(
                 "code/release-hands ends an acting context's hands; these are the caller's default \
@@ -1870,8 +1784,23 @@ impl ActionCommand for CodeReleaseHands {
                     .into(),
             ));
         };
+        // THE ONE RELEASE BOUNDARY (Astra on #5026): a release is the kernel's, run with an
+        // identity marked as releasing (never admitted to the hands it ends). It closes them to
+        // new work and waits out every admitted command and turn, THEN ends what still runs.
+        if !ctx.caller.as_ref().is_some_and(|c| c.releases_hands) {
+            return Err(CommandError::Invalid(
+                "code/release-hands is the kernel's release of an acting context; it runs as a release, \
+                 never as work admitted to the hands it ends"
+                    .into(),
+            ));
+        }
+        crate::code::hands::close(context).await;
         let who = key.map_key();
         let pending = self.state.begin_release(&who);
+        // Detached shells hold process custody, not foreground command admission.
+        // Their owner has now received the kill request; drain their full task
+        // lifetime before reading uncertainty or deleting the acting world.
+        let lingering = crate::code::hands::drain_processes(context).await;
         // WAIT each one out: its own task sets `process_ended` after the reap, or
         // `process_end_error` when the reap itself failed, at the cadence the task notices a
         // kill (`KILL_POLL`). SIGKILL can't be ignored, so a direct child's reap always comes;
@@ -1899,11 +1828,45 @@ impl ActionCommand for CodeReleaseHands {
                 if ended {
                     pids.extend(pid);
                     reaped.extend(pid);
+                    // What the shell started and the task couldn't confirm gone: kill each again
+                    // while its pid still names it, then re-check. Each release is one recheck,
+                    // so a retry can confirm what this one couldn't.
+                    let survivors = match state.lock() {
+                        Ok(s) => s.unconfirmed_descendants.clone(),
+                        Err(p) => p.get_ref().unconfirmed_descendants.clone(), // poisoned: read the last state
+                    };
+                    if !survivors.is_empty() {
+                        let still = tokio::task::spawn_blocking(move || crate::inference::lane_process::recheck(&survivors))
+                        .await
+                        .map_err(|e| CommandError::Internal(format!("release-hands: re-checking descendants failed to run: {e}")))?;
+                        if let Ok(mut s) = state.lock() {
+                            s.unconfirmed_descendants = still.clone();
+                        }
+                        if !still.is_empty() {
+                            unconfirmed.extend(still.iter().map(|who| who.pid));
+                            errors.push(format!("descendants {:?} of pid {pid:?} are not confirmed gone", still.iter().map(|who| who.pid).collect::<Vec<_>>()));
+                        }
+                    }
                     break;
                 }
                 tokio::time::sleep(crate::code::shell_session::KILL_POLL).await;
             }
         }
+        // What admitted work started and couldn't confirm gone (a gh's git): the same recheck
+        // as a shell's survivors, and the hands are kept while any is present.
+        if !lingering.processes.is_empty() {
+            let processes = lingering.processes;
+            let still = tokio::task::spawn_blocking(move || crate::inference::lane_process::recheck(&processes))
+                .await
+                .map_err(|e| CommandError::Internal(format!("release-hands: re-checking its work's processes failed to run: {e}")))?;
+            if !still.is_empty() {
+                unconfirmed.extend(still.iter().map(|who| who.pid));
+                errors.push(format!("processes {:?} its work started are not confirmed gone", still.iter().map(|who| who.pid).collect::<Vec<_>>()));
+            }
+            crate::code::hands::retain_processes(context, still);
+        }
+        // a tree no walk could read: nothing can confirm it, so the hands are held and it is named
+        errors.extend(lingering.unknown.iter().map(|why| format!("a process its work started ended unconfirmed: {why}")));
         let still_there = tokio::task::spawn_blocking(move || {
             reaped
                 .into_iter()
@@ -1988,8 +1951,9 @@ impl ActionCommand for CodeCreateWorkspace {
     // toolbelt action — letting a persona re-root itself to `/` would be an escape.
     const ACCESS: AccessLevel = AccessLevel::Privileged;
     const DESCRIPTION: &'static str =
-        "Establish or re-root the caller's workspace sandbox at a specific path, with optional \
-         read-only roots. Overrides the auto-provisioned default (repo cwd) for this caller.";
+        "Bind the caller's hands (in their acting context) to a workspace sandbox at a specific \
+         path, with optional read-only roots. Hands are bound once: binding them to another root \
+         is refused; an eval, a fork or a card claim opens hands of its own.";
     type Params = CodeCreateWorkspaceParams;
     type Output = CreateWorkspaceResult;
 
@@ -2000,7 +1964,16 @@ impl ActionCommand for CodeCreateWorkspace {
     ) -> Result<CreateWorkspaceResult, CommandError> {
         // These hands, in this caller's acting context: an eval's create-workspace roots the
         // eval's hands, never her live ones (docs/architecture/HER-HANDS.md).
-        let key = hands_key(ctx);
+        let key = &hands_of(ctx);
+        // The OWNER of a workspace refuses one for a card turn's unbound stand-in: those hands
+        // exist so code tools refuse rather than act anywhere (Astra on #5026).
+        if key.context.is_some_and(|c| c.kind() == crate::code::hands::ContextKind::Unbound) {
+            return Err(CommandError::Invalid(
+                "these are a card turn's unbound hands (its checkout couldn't be bound): they never get \
+                 a workspace, so code tools can't act in them this turn"
+                    .into(),
+            ));
+        }
         let who = key.map_key();
         let root = std::path::Path::new(&p.workspace_root);
         let mut security = PathSecurity::new(root).map_err(|e| {
@@ -2014,28 +1987,35 @@ impl ActionCommand for CodeCreateWorkspace {
                 .add_read_root(std::path::Path::new(rr))
                 .map_err(|e| CommandError::Invalid(format!("invalid read root '{rr}': {e}")))?;
         }
-        // An explicit create-workspace OVERRIDES any engine `ensure_engine` lazily
-        // provisioned for this caller (its doc reserves this override path). Keyed by
-        // caller, so each peer's change-DAG stays isolated — exactly like the migrated
-        // read/write/edit siblings, and never on a spoofable persona_id param.
+        // HANDS ARE BOUND ONCE (card fc9e9fd7). These hands get this workspace if they have
+        // none; the same root again is a no-op; ANOTHER root is refused by name. Moving one
+        // set of hands between roots is what split Kimi's shell from her code tools when two
+        // turns moved them (#11697); an eval, a fork or a card claim opens hands of its own
+        // instead. Keyed by caller and context, never a spoofable persona_id param.
         let policy = if p.refuse_inert_edits {
             crate::code::file_engine::WritePolicy::RefuseInert
         } else {
             crate::code::file_engine::WritePolicy::Warn
         };
-        self.state.file_engines.insert(
-            who.clone(),
-            FileEngine::new(&key.caller, security).with_write_policy(policy),
-        );
-        // Move the caller's shell to the NEW root. `ensure_shell` early-returns when a session
-        // exists, so without this a re-root moved her FILE engine and left her SHELL in the old
-        // directory. The old session is SET ASIDE, not dropped: a work turn roots at the card
-        // and restores home every turn, and dropping lost every execution handle she had been
-        // given (Kimi, 2026-09-29).
-        self.state
-            .re_root_shell(&who, std::path::Path::new(&p.workspace_root));
+        let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()); // unwrap_or_else: an uncanonicalizable path compares as written
+        match self.state.file_engines.entry(who.clone()) {
+            dashmap::mapref::entry::Entry::Occupied(bound) => {
+                let at = bound.get().workspace_root();
+                if canon(&at) != canon(root) {
+                    return Err(CommandError::Invalid(format!(
+                        "these hands are bound to '{}'; hands are bound once and never moved. Work \
+                         at '{}' in hands of its own (an eval, a fork or a card claim opens them)",
+                        at.display(),
+                        p.workspace_root
+                    )));
+                }
+            }
+            dashmap::mapref::entry::Entry::Vacant(free) => {
+                free.insert(FileEngine::new(&key.caller, security).with_write_policy(policy));
+            }
+        }
         if !p.path_prepend.is_empty() {
-            ensure_shell(&self.state, ctx).await?;
+            let who = ensure_shell(&self.state, ctx).await?;
             if let Some(mut shell) = self.state.shell_sessions.get_mut(&who) {
                 let prepend = p.path_prepend.join(":");
                 // Hand the per-task prefix to the shell as CONTINUUM_PATH_PREPEND, NOT as a
@@ -2220,24 +2200,86 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
 mod tests {
     use super::*;
 
-    // what this catches (card d598c806): the operator's hands confined (the core runs
-    // as the operator; confining him would break every operator tool), or a citizen's
-    // NOT confined. The decision is the gate's trust, never a params field.
-    #[test]
-    fn a_citizen_is_confined_to_her_workspace_and_the_operator_is_not() {
-        let ws = tempfile::tempdir().expect("test: ws");
-        assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
-        let persona = uuid::Uuid::from_u128(0xC1);
+    // what this catches (card fc9e9fd7; Kimi #11697): moving one set of hands between roots
+    // is what split her shell from her code tools when two turns moved them. Hands are bound
+    // once: the same root again is a no-op, another root is refused by name, and the hands
+    // still stand where they were bound.
+    #[tokio::test]
+    async fn create_workspace_binds_hands_once_and_refuses_to_move_them() {
+        let (bound, other) = (tempfile::tempdir().expect("test: a"), tempfile::tempdir().expect("test: b"));
+        let state = Arc::new(CodeState::new(
+            Arc::new(dashmap::DashMap::new()),
+            Arc::new(dashmap::DashMap::new()),
+            tokio::runtime::Handle::current(),
+        ));
+        let cmd = CodeCreateWorkspace { state: state.clone() };
+        let persona = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
         let ctx = Ctx {
-            caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona))),
+            caller: Some(crate::routing::CallerIdentity::local_persona(persona).in_hands(crate::code::hands::HandsContext::fresh())),
             ..Ctx::default()
         };
-        let confined = confinement_of(&ctx, ws.path()).expect("a citizen is confined");
+        let at = |root: &std::path::Path| CodeCreateWorkspaceParams {
+            workspace_root: root.to_string_lossy().into_owned(),
+            read_roots: Vec::new(),
+            path_prepend: Vec::new(),
+            refuse_inert_edits: false,
+        };
+        cmd.run(&ctx, at(bound.path())).await.expect("bound");
+        cmd.run(&ctx, at(bound.path())).await.expect("the same root again is a no-op");
+        let moved = cmd.run(&ctx, at(other.path())).await;
+        assert!(matches!(moved, Err(CommandError::Invalid(ref why)) if why.contains("bound once")), "{moved:?}");
+        let key = hands_of(&ctx).map_key();
+        let root = state.file_engines.get(&key).map(|e| e.workspace_root()).expect("an engine");
+        assert_eq!(std::fs::canonicalize(root).unwrap(), std::fs::canonicalize(bound.path()).unwrap(), "still where they were bound");
+    }
+
+    // what this catches: this node's own residents held to a workspace (Joel 2026-10-17:
+    // "Don't restrict them"), or given the credentials (Joel 2026-10-18: "keep creds
+    // off-limits"), or a caller from OUTSIDE this node (an airc peer) let past her workspace.
+    // The operator is never confined. The decision is the caller's identity, never a params field.
+    #[test]
+    fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
+        let ws = tempfile::tempdir().expect("test: ws");
+        assert!(confinement_of(&Ctx::default(), ws.path()).is_none(), "the operator");
+        let resident = Ctx {
+            caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
+            ..Ctx::default()
+        };
+        let hers = confinement_of(&resident, ws.path()).expect("a resident carries the credential boundary");
+        assert!(hers.reaches_host(), "this node's resident reaches the whole host");
+        assert!(matches!(read_scope_of(&resident, ws.path()), crate::code::path_security::ReadScope::Host { .. }), "her file verbs reach the host too");
+        let outside = Ctx {
+            caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
+            ..Ctx::default()
+        };
+        let confined = confinement_of(&outside, ws.path()).expect("a peer from outside this node is confined");
+        assert!(!confined.reaches_host(), "held to her workspace");
         assert_eq!(confined.workspace(), ws.path());
-        let list = confined.materialize();
-        assert!(list.write.contains(&ws.path().canonicalize().expect("test: canonical")), "her workspace is hers to write");
-        let home = crate::paths::home_dir().expect("test: home");
-        assert!(list.write.iter().any(|w| w.ends_with(format!(".continuum/citizens/peers/{persona}")) || !home.join(".continuum/citizens/peers").join(persona.to_string()).exists()), "her citizen dir, when it exists");
+    }
+
+    // what this catches: a resident refused a write to an absolute path outside her
+    // workspace (Joel 2026-10-17: "If she wants to write to my documents folder for no
+    // apparent reason so be it"), while a caller from outside this node still is refused.
+    #[test]
+    fn a_resident_writes_where_she_names_and_an_outside_peer_is_held_to_the_workspace() {
+        use crate::code::path_security::PathSecurity;
+        let ws = tempfile::tempdir().expect("test: ws");
+        let elsewhere = tempfile::tempdir().expect("test: elsewhere");
+        let target = elsewhere.path().join("note.txt");
+        let security = PathSecurity::new(ws.path()).expect("test: security");
+        let resident = Ctx {
+            caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
+            ..Ctx::default()
+        };
+        let scope = read_scope_of(&resident, ws.path());
+        let resolved = security.validate_write_in(target.to_str().unwrap(), &scope).expect("a resident's absolute path resolves");
+        assert_eq!(resolved, elsewhere.path().canonicalize().unwrap().join("note.txt"));
+        let outside = Ctx {
+            caller: Some(crate::routing::CallerIdentity::airc(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xA1)))),
+            ..Ctx::default()
+        };
+        let confined = read_scope_of(&outside, ws.path());
+        assert!(security.validate_write_in(target.to_str().unwrap(), &confined).is_err(), "an outside peer is held to the workspace");
     }
 
     // what this catches (Kimi, 2026-10-05): a write outside her workspace, a missing file
@@ -2299,10 +2341,52 @@ mod tests {
             "file_path": "a.py", "edit_mode": "append"
         })))
         .unwrap_err();
+        assert!(matches!(&err, CommandError::Arguments(_)), "missing edit fields need argument recovery: {err}");
         assert!(
             format!("{err}").contains("content"),
             "names the missing field: {err}"
         );
+    }
+
+    // what this catches: the edit tool advertised as `edit_mode: {allOf: [{$ref}], ...}`,
+    // a shape llama.cpp's grammar converter cannot match a valid value against, so a
+    // constrained model can never complete a code/edit call (from #5059, 2026-10-15; zero
+    // resident edit calls after it on the M5).
+    #[test]
+    fn the_advertised_edit_schema_has_no_single_entry_all_of() {
+        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>();
+        let text = schema.to_string();
+        assert!(!text.contains("\"allOf\""), "no allOf anywhere in the advertised edit schema: {text}");
+        let edit_mode = &schema["properties"]["edit_mode"];
+        assert_eq!(edit_mode["$ref"], "#/definitions/EditMode", "the operation is the EditMode ref itself: {edit_mode}");
+        assert_eq!(edit_mode["description"], "Operation to apply.", "its doc survives the fold");
+    }
+
+    #[test]
+    fn generated_edit_recovery_contains_a_normalizable_operation() {
+        let schema = serde_json::to_value(schemars::schema_for!(CodeEditParams)).unwrap();
+        assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("edit_mode")));
+        assert_eq!(schema["properties"].as_object().unwrap().len(), 3,
+            "legacy fallback fields must not duplicate the canonical operation schema");
+        let manual = crate::commands::help::render_ai_help("code/edit", "edit", &schema);
+        let envelope = manual.split_once("\n{").unwrap().1;
+        let envelope = format!("{{{}", envelope.split_once("\n\nArguments:").unwrap().0);
+        let envelope: serde_json::Value = serde_json::from_str(&envelope).unwrap();
+        let mut params: CodeEditParams = serde_json::from_value(envelope["tool_call"]["arguments"].clone()).unwrap();
+        // Fill the path blank; retain the generated numeric addresses unchanged and
+        // exercise the real executor, which rejects zero-based line positions.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("example.txt"), "original\n").unwrap();
+        params.file_path = "example.txt".into();
+        let engine = crate::code::FileEngine::new("edit-help-fixture", crate::code::PathSecurity::new(dir.path()).unwrap());
+        let edit = CanonicalEdit::try_from(params).expect("generated recovery must resolve an operation");
+        assert!(engine.edit(&edit.file_path, &edit.edit_mode, edit.description.as_deref()).unwrap().success);
+        assert_ne!(std::fs::read_to_string(dir.path().join("example.txt")).unwrap(), "original\n");
+        for name in ["line_range", "search_replace", "insert_at", "append"] {
+            assert!(manual.contains(name), "operation alternative missing: {name}");
+        }
+        let path_only: CodeEditParams = serde_json::from_value(serde_json::json!({"file_path":"x"})).unwrap();
+        assert!(matches!(normalize_edit_mode(&path_only), Err(CommandError::Arguments(_))));
     }
 
     // what this catches: THE live edit-stall (2026-07-14). Devstral personas
@@ -2472,19 +2556,14 @@ mod tests {
         }
     }
 
-    // what this catches: the overflow summary (glass-boxed on SWE flask-4045 —
-    // pattern:"blueprint" → 101 raw hits → the solver re-searched 9× instead of
-    // advancing). Above OVERFLOW_MATCHES the result must compress to ONE
-    // representative match per file (concrete carryable paths), name the top
-    // files BY COUNT in the note with read/narrow guidance, and keep
-    // total_matches truthful; a small result stays untouched (no false
-    // compression on ordinary searches). // regression for SWE cell one
+    // Caller limits bound search work; the executor, not a private row-count
+    // threshold, owns window-aware delivery. Every admitted row must reach it.
     #[tokio::test]
-    async fn search_overflow_compresses_to_per_file_summary_with_guidance() {
+    async fn search_preserves_caller_bounded_matches_for_shared_delivery() {
         let dir = std::env::temp_dir().join(format!("search-overflow-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        // hot.py: 30 hits; warm.py: 5; cold.py: 2 — 37 total, uneven on purpose.
-        std::fs::write(dir.join("hot.py"), "needle\n".repeat(30)).unwrap();
+        // hot.py: 47 hits; warm.py: 5; cold.py: 2 — 54 total, uneven on purpose.
+        std::fs::write(dir.join("hot.py"), "needle\n".repeat(47)).unwrap();
         std::fs::write(dir.join("warm.py"), "needle\n".repeat(5)).unwrap();
         std::fs::write(dir.join("cold.py"), "needle\n".repeat(2)).unwrap();
 
@@ -2512,28 +2591,19 @@ mod tests {
             .await
             .expect("search runs");
 
-        assert_eq!(out.total_matches, 37, "counts stay truthful");
-        assert!(
-            out.matches.len() <= 10,
-            "overflow compresses to per-file representatives: {}",
-            out.matches.len()
-        );
-        let files: Vec<&str> = out.matches.iter().map(|m| m.file_path.as_str()).collect();
-        assert_eq!(
-            files.iter().filter(|f| f.contains("hot.py")).count(),
-            1,
-            "one representative per file: {files:?}"
-        );
-        let note = out.error.expect("overflow note present");
-        assert!(
-            note.contains("too many to list") && note.contains("code/read"),
-            "note carries the read/narrow guidance: {note}"
-        );
-        assert!(
-            note.find("hot.py (30)").unwrap_or(usize::MAX)
-                < note.find("warm.py (5)").unwrap_or(usize::MAX),
-            "top files ordered by match count: {note}"
-        );
+        assert_eq!(out.total_matches, 54);
+        assert_eq!(out.matches.len(), 54, "no hidden per-file compression");
+        assert_eq!(out.matches.iter().filter(|m| m.file_path.contains("hot.py")).count(), 47);
+        assert!(out.error.is_none(), "successful results contain no behavioral directions");
+        for limit in [1, 25, 26, 100] {
+            let bounded = cmd.run(&Ctx::default(), CodeSearchParams {
+                pattern: "needle".into(),
+                file_glob: Some("hot.py".into()),
+                max_results: Some(limit),
+            }).await.expect("bounded search runs");
+            assert_eq!(bounded.matches.len(), (limit as usize).min(47));
+            assert!(bounded.error.is_none());
+        }
 
         // Small search stays raw — no false compression.
         let small = cmd
@@ -2785,8 +2855,8 @@ mod tests {
     // CoW clone under <CONTINUUM_HOME>/citizens/peers/<peer>/workspace, seeded
     // from the base, durable across calls; the anonymous local operator keeps
     // cwd. regression for commit 3ad97cc2e (the manifest-clobber repair).
-    #[test]
-    fn identified_peer_roots_at_citizen_layer_never_shared_cwd() {
+    #[tokio::test]
+    async fn identified_peer_roots_at_citizen_layer_never_shared_cwd() {
         // Scoped homes so the test never touches the real ~/.continuum. A tiny
         // base dir keeps the CoW clone instant.
         //
@@ -2820,11 +2890,11 @@ mod tests {
         let home = tempfile::tempdir().expect("home");
         // Under the one crate-wide home lock (#4082): this unlocked CONTINUUM_HOME write
         // raced every other test that resolves the citizen layer.
-        let _home = crate::test_env::HomeGuard::set_blocking(home.path());
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = "test-peer-1234";
-        let layer = ensure_citizen_layer_from_base(peer, base.path()).expect("layer provisions");
+        let layer = ensure_citizen_layer_from_base(peer, base.path()).await.expect("layer provisions");
         assert!(
             layer.starts_with(home.path()),
             "layer lives under CONTINUUM_HOME: {layer:?}"
@@ -2866,7 +2936,7 @@ mod tests {
             "the shared base is untouched by layer writes"
         );
         // Idempotent: second call reuses the existing layer (her diff survives).
-        let again = ensure_citizen_layer_from_base(peer, base.path()).expect("layer reused");
+        let again = ensure_citizen_layer_from_base(peer, base.path()).await.expect("layer reused");
         assert_eq!(again, layer);
         assert_eq!(
             std::fs::read_to_string(again.join("Cargo.toml")).unwrap(),

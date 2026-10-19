@@ -270,6 +270,9 @@ function Invoke-CoreEnginePromote {
         $said = (Invoke-InstallerProcess $Cli @('engine', 'promote', $name, $stamp) 2>&1 | Out-String).Trim()
         $code = $LASTEXITCODE
     } finally { $env:CONTINUUM_HOME = $saved }
+    # Exit 4 is the shared owner's proof that a verified fallback remains current.
+    # Null is distinct from the legacy CLI's false (unsupported promotion).
+    if ($code -eq 4) { Write-Warning $said; return $null }
     if ($code -ne 0) { throw "continuum engine promote refused $name (exit $code): $said" }
     return $true
 }
@@ -291,7 +294,12 @@ function Prepare-CoreServiceEngine {
         if ($drift) { throw $drift }
         $engineReceipt = Get-CoreEngineReceipt -Directory $built
         Get-CorePublishedEngineStamp -Directory $built -Receipt $engineReceipt | Out-Null
-        if (-not (Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $built)) { throw 'Prepared CLI cannot promote the published engine.' }
+        $promoted = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $built
+        if ($null -eq $promoted) {
+            [IO.File]::WriteAllText($ReceiptPath, 'SKIP: failed engine attempt deferred; verified current engine preserved', (New-Object Text.UTF8Encoding $false))
+            return
+        }
+        if (-not $promoted) { throw 'Prepared CLI cannot promote the published engine.' }
         $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
         if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
         [IO.File]::WriteAllText($ReceiptPath, $release.engine, (New-Object Text.UTF8Encoding $false))
@@ -309,7 +317,12 @@ function Prepare-CoreServiceEngine {
         $built = Join-Path $slotRoot $name
         if (-not (Test-Path -LiteralPath (Join-Path $built 'llama-server.exe'))) { continue }
         if (Get-CoreEngineDrift -Directory $built -Requirement $requirement) { continue }
-        if (Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot $installRoot -Slot $built) {
+        $promoted = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot $installRoot -Slot $built
+        if ($null -eq $promoted) {
+            [IO.File]::WriteAllText($ReceiptPath, 'SKIP: failed engine attempt deferred; verified current engine preserved', (New-Object Text.UTF8Encoding $false))
+            return
+        }
+        if ($promoted) {
             $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
             if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
             [IO.File]::WriteAllText($ReceiptPath, (Join-Path $built 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
@@ -336,7 +349,11 @@ function Prepare-CoreServiceEngine {
     if ((Get-CoreRegisteredRelease -Task $task | ConvertTo-Json -Compress) -cne $Description) { throw 'Installed release changed during engine preparation.' }
     # The verified slot becomes the engine by the core's own verb, for install and unattended
     # deploy alike (card d5584dfc); install still registers it as the release's bootstrap engine.
-    $null = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
+    $promoted = Invoke-CoreEnginePromote -Cli $release.cli -InstallRoot (Join-Path $env:USERPROFILE '.continuum') -Slot $slot
+    if ($null -eq $promoted) {
+        [IO.File]::WriteAllText($ReceiptPath, 'SKIP: failed engine attempt deferred; verified current engine preserved', (New-Object Text.UTF8Encoding $false))
+        return
+    }
     [IO.File]::WriteAllText($ReceiptPath, (Join-Path $slot 'llama-server.exe'), (New-Object Text.UTF8Encoding $false))
 }
 
@@ -390,6 +407,57 @@ function Update-CoreBrowserRelease {
     }
 }
 
+# Preserve typed admission refusals. A filesystem failure after admission is
+# operational uncertainty (admission is not a reservation), not a bad artifact.
+function Get-CoreDeploymentFailure {
+    param([Parameter(Mandatory = $true)][Management.Automation.ErrorRecord]$ErrorRecord)
+    $exception = $ErrorRecord.Exception
+    while ($null -ne $exception) {
+        if ($exception.Data.Contains('ContinuumDeploymentFailure')) {
+            return $exception.Data['ContinuumDeploymentFailure']
+        }
+        if ($exception -is [IO.IOException] -or $exception -is [UnauthorizedAccessException]) {
+            return @{ OperationalBlocked = $ErrorRecord.Exception.Message }
+        }
+        $exception = $exception.InnerException
+    }
+    return @{ Artifact = $ErrorRecord.Exception.Message }
+}
+
+function Assert-CoreArtifactCapacity {
+    param([Parameter(Mandatory = $true)][string]$ArtifactDirectory,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string[]]$Sources, [uint64]$AdditionalBytes = 0)
+    $cli = Join-Path $ArtifactDirectory 'continuum.exe'
+    $protocol = @(Invoke-InstallerProcess $cli @('artifact-capacity', '--protocol'))
+    if ($LASTEXITCODE -ne 0 -or ($protocol -join '').Trim() -ne '1') {
+        $reason = 'Selected published artifact lacks service capacity admission protocol 1; preparation deferred, installed release receipts and files preserved.'
+        $failure = [InvalidOperationException]::new($reason)
+        $failure.Data['ContinuumDeploymentFailure'] = @{ CapabilityDeferred = $reason }
+        throw $failure
+    }
+    # Current used bytes include the old destination and downloaded source. Count
+    # every remaining byte without crediting overwrite before it actually happens.
+    [decimal]$copyBytes = $AdditionalBytes
+    foreach ($source in $Sources) { $copyBytes += (Get-Item -LiteralPath $source -ErrorAction Stop).Length }
+    if ($copyBytes -gt [uint64]::MaxValue) { throw 'Service payload size exceeds the capacity accounting range.' }
+    try {
+        $result = @(Invoke-InstallerProcess $cli @('artifact-capacity', $Destination, ([uint64]$copyBytes).ToString([Globalization.CultureInfo]::InvariantCulture)))
+        if ($LASTEXITCODE -eq 4) {
+            $condition = ($result -join "`n") | ConvertFrom-Json -ErrorAction Stop
+            if (-not $condition.ResourceDeferred) { throw 'Capacity protocol returned an invalid resource refusal.' }
+        } elseif ($LASTEXITCODE -ne 0) { throw "Capacity observation failed: $($result -join ' ')" }
+        else { return }
+    } catch {
+        $failure = [InvalidOperationException]::new($_.Exception.Message)
+        $failure.Data['ContinuumDeploymentFailure'] = @{ OperationalBlocked = $_.Exception.Message }
+        throw $failure
+    }
+    $failure = [InvalidOperationException]::new('Service-slot capacity admission refused; installed release receipts and files were preserved.')
+    $failure.Data['ContinuumDeploymentFailure'] = $condition
+    throw $failure
+}
+
 function New-CoreServiceRelease {
     param(
         [Parameter(Mandatory = $true)][string]$RepoRoot,
@@ -435,7 +503,7 @@ function New-CoreServiceRelease {
     $registeredReleaseSnapshot = $descriptor | ConvertTo-Json -Compress
     $slot = $null
     $mediaBlocked = @()
-    $serviceFiles = @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1')
+    $serviceFiles = @('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe', 'run-service-hidden.ps1', 'start-livekit-windows.ps1', 'payload-paths.ps1')
     foreach ($name in @('service-a', 'service-b')) {
         $candidate = Join-Path $root $name
         $occupied = @($liveImages | Where-Object { $_.StartsWith($candidate + '\', [StringComparison]::OrdinalIgnoreCase) })
@@ -483,12 +551,6 @@ function New-CoreServiceRelease {
         $slot = $candidate
     }
     if (-not $slot) { throw 'Both installed core service slots are in use; resolve the extra live instance before updating.' }
-    # The CLI this release installs is the one that knows the lane records' contract.
-    $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent }
-        elseif ($kept = Get-CoreKeptEngineSlot -ArtifactDirectory $ArtifactDirectory -Descriptor $descriptor) { $kept }
-        else { Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe') }
-    Clear-CorePreparedSelectionForSlot -InstallRoot $InstallRoot -Slot $slot
-    New-Item -ItemType Directory -Force -Path $slot | Out-Null
     # CI cores carry declared runtime DLLs beside the binaries. The native deploy
     # stage honors this same manifest; installer/prepared rollback must do so too.
     $runtimeNames = @()
@@ -503,6 +565,29 @@ function New-CoreServiceRelease {
         $runtimeNames += 'runtime-libs.txt'
     }
     foreach ($name in (@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames)) {
+        if (-not (Test-Path -LiteralPath (Join-Path $ArtifactDirectory $name) -PathType Leaf)) {
+            throw "Incoming release artifact is missing: $name"
+        }
+    }
+    $copySources = @(@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames | ForEach-Object { Join-Path $ArtifactDirectory $_ })
+    $copySources += @((Join-Path $RepoRoot 'tools\scripts\run-service-hidden.ps1'), (Join-Path $RepoRoot 'tools\scripts\start-livekit-windows.ps1'), (Join-Path $RepoRoot 'tools\scripts\lib\payload-paths.ps1'))
+    Assert-CoreArtifactCapacity -ArtifactDirectory $ArtifactDirectory -Destination $slot -Sources $copySources
+    $publishedEngine = Join-Path $ArtifactDirectory 'engine'
+    if (Test-Path -LiteralPath (Join-Path $publishedEngine 'engine-install.json') -PathType Leaf) {
+        Get-CoreEngineReceipt -Directory $publishedEngine | Out-Null
+    }
+    # The CLI this release installs is the one that knows the lane records' contract.
+    # Every path below can reuse the service slot, including kept/explicit engines.
+    Retire-CorePreviousSelectionForSlot -InstallRoot $InstallRoot -Slot $slot -Descriptor $descriptor -DamagedOnly
+    $engineSlot = if ($EnginePath) { Split-Path $EnginePath -Parent }
+        elseif ($kept = Get-CoreKeptEngineSlot -ArtifactDirectory $ArtifactDirectory -Descriptor $descriptor) { $kept }
+        else {
+            Retire-CorePreviousSelectionForSlot -InstallRoot $InstallRoot -Slot $slot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe')
+            Select-CoreEngineSlot -InstallRoot $InstallRoot -Descriptor $descriptor -Cli (Join-Path $ArtifactDirectory 'continuum.exe')
+        }
+    Clear-CorePreparedSelectionForSlot -InstallRoot $InstallRoot -Slot $slot
+    New-Item -ItemType Directory -Force -Path $slot | Out-Null
+    foreach ($name in (@('continuum.exe', 'continuum-core-server.exe', 'livekit-bridge.exe') + $runtimeNames)) {
         $source = Join-Path $ArtifactDirectory $name
         $destination = Join-Path $slot $name
         Copy-Item -LiteralPath $source -Destination $destination -Force -ErrorAction Stop
@@ -513,6 +598,7 @@ function New-CoreServiceRelease {
     $launcher = Join-Path $slot 'run-service-hidden.ps1'
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tools\scripts\run-service-hidden.ps1') -Destination $launcher -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot 'tools\scripts\start-livekit-windows.ps1') -Destination (Join-Path $slot 'start-livekit-windows.ps1') -Force -ErrorAction Stop
+    Copy-Item -LiteralPath (Join-Path $RepoRoot 'tools\scripts\lib\payload-paths.ps1') -Destination (Join-Path $slot 'payload-paths.ps1') -Force -ErrorAction Stop
     $socket = $env:CONTINUUM_CORE_SOCKET
     if (-not $socket) { $socket = Join-Path ([IO.Path]::GetTempPath()) 'continuum-core.sock' }
     return [pscustomobject]@{
@@ -553,7 +639,12 @@ function Register-CoreServiceRelease {
     if (($PersistPreparedReceipt -or $PrepareOnly) -and -not $selectionRecovery) { Save-CorePreparedRelease -Release $Release }
     if ($PrepareOnly) { return }
     $protocol = (Invoke-InstallerProcess $Release.cli @('installed-service', '--protocol') | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Candidate CLI lacks supervisor protocol 3; registration and active release were preserved.' }
+    if ($LASTEXITCODE -ne 0 -or $protocol -cne '4') {
+        $reason = 'Candidate CLI lacks supervisor protocol 4; registration and active release were preserved.'
+        $failure = [InvalidOperationException]::new($reason)
+        $failure.Data['ContinuumDeploymentFailure'] = @{ CapabilityDeferred = $reason }
+        throw $failure
+    }
     $shell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction SilentlyContinue
     $bootstrap = Get-CoreSupervisorBootstrap -Generation (Get-FileHash -LiteralPath $Release.cli -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -564,7 +655,7 @@ function Register-CoreServiceRelease {
         Assert-CoreSupervisorBootstrap -Path $priorBootstrap
         $priorProtocol = (Invoke-InstallerProcess $priorBootstrap @('installed-service', '--protocol') | Out-String).Trim()
         if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect installed bootstrap capability.' }
-        if ($priorProtocol -ceq '3') { $bootstrap = $priorBootstrap }
+        if ($priorProtocol -ceq '4') { $bootstrap = $priorBootstrap }
     }
     $activePath = Join-Path $env:USERPROFILE '.continuum\install-active.json'
     $arguments = 'installed-service core "{0}"' -f $activePath
@@ -613,6 +704,19 @@ function Register-CoreServiceRelease {
     # the prior installed release, and the first update has a real rollback.
     # A recognized damaged selection remains launch-invalid throughout bootstrap
     # migration. Do not reseal it or promise that it is a usable rollback.
+    # Capacity observation runs as the ordinary installer caller. Never execute
+    # a caller-writable candidate CLI from the elevated bootstrap writer.
+    if (-not (Test-Path -LiteralPath $bootstrap -PathType Leaf)) {
+        $bootstrapHashes = Get-CoreReleaseHashes -Release $Release
+        $bootstrapFiles = @{ 'continuum.exe' = $bootstrapHashes.cli }
+        foreach ($property in $bootstrapHashes.PSObject.Properties) {
+            if ($property.Name -eq 'runtime-manifest') { $bootstrapFiles['runtime-libs.txt'] = $property.Value }
+            elseif ($property.Name.StartsWith('runtime:')) { $bootstrapFiles[$property.Name.Substring(8)] = $property.Value }
+        }
+        $bootstrapSources = @($bootstrapFiles.Keys | ForEach-Object { Join-Path (Split-Path $Release.cli) $_ })
+        $manifestBytes = [Text.Encoding]::UTF8.GetByteCount(($bootstrapFiles | ConvertTo-Json -Compress))
+        Assert-CoreArtifactCapacity -ArtifactDirectory (Split-Path $Release.cli) -Destination (Split-Path $bootstrap) -Sources $bootstrapSources -AdditionalBytes $manifestBytes
+    }
     $seededFirstInstall = $false
     if (-not $selectionRecovery) { $seededFirstInstall = Initialize-CoreActiveSelection -Task $task -Release $Release }
     New-Item -ItemType Directory -Force -Path $Release.logDirectory | Out-Null

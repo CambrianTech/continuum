@@ -284,6 +284,17 @@ pub enum Guarded<T> {
 /// the reporter fan-out (`MemoryPressureMonitor`) and the consumer reclaim
 /// fan-out (`ResourceDaemon`) share. The 100ms reporter budget and the
 /// per-request reclaim deadline are both just the `budget` passed here.
+/// The bound on ONE filesystem call made on a launch path (a git read at act→observe, a
+/// shell's cargo-root admission, a configured root at startup): the call answers well inside
+/// it and a hang is refused with a named outcome, never waited out. Not the 100 ms reporter
+/// budget, which is for pressure reporters whose "still pending" costs a tick, not a command.
+/// Measured (M5, 40ff660c4, 2026-10-16T19:49Z, swap 11.57 GB of 12): `realpath`+`stat` of the
+/// cargo root p50 9 µs, max 27 µs over 50 calls; the three refusals at the 100 ms budget that
+/// day (19:01Z, 19:04Z) were resolver LATENCY, not the call, which is why the resolver now
+/// probes queue and work time per resolution (`disk.root.resolution`).
+// derived-or-floor: a floor — the bound on one launch-path filesystem call, the same at any window
+pub const LAUNCH_PATH_FS_BOUND: Duration = Duration::from_secs(5);
+
 pub async fn guarded<T>(budget: Duration, fut: impl Future<Output = T>) -> Guarded<T> {
     match tokio::time::timeout(budget, AssertUnwindSafe(fut).catch_unwind()).await {
         Ok(Ok(value)) => Guarded::Completed(value),

@@ -197,6 +197,50 @@ fn origin_repo(repo_dir: &std::path::Path) -> Option<String> {
     Some(after_host.trim_end_matches(".git").trim_matches('/').to_string())
 }
 
+/// Read one exact revision with the same bounded source and suite policy used by tracking.
+/// Call from a blocking task; a missing origin or source answer never authorizes a build.
+pub fn revision_checks(repo_dir: &std::path::Path, tip: &str) -> Result<Checks, String> {
+    use crate::system_resources::bounded_command::probe;
+    let repo = origin_repo(repo_dir).ok_or_else(|| format!("checkout {} has no github origin", repo_dir.display()))?;
+    // Check-state via gh (gh manages its own rate-limiting). gh unreachable → Unknown → wait.
+    // Both reads ask gh for ONLY the fields `parse_tip_checks` uses: the raw bodies
+    // (31 KB and 90 KB on a canary tip, growing with every check) overran the 64 KB
+    // probe capture, the runs body arrived cut in half, and #4706's exclusion never
+    // applied: every node waited on the 44-73 min core-binaries legs.
+    let path = format!("repos/{repo}/commits/{tip}/check-runs?per_page=100");
+    let gh_out = probe(
+        "gh",
+        &["api", &path, "--jq", "{check_runs: [.check_runs[] | {name, status, conclusion, check_suite: {id: .check_suite.id}}]}"],
+        GH_TIMEOUT,
+    );
+    let Some(check_runs) = gh_out.stdout_if_ok() else {
+        return Ok(Checks::Unknown); // gh unreachable = Unknown = wait, never a deploy on a guess
+    };
+    // The sha's workflow runs carry the triggering EVENT the check-runs body lacks;
+    // without them a scheduled audit's failure reads as the tip's own (#4243). A
+    // failed read here degrades to the all-checks rule inside `parse_tip_checks`.
+    let runs_path = format!("repos/{repo}/actions/runs?head_sha={tip}&per_page=100");
+    let runs_out = probe(
+        "gh",
+        &["api", &runs_path, "--jq", "{workflow_runs: [.workflow_runs[] | {event, path, check_suite_id}]}"],
+        GH_TIMEOUT,
+    );
+    let read = parse_tip_checks(check_runs, runs_out.stdout_if_ok());
+    if read.excluded > 0 || !read.filtered {
+        crate::probe!(
+            class = "deploy.tip.checks",
+            tip = tip,
+            checks = ?read.checks,
+            total = read.total,
+            excluded = read.excluded,
+            filtered = read.filtered,
+            runs_read = runs_out.outcome(),
+            "the tip's verdict is judged over its own push's suites; excluded = another event's check-runs on the same sha, filtered=false = the runs read failed and every check counted"
+        );
+    }
+    Ok(read.checks)
+}
+
 #[async_trait]
 impl DeploySource for GitGhDeploySource {
     async fn build_key(&self, tip: &str) -> Option<String> {
@@ -222,8 +266,6 @@ impl DeploySource for GitGhDeploySource {
             use crate::system_resources::bounded_command::probe;
             // The checkout, resolved for THIS tick: gone or not a repo is said by path.
             let repo_dir = checkout_now()?;
-            let repo = origin_repo(&repo_dir)
-                .ok_or_else(|| format!("checkout {} has no github origin", repo_dir.display()))?;
             let dir = repo_dir.to_string_lossy().into_owned();
             // Fetch (bounded); a fetch failure is a source outage, not a deploy trigger.
             let fetched = probe("git", &["-C", &dir, "fetch", "-q", "origin", &branch], GIT_TIMEOUT);
@@ -234,43 +276,8 @@ impl DeploySource for GitGhDeploySource {
             let Some(tip) = tip_out.stdout_if_ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) else {
                 return Err(format!("git rev-parse origin/{branch} {}", tip_out.outcome()));
             };
-            // Check-state via gh (gh manages its own rate-limiting). gh unreachable → Unknown → wait.
-            // Both reads ask gh for ONLY the fields `parse_tip_checks` uses: the raw bodies
-            // (31 KB and 90 KB on a canary tip, growing with every check) overran the 64 KB
-            // probe capture, the runs body arrived cut in half, and #4706's exclusion never
-            // applied: every node waited on the 44-73 min core-binaries legs.
-            let path = format!("repos/{repo}/commits/{tip}/check-runs?per_page=100");
-            let gh_out = probe(
-                "gh",
-                &["api", &path, "--jq", "{check_runs: [.check_runs[] | {name, status, conclusion, check_suite: {id: .check_suite.id}}]}"],
-                GH_TIMEOUT,
-            );
-            let Some(check_runs) = gh_out.stdout_if_ok() else {
-                return Ok(Some((tip, Checks::Unknown))); // gh unreachable = Unknown = wait, never a deploy on a guess
-            };
-            // The sha's workflow runs carry the triggering EVENT the check-runs body lacks;
-            // without them a scheduled audit's failure reads as the tip's own (#4243). A
-            // failed read here degrades to the all-checks rule inside `parse_tip_checks`.
-            let runs_path = format!("repos/{repo}/actions/runs?head_sha={tip}&per_page=100");
-            let runs_out = probe(
-                "gh",
-                &["api", &runs_path, "--jq", "{workflow_runs: [.workflow_runs[] | {event, path, check_suite_id}]}"],
-                GH_TIMEOUT,
-            );
-            let read = parse_tip_checks(check_runs, runs_out.stdout_if_ok());
-            if read.excluded > 0 || !read.filtered {
-                crate::probe!(
-                    class = "deploy.tip.checks",
-                    tip = tip.as_str(),
-                    checks = ?read.checks,
-                    total = read.total,
-                    excluded = read.excluded,
-                    filtered = read.filtered,
-                    runs_read = runs_out.outcome(),
-                    "the tip's verdict is judged over its own push's suites; excluded = another event's check-runs on the same sha, filtered=false = the runs read failed and every check counted"
-                );
-            }
-            Ok(Some((tip, read.checks)))
+            let checks = revision_checks(&repo_dir, &tip)?;
+            Ok(Some((tip, checks)))
         })
         .await
         .map_err(|e| format!("deploy-source task join error: {e}"))?
@@ -379,7 +386,7 @@ impl ServiceModule for DeployTrackerModule {
         ModuleConfig {
             name: "deploy_tracker",
             priority: ModulePriority::Background,
-            command_prefixes: &[],
+            command_prefixes: &["deploy/consumer-capability"],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 1,
@@ -619,7 +626,13 @@ impl ServiceModule for DeployTrackerModule {
     }
 
     async fn handle_command(&self, command: &str, _params: Value) -> Result<CommandResult, String> {
-        Err(format!("deploy-tracker has no command surface; '{command}' is unknown"))
+        if command == "deploy/consumer-capability" {
+            return Ok(CommandResult::Json(serde_json::json!({
+                "deployConsumerProtocol": continuum_cli_lifecycle::prebuilt_artifact::CONSUMER_LEASE_PROTOCOL,
+                "deployConsumerCli": self.actuator.consumer_cli(),
+            })));
+        }
+        Err(format!("deploy-tracker command '{command}' is unknown"))
     }
 
     fn as_any(&self) -> &dyn Any {

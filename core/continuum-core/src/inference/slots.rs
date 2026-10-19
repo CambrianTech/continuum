@@ -268,22 +268,120 @@ static PAGE_DIR: parking_lot::Mutex<Option<std::path::PathBuf>> = parking_lot::M
 /// a save can trim the store it just wrote into.
 pub fn note_page_dir(dir: &std::path::Path) {
     *PAGE_DIR.lock() = Some(dir.to_path_buf());
-    // A restarted core starts with no state samples, so its first cache sizing fell back to the
-    // KV estimate while the pages it would measure sat on disk (IntelMac, 2026-10-11 02:46Z:
-    // derived 1,792 MiB beside states up to 865 MB). Seed them from the newest pages already
-    // here, once per dir: they are exactly the saves a running core would have measured.
-    // Cheap check first, then the dir read with no lock held (Fable on #4933), then insert
-    // only if no save measured this dir meanwhile: a live sample outranks the disk's.
-    if measured_state_bytes_in(&RECENT_STATE_BYTES.lock(), dir).is_some() {
-        return;
+}
+
+/// The one disk read in flight, and the dir it reads. ONE: every page dir is under one store on one
+/// volume, so a second concurrent read only adds a second stuck thread when that volume stops
+/// answering, and a plan whose geometry churns could otherwise start one per window (root on
+/// #5060). The read is its own task: it lands its samples and clears this slot whether or not
+/// anyone is still waiting on it.
+static SEEDING: parking_lot::Mutex<Option<(std::path::PathBuf, futures::future::Shared<futures::future::BoxFuture<'static, ()>>)>> =
+    parking_lot::Mutex::new(None);
+#[cfg(test)]
+static SEED_READS: parking_lot::Mutex<Vec<std::path::PathBuf>> = parking_lot::Mutex::new(Vec::new());
+
+/// A restarted core starts with no state samples while the pages it would measure sit on disk
+/// (IntelMac, 2026-10-11 02:46Z: derived 1,792 MiB beside states up to 865 MB). Seed the EXACT page
+/// dir a sizing is about to read from its newest pages, before it reads: they are exactly the saves
+/// a running core would have measured. Seeding at the spawn sized every fresh core's first lane from
+/// the KV estimate, because the sizing for that spawn runs first (Kimi's node, 2026-10-15: core
+/// started 12:15:15Z, launch derived 3,232 MiB 20 s later, and the re-home relaunched it at
+/// 9,477 MiB; card 37eb1925).
+///
+/// The sample cache is the readiness authority: a dir it knows (measured, or read and empty) is not
+/// read again, and a dir it evicted is unknown again. One read is in flight at a time ([`SEEDING`]);
+/// while another dir's read is still running, this dir stays unknown and its sizing uses the
+/// estimate, and the next ask reads it. The read runs on the blocking pool, never on a worker (root
+/// on #5060), and each asker waits at most the disk reporters'
+/// [`REPORTER_TIMEOUT`](crate::system_resources::disk_pressure::REPORTER_TIMEOUT): an unavailable
+/// disk leaves one read in flight and the sizing on its estimate, and never holds serving. A read
+/// that fails leaves the dir unknown (probed), so the next ask reads again.
+pub async fn seed_state_samples(dir: &std::path::Path) {
+    seed_state_samples_with(dir, |dir| newest_page_states(dir, STATE_SAMPLES)).await;
+}
+
+async fn seed_state_samples_with(
+    dir: &std::path::Path,
+    read: impl FnOnce(&std::path::Path) -> Result<Vec<u64>, String> + Send + 'static,
+) {
+    use crate::runtime::daemon::{guarded, Guarded};
+    let reading = {
+        let mut seeding = SEEDING.lock();
+        if state_dir_known_in(&RECENT_STATE_BYTES.lock(), dir) {
+            return;
+        }
+        match &*seeding {
+            Some((reading, read)) if reading == dir => read.clone(),
+            Some((reading, _)) => {
+                crate::probe!(
+                    class = "inference.kv_page.seed_busy",
+                    dir = %dir.display(),
+                    reading = %reading.display(),
+                    "another page dir is still being read; this sizing uses the estimate, the next ask reads this one",
+                );
+                return;
+            }
+            None => {
+                let landed = spawn_state_read(dir.to_path_buf(), read);
+                *seeding = Some((dir.to_path_buf(), landed.clone()));
+                landed
+            }
+        }
+    };
+    if let Guarded::TimedOut = guarded(crate::system_resources::disk_pressure::REPORTER_TIMEOUT, reading).await {
+        crate::probe!(
+            class = "inference.kv_page.seed_pending",
+            dir = %dir.display(),
+            "the saved pages are still being read; this sizing uses the estimate, the next one the pages",
+        );
     }
-    let seeded = newest_page_states(dir, STATE_SAMPLES);
-    let mut samples = RECENT_STATE_BYTES.lock();
-    if measured_state_bytes_in(&samples, dir).is_none() {
-        for bytes in seeded {
-            note_state_bytes_in(&mut samples, dir, bytes);
+}
+
+/// Start the read of `dir` as its own task and return its completion for askers to wait on. The
+/// task lands the samples (a live sample already there outranks them), THEN clears [`SEEDING`], so
+/// no asker between the two starts a second read; it never holds both locks.
+fn spawn_state_read(
+    dir: std::path::PathBuf,
+    read: impl FnOnce(&std::path::Path) -> Result<Vec<u64>, String> + Send + 'static,
+) -> futures::future::Shared<futures::future::BoxFuture<'static, ()>> {
+    use futures::FutureExt;
+    #[cfg(test)]
+    SEED_READS.lock().push(dir.clone());
+    let released = dir.clone();
+    let task = tokio::spawn(async move {
+        let path = dir.clone();
+        match tokio::task::spawn_blocking(move || read(&path))
+            .await
+            .map_err(|error| error.to_string())
+            .and_then(|states| states)
+        {
+            Ok(states) => seed_dir_in(&mut RECENT_STATE_BYTES.lock(), &dir, states),
+            Err(error) => crate::probe!(
+                class = "inference.kv_page.seed_failed",
+                dir = %dir.display(),
+                error = %error,
+                "reading the saved pages on disk failed; left unmeasured, the next ask reads again",
+            ),
+        }
+        let mut seeding = SEEDING.lock();
+        if seeding.as_ref().is_some_and(|(reading, _)| reading == &dir) {
+            *seeding = None;
+        }
+    });
+    async move {
+        // The read's own failures (the reader, the blocking pool) release the slot inside the
+        // task. Only a panic of the task itself skips that, and then the slot is released here,
+        // when an asker next waits on it: waiter-dependent, and with no reachable panic in the
+        // task body, not relied on (root on #5060).
+        if task.await.is_err() {
+            let mut seeding = SEEDING.lock();
+            if seeding.as_ref().is_some_and(|(reading, _)| reading == &released) {
+                *seeding = None;
+            }
         }
     }
+    .boxed()
+    .shared()
 }
 
 /// The engine's sidecars beside each page, saved and restored with it: the context checkpoints
@@ -305,15 +403,24 @@ pub fn page_sidecar_bytes(page: &str) -> Option<u64> {
 }
 
 /// Every page in `dir` (`a-*.bin`), as (page name -> (the page file's mtime, bytes of the page
-/// and its sidecars)). Reads the dir once; anything unreadable is skipped.
-fn pages_in(dir: &std::path::Path) -> std::collections::HashMap<String, (std::time::SystemTime, u64)> {
+/// and its sidecars)). Reads the dir once. A dir that does not exist holds no pages, and an entry
+/// that vanishes between the listing and its stat (a trim racing this read) is skipped; any other
+/// failure is an error, so no reader mistakes an unreadable store for an empty one (root on #5060).
+fn pages_in(dir: &std::path::Path) -> Result<std::collections::HashMap<String, (std::time::SystemTime, u64)>, String> {
     let mut pages = std::collections::HashMap::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return pages;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(pages),
+        Err(error) => return Err(format!("{}: {error}", dir.display())),
     };
-    for e in entries.flatten() {
+    for e in entries {
+        let e = e.map_err(|error| format!("{}: {error}", dir.display()))?;
         let name = e.file_name().to_string_lossy().into_owned();
-        let Ok(md) = e.metadata() else { continue };
+        let md = match e.metadata() {
+            Ok(md) => md,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(format!("{}: {error}", e.path().display())),
+        };
         let sidecar = PAGE_SIDECARS.iter().find_map(|s| name.strip_suffix(s));
         let page = sidecar.unwrap_or(&name).to_string(); // unwrap_or: a name with no sidecar suffix IS the page name
         if !md.is_file() || !(page.starts_with("a-") && page.ends_with(".bin")) {
@@ -325,16 +432,16 @@ fn pages_in(dir: &std::path::Path) -> std::collections::HashMap<String, (std::ti
             entry.0 = md.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH); // unwrap_or: an unreadable mtime sorts oldest, the safe side for an eviction candidate and the least likely sample
         }
     }
-    pages
+    Ok(pages)
 }
 
 /// The sizes of the newest `n` saved states in `dir` (each page with its sidecars), oldest
-/// first. Anything unreadable is simply not a sample.
-fn newest_page_states(dir: &std::path::Path, n: usize) -> Vec<u64> {
-    let mut by_age: Vec<(std::time::SystemTime, u64)> = pages_in(dir).into_values().filter(|(_, b)| *b > 0).collect();
+/// first, or why the dir could not be read ([`pages_in`]).
+fn newest_page_states(dir: &std::path::Path, n: usize) -> Result<Vec<u64>, String> {
+    let mut by_age: Vec<(std::time::SystemTime, u64)> = pages_in(dir)?.into_values().filter(|(_, b)| *b > 0).collect();
     by_age.sort_by_key(|(t, _)| *t);
     let skip = by_age.len().saturating_sub(n);
-    by_age.into_iter().skip(skip).map(|(_, b)| b).collect()
+    Ok(by_age.into_iter().skip(skip).map(|(_, b)| b).collect())
 }
 
 /// After a successful save of `just_saved` (a page filename), keep the live
@@ -376,7 +483,7 @@ const STATE_DIRS: usize = 8;
 type StateSamples = std::collections::VecDeque<(std::path::PathBuf, std::collections::VecDeque<u64>)>;
 static RECENT_STATE_BYTES: parking_lot::Mutex<StateSamples> = parking_lot::Mutex::new(std::collections::VecDeque::new());
 
-fn note_state_bytes(dir: &std::path::Path, bytes: u64) {
+pub(crate) fn note_state_bytes(dir: &std::path::Path, bytes: u64) {
     if bytes == 0 {
         return;
     }
@@ -394,6 +501,24 @@ fn note_state_bytes_in(samples: &mut StateSamples, dir: &std::path::Path, bytes:
         recent.pop_front();
     }
     samples.push_back((dir.to_path_buf(), recent));
+    while samples.len() > STATE_DIRS {
+        samples.pop_front();
+    }
+}
+
+/// PURE: whether `dir` has an entry yet, measured or seeded empty.
+fn state_dir_known_in(samples: &StateSamples, dir: &std::path::Path) -> bool {
+    samples.iter().any(|(d, _)| d == dir)
+}
+
+/// PURE: give an unknown `dir` its disk samples (possibly none), within [`STATE_DIRS`]. A dir
+/// already known keeps what it has.
+fn seed_dir_in(samples: &mut StateSamples, dir: &std::path::Path, seeded: Vec<u64>) {
+    if state_dir_known_in(samples, dir) {
+        return;
+    }
+    let skip = seeded.len().saturating_sub(STATE_SAMPLES);
+    samples.push_back((dir.to_path_buf(), seeded.into_iter().skip(skip).collect()));
     while samples.len() > STATE_DIRS {
         samples.pop_front();
     }
@@ -424,8 +549,20 @@ pub fn trim_page_store(
     max_bytes: u64,
     min_age_ms: u64,
 ) -> (usize, u64, u64) {
-    // page name → (mtime, bytes incl. sidecars)
-    let pages = pages_in(dir);
+    // page name → (mtime, bytes incl. sidecars). An unreadable store trims nothing: deleting on a
+    // partial listing could remove what the read did not see.
+    let pages = match pages_in(dir) {
+        Ok(pages) => pages,
+        Err(error) => {
+            crate::probe!(
+                class = "inference.kv_page.store_unreadable",
+                dir = %dir.display(),
+                error = %error,
+                "the KV page store could not be read; nothing trimmed",
+            );
+            return (0, 0, 0);
+        }
+    };
     let mut total: u64 = pages.values().map(|v| v.1).sum();
     if total <= max_bytes {
         return (0, 0, total);
@@ -1008,6 +1145,9 @@ struct EndpointState {
     pool: Option<Option<Arc<KvSlotPool>>>,
     // An installed ledger can outlive its child until replacement readiness.
     pool_generation: Option<Uuid>,
+    /// Negotiated for this pool incarnation. None is not yet negotiated;
+    /// Ok(None) is explicitly legacy or remotely owned, not governed coverage.
+    page_admission: Option<Result<Option<std::path::PathBuf>, String>>,
 }
 
 /// The directory's existing endpoint owner also arbitrates engine transitions.
@@ -1027,6 +1167,13 @@ pub(crate) struct EndpointAdmission {
 }
 
 impl EndpointAdmission {
+    /// The response must name this owned engine's launch alias. The read lease
+    /// prevents replacement while this evidence is checked; a discovered or
+    /// remote endpoint without a launch contract cannot certify local service.
+    pub(crate) fn served_geometry(&self, response_model: &str) -> Option<crate::modules::served_window_store::ServedGeometry> {
+        self.endpoint.served_geometry().filter(|g| g.model_id == response_model)
+    }
+
     /// Called while this generation's read lease still prevents replacement.
     pub(crate) fn quarantine_paging(&self) {
         self.endpoint.quarantine_paging();
@@ -1038,6 +1185,21 @@ impl EndpointAdmission {
         } else {
             Err("serving endpoint suspended; paging or engine completion remains unverified".into())
         }
+    }
+}
+
+impl EndpointSlots {
+    pub(crate) fn served_geometry(&self) -> Option<crate::modules::served_window_store::ServedGeometry> {
+        let state = self.state.lock();
+        let generation = state.generation.as_ref()?;
+        let contract = state.contract.as_ref()?;
+        if generation.has_exited() || !*state.ready.borrow() || contract.context == 0 || contract.slots == 0 {
+            return None;
+        }
+        Some(crate::modules::served_window_store::ServedGeometry {
+            model_id: contract.model_id.clone(), generation: generation.id,
+            per_slot_window: contract.context, lanes: contract.slots,
+        })
     }
 }
 
@@ -1448,6 +1610,7 @@ impl EndpointTransition {
             state.ready.send_replace(false);
             (generation, pool)
         };
+        directory().discover_page_admission(client, root).await?;
         let mut residents: Vec<_> = pool
             .holders
             .lock()
@@ -1564,6 +1727,7 @@ impl EndpointTransition {
             );
         }
         state.pool = Some(Some(pool));
+        state.page_admission = None;
         state.pool_generation = Some(generation.id);
         state.contract = Some(contract);
         state.ready.send_replace(true);
@@ -1593,6 +1757,7 @@ impl SlotDirectory {
                         contract: None,
                         pool: None,
                         pool_generation: None,
+                        page_admission: None,
                     }),
                 })
             })
@@ -1611,6 +1776,80 @@ impl SlotDirectory {
     /// `None` = never probed (caller should probe /props).
     pub fn get(&self, root: &str) -> Option<Option<Arc<KvSlotPool>>> {
         self.endpoint(root).state.lock().pool.clone()
+    }
+
+    pub(crate) fn page_admission_known(&self, root: &str) -> bool {
+        // A refused discovery never authorizes a write. It remains retryable:
+        // the existing retained path worker may finish after a bounded wait.
+        matches!(self.endpoint(root).state.lock().page_admission, Some(Ok(_)))
+    }
+
+    pub(crate) fn page_discovery_generation(&self, root: &str) -> Option<Uuid> {
+        self.endpoint(root).state.lock().generation.as_ref().map(|generation| generation.id)
+    }
+
+    pub(crate) fn page_admission_path(&self, root: &str) -> Result<Option<std::path::PathBuf>, String> {
+        self.endpoint(root).state.lock().page_admission.clone()
+            .unwrap_or_else(|| Err("page-write capability has not been negotiated".into()))
+    }
+
+    /// Cold discovery shared by spawned and adopted pools. Only the admission
+    /// path is physical: logical checkpoint filenames and ledger handles do not move.
+    pub(crate) async fn negotiate_page_admission(
+        &self, root: &str, pool: &Arc<KvSlotPool>, generation: Option<Uuid>,
+        capability: Option<&serde_json::Value>,
+    ) -> bool {
+        let admission = match capability {
+            None => Ok(None), // older engines retain their existing paging protocol
+            Some(value) if value.as_u64() == Some(1) => match self.page_dir(root) {
+                None => Ok(None), // remote owner must perform its own volume admission
+                Some(path) => crate::system_resources::disk_reporters::resolve_existing_storage_path(&path).await.map(Some)
+                    .map_err(|error| format!("cannot resolve owned page volume: {error}")),
+            },
+            Some(_) => Err("unrecognized exact page-write capability".into()),
+        };
+        let endpoint = self.endpoint(root);
+        let mut state = endpoint.state.lock();
+        if state.generation.as_ref().map(|current| current.id) != generation
+            || !state.pool.as_ref().and_then(Option::as_ref).is_some_and(|current| Arc::ptr_eq(current, pool)) {
+            return false; // a response from an old incarnation cannot authorize its successor
+        }
+        if !matches!(state.page_admission, Some(Ok(_))) {
+            crate::probe!(class = "inference.kv_page.capability",
+                governed = matches!(&admission, Ok(Some(_))),
+                refused = admission.is_err(),
+                "page-write negotiation; legacy and remote ownership remain unactivated");
+            state.page_admission = Some(admission);
+        }
+        true
+    }
+
+    /// Lifecycle checkpoints can precede the first adapter request. They use
+    /// the same endpoint capability publication, never an unnegotiated fallback.
+    pub(crate) async fn discover_page_admission(&self, client: &reqwest::Client, root: &str) -> Result<(), String> {
+        if self.page_admission_known(root) { return self.page_admission_path(root).map(|_| ()); }
+        let generation = self.page_discovery_generation(root);
+        let pool = self.get(root).flatten().ok_or("page-write discovery requires a pool")?;
+        let body = super::llama_server::engine_props(root, client).await
+            .map_err(|error| format!("page-write capability request failed: {error}"))?;
+        if body.get("total_slots").and_then(serde_json::Value::as_u64) != Some(pool.n_slots() as u64) {
+            return Err("page-write capabilities do not identify this pool geometry".into());
+        }
+        if !self.negotiate_page_admission(root, &pool, generation, body.get("slot_save_size_version")).await {
+            return Err("engine changed during page-write discovery".into());
+        }
+        self.page_admission_path(root).map(|_| ())
+    }
+
+    /// Actual page directory of the admitted engine, never a reconstructed default.
+    pub(crate) fn page_dir(&self, root: &str) -> Option<std::path::PathBuf> {
+        let endpoint = self.endpoint(root);
+        let state = endpoint.state.lock();
+        if let Some(path) = state.contract.as_ref().and_then(|contract| contract.page_dir.clone()) {
+            return Some(path);
+        }
+        // Adoption installs a ledger only after checking the live process incarnation.
+        state.pool.as_ref()?.as_ref()?.ledger.get()?.path.parent().map(std::path::Path::to_path_buf)
     }
 
     /// Install (or return the already-installed) pool for a probed server.
@@ -1743,11 +1982,119 @@ mod tests {
         std::fs::write(dir.path().join("a-p1-r1.bin.lora"), vec![0u8; 5]).expect("test: adapter sidecar");
         std::fs::write(dir.path().join("a-p2-r2.bin"), vec![0u8; 300]).expect("test: page");
         std::fs::write(dir.path().join("saved-ledger.json"), vec![0u8; 9_999]).expect("test: not a page");
-        let mut states = newest_page_states(dir.path(), STATE_SAMPLES);
+        let mut states = newest_page_states(dir.path(), STATE_SAMPLES).expect("test: readable dir");
         states.sort_unstable();
         assert_eq!(states, vec![300, 865], "each page with its sidecars, the ledger excluded");
-        assert_eq!(newest_page_states(dir.path(), 1).len(), 1, "at most n");
-        assert!(newest_page_states(&dir.path().join("absent"), 4).is_empty(), "no dir, no samples");
+        assert_eq!(newest_page_states(dir.path(), 1).expect("test: readable dir").len(), 1, "at most n");
+        assert!(newest_page_states(&dir.path().join("absent"), 4).expect("test: absent dir").is_empty(), "no dir, no samples");
+        let not_a_dir = dir.path().join("saved-ledger.json");
+        assert!(newest_page_states(&not_a_dir, 4).is_err(), "an unreadable store is an error, never an empty one");
+    }
+
+    // what this catches (card 37eb1925, Kimi's node 2026-10-15: a fresh core sized its first
+    // lane from the KV estimate, 3,232 MiB, because the pages on disk were only read at the
+    // spawn that sizing precedes, and the re-home relaunched it at 9,477 MiB): the exact dir a
+    // sizing reads is measured before it reads, among more same-model geometries than the sample
+    // cache holds; a known dir is not read again; a geometry made after an earlier seed is read
+    // for itself; a dir evicted from the bounded cache is read again, alone (root's fixtures on
+    // #5060). A dir with no pages is remembered empty; a live sample is never replaced by the disk's.
+    #[tokio::test]
+    async fn the_first_sizing_after_a_restart_reads_the_pages_on_disk() {
+        let root = tempfile::tempdir().expect("test: page store");
+        let geometry = |key: usize| root.path().join(format!("test-37eb1925--c{key}"));
+        let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
+        // An asker waits at most REPORTER_TIMEOUT and yields to another dir's read in flight (other
+        // tests seed concurrently). Re-ask until the dir is known: a re-ask joins its read or waits
+        // for the slot, never starting a second read of the same dir.
+        let seeded = |dir: std::path::PathBuf| async move {
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                while !state_dir_known_in(&RECENT_STATE_BYTES.lock(), &dir) {
+                    seed_state_samples(&dir).await;
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("test: the read lands");
+        };
+        for key in 0..(STATE_DIRS + 3) {
+            std::fs::create_dir(geometry(key)).expect("test: same-model geometry");
+            std::fs::write(geometry(key).join("a-p1-r1.bin"), vec![0u8; 1_000 + key]).expect("test: page");
+        }
+        let desired = geometry(0);
+        std::fs::write(desired.join("a-p1-r1.bin.ckpt"), vec![0u8; 900]).expect("test: sidecar");
+        assert_eq!(measured_state_bytes(&desired), None, "a fresh core has measured nothing");
+        seeded(desired.clone()).await;
+        assert_eq!(measured_state_bytes(&desired), Some(1_900), "the exact dir, no spawn first");
+        seeded(desired.clone()).await;
+        assert_eq!(reads_of(&desired), 1, "a known dir is not read again");
+
+        let later = geometry(STATE_DIRS + 7);
+        std::fs::create_dir(&later).expect("test: a geometry made after the seed");
+        std::fs::write(later.join("a-p2-r2.bin"), vec![0u8; 333]).expect("test: page");
+        seeded(later.clone()).await;
+        assert_eq!(measured_state_bytes(&later), Some(333), "a new geometry is read for itself");
+
+        for key in 1..(STATE_DIRS + 3) {
+            seeded(geometry(key)).await;
+        }
+        assert_eq!(measured_state_bytes(&desired), None, "evicted from the bounded cache");
+        seeded(desired.clone()).await;
+        assert_eq!(measured_state_bytes(&desired), Some(1_900), "an evicted dir is read again");
+        assert_eq!(reads_of(&desired), 2, "and read alone, not by a census of its model");
+
+        let mut samples = StateSamples::new();
+        let empty = std::path::Path::new("/pages/fresh");
+        seed_dir_in(&mut samples, empty, Vec::new());
+        assert!(state_dir_known_in(&samples, empty) && measured_state_bytes_in(&samples, empty).is_none());
+        let live = std::path::Path::new("/pages/live");
+        note_state_bytes_in(&mut samples, live, 7);
+        seed_dir_in(&mut samples, live, vec![1, 2, 3]);
+        assert_eq!(measured_state_bytes_in(&samples, live), Some(7), "the live sample stands");
+        for i in 0..(STATE_DIRS * 2) {
+            seed_dir_in(&mut samples, std::path::Path::new(&format!("/pages/s{i}")), vec![1]);
+        }
+        assert!(samples.len() <= STATE_DIRS, "seeding is bounded by dirs too");
+    }
+
+    // what this catches (root on #5060, ce7371d37): a stuck read per geometry when the volume stops
+    // answering, and a slot never released once a live save made its dir known after the asker
+    // timed out. One read is in flight; another dir starts no worker while it runs; the read lands
+    // and releases the slot with nobody waiting on it; and the live sample survives it.
+    #[tokio::test]
+    async fn one_stuck_read_holds_one_slot_and_releases_it_unwatched() {
+        let root = tempfile::tempdir().expect("test: page store");
+        let stuck = root.path().join("test-5060-stuck--c1");
+        let other = root.path().join("test-5060-other--c2");
+        let reads_of = |dir: &std::path::Path| SEED_READS.lock().iter().filter(|d| d.as_path() == dir).count();
+        let (release, gate) = std::sync::mpsc::channel::<()>();
+        let gate = std::sync::Arc::new(parking_lot::Mutex::new(gate));
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while reads_of(&stuck) == 0 {
+                let gate = gate.clone();
+                seed_state_samples_with(&stuck, move |_| {
+                    let _ = gate.lock().recv(); // released by the test: a volume that stopped answering
+                    Ok(vec![111])
+                })
+                .await;
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("test: the stuck read starts once another test's read clears the slot");
+        assert_eq!(measured_state_bytes(&stuck), None, "still reading: unmeasured, not guessed");
+        seed_state_samples_with(&other, |_| Ok(vec![222])).await;
+        assert_eq!(reads_of(&other), 0, "another dir starts no worker while one read is in flight");
+        note_state_bytes(&stuck, 999);
+        release.send(()).expect("test: release the stuck read");
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            while SEEDING.lock().as_ref().is_some_and(|(reading, _)| reading == &stuck) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("test: the read releases its slot with nobody waiting on it");
+        assert_eq!(measured_state_bytes(&stuck), Some(999), "the live sample outranks the disk's");
+        assert_eq!(reads_of(&stuck), 1, "one read, however many asks");
     }
 
     // what this catches (Fable on #4930): a node-wide sample, where a second model's lane on
@@ -2064,8 +2411,9 @@ mod tests {
 
     // what this catches: the directory latch — an unsupported server must never
     // hand out a pool, and the first probe outcome wins for the process life.
-    #[test]
-    fn directory_latch_and_ensure() {
+    #[tokio::test]
+    async fn directory_latch_and_ensure() {
+        crate::system_resources::disk_reporters::prepare_writer_fixture().await;
         let dir = SlotDirectory {
             endpoints: dashmap::DashMap::new(),
         };
@@ -2075,6 +2423,37 @@ mod tests {
         let p = dir.ensure_pool("s2", 4);
         assert_eq!(p.n_slots(), 4);
         assert!(matches!(dir.get("s2"), Some(Some(_))));
+        assert!(dir.negotiate_page_admission("s2", &p, None, None).await);
+        assert_eq!(dir.page_admission_path("s2").unwrap(), None, "legacy remains unactivated");
+        let capability = serde_json::json!(1);
+        let remote = dir.ensure_pool("remote", 1);
+        assert!(dir.negotiate_page_admission("remote", &remote, None, Some(&capability)).await);
+        assert_eq!(dir.page_admission_path("remote").unwrap(), None, "remote needs its owning node");
+        let page_dir = tempfile::tempdir().unwrap();
+        let local = dir.ensure_pool("local", 1);
+        local.attach_ledger(SavedLedger::in_dir(page_dir.path(), "fixture".into()), false);
+        assert!(dir.negotiate_page_admission("local", &local, None, Some(&capability)).await);
+        assert_eq!(dir.page_admission_path("local").unwrap(), Some(page_dir.path().canonicalize().unwrap()));
+        let replacement = Arc::new(KvSlotPool::new("local", 1));
+        dir.endpoint("local").state.lock().pool = Some(Some(replacement));
+        assert!(!dir.negotiate_page_admission("local", &local, None, Some(&capability)).await,
+            "late props cannot authorize a replacement pool");
+        let invalid = dir.ensure_pool("invalid", 1);
+        assert!(dir.negotiate_page_admission("invalid", &invalid, None, Some(&serde_json::json!("1"))).await);
+        assert!(dir.page_admission_path("invalid").is_err(), "invalid capability is not a legacy fallback");
+        let missing = dir.ensure_pool("missing", 1);
+        missing.attach_ledger(SavedLedger::in_dir(page_dir.path().join("not-created").as_path(), "fixture".into()), false);
+        assert!(dir.negotiate_page_admission("missing", &missing, None, Some(&capability)).await);
+        assert!(dir.page_admission_path("missing").is_err(), "local path resolution failure never falls back to ungoverned save");
+        assert!(!dir.page_admission_known("missing"), "unavailable storage must permit governed rediscovery");
+        std::fs::create_dir(page_dir.path().join("not-created")).unwrap();
+        assert!(dir.negotiate_page_admission("missing", &missing, None, Some(&capability)).await);
+        assert!(dir.page_admission_known("missing"));
+        assert_eq!(dir.page_admission_path("missing").unwrap(),
+            Some(page_dir.path().join("not-created").canonicalize().unwrap()),
+            "the same generation recovers without ungoverned fallback");
+        assert!(!dir.negotiate_page_admission("remote", &remote, Some(Uuid::new_v4()), Some(&capability)).await,
+            "props for a different generation cannot publish capability");
     }
 
     // What this catches (the M5, 2026-10-10 18:49Z: turn_cached 0 of 31,811 after a
@@ -2222,6 +2601,8 @@ mod tests {
         );
         let admitted = endpoint.admit().await.expect("old request");
         let old_pool = admitted.pool.as_ref().expect("pool").clone();
+        assert!(dir.negotiate_page_admission("test://generation", &old_pool, Some(old.id), None).await);
+        assert!(dir.page_admission_known("test://generation"));
         let activity = key(73, 74);
         old_pool
             .lease_paged(activity)
@@ -2304,6 +2685,7 @@ mod tests {
         transition
             .ready("test://generation", &new, contract.clone())
             .expect("replacement ready");
+        assert!(!dir.page_admission_known("test://generation"), "replacement renegotiates instead of inheriting capability");
         // Refreshing readiness for this generation must preserve its current ledger.
         let new_pool = dir
             .get("test://generation")

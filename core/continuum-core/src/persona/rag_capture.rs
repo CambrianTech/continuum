@@ -272,6 +272,10 @@ impl<S: RagSource> RecordingRagSource<S> {
 
 #[async_trait]
 impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
+    fn room_scope(&self) -> super::rag_budget::RagRoomScope {
+        self.inner.room_scope()
+    }
+
     fn source_id(&self) -> &'static str {
         self.inner.source_id()
     }
@@ -285,6 +289,10 @@ impl<S: RagSource + 'static> RagSource for RecordingRagSource<S> {
     /// Delegates: capture is transparent, so the wrapped source's floor is the floor.
     fn floor_tokens(&self) -> u32 {
         self.inner.floor_tokens()
+    }
+
+    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        self.inner.budget_claim(window, headroom)
     }
 
     async fn deliver(

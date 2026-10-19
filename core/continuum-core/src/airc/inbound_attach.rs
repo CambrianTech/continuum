@@ -347,14 +347,10 @@ pub async fn publish_transcript_event(
             "a room event fed to resident minds"
         );
     }
-    // THE CURRICULUM HEARS THE ROOM'S VERDICT at the same seam (genome lane, 2026-10-05).
-    // A review on a submission is the room judging the work, so it settles the staged
-    // learning credit of every resident who worked that card. Until today settlement
-    // fired only from a benchmark instance's recorded verdict, so a card on a project
-    // board (Career Wrangler, the paper) earned credit all day that nothing could ever
-    // settle, and none of her real work reached her curriculum. The grader's verdict
-    // arrives through this same event since #4761, so one path serves both.
-    crate::persona::training_producer::settle_on_review(event);
+    // The room's verdict settles staged credit in `reviewed::bridge_review`, AFTER the
+    // review is verified (signed by its author, accepted in the room's projection,
+    // admitted by the room's self-review policy). It used to settle here, on any
+    // review-shaped event, unchecked.
     let envelope = match envelope_from_event(event) {
         Ok(Some(envelope)) => envelope,
         // Not a Continuum EventBridge envelope. Before dropping it, try

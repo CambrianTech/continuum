@@ -377,7 +377,7 @@ impl ActionCommand for CognitionReplay {
         p: CognitionReplayParams,
     ) -> Result<CognitionReplayResult, CommandError> {
         let persona_uuid = Uuid::parse_str(p.persona_id.as_str()).map_err(|_| {
-            CommandError::Invalid(format!("persona_id '{}' is not a valid UUID", p.persona_id))
+            CommandError::Arguments(format!("persona_id '{}' is not a valid UUID", p.persona_id))
         })?;
 
         let mut burst = resolve_burst(&p, &persona_uuid)?;
@@ -407,7 +407,7 @@ impl ActionCommand for CognitionReplay {
         if replay_hands.is_some() {
             let live_root = match persona_workspace::acting_root_of(persona_uuid) {
                 Some(root) => root,
-                None => crate::modules::code_commands::ensure_citizen_layer(&persona_uuid.to_string())?,
+                None => crate::modules::code_commands::ensure_citizen_layer(&persona_uuid.to_string()).await?,
             };
             persona_workspace::root_acting_workspace(&cycle, &live_root.to_string_lossy(), &[], false).await?;
         }

@@ -193,13 +193,6 @@ pub struct ServingDemand {
     /// KV page geometry — `<model>--c<window>` — is the same across boots and the
     /// citizens' pages carry over. `None` = no memory (first serve of this model).
     pub sticky_window: Option<u32>,
-    /// THE LAST STEADY GEOMETRY this host served (per-slot window, lanes), applied at a
-    /// COLD BOOT only: its window joins the per-lane floor (it IS the last measured demand)
-    /// and its lane count CAPS the choice. The budget at boot is the transient minimum of
-    /// everything else on the box, and a plan sized to it launches a geometry the loaded
-    /// seat cannot keep (9/18: 8 × 28k, re-homed to 1 × 67k in 40 s, then 2 × 67k — three
-    /// geometries per boot). `None` at steady state — the live plan is the incumbent then.
-    pub boot_geometry: Option<(u32, u32)>,
     /// Concurrent lanes this seat serves for minds hosted on OTHER nodes — the `ai/generate`
     /// a peer sends here when its placement spills a mind onto this seat — measured at the
     /// seat's own admission as the peak per plan tick
@@ -274,7 +267,6 @@ impl ServingDemand {
             measured: measured.is_some(), // the provenance `unwrap_or` would otherwise destroy — UNKNOWN must stay distinguishable from a quantity
             window_floor_tokens: solve_window_floor(),
             sticky_window: None,
-            boot_geometry: None,
             sent_tokens: None,
             sent_median: None,
             requirements: Vec::new(),
@@ -350,12 +342,6 @@ impl ServingDemand {
         self
     }
 
-    /// The last steady (window, lanes) this host served — a cold boot's first choice
-    /// (see `boot_geometry`). A window under the serve floor or zero lanes is no geometry.
-    pub fn with_boot_geometry(mut self, g: Option<(u32, u32)>) -> Self {
-        self.boot_geometry = g.filter(|(w, l)| *w >= MIN_SERVE_CTX && *l >= 1);
-        self
-    }
 }
 
 /// The served per-slot window: the window this host served LAST time when it
@@ -685,8 +671,6 @@ pub enum LanesBound {
         rejected_lanes: u32,
         rejected_window: u32,
     },
-    /// A cold boot's remembered lane count capped the plan (it only ever lowers it).
-    BootGeometry,
 }
 
 /// What capped the lanes the requirements allocator would consider, before packing: the
@@ -705,7 +689,7 @@ pub enum LaneCapBy {
     Demand,
 }
 
-/// Which term set the per-lane floor: the largest of the four wins.
+/// Which term set the per-lane floor: the largest of the three wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
 #[ts(export, export_to = "../../../protocol/typescript/serving/FloorTerm.ts")]
 #[serde(rename_all = "camelCase")]
@@ -716,8 +700,6 @@ pub enum FloorTerm {
     WindowFloor,
     /// The residents' typical sent prompt, with headroom.
     TypicalPrompt,
-    /// A cold boot's remembered window.
-    BootWindow,
 }
 
 /// Decide how to serve persona inference on `host` given the `candidates`.
@@ -934,9 +916,6 @@ pub fn plan_serving(
         (demand.window_floor_tokens, FloorTerm::WindowFloor),
         // no sent prompt measured yet = no floor from it, the bootstrap prior stands
         (demand.typical_prompt_floor().unwrap_or(0), FloorTerm::TypicalPrompt), // JUSTIFIED unwrap_or: an absent median contributes no floor; 0 never wins the max
-        // A cold boot's remembered window is the last MEASURED demand: it floors the lane
-        // choice so the boot never trades the window it will need for lanes it cannot keep.
-        (demand.boot_geometry.map(|(w, _)| w).unwrap_or(0), FloorTerm::BootWindow), // JUSTIFIED unwrap_or: no remembered geometry = no floor from it
     ]
     .into_iter()
     .fold((0, FloorTerm::Bootstrap), |best, term| if term.0 > best.0 { term } else { best });
@@ -1013,11 +992,6 @@ pub fn plan_serving(
             (lanes, bound)
         }
     };
-    // And its lane count CAPS a cold boot's plan — never raises it: the boot budget is the
-    // transient minimum of everything else resident, and the loaded seat keeps fewer lanes.
-    let booted = demand.boot_geometry.map_or(lanes, |(_, l)| lanes.min(l.max(1)));
-    let lanes_bound = if booted < lanes { LanesBound::BootGeometry } else { lanes_bound };
-    let lanes = booted;
     // Over-subscription: more resident personas than warm slots the window floor permits. The
     // remainder can't get a persistent slot — with N minds on M<N slots the llama.cpp per-slot
     // LRU eviction re-prefills a cold ~10k prefix every time an evicted mind speaks (#266). The
@@ -2851,47 +2825,13 @@ mod tests {
         assert!(plan.served_context_window <= 37_500 + 4_096 && plan.served_context_window >= 37_500 - 4_096, "served near the target: {}", plan.served_context_window);
     }
 
-    // what this catches (2026-09-18, the M5, every boot): with no incumbent the plan sized
-    // itself to the boot budget — the transient minimum of everything else resident — and
-    // launched many lanes at a small window (8 × 28k), then re-homed to 1 × 67k in 40 s,
-    // then to 2 × 67k: three geometries per boot and every first turn killed. A cold boot
-    // now plans the LAST STEADY GEOMETRY first: its window floors the lane choice and its
-    // lane count caps it — never raises it: a box that fits fewer lanes at that window plans
-    // fewer. Numbers are the M5's shape, the rule is the same on any box.
-    #[test]
-    fn a_cold_boot_plans_the_remembered_geometry_not_the_transient_budget() {
-        let boot_budget = HostBudget { usable_bytes: 44 * GB, perf_cores: 10 };
-        let m27 = fp("qwen-27b", 17, 76 * 1024, 262_144, 42);
-        let fresh = plan_serving(&boot_budget, std::slice::from_ref(&m27), &ServingDemand::new(17, None)).expect("servable");
-        assert!(
-            fresh.lanes >= 4 && fresh.served_context_window < 67_340,
-            "the defect as measured: many lanes at a small window ({} × {})",
-            fresh.lanes, fresh.served_context_window
-        );
-        let remembered = plan_serving(
-            &boot_budget,
-            std::slice::from_ref(&m27),
-            &ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))))
-        .expect("servable");
-        assert_eq!((remembered.lanes, remembered.served_context_window), (2, 67_340), "the last steady geometry, first");
-        let tight = HostBudget { usable_bytes: 26 * GB, perf_cores: 10 };
-        let one = plan_serving(
-            &tight,
-            std::slice::from_ref(&m27),
-            &ServingDemand::new(17, None).with_sticky_window(Some(67_340)).with_boot_geometry(Some((67_340, 2))))
-        .expect("servable");
-        assert_eq!(one.lanes, 1, "remembered lanes cap, never raise: this box fits one at that window");
-        // No geometry = no effect; a nonsense geometry (zero lanes, a window under the floor) is ignored.
-        assert!(ServingDemand::new(17, None).with_boot_geometry(Some((67_340, 0))).boot_geometry.is_none());
-        assert!(ServingDemand::new(17, None).with_boot_geometry(Some((MIN_SERVE_CTX - 1, 2))).boot_geometry.is_none());
-    }
 
     // what this catches (card eb8d1839; the 5090, 2026-10-12, build 6160): a one-lane plan that
     // could not say WHICH term chose one lane. `bound_by=host-fit` meant only "the window came out
     // below demand", so the GPU accounting, the per-lane floor and a boot's memory all read alike.
     // The plan now carries the term from its own decision: the floor when one more lane would
     // starve each window, demand when every lane was granted, cores when the host capped it, and
-    // a boot's remembered lanes when that lowered it.
+    // the host core budget when it limits lanes.
     #[test]
     fn a_plan_names_the_term_that_chose_its_lane_count() {
         const GB: u64 = 1_000_000_000;
@@ -2929,9 +2869,5 @@ mod tests {
         let one_core = HostBudget { usable_bytes: 200 * GB, perf_cores: 1 };
         let plan = plan_serving(&one_core, models, &demand).expect("plan");
         assert_eq!((plan.lanes, plan.lanes_bound), (1, LanesBound::Cores));
-        // A cold boot that remembers one lane only ever lowers the count, and says so.
-        let booted = demand.clone().with_boot_geometry(Some((60_000, 1)));
-        let plan = plan_serving(&roomy, models, &booted).expect("plan");
-        assert_eq!((plan.lanes, plan.lanes_bound), (1, LanesBound::BootGeometry));
     }
 }

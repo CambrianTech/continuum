@@ -151,7 +151,7 @@ fn matching_brace(bytes: &[u8], open: usize) -> Option<usize> {
 /// the failure is diagnosable — and so a teacher can read the REAL error and fix.
 ///
 /// SAFETY: compiles and runs model-generated code in a temp dir, each step under
-/// its garbage-ceiling timeout with `kill_on_drop` so a runaway is reaped, never orphaned. That is
+/// its garbage-ceiling timeout, owned so a runaway and what it started are ended, never orphaned. That is
 /// the pragmatic floor for an OWNER's local dev machine (what coding agents do); it
 /// is NOT a sandbox. Before public/untrusted tasks, this MUST run in a real sandbox
 /// (container/seccomp). Slice 1 = prove the grading mechanism; sandbox is a P1 req.
@@ -299,13 +299,12 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
         .arg("-o")
         .arg(&bin)
         .arg(&src);
-    let compiled = run_capped(&mut rustc, "compile", COMPILE_TIMEOUT_SECS).await?;
+    let compiled = run_capped(rustc, "compile", COMPILE_TIMEOUT_SECS).await?;
     if !compiled.status.success() {
         return Err(format!("compile error: {}", trunc_stderr(&compiled.stderr)));
     }
 
-    let mut run = tokio::process::Command::new(&bin);
-    let ran = run_capped(&mut run, "run", RUN_TIMEOUT_SECS).await?;
+    let ran = run_capped(tokio::process::Command::new(&bin), "run", RUN_TIMEOUT_SECS).await?;
     if ran.status.success() {
         Ok(())
     } else {
@@ -313,18 +312,21 @@ async fn grade_rust(dir: &std::path::Path, code: &str, test: &str) -> Result<(),
     }
 }
 
-/// Run one grader subprocess under the grade timeout with `kill_on_drop(true)` — a
-/// step that overruns is SIGKILLed on drop, never orphaned to init burning a core.
-async fn run_capped(
-    cmd: &mut tokio::process::Command,
-    label: &str,
-    timeout_secs: u64,
-) -> Result<std::process::Output, String> {
-    cmd.kill_on_drop(true);
-    match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), cmd.output()).await {
-        Ok(Ok(out)) => Ok(out),
-        Ok(Err(e)) => Err(format!("{label} spawn failed: {e}")),
-        Err(_) => Err(format!("{label} timeout ({timeout_secs}s)")),
+/// Run one grader subprocess under the grade timeout, OWNED (`lane_process::run_owned`): a
+/// step that overruns, or whose grade is dropped, is ended with everything it started (model
+/// code can spawn), never orphaned to init burning a core.
+async fn run_capped(cmd: tokio::process::Command, label: &str, timeout_secs: u64) -> Result<std::process::Output, String> {
+    use crate::inference::lane_process::{run_owned, Ended};
+    let out = run_owned(cmd, Some(std::time::Duration::from_secs(timeout_secs)), "gym-grader", std::sync::Arc::default())
+        .await
+        .map_err(|e| format!("{label} spawn failed: {e}"))?;
+    if let (Ended::Exited(_), Some(note)) = (&out.ended, out.capture_note()) {
+        return Err(format!("{label} exited but {note}"));
+    }
+    match out.ended {
+        Ended::Exited(status) => Ok(std::process::Output { status, stdout: out.stdout.bytes, stderr: out.stderr.bytes }),
+        Ended::TimedOut { unconfirmed } if unconfirmed.is_empty() => Err(format!("{label} timeout ({timeout_secs}s)")),
+        Ended::TimedOut { unconfirmed } => Err(format!("{label} timeout ({timeout_secs}s); not confirmed gone: {unconfirmed:?}")),
     }
 }
 
@@ -389,6 +391,7 @@ mod tests {
     // the #[test] path (rejected) are pinned so the two can never be confused again.
     #[tokio::test]
     async fn hashtest_wrapped_test_is_rejected_not_false_passed() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         // WRONG sum_evens + a #[test]-wrapped test: must FAIL loud (format error), never pass.
         let (ok, msg) = test_grade(
             "```rust\nfn sum_evens(nums: &[i32]) -> i32 { 0 }\n```",
@@ -424,6 +427,7 @@ mod tests {
     // the objective verifier that lets "failure summons the smarts" hold.
     #[tokio::test]
     async fn code_verifier_passes_correct_draft_fails_wrong_one() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         use crate::cognition::resolution::Verifier;
         let v = CodeVerifier::new("rust", "assert_eq!(add(2, 3), 5);");
 
@@ -503,6 +507,7 @@ mod tests {
     // → PASS with "tests passed". Drives the real rustc grader end-to-end.
     #[tokio::test]
     async fn passing_test_grades_pass() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a + b }\n```";
         let (ok, grade) = test_grade(answer, "rust", "assert_eq!(add(2, 3), 5);").await;
         assert!(ok, "grade was: {grade}");
@@ -513,6 +518,7 @@ mod tests {
     // FAIL, and the panic message (not a vibe) is surfaced as the grade.
     #[tokio::test]
     async fn failing_test_grades_fail_with_panic() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a - b }\n```";
         let (ok, grade) = test_grade(answer, "rust", "assert_eq!(add(2, 3), 5);").await;
         assert!(!ok);
@@ -526,6 +532,7 @@ mod tests {
     // surfaced, so the persona can read what broke rather than guessing.
     #[tokio::test]
     async fn non_compiling_code_grades_fail_with_compile_error() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let answer = "```rust\nfn add(a: i32, b: i32) -> i32 { a + }\n```";
         let (ok, grade) = test_grade(answer, "rust", "let _ = add(2, 3);").await;
         assert!(!ok);
@@ -539,6 +546,7 @@ mod tests {
     // ACTING persona measurable at all (a spoken-text grade is blind to code she filed).
     #[tokio::test]
     async fn artifact_grade_reads_the_file_passes_correct_cleans_up_and_fails_loud() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let rel = format!("cu-gym-artifact-{}.rs", uuid::Uuid::new_v4());
         std::fs::write(&rel, "pub fn dbl(x: i32) -> i32 { x * 2 }\n").unwrap();
         let (ok, grade) = test_grade_file(None, &rel, "rust", "assert_eq!(dbl(3), 6);").await;
@@ -579,6 +587,7 @@ mod tests {
     // multiple times` — Asha's answer carried a demo main).
     #[tokio::test]
     async fn candidate_with_its_own_main_still_grades_against_the_test() {
+        let _home = crate::test_env::HomeGuard::preserve().await;
         let answer = "```rust\n\
             fn is_prime(n: u64) -> bool {\n\
             \x20   if n <= 1 { return false; }\n\

@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{blocking_git, workspace_root_for};
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -45,12 +45,8 @@ crate::action_command! {
     run(this, ctx, p) => {
         let root = workspace_root_for(&this.state, ctx).await?;
         let written = root.clone();
-        let output = blocking_git(move || {
-            let refs: Vec<&str> = p.paths.iter().map(String::as_str).collect();
-            git_bridge::git_add(&root, &refs)
-        })
-        .await?
-        .map_err(CommandError::Internal)?;
+        let refs: Vec<&str> = p.paths.iter().map(String::as_str).collect();
+        let output = git_bridge::git_add(&root, &refs).await.map_err(CommandError::Internal)?;
         // The index moved: announce it from the write, not from a later poll (card f860e59c).
         crate::code::workspace_events::note_written(&written);
         Ok(GitAddResult { output })

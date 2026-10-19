@@ -34,6 +34,26 @@
 
 use std::fmt;
 
+/// Operator diagnostics shared by quoting and generation. Never render arbitrary
+/// error Display/source text: it can contain a URL (including credentials/query)
+/// or data from a response. Preserve transport classifications and typed OS cause.
+/// This is diagnostic only; it does not change admission or retry decisions.
+pub(crate) fn transport_diagnostic(error: &reqwest::Error) -> String {
+    let mut source: &dyn std::error::Error = error;
+    let mut io_cause = None;
+    while let Some(cause) = source.source() {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            io_cause = Some((io.kind(), io.raw_os_error()));
+        }
+        source = cause;
+    }
+    format!(
+        "kind: timeout={}, connect={}, request={}, body={}, decode={}, builder={}, redirect={}; io_source={io_cause:?}",
+        error.is_timeout(), error.is_connect(), error.is_request(), error.is_body(),
+        error.is_decode(), error.is_builder(), error.is_redirect(),
+    )
+}
+
 /// A generation failure, classified at the adapter seam.
 ///
 /// `Display` deliberately reproduces the operator-facing prose the untyped

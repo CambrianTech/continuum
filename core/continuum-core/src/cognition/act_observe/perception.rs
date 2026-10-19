@@ -145,7 +145,7 @@ pub(super) fn claimed_file_without_act(text: &str, recent: &[WmEntry]) -> Option
     candidates.into_iter().find(|f| {
         // Unbacked iff no MUTATING act names this file in its typed paths.
         !acts_in(recent).any(|a| {
-            a.output.verb.mutates()
+            a.mutated_workspace()
                 && a.output
                     .paths
                     .iter()
@@ -160,39 +160,40 @@ pub(super) fn claimed_file_without_act(text: &str, recent: &[WmEntry]) -> Option
 /// appears with NO subsequent observing act (`ToolVerb::observes`) after the LAST
 /// mutation. Typed verbs, not receipt prose — the seam-5 fix (`acts_in`). Pure
 /// geometry over her own acts; no judgment about whether the artifact needed
-/// observing, the recorded fact leaves that to her.
+/// observing, the recorded fact leaves that to her. Batch-only disk change cannot
+/// establish where a shell mutation fell relative to reads within that batch;
+/// this ordered predicate therefore uses successful per-call evidence only.
 pub(super) fn wrote_without_observation(recent: &[WmEntry]) -> bool {
     let start = last_settlement(recent).map_or(0, |i| i + 1);
-    let verbs: Vec<&super::observation::ToolVerb> =
-        acts_in(&recent[start..]).map(|a| &a.output.verb).collect();
-    let Some(m) = verbs.iter().rposition(|v| v.mutates()) else {
+    let acts: Vec<_> = acts_in(&recent[start..]).collect();
+    let Some(m) = acts.iter().rposition(|act| act.mutated_workspace()) else {
         return false;
     };
-    !verbs[m + 1..].iter().any(|v| v.observes())
+    !acts[m + 1..].iter().any(|act| {
+        act.completed_successfully() && act.output.verb.observes()
+    })
 }
 
-/// Did THIS concern actually change the workspace? True iff a mutating act
-/// (`ToolVerb::mutates`) sits after the last settlement marker — the same
-/// concern-scoping [`wrote_without_observation`] uses, so the two agree by
-/// construction about what a mutation is.
-///
-/// Deliberately act-based on the TYPED verb, not string prose: a turn can spend
-/// acts on `code/tree` + `code/read` and still have produced nothing a diff-grader
-/// will see (the live sympy-21379 shape — one act, zero bytes). Only a mutating
-/// act that really executed counts.
-/// CRITICAL ordering detail: `settle_step`'s Speak arm records its settlement
-/// marker BEFORE returning (which is why that arm snapshots `pre_settle` first).
-/// So by the time this runs the marker is already the tail, and scanning "after
-/// the last marker" would read an EMPTY span and call every turn unmutated. The
-/// concern that just settled is the span ENDING at that marker.
-pub(super) fn mutated_workspace(recent: &[WmEntry]) -> bool {
-    let is_settle = |e: &WmEntry| matches!(e.kind, WmKind::Settlement);
-    let end = recent.iter().rposition(is_settle).unwrap_or(recent.len());
-    let start = recent[..end]
-        .iter()
-        .rposition(is_settle)
-        .map_or(0, |i| i + 1);
-    acts_in(&recent[start..end]).any(|a| a.output.verb.mutates())
+/// The caller knows whether settlement has already appended its boundary.
+#[derive(Clone, Copy)]
+pub(super) enum ConcernPhase {
+    Ongoing,
+    JustSettled,
+}
+
+/// Successful mutating calls or a measured checkout change in THIS concern.
+/// Batch disk evidence belongs to the receipt, not to an arbitrary shell call.
+pub(super) fn mutated_workspace(recent: &[WmEntry], phase: ConcernPhase) -> bool {
+    let end = match phase {
+        ConcernPhase::Ongoing => recent.len(),
+        ConcernPhase::JustSettled => last_settlement(recent).unwrap_or(recent.len()),
+    };
+    let start = last_settlement(&recent[..end]).map_or(0, |i| i + 1);
+    recent[start..end].iter().any(|entry| {
+        matches!(entry.kind, WmKind::Receipt { .. })
+            && (entry.disk_change == super::disk_change::DiskChange::Changed
+                || entry.acts.iter().any(super::observation::Observation::mutated_workspace))
+    })
 }
 
 #[cfg(test)]
@@ -238,6 +239,8 @@ mod tests {
     // predicates — they read `acts`, never re-parse the string).
     fn receipt(acts: Vec<Observation>) -> WmEntry {
         WmEntry {
+            disk_change: Default::default(),
+            native_calls: Vec::new(),
             kind: WmKind::Receipt { n: 1 },
             text: String::new(),
             acts,
@@ -246,6 +249,8 @@ mod tests {
     }
     fn settle() -> WmEntry {
         WmEntry {
+            disk_change: Default::default(),
+            native_calls: Vec::new(),
             kind: WmKind::Settlement,
             text: crate::cognition::working_memory::WM_SETTLEMENT_PREFIX.to_string(),
             acts: Vec::new(),
@@ -268,13 +273,13 @@ mod tests {
             settle(),
         ];
         assert!(
-            mutated_workspace(&wrote),
+            mutated_workspace(&wrote, ConcernPhase::JustSettled),
             "an edit inside the concern that just settled COUNTS — the marker at the tail must not hide it"
         );
 
         let only_looked = vec![receipt(vec![act("code/tree", None)]), settle()];
         assert!(
-            !mutated_workspace(&only_looked),
+            !mutated_workspace(&only_looked, ConcernPhase::JustSettled),
             "acts that only LOOK are not a deliverable — the live sympy-21379 shape"
         );
 
@@ -286,9 +291,82 @@ mod tests {
             settle(),
         ];
         assert!(
-            !mutated_workspace(&stale),
+            !mutated_workspace(&stale, ConcernPhase::JustSettled),
             "mutation is scoped to THIS concern — an earlier concern's write does not count"
         );
+    }
+
+    // what this catches: a previous concern or unsuccessful edit suppressing current no-deliverable feedback.
+    #[test]
+    fn ongoing_concern_does_not_inherit_previous_writes_or_failed_edits() {
+        use crate::sdk_codegen::{ActVerdict, ToolVerdict};
+        let mut entries = vec![receipt(vec![act("code/edit", Some("old.rs"))]), settle()];
+        entries.push(receipt(vec![act("code/read", Some("current.rs"))]));
+        assert!(!mutated_workspace(&entries, ConcernPhase::Ongoing));
+        assert!(mutated_workspace(&entries, ConcernPhase::JustSettled));
+        for verdict in [
+            ActVerdict::Declared(ToolVerdict::Failed),
+            ActVerdict::Declared(ToolVerdict::Running),
+            ActVerdict::Undecodable,
+        ] {
+            let mut failed = act("code/edit", Some("current.rs"));
+            failed.output.verdict = verdict;
+            entries.push(receipt(vec![failed]));
+            assert!(!mutated_workspace(&entries, ConcernPhase::Ongoing));
+            assert!(!wrote_without_observation(&entries));
+        }
+        let mut transport_error = act("code/edit", Some("current.rs"));
+        transport_error.output.result.is_error = Some(true);
+        entries.push(receipt(vec![transport_error]));
+        let mut refused = act("code/edit", Some("current.rs"));
+        refused.status = ActStatus::Errored { message: "not executed".into() };
+        entries.push(receipt(vec![refused]));
+        assert!(!mutated_workspace(&entries, ConcernPhase::Ongoing));
+        assert!(!wrote_without_observation(&entries));
+        entries.push(receipt(vec![act("code/edit", Some("current.rs"))]));
+        assert!(wrote_without_observation(&entries));
+        let mut failed_read = act("code/read", Some("current.rs"));
+        failed_read.output.result.is_error = Some(true);
+        entries.push(receipt(vec![failed_read]));
+        assert!(wrote_without_observation(&entries), "failed read does not observe the edit");
+        assert!(mutated_workspace(&entries, ConcernPhase::Ongoing));
+        entries.push(settle());
+        assert!(mutated_workspace(&entries, ConcernPhase::JustSettled));
+        assert!(!mutated_workspace(&entries, ConcernPhase::Ongoing));
+    }
+
+    // what this catches: real shell effects lost between fingerprinting, checkpointed receipt and settlement.
+    #[test]
+    fn measured_shell_change_survives_receipt_checkpoint_and_settlement() {
+        use super::super::disk_change::{checkout_fingerprint, DiskChange};
+        use crate::cognition::working_memory::WorkingMemory;
+        use crate::ai::types::ResultCustody;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for args in [vec!["init", "-q"], vec!["-c", "user.name=test", "-c", "user.email=t@t", "commit", "--allow-empty", "-qm", "base"]] {
+            assert!(std::process::Command::new("git").arg("-C").arg(root).args(args).output().unwrap().status.success());
+        }
+        let before = checkout_fingerprint(root);
+        assert!(before.is_some());
+        // A real checkout write through a shell-class receipt, not a mutating verb.
+        std::fs::write(root.join("authored.rs"), "fn authored() {}\n").unwrap();
+        let disk = DiskChange::between(before, checkout_fingerprint(root));
+        assert_eq!(disk, DiskChange::Changed);
+        let wm = WorkingMemory::new(32);
+        wm.record_receipt_measured(&[act("code/shell", None)], "shell completed", None, ResultCustody::Unsaved, disk);
+        assert!(mutated_workspace(&wm.recent_entries(), ConcernPhase::Ongoing));
+        let snap = serde_json::to_value(wm.snapshot()).unwrap();
+        let restored = WorkingMemory::new(32);
+        restored.restore(serde_json::from_value(snap).unwrap());
+        assert!(mutated_workspace(&restored.recent_entries(), ConcernPhase::Ongoing));
+        restored.record_settlement("done", None);
+        assert!(mutated_workspace(&restored.recent_entries(), ConcernPhase::JustSettled));
+        restored.record_receipt_typed(&[act("code/read", None)], "read completed", None, ResultCustody::Unsaved);
+        assert!(!mutated_workspace(&restored.recent_entries(), ConcernPhase::Ongoing));
+        let legacy: WmEntry = serde_json::from_value(serde_json::json!({
+            "kind": {"Receipt": {"n": 1}}, "text": "legacy", "acts": []
+        })).unwrap();
+        assert_eq!(legacy.disk_change, DiskChange::Unknown);
     }
 
     // what this catches: the claimed-without-acting geometry (live specimen
@@ -374,6 +452,8 @@ mod tests {
         )])]));
         assert!(!any_real_receipt(&[settle()]));
         let facty = WmEntry {
+            disk_change: Default::default(),
+            native_calls: Vec::new(),
             kind: WmKind::Fact,
             text: "[unfulfilled] real executions leave [action #n] receipts".to_string(),
             acts: Vec::new(),

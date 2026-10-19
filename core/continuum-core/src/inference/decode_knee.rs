@@ -58,6 +58,9 @@ use std::sync::LazyLock;
 pub const DECODE_FLOOR_TPS: f64 = 10.0;
 /// The knee never clamps a seated roster below this: one lane serialises the next
 /// turn's prefill behind the current decode and idles the box between turns.
+/// Judge any change to it by each resident's wait between her own acts at a 3-6 roster,
+/// never by per-stream t/s (docs/architecture/INFERENCE-LANES-REALISTIC.md, "How a lane
+/// change is judged"; a lower per-stream rate at two lanes is the price of concurrency).
 pub const MIN_KNEE_LANES: u32 = 2;
 /// Samples at a concurrency before its EMA is trusted — one decode is noise, a handful
 /// is a curve.
@@ -376,7 +379,15 @@ impl DecodeCurve {
             .map(|p| p.tps_ema)
     }
 
-    /// This curve's best rate and where it came from: fresh, else stale, else nothing.
+}
+
+/// A model's own measured point on one axis (decode or prefill): its rate and how far
+/// it is trusted. One trait so the ladder below is written ONCE for both axes.
+pub trait OwnRate {
+    fn own_rate(&self, now_ms: u64) -> Option<(f64, RateSource)>;
+}
+
+impl OwnRate for DecodeCurve {
     fn own_rate(&self, now_ms: u64) -> Option<(f64, RateSource)> {
         self.fresh_tps(now_ms)
             .map(|t| (t, RateSource::Fresh))
@@ -384,14 +395,16 @@ impl DecodeCurve {
     }
 }
 
-/// PURE: the rate ladder for `model` over `curves` — fresh → stale on its own curve,
-/// else the SLOWEST rate any curve on this box holds (fresh or stale; the biggest
-/// model's, in practice — the same conservatism as [`conservative`]), else unknown.
-pub fn rate_from(curves: &BTreeMap<String, DecodeCurve>, model: &str, now_ms: u64) -> MeasuredRate {
-    if let Some((tps, source)) = curves.get(model).and_then(|c| c.own_rate(now_ms)) {
+/// PURE: THE rate ladder, one for both axes (decode curves here, prefill points in
+/// `prefill_rate`): fresh → stale on the model's OWN point, else the SLOWEST rate any
+/// point on this box holds (fresh or stale; the biggest model's, in practice — the same
+/// conservatism as [`conservative`]), else unknown. It was written twice, once per axis,
+/// and the two copies had to be kept the same by hand.
+pub fn rate_from<P: OwnRate>(points: &BTreeMap<String, P>, model: &str, now_ms: u64) -> MeasuredRate {
+    if let Some((tps, source)) = points.get(model).and_then(|c| c.own_rate(now_ms)) {
         return MeasuredRate { tps: Some(tps), source };
     }
-    let slowest = curves
+    let slowest = points
         .values()
         .filter_map(|c| c.own_rate(now_ms).map(|(t, _)| t))
         .fold(None, |acc: Option<f64>, t| Some(acc.map_or(t, |a| a.min(t))));

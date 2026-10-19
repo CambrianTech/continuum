@@ -16,6 +16,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use ts_rs::TS;
 
+mod serving_lane_permit;
+pub use serving_lane_permit::ServingLanePermit;
+
 // ── Soft saturation signal (the read-only companion to the hard gate) ──────────
 //
 // Deliberative model calls currently outstanding against the shared serving target.
@@ -167,29 +170,79 @@ impl LeasedInCall {
         }
     }
 }
-/// The PROMPT SIZES of leased-in generates this seat served recently — the samples the
-/// serving plan folds into its per-lane window floor beside its own residents' sent peaks.
+/// Demand from leased-in generates and observed service from the local engine.
+/// The plan projects demand into its growth floor and model-bound service into
+/// remembered geometry; a requested size must never certify successful service.
 /// Without them a two-resident seat's "typical prompt" is one resident's SWE prompt, and
 /// the plan grows lanes for the grid (`leased_in`) it then refuses to fit (BigMama,
 /// 2026-09-18: the 5090 considered 2 × 49k every tick and kept 1 × 101k, because 49k was
 /// under a floor computed from Sahar's prompts alone while twelve leased-in coders sent
-/// ~30k). Bounded ring: the newest [`LEASED_IN_SENT_SAMPLES`] measured `usage.input_tokens`.
-static LEASED_IN_SENT: std::sync::Mutex<std::collections::VecDeque<u32>> =
-    std::sync::Mutex::new(std::collections::VecDeque::new());
+/// ~30k). The existing bounded ring retains the newest [`LEASED_IN_SENT_SAMPLES`] facts.
+static LEASED_IN_SENT: std::sync::Mutex<PromptSamples> =
+    std::sync::Mutex::new(PromptSamples::new());
+
+/// Each semantic role retains its own existing history depth. Successful small
+/// turns cannot age unmet demand out merely by being more frequent.
+struct PromptSamples {
+    requested: std::collections::VecDeque<super::working_set::PromptSample>,
+    served: std::collections::VecDeque<super::working_set::PromptSample>,
+}
+
+impl PromptSamples {
+    const fn new() -> Self {
+        Self {
+            requested: std::collections::VecDeque::new(),
+            served: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn record(&mut self, sample: super::working_set::PromptSample) {
+        use super::working_set::PromptSample;
+        let history = match &sample {
+            PromptSample::Requested(0) | PromptSample::Served { tokens: 0, .. } => return,
+            PromptSample::Requested(_) => &mut self.requested,
+            PromptSample::Served { .. } => &mut self.served,
+        };
+        history.push_back(sample);
+        while history.len() > LEASED_IN_SENT_SAMPLES {
+            history.pop_front();
+        }
+    }
+
+    fn snapshot(&self) -> Vec<super::working_set::PromptSample> {
+        self.requested
+            .iter()
+            .chain(self.served.iter())
+            .cloned()
+            .collect()
+    }
+}
 /// How many leased-in prompt sizes the floor pool remembers. Enough for a median over a
 /// grid's worth of coders across several ticks; small enough that a stale burst ages out.
 pub const LEASED_IN_SENT_SAMPLES: usize = 64;
-/// Record one leased-in generate's measured prompt size (the server's own count, never an
-/// estimate). Zero is the empty-completion fault's territory, not a sample.
+/// A completed leased-in call supplies growth demand. Its caller does not own the
+/// engine generation anymore, so only the adapter may certify observed service.
+/// Zero is the empty-completion fault's territory, not a sample.
 pub fn note_leased_in_sent(input_tokens: u32) {
-    if input_tokens == 0 {
+    note_prompt_sample(super::working_set::PromptSample::Requested(input_tokens));
+}
+
+/// Called while the local engine generation's admission is still owned and its
+/// explicit successful terminal frame has arrived. Never sampled from a later binding.
+pub(crate) fn note_served_prompt(endpoint: &str, geometry: crate::modules::served_window_store::ServedGeometry, input_tokens: u32) {
+    if geometry.model_id.is_empty() || input_tokens == 0 {
         return;
     }
+    note_prompt_sample(super::working_set::PromptSample::Served {
+        endpoint: endpoint.to_owned(),
+        geometry,
+        tokens: input_tokens,
+    });
+}
+
+fn note_prompt_sample(sample: super::working_set::PromptSample) {
     let mut ring = LEASED_IN_SENT.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
-    ring.push_back(input_tokens);
-    while ring.len() > LEASED_IN_SENT_SAMPLES {
-        ring.pop_front();
-    }
+    ring.record(sample);
 }
 /// A prompt this seat REFUSED at its served window (`serving_guard`, #175) is demand the
 /// seat was asked for and could not hold — it joins the typical-prompt pool exactly as a
@@ -197,17 +250,15 @@ pub fn note_leased_in_sent(input_tokens: u32) {
 /// (2026-09-20) refused 2,932 prompts at 2 × 2048 (p50 56k) while its median read 828,
 /// because a refusal never reached the sample site and the window sealed itself.
 pub fn note_refused_prompt(prompt_tokens: u32) {
-    note_leased_in_sent(prompt_tokens);
+    note_prompt_sample(super::working_set::PromptSample::Requested(prompt_tokens));
 }
 
 /// The remembered leased-in prompt sizes, oldest first — the plan's extra median inputs.
-pub fn leased_in_sent_samples() -> Vec<u32> {
+pub fn leased_in_sent_samples() -> Vec<super::working_set::PromptSample> {
     LEASED_IN_SENT
         .lock()
         .unwrap_or_else(|e| e.into_inner()) // unwrap_or_else: same policy — read the last state
-        .iter()
-        .copied()
-        .collect()
+        .snapshot()
 }
 /// THE SEAT'S OWN QUEUE, measured where it forms: for each leased-in generate, the wait from
 /// the seat RECEIVING the request to its first progress (a prefill frame or a token) —
@@ -878,45 +929,6 @@ pub fn boot_lane_count() -> usize {
     LANES.lane_count()
 }
 
-/// Lanes a non-directed (ambient / idle) model call may occupy: all lanes minus one
-/// reserved for directed work, floored at 1 so a single-lane machine — where there is
-/// nothing to reserve — still lets idle work run rather than starving it forever.
-/// RAII permit for one serving-lane model call. Holds a physical-lane permit, the
-/// (optional) non-directed sub-cap permit, and the in-flight gauge marker — ALL released
-/// on drop. Acquire it around the single generate call so the reservation window matches
-/// exactly the lane-consuming window (queue + prefill + decode) and nothing downstream.
-#[derive(Debug)]
-pub struct ServingLanePermit {
-    _lane: tokio::sync::OwnedSemaphorePermit,
-    _nondirected: Option<tokio::sync::OwnedSemaphorePermit>,
-    _inflight: InflightModelCall,
-    /// Ledger tag for grant/release probes (2026-08-29 leak hunt) — permits
-    /// vanished with no probe naming the taker, so the permit itself speaks.
-    granted_at: std::time::Instant,
-    directed: bool,
-    priority: LanePriority,
-    /// The gate this permit came from — its release wakes parked ambient callers.
-    released: &'static tokio::sync::Notify,
-}
-
-impl Drop for ServingLanePermit {
-    fn drop(&mut self) {
-        let held_ms = self.granted_at.elapsed().as_millis() as u64;
-        // The measured turn time the NEXT mind's wait is bounded by (`lane_wait_bound`).
-        // One ring push per release, on a path that already probes.
-        note_lane_held_ms(held_ms);
-        crate::probe!(
-            class = "admission.lane.released",
-            directed = self.directed,
-            priority = ?self.priority,
-            held_ms = held_ms,
-            "serving-lane permit released"
-        );
-        // Permits drop AFTER this body (field order), so wake on the next poll: the
-        // parked caller's try_acquire runs after the semaphore permit has returned.
-        self.released.notify_waiters();
-    }
-}
 
 impl LaneAdmission {
     // A released semaphore permit may transfer directly to a queued waiter,
@@ -1115,9 +1127,11 @@ impl LaneAdmission {
     /// test instance can never drift into two different policies.
     pub async fn acquire_serving_lane(
         &'static self,
+        persona: Option<uuid::Uuid>,
         priority: LanePriority,
         expected_occupancy: Option<std::time::Duration>,
     ) -> ServingLanePermit {
+        let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
         // acquire below can never let non-directed work starve a directed caller —
@@ -1184,6 +1198,8 @@ impl LaneAdmission {
         };
         crate::probe!(
             class = "admission.lane.granted",
+            persona = ?persona,
+            waited_ms = queued_at.elapsed().as_millis() as u64,
             directed,
             priority = ?priority,
             now_available = self.serving_lanes().available_permits() as u64,
@@ -1194,6 +1210,7 @@ impl LaneAdmission {
             _nondirected: nondirected,
             _inflight: InflightModelCall::enter(),
             granted_at: std::time::Instant::now(),
+            persona,
             directed,
             priority,
             released: &self.released,
@@ -1302,10 +1319,11 @@ pub fn serving_lane_permits_available() -> usize {
 /// a WORK call uses it — the reserved lane may be lent to it inside the directed wait
 /// budget (`reserve_lendable`). Directed and ambient callers pass `None`.
 pub async fn acquire_serving_lane(
+    persona: Option<uuid::Uuid>,
     priority: LanePriority,
     expected_occupancy: Option<std::time::Duration>,
 ) -> ServingLanePermit {
-    LANES.acquire_serving_lane(priority, expected_occupancy).await
+    LANES.acquire_serving_lane(persona, priority, expected_occupancy).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
@@ -1534,22 +1552,26 @@ mod tests {
     // kept, zero never a sample) so the plan's median floor sees the grid's prompts.
     #[test]
     fn leased_in_prompt_sizes_are_remembered_bounded_and_zero_is_not_a_sample() {
-        // the ring is process-global; assert RELATIVE to what is there (the #1960 rule)
-        let before = leased_in_sent_samples().len();
-        note_leased_in_sent(0);
-        assert_eq!(leased_in_sent_samples().len(), before, "an empty completion is not a prompt size");
+        use crate::cognition::working_set::PromptSample;
+        let mut samples = PromptSamples::new();
+        samples.record(PromptSample::Requested(0));
+        assert!(samples.snapshot().is_empty(), "an empty completion is not a prompt size");
         // what this catches (the 5090, 2026-09-20): a refusal at the served window is a
         // sample of the demand the seat could not hold — it must reach the pool, or the
         // pool only ever sees what fit and the window measures itself.
-        note_refused_prompt(56_057);
-        assert_eq!(leased_in_sent_samples().last().copied(), Some(56_057), "a refused prompt votes at its real size");
-        for i in 1..=(LEASED_IN_SENT_SAMPLES as u32 + 8) {
-            note_leased_in_sent(30_000 + i);
+        samples.record(PromptSample::Requested(56_057));
+        for _ in 0..=LEASED_IN_SENT_SAMPLES {
+            samples.record(PromptSample::Served { endpoint: "seat".into(), tokens: 828, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "m".into(), generation: uuid::Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 } });
         }
-        let s = leased_in_sent_samples();
+        assert_eq!(samples.snapshot().iter().filter_map(PromptSample::requested).collect::<Vec<_>>(), vec![56_057], "a burst of local successes cannot evict unmet demand");
+        assert_eq!(samples.snapshot().iter().find_map(|s| s.served("seat", Some("m"))), Some(828));
+        for i in 1..=(LEASED_IN_SENT_SAMPLES as u32 + 8) {
+            samples.record(PromptSample::Requested(30_000 + i));
+        }
+        let s: Vec<_> = samples.snapshot().iter().filter_map(PromptSample::requested).collect();
         assert_eq!(s.len(), LEASED_IN_SENT_SAMPLES, "bounded");
-        assert_eq!(*s.last().expect("nonempty"), 30_000 + LEASED_IN_SENT_SAMPLES as u32 + 8, "newest kept");
-        assert!(s.first().copied().expect("nonempty") > 30_000 + 8, "oldest aged out");
+        assert_eq!(s.last().copied(), Some(30_000 + LEASED_IN_SENT_SAMPLES as u32 + 8), "newest requested sample kept");
+        assert!(*s.first().expect("nonempty") > 30_000 + 8, "oldest aged out by demand, not service");
     }
 
 
@@ -1819,7 +1841,7 @@ mod tests {
         // Fill the ENTIRE non-directed budget (all lanes idle/ambient work may hold).
         let mut nondirected = Vec::new();
         for _ in 0..budget {
-            nondirected.push(gate.acquire_serving_lane(LanePriority::Ambient, None).await);
+            nondirected.push(gate.acquire_serving_lane(None, LanePriority::Ambient, None).await);
         }
 
         // On a machine with a lane to reserve (MAX_LANES >= 2), a directed call still
@@ -1827,7 +1849,7 @@ mod tests {
         if gate.lane_count() > 1 {
             let directed = tokio::time::timeout(
                 Duration::from_millis(250),
-                gate.acquire_serving_lane(LanePriority::Directed, None),
+                gate.acquire_serving_lane(None, LanePriority::Directed, None),
             )
             .await;
             assert!(
@@ -1839,7 +1861,7 @@ mod tests {
             // times out rather than stealing the lane the directed turn is using.
             let extra_nondirected = tokio::time::timeout(
                 Duration::from_millis(150),
-                gate.acquire_serving_lane(LanePriority::Ambient, None),
+                gate.acquire_serving_lane(None, LanePriority::Ambient, None),
             )
             .await;
             assert!(
@@ -2055,8 +2077,8 @@ mod tests {
         use std::time::Duration;
         let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
         gate.set_served_lane_count(2); // non-directed budget = 1
-        let held = gate.acquire_serving_lane(LanePriority::Ambient, None).await;
-        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work, None).await });
+        let held = gate.acquire_serving_lane(None, LanePriority::Ambient, None).await;
+        let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work, None).await });
         // Deterministic (Cormac's note on #4083): wait until the task is COUNTED, under a
         // bound, instead of a fixed sleep a loaded runner can outlast.
         let counted = tokio::time::timeout(Duration::from_secs(5), async {
@@ -2076,7 +2098,7 @@ mod tests {
         drop(held);
         let ambient = tokio::time::timeout(
             Duration::from_millis(1500),
-            gate.acquire_serving_lane(LanePriority::Ambient, None),
+            gate.acquire_serving_lane(None, LanePriority::Ambient, None),
         )
         .await;
         assert!(
@@ -2096,9 +2118,9 @@ mod tests {
         use std::time::Duration;
         let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
         gate.set_served_lane_count(2); // non-directed budget = 1
-        let held = gate.acquire_serving_lane(LanePriority::Ambient, None).await;
+        let held = gate.acquire_serving_lane(None, LanePriority::Ambient, None).await;
 
-        let work = tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Work, None).await });
+        let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert_eq!(
             gate.work_waiting(),
@@ -2106,7 +2128,7 @@ mod tests {
             "the work caller is counted while it waits"
         );
         let ambient =
-            tokio::spawn(async move { gate.acquire_serving_lane(LanePriority::Ambient, None).await });
+            tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Ambient, None).await });
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(!ambient.is_finished(), "ambient parks while work waits");
 

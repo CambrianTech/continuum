@@ -222,10 +222,37 @@ pub fn detect_drives() -> Vec<DriveInfo> {
 /// budget already resolved its drive by longest prefix (`ipc/mod.rs`); this is that
 /// rule, hoisted, so the two can never disagree again.
 pub fn drive_holding<'a>(drives: &'a [DriveInfo], path: &Path) -> Option<&'a DriveInfo> {
+    let path = mount_comparison_path(path);
     drives
         .iter()
-        .filter(|d| path.starts_with(&d.mount))
+        .filter(|d| path.starts_with(mount_comparison_path(&d.mount)))
         .max_by_key(|d| d.mount.as_os_str().len())
+}
+
+// canonicalize returns verbatim prefixes on Windows, while sysinfo mount points
+// use ordinary prefixes. This is comparison only; filesystem operations retain
+// their native spelling and long-path support.
+fn mount_comparison_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+        let mut components = path.components();
+        if let Some(Component::Prefix(prefix)) = components.next() {
+            let mut normalized = match prefix.kind() {
+                Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => PathBuf::from(format!("{}:", char::from(letter.to_ascii_uppercase()))),
+                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
+                    let mut root = PathBuf::from(r"\\");
+                    root.push(server);
+                    root.push(share);
+                    root
+                },
+                _ => return path.to_path_buf(),
+            };
+            normalized.extend(components);
+            return normalized;
+        }
+    }
+    path.to_path_buf()
 }
 
 #[cfg(test)]
@@ -254,6 +281,20 @@ mod tests {
             let win = [drive("C:\\", 2_000), drive("D:\\", 16_000)];
             let home = Path::new("C:\\Users\\someone\\.continuum");
             assert_eq!(drive_holding(&win, home).map(|d| d.total_bytes), Some(2_000));
+            assert_eq!(drive_holding(&win, Path::new(r"\\?\c:\Users\someone\cache")).map(|d| d.total_bytes), Some(2_000), "canonical roots retain their owning volume");
+            // The paging owner supplies a real canonical directory while the
+            // monitor's mount sample uses ordinary Windows spelling.
+            let page_dir = tempfile::tempdir().unwrap();
+            let physical = page_dir.path().canonicalize().unwrap();
+            let ordinary = mount_comparison_path(&physical);
+            let mount: PathBuf = ordinary.components().take(2).collect();
+            let observed = [DriveInfo { mount, total_bytes: 8_000,
+                available_bytes: 4_000, role: DriveRole::System }];
+            assert_eq!(drive_holding(&observed, &physical).map(|d| d.total_bytes), Some(8_000),
+                "actual canonical page directory resolves through the monitor's volume selector");
+            let unc = [drive(r"\\server\share\", 9_000)];
+            assert_eq!(drive_holding(&unc, Path::new(r"\\?\UNC\server\share\pages")).map(|d| d.total_bytes), Some(9_000));
+            assert!(drive_holding(&unc, Path::new(r"\\?\UNC\server\share-other\pages")).is_none());
             assert!(
                 drive_holding(&win, Path::new("Z:\\nowhere")).is_none(),
                 "no drive = None, never (0, 0)"

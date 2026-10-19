@@ -569,11 +569,13 @@ impl OpenAICompatibleAdapter {
         let dir = crate::inference::slots::directory();
         // Fast path: this server's state already known (process-global directory —
         // every adapter instance talking to the same server shares ONE assignment).
-        match dir.get(root) {
-            Some(Some(pool)) => return Some(pool),
+        let existing_pool = match dir.get(root) {
+            Some(Some(pool)) if dir.page_admission_known(root) => return Some(pool),
+            Some(Some(pool)) => Some(pool),
             Some(None) => return None, // latched unsupported
-            None => {}                 // never probed — probe below
-        }
+            None => None,              // never probed — probe below
+        };
+        let discovery_generation = dir.page_discovery_generation(root);
         // Probe /props once. Lock is NOT held across the await.
         let url = endpoints.props();
         let resp = match self.client.get(&url).send().await {
@@ -643,14 +645,20 @@ impl OpenAICompatibleAdapter {
             // Missing geometry is not proof that activity paging is unsupported.
             return None;
         }
+        if dir.page_discovery_generation(root) != discovery_generation {
+            return None; // props belongs to the superseded process, not its replacement
+        }
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
-        let pool = dir.ensure_pool(root, n_slots);
+        let pool = existing_pool.clone().unwrap_or_else(|| dir.ensure_pool(root, n_slots));
+        if pool.n_slots() != n_slots {
+            return None; // installed geometry and this props response must agree
+        }
         // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
         // so its confirmed saves come from the ledger it left, when that ledger names this
-        // very process. A spawned engine already attached its own at readiness and returned
-        // on the fast path above, so this only runs for an engine this core did not spawn.
-        let adoption = match crate::inference::lane_registry::live_lane() {
+        // very process. A spawned engine already attached its own at readiness;
+        // its first capability probe must not pretend it adopted another ledger.
+        let adoption = if existing_pool.is_some() { Err("pool_already_installed") } else { match crate::inference::lane_registry::live_lane() {
             None => Err("no_live_lane_record"),
             Some(lane) if lane.root_url() != root.trim_end_matches('/') => Err("live_lane_is_another_root"),
             Some(lane) if crate::inference::engine_residency::process_start_s(lane.pid) != Some(lane.started_s) => {
@@ -666,7 +674,7 @@ impl OpenAICompatibleAdapter {
                         .map_err(crate::inference::slots::AdoptRefusal::as_str)
                 }
             },
-        };
+        }};
         crate::probe!(
             class = "inference.kv_page.ledger_adopted",
             adopted = adoption.is_ok(),
@@ -674,6 +682,9 @@ impl OpenAICompatibleAdapter {
             why = adoption.err().unwrap_or("adopted"), // probe field: the refusal, or "adopted" when the ledger was the engine's
             "an adopted engine's confirmed-save ledger: its saved pages are restorable only when the ledger names this same process"
         );
+        if !dir.negotiate_page_admission(root, &pool, discovery_generation, body.get("slot_save_size_version")).await {
+            return None;
+        }
         tracing::info!(
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"
@@ -1849,6 +1860,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             );
         }
 
+        let exact_prompt_quote = self.config.single_resident_model && self.targets_local_serving_lane();
         // Pre-flight the single-resident gateway (the serving guard, now its own module:
         // `inference::serving_guard`). Refuses when the lane cannot guarantee `model` or
         // the prompt alone overflows the served slot (#175).
@@ -1856,11 +1868,13 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             &self.config,
             self.dedicated_lane,
             model,
-            crate::inference::serving_guard::PromptCount::Estimated(prompt_tokens),
+            crate::inference::serving_guard::PromptCount::Estimated(if exact_prompt_quote { 0 } else { prompt_tokens }),
             request.persona_id.as_deref().unwrap_or("non-persona"), // unwrap_or: no persona = a non-persona caller in the refusal text
         )
         .await?;
 
+        // The managed engine quotes the finalized body before generation; the heuristic
+        // preflight above checks residency only so an overestimate cannot refuse a fit.
         // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
         let response = crate::inference::lane_send::send_with_lane_retry(
             &self.config,
@@ -1870,14 +1884,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             crate::inference::lane_send::FillReceipt {
                 model,
                 prompt_tokens,
-                image_quote: (self.config.single_resident_model
-                    && self.targets_local_serving_lane()
-                    && crate::inference::serving_guard::needs_media_quote(&body))
-                    .then_some(crate::inference::lane_send::ImageQuote {
+                prompt_quote: exact_prompt_quote
+                    .then_some(crate::inference::lane_send::PromptQuote {
                         client: &self.client,
                         dedicated_lane: self.dedicated_lane,
                         caller: request.persona_id.as_deref().unwrap_or("non-persona"), // no persona: label the non-persona caller in a refusal; not a budget default
-                        patience: crate::inference::slots::EndpointSlots::turn_patience(request.turn_bound, start.elapsed()),
                         reply: request.max_tokens.unwrap_or(0), // absent max_tokens reserves no explicit output allowance
                         request_id: &request_id,
                     }),
@@ -2135,6 +2146,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // makes the provisional physical KV attribution safe to retain.
         if generation_completed {
             if let Some(admission) = _admission.as_mut() {
+                admission.record_served_prompt(
+                    endpoints.root(),
+                    resp_model.as_deref(),
+                    usage.input_tokens,
+                );
                 admission.generation_completed();
                 // THE RESTORE ECONOMY, JUDGED ON REAL TRAFFIC. A turn whose KV was
                 // restored from a page either reused it (the engine reports cached
@@ -2756,6 +2772,9 @@ mod tests {
         }))
         .route("/bad/chat/completions/input_tokens", post(|| async {
             (StatusCode::OK, r#"{"input_tokens":"unknown"}"#)
+        }))
+        .route("/silent/chat/completions/input_tokens", post(|| async {
+            std::future::pending::<StatusCode>().await
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -2799,15 +2818,17 @@ mod tests {
                     .post(format!("http://{address}/v1/chat/completions"))
                     .header("Content-Type", "application/json"),
                 body.clone(),
-                None,
+                // fe7960bf: a short measured occupancy is not an expired end-to-end
+                // deadline. Even after admission spent it, quote + retry retain the
+                // existing wire floor; no readiness-patience value enters this API.
+                Some(std::time::Duration::ZERO),
                 crate::inference::lane_send::FillReceipt {
                     model: "fixture",
                     prompt_tokens: 4,
-                    image_quote: Some(crate::inference::lane_send::ImageQuote {
+                    prompt_quote: Some(crate::inference::lane_send::PromptQuote {
                         client: &adapter.client,
                         dedicated_lane: true,
                         caller: "fixture",
-                        patience: std::time::Duration::from_secs(5),
                         reply: 0,
                         request_id: "fixture",
                     }),
@@ -2825,6 +2846,25 @@ mod tests {
         ));
         assert_eq!(*quotes.lock().expect("actual quotes"), vec![body.clone(), body.clone()],
             "the 503 transport retry must re-quote the unchanged prepared body");
+        // Regression: text density varies across Kimi's turns. The finalized HTTP
+        // count, not the previous turn's byte estimate, drives the same capacity
+        // check used by guard_resident_model. Reply allowance stays separate from
+        // the typed prompt count returned to the existing corrective fitter.
+        let measured = crate::inference::serving_guard::quote_prompt(
+            &adapter.client,
+            &adapter.client.post(format!("http://{address}/v1/chat/completions")).body(body.clone()),
+            std::time::Duration::from_secs(5),
+        ).await.unwrap();
+        use crate::inference::serving_guard::PromptCount;
+        assert!(PromptCount::Estimated(4).check(1400, "fixture", "fixture").is_ok());
+        assert!(matches!(PromptCount::Measured { prompt: measured, reply: 128 }
+            .check(1400, "fixture", "fixture"),
+            Err(InferenceError::ContextExceeded { requested: 1319, available: 1400 })));
+        assert!(PromptCount::Estimated(2000).check(1600, "fixture", "fixture").is_err());
+        assert!(PromptCount::Measured { prompt: measured, reply: 128 }
+            .check(1600, "fixture", "fixture").is_ok(),
+            "a heuristic overestimate cannot veto a measured fit");
+        assert_eq!(received.lock().unwrap().len(), 3, "counting and refusal never generate");
         // Use this same transport fixture to verify that quote failures remain
         // errors, never a zero-cost image estimate or a generation request.
         for (path, expected) in [
@@ -2832,7 +2872,7 @@ mod tests {
             ("bad/chat/completions", Err("positive input_tokens")),
             ("missing/chat/completions", Err("HTTP 404")),
         ] {
-            let quoted = crate::inference::serving_guard::quote_image_prompt(
+            let quoted = crate::inference::serving_guard::quote_prompt(
                 &adapter.client,
                 &adapter.client.post(format!("http://{address}/{path}")).body(body.clone()),
                 std::time::Duration::from_secs(5),
@@ -2842,8 +2882,30 @@ mod tests {
                 Err(message) => assert!(quoted.unwrap_err().contains(message)),
             }
         }
+        // Card 2617c7f2: the same HTTP fixture distinguishes an unanswered quote
+        // from a failed connection without leaking URL, auth, or prompt data.
+        // The short patience is fixture input, not a production timeout policy.
+        let secret = "quote-fixture-secret";
+        let quote_failure = |path: &str| adapter.client
+            .post(format!("http://{address}/{path}?credential={secret}"))
+            .bearer_auth(secret).body(secret);
+        let timeout = crate::inference::serving_guard::quote_prompt(
+            &adapter.client, &quote_failure("silent/chat/completions"),
+            std::time::Duration::from_millis(50),
+        ).await.unwrap_err();
+        assert!(timeout.contains("timeout=true"), "{timeout}");
+        assert!(!timeout.contains(secret) && !timeout.contains(&address.to_string()), "{timeout}");
         server.abort();
         let _ = server.await;
+        // Do not reuse a keep-alive connection accepted before listener shutdown.
+        let disconnected_client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let disconnected = crate::inference::serving_guard::quote_prompt(
+            &disconnected_client, &quote_failure("v1/chat/completions"),
+            std::time::Duration::from_secs(5),
+        ).await.unwrap_err();
+        assert!(disconnected.contains("connect=true"), "{disconnected}");
+        assert!(disconnected.contains("io_source=Some"), "{disconnected}");
+        assert!(!disconnected.contains(secret) && !disconnected.contains(&address.to_string()), "{disconnected}");
         let received = received.lock().expect("actual wire requests");
         assert_eq!(received.len(), 3);
         assert_eq!(received[1], body);
@@ -2886,9 +2948,12 @@ mod tests {
         let generate_log = Arc::clone(&operations);
         let generate_mode = Arc::clone(&generation_mode);
         let generate_release = Arc::clone(&release_stream);
+        let props_slots = Arc::new(AtomicU8::new(2));
+        let advertised_slots = Arc::clone(&props_slots);
         let app = Router::new()
-            .route("/props", get(|| async {
-                Json(json!({"total_slots": 1, "default_generation_settings": {"n_ctx": 8192}}))
+            .route("/props", get(move || {
+                let slots = advertised_slots.load(Ordering::SeqCst);
+                async move { Json(json!({"total_slots": slots, "default_generation_settings": {"n_ctx": 8192}})) }
             }))
             .route("/slots/{slot}", post(move |
                 Query(query): Query<std::collections::HashMap<String, String>>,
@@ -2922,7 +2987,11 @@ mod tests {
                     if mode == 1 {
                         return (StatusCode::BAD_REQUEST, "fixture generation failed").into_response();
                     }
-                    const PARTIAL: &str = "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n";
+                    if mode == 5 {
+                        return ([("content-type", "text/event-stream")],
+                            "data: {\"model\":\"foreign-alias\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":5555,\"completion_tokens\":1}}\n\ndata: [DONE]\n\n").into_response();
+                    }
+                    const PARTIAL: &str = "data: {\"model\":\"test-model\",\"choices\":[{\"delta\":{\"content\":\"partial\"}}],\"usage\":{\"prompt_tokens\":4444,\"completion_tokens\":1}}\n\n";
                     if mode == 2 {
                         return ([("content-type", "text/event-stream")], PARTIAL).into_response();
                     }
@@ -2941,7 +3010,7 @@ mod tests {
                         return ([("content-type", "text/event-stream")], axum::body::Body::from_stream(stream)).into_response();
                     }
                     ([ ("content-type", "text/event-stream") ],
-                     "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5}}\n\ndata: [DONE]\n\n").into_response()
+                     "data: {\"model\":\"test-model\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":1,\"total_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":3}}}\n\ndata: [DONE]\n\n").into_response()
                 }
             }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -2953,6 +3022,25 @@ mod tests {
         adapter.config.base_url = format!("http://{address}");
         adapter.config.llamacpp_sampling_extensions = true;
         adapter.concurrency = Arc::new(tokio::sync::Semaphore::new(1));
+        let root = adapter.endpoints().root().to_owned();
+        let endpoint = crate::inference::slots::directory().endpoint(&root);
+        let transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("fixture engine generation");
+        transition.ready(&root, &generation, crate::inference::slots::KvPageContract {
+            model_id: "test-model".into(), model: "fixture.gguf".into(), adapters: vec![],
+            page_dir: None, context: 8192, slots: 1, cache_type: None,
+            engine: "fixture-engine".into(), revisions: None,
+        }).expect("fixture owned engine readiness");
+        drop(transition);
+        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_none(),
+            "props cannot authorize an already installed pool with different geometry");
+        assert!(!crate::inference::slots::directory().page_admission_known(&root));
+        props_slots.store(1, Ordering::SeqCst);
+        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_some());
+        assert!(crate::inference::slots::directory().page_admission_known(&root));
+        let owned_geometry = endpoint.served_geometry().expect("fixture owned geometry");
+        let observed_service = || crate::cognition::resource_admission::leased_in_sent_samples()
+            .iter().filter_map(|sample| sample.served(&root, Some("test-model"))).collect::<Vec<_>>();
         let activity =
             crate::inference::slots::ActivityKey::new(uuid::Uuid::new_v4(), uuid::Uuid::new_v4())
                 .expect("non-nil fixture activity");
@@ -2988,6 +3076,11 @@ mod tests {
             room_id: Some(uuid::Uuid::new_v4().to_string()),
             ..turn.clone()
         };
+        assert!(!observed_service().is_empty(), "real adapter terminal records owned service");
+        assert!(observed_service().iter().all(|tokens| *tokens == 4), "full prompt includes cached prefix; evaluated suffix is not the count");
+        assert_eq!(crate::cognition::working_set::PromptSample::geometry_median(
+            &crate::cognition::resource_admission::leased_in_sent_samples(), &root, &owned_geometry,
+        ), Some(4), "real adapter terminal preserves launch model, window, lanes and generation");
         generation_mode.store(1, Ordering::SeqCst);
         assert!(tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -3065,6 +3158,7 @@ mod tests {
                     assert_eq!(result.expect("existing EOF response").text, "partial");
                 }
             }
+            assert!(!observed_service().contains(&4444), "partial usage before EOF/error/cancellation cannot certify service");
             generation_mode.store(0, Ordering::SeqCst);
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
@@ -3125,6 +3219,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["save", "generate", "restore", "generate", "generate"]
         );
+        generation_mode.store(5, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(5), adapter.generate_text(TextGenerationRequest::default()))
+            .await.expect("bounded foreign alias response").expect("response compatibility");
+        assert!(!crate::cognition::resource_admission::leased_in_sent_samples().iter()
+            .any(|sample| sample.served(&root, Some("foreign-alias")).is_some()),
+            "a wire alias that differs from the admitted engine cannot certify local service");
         server.abort();
         let _ = server.await;
     }

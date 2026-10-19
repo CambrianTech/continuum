@@ -28,17 +28,7 @@ pub struct CodeState {
     pub shell_sessions: Arc<DashMap<String, ShellSession>>,
     /// Tokio runtime handle for spawning async shell execution tasks.
     pub rt_handle: tokio::runtime::Handle,
-    /// Sessions set aside when her hands moved to another root, newest last, keyed by
-    /// caller. A work turn roots her at the card and restores her home afterwards, so the
-    /// session a long command runs in is left behind every turn; parking it keeps its
-    /// execution handles pollable (Kimi, 2026-09-29: code/shell-poll failing on every
-    /// handle from an earlier turn).
-    parked_shells: Arc<DashMap<String, Vec<ShellSession>>>,
 }
-
-/// How many set-aside sessions one caller keeps. Her roots per turn are few (home, the
-/// held card, sometimes a review checkout); a longer tail only holds dead handles.
-const PARKED_SHELLS_PER_CALLER: usize = 4;
 
 impl CodeState {
     pub fn new(
@@ -50,30 +40,31 @@ impl CodeState {
             file_engines,
             shell_sessions,
             rt_handle,
-            parked_shells: Arc::new(DashMap::new()),
         }
     }
 
     /// Begin ending one set of hands: an acting context that is over (an eval or a fork
-    /// finished). Kills every execution its current and parked shells still RUN, and returns
+    /// finished, or a card claim ended). Kills every execution its shell still RUNS, and returns
     /// every execution not yet PROVEN ended, including ones already killed whose child hasn't
     /// been reaped, so the caller can wait each one out. Nothing is removed here: the context's
     /// handles stay until the caller has confirmed termination and calls
     /// [`Self::finish_release`], so a release that can't confirm can be retried (Astra on #5005).
     /// Never called for a caller's default (live) hands; `code/release-hands` refuses that.
     ///
-    /// Scope, stated: a kill ends the execution's DIRECT child. The shell isn't spawned in its
-    /// own process group, so a compound command's grandchildren can outlive it; that is a
-    /// shell-wide gap (code/shell-kill has it too), carded separately (ea06701d).
+    /// A kill ends the shell and everything it started that is still its descendant (found and
+    /// killed by the execution's own task, deepest first); what survives is kept on the
+    /// execution and re-checked here. A process that double-forked away from the shell is not a
+    /// descendant and is not reached.
     pub fn begin_release(&self, who: &str) -> Vec<std::sync::Arc<std::sync::Mutex<crate::code::shell_session::ExecutionState>>> {
         let mut pending = Vec::new();
-        let mut visit = |shell: &ShellSession| {
+        if let Some(shell) = self.shell_sessions.get(who) {
             let ids: Vec<String> = shell.execution_ids().map(str::to_string).collect();
             for id in ids {
                 let Ok(state) = shell.get_execution_state(&id) else { continue };
+                // Ended means the shell was reaped AND nothing it started is known to survive.
                 let (running, ended) = match state.lock() {
-                    Ok(s) => (s.status == crate::code::shell_types::ShellExecutionStatus::Running, s.process_ended),
-                    Err(p) => (p.get_ref().status == crate::code::shell_types::ShellExecutionStatus::Running, p.get_ref().process_ended), // poisoned: read the last state
+                    Ok(s) => (s.status == crate::code::shell_types::ShellExecutionStatus::Running, s.process_ended && s.unconfirmed_descendants.is_empty()),
+                    Err(p) => (p.get_ref().status == crate::code::shell_types::ShellExecutionStatus::Running, p.get_ref().process_ended && p.get_ref().unconfirmed_descendants.is_empty()), // poisoned: read the last state
                 };
                 if ended {
                     continue;
@@ -83,112 +74,59 @@ impl CodeState {
                 }
                 pending.push(state);
             }
-        };
-        if let Some(current) = self.shell_sessions.get(who) {
-            visit(&current);
-        }
-        if let Some(parked) = self.parked_shells.get(who) {
-            for shell in parked.iter() {
-                visit(shell);
-            }
         }
         pending
     }
 
     /// Finish ending one set of hands, once every execution `begin_release` returned is
-    /// confirmed gone: drop its file engine, its shell and its parked shells.
+    /// confirmed gone: drop its file engine and its shell.
     pub fn finish_release(&self, who: &str) {
         self.shell_sessions.remove(who);
-        self.parked_shells.remove(who);
         self.file_engines.remove(who);
     }
 
-    /// Move `who`'s shell to `new_root`. A no-op at the same root. Otherwise: first take back
-    /// a session she parked at `new_root` (so returning is never lost to eviction), then set
-    /// the current one aside, then trim the parked set, dropping only IDLE sessions, oldest
-    /// first. A session with a running execution is never dropped, however many roots she
-    /// works across (Codex on #4586). With nothing to reinstate, the next command opens a
-    /// session at the new root, as before.
-    pub fn re_root_shell(&self, who: &str, new_root: &std::path::Path) {
-        let same = |a: &std::path::Path, b: &std::path::Path| {
-            let canon = |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()); // unwrap_or_else: an uncanonicalizable path compares as written
-            canon(a) == canon(b)
-        };
-        if self
-            .shell_sessions
-            .get(who)
-            .is_some_and(|s| same(s.workspace_root(), new_root))
-        {
-            return;
-        }
-        // LOCK ORDER (Cormac on #4586): never hold a `parked_shells` guard while touching
-        // `shell_sessions`. `with_execution` takes shell_sessions then parked_shells; holding
-        // them the other way round here could deadlock two callers on shared shards. So each
-        // map is touched in its own statement: take the current out, work the parked set, put
-        // the destination in.
-        let current = self.shell_sessions.remove(who).map(|(_, s)| s);
-        let destination = {
-            let mut parked = self.parked_shells.entry(who.to_string()).or_default();
-            let destination = parked
-                .iter()
-                .position(|s| same(s.workspace_root(), new_root))
-                .map(|i| parked.remove(i));
-            if let Some(current) = current {
-                parked.push(current);
-            }
-            while parked.len() > PARKED_SHELLS_PER_CALLER {
-                let Some(idle) = parked.iter().position(|s| !s.has_running()) else {
-                    break; // every parked session has live work: keep them all
-                };
-                let dropped = parked.remove(idle);
-                crate::probe!(
-                    class = "code.shell.parked_session_dropped",
-                    caller = %who,
-                    root = %dropped.workspace_root().display(),
-                    "an idle set-aside shell session was dropped; only finished executions went with it"
-                );
-            }
-            destination
-        };
-        if let Some(back) = destination {
-            self.shell_sessions.insert(who.to_string(), back);
-        }
-    }
-
-    /// Holds `shell_sessions` then `parked_shells`, the one order used anywhere both are held.
-    /// Apply `f` to the session holding `handle` (a full execution id or a prefix), resolved
-    /// ONCE across all of `who`'s sessions, current and parked. A prefix matching executions in
-    /// two sessions is refused as ambiguous, never resolved to whichever is searched first, so
-    /// a kill never lands on the wrong command (Codex on #4586).
+    /// Apply `f` to the session holding `handle` (a full execution id or a unique prefix),
+    /// resolved ONCE across the sessions THESE hands reach ([`HandsKey::reaches`]): her default
+    /// and card hands reach each other, so a handle from her claim A stays reachable after her
+    /// focus moved to claim B; an isolated eval or fork reaches only itself, and nothing of hers
+    /// reaches into it; another caller's never (Astra on #5026). A prefix that matches
+    /// executions in two sessions is refused as ambiguous (Codex on #4586).
     pub fn with_execution<T>(
         &self,
-        who: &str,
+        hands: &crate::code::hands::HandsKey,
         handle: &str,
         f: impl FnOnce(&ShellSession, &str) -> Result<T, String>,
     ) -> Result<T, ExecutionLookup> {
-        let current = self.shell_sessions.get(who);
-        let parked = self.parked_shells.get(who);
-        let sessions: Vec<&ShellSession> = current
+        let hers = |key: &str| hands.reaches(key);
+        // Collect (session key, execution ids) shard by shard, then act on ONE session: no
+        // guard is held across the scan.
+        let sessions: Vec<(String, Vec<String>)> = self
+            .shell_sessions
             .iter()
-            .map(|s| &**s)
-            .chain(parked.iter().flat_map(|p| p.iter()))
+            .filter(|entry| hers(entry.key()))
+            .map(|entry| (entry.key().clone(), entry.value().execution_ids().map(str::to_string).collect()))
             .collect();
         if sessions.is_empty() {
             return Err(ExecutionLookup::NoSession);
         }
         let ids: Vec<uuid::Uuid> = sessions
             .iter()
-            .flat_map(|s| s.execution_ids())
+            .flat_map(|(_, ids)| ids.iter())
             .filter_map(|id| uuid::Uuid::parse_str(id).ok())
             .collect();
         let id = crate::id_resolve::resolve_handle(handle, &ids, "shell execution")
             .map_err(ExecutionLookup::Unresolved)?
             .to_string();
         let holder = sessions
-            .into_iter()
-            .find(|s| s.execution_ids().any(|e| e == id))
+            .iter()
+            .find(|(_, ids)| ids.iter().any(|e| *e == id))
+            .map(|(key, _)| key.clone())
             .ok_or_else(|| ExecutionLookup::Unresolved(format!("shell execution {id} vanished")))?;
-        f(holder, &id).map_err(ExecutionLookup::Failed)
+        let shell = self
+            .shell_sessions
+            .get(&holder)
+            .ok_or_else(|| ExecutionLookup::Unresolved(format!("shell execution {id}'s hands were released")))?;
+        f(&shell, &id).map_err(ExecutionLookup::Failed)
     }
 }
 
@@ -280,46 +218,53 @@ mod tests {
     use super::*;
     use crate::runtime::ServiceModule;
 
-    // what this catches (Kimi, 2026-09-29; Codex's review of #4586): re-rooting her hands
-    // dropping the shell session and with it every execution handle, so a command started
-    // on one turn could not be polled on the next. A REAL running command survives a
-    // re-root and is reachable by its handle (and a prefix of it); another caller cannot
-    // reach it; returning reinstates the same session; and working across more roots than
-    // the cap never drops a session whose command is still running.
+    // what this catches (Kimi, 2026-09-29; Codex on #4586; Astra on #5026): a command started
+    // on one turn unreachable on the next, or reachable across an isolation boundary. One set
+    // of hands keeps ONE session for its life (hands are never re-rooted, card fc9e9fd7); her
+    // default and card hands reach each other's handles (claim A's after her focus moved to B);
+    // an isolated eval reaches only its own and nothing of hers reaches into it; another
+    // caller (or a caller-id prefix) reaches nothing.
     #[tokio::test]
-    async fn a_running_command_survives_re_rooting_and_is_never_evicted() {
+    async fn a_running_command_stays_reachable_by_its_handle_in_any_of_her_hands() {
+        crate::system_resources::disk_reporters::prepare_writer_fixture().await;
+        use crate::code::hands::{HandsContext, HandsKey};
         let rt = tokio::runtime::Handle::current();
-        let roots: Vec<_> = (0..6).map(|_| tempfile::tempdir().unwrap()).collect();
+        let root = tempfile::tempdir().unwrap();
         let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());
-
-        let mut first = ShellSession::new("s0", "kimi", roots[0].path()).expect("session");
-        let exec = first.execute("sleep 30", Some(60_000), &rt).expect("a long command starts");
-        state.shell_sessions.insert("kimi".into(), first);
-
-        state.re_root_shell("kimi", roots[0].path());
-        assert!(state.shell_sessions.contains_key("kimi"), "the same root keeps the session");
-
-        // Work across five more roots, each with its own (idle) session, past the cap of 4.
-        for (i, root) in roots.iter().enumerate().skip(1) {
-            state.re_root_shell("kimi", root.path());
-            let idle = ShellSession::new(&format!("s{i}"), "kimi", root.path()).expect("session");
-            state.shell_sessions.insert("kimi".into(), idle);
-        }
+        let home = HandsKey::new("kimi".into(), None);
+        let mut shell = ShellSession::new("s0", "kimi", root.path()).expect("session");
+        let exec = shell.execute("sleep 30", Some(60_000), &rt).expect("a long command starts");
+        state.shell_sessions.insert(home.map_key(), shell);
 
         let running = |s: &ShellSession, id: &str| s.get_execution_state(id);
-        let by_full = state.with_execution("kimi", &exec, running).expect("still reachable after 5 re-roots");
+        let by_full = state.with_execution(&home, &exec, running).expect("reachable by its handle");
         assert_eq!(by_full.lock().unwrap().status, crate::code::shell_types::ShellExecutionStatus::Running);
-        let prefix = &exec[..8];
-        assert!(state.with_execution("kimi", prefix, running).is_ok(), "a unique prefix resolves across sessions");
-        assert!(
-            matches!(state.with_execution("mara", &exec, running), Err(ExecutionLookup::NoSession)),
-            "another caller never reaches her command"
-        );
+        assert!(state.with_execution(&home, &exec[..8], running).is_ok(), "a unique prefix resolves");
+        let mara = HandsKey::new("mara".into(), None);
+        assert!(matches!(state.with_execution(&mara, &exec, running), Err(ExecutionLookup::NoSession)), "another caller never reaches her command");
 
-        state.re_root_shell("kimi", roots[0].path());
-        let back = state.shell_sessions.get("kimi").expect("returning reinstates it");
-        assert_eq!(back.id(), "s0", "the very same session, with its handles");
-        back.kill(&exec).expect("clean up the test command");
+        // A command in her claim A's hands, polled from claim B: still hers.
+        let claim_a = HandsKey::new("kimi".into(), Some(HandsContext::for_claim(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4())));
+        let claim_b = HandsKey::new("kimi".into(), Some(HandsContext::for_claim(uuid::Uuid::new_v4(), uuid::Uuid::new_v4(), uuid::Uuid::new_v4())));
+        let mut a_shell = ShellSession::new("sa", "kimi", root.path()).expect("session");
+        let a_exec = a_shell.execute("sleep 30", Some(60_000), &rt).expect("a command in claim A");
+        state.shell_sessions.insert(claim_a.map_key(), a_shell);
+        state.shell_sessions.insert(claim_b.map_key(), ShellSession::new("sb", "kimi", root.path()).expect("session"));
+        assert!(state.with_execution(&claim_b, &a_exec, running).is_ok(), "claim A's handle is reachable while she works claim B");
+        assert!(matches!(state.with_execution(&HandsKey::new("kim".into(), None), &a_exec, running), Err(ExecutionLookup::NoSession)), "a caller-id prefix is not her");
+
+        // An isolated eval reaches only itself, and nothing of hers reaches into it.
+        let eval = HandsKey::new("kimi".into(), Some(HandsContext::fresh()));
+        let mut e_shell = ShellSession::new("se", "kimi", root.path()).expect("session");
+        let e_exec = e_shell.execute("sleep 30", Some(60_000), &rt).expect("a command in the eval");
+        state.shell_sessions.insert(eval.map_key(), e_shell);
+        assert!(state.with_execution(&eval, &exec, running).is_err(), "an eval never reaches her live command");
+        assert!(state.with_execution(&home, &e_exec, running).is_err(), "her live hands never reach into an eval");
+        assert!(state.with_execution(&eval, &e_exec, running).is_ok(), "the eval reaches its own");
+
+        for (hands, id) in [(&eval, &e_exec), (&home, &a_exec), (&home, &exec)] {
+            state.with_execution(hands, id, |s, id| s.kill(id)).expect("clean up the test commands");
+        }
     }
 
     // what this catches (Astra's review of #5005): ending a context's hands dropping its
@@ -328,6 +273,7 @@ mod tests {
     // reachable (so a release that can't confirm can retry) until `finish_release`.
     #[tokio::test]
     async fn ending_hands_keeps_every_handle_until_each_execution_is_proven_ended() {
+        crate::system_resources::disk_reporters::prepare_writer_fixture().await;
         let rt = tokio::runtime::Handle::current();
         let root = tempfile::tempdir().unwrap();
         let state = CodeState::new(Arc::new(DashMap::new()), Arc::new(DashMap::new()), rt.clone());

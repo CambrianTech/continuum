@@ -174,7 +174,7 @@ impl MoeArchProfile {
         ContainerManifest {
             version: 1,
             model: model.into(),
-            fmt: fmt.into(),
+            fmt: super::expert_container::ContainerFormat::Label(fmt.into()),
             record_bytes,
             n_layers: self.n_moe_layers as u16,
             experts_per_layer: self.experts_per_layer as u16,

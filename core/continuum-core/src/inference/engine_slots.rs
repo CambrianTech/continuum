@@ -23,6 +23,8 @@
 
 use std::path::{Path, PathBuf};
 
+mod attempts;
+
 /// The slots, bounded by construction: the current engine, one a lane may still run, and one to
 /// build into.
 pub const SLOTS: [&str; 3] = ["engine-a", "engine-b", "engine-c"];
@@ -74,6 +76,119 @@ pub fn previous_slot(root: &Path) -> Option<&'static str> {
     named_slot(root, PREVIOUS_FILE)
 }
 
+/// The installed engine owner captures every managed slot, not only engines
+/// named by the service receipts. Installation custody must span its lifetime.
+#[cfg(windows)]
+pub struct MaintenanceEngines {
+    root: PathBuf,
+    override_bin: Option<String>,
+    selectors: Vec<(PathBuf, Option<String>)>,
+    engines: Vec<(PathBuf, super::engine_install::EngineInstallReceipt)>,
+    absent: Vec<PathBuf>,
+}
+
+#[cfg(windows)]
+impl MaintenanceEngines {
+    pub fn verified_identity(program: &Path) -> Result<String, String> {
+        super::engine_install::EngineInstallReceipt::maintenance_snapshot(program)?.maintenance_identity()
+    }
+
+    pub fn capture(home: &Path) -> Result<Self, String> {
+        Self::capture_at(root(home)?, super::llama_server::engine_override(), live_lane_engines()?)
+    }
+
+    pub(crate) fn capture_at(root: PathBuf, override_bin: Option<String>, live_engines: Vec<Option<PathBuf>>) -> Result<Self, String> {
+        if let Some(value) = &override_bin {
+            let path = Path::new(value);
+            let slot = slot_of(&root, path).ok_or("operator engine is outside managed maintenance custody")?;
+            if path.canonicalize().map_err(|e| e.to_string())?
+                != slot_bin(&root, slot).canonicalize().map_err(|e| e.to_string())? {
+                return Err("operator engine differs from the managed executable".into());
+            }
+        }
+        let mut selectors = Vec::new();
+        for name in [CURRENT_FILE, PREVIOUS_FILE] {
+            let path = root.join(name);
+            let text = match std::fs::symlink_metadata(&path) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+                Err(e) => return Err(e.to_string()),
+                Ok(_) => Some(continuum_cli_lifecycle::installed_release::read_receipt(&path)?),
+            };
+            if text.as_ref().is_some_and(|value| !SLOTS.contains(&value.trim())) {
+                return Err("unknown engine selector blocks maintenance".into());
+            }
+            selectors.push((path, text));
+        }
+        if selectors[0].1.is_none() {
+            return Err("legacy engine fallback is not covered by managed slot maintenance".into());
+        }
+        let mut engines = Vec::new();
+        let mut absent = Vec::new();
+        for slot in SLOTS {
+            let directory = root.join(slot);
+            match std::fs::symlink_metadata(&directory) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => absent.push(directory),
+                Err(e) => return Err(e.to_string()),
+                Ok(_) => engines.push((directory, super::engine_install::EngineInstallReceipt::maintenance_snapshot(&slot_bin(&root, slot))?)),
+            }
+        }
+        for (_, selected) in &selectors {
+            if let Some(selected) = selected {
+                if !engines.iter().any(|(directory, _)| *directory == root.join(selected.trim())) {
+                    return Err("selected engine is absent from the sealed maintenance closure".into());
+                }
+            }
+        }
+        for engine in live_engines {
+            let engine = engine.ok_or("live lane has no engine provenance")?;
+            let slot = slot_of(&root, &engine).ok_or("live lane uses an unmanaged engine")?;
+            if engine != slot_bin(&root, slot) && engine.canonicalize().map_err(|e| e.to_string())?
+                != slot_bin(&root, slot).canonicalize().map_err(|e| e.to_string())? {
+                return Err("live engine differs from managed executable".into());
+            }
+        }
+        Ok(Self { root, override_bin, selectors, engines, absent })
+    }
+
+    pub fn exclude(&self, pins: &mut continuum_cli_lifecycle::installed_release::ExclusiveFiles) -> Result<(), String> {
+        self.revalidate()?;
+        for (path, text) in &self.selectors {
+            if let Some(expected) = text {
+                use std::io::Read;
+                let mut actual = String::new();
+                pins.pin(path)?.take(continuum_cli_lifecycle::installed_release::MAX_RECEIPT_BYTES + 1)
+                    .read_to_string(&mut actual).map_err(|e| e.to_string())?;
+                if &actual != expected { return Err("engine selector changed before exclusion".into()); }
+            }
+        }
+        for (_, engine) in &self.engines { engine.exclude_for_maintenance(pins)?; }
+        Ok(())
+    }
+
+    pub fn revalidate(&self) -> Result<(), String> {
+        // Once selector handles are exclusive they cannot be re-opened here.
+        // Their retained pins prevent mutation; namespace checks remain necessary
+        // because pinning a directory does not prevent every child addition.
+        continuum_cli_lifecycle::installed_release::unredirected(&self.root)?;
+        if super::llama_server::engine_override() != self.override_bin {
+            return Err("engine override changed during maintenance".into());
+        }
+        for (path, expected) in &self.selectors {
+            if expected.is_none() && !matches!(path.symlink_metadata(), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+                return Err("engine selector appeared during maintenance".into());
+            }
+        }
+        for path in &self.absent {
+            match path.symlink_metadata() {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                _ => return Err("an engine slot appeared during maintenance".into()),
+            }
+        }
+        for (_, engine) in &self.engines { engine.maintenance_namespace_unchanged()?; }
+        Ok(())
+    }
+}
+
 fn named_slot(root: &Path, file: &str) -> Option<&'static str> {
     let named = std::fs::read_to_string(root.join(file)).ok()?;
     let named = named.trim();
@@ -88,12 +203,7 @@ pub fn slot_of(root: &Path, bin: &Path) -> Option<&'static str> {
     // normalized: the service-host derives `root` from the descriptor's own engine path, so a
     // verbatim descriptor gives a verbatim root, and stripping only `bin` refused the slot and
     // kept the core from starting.
-    let plain = |p: &Path| {
-        let text = p.to_string_lossy().into_owned();
-        PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)) // unwrap_or: a path with no verbatim prefix is already plain
-    };
-    let (root, bin) = (plain(root), plain(bin));
-    SLOTS.into_iter().find(|slot| bin.starts_with(root.join(slot)))
+    SLOTS.into_iter().find(|slot| crate::paths::has_path_prefix(bin, &root.join(slot)))
 }
 
 /// Why no slot is idle.
@@ -161,12 +271,34 @@ static RESTORED: parking_lot::Mutex<Option<&'static str>> = parking_lot::const_m
 /// the one a rollback already restored. The caller skips this under an operator override (their engine, not a slot) and
 /// while a deploy holds the claim (it is mid-promote).
 pub fn rollback_after_failed_launch(root: &Path) -> Result<Option<(&'static str, &'static str)>, String> {
+    rollback_after_failed_launch_reason(root, "launch failed")
+}
+
+/// Failure class only: diagnostic environment values are never serialized.
+pub fn rollback_after_failed_launch_reason(root: &Path, reason: &str) -> Result<Option<(&'static str, &'static str)>, String> {
     let Some(failed) = current_slot(root).filter(|slot| !is_verified(root, slot)) else {
         return Ok(None);
     };
     let mut restored = RESTORED.lock();
     if *restored == Some(failed) {
         return Ok(None);
+    }
+    // Persisted evidence also prevents the inverse swap after a core restart.
+    if let Some(back) = previous_slot(root) {
+        match attempts::failed_selection(root, back) {
+            Ok(true) => return Ok(None),
+            Ok(false) => {}
+            Err(reason) => crate::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
+                "fallback attempt disposition is unreadable; retain ordinary restoration authority"),
+        }
+    }
+    // Failed bookkeeping cannot strand serving. Promotion still refuses corrupt
+    // evidence, while restoration of the intact fallback remains available.
+    if let Some(back) = previous_slot(root) {
+        if let Err(reason) = attempts::failed(root, failed, back, reason) {
+            crate::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
+                "failed attempt could not be persisted; restoring the intact fallback");
+        }
     }
     let back = rollback(root, failed)?;
     *restored = Some(back);
@@ -178,12 +310,14 @@ pub fn rollback_after_failed_launch(root: &Path) -> Result<Option<(&'static str,
 #[derive(Debug)]
 pub enum VerbError {
     NoIdleSlot,
+    DeferredFailedAttempt(String),
     Failed(String),
 }
 
 impl std::fmt::Display for VerbError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            VerbError::DeferredFailedAttempt(reason) => write!(f, "{reason}"),
             VerbError::NoIdleSlot => write!(
                 f,
                 "every engine slot is current or run by a live lane: the engine build is skipped this deploy"
@@ -205,7 +339,7 @@ pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
     let root = root(&home).map_err(VerbError::Failed)?;
     let usage = || {
         VerbError::Failed(
-            "usage: continuum engine root | idle-slot | promote <slot> <commit:backend> | rollback <failed-slot>".into(),
+            "usage: continuum engine root | idle-slot | promote <slot> <commit:backend> | attempt <slot> | retry <slot> <commit:backend> <artifact-identity> | rollback <failed-slot>".into(),
         )
     };
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
@@ -218,7 +352,7 @@ pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
             .map_err(|NotIdle::AllInUse| VerbError::NoIdleSlot)?;
             Ok(root.join(slot).to_string_lossy().into_owned())
         }
-        ["promote", slot, stamp] => {
+        ["promote", slot, stamp] | ["retry", slot, stamp, _] => {
             // A live lane may run the slot only when promoting it switches nothing: it is
             // already current with exactly this stamp (Codex installing on the 5090: the node
             // already ran the verified engine the release names, and the refusal blocked the
@@ -229,11 +363,18 @@ pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
                     return Err(VerbError::Failed(format!("{slot} is run by a live lane: it was never idle")));
                 }
             }
-            match promote(&root, slot, stamp).map_err(VerbError::Failed)? {
+            let retry = (args.first().map(String::as_str) == Some("retry"))
+                .then(|| args[3].as_str());
+            match promote_with_retry(&root, slot, stamp, retry).map_err(VerbError::Failed)? {
+                Promotion::Deferred(fallback) => Err(VerbError::DeferredFailedAttempt(format!(
+                    "failed engine attempt held; verified {fallback} remains current; use engine retry with the exact artifact identity reported by engine attempt"
+                ))),
                 Promotion::AlreadyCurrent => Ok(format!("{slot} is already the current engine ({stamp}); nothing changed")),
                 Promotion::Switched => Ok(format!("{slot} is the current engine ({stamp})")),
             }
         }
+        ["attempt", slot] => attempts::describe(&root, known(slot).map_err(VerbError::Failed)?)
+            .map_err(VerbError::Failed),
         ["rollback", failed] => {
             let back = rollback(&root, failed).map_err(VerbError::Failed)?;
             Ok(format!("{back} is the current engine again ({failed} kept as previous)"))
@@ -301,6 +442,8 @@ pub fn slot_stamp(root: &Path, slot: &str) -> Option<String> {
 /// What a successful [`promote`] did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Promotion {
+    /// This artifact failed previously; a verified fallback stays current.
+    Deferred(&'static str),
     /// `slot` became current; the slot it replaced is `previous`, and `slot` must come up
     /// ready again before it counts as verified.
     Switched,
@@ -322,6 +465,10 @@ pub fn is_current_with(root: &Path, slot: &str, want_stamp: &str) -> bool {
 /// (write a temp file, then rename); `previous` is written first, so a crash between the two
 /// leaves the old engine current and a harmless `previous`.
 pub fn promote(root: &Path, slot: &str, want_stamp: &str) -> Result<Promotion, String> {
+    promote_with_retry(root, slot, want_stamp, None)
+}
+
+fn promote_with_retry(root: &Path, slot: &str, want_stamp: &str, retry: Option<&str>) -> Result<Promotion, String> {
     let slot = known(slot)?;
     let bin = slot_bin(root, slot);
     if !bin.is_file() {
@@ -331,6 +478,16 @@ pub fn promote(root: &Path, slot: &str, want_stamp: &str) -> Result<Promotion, S
         .ok_or_else(|| format!("{slot} has no stamp: the build did not verify, so it is not promoted"))?;
     if stamp != want_stamp.trim() {
         return Err(format!("{slot} holds {stamp} but the deploy built {}: not promoted", want_stamp.trim()));
+    }
+    if current_slot(root) == Some(slot) {
+        return Ok(Promotion::AlreadyCurrent);
+    }
+    let admission = attempts::admit(root, slot, &stamp, retry)?;
+    if !admission {
+        let fallback = current_slot(root)
+            .filter(|s| is_verified(root, s) && slot_bin(root, s).is_file() && slot_stamp(root, s).is_some())
+            .ok_or("failed engine attempt held but no verified fallback exists; explicit retry required")?;
+        return Ok(Promotion::Deferred(fallback));
     }
     match current_slot(root) {
         // Already current with this stamp: a reinstall of the engine the node runs. Clearing
@@ -347,6 +504,10 @@ pub fn promote(root: &Path, slot: &str, want_stamp: &str) -> Result<Promotion, S
 /// Record that `slot`'s engine came up ready on this machine. Idempotent.
 pub fn mark_verified(root: &Path, slot: &str) -> Result<(), String> {
     let slot = known(slot)?;
+    if let Err(reason) = attempts::ready(root, slot) {
+        crate::probe!(class = "serving.engine.attempt_receipt_failed", reason = reason.as_str(),
+            "engine is ready but prior attempt bookkeeping could not be reconciled");
+    }
     let path = root.join(slot).join(VERIFIED_FILE);
     if path.is_file() {
         return Ok(());
@@ -416,6 +577,21 @@ impl HandoffSelection {
         Ok(())
     }
 
+    /// A deferred candidate permits the core handoff only while the captured,
+    /// verified fallback is still selected. Keep this selection's restore
+    /// authority: later core launch failure must not invent a candidate swap.
+    pub fn confirm_preserved(&self) -> Result<(), String> {
+        let prior = self.prior.ok_or("deferred engine has no prior selection")?;
+        if current_slot(&self.root) != Some(prior)
+            || !is_verified(&self.root, prior)
+            || !slot_bin(&self.root, prior).is_file()
+            || slot_stamp(&self.root, prior).is_none()
+        {
+            return Err("deferred engine fallback is not the captured verified selection".into());
+        }
+        Ok(())
+    }
+
     /// Restore before starting the previous core, whose reader may not understand
     /// the new engine receipt. Normal launch-failure rollback deliberately refuses
     /// during deployment; this caller already owns that authority.
@@ -454,13 +630,8 @@ pub fn register(root: &Path, slot: &str) -> Result<bool, String> {
     if !slot_bin(root, slot).is_file() || slot_stamp(root, slot).is_none() {
         return Err(format!("{slot} has no stamped engine: not registered"));
     }
-    match current_slot(root) {
-        Some(same) if same == slot => return Ok(false),
-        Some(old) => write_pointer(root, PREVIOUS_FILE, old)?,
-        None => {}
-    }
-    clear_verified(root, slot)?;
-    write_pointer(root, CURRENT_FILE, slot).map(|()| true)
+    let stamp = slot_stamp(root, slot).ok_or("registered engine stamp disappeared")?;
+    promote(root, slot, &stamp).map(|result| matches!(result, Promotion::Switched))
 }
 
 /// The Windows service-host's start: BOOTSTRAP `current` from the engine its registered release
@@ -587,6 +758,7 @@ mod tests {
         assert!(promote(root, "engine-b", "abc123:cuda").is_err(), "stamp is not the pin built");
         engine(root, "engine-a", "aaa000:cuda");
         let fresh = HandoffSelection::capture(root, &slot_bin(root, "engine-a")).expect("capture absent selection");
+        assert!(fresh.confirm_preserved().is_err(), "no fallback cannot be a successful deferred handoff");
         fresh.restore().expect("preparation refused before promotion");
         promote(root, "engine-a", "aaa000:cuda").expect("first install promotes");
         fresh.restore().expect("failed first handoff restores absence");
@@ -597,7 +769,11 @@ mod tests {
         // A core rollback must restore its actual prior engine before the old
         // reader encounters the newly published stamp-bearing receipt.
         let handoff = HandoffSelection::capture(root, &slot_bin(root, "engine-b")).expect("capture actual prior engine");
+        assert!(handoff.confirm_preserved().is_err(), "unproven fallback cannot authorize core adoption");
+        mark_verified(root, "engine-a").unwrap();
+        handoff.confirm_preserved().expect("deferred published candidate preserves verified prior selection");
         promote(root, "engine-b", "abc123:cuda").expect("verified slot promotes");
+        assert!(handoff.confirm_preserved().is_err(), "changed selection cannot claim preservation");
         handoff.confirm().expect("promotion receipt");
         handoff.restore().expect("core failure restores actual prior engine");
         handoff.restore().expect("repeated recovery preserves restored selection");
@@ -656,13 +832,18 @@ mod tests {
         assert_eq!(register(root, "engine-b"), Ok(true), "the next Windows release moves current");
         assert_eq!((current_slot(root), previous_slot(root)), (Some("engine-b"), Some("engine-a")));
         assert_eq!(resolve(root, None, Some("engine-c")), Resolved::Slot("engine-c"), "an empty current slot fails loud at spawn, never the legacy engine");
-        assert_eq!(slot_of(root, Path::new(&format!(r"\\?\{a}"))), Some("engine-a"), "a verbatim-prefixed path is the same slot");
-        let verbatim_root = PathBuf::from(format!(r"\\?\{}", root.display()));
-        assert_eq!(
-            slot_of(&verbatim_root, Path::new(&format!(r"\\?\{a}"))),
-            Some("engine-a"),
-            "a verbatim descriptor gives a verbatim root: the service-host's own derivation"
-        );
+        assert_eq!(slot_of(root, Path::new(&a)), Some("engine-a"));
+        // Verbatim prefixes are Windows path syntax, not Unix filename aliases.
+        #[cfg(windows)]
+        {
+            assert_eq!(slot_of(root, Path::new(&format!(r"\\?\{a}"))), Some("engine-a"), "a verbatim-prefixed path is the same slot");
+            let verbatim_root = PathBuf::from(format!(r"\\?\{}", root.display()));
+            assert_eq!(
+                slot_of(&verbatim_root, Path::new(&format!(r"\\?\{a}"))),
+                Some("engine-a"),
+                "a verbatim descriptor gives a verbatim root: the service-host's own derivation"
+            );
+        }
     }
 
     // what this catches (Fable on #4491): a promoted engine that verifies and then fails at
@@ -682,6 +863,33 @@ mod tests {
         assert_eq!(current_slot(root), Some("engine-a"));
         assert_eq!(rollback_after_failed_launch(root), Ok(None), "the restored engine failing is not rolled back onto the failed one");
         assert_eq!(current_slot(root), Some("engine-a"));
+        // Disk evidence, independent of the process-only RESTORED optimization.
+        assert!(attempts::failed_selection(root, "engine-b").unwrap());
+        mark_verified(root, "engine-a").unwrap();
+        assert_eq!(promote(root, "engine-b", "bad000:cuda"), Ok(Promotion::Deferred("engine-a")));
+        // Copying the same legacy candidate to another slot does not reset failure.
+        engine(root, "engine-c", "bad000:cuda");
+        assert_eq!(promote(root, "engine-c", "bad000:cuda"), Ok(Promotion::Deferred("engine-a")));
+        assert!(promote_with_retry(root, "engine-c", "bad000:cuda", Some("legacy:other")).is_err());
+        assert_eq!(promote_with_retry(root, "engine-c", "bad000:cuda", Some("legacy:bad000:cuda")), Ok(Promotion::Switched));
+        mark_verified(root, "engine-c").unwrap();
+        assert!(!attempts::failed_selection(root, "engine-b").unwrap());
+        // Corrupt bookkeeping refuses new admission, but does not veto an actual
+        // ready engine or an administrative restoration of intact payloads.
+        std::fs::write(root.join("engine-b/.engine-attempt.json"), b"broken").unwrap();
+        assert!(promote(root, "engine-b", "bad000:cuda").is_err());
+        clear_verified(root, "engine-c").unwrap();
+        mark_verified(root, "engine-c").unwrap();
+        assert!(is_verified(root, "engine-c"));
+        assert_eq!(rollback(root, "engine-c"), Ok("engine-a"));
+        assert_eq!(current_slot(root), Some("engine-a"));
+        std::fs::remove_file(root.join("engine-b/.engine-attempt.json")).unwrap();
+        engine(root, "engine-c", "next00:cuda");
+        assert_eq!(promote(root, "engine-c", "next00:cuda"), Ok(Promotion::Switched));
+        // Make the receipt staging leaf unwritable without changing payloads.
+        std::fs::create_dir(root.join("engine-c/.engine-attempt.tmp")).unwrap();
+        assert_eq!(rollback_after_failed_launch(root), Ok(Some(("engine-c", "engine-a"))));
+        assert_eq!(current_slot(root), Some("engine-a"), "receipt IO failure must not strand serving");
     }
 
     // what this catches (Fable on #4491): a GOOD engine demoted after a NotReady that was memory,

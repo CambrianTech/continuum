@@ -1,5 +1,8 @@
 [package]
 name = "continuum-core"
+# Read by `repo_registry::own_checkout` (env!("CARGO_PKG_REPOSITORY")): which recorded
+# checkout is this core's own. Never the process cwd (card 2a2cd6f1).
+repository = "https://github.com/CambrianTech/continuum"
 edition.workspace = true
 version.workspace = true
 authors.workspace = true

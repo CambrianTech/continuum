@@ -35,6 +35,7 @@ use crate::sdk_codegen::DynCommand;
 
 pub mod flush;
 pub mod resolve;
+pub mod policy_recover;
 pub mod retire;
 pub mod return_;
 pub mod status;
@@ -68,6 +69,7 @@ pub fn command_objects(state: Arc<TrainingTriggerState>) -> Vec<Arc<dyn DynComma
         Arc::new(TrainingTriggerResolve {
             state: state.clone(),
         }),
+        Arc::new(policy_recover::TrainingTriggerPolicyRecover { state: state.clone() }),
         Arc::new(TrainingTriggerStatus { state }),
     ]
 }

@@ -6,7 +6,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::{blocking_git, workspace_root_for};
+use super::workspace_root_for;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
 use crate::sdk_codegen::CommandError;
@@ -44,9 +44,7 @@ crate::action_command! {
     run(this, ctx, p) => {
         let root = workspace_root_for(&this.state, ctx).await?;
         let count = p.limit.unwrap_or(10);
-        let log = blocking_git(move || git_bridge::git_log(&root, count))
-            .await?
-            .map_err(CommandError::Internal)?;
+        let log = git_bridge::git_log(&root, count).await.map_err(CommandError::Internal)?;
         Ok(GitLogResult { log })
     }
 }

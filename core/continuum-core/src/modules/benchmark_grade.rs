@@ -285,13 +285,13 @@ async fn grade_card(
     // The event carries whatever id the citizen passed to work/state (short 8-char or full).
     // Normalize to simple hex; a short id is a prefix of the full simple form.
     let want = card_id.replace('-', "").to_ascii_lowercase();
-    let (title, owner) = {
+    let (title, owner, graded_card) = {
         let card = board
             .cards
             .iter()
             .find(|c| c.card_id.as_uuid().simple().to_string().starts_with(&want))
             .ok_or_else(|| format!("card {card_id} not on the board"))?;
-        (card.title.clone(), card.owner)
+        (card.title.clone(), card.owner, card.card_id.as_uuid())
     };
 
     let Some((bench, instance)) = parse_bench_title(&title) else {
@@ -308,7 +308,7 @@ async fn grade_card(
         // A gym suite, registered or a coursework lesson set: the ONE resolver turns the
         // title's suite name into the eval set the oracle is read from.
         if let Some(reference) = crate::commands::benchmark::eval_set_reference(&bench) {
-            return grade_gym_card(&airc, &reference, &instance, owner, &bench, room_id).await;
+            return grade_gym_card(&airc, &reference, &instance, owner, &bench, room_id, graded_card).await;
         }
         return Ok(()); // catalogued-but-not-runnable, or a bench name we don't know
     };
@@ -446,7 +446,7 @@ pub(crate) async fn grade_submission(
 /// rule dispatch applies before composing the card — so the `solution_file` this grader
 /// reads is byte-for-byte the path the card told her to write. Pure over the embedded
 /// gym text; the unit test below pins the agreement.
-fn normalized_gym_task(
+pub(crate) fn normalized_gym_task(
     reference: &str,
     task_id: &str,
 ) -> Result<crate::cognition::eval::EvalTask, String> {
@@ -521,18 +521,17 @@ async fn grade_gym_card(
     owner: Option<impl std::fmt::Display>,
     bench: &str,
     room_id: uuid::Uuid,
+    graded_card: uuid::Uuid,
 ) -> Result<(), String> {
     let owner = owner
         .ok_or_else(|| format!("bench card {task_id} has no owner — nobody worked it"))?
         .to_string();
     let task = normalized_gym_task(reference, task_id)?;
     // Her workspace root — the same layout every other per-citizen path uses.
-    let workspace = crate::paths::continuum_home()
-        .map_err(|e| format!("{e:?}"))?
-        .join("citizens")
-        .join("peers")
-        .join(&owner)
-        .join("workspace");
+    let workspace = crate::modules::card_staging::gym_workspace(
+        &crate::paths::continuum_home().map_err(|e| format!("{e:?}"))?,
+        owner.parse().map_err(|e| format!("invalid gym owner {owner}: {e}"))?,
+    );
     // The graded OUTCOME is carried as a value, and the room line is rendered FROM it.
     // It used to be the other way round: the only typed thing was the prose, and the
     // probe recovered the score by reading its own emoji back out of the message. A fact
@@ -616,7 +615,8 @@ async fn grade_gym_card(
         let verdict = gym_verdict(task_id, bench, &owner, *passed, detail);
         // A record that cannot be written is LOUD. Dropping it quietly would restore the
         // exact invisibility this call exists to end.
-        crate::cognition::swe_bench::record_verdict(&verdict, false)
+        crate::cognition::swe_bench::record_card_verdict(&verdict, graded_card)
+            .await
             .map_err(|e| format!("record gym verdict for {task_id}: {e}"))?;
     }
 

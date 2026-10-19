@@ -363,3 +363,94 @@ A future result cache must prove validity and return the actual correlated resul
 FileEngine change IDs invalidate tracked edits; their absence cannot prove that
 shell, Git or external writes did not occur. Missing freshness or missing content
 must never become an AlreadySatisfied outcome.
+
+### Workspace binding evidence (card 81097858, implementation boundary)
+
+The successful `persona_workspace::bind_card` seam owns which card's claim the
+hands actually reached. Both held-work and room turns must stamp the handoff there.
+A seam board refresh may update that exact card/claim or invalidate it; it must
+never select another held card and describe it beside the old staged checkout.
+A retained ledger remains attributed to its own card, including when it is not
+for the bound card. This reuses handoff storage and the existing claim binding;
+there is no new task registry, selection policy, or background worker.
+
+Repository evidence comes from AIRC's shared allocation owner. Core passes the
+card repository to `WorktreeSpec`; an implicit start point uses the same configured
+integration branch as CLI allocation. AIRC records the resolved start ref and
+creation commit together under private Git refs. The workspace map reads that
+immutable receipt through the owned async Git bridge and AIRC's shared decoder.
+All three root readers use the same layout/evidence read. Actual HEAD, branch and
+shallow observations remain distinct from allocation intent. Legacy allocation
+receipts remain unknown; current HEAD is never backfilled as intended base.
+The existing workspace invalidation events refresh this projection after actions.
+
+The regression contracts are a stale review ledger beside a different bound
+claim, failed binding preserving the prior claim, and a shallow main checkout
+whose recorded allocation names a different integration branch. The ledger keeps
+its own card identity even after the binding ends.
+
+The existing event-invalidated `CachedRagSource` retains the complete projection
+between relevant events. On a dirty refresh, the shared layout reader re-observes
+checkout state and both private refs. Its single-entry memo reuses only a validated
+immutable allocation blob keyed by blob OID and creation SHA; errors and absence
+are not memoized. A replaced checkout therefore cannot inherit an old receipt by
+path. Plain non-repository roots add no Git block and launch no Git commands;
+broken repository markers remain visible failures. No background refresh is added.
+
+M5 latency measurement remains pending: Codex helper owning card 81097858 will
+measure cold/dirty/cached workspace-map milliseconds per turn after supported
+candidate deployment, before closing the card. Process-call reduction is a source
+property (four to two for a validated receipt on dirty refresh), not a measured
+latency improvement.
+
+### Attention admission (60c4f8bb)
+
+The existing conversation pump queues typed attention envelopes, not arbitrary
+transport frames. One classifier uses the existing room/work decoders for live
+input and durable catch-up. Known telemetry, protocol and presence frames remain
+with their existing owners; speech/media and work facts retain the raw event and
+once-decoded perception together. Decode faults retain their named diagnostics.
+The consumer still owns the asynchronous work bridge and retains the envelope
+across cancellation; self-authored work must reach that bridge before self-filtering.
+An exhausted cooperative scan slice is not an empty inbox. It yields to the runtime
+and continues under the existing caller deadline, without a new timer or larger cap.
+The real-pump regression covers more than one page of non-chat envelopes before
+speech, work-fact survival, decode faults, duplicates and lag through the same setup.
+
+### Deferred perception scope (04dc5e95)
+
+The resolved activity room and wake room travel together through the existing
+DeferredFaculty input and last-good finding. The worker reconstructs both before
+calling its inner faculty; source-owned room selection therefore behaves the same
+on the direct and deferred paths. A cached result is eligible only when both rooms
+match, including a late completion after an activity switch within one wake room.
+Cold-start and directed results seed that same identity. No new cache, refresh
+policy, task selection, or speech attribution is introduced.
+
+Acceptance remains owned by Codex helper on card 04dc5e95: after supported
+deployment, observe a natural ambient Kimi request whose task board and ledger
+match the bound activity while wake attribution remains unchanged. Unit fixtures
+prove the wrapper contract; they do not establish a useful authored code change.
+
+### Concern-scoped workspace evidence (32d3569c)
+
+The act owner records the existing before/after checkout measurement on its
+bounded typed batch receipt. It does not attribute a batch change to an arbitrary
+call. Legacy snapshots have unknown measurement. Successful mutating command
+outcomes and measured checkout changes feed the same progress evidence; failed,
+running and undecodable command results do not establish a completed mutation.
+Ongoing Act reads after the last settlement boundary; Speak reads the concern
+ending at the boundary it just recorded. This changes evidence, not the caller's
+workspace-deliverable contract or the citizen's ability to answer by speaking.
+
+### Admission-deferred directed input (2e3f0eab)
+
+The wake owner retains an admitted priority message when the entire settle attempt
+never dispatched a generation or performed an action. This is a distinct deferred
+outcome, not a voluntary Pass. The existing heartbeat retries the exact event,
+room, media, admitted attention and causal engram without repeating input admission
+or heard receipts. Changing peer presence does not reclassify that admitted input.
+New arrivals remain in the existing conversation inbox and can be perceived during
+the retry. A completed decision or prior dispatched work does not replay the input;
+ambient input keeps its existing transcript/re-perception policy. This custody is
+local to the running loop, not a claim of durable restart recovery.

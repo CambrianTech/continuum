@@ -121,7 +121,7 @@ pub(crate) struct BucketKey {
 
 /// What a bucket pins at its first arrival ([`PendingBatch::policy`]); a later batch
 /// that disagrees is refused `InconsistentBucket`.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BucketPolicy {
     pub(crate) source: TrainingSource,
     pub(crate) lora: Option<LoRAHyperparams>,

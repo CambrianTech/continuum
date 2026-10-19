@@ -54,9 +54,7 @@ crate::action_command! {
         // toolbelt caller is herself, an agent session is the agent self-peer, a
         // caller-less or anonymous-socket session is the operator. The same answer
         // every other verb acts on.
-        let registry = crate::persona::PersonaAircRuntimeRegistry::try_global()
-            .unwrap_or_default(); // unwrap_or_default: no registry yet = no personas to name; the self-peers still resolve
-        let me = crate::persona::operator_peer::acting(&registry, ctx, "identity/whoami")?;
+        let me = crate::persona::operator_peer::acting_now(ctx, "identity/whoami")?;
         Ok(WhoamiResult {
             id: me.peer.to_string(),
             name: me

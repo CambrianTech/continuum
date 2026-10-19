@@ -23,6 +23,7 @@
 //! connection) is declared in the schema as the next tier and refused until built.
 
 use super::{AccessLevel, CommandDescriptor, DynCommand, TypeRef, WireShape};
+use crate::inference::lane_process::{Answer, Why};
 use crate::runtime::CommandResult;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -249,65 +250,60 @@ impl ProcessCommand {
 
     /// Run the process once: params on stdin, result from stdout, bounded.
     pub async fn run_process(&self, params: Value) -> Result<Value, String> {
-        use tokio::io::AsyncWriteExt;
         let started = std::time::Instant::now();
         let mut cmd = tokio::process::Command::new(self.program());
-        cmd.args(&self.manifest.exec[1..])
-            .current_dir(self.working_dir())
-            .stdin(std::process::Stdio::piped())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = cmd.spawn().map_err(|e| format!("{}: cannot spawn {:?}: {e}", self.name, self.manifest.exec[0]))?;
+        cmd.args(&self.manifest.exec[1..]).current_dir(self.working_dir());
+        let body = serde_json::to_vec(&params).map_err(|e| e.to_string())?; // boundary: params leave this process on the child's stdin
         crate::probe!(
             class = "ext.command.spawned",
             command = %self.name,
             program = %self.manifest.exec[0],
-            "authored command process started"
+            "authored command process starting"
         );
-        if let Some(mut stdin) = child.stdin.take() {
-            let body = serde_json::to_vec(&params).map_err(|e| e.to_string())?; // boundary: params leave this process on the child's stdin
-            // A program that never reads stdin must not wedge the call: write, then drop.
-            let _ = stdin.write_all(&body).await;
-            let _ = stdin.shutdown().await;
-        }
+        // owned (lane_process::run_owned_with_input): params on stdin, written beside the wait so a
+        // program that never reads them can't wedge the call; at the bound, or when this call is
+        // dropped, the program and everything it started are ended (kill_on_drop ended only it)
         let bound = std::time::Duration::from_millis(self.manifest.timeout_ms);
-        let out = match tokio::time::timeout(bound, child.wait_with_output()).await {
-            Ok(Ok(out)) => out,
-            Ok(Err(e)) => return Err(format!("{}: process failed: {e}", self.name)),
-            Err(_) => {
-                crate::probe!(
-                    class = "ext.command.timed_out",
-                    command = %self.name,
-                    timeout_ms = self.manifest.timeout_ms,
-                    "authored command exceeded its declared bound — killed"
-                );
-                return Err(format!("{}: timed out after {} ms", self.name, self.manifest.timeout_ms));
+        let out = crate::inference::lane_process::run_owned_with_input(cmd, Some(body), Some(bound), "ext-command", std::sync::Arc::default())
+            .await
+            .map_err(|e| format!("{}: cannot run {:?}: {e}", self.name, self.manifest.exec[0]))?;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let stdout = match out.answer() {
+            Answer::Whole(stdout) => stdout,
+            Answer::Not(unanswered) => {
+                match &unanswered.why {
+                    Why::TimedOut { unconfirmed } => {
+                        crate::probe!(
+                            class = "ext.command.timed_out",
+                            command = %self.name,
+                            timeout_ms = self.manifest.timeout_ms,
+                            unconfirmed = ?unconfirmed,
+                            "authored command exceeded its declared bound; it was ended, and any pid listed is not confirmed gone"
+                        );
+                    }
+                    Why::Exited(status) => {
+                        crate::probe!(
+                            class = "ext.command.failed",
+                            command = %self.name,
+                            code = status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
+                            elapsed_ms,
+                            "authored command exited non-zero"
+                        );
+                    }
+                    // its params didn't all reach it, or what it wrote wasn't read whole: whatever
+                    // it answered, it didn't answer THIS call
+                    Why::NotWhole => {}
+                }
+                // why, the note beside it, and both streams as read: every dimension the run left
+                return Err(format!("{} (bound {} ms): {unanswered}", self.name, self.manifest.timeout_ms));
             }
         };
-        let elapsed_ms = started.elapsed().as_millis() as u64;
-        if !out.status.success() {
-            let stderr = String::from_utf8_lossy(&out.stderr);
-            crate::probe!(
-                class = "ext.command.failed",
-                command = %self.name,
-                code = out.status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
-                elapsed_ms,
-                "authored command exited non-zero"
-            );
-            return Err(format!(
-                "{}: exit {} — {}",
-                self.name,
-                out.status.code().unwrap_or(-1), // unwrap_or: killed by a signal has no exit code; -1 names that
-                stderr.trim().chars().take(600).collect::<String>()
-            ));
-        }
-        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stdout = String::from_utf8_lossy(&stdout.bytes);
         let value = if stdout.trim().is_empty() {
             Value::Null
         } else {
             serde_json::from_str(stdout.trim()).map_err(|e| {
-                format!("{}: stdout is not JSON ({e}): {}", self.name, stdout.trim().chars().take(200).collect::<String>())
+                format!("{}: stdout is not JSON ({e}): {}", self.name, stdout.trim())
             })?
         };
         crate::probe!(
@@ -450,7 +446,7 @@ mod tests {
         m.timeout_ms = 200;
         let hang = ProcessCommand::new(m, PathBuf::new());
         let err = hang.run_process(Value::Null).await.expect_err("bounded");
-        assert!(err.contains("timed out after 200 ms"), "{err}");
+        assert!(err.contains("(bound 200 ms): timed out"), "{err}");
     }
 
     // what this catches: the manifest file has a PUBLISHED schema, like the recipe —

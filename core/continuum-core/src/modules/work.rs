@@ -2375,7 +2375,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
         // A room's own card (not a bench card): its review card comes from the parent
         // itself, under the room's policy (card fa4aaaaa). The bench branch below is
         // unchanged.
-        return open_room_review_card(airc, &room, &card, parent).await;
+        return open_room_review_card(airc, &room, &card, parent, submission::latest_submission(&card).map(|s| s.submission_id)).await;
     };
     let owner = card
         .owner
@@ -2424,6 +2424,7 @@ async fn open_room_review_card(
     room: &airc_lib::Room,
     card: &airc_lib::WorkCard,
     parent: WorkCardId,
+    submission: Option<airc_work::SubmissionId>,
 ) -> Result<WorkCardId, String> {
     let owner = card
         .owner
@@ -2442,7 +2443,10 @@ async fn open_room_review_card(
     // on the parent's board, named: never through the shared current-room pointer (#4838)
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
     req.body = Some(body);
-    airc.create_work_card_in(room, req).await.map_err(|e| e.to_string())
+    match submission {
+        Some(candidate) => airc.ensure_submission_review_in(room, parent, candidate, req).await,
+        None => airc.create_work_card_in(room, req).await,
+    }.map_err(|e| e.to_string())
 }
 
 /// The card a review card reviews, by airc's native link (`reviews`), for review cards no
@@ -2904,7 +2908,17 @@ pub struct WorkListParams {
     /// day reporting they had no work, and they were reading their tool correctly.
     #[serde(default)]
     pub claimable: Option<bool>,
+    /// At most this many cards (default 40): claimable first, then priority, then newest.
+    // Not a doc comment: this struct's docs are the tool surface a citizen pays tokens for.
+    // Measured 2026-10-16 on the M5: an unbounded list answered with all 776 cards as 198k
+    // chars of JSON, past her window's share, and she could read none of it (card ee003c55).
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<usize>,
 }
+
+/// `work/list`'s default bound on listed cards (see [`WorkListParams::limit`]).
+pub const WORK_LIST_DEFAULT_LIMIT: usize = 40;
 
 #[derive(Debug, Clone, Serialize, TS)]
 pub struct WorkListCard {
@@ -3072,7 +3086,7 @@ impl ActionCommand for WorkList {
                         // unnamed peer" otherwise (its handle in owner_id), `YOU` when hers.
                         owner: holder.owner.map(|_| holder.display.clone()),
                         owner_id: holder.owner.filter(|_| !holder.is_self).map(|o| o.as_uuid()),
-                        claimable: holder.claimable(c.state),
+                        claimable: holder.claimable(),
                         lease: holder.lease_word().map(str::to_string),
                         priority: priority_str(c.priority).to_string(),
                         age_hours: now_ms.saturating_sub(c.created_at_ms) / 3_600_000,
@@ -3085,19 +3099,35 @@ impl ActionCommand for WorkList {
         let total_on_board = rendered.len();
         let claimable_now = rendered.iter().filter(|(r, _)| r.claimable).count();
 
-        let cards: Vec<WorkListCard> = rendered
+        let mut cards: Vec<WorkListCard> = rendered
             .into_iter()
             .filter(|(_, state)| filter.map_or(true, |f| *state == f))
             .filter(|(r, _)| p.claimable.map_or(true, |want| r.claimable == want))
             .map(|(r, _)| r)
             .collect();
+        let matched = cards.len();
+        // claimable first, then priority (p0 before p3), then newest: the board's own order
+        // is arrival, the one order a citizen looking for work never wants
+        cards.sort_by(|a, b| {
+            b.claimable
+                .cmp(&a.claimable)
+                .then_with(|| a.priority.cmp(&b.priority))
+                .then_with(|| a.age_hours.cmp(&b.age_hours))
+        });
+        cards.truncate(p.limit.unwrap_or(WORK_LIST_DEFAULT_LIMIT).max(1));
 
         // A zero that explains itself. `{"cards":[]}` on a full board is the receipt
         // that cost the residents a day: it is indistinguishable from an empty board,
         // and they read it the only way it can be read. The filter's answer stays
         // honest — we do not quietly widen it — but the result says what it left out
         // and which query asks the question she meant. [[observability-as-substrate]]
-        let note = if cards.is_empty() && total_on_board > 0 {
+        let note = if matched > cards.len() {
+            Some(format!(
+                "{} of the {matched} matching cards are listed (claimable first, then priority, then \
+                 newest); pass limit for more, or narrow with state / claimable",
+                cards.len()
+            ))
+        } else if cards.is_empty() && total_on_board > 0 {
             Some(if claimable_now > 0 {
                 format!(
                     "Your filter matched 0 of {total_on_board} cards — the board is NOT empty. \
@@ -3530,11 +3560,11 @@ impl WorkGet {
             .map(submission::WorkReviewResult::from).collect();
         // the holder's card only: a review card's next step is its verdict, not a submission
         if card.reviews.is_none() {
-            let latest = card.submissions.last().map(|s| s.submission_id);
+            let latest = submission::latest_submission(card).map(|s| s.submission_id);
             let outcomes: Vec<_> = latest
                 .map(|id| board.submission_reviews_for(id).filter(|r| r.card_id == card.card_id).map(|r| r.outcome).collect())
                 .unwrap_or_default(); // unwrap_or_default: no submission, no outcomes
-            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title));
+            receipt.next = submission::next_after_submission(latest.map(|id| id.as_uuid()), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title), submission::submission_review_handoff(board, card.card_id, latest));
         }
         Ok(receipt)
     }
@@ -3558,7 +3588,7 @@ impl WorkGet {
             room_id: room.channel,
             room: room.name.clone(),
             is_self: holder.is_self,
-            claimable: holder.claimable(card.state),
+            claimable: holder.claimable(),
             lease: holder.lease_word().map(str::to_string),
             observed_at_ms: now_ms,
             claim_expires_at_ms: card.claim_expires_at_ms,

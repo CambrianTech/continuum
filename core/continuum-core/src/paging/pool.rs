@@ -49,7 +49,7 @@ use ts_rs::TS;
 /// Default refusal threshold for disk-backed tiers. 9500 basis points = 95%.
 /// Callers that can project post-operation usage must refuse before crossing
 /// this line instead of waiting for ENOSPC.
-pub const DISK_CAPACITY_REFUSAL_BASIS_POINTS: u64 = 9_500;
+pub use super::disk_capacity::DISK_CAPACITY_REFUSAL_BASIS_POINTS;
 
 /// Typed resource-pool failures exported through ts-rs so callers see a
 /// stable discriminant instead of parsing strings.
@@ -138,9 +138,9 @@ pub fn ensure_projected_disk_capacity_bps(
         });
     }
 
-    let projected_used = used_bytes.saturating_add(projected_bytes);
-    let max_allowed_bytes = capacity_bytes.saturating_mul(max_pressure_basis_points) / 10_000;
-    if projected_used > max_allowed_bytes {
+    if !super::disk_capacity::projected_fits(
+        used_bytes, capacity_bytes, projected_bytes, max_pressure_basis_points,
+    ) {
         return Err(ResourceError::DiskCapacity {
             tier,
             used_bytes,

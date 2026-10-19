@@ -46,6 +46,9 @@ pub struct SettleOutcome {
     /// corrupts the accuracy metric ([[self-improvement-is-a-control-loop]]: the
     /// reward is only as trustworthy as the metric). `None` on every settled turn.
     pub inference_error: Option<String>,
+    /// The entire turn stopped at admission before any generation or action.
+    /// Callers retain its inbound delivery obligation; this is not a chosen Pass.
+    pub deferred_before_dispatch: bool,
     /// File paths her acts NAMED (any `file_path`/`path` string arg on an executed
     /// call), in first-touch order, deduped. This is the turn's investigation trail
     /// as STATE — distinct from `files_changed` (what git saw): a failed edit or a
@@ -96,6 +99,7 @@ impl SettleOutcome {
             room_updates: Default::default(),
             metrics: TurnMetrics::default(),
             inference_error: Some(cause.into()),
+            deferred_before_dispatch: false,
             touched_paths: Vec::new(),
             // Empty, and truthfully so: this constructor is for a turn where the
             // deliberation call failed or was killed by a watchdog BEFORE any
@@ -134,6 +138,8 @@ pub enum SettleStep {
     /// held-work edge can tell a gradeable *done* from a *blocker* from a
     /// substrate-gap *nothing*; `None` for a bare pass.
     Passed { reason: Option<String> },
+    /// No generation or action occurred; the admitted input remains pending.
+    DeferredBeforeDispatch,
     /// She reached for an act that could NOT be carried out (no hands / executor
     /// error). No utterance; the intent rides along for honest logging/grading.
     ActUnfulfilled {
@@ -192,6 +198,9 @@ impl SettleStep {
                 generation_receipts,
             );
         }
+        if outcome.deferred_before_dispatch {
+            return (SettleStep::DeferredBeforeDispatch, metrics, generation_receipts);
+        }
         let step = match outcome.decision {
             Decision::Speak { text } | Decision::RaiseUnprompted { text } => {
                 SettleStep::Spoke(text)
@@ -225,6 +234,7 @@ mod tests {
             room_updates: Default::default(),
             metrics: TurnMetrics::default(),
             inference_error,
+            deferred_before_dispatch: false,
             touched_paths: Vec::new(),
             room: uuid::Uuid::from_u128(7),
             generation_receipts: Vec::new(),
@@ -234,6 +244,11 @@ mod tests {
 
     #[test]
     fn from_settled_projects_every_terminal_outcome_onto_the_live_handler() {
+        // The same Pass decision with an admission disposition must retain input,
+        // while a genuine Pass below remains terminal.
+        let mut deferred = outcome_with(Decision::pass(), None);
+        deferred.deferred_before_dispatch = true;
+        assert!(matches!(SettleStep::from_settled(deferred).0, SettleStep::DeferredBeforeDispatch));
         // Speak → Spoke (the prose reaches the room).
         let (step, m, _) = SettleStep::from_settled(outcome_with(
             Decision::Speak {

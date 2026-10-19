@@ -114,6 +114,16 @@ pub struct ToolOutputParams {
     #[ts(optional)]
     #[ts(type = "number")]
     pub max_matches: Option<usize>,
+    /// Absolute byte position for exact, non-consuming retrieval. Mutually exclusive
+    /// with line/regex queries. Follow nextByteOffset to recover the remaining bytes.
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub byte_offset: Option<u64>,
+    /// Requested byte count; a page fits the live render allowance. No bytes are
+    /// discarded when this request spans multiple pages: nextByteOffset continues it.
+    #[ts(optional)]
+    #[ts(type = "number")]
+    pub byte_length: Option<usize>,
 }
 
 /// Result of paging a spilled output: the scale of the full thing plus the
@@ -128,21 +138,31 @@ pub struct ToolOutputResult {
     /// Echo of the output id read.
     #[serde(rename = "outputId")]
     pub handle: String,
-    /// Total lines in the full spilled output.
-    #[ts(type = "number")]
-    pub total_lines: usize,
+    /// Total lines in the full spilled output; null for an exact byte page.
+    #[ts(type = "number | null")]
+    pub total_lines: Option<usize>,
     /// Total bytes in the full spilled output.
     #[ts(type = "number")]
     pub total_bytes: usize,
     /// When grepping: how many lines matched `pattern` across the WHOLE file
-    /// (pre-cap), so you know if there were more hits than shown. `0` otherwise.
-    #[ts(type = "number")]
-    pub total_matches: usize,
+    /// (pre-cap), so you know if there were more hits than shown. Zero for a line
+    /// range/tail, null for a byte page (no regex scan was performed).
+    #[ts(type = "number | null")]
+    pub total_matches: Option<usize>,
     /// The rendered, line-numbered slice (grep windows / explicit range / tail).
     pub content: String,
-    /// `true` if the rendered slice itself hit the budget and was cut — narrow
+    /// `true` if selected lines or matches remain beyond this page — narrow
     /// the pattern or shrink the range to see the rest.
     pub truncated: bool,
+    /// utf8 for text; base64 for a byte extent that is not independently valid UTF-8.
+    pub encoding: String,
+    #[ts(type = "number | null")]
+    pub byte_start: Option<u64>,
+    #[ts(type = "number | null")]
+    pub byte_end: Option<u64>,
+    /// Next unread byte in exact mode, or first omitted source byte in line mode.
+    #[ts(type = "number | null")]
+    pub next_byte_offset: Option<u64>,
 }
 
 /// `tool/output` — recover a spilled tool result by handle. Stateless; AiSafe by
@@ -174,7 +194,10 @@ impl ActionCommand for ToolOutput {
          (which tests failed?), or `summary` (how did it end?) — no regex needed. For a \
          specific hunt use `pattern` (a regex, e.g. \"error\\[E0308\\]\"). Or read an \
          exact slice with `startLine`/`endLine`. With none of these, you get the tail \
-         (where build verdicts live).";
+         (where build verdicts live). Exact byte pages use byteOffset and optional byteLength; \
+         follow nextByteOffset. Check encoding (utf8 or base64). Line/regex scans examine \
+         the whole file with bounded memory; an oversized line is refused with its byte \
+         offset, never partially searched.";
     type Params = ToolOutputParams;
     type Output = ToolOutputResult;
 
@@ -197,15 +220,6 @@ impl ActionCommand for ToolOutput {
 
         let path = spill::resolve(persona_id, &params.handle)
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
-        let content = std::fs::read_to_string(&path).map_err(|_| {
-            CommandError::Invalid(format!(
-                "no saved output with id `{}`: the id is mistyped, or it was deleted under \
-                 disk pressure after no working memory pointed at it any more. Use an \
-                 `outputId` from a pointer still in view.",
-                params.handle
-            ))
-        })?;
-
         let range = match (params.start_line, params.end_line) {
             (Some(s), Some(e)) => Some((s, e)),
             // A half-given range is ambiguous — name it rather than guess.
@@ -217,34 +231,80 @@ impl ActionCommand for ToolOutput {
             (None, None) => None,
         };
 
-        // An explicit `pattern` wins; otherwise a `filter` preset supplies one — so the
-        // common "just show me the errors" needs zero regex. Neither → range/tail.
-        let effective_pattern = params
-            .pattern
-            .as_deref()
-            .or_else(|| params.filter.map(|f| f.pattern()));
-
-        let inv = spill::investigate(
-            &content,
-            effective_pattern,
-            params.context_lines.unwrap_or(DEFAULT_CONTEXT_LINES),
-            range,
-            params.max_matches.unwrap_or(DEFAULT_MAX_MATCHES),
-            ContextBudget::live().render_slice_chars(),
-        )
-        .map_err(CommandError::Invalid)?;
-
-        Ok(ToolOutputResult {
-            handle: params.handle,
-            total_lines: inv.total_lines,
-            total_bytes: inv.total_bytes,
-            total_matches: inv.total_matches,
-            content: inv.rendered,
-            truncated: inv.result_truncated,
-        })
+        let budget = ContextBudget::live().render_slice_chars();
+        if params.byte_length.is_some() && params.byte_offset.is_none() {
+            return Err(CommandError::Invalid(
+                "byteLength requires byteOffset".into(),
+            ));
+        }
+        if params.byte_offset.is_some()
+            && (range.is_some()
+                || params.pattern.is_some()
+                || params.filter.is_some()
+                || params.context_lines.is_some()
+                || params.max_matches.is_some())
+        {
+            return Err(CommandError::Invalid(
+                "byteOffset cannot be combined with line or regex selectors".into(),
+            ));
+        }
+        // Disk scanning belongs off the async executor. The same spill owner handles
+        // both views; no second content registry or private whole-file retrieval path.
+        tokio::task::spawn_blocking(move || read_saved(&path, params, range, budget))
+            .await
+            .map_err(|e| CommandError::Invalid(format!("saved output reader failed: {e}")))?
+            .map_err(CommandError::Invalid)
     }
 }
 crate::register_stateless_command!(ToolOutput);
+
+fn read_saved(
+    path: &std::path::Path,
+    params: ToolOutputParams,
+    range: Option<(usize, usize)>,
+    budget: usize,
+) -> Result<ToolOutputResult, String> {
+    if let Some(offset) = params.byte_offset {
+        let extent = spill::read_extent(&path, offset, params.byte_length, budget)?;
+        return Ok(ToolOutputResult {
+            handle: params.handle,
+            total_lines: None,
+            total_bytes: usize::try_from(extent.total_bytes)
+                .map_err(|_| "saved output length exceeds this platform")?,
+            total_matches: None,
+            content: extent.content,
+            truncated: extent.next_byte_offset.is_some(),
+            encoding: extent.encoding.into(),
+            byte_start: Some(extent.start),
+            byte_end: Some(extent.end),
+            next_byte_offset: extent.next_byte_offset,
+        });
+    }
+    let effective_pattern = params
+        .pattern
+        .as_deref()
+        .or_else(|| params.filter.map(|f| f.pattern()));
+    let inv = spill::investigate_file(
+        &path,
+        effective_pattern,
+        params.context_lines.unwrap_or(DEFAULT_CONTEXT_LINES),
+        range,
+        params.max_matches.unwrap_or(DEFAULT_MAX_MATCHES),
+        budget,
+    )?;
+    Ok(ToolOutputResult {
+        handle: params.handle,
+        total_lines: Some(inv.total_lines),
+        total_bytes: inv.total_bytes,
+        total_matches: Some(inv.total_matches),
+        content: inv.rendered,
+        truncated: inv.result_truncated,
+        encoding: "utf8".into(),
+        byte_start: None,
+        byte_end: None,
+        next_byte_offset: inv.next_byte_offset,
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -303,5 +363,89 @@ mod tests {
             .await
             .expect_err("must refuse");
         assert!(matches!(err, CommandError::Invalid(_)));
+    }
+
+    // what this catches: the real command projection preserves exact byte continuation,
+    // split UTF-8 and whole-file regex counts without loading the retained file in memory.
+    #[test]
+    fn saved_output_pages_round_trip_and_queries_keep_counts() {
+        use base64::Engine;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("output.log");
+        let body = "é🙂\r\nerror one\nnoise\nerror two\n";
+        std::fs::write(&path, body).unwrap();
+        let mut actual = Vec::new();
+        let mut offset = 0;
+        loop {
+            let result = read_saved(
+                &path,
+                ToolOutputParams {
+                    handle: "id".into(),
+                    byte_offset: Some(offset),
+                    byte_length: Some(2),
+                    ..Default::default()
+                },
+                None,
+                12,
+            )
+            .unwrap();
+            assert!(result.content.len() <= 12);
+            assert_eq!(result.byte_start, Some(offset));
+            assert_eq!(
+                result.total_lines, None,
+                "byte retrieval does not pretend to have scanned lines"
+            );
+            actual.extend(if result.encoding == "base64" {
+                base64::engine::general_purpose::STANDARD
+                    .decode(result.content)
+                    .unwrap()
+            } else {
+                result.content.into_bytes()
+            });
+            match result.next_byte_offset {
+                Some(next) => {
+                    assert!(next > offset);
+                    offset = next;
+                }
+                None => break,
+            }
+        }
+        assert_eq!(actual, body.as_bytes());
+        let result = read_saved(
+            &path,
+            ToolOutputParams {
+                handle: "id".into(),
+                pattern: Some("error".into()),
+                context_lines: Some(0),
+                max_matches: Some(1),
+                ..Default::default()
+            },
+            None,
+            256,
+        )
+        .unwrap();
+        assert_eq!(result.total_lines, Some(4));
+        assert_eq!(result.total_matches, Some(2));
+        assert!(result.content.contains("error one"));
+        assert!(!result.content.contains("error two"));
+        assert_eq!(
+            result.next_byte_offset,
+            Some(body.find("error two").unwrap() as u64)
+        );
+        assert!(result.truncated);
+        std::fs::write(&path, "x".repeat(257)).unwrap();
+        let error = read_saved(
+            &path,
+            ToolOutputParams {
+                handle: "id".into(),
+                pattern: Some("never".into()),
+                ..Default::default()
+            },
+            None,
+            256,
+        )
+        .unwrap_err();
+        assert!(error.contains("byteOffset 0"));
+        assert!(error.contains("not evaluated on a partial line"));
     }
 }

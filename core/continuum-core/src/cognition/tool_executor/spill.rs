@@ -15,10 +15,10 @@
 //! `peer_id`, which equals `persona_id` for a local persona). A persona can only
 //! ever read back its OWN spilled output — the directory layout IS the scope.
 //!
-//! The investigate logic ([`investigate`]) is what makes "find the error in the
+//! The investigate logic ([`investigate_file`]) is what makes "find the error in the
 //! crap" first-class: a regex grep with context lines (the failure-hunting path)
-//! plus explicit line-range paging. It is a pure function over the spilled text
-//! so it unit-tests without the command framework or the filesystem.
+//! plus explicit line-range paging. It streams through retained bytes
+//! with bounded memory, and exact byte extents remain reachable between pages.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -347,14 +347,98 @@ fn handle_of(content: &str) -> String {
     format!("{:x}", hasher.finalize())[..16].to_string()
 }
 
-fn write_in(root: &Path, persona_id: Uuid, handle: &str, content: &str) -> std::io::Result<PathBuf> {
+fn write_in(
+    root: &Path,
+    persona_id: Uuid,
+    handle: &str,
+    content: &str,
+) -> std::io::Result<PathBuf> {
     let dir = persona_dir(root, persona_id);
     fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{handle}.log"));
-    fs::write(&path, content.as_bytes())?;
+    if existing_matches(&path, content.as_bytes())? {
+        return Ok(path);
+    }
+    use std::io::Write;
+    // The staging filename has the SAME stem as the final .log, so the
+    // existing content-address pin protects both throughout publication.
+    let staging = dir.join(format!("{handle}.{}", Uuid::new_v4()));
+    // Do not remove anything if create_new fails: that path is not ours.
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&staging)?;
+    let publish = || -> std::io::Result<()> {
+        file.write_all(content.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+        crate::fs_portable::durable_publish_new(&staging, &path)
+    };
+    if let Err(error) = publish() {
+        let _ = fs::remove_file(&staging);
+        // Another publisher may have installed the same immutable object.
+        // Verify bytes before reusing it; never treat a publication error alone
+        // as evidence that the output was retained.
+        if error.kind() != std::io::ErrorKind::AlreadyExists {
+            return Err(error);
+        }
+        return match existing_matches(&path, content.as_bytes()) {
+            Ok(true) => Ok(path),
+            Ok(false) => Err(error),
+            Err(verification) => Err(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "publication failed: {error}; existing object verification: {verification}"
+                ),
+            )),
+        };
+    }
+    let _ = fs::remove_file(&staging);
     Ok(path)
 }
 
+/// Existing content addresses are immutable. Compare using the standard reader's
+/// bounded buffer; never duplicate a flood-sized result just to deduplicate it.
+fn existing_matches(path: &Path, expected: &[u8]) -> std::io::Result<bool> {
+    use std::io::BufRead;
+    let file = match fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let mismatch = || {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "saved output content address {} contains different bytes; refusing replacement",
+                path.display()
+            ),
+        )
+    };
+    if file.metadata()?.len() != expected.len() as u64 {
+        return Err(mismatch());
+    }
+    let mut reader = std::io::BufReader::new(file);
+    let mut offset = 0;
+    loop {
+        let bytes = reader.fill_buf()?;
+        if bytes.is_empty() {
+            break;
+        }
+        let end = offset + bytes.len();
+        if expected.get(offset..end) != Some(bytes) {
+            return Err(mismatch());
+        }
+        offset = end;
+        let n = bytes.len();
+        reader.consume(n);
+    }
+    if offset != expected.len() {
+        return Err(mismatch());
+    }
+    crate::fs_portable::sync_publication(reader.get_ref(), path)?;
+    Ok(true)
+}
 fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid, pin: &LivePin) -> Fitted {
     let chars = full.chars().count();
     match pin.save_in(root, persona_id, &full) {
@@ -363,29 +447,126 @@ fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid,
             handle: r.handle,
         },
         Ok(r) => {
+            // The head rides with the pointer, named as a head. A pointer alone sent a citizen
+            // back to re-read the same file in slices for hours (Benchy, the M5, 2026-10-16: a
+            // 578-line lib.rs read at 27,454 chars against a 26,176-char share came back as
+            // "a single 27454-character line (or the result has been truncated)", 121 acts
+            // without a write). What a person gets from `head` she gets here: the first lines,
+            // the line count, and the handle for the rest. Never passed off as the whole.
+            let (head, head_lines) = head_of(&full, share / HEAD_SHARE_DENOM);
             crate::probe!(
                 class = "tool.output.spilled",
                 handle = %r.handle,
                 chars = %chars,
                 share = %share,
+                head_lines = %head_lines,
                 "a tool result was larger than the window's share for one result: saved \
-                 whole and handed to the mind as its handle"
+                 whole and handed to the mind as its head and handle"
             );
             Fitted::Stored {
                 shown: format!(
                     "[this result is {} lines ({chars} chars), more than this window's \
-                     {share}-char share for one result, so it is not shown in part. The whole \
-                     result is saved as output `{}`: open what you need with `tool/output`. \
-                     Jump straight to what broke with `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` \
-                     (or `warnings`/`failures`/`summary`), hunt with `\"pattern\":\"<regex>\"`, or \
-                     read a line range with `startLine`/`endLine`]",
-                    r.lines, r.handle, r.handle,
+                     {share}-char share for one result: lines 1-{head_lines} are shown below and \
+                     the WHOLE result is saved as output `{}`. Open the rest with `tool/output`: \
+                     a line range with `startLine`/`endLine`, a `\"pattern\":\"<regex>\"` hunt, or \
+                     `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/`summary`). \
+                     For a file, a `code/read` with `start_line`/`end_line` reads a range directly]\n{head}\n\
+                     [lines {}-{} of {} are not shown: open them as above]",
+                    r.lines, r.handle, r.handle, head_lines + 1, r.lines, r.lines,
                 ),
                 handle: r.handle,
             }
         }
         Err(e) => unsaved_whole(full, share, &e),
     }
+}
+
+/// The text a tool result goes on as. A result object whose bytes are mostly ONE string field
+/// (a file's `content`, a shell's `stdout`) is rendered as its scalar fields on one line, then
+/// that field's text raw, with its real newlines: what the mind reads, counts and pages by
+/// lines is the text itself, not its JSON escape. Any other shape goes on as compact JSON.
+pub fn result_text(value: &serde_json::Value) -> String {
+    let compact = value.to_string();
+    // A long result with no text body (an array of cards, of matches) goes on pretty-printed:
+    // one element per lines, so its head shows the first elements and the rest pages by line.
+    // Compact, a board of 776 cards was ONE 198k-char line (the M5, 2026-10-16).
+    let pretty_when_long = |v: &serde_json::Value, compact: String| {
+        if compact.len() > PRETTY_JSON_OVER_CHARS {
+            serde_json::to_string_pretty(v).unwrap_or(compact) // unwrap_or: a value that serialized compact serializes pretty; the compact form is the fallback
+        } else {
+            compact
+        }
+    };
+    let Some(object) = value.as_object() else { return pretty_when_long(value, compact) };
+    let Some((body_key, body)) = object
+        .iter()
+        .filter_map(|(k, v)| v.as_str().map(|s| (k, s)))
+        .max_by_key(|(_, s)| s.len())
+    else {
+        return compact;
+    };
+    if body.len() * 2 < compact.len() || !body.contains('\n') {
+        return pretty_when_long(value, compact);
+    }
+    let mut head = serde_json::Map::new();
+    for (k, v) in object {
+        if k != body_key {
+            head.insert(k.clone(), v.clone());
+        }
+    }
+    head.insert(body_key.clone(), serde_json::Value::String(format!("<{} lines below>", body.lines().count())));
+    format!("{}\n{body}", serde_json::Value::Object(head))
+}
+
+/// The scalar fields [`result_text`] put on a result's first line (a file read's
+/// `file_path`, `total_lines`, `start_line`…), read back from the text a mind was shown.
+/// When the result was stored, that text opens with the one-line pointer and the head
+/// follows it, so the header is the first or second line. `None` for a result that went
+/// on as something other than one JSON object line (pretty-printed, or not an object).
+pub fn result_scalars(shown: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    shown.lines().take(2).find_map(|line| {
+        let line = line.trim_start();
+        if !line.starts_with('{') {
+            return None;
+        }
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(serde_json::Value::Object(map)) => Some(map),
+            _ => None,
+        }
+    })
+}
+
+/// A result with no text body longer than this goes on pretty-printed (see [`result_text`]).
+// context-budget-exempt: a readability threshold, not a window bound: compact JSON past a
+// couple of thousand chars is one unreadable line at any window
+const PRETTY_JSON_OVER_CHARS: usize = 2_000;
+
+/// A spilled result's shown head takes this fraction of the one-result share: the share
+/// itself is what the mind's view holds for a result, and the pointer plus a quarter of it
+/// leaves the view room for the next result beside it.
+const HEAD_SHARE_DENOM: usize = 4;
+
+/// The first whole lines of `full` that fit in `max_chars`, and how many lines that is
+/// (at least one line, cut at `max_chars` if even the first line is longer).
+fn head_of(full: &str, max_chars: usize) -> (String, usize) {
+    let mut out = String::new();
+    let mut lines = 0usize;
+    for line in full.lines() {
+        if lines > 0 && out.len() + line.len() + 1 > max_chars {
+            break;
+        }
+        if lines > 0 {
+            out.push('\n');
+        }
+        if lines == 0 && line.len() > max_chars {
+            out.push_str(&line.chars().take(max_chars).collect::<String>());
+            lines = 1;
+            break;
+        }
+        out.push_str(line);
+        lines += 1;
+    }
+    (out, lines)
 }
 
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
@@ -435,134 +616,326 @@ pub struct Investigation {
     /// The rendered, line-numbered slice (grep windows, an explicit range, or
     /// the tail), already bounded to the char budget.
     pub rendered: String,
-    /// `true` when the rendered slice itself hit the budget and was cut — a cue
+    /// `true` when the render allowance or match count leaves content unreturned — a cue
     /// to narrow the pattern or shrink the range.
     pub result_truncated: bool,
+    /// First unrendered selected line or first match beyond max_matches; use byteOffset.
+    pub next_byte_offset: Option<u64>,
 }
 
 /// The default tail size (lines) when neither a pattern nor a range is given —
 /// build/test logs put the verdict at the END, so the tail is the useful default.
 const DEFAULT_TAIL_LINES: usize = 80;
 
-/// Investigate spilled `content`: grep with `pattern` (+ `context_lines` of
-/// surrounding context, the failure-hunting path), OR read an explicit
-/// `[start, end]` 1-based line `range`, OR (neither) return the tail. `max_matches`
-/// caps grep windows; `budget` bounds the rendered output in chars so the result
-/// can't re-flood the context it was meant to protect.
-///
-/// A bad regex is a loud error (the caller's pattern is wrong; naming it lets her
-/// fix it), never a silent empty result.
-pub fn investigate(
-    content: &str,
+/// Read a retained byte extent without consuming a shared cursor. `budget` bounds
+/// the encoded result, including base64 expansion if the extent is not UTF-8.
+/// No byte is discarded: `next_byte_offset` names the next unread source byte.
+pub fn read_extent(
+    path: &Path,
+    offset: u64,
+    length: Option<usize>,
+    budget: usize,
+) -> Result<ByteExtent, String> {
+    use base64::Engine;
+    let file = fs::File::open(path).map_err(|e| format!("open saved output: {e}"))?;
+    let total_bytes = file.metadata().map_err(|e| e.to_string())?.len();
+    if offset > total_bytes {
+        return Err(format!(
+            "byteOffset {offset} exceeds saved length {total_bytes}"
+        ));
+    }
+    let capacity = (budget / 4) * 3; // exact worst-case base64 expansion, not a content clip
+    if capacity == 0 || length == Some(0) {
+        return Err(
+            "byte retrieval needs a positive length and an encoding budget of at least four bytes"
+                .into(),
+        );
+    }
+    let len = length
+        .unwrap_or(capacity)
+        .min(capacity)
+        .min((total_bytes - offset).min(usize::MAX as u64) as usize);
+    let mut bytes = vec![0; len];
+    crate::fs_portable::read_exact_at(&file, &mut bytes, offset)
+        .map_err(|e| format!("read saved extent at {offset}: {e}"))?;
+    let end = offset + len as u64;
+    let (content, encoding) = match String::from_utf8(bytes) {
+        Ok(text) => (text, "utf8"),
+        Err(e) => (
+            base64::engine::general_purpose::STANDARD.encode(e.as_bytes()), // tool/output JSON wire: preserve exact non-UTF8 page bytes in its string field
+            "base64",
+        ),
+    };
+    Ok(ByteExtent {
+        content,
+        encoding,
+        total_bytes,
+        start: offset,
+        end,
+        next_byte_offset: (end < total_bytes).then_some(end),
+    })
+}
+
+pub struct ByteExtent {
+    pub content: String,
+    pub encoding: &'static str,
+    pub total_bytes: u64,
+    pub start: u64,
+    pub end: u64,
+    pub next_byte_offset: Option<u64>,
+}
+
+/// File-backed investigation. Three bounded streaming passes replace the whole
+/// file, line-index and match-index allocations. The count pass examines every
+/// line; the other two render the requested windows with streaming lookahead.
+/// A regex operates on a WHOLE line. A line too large for the scan allowance is
+/// refused with its byte position, never searched as a misleading fragment.
+/// Scan work is O(file bytes), independent of the returned-output allowance:
+/// exact total line/match counts require a full scan. Memory is O(budget).
+pub fn investigate_file(
+    path: &Path,
     pattern: Option<&str>,
     context_lines: usize,
     range: Option<(usize, usize)>,
     max_matches: usize,
     budget: usize,
 ) -> Result<Investigation, String> {
-    let lines: Vec<&str> = content.lines().collect();
-    let total_lines = lines.len();
-    let total_bytes = content.len();
-
-    let (rendered_raw, total_matches) = if let Some(pat) = pattern {
-        let re = Regex::new(pat).map_err(|e| format!("invalid search pattern `{pat}`: {e}"))?;
-        let matches: Vec<usize> = lines
-            .iter()
-            .enumerate()
-            .filter(|(_, l)| re.is_match(l))
-            .map(|(i, _)| i)
-            .collect();
-        let windows = merge_windows(&matches, context_lines, total_lines, max_matches);
-        (render_windows(&lines, &windows, &matches), matches.len())
-    } else if let Some((start, end)) = range {
-        // 1-based inclusive, clamped to the file.
-        let s = start.max(1);
-        let e = end.min(total_lines).max(s);
-        let idxs: Vec<usize> = (s - 1..e).collect();
-        (render_lines(&lines, &idxs, &[]), 0)
-    } else {
-        // No pattern, no range: the tail (where the verdict lives).
-        let s = total_lines.saturating_sub(DEFAULT_TAIL_LINES);
-        let idxs: Vec<usize> = (s..total_lines).collect();
-        let head = format!(
-            "(no pattern or range given — showing the last {} lines; grep with a \
-             `pattern` like \"error\" or \"panic\" to find a specific failure)\n",
-            idxs.len()
-        );
-        (format!("{head}{}", render_lines(&lines, &idxs, &[])), 0)
+    let file = fs::File::open(path).map_err(|e| format!("open saved output: {e}"))?;
+    let end = file.metadata().map_err(|e| e.to_string())?.len();
+    let cursor = || {
+        std::io::BufReader::new(ExtentReader {
+            file: &file,
+            offset: 0,
+            end,
+        })
     };
+    investigate_readers(
+        cursor(),
+        cursor(),
+        cursor(),
+        pattern,
+        context_lines,
+        range,
+        max_matches,
+        budget,
+    )
+}
 
-    let (rendered, result_truncated) = bound(rendered_raw, budget);
+// Independent positioned cursors over ONE opened file, never try_clone + seek.
+// Publication creates an immutable file, so subsequent writes to the same
+// content address only verify and reuse this reader's already-open source.
+struct ExtentReader<'a> {
+    file: &'a fs::File,
+    offset: u64,
+    end: u64,
+}
+impl std::io::Read for ExtentReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = buf
+            .len()
+            .min(self.end.saturating_sub(self.offset).min(usize::MAX as u64) as usize);
+        crate::fs_portable::read_exact_at(self.file, &mut buf[..n], self.offset)?;
+        self.offset += n as u64;
+        Ok(n)
+    }
+}
+struct Scan<R> {
+    reader: R,
+    offset: u64,
+    line: usize,
+    allowance: usize,
+}
+struct Line {
+    text: String,
+    offset: u64,
+    number: usize,
+}
+impl<R: std::io::BufRead> Scan<R> {
+    fn next(&mut self, retain: bool) -> Result<Option<Line>, String> {
+        let offset = self.offset;
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = self
+                .reader
+                .fill_buf()
+                .map_err(|e| format!("scan saved output at byteOffset {}: {e}", self.offset))?;
+            if chunk.is_empty() {
+                break;
+            }
+            let newline = chunk.iter().position(|&b| b == b'\n');
+            let n = newline.map_or(chunk.len(), |i| i + 1);
+            if retain {
+                if n > self.allowance.saturating_sub(bytes.len()) {
+                    return Err(format!("line {} at byteOffset {offset} exceeds scan allowance {} bytes; use tool/output with byteOffset {offset} for exact byte pages (regex was not evaluated on a partial line)", self.line + 1, self.allowance));
+                }
+                bytes.extend_from_slice(&chunk[..n]);
+            }
+            self.reader.consume(n);
+            self.offset += n as u64;
+            if newline.is_some() {
+                break;
+            }
+        }
+        if self.offset == offset {
+            return Ok(None);
+        }
+        self.line += 1;
+        if bytes.last() == Some(&b'\n') {
+            bytes.pop();
+            if bytes.last() == Some(&b'\r') {
+                bytes.pop();
+            }
+        }
+        let text = String::from_utf8(bytes).map_err(|e| {
+            format!(
+                "invalid UTF-8 at byteOffset {}: use byte pages; {e}",
+                offset + e.utf8_error().valid_up_to() as u64
+            )
+        })?;
+        Ok(Some(Line {
+            text,
+            offset,
+            number: self.line,
+        }))
+    }
+}
+
+fn investigate_readers<R: std::io::BufRead>(
+    count: R,
+    render: R,
+    lookahead: R,
+    pattern: Option<&str>,
+    context: usize,
+    range: Option<(usize, usize)>,
+    max_matches: usize,
+    budget: usize,
+) -> Result<Investigation, String> {
+    if budget == 0 {
+        return Err("investigation needs a positive scan and render allowance".into());
+    }
+    let regex = pattern
+        .map(Regex::new)
+        .transpose()
+        .map_err(|e| format!("invalid search pattern: {e}"))?;
+    let scan = |reader| Scan {
+        reader,
+        offset: 0,
+        line: 0,
+        allowance: budget,
+    };
+    let mut count = scan(count);
+    let mut total_matches = 0;
+    let mut first_unselected = None;
+    while let Some(line) = count.next(regex.is_some())? {
+        if regex.as_ref().is_some_and(|r| r.is_match(&line.text)) {
+            total_matches += 1;
+            if total_matches == max_matches.saturating_add(1) {
+                first_unselected = Some(line.offset);
+            }
+        }
+    }
+    let total_lines = count.line;
+    let total_bytes = usize::try_from(count.offset)
+        .map_err(|_| "saved output length cannot be represented on this platform")?;
+    let mut render = scan(render);
+    let mut lookahead = scan(lookahead);
+    let mut seen_matches = 0;
+    let mut next_match = |lookahead: &mut Scan<R>| -> Result<Option<usize>, String> {
+        if seen_matches >= max_matches || regex.is_none() {
+            return Ok(None);
+        }
+        while let Some(line) = lookahead.next(true)? {
+            if regex.as_ref().is_some_and(|r| r.is_match(&line.text)) {
+                seen_matches += 1;
+                return Ok(Some(line.number));
+            }
+        }
+        Ok(None)
+    };
+    let mut next = next_match(&mut lookahead)?;
+    let mut previous = None::<usize>;
+    let mut rendered = String::new();
+    if pattern.is_none() && range.is_none() {
+        rendered = format!("(no pattern or range given — showing the last {} lines; grep with a `pattern` like \"error\" or \"panic\" to find a specific failure)\n", total_lines.min(DEFAULT_TAIL_LINES));
+        if rendered.len() > budget {
+            rendered.clear();
+        }
+    }
+    let mut last_rendered = None::<usize>;
+    let mut next_byte_offset = first_unselected;
+    let mut result_truncated = first_unselected.is_some();
+    loop {
+        let number = render.line + 1;
+        while next.is_some_and(|n| n < number) {
+            previous = next;
+            next = next_match(&mut lookahead)?;
+        }
+        let selected = if regex.is_some() {
+            previous.is_some_and(|n| n.saturating_add(context) >= number)
+                || next.is_some_and(|n| n <= number.saturating_add(context))
+        } else if let Some((start, end)) = range {
+            number >= start.max(1) && number <= end.max(start.max(1))
+        } else {
+            number > total_lines.saturating_sub(DEFAULT_TAIL_LINES)
+        };
+        // A long unrelated line must not make a later short range/tail unreadable.
+        // Counting and skipping use bounded chunks without materializing the line.
+        let Some(line) = render.next(selected)? else {
+            break;
+        };
+        if !selected {
+            continue;
+        }
+        let separator = if last_rendered.is_some_and(|n| n + 1 < line.number) {
+            "    ⋯\n"
+        } else {
+            ""
+        };
+        let mark = if regex.as_ref().is_some_and(|r| r.is_match(&line.text)) {
+            '>'
+        } else {
+            ' '
+        };
+        let row = format!("{separator}{mark}{:>6} {}\n", line.number, line.text);
+        if row.len() > budget.saturating_sub(rendered.len()) {
+            result_truncated = true;
+            next_byte_offset = Some(next_byte_offset.map_or(line.offset, |n| n.min(line.offset)));
+            break;
+        }
+        rendered.push_str(&row);
+        last_rendered = Some(line.number);
+    }
     Ok(Investigation {
         total_lines,
         total_bytes,
         total_matches,
         rendered,
         result_truncated,
+        next_byte_offset,
     })
 }
 
-/// Merge match line-indices into deduped, sorted [start, end] windows of
-/// `±context` lines, capped to the windows around the first `max_matches` hits.
-fn merge_windows(
-    matches: &[usize],
+#[cfg(test)]
+fn investigate(
+    content: &str,
+    pattern: Option<&str>,
     context: usize,
-    total: usize,
+    range: Option<(usize, usize)>,
     max_matches: usize,
-) -> Vec<(usize, usize)> {
-    let mut windows: Vec<(usize, usize)> = Vec::new();
-    for &m in matches.iter().take(max_matches) {
-        let start = m.saturating_sub(context);
-        let end = (m + context).min(total.saturating_sub(1));
-        match windows.last_mut() {
-            // Overlapping or adjacent → extend the open window.
-            Some(last) if start <= last.1 + 1 => last.1 = last.1.max(end),
-            _ => windows.push((start, end)),
-        }
-    }
-    windows
+    budget: usize,
+) -> Result<Investigation, String> {
+    let reader = || std::io::Cursor::new(content.as_bytes());
+    investigate_readers(
+        reader(),
+        reader(),
+        reader(),
+        pattern,
+        context,
+        range,
+        max_matches,
+        budget,
+    )
 }
-
-/// Render a set of windows with line numbers, `>` marking matched lines and a
-/// `⋯` separator between non-contiguous windows.
-fn render_windows(lines: &[&str], windows: &[(usize, usize)], matches: &[usize]) -> String {
-    let mut out = String::new();
-    for (wi, &(start, end)) in windows.iter().enumerate() {
-        if wi > 0 {
-            out.push_str("    ⋯\n");
-        }
-        let idxs: Vec<usize> = (start..=end).collect();
-        out.push_str(&render_lines(lines, &idxs, matches));
-    }
-    out
-}
-
-/// Render the given 0-based line indices with 1-based numbers; lines whose index
-/// is in `highlight` get a `>` gutter, the rest a space.
-fn render_lines(lines: &[&str], idxs: &[usize], highlight: &[usize]) -> String {
-    let mut out = String::new();
-    for &i in idxs {
-        let Some(line) = lines.get(i) else { continue };
-        let mark = if highlight.contains(&i) { '>' } else { ' ' };
-        out.push_str(&format!("{mark}{:>6} {line}\n", i + 1));
-    }
-    out
-}
-
-/// Bound `s` to `max` bytes on a char boundary, returning (bounded, was_cut).
-fn bound(s: String, max: usize) -> (String, bool) {
-    if s.len() <= max {
-        return (s, false);
-    }
-    let mut end = max.min(s.len());
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    let mut t = s[..end].to_string();
-    t.push_str("\n…[more — narrow the pattern or range]");
-    (t, true)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -648,7 +1021,10 @@ mod tests {
         else {
             panic!("an over-share result is saved")
         };
-        assert!(!shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "no fragment: {shown}");
+        // the head rides along, LABELLED as lines 1-N of M; the tail does not, and the pointer
+        // names the unseen range, so a head is never passed off as the whole
+        assert!(shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "a labelled head, no tail: {shown}");
+        assert!(shown.contains("lines 1-") && shown.contains("are not shown"), "the head is named and the unseen range is named: {shown}");
         assert!(shown.contains(&handle) && shown.contains("tool/output"), "names the way in: {shown}");
         assert!(shown.contains("\"filter\":\"errors\""), "points at the failure filter: {shown}");
         let path = resolve_in(&tmp, persona, &handle).expect("resolve");
@@ -671,9 +1047,11 @@ mod tests {
         };
         assert!(shown.contains("cannot be reopened") && shown.ends_with("ok"), "{shown}");
 
-        // Multibyte bodies measure in chars, the unit the share is in, and never split.
+        // Multibyte bodies measure in chars, the unit the share is in, and never split: the
+        // head of a one-line body is cut at a CHAR boundary, at most a quarter of the share.
         let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona, &LivePin::new()).into_parts();
-        assert!(!shown.contains('α'));
+        let greek = shown.chars().filter(|c| "αβγδε".contains(*c)).count();
+        assert!(greek > 0 && greek <= 64 / HEAD_SHARE_DENOM, "a char-bounded head: {greek} chars in {shown}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
@@ -826,6 +1204,132 @@ mod tests {
         let inv = investigate(&body, Some("matchme"), 0, None, 10000, 500).expect("ok");
         assert!(inv.result_truncated);
         assert!(inv.rendered.len() <= 600, "bounded near the budget");
-        assert!(inv.rendered.contains("narrow"));
+        assert!(inv.next_byte_offset.is_some());
+    }
+    // what this catches: independent cursors retain one opened source across
+    // publication at the same path, and all continue from their own byte offsets.
+    #[test]
+    fn positioned_investigation_keeps_one_source_across_reuse() {
+        use std::io::Read;
+        let dir = tempfile::tempdir().unwrap();
+        let persona = Uuid::new_v4();
+        let handle = "deadbeef";
+        let path = write_in(dir.path(), persona, handle, "original\n").unwrap();
+        let file = fs::File::open(&path).unwrap();
+        let mut first = ExtentReader {
+            file: &file,
+            offset: 0,
+            end: 9,
+        };
+        let mut second = ExtentReader {
+            file: &file,
+            offset: 0,
+            end: 9,
+        };
+        let mut bytes = [0; 3];
+        first.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"ori");
+        write_in(dir.path(), persona, handle, "original\n").unwrap();
+        assert_eq!(
+            write_in(dir.path(), persona, handle, "replacement\n")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        second.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"ori");
+        first.read_exact(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"gin");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "original\n");
+    }
+
+    // what this catches: unselected huge lines do not block a small range or
+    // tail; regex still refuses to misrepresent a partial-line search as complete.
+    #[test]
+    fn long_unselected_lines_are_counted_without_materialization() {
+        let body = format!("{}\n{}", "x".repeat(10000), "short\n".repeat(100));
+        let range = investigate(&body, None, 0, Some((2, 3)), 50, 256).unwrap();
+        assert_eq!(range.total_lines, 101);
+        assert_eq!(range.total_bytes, body.len());
+        assert!(range.rendered.contains("     2 short"));
+        let tail = investigate(&body, None, 0, None, 50, 256).unwrap();
+        assert!(tail.rendered.contains("short"));
+        assert!(investigate(&body, Some("short"), 0, None, 50, 256)
+            .unwrap_err()
+            .contains("byteOffset 0"));
+    }
+
+    // what this catches: the existing pin/remover contract protects staging as
+    // well as published bytes, including publication followed by a holder release.
+    #[test]
+    fn staging_and_published_objects_share_the_existing_pin() {
+        use crate::paging::filesystem_tier_pool::Removal;
+        let dir = tempfile::tempdir().unwrap();
+        let persona = Uuid::new_v4();
+        let parent = persona_dir(dir.path(), persona);
+        fs::create_dir_all(&parent).unwrap();
+        let handle = "deadbeef";
+        let pin = LivePin::new();
+        pin.hold(handle);
+        let staging = parent.join(format!("{handle}.{}", Uuid::new_v4()));
+        fs::write(&staging, "retained").unwrap();
+        assert!(matches!(evict_unless_live(&staging), Removal::Protected));
+        let published = parent.join(format!("{handle}.log"));
+        crate::fs_portable::durable_publish_new(&staging, &published).unwrap();
+        let _ = fs::remove_file(&staging);
+        assert!(matches!(evict_unless_live(&published), Removal::Protected));
+        drop(pin);
+        let _ = evict_unless_live(&published);
+        assert!(!published.exists());
+    }
+
+    // Regression for #5036: a failed publisher leaves visible bytes, not a
+    // durability receipt. Actual spill reuse must independently complete the fence.
+    #[test]
+    fn visible_publication_requires_a_successful_reuse_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let persona = Uuid::new_v4();
+        let body = "retained output\n";
+        let handle = handle_of(body);
+        let pin = LivePin::new();
+        pin.hold(&handle);
+        let path = persona_dir(dir.path(), persona).join(format!("{handle}.log"));
+        crate::fs_portable::tests::with_failed_publication_fence(|| {
+            assert!(write_in(dir.path(), persona, &handle, body).is_err());
+            assert_eq!(fs::read_to_string(&path).unwrap(), body);
+            // The object is already visible; byte equality must not bypass the fence.
+            assert!(write_in(dir.path(), persona, &handle, body).is_err());
+        });
+        assert_eq!(write_in(dir.path(), persona, &handle, body).unwrap(), path);
+    }
+
+    #[cfg(feature = "stress-tests")]
+    mod stress {
+        use super::*;
+
+        // Competing writers must converge on the same complete immutable object,
+        // and neither publisher may leave a staging object behind.
+        #[test]
+        fn concurrent_duplicate_publishers_reuse_one_object() {
+            let dir = tempfile::tempdir().unwrap();
+            let persona = Uuid::new_v4();
+            let content = "shared result\n".repeat(8192);
+            let handle = handle_of(&content);
+            let pin = LivePin::new();
+            pin.hold(&handle);
+            let ready = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let publish = || {
+                    ready.wait();
+                    write_in(dir.path(), persona, &handle, &content).unwrap()
+                };
+                let first = scope.spawn(publish);
+                let second = scope.spawn(publish);
+                let path = first.join().unwrap();
+                assert_eq!(path, second.join().unwrap());
+                assert_eq!(fs::read_to_string(path).unwrap(), content);
+            });
+            assert_eq!(fs::read_dir(persona_dir(dir.path(), persona)).unwrap().count(), 1);
+        }
     }
 }

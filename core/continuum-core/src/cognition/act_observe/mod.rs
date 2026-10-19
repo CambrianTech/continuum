@@ -38,7 +38,7 @@ mod types;
 pub use types::{SettleOutcome, SettleStep};
 
 mod apply;
-mod disk_change;
+pub(crate) mod disk_change;
 pub use apply::{apply_act, ActChain};
 
 mod settle;
@@ -94,13 +94,17 @@ mod tests {
     /// A `ToolExecutor` that records the `context_id` it was handed and returns a
     /// canned per-call result — so a test can assert BOTH that the act was scoped
     /// to the right room and that the observation correlates call→result.
+    #[derive(Clone)]
     struct RecordingExecutor {
-        seen_context: Mutex<Option<Uuid>>,
+        seen_context: Arc<Mutex<Option<Uuid>>>,
         result_content: String,
     }
 
     #[async_trait]
     impl ToolExecutor for RecordingExecutor {
+        fn in_hands(&self, _persona: Uuid, _context: crate::code::hands::HandsContext) -> Option<Arc<dyn ToolExecutor>> {
+            Some(Arc::new(self.clone()))
+        }
         async fn execute_native_batch(
             &self,
             calls: &[ToolCall],
@@ -197,11 +201,13 @@ mod tests {
     /// driven), not an iteration counter in the agentic sense.
     struct ActThenSpeak {
         responded_through: std::sync::atomic::AtomicU64,
+        admission_open: Option<Arc<std::sync::atomic::AtomicBool>>,
     }
     impl ActThenSpeak {
         fn new() -> Self {
             Self {
                 responded_through: std::sync::atomic::AtomicU64::new(0),
+                admission_open: None,
             }
         }
     }
@@ -226,6 +232,10 @@ mod tests {
             true
         }
         async fn contribute(&self, ws: &Workspace) -> Option<Contribution> {
+            if self.admission_open.as_ref().is_some_and(|gate| !gate.load(std::sync::atomic::Ordering::SeqCst)) {
+                return Some(Contribution::deliberation_fault("lane starved before dispatch"));
+            }
+
             use std::sync::atomic::Ordering;
             let latest = latest_action_seq(&ws.perceived());
             if latest > self.responded_through.load(Ordering::Relaxed) {
@@ -327,7 +337,7 @@ mod tests {
     #[tokio::test]
     async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok\n".into(),
         });
         let adm = admission();
@@ -337,7 +347,7 @@ mod tests {
         let chain = ActChain::new();
 
         // Act 1 — starts the chain: no predecessor, so no edge.
-        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
+        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain, None).await);
         let first = chain.prior().expect("first act admitted onto the chain");
         assert!(
             adm.engram_neighbors(&first).is_empty(),
@@ -351,7 +361,7 @@ mod tests {
             name: "code/read".into(),
             input: serde_json::json!({ "file_path": "src/main.rs" }),
         };
-        acts_of(apply_act(&cycle, &[second_call], "inspect", room, &chain).await);
+        acts_of(apply_act(&cycle, &[second_call], "inspect", room, &chain, None).await);
         let second = chain.prior().expect("second act admitted onto the chain");
         assert_ne!(first, second, "two acts, two engrams");
 
@@ -385,7 +395,7 @@ mod tests {
     #[tokio::test]
     async fn a_chain_rooted_in_its_trigger_links_the_first_act_to_what_caused_the_turn() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok\n".into(),
         });
         let adm = admission();
@@ -397,7 +407,7 @@ mod tests {
         let trigger = Uuid::new_v4();
         let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Stimulus(trigger));
 
-        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain).await);
+        acts_of(apply_act(&cycle, &[tool_call()], "start", room, &chain, None).await);
         let first = chain.prior().expect("first act admitted onto the chain");
         assert_ne!(first, trigger, "the act is its own engram, not the trigger");
 
@@ -419,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn an_unrooted_chain_leaves_its_first_act_honestly_unlinked() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok\n".into(),
         });
         let adm = admission();
@@ -427,7 +437,7 @@ mod tests {
             .with_acting(body(exec.clone(), adm.clone()));
         let chain = ActChain::rooted_in(&crate::cognition::workspace::Cause::Ambient);
 
-        acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain).await);
+        acts_of(apply_act(&cycle, &[tool_call()], "start", Uuid::new_v4(), &chain, None).await);
         let first = chain.prior().expect("first act admitted");
         assert!(
             adm.engram_neighbors(&first).is_empty(),
@@ -477,10 +487,178 @@ mod tests {
     // observation correlates each call to its result in first person, and the
     // outcome becomes a recallable engram. Regresses the multi-room steer + the
     // result-as-memory choice (ACTING-ORGANISM §3.3).
+    // Regression17d3e6ff: real card lookup must resolve admitted hands before
+    // board grounding, ledger rendering and execution, without moving the wake.
+    #[tokio::test]
+    async fn bound_card_activity_is_shared_by_perception_and_execution() {
+        use crate::cognition::{
+            llm_deliberation_faculty::LlmDeliberationFaculty,
+            rag_source_faculty::{RagSourceFaculty, SaliencePolicy},
+        };
+        use crate::persona::{
+            airc_runtime::PersonaAircRuntime, airc_runtime_registry::PersonaAircRuntimeRegistry,
+            room_board_source::RoomBoardSource,
+        };
+        let home = tempfile::tempdir().unwrap();
+        let _home = crate::test_env::HomeGuard::set(home.path()).await;
+        let airc = Arc::new(
+            airc_lib::Airc::open_with_wire_root_for_test(home.path(), home.path())
+                .await
+                .unwrap(),
+        );
+        let task = airc.join("bound-activity-task").await.unwrap();
+        let card = airc
+            .create_work_card(airc_lib::CreateWorkCard::new(
+                airc_lib::RepoId::new("fixture/activity").unwrap(),
+                "implement subject change",
+                airc_lib::Priority::P2,
+            ))
+            .await
+            .unwrap();
+        let claim = airc
+            .claim_work_card(airc_lib::ClaimWorkCard {
+                card_id: card,
+                ttl_ms: 600_000,
+            })
+            .await
+            .unwrap();
+        let wake = airc.join("bound-activity-wake").await.unwrap();
+        let persona = airc.peer_id().as_uuid();
+        PersonaAircRuntimeRegistry::set_global(PersonaAircRuntimeRegistry::new());
+        let registry = PersonaAircRuntimeRegistry::try_global().unwrap();
+        let runtime = registry.register(PersonaAircRuntime::from_attached(
+            persona,
+            "Ivar",
+            home.path().to_path_buf(),
+            airc.clone(),
+            wake.channel,
+            crate::persona::identity_provider::PersonaIdentitySource::FreshlyMinted,
+        ));
+        let hands =
+            crate::code::hands::HandsContext::for_claim(persona, card.as_uuid(), claim.as_uuid());
+        let checkout = airc_lib::work_worktree::worktree_path_for(card).unwrap();
+        assert!(checkout.starts_with(home.path()));
+        std::fs::create_dir_all(checkout.join(".git")).unwrap();
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Arc::new(Mutex::new(None)),
+            result_content: "read subject file".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(8));
+        let (board_source, _dirty) = crate::persona::cached_source::CachedRagSource::new(Arc::new(
+            RoomBoardSource::new(persona, runtime).for_room(wake.channel.as_uuid()),
+        ));
+        let board = RagSourceFaculty::new(persona, board_source, SaliencePolicy::StandingFraming);
+        let cycle = WorkspaceCycle::new(
+            vec![
+                Arc::new(board),
+                Arc::new(WorkingMemoryFaculty::new(wm.clone())),
+                Arc::new(ActThenSpeak::new()),
+            ],
+            Arc::new(SalienceArbiter),
+            8,
+        )
+        .with_acting(Arc::new(ActingBody {
+            persona_id: persona,
+            persona_name: "Ivar".into(),
+            executor: exec.clone(),
+            admission: admission(),
+            working_memory: wm.clone(),
+        }));
+        let board_state = airc.work_board_in(&task).await.unwrap();
+        let focus = board_state.card(card).unwrap();
+        let binding = crate::cognition::persona_workspace::bind_card(&cycle, persona, focus).await;
+        assert_eq!(binding.hands.as_ref().map(|h| h.context), Some(hands));
+        let burst = crate::cognition::workspace::Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(wake.channel.as_uuid()).unwrap(),
+            "work on my held card".into(),
+        )
+        .in_hands(Some(hands));
+        let _ = settle_step(
+            &cycle,
+            burst.clone(),
+            true,
+            TurnFraming::default(),
+            Situation::default(),
+            &ActChain::new(),
+        )
+        .await;
+        assert_eq!(
+            *exec.seen_context.lock().unwrap(),
+            Some(task.channel.as_uuid()),
+            "tools execute in the card activity"
+        );
+        let ws = cycle.run(burst).await;
+        assert_eq!(ws.room_id, wake.channel.as_uuid());
+        assert_eq!(ws.activity_room_id, task.channel.as_uuid());
+        assert!(
+            ws.broadcast
+                .iter()
+                .any(|c| c.content.contains("implement subject change")),
+            "the task board reaches perception"
+        );
+        let prompt = LlmDeliberationFaculty::new(
+            persona,
+            "Ivar",
+            "You are Ivar.",
+            Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new()),
+        )
+        .with_working_memory(wm)
+        .prompt_view(&ws);
+        let ledger = prompt
+            .messages
+            .iter()
+            .map(|m| m.content_text())
+            .find(|m| m.starts_with("[steps taken this session]"))
+            .unwrap();
+        assert!(ledger.contains("code/run"), "{ledger}");
+        assert!(!ledger.contains("no acts in this room"), "{ledger}");
+        assert_eq!(airc.current_room().await.unwrap().channel, wake.channel);
+        let private = crate::persona::mind_room::mind_room_id(persona);
+        let private_ws = cycle
+            .run(
+                crate::cognition::workspace::Burst::raw_in(
+                    crate::identity::ActivityRoom::from_uuid(private).unwrap(),
+                    "private thought".into(),
+                )
+                .in_hands(Some(hands)),
+            )
+            .await;
+        assert_eq!(
+            private_ws.activity_room_id, private,
+            "private thoughts never adopt public task scope"
+        );
+        // An eval's fresh hands and a roomless fixture never borrow the focused claim.
+        let fork = crate::code::hands::HandsContext::fresh();
+        assert_eq!(
+            crate::cognition::persona_workspace::activity_room_for(persona, Some(fork), Uuid::nil())
+                .await,
+            Uuid::nil(),
+        );
+        let unbound_ws = cycle
+            .run(crate::cognition::workspace::Burst::from("synthetic exam").in_hands(Some(fork)))
+            .await;
+        assert_eq!(unbound_ws.activity_room_id, unbound_ws.room_id);
+        assert!(!unbound_ws
+            .broadcast
+            .iter()
+            .any(|c| c.content.contains("implement subject change")));
+        assert_eq!(
+            crate::cognition::persona_workspace::activity_room_for(
+                persona,
+                None,
+                wake.channel.as_uuid()
+            )
+            .await,
+            wake.channel.as_uuid(),
+            "default hands do not inherit the focused claim's card",
+        );
+        registry.remove(persona);
+    }
+
     #[tokio::test]
     async fn apply_act_scopes_to_the_room_and_observes_the_result() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "4\n".into(),
         });
         let adm = admission();
@@ -494,6 +672,7 @@ mod tests {
             "check the math",
             room,
             &ActChain::new(),
+            None,
         )
         .await
         {
@@ -638,6 +817,7 @@ mod tests {
             "building",
             Uuid::new_v4(),
             &ActChain::new(),
+            None,
         )
         .await
         {
@@ -686,8 +866,9 @@ mod tests {
                     &[tool_call()],
                     "try",
                     Uuid::new_v4(),
-                    &ActChain::new()
-                )
+                    &ActChain::new(),
+            None,
+        )
                 .await,
                 ActOutcome::NoHands
             ),
@@ -710,8 +891,9 @@ mod tests {
                     &[tool_call()],
                     "run",
                     Uuid::new_v4(),
-                    &ActChain::new()
-                )
+                    &ActChain::new(),
+            None,
+        )
                 .await,
                 ActOutcome::ExecutorError { .. }
             ),
@@ -726,7 +908,7 @@ mod tests {
     #[tokio::test]
     async fn drive_to_settle_acts_then_settles_on_speak() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "4".into(),
         });
         let adm = admission();
@@ -756,6 +938,83 @@ mod tests {
         assert!(matches!(outcome.decision, Decision::Speak { .. }));
     }
 
+    // Regression 2e3f0eab: admission refusal must retain the original directed
+    // input, even when a newer directed input arrives before the admitted retry.
+    #[tokio::test]
+    async fn starved_priority_input_survives_until_dispatch_without_replaying_actions() {
+        use crate::persona::service_loop::{IncomingMessage, PersonaConversation};
+        use crate::persona::scripted_conversation::ScriptedConversation;
+        use crate::persona::wake_backlog::PendingInput;
+        use crate::cognition::workspace::{Burst, TurnAttention};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut faculty = ActThenSpeak::new();
+        faculty.admission_open = Some(Arc::clone(&gate));
+        let exec = Arc::new(RecordingExecutor {
+            seen_context: Arc::new(Mutex::new(None)),
+            result_content: "4".into(),
+        });
+        let wm = Arc::new(WorkingMemory::new(8));
+        let cycle = WorkspaceCycle::new(
+            vec![Arc::new(WorkingMemoryFaculty::new(Arc::clone(&wm))) as Arc<dyn Faculty>, Arc::new(faculty)],
+            Arc::new(SalienceArbiter), 8,
+        ).with_acting(body_with_wm(exec.clone(), admission(), wm));
+        let original = IncomingMessage {
+            event_id: Uuid::new_v4(), lamport: 10, peer_id: Uuid::new_v4(),
+            room_id: Uuid::new_v4(), text: "Asha, inspect this exact input".into(), work: None,
+            media: vec![crate::persona::channel_items::MediaItemRequest {
+                kind: "image".into(), mime_type: Some("image/png".into()),
+                blob_hash: Some("sha256:retained-input".into()), url: None,
+                description: Some("original attachment".into()),
+            }],
+        };
+        let mut newer = original.clone();
+        newer.event_id = Uuid::new_v4();
+        newer.room_id = Uuid::new_v4();
+        newer.lamport += 1;
+        newer.text = "Asha, a newer directed request".into();
+        let mut conversation = ScriptedConversation::new();
+        conversation.prime().await.unwrap();
+        let mut pending = PendingInput::default();
+        let cause = Some(Uuid::new_v4());
+        let framing = TurnFraming::message(TurnAttention::for_message(true, false));
+        let burst = |message: &IncomingMessage| Burst::raw_in(
+            crate::identity::ActivityRoom::from_uuid(message.room_id).unwrap(),
+            message.render_content(),
+        );
+        let refused = drive_to_settle_with_input(&cycle, burst(&original), 8, framing, &mut conversation).await;
+        assert!(refused.deferred_before_dispatch);
+        assert_eq!(refused.acts, 0);
+        assert!(exec.seen_context.lock().unwrap().is_none());
+        let (step, _, _) = SettleStep::from_settled(refused);
+        pending.settle(&original, cause, framing.attention, &step);
+        conversation.event_feed().push(Ok(Some(newer.clone())));
+        assert_eq!(pending.message(), Some(&original));
+        assert_eq!(pending.wake_engram(), cause);
+
+        // A second failed admission neither consumes nor replaces the original.
+        let retried = pending.message().unwrap().clone();
+        let refused_again = drive_to_settle_with_input(&cycle, burst(&retried), 8, framing, &mut conversation).await;
+        let (step, _, _) = SettleStep::from_settled(refused_again);
+        pending.settle(&retried, cause, framing.attention, &step);
+        assert_eq!(pending.message(), Some(&original));
+        assert!(conversation.perceive_ready().await.unwrap().iter().any(|m| **m == newer));
+
+        gate.store(true, Ordering::SeqCst);
+        let completed = drive_to_settle_with_input(&cycle, burst(pending.message().unwrap()), 8, framing, &mut conversation).await;
+        assert!(!completed.deferred_before_dispatch);
+        assert_eq!(completed.acts, 1, "only the admitted retry executes an action");
+        assert!(completed.room_updates.iter().any(|m| **m == newer));
+        assert_eq!(completed.room, original.room_id);
+        let (step, _, _) = SettleStep::from_settled(completed);
+        assert!(matches!(&step, SettleStep::Spoke(_)));
+        pending.settle(&original, cause, framing.attention, &step);
+        assert!(pending.message().is_none(), "completed input is not replayed");
+        assert_eq!(conversation.next_message().await.unwrap(), Some(newer));
+        assert!(conversation.next_message().await.unwrap().is_none());
+    }
+
     // what this catches: THE SETTLE ARTERY (the dominant SWE-bench killer, glass-boxed
     // 2026-08-04 on sympy-21379: one `code/tree`, then a prose explanation of the bug —
     // 0 patch bytes, 29 of 30 acts unspent, run over). When the CALLER declared the
@@ -770,7 +1029,7 @@ mod tests {
         let speaker = CountingSpeaker::new();
         let wm = Arc::new(WorkingMemory::new(8));
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "src/".into(),
         });
         let cycle = WorkspaceCycle::new(
@@ -817,7 +1076,7 @@ mod tests {
         let speaker = CountingSpeaker::new();
         let wm = Arc::new(WorkingMemory::new(8));
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let cycle = WorkspaceCycle::new(
@@ -891,7 +1150,7 @@ mod tests {
     #[tokio::test]
     async fn drive_to_settle_gates_discovery_at_half_budget_on_workspace_deliverable() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "file contents...".into(),
         });
         let adm = admission();
@@ -927,7 +1186,7 @@ mod tests {
         // Ambient control: same never-writing faculty, deliverable is the utterance —
         // discovery is not gated and the full budget is hers.
         let exec2 = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "file contents...".into(),
         });
         let cycle2 = WorkspaceCycle::new(
@@ -955,7 +1214,7 @@ mod tests {
     #[tokio::test]
     async fn act_budget_facts_reach_working_memory_on_workspace_turns_only() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "file contents...".into(),
         });
         let adm = admission();
@@ -997,7 +1256,7 @@ mod tests {
 
         // Control: an ordinary (speech-deliverable) turn records no stopwatch.
         let exec2 = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "file contents...".into(),
         });
         let body2 = body(exec2, admission());
@@ -1026,7 +1285,7 @@ mod tests {
     #[tokio::test]
     async fn drive_to_settle_returns_unsettled_act_when_budget_exhausted() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "...".into(),
         });
         let adm = admission();
@@ -1077,6 +1336,7 @@ mod tests {
         let mut call = tool_call();
         let mut acts = acts_of(apply_act(
             &cycle, &[call.clone()], "inspect", Uuid::new_v4(), &ActChain::new(),
+            None,
         ).await);
         let original = batch_evidence(&[call.clone()], &acts);
         assert!(original.is_some());
@@ -1103,7 +1363,7 @@ mod tests {
     #[tokio::test]
     async fn settle_step_defers_the_act_without_executing_when_may_act_is_false() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "...".into(),
         });
         let adm = admission();
@@ -1939,7 +2199,7 @@ mod tests {
             ("code/tree", serde_json::json!({"path":"b"}), "tree two"),
         ].into_iter().enumerate() {
             let call = ToolCall { id: format!("call-{i}"), name: name.into(), input };
-            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &chain).await);
+            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &chain, None).await);
             assert!(matches!(acts[0].status, ActStatus::Executed));
             assert!(acts[0].output.result.content.contains(expected));
             assert_eq!(acts[0].output.result.is_error, (i == 3).then_some(true));
@@ -1963,7 +2223,7 @@ mod tests {
                 name: "code/read".into(),
                 input: serde_json::json!({"file_path": "README.md"}),
             };
-            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new()).await);
+            let acts = acts_of(apply_act(&cycle, &[call], "inspect", room, &ActChain::new(), None).await);
             assert!(matches!(acts[0].status, ActStatus::Executed));
             assert_eq!(acts[0].output.result.tool_use_id, id);
             assert!(acts[0].output.result.content.contains(if i == 0 {
@@ -2073,7 +2333,7 @@ mod tests {
     #[tokio::test]
     async fn spoken_narrated_action_records_unfulfilled_promise() {
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let promise = "I'll run this script to check:\n```python\nprint(2+2)\n```\nOutput soon!";
@@ -2141,7 +2401,7 @@ mod tests {
             )
         };
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let wm = Arc::new(WorkingMemory::new(4));
@@ -2185,7 +2445,7 @@ mod tests {
 
         // With an outstanding promise in memory → [unverified].
         let exec = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let wm = Arc::new(WorkingMemory::new(4));
@@ -2218,7 +2478,7 @@ mod tests {
 
         // Clean memory, same fenced content → legitimate drafting, no line.
         let exec2 = Arc::new(RecordingExecutor {
-            seen_context: Mutex::new(None),
+            seen_context: Arc::new(Mutex::new(None)),
             result_content: "ok".into(),
         });
         let wm2 = Arc::new(WorkingMemory::new(4));

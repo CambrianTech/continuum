@@ -1,5 +1,14 @@
 # Shared deployment-path record. Runtime paths::payload_root reads the same
 # UTF-8 absolute-path file; cache/model placement is deliberately independent.
+function Get-ManagedColdPayloadRoot {
+    param([string]$HomeRoot, [string]$ColdRoot)
+    $hash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $scope = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($HomeRoot))))).Replace('-', '').ToLowerInvariant().Substring(0, 16)
+    } finally { $hash.Dispose() }
+    return (Join-Path (Join-Path $ColdRoot 'payloads') $scope)
+}
+
 function Get-ManagedPayloadRoot {
     param([string]$HomeRoot = (Join-Path $env:USERPROFILE '.continuum'))
     $record = Join-Path $HomeRoot 'payload-root'
@@ -23,11 +32,7 @@ function Initialize-ManagedPayloadRoot {
     }).Count -gt 0
     $root = $HomeRoot
     if ($ColdRoot -and -not $legacy) {
-        $hash = [Security.Cryptography.SHA256]::Create()
-        try {
-            $scope = ([BitConverter]::ToString($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFullPath($HomeRoot))))).Replace('-', '').ToLowerInvariant().Substring(0, 16)
-        } finally { $hash.Dispose() }
-        $root = Join-Path (Join-Path $ColdRoot 'payloads') $scope
+        $root = Get-ManagedColdPayloadRoot -HomeRoot $HomeRoot -ColdRoot $ColdRoot
         if ((Test-Path -LiteralPath $root) -and @(Get-ChildItem -LiteralPath $root -Force -ErrorAction Stop).Count) {
             throw "Unowned payload directory $root is not empty; refusing to adopt another install."
         }

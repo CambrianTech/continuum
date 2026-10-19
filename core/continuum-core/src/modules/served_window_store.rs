@@ -6,49 +6,56 @@
 //! moving measured demand each time). The page dir is keyed `<model>--c<window>`
 //! and the spawn sweeps every other generation, so NO page ever survived a
 //! reboot — every citizen re-prefilled cold after every deploy. Joel: "virtual
-//! disk paging … managed and maintained across runs." One writer (the spawn, the
-//! place that knows what actually served), one reader (the plan, which prefers a
-//! stored window that still fits over a fresh derivation).
+//! disk paging … managed and maintained across runs." The serving lifecycle records
+//! settled candidates; successful terminal usage observes an exact generation.
+//! Both updates belong to this store. The last observed window is only a cache
+//! preference: current workload and admission decide what can serve after restart.
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 const FILE: &str = "served-window.json";
 
+/// Geometry observed under the endpoint owner's generation lease, not a planner proposal.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServedGeometry {
+    pub model_id: String,
+    pub generation: uuid::Uuid,
+    pub per_slot_window: u32,
+    pub lanes: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredServedWindow {
     pub model_id: String,
     pub per_slot_window: u32,
-    /// The lane count that served beside that window — the other half of the geometry a
-    /// cold boot plans first (9/18: a window alone let the boot launch 8 lanes at 28k).
-    /// Absent on an older record (default 0 = unknown): the window still carries over.
+    /// Observed lane count, never a cap on a future allocation. Zero is unknown.
     #[serde(default)]
     pub lanes: u32,
-    /// The typical prompt (median sent tokens, residents AND leased-in) the seat served at
-    /// its last steady plan — the per-lane FLOOR a cold boot starts from. Without it the
-    /// floor is the 16,384 bootstrap prior until enough prompts land: the 5090 on
-    /// 2026-09-19 00:3xZ planned 2 × 17k for coders sending ~30k, because the leased-in
-    /// sample ring is process-static and empty at boot. 0 = unknown (older record).
+    /// Compatibility projection of the observed prompt median. Legacy records
+    /// also wrote requested demand here; only observed_prompt_tokens is evidence.
+    /// Diagnostic history, not a substitute for the current workload's requirement.
     #[serde(default)]
     pub typical_prompt_tokens: u32,
+    /// Accepted provider counts. Absent on legacy records whose typical field
+    /// mixed unmet demand with actual service; that field is not observed evidence.
+    #[serde(default)]
+    pub observed_prompt_tokens: Option<u32>,
     pub set_at_ms: u64,
+    /// Current settled launch. It does not replace the last observed geometry
+    /// until successful usage from this exact generation observes it.
+    #[serde(default)]
+    pub candidate: Option<ServedGeometry>,
 }
 
 impl StoredServedWindow {
-    /// The geometry a cold boot may plan FIRST — or `None` when the record is a COLLAPSE,
-    /// not a steady state. A window below the typical prompt the same record remembers
-    /// cannot have served a turn: it is what the plan shed to under pressure (the M5 at
-    /// 2026-09-20 07:52Z: 1 × 2,048 with residents sending ~30k; the 5090 the same
-    /// afternoon, refusing every 17–31k prompt against a 2,048 slot). Remembering it as
-    /// "the last steady geometry" seeds the NEXT boot with the collapse — its lane count
-    /// caps the boot's choice at one lane and its window joins the floor — so a node that
-    /// fell over once boots into the fall. An unknown typical (0, an older record) never
-    /// disqualifies: the window carries over as before. Zero lanes is no geometry.
-    pub fn steady_geometry(&self) -> Option<(u32, u32)> {
+    /// Return internally consistent observed cache geometry, not a capacity claim.
+    /// Zero lanes denotes a first candidate without successful service yet.
+    pub fn cache_geometry(&self) -> Option<(u32, u32)> {
         if self.lanes == 0 {
             return None;
         }
-        if self.typical_prompt_tokens > 0 && self.per_slot_window < self.typical_prompt_tokens {
+        if self.observed_prompt_tokens.is_some_and(|tokens| self.per_slot_window < tokens) {
             return None;
         }
         Some((self.per_slot_window, self.lanes))
@@ -65,15 +72,14 @@ fn default_path() -> Option<PathBuf> {
         .map(|h| path_under(&h))
 }
 
-/// THE LAST STEADY GEOMETRY this host served, whatever the model — a cold boot's first
-/// choice (the caller checks the model is still a candidate). Missing/corrupt = `None`.
+/// Historical cache geometry. The caller must check model and current workload fit.
 pub fn load_geometry() -> Option<StoredServedWindow> {
     default_path().and_then(|p| load_from(&p))
 }
 /// The remembered window for `model_id`, if the store holds one for THAT model.
 /// Missing or foreign = `None` silently; corrupt = `None` with a probe.
 pub fn load_for(model_id: &str) -> Option<u32> {
-    default_path().and_then(|p| load_from(&p)).filter(|s| s.model_id == model_id).map(|s| s.per_slot_window)
+    default_path().and_then(|p| load_from(&p)).filter(|s| s.model_id == model_id && s.cache_geometry().is_some()).map(|s| s.per_slot_window)
 }
 
 pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
@@ -104,35 +110,74 @@ pub fn load_from(path: &Path) -> Option<StoredServedWindow> {
     }
 }
 
-/// Remember what actually served — the window AND the lane count. Called by the spawn;
-/// idempotent. Keeps the record's typical prompt (the plan tick owns that half).
-pub fn save(model_id: &str, per_slot_window: u32, lanes: u32) {
-    if let Some(p) = default_path() {
-        let typical = load_from(&p).filter(|s| s.model_id == model_id).map_or(0, |s| s.typical_prompt_tokens);
-        save_to(&p, model_id, per_slot_window, lanes, typical);
+/// Record a settled launch separately from the last successfully observed geometry.
+/// The serving reconciler calls this under its existing ServingOperation guard;
+/// authority planning only reads the store and never races a second writer.
+pub fn record_reconciled(geometry: ServedGeometry, settled_now: bool, observed_prompt: Option<u32>) {
+    if let Some(path) = default_path() {
+        record_reconciled_to(&path, geometry, settled_now, observed_prompt);
     }
 }
 
-/// Remember the typical prompt the seat serves (the plan tick, once measured); the
-/// window and lanes halves are kept. Idempotent; a 0 never overwrites a measurement.
-pub fn save_typical_prompt(model_id: &str, typical_prompt_tokens: u32) {
-    if typical_prompt_tokens == 0 {
-        return;
+fn record_reconciled_to(path: &Path, geometry: ServedGeometry, settled_now: bool, observed_prompt: Option<u32>) {
+    if settled_now {
+        save_candidate_to(path, geometry.clone());
     }
-    if let Some(p) = default_path() {
-        let Some(s) = load_from(&p).filter(|s| s.model_id == model_id) else { return };
-        save_to(&p, model_id, s.per_slot_window, s.lanes, typical_prompt_tokens);
+    // Terminal usage commonly arrives after the one-shot settlement edge. Every
+    // subsequent reconcile may observe it; candidate identity rejects early/stale usage.
+    if let Some(tokens) = observed_prompt {
+        observe_to(path, &geometry, tokens);
     }
 }
 
-pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, typical_prompt_tokens: u32) {
-    if load_from(path).is_some_and(|s| {
-        s.model_id == model_id && s.per_slot_window == per_slot_window && s.lanes == lanes && s.typical_prompt_tokens == typical_prompt_tokens
-    }) {
+fn save_candidate_to(path: &Path, geometry: ServedGeometry) {
+    let mut stored = load_from(path).unwrap_or_else(|| StoredServedWindow {
+        model_id: geometry.model_id.clone(),
+        per_slot_window: geometry.per_slot_window,
+        lanes: 0, // This launch has no successful observation yet.
+        typical_prompt_tokens: 0,
+        observed_prompt_tokens: None,
+        set_at_ms: crate::time::EpochMs::now().millis(),
+        candidate: None,
+    });
+    let candidate = geometry;
+    // Settlement repeats; a later tick cannot rewrite an owned generation's shape.
+    if stored.candidate.as_ref().is_some_and(|old| old.generation == candidate.generation) {
         return;
     }
-    let set_at_ms = crate::time::EpochMs::now().millis(); // pre-1970 reads 0: a clock before the epoch stamps 0 — the stamp is informational, the window is the fact
-    let stored = StoredServedWindow { model_id: model_id.to_string(), per_slot_window, lanes, typical_prompt_tokens, set_at_ms };
+    if stored.candidate.as_ref() != Some(&candidate) {
+        stored.candidate = Some(candidate);
+        write_record(path, &stored);
+    }
+}
+
+/// Record usage only for the settled generation that produced it. Successful
+/// service does not certify that this geometry satisfies future workloads.
+fn observe_to(path: &Path, geometry: &ServedGeometry, tokens: u32) {
+    let Some(mut stored) = load_from(path) else { return };
+    let Some(_) = stored.candidate.as_ref().filter(|c| *c == geometry) else { return };
+    if tokens == 0 || tokens > geometry.per_slot_window || geometry.lanes == 0
+    {
+        return;
+    }
+    if stored.model_id == geometry.model_id && stored.per_slot_window == geometry.per_slot_window
+        && stored.lanes == geometry.lanes && stored.observed_prompt_tokens == Some(tokens)
+    {
+        return;
+    }
+    stored.model_id = geometry.model_id.clone();
+    stored.per_slot_window = geometry.per_slot_window;
+    stored.lanes = geometry.lanes;
+    stored.typical_prompt_tokens = tokens;
+    stored.observed_prompt_tokens = Some(tokens);
+    stored.set_at_ms = crate::time::EpochMs::now().millis();
+    write_record(path, &stored);
+}
+fn write_record(path: &Path, stored: &StoredServedWindow) {
+    let model_id = stored.model_id.as_str();
+    let per_slot_window = stored.per_slot_window;
+    let lanes = stored.lanes;
+    let typical_prompt_tokens = stored.typical_prompt_tokens;
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -143,7 +188,7 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, ty
             per_slot_window = per_slot_window as u64,
             lanes = lanes as u64,
             typical_prompt_tokens = typical_prompt_tokens as u64,
-            "served geometry remembered (window, lanes, typical prompt) — the next boot plans it first, so KV pages carry over and the first launch is the steady one"
+            "serving geometry recorded — observed cache preference, not a future capacity constraint"
         ),
         _ => crate::probe!(
             class = "serving.window.store_failed",
@@ -156,49 +201,82 @@ pub fn save_to(path: &Path, model_id: &str, per_slot_window: u32, lanes: u32, ty
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::serving_plan::{plan_serving_at_rest, HostBudget, ModelFootprint, ServingDemand};
+    use crate::cognition::window_allocator::LaneRequirement;
 
-    // what this catches: a collapsed geometry must not seed the next boot as the steady one.
-    // Regression for the M5 (2026-09-20 08:43Z booted 1 × 2,048 from the record its 07:52Z
-    // collapse wrote) and the 5090 (serving 1 × 2,048 all afternoon, refusing 17–31k prompts):
-    // a window below the typical prompt the same record remembers is a fall, not a state.
     #[test]
-    fn a_window_below_the_typical_prompt_is_a_collapse_not_a_steady_geometry() {
-        let rec = |window: u32, lanes: u32, typical: u32| StoredServedWindow {
-            model_id: "m".into(),
-            per_slot_window: window,
-            lanes,
-            typical_prompt_tokens: typical,
-            set_at_ms: 1,
-        };
-        assert_eq!(rec(2_048, 1, 30_000).steady_geometry(), None, "the collapse seeds nothing");
-        assert_eq!(rec(67_072, 2, 30_000).steady_geometry(), Some((67_072, 2)), "a window that served the residents' prompts is steady");
-        assert_eq!(rec(2_048, 1, 0).steady_geometry(), Some((2_048, 1)), "an unknown typical never disqualifies");
-        assert_eq!(rec(67_072, 0, 30_000).steady_geometry(), None, "zero lanes is no geometry");
-        assert_eq!(rec(30_000, 1, 30_000).steady_geometry(), Some((30_000, 1)), "a window equal to the typical served it");
+    fn observed_collapse_survives_restart_as_history_not_an_allocation_limit() {
+        let home = tempfile::tempdir().unwrap();
+        let path = path_under(home.path());
+        let model = ModelFootprint { model_id: "qwen-27b".into(), weights_bytes: 19 << 30,
+            kv_per_token: 33_000, context_window: 262_144, capability_rank: 9, fixed_per_lane_bytes: 0 };
+        let host = HostBudget { usable_bytes: 30 << 30, perf_cores: 8 };
+        let initial = plan_serving_at_rest(&host, std::slice::from_ref(&model), None,
+            &ServingDemand::new(2, Some(70_000)).with_requirements(vec![
+                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
+                LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)])).unwrap();
+        let large = ServedGeometry { model_id: model.model_id.clone(), generation: uuid::Uuid::new_v4(),
+            per_slot_window: initial.served_context_window, lanes: initial.lanes };
+        record_reconciled_to(&path, large.clone(), false, Some(60_000));
+        assert!(load_from(&path).is_none(), "usage cannot settle an unrecorded launch");
+        record_reconciled_to(&path, large.clone(), true, None);
+        assert_eq!(load_from(&path).unwrap().cache_geometry(), None);
+        // A long turn finishes after settlement: the next reconcile must consume
+        // its terminal sample without requiring another settlement edge.
+        record_reconciled_to(&path, large.clone(), false, Some(60_000));
+        let pressure = HostBudget { usable_bytes: model.peak_resident_bytes(8192, 1), perf_cores: 8 };
+        let pressured = plan_serving_at_rest(&pressure, std::slice::from_ref(&model), None,
+            &ServingDemand::new(2, Some(70_000))).unwrap();
+        assert_eq!(pressured.lanes, 1);
+        assert!(pressured.served_context_window < large.per_slot_window);
+        let collapse = ServedGeometry { generation: uuid::Uuid::new_v4(), per_slot_window: pressured.served_context_window,
+            lanes: pressured.lanes, ..large.clone() };
+        record_reconciled_to(&path, collapse.clone(), true, None);
+        assert_eq!(load_from(&path).unwrap().cache_geometry(), Some((70_000, 2)));
+        // Another endpoint/model, the prior generation, and a rewritten same-generation
+        // shape cannot certify the current candidate's usage.
+        for foreign in [large.clone(), ServedGeometry { model_id: "neighbor".into(), ..collapse.clone() },
+            ServedGeometry { generation: uuid::Uuid::new_v4(), ..collapse.clone() }] {
+            observe_to(&path, &foreign, 1000);
+        }
+        save_candidate_to(&path, ServedGeometry { lanes: 2, ..collapse.clone() });
+        assert_eq!(load_from(&path).unwrap().candidate, Some(collapse.clone()));
+        record_reconciled_to(&path, collapse.clone(), false, Some(2048));
+        let restarted = load_from(&path).unwrap();
+        assert_eq!(restarted.cache_geometry(), Some((collapse.per_slot_window, 1)));
+        assert_eq!(restarted.observed_prompt_tokens, Some(2048));
+        // Both real allocation branches use the same current demand and already
+        // credited budget for cold boot and settled reconciliation.
+        for requirements in [vec![], vec![LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000),
+            LaneRequirement::declared(uuid::Uuid::new_v4(), 70_000)]] {
+            // Legacy callers express their current per-lane requirement through
+            // the measured prompt median (56k plus existing headroom = 70k).
+            // Without it they may legitimately choose two narrower lanes.
+            let demand = ServingDemand::new(2, Some(70_000)).with_sent_median(Some(56_000))
+                .with_sticky_window(Some(restarted.per_slot_window))
+                .with_requirements(requirements);
+            let cold = plan_serving_at_rest(&host, std::slice::from_ref(&model), None, &demand).unwrap();
+            let settled = plan_serving_at_rest(&host, std::slice::from_ref(&model), Some(&model.model_id), &demand).unwrap();
+            assert_eq!(cold.lanes, 2);
+            assert!(cold.served_context_window >= 70_000);
+            assert_eq!((cold.lanes, cold.served_context_window), (settled.lanes, settled.served_context_window));
+            assert!(model.peak_resident_bytes(cold.served_context_window, cold.lanes) <= host.usable_bytes);
+            let tight = HostBudget { usable_bytes: model.peak_resident_bytes(cold.served_context_window, 1), ..host.clone() };
+            let edge = plan_serving_at_rest(&tight, std::slice::from_ref(&model), None, &demand).unwrap();
+            assert_eq!(edge.lanes, 1);
+            assert!(model.peak_resident_bytes(edge.served_context_window, edge.lanes) <= tight.usable_bytes);
+        }
     }
 
-    // what this catches: the store answering for a different model (a foreign
-    // window would key the page dir wrong), and a corrupt file surviving a read.
     #[test]
-    fn the_store_answers_only_for_its_own_model_and_discards_corruption() {
-        let dir = tempfile::tempdir().unwrap(); // JUSTIFIED unwrap: test scaffolding
-        let path = dir.path().join("state").join("served-window.json");
-        save_to(&path, "a/model", 65_536, 2, 0);
-        let s = load_from(&path).expect("stored");
-        assert_eq!((s.model_id.as_str(), s.per_slot_window, s.lanes), ("a/model", 65_536, 2));
-        // what this catches (2026-09-19, the 5090's 2 × 17k): the typical prompt is the
-        // record's third half — set by the plan tick, kept by the spawn's save, never
-        // overwritten by a 0, and answering 0 = unknown on an older record.
-        save_to(&path, "a/model", 65_536, 2, 30_000);
-        assert_eq!(load_from(&path).map(|s| s.typical_prompt_tokens), Some(30_000));
-        save_to(&path, "a/model", 67_340, 1, load_from(&path).map_or(0, |s| s.typical_prompt_tokens));
-        assert_eq!(load_from(&path).map(|s| (s.per_slot_window, s.lanes, s.typical_prompt_tokens)), Some((67_340, 1, 30_000)), "a spawn keeps the measured prompt");
-        // An older record (window only) still carries its window; lanes read as unknown (0).
-        std::fs::write(&path, br#"{"model_id":"a/model","per_slot_window":40000,"set_at_ms":1}"#).unwrap(); // JUSTIFIED unwrap: test scaffolding
-        let old = load_from(&path).expect("old record reads");
-        assert_eq!((old.per_slot_window, old.lanes, old.typical_prompt_tokens), (40_000, 0, 0));
-        std::fs::write(&path, b"{not json").unwrap(); // JUSTIFIED unwrap: test scaffolding
-        assert!(load_from(&path).is_none(), "corrupt store reads as absent");
-        assert!(!path.exists(), "and is discarded");
+    fn legacy_and_corrupt_records_are_not_new_observation_evidence() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("window.json");
+        std::fs::write(&path, r#"{"model_id":"legacy","per_slot_window":60000,"lanes":2,"typical_prompt_tokens":1000,"set_at_ms":1}"#).unwrap();
+        let legacy = load_from(&path).unwrap();
+        assert_eq!(legacy.observed_prompt_tokens, None);
+        assert_eq!(legacy.cache_geometry(), Some((60000, 2)));
+        std::fs::write(&path, "broken").unwrap();
+        assert!(load_from(&path).is_none());
     }
 }

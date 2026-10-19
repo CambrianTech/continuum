@@ -43,6 +43,8 @@ impl AircCommandRunner for TokioAircCommandRunner {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        airc_core::process::configure_background(command.as_std_mut());
+
         let output = match tokio::time::timeout(
             Duration::from_millis(invocation.timeout_ms),
             command.output(),

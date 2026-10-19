@@ -2496,7 +2496,7 @@ impl CognitionEval {
         let room = match p.room_id.as_deref() {
             Some(s) => {
                 let parsed = Uuid::parse_str(s)
-                    .map_err(|_| CommandError::Invalid(format!("room_id '{s}' is not a valid UUID")))?;
+                    .map_err(|_| CommandError::Arguments(format!("room_id '{s}' is not a valid UUID")))?;
                 crate::identity::ActivityRoom::from_uuid(parsed).map_err(|_| {
                     CommandError::Invalid("room_id must be a real (non-nil) room".into())
                 })?

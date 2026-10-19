@@ -60,7 +60,8 @@ mod tests {
         let port = server.local_addr().expect("addr").port();
         assert!(listened_on(port), "a wildcard server answers a loopback connect");
         assert_eq!(first_unused([port]), None, "its port is not offered");
-        drop(server);
-        assert!(!listened_on(port), "once it stops, nobody answers");
+        // Regression for the 39f130 combined run: once this listener is dropped, the OS
+        // may reassign its ephemeral port. Assert only while this test owns the listener;
+        // a later successful connect cannot identify which process accepted it.
     }
 }

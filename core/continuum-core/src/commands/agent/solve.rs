@@ -2343,7 +2343,7 @@ impl AgentSolve {
         // real defect, but it must not overwrite the measurement's own verdict.
         if let Some(hands) = &hands {
             if let Err(e) =
-                crate::cognition::persona_workspace::restore_acting_workspace(hands).await
+                crate::cognition::persona_workspace::end_acting_context(hands).await
             {
                 tracing::error!(
                     persona = %persona_uuid,

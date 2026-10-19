@@ -395,6 +395,12 @@ pub struct Contribution {
     /// precisely so every source decides. `None` = nothing further to fetch, and
     /// the notice then says only how much was omitted.
     pub expand_command: Option<&'static str>,
+    /// The SOURCE stopped short of its own list at its budget (it minted a
+    /// continuation): units exist beyond `parts` that no packing here can show. The
+    /// notice then says so even when every delivered part fits, and gives no total,
+    /// because the source did not report one ("whole or handle": a cut the reader
+    /// cannot see is a silent clip, PERSONA-COGNITION-PIPELINE.md §3).
+    pub source_truncated: bool,
 }
 
 impl Contribution {
@@ -415,6 +421,7 @@ impl Contribution {
             // faculty that actually knows its content is a list.
             parts: vec![content.clone()],
             expand_command: None,
+            source_truncated: false,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -447,6 +454,12 @@ impl Contribution {
     }
 
     /// Name the verb that yields this content in full — see [`expand_command`](Self::expand_command).
+    /// Mark that the source withheld units beyond `parts` (see `source_truncated`).
+    pub fn with_source_truncated(mut self, truncated: bool) -> Self {
+        self.source_truncated = truncated;
+        self
+    }
+
     pub fn with_expand_command(mut self, cmd: Option<&'static str>) -> Self {
         self.expand_command = cmd;
         self
@@ -474,6 +487,7 @@ impl Contribution {
             // A verdict is one utterance — never a list, never divisible.
             parts: vec![content.clone()],
             expand_command: None,
+            source_truncated: false,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -505,6 +519,7 @@ impl Contribution {
             // A fault is one named cause — never a list, never divisible.
             parts: vec![error.clone()],
             expand_command: None,
+            source_truncated: false,
             content: error.clone(),
             salience: 1.0,
             reasoning: "deliberation inference failed".to_string(),
@@ -714,6 +729,12 @@ pub struct Burst {
     /// to: threading the cause as a separate parameter through every driver would let
     /// the two drift, and provenance belongs on the thing whose provenance it is.
     pub cause: Cause,
+    /// WHICH of her hands this turn acts with: the acting context of the card claim it
+    /// works, or `None` for her default hands. Bound once, at the turn's admission, by
+    /// whoever admitted it; every act of the turn runs in these hands and no turn moves
+    /// another's (card fc9e9fd7). It lives here for the reason `room` and `cause` do: a
+    /// parameter beside the burst could drift from the turn it belongs to.
+    pub hands: Option<crate::code::hands::HandsContext>,
 }
 
 /// Why a turn is happening — the thing it is a RESPONSE to, and the root of its
@@ -827,7 +848,14 @@ impl Burst {
             now_ms,
             cause,
             room_updates: Arc::default(),
+            hands: None,
         }
+    }
+
+    /// This turn acts with the hands of `context` (the card claim it works).
+    pub fn in_hands(mut self, context: Option<crate::code::hands::HandsContext>) -> Self {
+        self.hands = context;
+        self
     }
 
     /// A raw-string burst IN a named activity — the production path for a
@@ -841,6 +869,7 @@ impl Burst {
             now_ms: None,
             cause: Cause::Synthetic,
             room_updates: Arc::default(),
+            hands: None,
         }
     }
 }
@@ -861,6 +890,7 @@ impl From<String> for Burst {
             // construction. Honest, never invented.
             cause: Cause::Synthetic,
             room_updates: Arc::default(),
+            hands: None,
         }
     }
 }
@@ -1031,18 +1061,20 @@ pub struct Workspace {
     /// projection; this is the source of truth for WHO said what. A raw-string
     /// burst collapses to a single opaque turn (rendered identically to today).
     pub turns: Vec<BurstTurn>,
-    /// The CONTEXT this tick reasons within — the room/conversation the turn is
+    /// The wake/speech CONTEXT — the room/conversation the turn is
     /// for (the third ID tier, contextId; see
     /// docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A). Faculties
-    /// scope their actions to it: the deliberation faculty stamps tool calls with
-    /// this room so a persona's hands act in the SAME room the turn is about, not
-    /// a phantom `nil` room. `Uuid::nil()` only in faculty-isolation tests that
+    /// retain this provenance; task grounding and actions use `activity_room_id`.
+    /// A wake in another room does not move the card's work there. `Uuid::nil()` only in faculty-isolation tests that
     /// don't run in a room. NEVER a session id — context is durable, session is
     /// ephemeral and never load-bearing for where an action lands.
     /// Guaranteed non-nil in production: the only live constructor is
     /// [`from_burst`](Self::from_burst) and a [`Burst`] carries a witnessed
     /// [`ActivityRoom`](crate::identity::ActivityRoom) (#425).
     pub room_id: Uuid,
+    /// Subject activity resolved from this step's admitted hands. Grounding and acts
+    /// share this scope; room_id remains wake/speech provenance.
+    pub activity_room_id: Uuid,
     /// Why this turn is happening — carried from [`Burst::cause`] so downstream
     /// receipts (prompt capture, dataset fork-guard #427) can tell a LIVED turn
     /// ("stimulus"/"ambient") from an eval-fork/fixture tick ("synthetic")
@@ -1151,6 +1183,7 @@ impl Workspace {
             turns: burst.turns,
             room_updates: burst.room_updates,
             room_id: burst.room.as_uuid(),
+            activity_room_id: burst.room.as_uuid(),
             cause: burst.cause,
             cycle: CycleId::UNSTAMPED,
             broadcast: Vec::new(),
@@ -2311,7 +2344,13 @@ impl WorkspaceCycle {
         // ROOM from the burst itself. Framing carries prompt and scheduling facts;
         // it never touches the conversation turns.
         // S1: what the ROOM's recipe lets her do, read before the burst is consumed.
-        let room_affordances = self.room_affordances_for(burst.room.as_uuid());
+        let activity_room_id = match self.acting() {
+            Some(body) => super::persona_workspace::activity_room_for(
+                body.persona_id, burst.hands, burst.room.as_uuid(),
+            ).await,
+            None => burst.room.as_uuid(),
+        };
+        let room_affordances = self.room_affordances_for(activity_room_id);
         let mut ws = Workspace::from_burst(burst)
             .with_cycle(cycle)
             .with_attention(framing.attention)
@@ -2322,6 +2361,16 @@ impl WorkspaceCycle {
             // #169: hand this turn the live streaming sink if the caller set one
             // (service_loop, just before a streamed Speak); `None` otherwise.
             .with_token_sink(self.current_token_sink());
+
+        ws.activity_room_id = activity_room_id;
+        if activity_room_id != ws.room_id {
+            crate::probe!(
+                class = "act.activity.resolved",
+                activity = %activity_room_id,
+                wake_room = %ws.room_id,
+                "perception and acts share the subject activity; wake remains provenance"
+            );
+        }
 
         // --- Phase 1: perception. Context faculties react to the raw world-state. ---
         let perception: Vec<&Arc<dyn Faculty>> = self
@@ -2855,7 +2904,9 @@ mod tests {
 
         // Baseline: what boot bound.
         assert_eq!(handle.load().context_window, 4096);
-        assert!(handle.load().model.is_none());
+        // A binding always names its model: `None` resolves to the adapter's served model at
+        // bind time (one owner of the identity; every rate lookup is keyed by it).
+        assert_eq!(handle.load().model.as_deref(), Some(adapter.default_model()));
 
         // A served-model change re-homes onto a new model + served window.
         c.rebind_model(ModelBinding {

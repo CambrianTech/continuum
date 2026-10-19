@@ -495,9 +495,10 @@ async fn base_sha_of(checkout: &std::path::Path, instance: &str, is_swe: bool) -
 /// the artifact was 177 KB of other people's merged commits (and she had written nothing
 /// yet). What is hers is what no remote carries: the base is the newest merge-base of her
 /// HEAD with any remote-tracking ref that still descends from the creation base. A worktree
-/// that merged nothing upstream keeps its creation base; a git failure keeps it too (the
-/// artifact is then the wider diff, never a narrower one that hides her work).
-fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
+/// that merged nothing upstream keeps its creation base. Unproven ancestry or an unreadable
+/// remote-ref inventory refuses automatic derivation: a wider fallback can publish unrelated
+/// upstream work as her candidate. An explicitly supplied base remains caller-owned.
+fn past_upstream(checkout: &std::path::Path, created: &str, repo: Option<&airc_work::RepoId>, repository_url: Option<&str>) -> Result<String, CommandError> {
     let git = |args: &[&str]| {
         std::process::Command::new("git")
             .args(args)
@@ -507,25 +508,50 @@ fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
             .filter(|o| o.status.success())
             .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
     };
+    // A shallow boundary can retain the creation object but hide its relation to HEAD.
+    // Reproduced in Kimi's checkout after c82b5f9c (179 upstream files): every candidate
+    // was skipped and the old base silently won. Do not turn missing proof into authorship.
+    if git(&["merge-base", "--is-ancestor", created, "HEAD"]).is_none() {
+        return Err(CommandError::Invalid(format!(
+            "cannot derive submission base: creation anchor {created} is not a proven ancestor of HEAD \
+             (history may be shallow or rewritten); restore the relevant history or pass a verified base_sha"
+        )));
+    }
     // Full ref names: `%(refname:short)` abbreviates refs/remotes/origin/HEAD to "origin",
     // so a HEAD alias could not be recognised by its suffix (Cormac on #4442).
     let Some(refs) = git(&["for-each-ref", "--format=%(refname) %(objectname)", "refs/remotes"]) else {
-        return created.to_string();
+        return Err(CommandError::Invalid(
+            "cannot derive submission base: remote refs could not be read; repair Git access or pass a verified base_sha".into()
+        ));
     };
     // Her OWN branch on a remote is not upstream (Cormac on #4442): the runtime pushes her
     // branch after each act, so refs/remotes/<remote>/<her branch> is her own tip, the ref
     // furthest past the creation base, and choosing it would make every submission empty.
-    // Skip the current branch's remote copies and its configured upstream.
+    // Skip current-branch copies and a tracked publishing ref; validated integration
+    // authority below distinguishes a feature that tracks the repository's base.
     let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default(); // unwrap_or_default: a detached HEAD has no branch to exclude
     let tracked = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).unwrap_or_default(); // unwrap_or_default: no upstream configured
+    let integration = submission_integration_branch(checkout, repo, &branch)?;
     let mut best: Option<(u64, String)> = None;
     for line in refs.lines().filter(|l| !l.is_empty()) {
         let Some((name, r)) = line.split_once(' ') else { continue };
         // refs/remotes/<remote>/<branch...>
         let short = name.strip_prefix("refs/remotes/").unwrap_or(name); // unwrap_or: for-each-ref under refs/remotes always carries the prefix
-        let ours = (!branch.is_empty() && short.split_once('/').is_some_and(|(_, b)| b == branch))
-            || (!tracked.is_empty() && short == tracked);
-        if ours || name.ends_with("/HEAD") {
+        let remote_branch = short.split_once('/');
+        // Own publishing copies are always excluded, even if configuration names them.
+        let ours = !branch.is_empty() && remote_branch.is_some_and(|(_, b)| b == branch);
+        let tracked_integration = !tracked.is_empty() && short == tracked
+            && remote_branch.is_some_and(|(remote, b)| {
+                integration.as_deref() == Some(b) && repo.is_some_and(|repo| {
+                    git(&["remote", "get-url", remote]).is_some_and(|url| {
+                        let identity = crate::modules::repo_registry::network_repo_identity(&url);
+                        let authority = repository_url.and_then(crate::modules::repo_registry::network_repo_identity);
+                        identity.as_ref().is_some_and(|(_, _, name)| name == repo.as_str())
+                            && identity.is_some() && identity == authority
+                    })
+                })
+            });
+        if ours || (!tracked.is_empty() && short == tracked && !tracked_integration) || name.ends_with("/HEAD") {
             continue;
         }
         let Some(mb) = git(&["merge-base", "HEAD", r]) else { continue };
@@ -549,10 +575,53 @@ fn past_upstream(checkout: &std::path::Path, created: &str) -> String {
                 "the worktree merged upstream history since it was created — the submission \
                  diffs from the newest upstream commit she holds, so only her change is published"
             );
-            mb
+            Ok(mb)
         }
-        _ => created.to_string(),
+        _ => Ok(created.to_string()),
     }
+}
+
+/// Immutable allocation evidence is authoritative when present; absence is the only
+/// legacy case allowed to consult the shared repository policy.
+fn submission_integration_branch(
+    checkout: &std::path::Path, repo: Option<&airc_work::RepoId>, branch: &str,
+) -> Result<Option<String>, CommandError> {
+    // Allocation intent is immutable; a legacy tree can instead use the SAME repository
+    // policy as AIRC PR creation. A malformed/mismatched record is not a legacy tree.
+    Ok(match repo {
+        Some(repo) => match airc_lib::work_worktree::allocation_evidence(checkout)
+            .map_err(|e| CommandError::Invalid(format!("submission allocation evidence: {e}")))? {
+            Some(evidence) => {
+                if evidence.repo != *repo || evidence.requested_branch != branch {
+                    return Err(CommandError::Invalid("submission allocation evidence does not match the card repository and checkout branch".into()));
+                }
+                evidence.integration_base
+            }
+            None => airc_lib::work_repository::configured_base_branch(repo),
+        },
+        None => None,
+    })
+}
+
+/// Only the tracked-integration exception needs host authority. Ordinary automatic
+/// submissions and unknown policies retain their existing local behavior.
+async fn submission_repository_url(checkout: &std::path::Path, repo: &airc_work::RepoId) -> Result<Option<String>, CommandError> {
+    let git = |args: &[&str]| std::process::Command::new("git").args(args).current_dir(checkout)
+        .output().ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+    let branch = git(&["symbolic-ref", "--short", "-q", "HEAD"]).unwrap_or_default(); // unwrap_or_default: detached has no own branch
+    let integration = submission_integration_branch(checkout, Some(repo), &branch)?;
+    let tracked = git(&["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).unwrap_or_default(); // unwrap_or_default: no tracked ref needs no exception
+    let needs_authority = tracked.split_once('/').is_some_and(|(_, name)| name != branch && integration.as_deref() == Some(name));
+    if !needs_authority { return Ok(None); }
+    // Conservative metadata-only network bound approved for this owner: not a latency
+    // estimate or a new background retry policy. Failure leaves the submission unmade.
+    let args = vec!["repo".into(), "view".into(), repo.to_string(), "--json".into(), "url".into(), "--jq".into(), ".url".into()];
+    let url = crate::commands::code::github::run_gh_within(checkout, &args, std::time::Duration::from_secs(30))
+        .await.map_err(CommandError::from)?;
+    if !crate::modules::repo_registry::network_repo_identity(&url).is_some_and(|(_, _, name)| name == repo.as_str()) {
+        return Err(CommandError::Invalid("GitHub repository authority returned an invalid or mismatched URL".into()));
+    }
+    Ok(Some(url))
 }
 
 /// Read the submission off her checkout: instance, base, and the patch's hash + size.
@@ -563,6 +632,7 @@ async fn derive_submission(
     card_id: Uuid,
     given_instance: Option<String>,
     given_base: Option<String>,
+    repo: Option<&airc_work::RepoId>,
 ) -> Result<DerivedSubmission, CommandError> {
     let is_swe = checkout.iter().any(|c| c == "swe");
     let instance = given_instance
@@ -575,7 +645,11 @@ async fn derive_submission(
             if is_swe {
                 created
             } else {
-                past_upstream(checkout, &created)
+                let repository_url = match repo {
+                    Some(repo) => submission_repository_url(checkout, repo).await?,
+                    None => None,
+                };
+                past_upstream(checkout, &created, repo, repository_url.as_deref())?
             }
         }
     };
@@ -680,7 +754,7 @@ pub struct WorkSubmitResult {
 /// - any other card is graded when a reviewer's verdict passes the submission.
 /// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
 /// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
-pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool) -> Option<String> {
+pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
     let submission = short8(latest?);
     Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
         format!("Submission {submission} passed review: the grade fired. Nothing more to do on this card.")
@@ -692,12 +766,19 @@ pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work:
              (marking the card done runs the same grade). A failed grade: revise and work/submit again. \
              A passed grade: nothing more to do."
         )
-    } else {
+    } else if let Some(review) = review {
         format!(
-            "Submitted as {submission}. Nothing more to do on this card until its reviewer's verdict: a pass \
+            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the reviewer's verdict: a pass \
              grades it; a send-back appears in its reviews. Do not submit again unless it is sent back."
         )
+    } else {
+        format!("Submission {submission} is retained, but no review handoff is recorded. Retry work/submit with this same submission_id to establish review; do not publish a new candidate just to retry handoff.")
     })
+}
+
+pub(crate) fn submission_review_handoff(board: &airc_work::WorkBoardProjection, parent: WorkCardId, submission: Option<airc_work::SubmissionId>) -> Option<WorkCardId> {
+    let id = airc_work::submission_review_card_id(parent, submission?);
+    board.review_request(id).map(|_| id)
 }
 
 #[async_trait]
@@ -813,7 +894,7 @@ impl ActionCommand for WorkSubmit {
                 Some(path) => path,
                 None => stage_for_owner_on_demand(&runtime, card).await?,
             };
-            let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone()).await?;
+            let d = derive_submission(&checkout, card_uuid, p.instance.clone(), p.base_sha.clone(), Some(&card.repo)).await?;
             (d.instance, d.base_sha, d.artifact)
         };
         crate::probe!(
@@ -957,6 +1038,11 @@ impl ActionCommand for WorkSubmit {
             instance: candidate.instance, base_sha: candidate.base_sha, artifact: candidate.artifact,
         }).await.map_err(|e| CommandError::Internal(format!(
             "submission publication was not acknowledged; retry the same submission_id and selection: {e}")))?;
+        let handoff = if bench {
+            Ok(None)
+        } else {
+            super::open_room_review_card(airc, &room, card, card_id, Some(published.submission_id)).await.map(Some)
+        };
         // A hand-in on a bench card is graded now, here, where the artifact lives; a
         // card that is not a SWE bench card returns at once.
         tokio::spawn(crate::modules::benchmark_grade::grade_submission(
@@ -966,6 +1052,9 @@ impl ActionCommand for WorkSubmit {
             published.instance.clone(),
             grade_patch,
         ));
+        // Guidance reflects this command's board snapshot. A concurrently
+        // arriving verdict appears on the next work/get or work/submission read.
+        let outcomes: Vec<_> = board.submission_reviews_for(published.submission_id).filter(|review| review.card_id == card_id).map(|review| review.outcome).collect();
         Ok(WorkSubmitResult {
             submission_id: published.submission_id.as_uuid(),
             card_id: published.card_id.as_uuid(),
@@ -977,7 +1066,10 @@ impl ActionCommand for WorkSubmit {
             artifact: (&published.artifact).into(),
             submitted_at_ms: published.submitted_at_ms,
             bound_staged_revision_id,
-            next: next_after_submission(Some(published.submission_id.as_uuid()), &[], bench).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+            next: match handoff {
+                Ok(review) => next_after_submission(Some(published.submission_id.as_uuid()), &outcomes, bench, review).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                Err(error) => format!("Submission {} is retained, but review handoff failed: {error}. Retry work/submit with this same submission_id; do not create a new candidate to retry handoff.", published.submission_id),
+            },
         })
     }
 }
@@ -1181,40 +1273,18 @@ impl ActionCommand for WorkReview {
                 }
             },
         };
-        let parent = board
-            .card(card_id)
-            .ok_or_else(|| {
-                CommandError::NotFound(format!(
-                    "card {card_id} is absent from the board of room {} — you asked for '{}'",
-                    room_label(&room.name, room.channel.as_uuid()),
-                    p.room.as_deref().unwrap_or("none, the card's own") // unwrap_or: no room named is a fact to state, never an error
-                ))
-            })?;
-        let submission = match p.submission_id {
-            Some(id) => parent
-                .submissions
-                .iter()
-                .find(|s| s.submission_id.as_uuid() == id)
-                .ok_or_else(|| CommandError::Invalid(format!("card {card_id} has no submission {id}")))?,
-            None => latest_submission(parent)
-                .ok_or_else(|| {
-                    CommandError::Invalid(format!(
-                        "card {card_id} has no submission to review yet — the holder submits first (work/submit)"
-                    ))
-                })?,
-        };
+        if review_card.reviews != Some(card_id) {
+            return Err(CommandError::Invalid("review card does not review the named parent".into()));
+        }
+        let submission = board.candidate_for_review(review_card.card_id, p.submission_id.map(airc_work::SubmissionId::from_uuid))
+            .map_err(|e| CommandError::Invalid(format!("review candidate: {e}")))?;
         // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
         // submission is admitted only where the room's policy says `self`; a room that
         // declares no policy keeps today's behaviour. Refused up front, by name, rather
         // than counted as nothing after the fact.
         if submission.publisher == airc.peer_id() {
-            if let Some(policy) = crate::modules::work::review_gate::room_policy(airc, &room).await {
-                if !policy.self_review {
-                    return Err(CommandError::Invalid(format!(
-                        "this room's review policy does not admit the author's own review                          (review.self is false): a member other than you reviews card {card_id}.                          A room can allow it: activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."
-                    )));
-                }
-            }
+            let policy = crate::modules::work::review_gate::room_policy(airc, &room).await;
+            own_review_publishable(&policy, &card_id)?;
         }
         let artifact = match p.artifact.clone() {
             Some(a) => a.into_artifact()?,
@@ -1289,6 +1359,30 @@ impl ActionCommand for WorkReview {
 }
 
 crate::register_command!(WorkReview);
+
+/// May the author PUBLISH a review of her own submission, given the ONE policy read the
+/// command took? A declared `self: false` refuses; a policy that could not be read refuses
+/// (it was admitted on a read failure); a room that declares none keeps today's behaviour.
+/// Whether that review then earns credit is the exact path's `SelfReview`, a different question.
+fn own_review_publishable(
+    policy: &crate::modules::work::review_gate::PolicyRead,
+    card_id: &WorkCardId,
+) -> Result<(), CommandError> {
+    use crate::modules::work::review_gate::PolicyRead;
+    match policy {
+        PolicyRead::Absent => Ok(()),
+        PolicyRead::Declared(policy) if policy.self_review => Ok(()),
+        PolicyRead::Declared(_) => Err(CommandError::Invalid(format!(
+            "this room's review policy does not admit the author's own review (review.self is false): \
+             a member other than you reviews card {card_id}. A room can allow it: \
+             activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."
+        ))),
+        PolicyRead::Unavailable(why) => Err(CommandError::Invalid(format!(
+            "this room's review policy could not be read ({why}), so your own review of card {card_id} \
+             cannot be admitted now: retry, or have a member other than you review it."
+        ))),
+    }
+}
 
 pub struct WorkSubmission {
     pub registry: PersonaAircRuntimeRegistry,
@@ -1468,7 +1562,7 @@ impl ActionCommand for WorkSubmission {
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
-                next: next_after_submission(Some(submission_uuid), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title)).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                next: next_after_submission(Some(submission_uuid), &outcomes, crate::modules::benchmark_grade::graded_at_submit(&card.title), submission_review_handoff(&board, card.card_id, Some(submitted.submission_id))).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
             },
             claim_id: submitted.claim_id.as_uuid(),
             base_sha: submitted.base_sha.to_string(),
@@ -1488,6 +1582,29 @@ crate::register_command!(WorkSubmission);
 
 #[cfg(test)]
 mod tests {
+
+    // what this catches (Codex root, review of #5017): work/review read the room's policy
+    // twice, so a Declared(self: false) read followed by an Unavailable read published the
+    // author's own review under a policy nobody could verify. The command now reads ONCE and
+    // decides on that snapshot; every outcome of the one read is pinned here.
+    #[test]
+    fn her_own_review_publishes_only_on_a_readable_policy_that_admits_it() {
+        use crate::experience::binding::ReviewPolicy;
+        use crate::modules::work::review_gate::PolicyRead;
+        use crate::sdk_codegen::CommandError;
+        let card = airc_work::WorkCardId::new();
+        assert!(super::own_review_publishable(&PolicyRead::Absent, &card).is_ok(), "no policy keeps today's behaviour");
+        let admits = ReviewPolicy { self_review: true, ..ReviewPolicy::default() };
+        assert!(super::own_review_publishable(&PolicyRead::Declared(admits), &card).is_ok());
+        let refuses = ReviewPolicy { self_review: false, ..ReviewPolicy::default() };
+        assert!(super::own_review_publishable(&PolicyRead::Declared(refuses), &card).is_err());
+        let Err(CommandError::Invalid(why)) =
+            super::own_review_publishable(&PolicyRead::Unavailable("wall unreachable".into()), &card)
+        else {
+            panic!("an unreadable policy must refuse her own review, by name");
+        };
+        assert!(why.contains("could not be read") && why.contains("wall unreachable"), "{why}");
+    }
 
     // what this catches (card d6e1b7a2, BigMama on #4836): a card she HOLDS on a room she is
     // not subscribed to, seen by her gate but unreachable by work/review, by full id or by the
@@ -1543,18 +1660,20 @@ mod tests {
     fn after_a_submit_the_receipt_says_what_happens_next() {
         use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
         let id = uuid::Uuid::new_v4();
-        let bench = super::next_after_submission(Some(id), &[], true).expect("submitted");
+        let bench = super::next_after_submission(Some(id), &[], true, None).expect("submitted");
         assert!(bench.contains(&short8(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
         assert!(bench.contains("marking the card done") && !bench.contains("No state"), "never contradicts the bench card's own text: {bench}");
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
-        let reviewed = super::next_after_submission(Some(id), &[], false).expect("submitted");
+        let handoff = Some(airc_lib::WorkCardId::new());
+        let reviewed = super::next_after_submission(Some(id), &[], false, handoff).expect("submitted");
         assert!(reviewed.contains("reviewer's verdict") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
-        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false), Some(reviewed.clone()), "an unknown verdict is still waiting");
-        let back = super::next_after_submission(Some(id), &[Failed], true).expect("sent back");
+        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff), Some(reviewed.clone()), "an unknown verdict is still waiting");
+        assert!(super::next_after_submission(Some(id), &[], false, None).unwrap().contains("no review handoff is recorded"));
+        let back = super::next_after_submission(Some(id), &[Failed], true, None).expect("sent back");
         assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
-        let done = super::next_after_submission(Some(id), &[Failed, Passed], false).expect("passed");
+        let done = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff).expect("passed");
         assert!(done.contains("passed review") && done.contains("grade fired"), "a pass outranks an earlier send-back: {done}");
-        assert_eq!(super::next_after_submission(None, &[], true), None, "nothing submitted, nothing to say");
+        assert_eq!(super::next_after_submission(None, &[], true, None), None, "nothing submitted, nothing to say");
     }
 
     // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a
@@ -1792,21 +1911,92 @@ mod tests {
         assert!(run(&["init", "-q"]).status.success());
         let created = commit("created here");
         // nothing merged from upstream yet: the creation base stands
-        assert_eq!(super::past_upstream(dir.path(), &created), created);
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("proven history"), created);
         let upstream = commit("someone else's merged work");
         assert!(run(&["update-ref", "refs/remotes/origin/canary", &upstream]).status.success());
         std::fs::write(dir.path().join("hers.rs"), "fn hers() {}\n").expect("write");
         assert!(run(&["add", "hers.rs"]).status.success());
         let _mine = commit("her change");
-        assert_eq!(super::past_upstream(dir.path(), &created), upstream, "the base moves past what upstream carries");
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("proven history"), upstream, "the base moves past what upstream carries");
         // her own branch pushed to the remote is NOT upstream (Cormac on #4442): the runtime
         // pushes after each act, and that ref sits at her own tip
         let branch = String::from_utf8(run(&["symbolic-ref", "--short", "HEAD"]).stdout).expect("branch").trim().to_string();
         assert!(run(&["update-ref", &format!("refs/remotes/origin/{branch}"), "HEAD"]).status.success());
-        assert_eq!(super::past_upstream(dir.path(), &created), upstream, "her own pushed tip never becomes the base");
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("proven history"), upstream, "her own pushed tip never becomes the base");
         // a remote that does not descend from the creation base is ignored
         assert!(run(&["update-ref", "refs/remotes/origin/stale", &created]).status.success());
-        assert_eq!(super::past_upstream(dir.path(), &created), upstream);
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("proven history"), upstream);
+
+        // A feature may track the integration branch rather than its own publishing
+        // ref. Only recorded repository authority can exempt that tracked ref.
+        let repo = airc_work::RepoId::new("CambrianTech/continuum").expect("repo");
+        assert!(run(&["remote", "add", "origin", "https://github.com/CambrianTech/continuum.git"]).status.success());
+        assert!(run(&["config", &format!("branch.{branch}.remote"), "origin"]).status.success());
+        assert!(run(&["config", &format!("branch.{branch}.merge"), "refs/heads/canary"]).status.success());
+        assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &created]).status.success());
+        let mut evidence = airc_lib::work_worktree::AllocationEvidence {
+            repo: repo.clone(), requested_branch: branch.clone(), integration_base: Some("canary".into()),
+            start_ref: "refs/remotes/origin/canary".into(), creation_sha: created.clone(),
+        };
+        let evidence_path = dir.path().join(".git/allocation-fixture.json");
+        let record = |bytes: &[u8]| {
+            std::fs::write(&evidence_path, bytes).expect("allocation fixture");
+            let object = run(&["hash-object", "-w", evidence_path.to_str().expect("fixture path")]);
+            assert!(object.status.success());
+            let object = String::from_utf8(object.stdout).expect("object");
+            assert!(run(&["update-ref", airc_lib::work_worktree::ALLOCATION_REF, object.trim()]).status.success());
+        };
+        record(&serde_json::to_vec(&evidence).expect("allocation"));
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("tracked integration"), upstream);
+        let diff = run(&["diff", &upstream, "HEAD", "--", "hers.rs"]);
+        assert!(String::from_utf8(diff.stdout).expect("own diff").contains("fn hers()"), "committed own work remains in the candidate");
+        for remote in ["https://foreign.example/CambrianTech/continuum.git", "ssh://git@foreign.example/CambrianTech/continuum.git", "git@foreign.example:CambrianTech/continuum.git"] {
+            assert!(run(&["remote", "set-url", "origin", remote]).status.success());
+            assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("foreign host excluded"), created);
+        }
+        for remote in ["git@github.com:CambrianTech/continuum.git", "ssh://git@github.com/CambrianTech/continuum.git"] {
+            assert!(run(&["remote", "set-url", "origin", remote]).status.success());
+            assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("same GitHub repository"), upstream);
+        }
+        assert!(run(&["remote", "set-url", "origin", "git@enterprise.example:CambrianTech/continuum.git"]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://enterprise.example/CambrianTech/continuum")).expect("configured enterprise authority"), upstream);
+        assert!(run(&["remote", "set-url", "origin", "https://github.com/CambrianTech/continuum.git.git"]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("distinct repeated suffix identity"), created);
+        assert!(run(&["remote", "set-url", "origin", "https://github.com/Foreign/fork.git"]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("foreign tracked ref excluded"), created);
+        assert!(run(&["remote", "set-url", "origin", "https://github.com/CambrianTech/continuum.git"]).status.success());
+        assert!(run(&["config", &format!("branch.{branch}.merge"), &format!("refs/heads/{branch}")]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("own publishing ref excluded"), upstream);
+        evidence.repo = airc_work::RepoId::new("Foreign/fork").expect("foreign repo");
+        record(&serde_json::to_vec(&evidence).expect("mismatched allocation"));
+        assert!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).unwrap_err().to_string().contains("does not match"));
+        record(b"{broken");
+        assert!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).unwrap_err().to_string().contains("allocation evidence"));
+        assert!(run(&["update-ref", "-d", airc_lib::work_worktree::ALLOCATION_REF]).status.success());
+        // Legacy absence is not corruption. The same shared policy supplies the base;
+        // repositories without a configured policy retain the previous selection.
+        assert!(run(&["config", &format!("branch.{branch}.merge"), "refs/heads/canary"]).status.success());
+        let legacy_expected = if airc_lib::work_repository::configured_base_branch(&repo).as_deref() == Some("canary") { &upstream } else { &created };
+        assert_eq!(&super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("legacy shared policy"), legacy_expected);
+        let unknown = airc_work::RepoId::new("Unknown/unconfigured").expect("unknown repo");
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&unknown), None).expect("unknown policy preserves selection"), created);
+        assert!(run(&["config", "--unset", &format!("branch.{branch}.merge")]).status.success());
+        assert!(run(&["config", "--unset", &format!("branch.{branch}.remote")]).status.success());
+        std::fs::remove_file(evidence_path).expect("remove fixture bytes");
+
+        // The creation object still exists, but a real Git shallow boundary hides its
+        // ancestry. Refuse instead of silently publishing the whole upstream delta.
+        let head_before = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("head");
+        let status_before = run(&["status", "--porcelain"]).stdout;
+        let shallow = dir.path().join(".git/shallow");
+        std::fs::write(&shallow, format!("{upstream}\n")).expect("shallow boundary");
+        assert!(!run(&["merge-base", "--is-ancestor", &created, "HEAD"]).status.success());
+        let refused = super::past_upstream(dir.path(), &created, None, None).expect_err("unproven automatic base");
+        assert!(refused.to_string().contains("pass a verified base_sha"), "{refused}");
+        assert_eq!(String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("head"), head_before);
+        assert_eq!(run(&["status", "--porcelain"]).stdout, status_before);
+        std::fs::remove_file(shallow).expect("restore fixture history");
+        assert_eq!(super::past_upstream(dir.path(), &created, None, None).expect("restored ancestry"), upstream);
     }
 
     #[tokio::test]
@@ -1828,7 +2018,7 @@ mod tests {
         let add = run(&["add", "solution.py"]);
         assert!(add.status.success());
         let card = uuid::Uuid::new_v4();
-        let derived = super::derive_submission(dir.path(), card, None, Some(base.clone())).await.expect("derive without ambient hands");
+        let derived = super::derive_submission(dir.path(), card, None, Some(base.clone()), None).await.expect("derive without ambient hands");
         assert_eq!(derived.instance, card.to_string());
         assert_eq!(derived.base_sha, base);
         let expected = String::from_utf8(run(&["diff", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-color", "--src-prefix=a/", "--dst-prefix=b/", "HEAD", "--", "solution.py"]).stdout).expect("diff");
@@ -1840,12 +2030,19 @@ mod tests {
         // must neither swallow committed work nor change the stored creation base.
         assert!(run(&["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &base, ""]).status.success());
         assert!(run(&["update-ref", "refs/remotes/origin/HEAD", "HEAD"]).status.success());
-        let recorded = super::derive_submission(dir.path(), card, None, None).await.expect("recorded base includes committed work");
+        let recorded = super::derive_submission(dir.path(), card, None, None, None).await.expect("recorded base includes committed work");
         assert_eq!(recorded.base_sha, base);
         assert_eq!(recorded.artifact.hash, derived.artifact.hash);
         assert_eq!(recorded.artifact.size_bytes, derived.artifact.size_bytes);
-        let empty = super::derive_submission(dir.path(), card, None, Some(clean_base)).await.err().expect("clean checkout refused");
+        let empty = super::derive_submission(dir.path(), card, None, Some(clean_base), None).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
+        // Regression for 6dd8befa: a valid empty submission is not malformed
+        // arguments. The real refusal reaches her without advice to retry its schema.
+        let refusal = format!("work/submit: {empty}");
+        assert_eq!(
+            crate::cognition::tool_executor::command_executor::persona_tool_error("work_submit", refusal.clone()),
+            refusal,
+        );
     }
 
     // what this catches (Kimi, 2026-09-21): the two halves of the supplied-claim guard

@@ -114,6 +114,17 @@ const REHOME_HOLD_DEFER_TICKS: u32 = 24;
 /// re-running that measurement against fresher receipts.
 const REHOME_SUSTAINED_TICKS: u32 = 3;
 
+/// PURE: record `plan` among the last [`REHOME_SUSTAINED_TICKS`] plans and answer whether it is
+/// their high. Bounded by the evidence span, so a high ages out with the evidence it came from
+/// and a settled plan's own best tick is always reachable.
+fn at_recent_plan_high(recent: &mut std::collections::VecDeque<u64>, plan: u64) -> bool {
+    recent.push_back(plan);
+    while recent.len() > REHOME_SUSTAINED_TICKS as usize {
+        recent.pop_front();
+    }
+    recent.iter().all(|&seen| plan >= seen)
+}
+
 /// One line per 5 s tick makes the decline probe the defect at the other end, so
 /// it speaks on ENTRY and roughly once a minute thereafter.
 ///
@@ -242,6 +253,74 @@ const HEALTH_PROBE_EVERY_TICKS: u64 = 12; // 12 × 5s ≈ 60s
 /// a wake burst), and reaping a healthy-but-busy lane is the exact thrash that got the
 /// prior watchdog reverted (commit 93753d812). Two consecutive failures ≈ 2 minutes of
 /// sustained no-decode = genuinely poisoned, not transiently loaded.
+/// How long work may stop advancing on a slot the engine still reports as processing before
+/// the lane is condemned as frozen. derived-or-floor: floor — measured on the M5 2026-10-17
+/// the engine logs a prefill or decode advance every ~3 s while working, and the longest
+/// cold prefill seen that day (23,612 tokens at 105 t/s) still advanced continuously; a
+/// frozen engine advanced nothing for 34 min. Three minutes is 60x the healthy gap.
+const FROZEN_ENGINE_MS: u64 = 180_000;
+
+struct FrozenSlots {
+    generation: uuid::Uuid,
+    fingerprint: u64,
+    unchanged_since: std::time::Instant,
+}
+
+impl FrozenSlots {
+    fn observe(
+        last: &mut Option<Self>,
+        generation: uuid::Uuid,
+        slots: Option<&serde_json::Value>,
+        now: std::time::Instant,
+    ) -> bool {
+        let fingerprint = slots.and_then(|slots| {
+            let active: Vec<_> = slots
+                .as_array()?
+                .iter()
+                .filter(|s| s.get("is_processing").and_then(|v| v.as_bool()) == Some(true))
+                .collect();
+            if active.is_empty()
+                || active.iter().any(|s| {
+                    s.get("id").and_then(|v| v.as_u64()).is_none()
+                        || s.get("id_task")
+                            .and_then(|v| v.as_i64())
+                            .is_none_or(|id| id < 0)
+                        || s.get("n_prompt_tokens_processed")
+                            .and_then(|v| v.as_u64())
+                            .is_none()
+                        || s.get("next_token")
+                            .and_then(|v| v.get("n_decoded").or_else(|| v.get(0)?.get("n_decoded")))
+                            .and_then(|v| v.as_u64())
+                            .is_none()
+                })
+            {
+                return None;
+            }
+            crate::inference::llama_server::slots_activity_fingerprint_of(slots)
+        });
+        let Some(fingerprint) = fingerprint else {
+            *last = None;
+            return false;
+        };
+        match last {
+            Some(previous)
+                if previous.generation == generation && previous.fingerprint == fingerprint =>
+            {
+                now.duration_since(previous.unchanged_since).as_millis()
+                    >= u128::from(FROZEN_ENGINE_MS)
+            }
+            _ => {
+                *last = Some(Self {
+                    generation,
+                    fingerprint,
+                    unchanged_since: now,
+                });
+                false
+            }
+        }
+    }
+}
+
 const HEALTH_FAILS_TO_RELAUNCH: u8 = 2;
 
 /// Bus topic the live [`ServingSnapshot`] is emitted on whenever it changes.
@@ -347,7 +426,7 @@ fn incumbent_for_plan(published: Option<String>, inherited: Option<&LaneRecord>)
 /// test doing the stamping. Owning the evidence source per-daemon makes each test's answer
 /// its own; production still reads the global, through the default below.
 type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
-type LeasedInSentSource = Arc<dyn Fn() -> Vec<u32> + Send + Sync>;
+type LeasedInSentSource = Arc<dyn Fn() -> Vec<crate::cognition::working_set::PromptSample> + Send + Sync>;
 
 /// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
 /// since the last success" (#363). Defaults to the llama-server process-global stamped by
@@ -574,6 +653,70 @@ impl ServingOperation {
     }
 }
 impl ServingDaemonModule {
+    /// The per-slot window a launch of `desired` at `lanes` takes from the plan's window: the
+    /// #175 sticky floor (keep the incumbent window on a same-lane relaunch), the #363 wedge-heal
+    /// floor (the last healthy lane's window, through a teardown-transient plan), then the
+    /// physical-fit bound (a kept window must still fit the card). ONE derivation, so the
+    /// reconcile that sizes a launch and the tick that seeds the page dir it sizes from read the
+    /// same geometry (card 37eb1925). Pure of side effects: the reconcile probes each step.
+    fn launch_window(&self, desired: &str, plan_window: u32, lanes: u32) -> LaunchWindow {
+        // #175: a relaunch WILL happen past the no-relaunch guard (a genome page-in / model
+        // change). Don't let the startup LoRA-load cascade ratchet the per-slot window DOWN on a
+        // same-lane relaunch and strand the personas pinned to the earlier, larger slot: keep
+        // the incumbent window when lanes are unchanged (a lane change legitimately resizes KV).
+        let sticky = sticky_served_window(plan_window, lanes, &self.serving_tx.borrow());
+        // #363: the sticky floor reads the live snapshot, but declaring a wedge EMPTIES that
+        // snapshot first, so the relaunch the detector triggers used to spawn at whatever the
+        // teardown-transient plan said (the dying predecessor still holds its memory when the
+        // successor's budget samples free RAM). Floor the successor to the last HEALTHY lane's
+        // window when the lane count is unchanged.
+        let floored = wedge_heal_floor(
+            sticky,
+            lanes,
+            self.serving_tx.borrow().ready,
+            self.last_healthy_window.load(Ordering::Relaxed),
+            self.last_healthy_lanes.load(Ordering::Relaxed),
+        );
+        // A KEPT WINDOW MUST STILL FIT. Both floors keep the BIGGER window on the assumption it
+        // was legitimately sized. On 2026-09-17 it was not: a 144,640 window sized against a
+        // fictional 54 GB budget (the ledger's uncapped add-back) was kept by sticky, then by
+        // wedge-heal, across every relaunch onto a 26 GB budget (31.9 of 32.6 GB VRAM, 44 s
+        // prefills). Bound it by what the PHYSICAL budget fits at this lane count (physical, not
+        // live: the live budget is exactly the transient the wedge-heal law sees through). The
+        // plan's own window is always within it, so this touches nothing but a kept fiction.
+        let served = match self
+            .catalog
+            .snapshot()
+            .get(desired)
+            .and_then(|live| footprint_for(&live.model))
+            .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
+        {
+            Some(fits) if floored > fits.max(crate::inference::planning::MIN_SERVE_CTX) => {
+                fits.max(crate::inference::planning::MIN_SERVE_CTX)
+            }
+            _ => floored,
+        };
+        LaunchWindow { sticky, floored, served }
+    }
+
+    /// Before a reconcile sizes anything, measure the saved states in the exact page dirs it will
+    /// read for the plan's model: the dir a launch would size its prompt cache from, and the dir
+    /// at the running lane's window (the cache-holds-no-state check). Bounded and off the worker
+    /// (card 37eb1925).
+    async fn seed_reconcile_pages(&self) {
+        let Some((model, plan_window, lanes)) = self.plan_tx.borrow().plan.as_ref().map(|plan| {
+            (plan.base_model.model_id.clone(), plan.served_context_window, plan.lanes)
+        }) else {
+            return;
+        };
+        let launch = self.launch_window(&model, plan_window, lanes).served;
+        crate::inference::slots::seed_state_samples(&crate::inference::llama_server::kv_page_dir(&model, launch)).await;
+        let live = self.serving_tx.borrow().served_context_window;
+        if live > 0 && live != launch {
+            crate::inference::slots::seed_state_samples(&crate::inference::llama_server::kv_page_dir(&model, live)).await;
+        }
+    }
+
     /// This daemon's lifecycle gate, for the boot path to publish (`LifecycleGate::set_global`).
     pub(crate) fn lifecycle_gate(&self) -> LifecycleGate {
         LifecycleGate {
@@ -736,6 +879,10 @@ pub struct ServingDaemonModule {
     /// with no governor has no honest VRAM ceiling, and serving must fail
     /// closed rather than over-commit.
     resource_daemon: Arc<ResourceDaemon>,
+    /// The plan's memory budget, SUSTAINED: every instantaneous reading of the last
+    /// `READY_TIMEOUT`, so the plan grows only into headroom that has outlived one relaunch
+    /// and shrinks the moment pressure arrives (`system_resources::sustained`).
+    budget_readings: parking_lot::Mutex<crate::system_resources::sustained::Sustained>,
     /// The published decision. `None` until the first successful plan. Held as
     /// the module's only shared state; `send` takes `&self` so `tick()` can
     /// publish without interior-mutability gymnastics.
@@ -821,6 +968,7 @@ pub struct ServingDaemonModule {
     /// exonerate a later freeze. `std::sync::Mutex` — held only for a copy, never
     /// across an await.
     last_miss_slots_fp: Arc<std::sync::Mutex<Option<u64>>>,
+    frozen_slots: Arc<parking_lot::Mutex<Option<FrozenSlots>>>,
     /// Where the first plan after boot learns about a PAST FORM OF OURSELF still holding VRAM.
     /// Defaults to the lane registry; tests own it ([`Self::set_inherited_lane`]). See
     /// [`InheritedLaneSource`] for the measured defect this closes (#438).
@@ -962,6 +1110,11 @@ pub struct ServingDaemonModule {
     /// a plan alternating 33k/70k never re-homed for an hour, because every rise
     /// reset the streak).
     rehome_plan_high: Arc<std::sync::atomic::AtomicU64>,
+    /// The last [`REHOME_SUSTAINED_TICKS`] plan windows the re-home decision saw: the span of
+    /// evidence a streak needs. A re-home fires at the best of THESE, not at the streak's
+    /// all-time high, so one transient high cannot make the fire tick unreachable (see
+    /// [`at_recent_plan_high`]).
+    rehome_recent_plans: Arc<parking_lot::Mutex<std::collections::VecDeque<u64>>>,
     /// L10 (#438): consecutive plan ticks wanting a DIFFERENT base model than the
     /// ready incumbent, and which model that was. A model swap re-homes every
     /// persona to different weights, so it earns the same sustained-streak bar as
@@ -1156,6 +1309,7 @@ impl ServingDaemonModule {
             gpu,
             system,
             resource_daemon,
+            budget_readings: parking_lot::Mutex::new(crate::system_resources::sustained::Sustained::new(crate::inference::llama_server::READY_TIMEOUT)),
             plan_tx,
             plan_view_tx,
             server,
@@ -1183,6 +1337,7 @@ impl ServingDaemonModule {
             decode_age: Arc::new(crate::inference::llama_server::ms_since_real_work),
             leased_in_sent: Arc::new(crate::cognition::resource_admission::leased_in_sent_samples),
             last_miss_slots_fp: Arc::new(std::sync::Mutex::new(None)),
+            frozen_slots: Arc::new(parking_lot::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
             real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
@@ -1198,6 +1353,7 @@ impl ServingDaemonModule {
             last_swap_used: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)), // MAX = no reading yet: unknown is never "rising"
             decline_log_ticks: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             rehome_plan_high: Arc::new(std::sync::atomic::AtomicU64::new(0)), // 0 = no plan seen in this streak yet
+            rehome_recent_plans: Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new())),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             pending_model_change: Arc::new(std::sync::Mutex::new(None)),
             rehome_cooldown: Arc::new(std::sync::atomic::AtomicU32::new(0)),
@@ -1371,32 +1527,26 @@ pub fn resident_lane_demand(boot_floor: u32, live_residents: usize, overridden: 
 /// on the one seat everyone queues on, each swing destroying the remote turns it was sized
 /// for. One constant for both directions, on purpose: the guard that stops a squeeze
 /// evicting the best activity is the guard that stops a burst evicting the grid's coders.
-pub fn sustained_leased_in(tick_peaks: &[usize]) -> usize {
-    let window = DOWNSHIFT_SUSTAINED_TICKS as usize;
-    if tick_peaks.len() < window {
-        return 0;
-    }
-    tick_peaks[tick_peaks.len() - window..]
-        .iter()
-        .copied()
-        .min()
-        .unwrap_or(0) // unwrap_or: unreachable (window >= 1 and len >= window) — an empty slice reads as no demand, never a lane
+/// The leased-in demand the plan may act on: the ring's minimum, and only once the ring
+/// holds a full `DOWNSHIFT_SUSTAINED_TICKS` of peaks; fewer reads as no demand, never a lane.
+pub fn sustained_leased_in(samples: usize, floor: usize) -> usize {
+    if samples < DOWNSHIFT_SUSTAINED_TICKS as usize { 0 } else { floor }
 }
 /// The last [`DOWNSHIFT_SUSTAINED_TICKS`] per-tick leased-in peaks, oldest first — the
 /// input to [`sustained_leased_in`]. Kept beside the tick that fills it. The most recent
 /// raw peak is also kept so the plan receipt can carry both numbers.
-static LEASED_IN_PEAKS: std::sync::Mutex<std::collections::VecDeque<usize>> =
-    std::sync::Mutex::new(std::collections::VecDeque::new());
+static LEASED_IN_PEAKS: std::sync::Mutex<crate::system_resources::sustained::Sustained> =
+    std::sync::Mutex::new(crate::system_resources::sustained::Sustained::bounded(
+        Duration::from_secs(DOWNSHIFT_SUSTAINED_TICKS as u64 * TICK.as_secs()),
+        DOWNSHIFT_SUSTAINED_TICKS as usize,
+    ));
 static LAST_LEASED_IN_PEAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// Fold this tick's leased-in peak into the ring and return the sustained demand.
 fn note_leased_in_peak(peak: usize) -> usize {
     LAST_LEASED_IN_PEAK.store(peak.min(u32::MAX as usize) as u32, Ordering::Relaxed);
     let mut ring = LEASED_IN_PEAKS.lock().unwrap_or_else(|e| e.into_inner()); // unwrap_or_else: a poisoned ring reads its last state, same policy as every ledger lock here
-    ring.push_back(peak);
-    while ring.len() > DOWNSHIFT_SUSTAINED_TICKS as usize {
-        ring.pop_front();
-    }
-    sustained_leased_in(ring.make_contiguous())
+    let floor = ring.observe(crate::time::EpochMs::now().millis(), peak as u64).min;
+    sustained_leased_in(ring.len(), floor as usize)
 }
 
 /// Add a measurement override: the fleet's warm-slot demand becomes `active` (minds that
@@ -1498,7 +1648,8 @@ impl ServingDaemonModule {
         // 27B's knee of 2 arrived and it relaunched again to 2 × 67k. The knee is a
         // property of the model on this box; when no lane has reported one yet, the model
         // the box served last (the remembered geometry) is the one being planned for.
-        let active_model = crate::inference::llama_server::current_serving().active_model;
+        let serving = crate::inference::llama_server::current_serving();
+        let active_model = serving.active_model;
         let model_for_knee = knee_model(active_model, || {
             crate::modules::served_window_store::load_geometry().map(|g| g.model_id)
         });
@@ -1553,7 +1704,7 @@ impl ServingDaemonModule {
         if LAST_CLAMP.swap(shape, std::sync::atomic::Ordering::Relaxed) != shape {
             crate::probe!(
                 class = "serving.decode_knee.clamped",
-                model = %model_for_knee.unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
+                model = %model_for_knee.as_deref().unwrap_or_default(), // unwrap_or_default: no model anywhere = no knee = the roster's own count, still worth one row
                 roster_lanes = lanes as u64,
                 knee = clamped as u64,
                 decode_knee = decode_knee.unwrap_or(0) as u64, // probe field: 0 = unmeasured
@@ -1573,7 +1724,8 @@ impl ServingDaemonModule {
         // typical-prompt pool (c84d885a): a seat that plans lanes for leased-in minds must
         // size them to the prompts those minds send, not to one local resident's. A seat
         // with no residents of its own but leased-in minds still gets a floor from them.
-        let leased_sent = (self.leased_in_sent)();
+        let leased_samples = (self.leased_in_sent)();
+        let leased_sent: Vec<u32> = leased_samples.iter().filter_map(|s| s.requested()).collect();
         let (demand, sent, median) = if live.is_empty() {
             // No registry yet (boot): the residents the working set REMEMBERS (rehydrated
             // from their last boot) are the demand pool — not only the leased-in ring. A
@@ -1918,8 +2070,28 @@ impl ServingDaemonModule {
                 );
             }
         }
+        let instant = plan_fill(live, mode.serving_fraction(), unified);
+        // The plan budgets the sustained MINIMUM over one relaunch's duration (READY_TIMEOUT):
+        // headroom that has not outlived a relaunch has not earned one; pressure is honoured
+        // at once. The M5, 2026-10-18 15:27-15:28Z: the instantaneous budget read 22.9, 29.8,
+        // 29.1 then 41.9 GB within 22 s (ledger flat at 41.68 GB) and the plan it fed
+        // relaunched the engine at 15:06, 15:18 and 15:24, every resident cold each time.
+        let usable_bytes = self
+            .budget_readings
+            .lock()
+            .observe(crate::time::EpochMs::now().millis(), instant)
+            .min;
+        if usable_bytes != instant {
+            crate::probe!(
+                class = "serving.budget.sustained",
+                instant_bytes = instant,
+                usable_bytes,
+                window_ms = crate::inference::llama_server::READY_TIMEOUT.as_millis() as u64,
+                "the plan budgets the sustained minimum, not this tick's reading"
+            );
+        }
         HostBudget {
-            usable_bytes: plan_fill(live, mode.serving_fraction(), unified),
+            usable_bytes,
             perf_cores: perf_cores(),
         }
     }
@@ -2308,27 +2480,21 @@ impl ServingDaemonModule {
     /// file path protects its per-model dir and vice versa, whichever
     /// layout the artifact uses.
     fn set_active_artifact(&self, path: Option<std::path::PathBuf>) {
-        Self::set_active_artifact_in(&self.active_artifact, path);
+        Self::set_active_artifact_in(&self.active_artifact, path, None);
     }
 
     fn set_active_artifact_in(
         active: &std::sync::Mutex<Option<std::path::PathBuf>>,
         path: Option<std::path::PathBuf>,
+        physical: Option<std::path::PathBuf>,
     ) {
         let Ok(mut current) = active.lock() else {
             return; // poisoned: the set fails SAFE (protects everything)
         };
-        if *current == path {
-            return;
-        }
+
         let set = crate::system_resources::serving_active_artifacts();
-        if let Some(old) = current.take() {
-            set.release(&old);
-        }
-        if let Some(new) = path {
-            set.register(new.clone());
-            *current = Some(new);
-        }
+        set.replace(current.as_deref(), path.clone().map(|raw| (raw, physical)));
+        *current = path;
     }
 
     /// Once a minute, read the live lane's anonymous footprint off its process and feed
@@ -3390,16 +3556,19 @@ impl ServingDaemonModule {
                     // "sustained" meaning sustained-NOW.
                     self.reset_rehome_streak();
                 }
-                // The geometry a cold boot plans first is the last SETTLED one — the lane
-                // that outlived its own spawn cooldown without a re-home — never the last
-                // SPAWNED one. Measured 2026-09-19 on the M5: the 12:19Z Eco relaunch spawned
-                // `--parallel 1`, the spawn wrote `lanes: 1` to the store, and every boot after
-                // (13:2xZ, 13:36Z) planned `min(fit, 1)` = one lane on a box whose fit held two
-                // — a shrink-only ratchet across boots. Saving on settle makes "the first
-                // launch is the steady one" (the boot probe's own words) true.
-                if settles_this_tick(cooling, live.ready, live.lanes) {
-                    if let Some(model) = live.active_model.as_deref() {
-                        crate::modules::served_window_store::save(model, live.served_context_window, live.lanes);
+                // Settlement records an owned candidate. Only terminal usage from this
+                // exact generation promotes its cache preference; neither transition
+                // constrains the next plan's lanes or current workload requirement.
+                let settled_now = settles_this_tick(cooling, live.ready, live.lanes);
+                if let Some(model) = live.active_model.as_deref() {
+                    let endpoint = crate::ai::openai_endpoints::OpenAiBase::new(&live.base_url);
+                    if let Some(geometry) = crate::inference::slots::directory().endpoint(endpoint.root()).served_geometry()
+                        .filter(|g| g.model_id == model && g.per_slot_window == live.served_context_window && g.lanes == live.lanes)
+                    {
+                        let observed = crate::cognition::working_set::PromptSample::geometry_median(&(self.leased_in_sent)(), endpoint.root(), &geometry);
+                        crate::modules::served_window_store::record_reconciled(geometry, settled_now, observed);
+                    }
+                    if settled_now {
                         // A settled geometry is lanes the hour served: fold it into the
                         // health window's maximum (the lane-bound rest stands on that).
                         crate::modules::citizen_health::note_lanes(live.lanes as u64);
@@ -3408,7 +3577,7 @@ impl ServingDaemonModule {
                             model,
                             per_slot_window = live.served_context_window as u64,
                             lanes = live.lanes as u64,
-                            "the launch outlived its spawn cooldown without a re-home — this geometry is what the next boot plans first"
+                            "the launch settled — same-generation successful usage may record its cache preference"
                         );
                     }
                 }
@@ -3430,7 +3599,7 @@ impl ServingDaemonModule {
                 let measured_state = crate::inference::slots::measured_state_bytes(
                     &crate::inference::llama_server::kv_page_dir(desired.as_str(), live.served_context_window),
                 );
-                let cache_holds_no_state = launched_cache_holds_no_state(live.host_prompt_cache_mib, measured_state)
+                let cache_holds_no_state = crate::inference::lane_args::launched_cache_holds_no_state(live.host_prompt_cache_mib, measured_state)
                     && {
                         // what a relaunch would launch with: computed only in this rare case
                         let would_launch_mib = (self.model_resolver)(&desired)
@@ -3447,7 +3616,7 @@ impl ServingDaemonModule {
                                 .mib
                             })
                             .unwrap_or(0); // unwrap_or: an unresolvable model would launch nothing better, so no relaunch for size
-                        cache_relaunch_needed(live.host_prompt_cache_mib, would_launch_mib, measured_state)
+                        crate::inference::lane_args::cache_relaunch_needed(live.host_prompt_cache_mib, would_launch_mib, measured_state)
                     };
                 let worth_it = worth_it || short_of_slots || cache_holds_no_state;
                 // A plan may shrink while the host pages out; it never GROWS into it
@@ -3512,12 +3681,16 @@ impl ServingDaemonModule {
                     }
                     0
                 };
-                // Fire only on a tick whose plan IS the streak's high (BigMama on #4851): the
-                // relaunch takes this tick's plan, so firing on a low tick of an alternating
-                // plan would land the lane at the low value (33k under Kimi's 52k) and re-home
-                // again; launching the remembered high instead would use a budget this tick
-                // did not plan. The high tick is both: the best the streak saw, planned now.
-                let at_high = plan_space >= self.rehome_plan_high.load(Ordering::Relaxed);
+                // Fire only on a tick whose plan IS the high of the streak's evidence (BigMama on
+                // #4851): the relaunch takes this tick's plan, so firing on a low tick of an
+                // alternating plan would land the lane at the low value (33k under Kimi's 52k) and
+                // re-home again; launching the remembered high instead would use a budget this
+                // tick did not plan. The high is taken over the last REHOME_SUSTAINED_TICKS plans,
+                // the evidence the streak itself needs, NOT over the whole streak: a high recorded
+                // once, while a relaunch was still freeing memory (Kimi's node 2026-10-15,
+                // 109,768, then a plan settled at 33k-87k), made this unreachable, and the lane
+                // served a 6,144 window until an operator relaunched it (card 5bac4968).
+                let at_high = at_recent_plan_high(&mut self.rehome_recent_plans.lock(), plan_space);
                 let starved = streak >= REHOME_SUSTAINED_TICKS && cooling == 0 && at_high;
                 // NOTE: the guards are re-armed at the FIRE point below, not here —
                 // `starved` only means the evidence qualifies. A later suppression
@@ -3740,67 +3913,36 @@ impl ServingDaemonModule {
             }
         }
 
-        // #175 sticky window: we're past the no-relaunch guard, so a relaunch WILL
-        // happen (a genome page-in / model change). Don't let the startup LoRA-load
-        // cascade ratchet the per-slot window DOWN on a same-lane relaunch and strand
-        // the personas pinned to the earlier, larger slot — keep the incumbent window
-        // when lanes are unchanged (memory-safe; a lane change legitimately resizes KV).
-        let served_ctx = sticky_served_window(served_ctx, lanes, &self.serving_tx.borrow());
-        // #363 prevention: the WEDGE-HEAL floor. The sticky floor above reads the live
-        // snapshot, but declaring a wedge EMPTIES that snapshot first — so the very
-        // relaunch the detector triggers used to spawn at whatever the teardown-transient
-        // plan said (the dying predecessor still holds its memory when the successor's
-        // budget samples free RAM). Floor the successor to the last HEALTHY lane's window
-        // when the lane count is unchanged; the predecessor's window is exactly the
-        // memory being freed, so the successor inherits it, and the existing overflow
-        // protection stays the backstop if the world genuinely shrank.
-        let floor_w = self.last_healthy_window.load(Ordering::Relaxed);
-        let floor_l = self.last_healthy_lanes.load(Ordering::Relaxed);
-        let live_ready = self.serving_tx.borrow().ready;
-        let floored = wedge_heal_floor(served_ctx, lanes, live_ready, floor_w, floor_l);
-        if floored != served_ctx {
+        // Past the no-relaunch guard a relaunch WILL happen: the window it takes is the plan's
+        // through the sticky, wedge-heal and physical-fit laws (`launch_window`, the one owner the
+        // tick's page seed reads too), each step that moved it reported here.
+        let window = self.launch_window(&desired, served_ctx, lanes);
+        if window.floored != window.sticky {
             crate::probe!(
                 class = "serving.reconcile.window",
                 decision = "wedge-heal-floor",
                 live_window = 0u32,
-                plan_window = served_ctx,
-                floored_to = floored,
+                plan_window = window.sticky,
+                floored_to = window.floored,
                 plan_lanes = lanes,
                 "spawn-at-transient guarded: successor floored to the last healthy \
                  lane's window instead of a teardown-dip plan (#363)",
             );
         }
-        // A KEPT WINDOW MUST STILL FIT. Both laws above keep the BIGGER window on the
-        // assumption it was legitimately sized. On 2026-09-17 it was not: a 144,640
-        // window sized against a fictional 54 GB budget (the ledger's uncapped add-back)
-        // was kept by sticky, then by wedge-heal, across every relaunch onto a 26 GB
-        // budget — 31.9 of 32.6 GB VRAM, 44 s prefills, the cache demand it implied.
-        // Bound the kept window by what the PHYSICAL budget fits at this lane count
-        // (physical, not live: the live budget is exactly the teardown transient the
-        // wedge-heal law exists to see through). The plan's own window is always
-        // within it, so this touches nothing but a kept fiction.
-        let served_ctx = match self
-            .catalog
-            .snapshot()
-            .get(&desired)
-            .and_then(|live| footprint_for(&live.model))
-            .map(|fp| fp.window_within(self.physical_budget().usable_bytes, lanes))
-        {
-            Some(fits) if floored > fits.max(crate::inference::planning::MIN_SERVE_CTX) => {
-                let bound = fits.max(crate::inference::planning::MIN_SERVE_CTX);
-                crate::probe!(
-                    class = "serving.reconcile.window",
-                    decision = "kept-window-exceeds-physical-fit",
-                    kept_window = floored,
-                    bound_to = bound,
-                    plan_lanes = lanes,
-                    physical_usable_gb = (self.physical_budget().usable_bytes / 1_000_000_000),
-                    "a kept (sticky / wedge-heal) window does not fit this host's physical \\n                     budget at this lane count — bounded; a kept window is never a licence \\n                     to exceed the card",
-                );
-                bound
-            }
-            _ => floored,
-        };
+        if window.served != window.floored {
+            crate::probe!(
+                class = "serving.reconcile.window",
+                decision = "kept-window-exceeds-physical-fit",
+                kept_window = window.floored,
+                bound_to = window.served,
+                plan_lanes = lanes,
+                physical_usable_gb = (self.physical_budget().usable_bytes / 1_000_000_000),
+                "a kept (sticky / wedge-heal) window does not fit this host's physical \
+                 budget at this lane count — bounded; a kept window is never a licence \
+                 to exceed the card",
+            );
+        }
+        let served_ctx = window.served;
 
         // Resolve the full Model struct ONCE, here, and carry it on the target —
         // no re-fetch downstream ([[pass-the-model-struct-no-param-hell]]). If
@@ -3920,6 +4062,10 @@ impl ServingDaemonModule {
             if !current() {
                 return;
             }
+            let physical_artifact = match target.model.gguf_local_path.as_deref() {
+                Some(path) => crate::system_resources::ActiveArtifactSet::resolve(path).await,
+                None => None,
+            };
             let mut force_probe = ForcedProbe::claim(force_relaunch);
             let admit = || {
                 // This short borrow is the linearization point with intent writers.
@@ -3945,6 +4091,7 @@ impl ServingDaemonModule {
                 Self::set_active_artifact_in(
                     &active_artifact,
                     target.model.gguf_local_path.clone(),
+                    physical_artifact.clone(),
                 );
 
                 drop(intent);
@@ -4470,6 +4617,7 @@ impl ServingDaemonModule {
             s.ready && s.active_model.is_some()
         };
         if !believe_ready {
+            *self.frozen_slots.lock() = None;
             self.health_fails.store(0, Ordering::Relaxed);
             return None;
         }
@@ -4520,6 +4668,7 @@ impl ServingDaemonModule {
         let probe_window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
         if let Some(since) = (self.decode_age)() {
             if since <= probe_window_ms {
+                *self.frozen_slots.lock() = None;
                 self.health_fails.store(0, Ordering::Relaxed);
                 crate::probe!(
                     class = "serving.health",
@@ -4531,6 +4680,78 @@ impl ServingDaemonModule {
                      smoke probe rather than contend for a slot with the work that proves it",
                 );
                 return None;
+            }
+        }
+        // Adapter stamps miss inherited work. A processing flag is only a baseline:
+        // the same engine and task progress must remain unchanged over the interval.
+        // The M5's verified 34-minute freeze motivated this; its cause is unproven.
+        let frozen_age = (self.decode_age)();
+        if !frozen_age.is_some_and(|age| age >= FROZEN_ENGINE_MS)
+            || self.reconciling.load(Ordering::Acquire)
+        {
+            *self.frozen_slots.lock() = None;
+        }
+        if let Some(since) = frozen_age {
+            if since >= FROZEN_ENGINE_MS && !self.reconciling.load(Ordering::Acquire) {
+                let root = self
+                    .serving_tx
+                    .borrow()
+                    .base_url
+                    .strip_suffix("/v1")
+                    .map(str::to_owned);
+                if let Some(root) = root {
+                    let directory = crate::inference::slots::directory();
+                    let endpoint = directory.endpoint(&root);
+                    if let Some(generation) = directory
+                        .page_discovery_generation(&root)
+                        .filter(|_| endpoint.is_ready())
+                    {
+                        if self.health_probing.swap(true, Ordering::AcqRel) {
+                            return None;
+                        }
+                        let server = self.server.clone();
+                        let serving_tx = self.serving_tx.clone();
+                        let force_relaunch = self.force_relaunch.clone();
+                        let reconciling = self.reconciling.clone();
+                        let health_probing = self.health_probing.clone();
+                        let observation = self.frozen_slots.clone();
+                        let decode_age = self.decode_age.clone();
+                        let bus = self.bus.get().cloned();
+                        return Some(tokio::spawn(async move {
+                            let slots = server.slots_body().await;
+                            let current = {
+                                let state = serving_tx.borrow();
+                                state.ready
+                                    && state.active_model.is_some()
+                                    && state.base_url.strip_suffix("/v1") == Some(root.as_str())
+                                    && !reconciling.load(Ordering::Acquire)
+                                    && endpoint.is_ready()
+                                    && directory.page_discovery_generation(&root)
+                                        == Some(generation)
+                                    && decode_age().is_some_and(|age| age >= FROZEN_ENGINE_MS)
+                            };
+                            let frozen = if current {
+                                FrozenSlots::observe(
+                                    &mut observation.lock(),
+                                    generation,
+                                    slots.as_ref(),
+                                    std::time::Instant::now(),
+                                )
+                            } else {
+                                *observation.lock() = None;
+                                false
+                            };
+                            if frozen {
+                                crate::probe!(class = "serving.health", ok = false, via = "frozen_processing_slot",
+                                    unchanged_ms = FROZEN_ENGINE_MS,
+                                    "same engine and processing task progress remained unchanged across the observation interval");
+                                Self::declare_lane_wedged(&force_relaunch, &serving_tx, bus.as_ref(), "frozen: unchanged processing task progress across the observation interval");
+                            }
+                            health_probing.store(false, Ordering::Release);
+                        }));
+                    }
+                }
+                *self.frozen_slots.lock() = None;
             }
         }
         // NEVER DECODE ON A RESIDENT'S ONLY SLOT (card 9e3350bd, the 5090 2026-10-11): with no
@@ -4823,68 +5044,14 @@ impl ServingDaemonModule {
                 .map(|p| p.base_model.model_id.clone()),
             (self.inherited_lane)().as_ref(),
         );
-        // The window this host served the incumbent at last time (across runs) is
-        // the plan's first choice — the KV page geometry holds still (card 6e8214e8).
-        // A COLD BOOT PLANS THE LAST STEADY GEOMETRY FIRST (9/18). The store was keyed by
-        // the incumbent, and a cold boot has none — so it was never consulted at the one
-        // moment it mattered, and every boot planned against the transient minimum of
-        // external RAM: 8 × 28k on the M5, re-homed to 1 × 67k in 40 s, then 2 × 67k. Three
-        // geometries per boot, every first turn killed. The store now carries lanes with
-        // the window; with no incumbent, the remembered geometry is the plan's first choice
-        // when its model is still a candidate.
-        // …and only a STEADY one: a record whose window is below the typical prompt it
-        // remembers is the collapse the last plan shed to, not a geometry that served
-        // anyone (`StoredServedWindow::steady_geometry`, 2026-09-20).
-        let boot = if incumbent.is_none() {
-            crate::modules::served_window_store::load_geometry().filter(|g| {
-                g.steady_geometry().is_some() && candidates.iter().any(|c| c.model_id == g.model_id)
-            })
-        } else {
-            None
-        };
-        if let Some(g) = &boot {
-            static SAID: std::sync::Mutex<Option<(String, u32, u32)>> = std::sync::Mutex::new(None);
-            let key = (g.model_id.clone(), g.per_slot_window, g.lanes);
-            let mut said = SAID.lock().unwrap_or_else(|p| p.into_inner()); // unwrap_or_else: a probe dedupe, never truth
-            if said.as_ref() != Some(&key) {
-                crate::probe!(
-                    class = "serving.plan.boot_geometry",
-                    model = g.model_id.as_str(),
-                    per_slot_window = g.per_slot_window as u64,
-                    lanes = g.lanes as u64,
-                    "cold boot: planning the last steady geometry first — the first launch is the steady one"
-                );
-                *said = Some(key);
-            }
-        }
-        let mut demand = self
-            .serving_demand()
-            .with_sticky_window(
-                incumbent
-                    .as_deref()
-                    .and_then(crate::modules::served_window_store::load_for)
-                    .or(boot.as_ref().map(|g| g.per_slot_window)),
-            )
-            .with_boot_geometry(boot.as_ref().map(|g| (g.per_slot_window, g.lanes)));
-        // THE FLOOR REMEMBERS (2026-09-19): the typical prompt the seat served last time is
-        // the per-lane floor a boot starts from. The leased-in sample ring is process-static
-        // — empty on a fresh core — so the first plans after a boot floored at the 16,384
-        // bootstrap prior and the 5090 chose 2 × 17k for coders sending ~30k. Measured now:
-        // the record follows the live median; unmeasured now: the record's last median is
-        // the floor until prompts land. A boot never plans thinner than what it served.
-        {
-            let seat_model = incumbent.as_deref().or(boot.as_ref().map(|g| g.model_id.as_str()));
-            let record = crate::modules::served_window_store::load_geometry();
-            match typical_prompt_for_plan(demand.sent_median, seat_model, record.as_ref()) {
-                TypicalPrompt::Live(median) => {
-                    if let Some(model) = seat_model {
-                        crate::modules::served_window_store::save_typical_prompt(model, median);
-                    }
-                }
-                TypicalPrompt::Remembered(t) => demand = demand.with_sent_median(Some(t)),
-                TypicalPrompt::None => {}
-            }
-        }
+        // Remembered geometry is a cache preference, never capacity or demand.
+        // The current roster, knee and admission budget decide lanes and width.
+        let remembered = crate::modules::served_window_store::load_geometry()
+            .filter(|g| candidates.iter().any(|c| c.model_id == g.model_id));
+        let seat_model = incumbent.as_deref().or(remembered.as_ref().map(|g| g.model_id.as_str()));
+        let demand = self.serving_demand().with_sticky_window(
+            seat_model.and_then(crate::modules::served_window_store::load_for),
+        );
         // THE INCUMBENT'S OWN BYTES ARE CREDITED BACK EXACTLY ONCE. `budget` is the
         // ledger's replace-myself budget: serving's own measured footprint added back,
         // capped at the device. Once serving has REPORTED that footprint (steady state,
@@ -5067,7 +5234,7 @@ impl ServingDaemonModule {
                             if let Some(inc) = incumbent.as_deref() {
                                 let geometry = crate::modules::served_window_store::load_geometry()
                                     .filter(|g| g.model_id == inc)
-                                    .and_then(|g| g.steady_geometry());
+                                    .and_then(|g| g.cache_geometry());
                                 match incumbent_adoption_plan(
                                     &self.physical_budget(),
                                     candidates,
@@ -5440,7 +5607,7 @@ fn incumbent_adoption_plan(
     geometry: Option<(u32, u32)>,
 ) -> Option<ServingPlan> {
     let footprint = candidates.iter().find(|c| c.model_id == incumbent)?;
-    let demand = demand.clone().with_boot_geometry(geometry);
+    let demand = demand.clone().with_sticky_window(geometry.map(|(window, _)| window));
     plan_serving(physical, std::slice::from_ref(footprint), &demand)
 }
 
@@ -6436,19 +6603,6 @@ pub fn with_measured_state(demands: Vec<u32>, kv_per_token: Option<u64>, measure
     demands.into_iter().map(|t| t.max(state_tokens)).collect()
 }
 
-/// PURE: a lane's launched `--cache-ram` cannot hold even ONE measured saved state. Unknown
-/// (nothing measured, or an unrecorded launch size) is never true: no relaunch on a guess.
-pub fn launched_cache_holds_no_state(launched_mib: u32, measured_state: Option<u64>) -> bool {
-    measured_state.is_some_and(|state| launched_mib > 0 && u64::from(launched_mib) * 1024 * 1024 < state)
-}
-
-/// PURE: whether a relaunch is owed for cache size: the launched cache holds no measured
-/// state AND the cache a relaunch would launch with holds one. Without the second half a
-/// host that cannot afford one state would relaunch every cooldown and gain nothing.
-pub fn cache_relaunch_needed(launched_mib: u32, would_launch_mib: u32, measured_state: Option<u64>) -> bool {
-    launched_cache_holds_no_state(launched_mib, measured_state)
-        && measured_state.is_some_and(|state| u64::from(would_launch_mib) * 1024 * 1024 >= state)
-}
 
 /// PURE: the lane count the admission gate sizes by: the running engine's own lanes when it
 /// is serving, the plan's only before an engine is up (a cold boot has nothing else to go
@@ -6630,34 +6784,6 @@ fn sidecar_planned_headroom_bytes(
         .saturating_add((target.host_prompt_cache_mib as u64) * 1024 * 1024)
         .saturating_add(host_os_floor_bytes(physical_bytes));
     physical_bytes.saturating_sub(working_set)
-}
-
-/// The typical prompt a plan floors from — the three arms, pure (card c84d885a, 9/19):
-/// a LIVE median always wins and is what gets remembered; with no live median the
-/// remembered one for THE SAME model is the floor; a different model's record, or a 0 on
-/// disk, floors nothing. "Typical" is the median of the prompts the seat SERVES — residents
-/// and leased-in minds in one pool (#4197) — so on a seat that mostly serves other nodes'
-/// coders the remembered median is theirs, which is correct for a seat.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TypicalPrompt {
-    Live(u32),
-    Remembered(u32),
-    None,
-}
-fn typical_prompt_for_plan(
-    live_median: Option<u32>,
-    seat_model: Option<&str>,
-    record: Option<&crate::modules::served_window_store::StoredServedWindow>,
-) -> TypicalPrompt {
-    if let Some(m) = live_median.filter(|m| *m > 0) {
-        return TypicalPrompt::Live(m);
-    }
-    match (seat_model, record) {
-        (Some(model), Some(r)) if r.model_id == model && r.typical_prompt_tokens > 0 => {
-            TypicalPrompt::Remembered(r.typical_prompt_tokens)
-        }
-        _ => TypicalPrompt::None,
-    }
 }
 
 /// ONE FLOOR EVERYWHERE: the bytes a sidecar may take is the tighter of the LIVE free
@@ -7141,6 +7267,14 @@ fn snapshot_from_outcome(
     }
 }
 
+/// The window a launch takes ([`ServingDaemonModule::launch_window`]), with the steps the
+/// reconcile reports: after the sticky floor, after the wedge-heal floor, and the window served.
+struct LaunchWindow {
+    sticky: u32,
+    floored: u32,
+    served: u32,
+}
+
 #[async_trait]
 impl ServiceModule for ServingDaemonModule {
     fn config(&self) -> ModuleConfig {
@@ -7234,6 +7368,7 @@ impl ServiceModule for ServingDaemonModule {
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.
         self.recompute();
+        self.seed_reconcile_pages().await;
         let _ = self.reconcile_to_plan();
         Ok(())
     }
@@ -7251,6 +7386,7 @@ impl ServiceModule for ServingDaemonModule {
         // not-ready when the reconcile reads the snapshot — otherwise the escalation waits a
         // full tick behind the very guard it exists to defeat.
         self.take_reported_wedge();
+        self.seed_reconcile_pages().await;
         let _ = self.reconcile_to_plan();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane
         // we believe is `ready` can ACTUALLY decode — the reconcile trusts the published
@@ -7561,24 +7697,6 @@ pub(crate) mod tests {
         assert_eq!(admitted_lanes(true, 1, 2), 1, "and a 1-lane engine as one, until the reconcile relaunches it");
         assert_eq!(admitted_lanes(false, 0, 2), 2, "cold boot: the plan is all there is");
         assert_eq!(admitted_lanes(true, 0, 2), 2, "a ready snapshot without a lane count is no evidence");
-    }
-
-    // what this catches (the 5090, 2026-10-11: launched --cache-ram 4288 against ~5.5 GB
-    // measured states, 114 skips, 76% of restores cold, and nothing ever relaunched for it):
-    // the agreed rule. A cache that holds no measured state is evidence for a re-home when a
-    // relaunch would hold one; a cache that holds at least one state is never a reason,
-    // however far below the derived target; nothing measured is never a reason; and a host
-    // that cannot afford one state does not relaunch for nothing.
-    #[test]
-    fn a_lane_relaunches_for_cache_size_only_when_its_cache_holds_no_state() {
-        let mib = 1024u64 * 1024;
-        let state = Some(5_511 * mib);
-        assert!(cache_relaunch_needed(4_288, 11_022, state), "the 5090: holds nothing, a relaunch holds two");
-        assert!(!cache_relaunch_needed(6_000, 40_000, state), "holds one state: waits for the next relaunch, however far below target");
-        assert!(!cache_relaunch_needed(4_288, 11_022, None), "nothing measured: no relaunch on a guess");
-        assert!(!cache_relaunch_needed(4_288, 5_000, state), "a relaunch would hold no state either: no futile relaunch");
-        assert!(!cache_relaunch_needed(0, 11_022, state), "an unrecorded launch size is not a measurement");
-        assert!(launched_cache_holds_no_state(4_288, state) && !launched_cache_holds_no_state(5_512, state));
     }
 
     // what this catches (card 58ba9752): the cache sized for lanes x 2 while more minds
@@ -8077,6 +8195,19 @@ pub(crate) mod tests {
         // with none it is not — the first stair of the staircase.
         assert_eq!(knee_lanes(17, Some(2)), 2);
         assert_eq!(knee_lanes(17, None), 17);
+        // Exercise the actual plan as well as the lookup: remembering a one-lane
+        // collapse cannot defeat today's two-lane knee, even before a slot reports.
+        use crate::cognition::serving_plan::{HostBudget, ModelFootprint, ServingDemand, plan_serving_at_rest};
+        let model = ModelFootprint { model_id: remembered.clone().unwrap(), weights_bytes: 19 << 30,
+            kv_per_token: 33_000, context_window: 262_144, capability_rank: 9, fixed_per_lane_bytes: 0 };
+        let host = HostBudget { usable_bytes: 30 << 30, perf_cores: 8 };
+        let demand = ServingDemand::new(knee_lanes(resident_lane_demand(1, 17, false), Some(2)), Some(60_000))
+            .with_sticky_window(Some(67_340));
+        let cold = plan_serving_at_rest(&host, std::slice::from_ref(&model), None, &demand).unwrap();
+        let settled = plan_serving_at_rest(&host, std::slice::from_ref(&model), Some(&model.model_id), &demand).unwrap();
+        assert_eq!((cold.lanes, cold.served_context_window), (settled.lanes, settled.served_context_window));
+        assert_eq!(cold.lanes, 2, "remembered model applies its knee before boot, not the eight-core maximum");
+        assert!(roster_short_of_slots(1, cold.lanes), "a prior one-lane collapse can recover the second slot");
     }
 
     // what this catches (2026-09-19 15:4xZ, the M5 stuck at one lane): the knee's mirror.
@@ -8306,13 +8437,13 @@ pub(crate) mod tests {
     fn a_burst_of_leased_in_calls_on_one_tick_does_not_move_the_lane_count() {
         let w = DOWNSHIFT_SUSTAINED_TICKS as usize;
         assert!(w >= 2, "the guard only means something with a window");
-        assert_eq!(sustained_leased_in(&[3]), 0, "a fresh gauge never relaunches");
-        assert_eq!(sustained_leased_in(&[3, 0, 0]), 0, "a burst that vanished is not demand");
-        assert_eq!(sustained_leased_in(&[3, 3, 0]), 0, "two ticks is still a burst");
-        assert_eq!(sustained_leased_in(&[3, 3, 3]), 3, "three consecutive ticks: a load");
-        assert_eq!(sustained_leased_in(&[0, 3, 3, 3]), 3, "the window is the LAST w ticks");
-        assert_eq!(sustained_leased_in(&[2, 3, 3]), 2, "the minimum, not the max: a dip is honored");
-        assert_eq!(sustained_leased_in(&[3, 3, 3, 1]), 1, "a falling load falls at once");
+        assert_eq!(sustained_leased_in(1, 3), 0, "a fresh gauge never relaunches");
+        assert_eq!(sustained_leased_in(3, 0), 0, "a burst that vanished is not demand");
+        assert_eq!(sustained_leased_in(3, 0), 0, "two ticks is still a burst");
+        assert_eq!(sustained_leased_in(3, 3), 3, "three consecutive ticks: a load");
+        assert_eq!(sustained_leased_in(3, 3), 3, "the window is the LAST w ticks: [0, 3, 3, 3] keeps [3, 3, 3]");
+        assert_eq!(sustained_leased_in(3, 2), 2, "the minimum, not the max: a dip is honored");
+        assert_eq!(sustained_leased_in(3, 1), 1, "a falling load falls at once: [3, 3, 3, 1] keeps [3, 3, 1]");
     }
 
     #[test]
@@ -8835,6 +8966,7 @@ pub(crate) mod tests {
         probe_started: Option<Arc<tokio::sync::Notify>>,
         /// `/slots` reads served ([`LlamaServerControl::slots_body`]): the prefill knee's.
         slots_reads: Arc<AtomicUsize>,
+        slots_reply: Option<Arc<dyn Fn() -> serde_json::Value + Send + Sync>>,
     }
 
     impl FakeServer {
@@ -8854,6 +8986,7 @@ pub(crate) mod tests {
                 serve_started: None,
                 probe_started: None,
                 slots_reads: Arc::new(AtomicUsize::new(0)),
+                slots_reply: None,
             }
         }
     }
@@ -8928,7 +9061,12 @@ pub(crate) mod tests {
         }
         async fn slots_body(&self) -> Option<serde_json::Value> {
             self.slots_reads.fetch_add(1, Ordering::SeqCst);
-            Some(serde_json::json!([]))
+            Some(
+                self.slots_reply
+                    .as_ref()
+                    .map(|reply| reply())
+                    .unwrap_or_else(|| serde_json::json!([])),
+            )
         }
 
         async fn slots_activity_fingerprint(&self) -> Option<u64> {
@@ -9140,11 +9278,27 @@ pub(crate) mod tests {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Semaphore::new(0));
         let calls = Arc::new(AtomicUsize::new(0));
-        let app = Router::new().route("/v1/chat/completions", post({
-            let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
-            move || {
-                let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
+        let quoted_body = Arc::new(std::sync::Mutex::new(None::<axum::body::Bytes>));
+        let quotes = Arc::new(AtomicUsize::new(0));
+        let app = Router::new().route("/v1/chat/completions/input_tokens", post({
+            let quoted_body = quoted_body.clone(); let quotes = quotes.clone();
+            move |body: axum::body::Bytes| {
+                let quoted_body = quoted_body.clone(); let quotes = quotes.clone();
                 async move {
+                    *quoted_body.lock().unwrap() = Some(body);
+                    quotes.fetch_add(1, Ordering::SeqCst);
+                    axum::Json(serde_json::json!({"input_tokens":10}))
+                }
+            }
+        })).route("/v1/chat/completions", post({
+            let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
+            let quoted_body = quoted_body.clone();
+            move |body: axum::body::Bytes| {
+                let entered = entered.clone(); let release = release.clone(); let calls = calls.clone();
+                let quoted_body = quoted_body.clone();
+                async move {
+                    assert_eq!(quoted_body.lock().unwrap().take(), Some(body),
+                        "the real managed adapter must quote this finalized body before generation");
                     calls.fetch_add(1, Ordering::SeqCst);
                     entered.notify_one();
                     release.acquire().await.unwrap().forget();
@@ -9267,6 +9421,7 @@ pub(crate) mod tests {
             2,
             "cancelled batch schedules no second task"
         );
+        assert_eq!(quotes.load(Ordering::SeqCst), 2, "each generation is quoted once");
         assert_eq!(
             serves.load(Ordering::SeqCst),
             0,
@@ -10444,6 +10599,49 @@ pub(crate) mod tests {
         assert_eq!(fired_at % 2, 1, "fired on a low tick (half the plan), not the high one");
     }
 
+    // what this catches (card 5bac4968, Kimi's node 2026-10-15): one transient high stranding a
+    // lane. The plan read 109,768 at the post-deploy relaunch tick while memory was still being
+    // freed, then settled at 33k-87k; the fire tick had to reach that one-off high, never did, and
+    // her lane served 6,144 until an operator relaunched it. The high is the best of the last
+    // REHOME_SUSTAINED_TICKS plans, so a spike ages out and the lane re-homes to the settled
+    // plan; the rule is also pinned on its own, alternating and staircase cases kept above/below.
+    #[tokio::test]
+    async fn a_transient_plan_spike_does_not_strand_the_lane_below_the_settled_plan() {
+        let serves = Arc::new(AtomicUsize::new(0));
+        let (daemon, full) = lane_under_plan(serves.clone(), 65_536, 4);
+        let live_window = daemon.serving_tx.borrow().served_context_window;
+        let settled_window = full * 3 / 4;
+        assert!(live_window * 4 < settled_window / 2, "fixture: the lane must sit far below the settled plan");
+        let budget = HostBudget {
+            usable_bytes: 45 * GB,
+            perf_cores: 6,
+        };
+        let spike = vec![footprint_from_parts("coder-14b", 9 * GB, full, true, None).unwrap()];
+        let settled = vec![footprint_from_parts("coder-14b", 9 * GB, settled_window, true, None).unwrap()];
+        daemon.publish_plan(budget, &spike, &spike);
+        assert!(daemon.reconcile_to_plan().is_none(), "one spike tick is not sustained evidence");
+        let mut fired_at = None;
+        for tick in 1..(REHOME_SUSTAINED_TICKS * 4) {
+            daemon.publish_plan(budget, &settled, &settled);
+            if daemon.reconcile_to_plan().is_some() {
+                fired_at = Some(tick);
+                break;
+            }
+        }
+        let fired_at = fired_at.expect("a lane far below a settled plan must re-home once the spike ages out");
+        assert!(
+            fired_at <= REHOME_SUSTAINED_TICKS + 1,
+            "re-homed only at tick {fired_at}: the spike outlived the evidence span"
+        );
+
+        let mut recent = std::collections::VecDeque::new();
+        assert!(at_recent_plan_high(&mut recent, 109_768), "the first plan is its own high");
+        for (plan, expect) in [(87_000, false), (84_000, false), (86_000, false), (87_000, true)] {
+            assert_eq!(at_recent_plan_high(&mut recent, plan), expect, "plan {plan} against {recent:?}");
+        }
+        assert!(recent.len() <= REHOME_SUSTAINED_TICKS as usize, "bounded by the evidence span");
+    }
+
     // what this catches: the boot staircase (2026-09-02) the streak's plan-high rule
     // exists for. Personas register serially at boot, so the plan climbs in stairs;
     // a re-home per stair was sixteen model loads in one lane's log. While every tick
@@ -10909,6 +11107,168 @@ pub(crate) mod tests {
              latency must be unchanged"
         );
         assert!(d.force_relaunch.load(Ordering::Acquire));
+
+        // The processing-slot path must establish its own task/generation interval,
+        // even when adapter activity is stale after an idle period or core restart.
+        let now = std::time::Instant::now();
+        let interval = Duration::from_millis(FROZEN_ENGINE_MS);
+        let generation = uuid::Uuid::new_v4();
+        let processing = serde_json::json!([{"id": 0, "id_task": 17, "is_processing": true,
+            "n_prompt_tokens_processed": 200, "next_token": [{"n_decoded": 4}]}]);
+        let mut observed = None;
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            generation,
+            Some(&processing),
+            now
+        ));
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            generation,
+            Some(&processing),
+            now + interval / 2
+        ));
+        let mut advancing = processing.clone();
+        advancing[0]["n_prompt_tokens_processed"] = serde_json::json!(201);
+        assert!(!FrozenSlots::observe(
+            &mut observed, generation, Some(&advancing), now + interval / 2
+        ));
+        advancing[0]["next_token"][0]["n_decoded"] = serde_json::json!(5);
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            generation,
+            Some(&advancing),
+            now + interval
+        ));
+        let mut replacement = advancing.clone();
+        replacement[0]["id_task"] = serde_json::json!(18);
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            generation,
+            Some(&replacement),
+            now + interval * 2
+        ));
+        let successor = uuid::Uuid::new_v4();
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            successor,
+            Some(&replacement),
+            now + interval * 3
+        ));
+        assert!(FrozenSlots::observe(
+            &mut observed,
+            successor,
+            Some(&replacement),
+            now + interval * 4
+        ));
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            successor,
+            None,
+            now + interval * 5
+        ));
+        assert!(
+            observed.is_none(),
+            "an unreadable interval cannot support a frozen verdict"
+        );
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            successor,
+            Some(&serde_json::json!([])),
+            now
+        ));
+        assert!(!FrozenSlots::observe(
+            &mut observed,
+            successor,
+            Some(&serde_json::json!([{"is_processing": true}])),
+            now
+        ));
+
+        // Exercise the actual heartbeat with the existing endpoint generation owner.
+        let root = format!("test://frozen-{}", uuid::Uuid::new_v4());
+        let directory = crate::inference::slots::directory();
+        let endpoint = directory.endpoint(&root);
+        let launch = endpoint.transition().await;
+        let engine = launch.start_generation().unwrap();
+        launch
+            .ready(
+                &root,
+                &engine,
+                crate::inference::slots::KvPageContract {
+                    model_id: "fixture".into(),
+                    model: "fixture.gguf".into(),
+                    adapters: vec![],
+                    page_dir: None,
+                    context: 11008,
+                    slots: 1,
+                    cache_type: None,
+                    engine: "fixture-engine".into(),
+                    revisions: None,
+                },
+            )
+            .unwrap();
+        drop(launch);
+        let reply = processing.clone();
+        let mut frozen = daemon_with(Arc::new(FakeServer {
+            slots_reply: Some(Arc::new(move || reply.clone())),
+            ..FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)
+        }));
+        let age = Arc::new(AtomicU64::new(FROZEN_ENGINE_MS * 10));
+        let sampled_age = age.clone();
+        frozen.set_decode_age_source(Arc::new(move || Some(sampled_age.load(Ordering::Acquire))));
+        frozen.set_real_fails_source(Arc::new(|| 0));
+        let mut snapshot = ready_snapshot();
+        snapshot.base_url = format!("{root}/v1");
+        frozen.serving_tx.send_replace(snapshot.clone());
+        probe_once(&frozen).await.unwrap();
+        assert!(
+            frozen.serving_tx.borrow().ready,
+            "a newly observed task is not frozen"
+        );
+        frozen.frozen_slots.lock().as_mut().unwrap().unchanged_since -= interval;
+        age.store(TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS + 1, Ordering::Release);
+        for _ in 0..HEALTH_PROBE_EVERY_TICKS {
+            if let Some(probe) = frozen.spawn_health_heartbeat_if_due() {
+                probe.await.unwrap();
+            }
+        }
+        assert!(frozen.frozen_slots.lock().is_none(), "intervening activity beyond the fast trust window still invalidates the interval");
+        age.store(FROZEN_ENGINE_MS * 10, Ordering::Release);
+        probe_once(&frozen).await.unwrap();
+        assert!(!frozen.force_relaunch.load(Ordering::Acquire), "eligibility returning requires a fresh baseline");
+        frozen.frozen_slots.lock().as_mut().unwrap().unchanged_since -= interval;
+        probe_once(&frozen).await.unwrap();
+        assert!(
+            frozen.force_relaunch.load(Ordering::Acquire),
+            "same task unchanged across the interval is evidence"
+        );
+
+        // An engine exit during the awaited read invalidates an otherwise mature observation.
+        let reply = processing.clone();
+        let exiting = engine.clone();
+        let mut stale = daemon_with(Arc::new(FakeServer {
+            slots_reply: Some(Arc::new(move || {
+                exiting.observed_exit();
+                reply.clone()
+            })),
+            ..FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)
+        }));
+        stale.set_decode_age_source(Arc::new(|| Some(FROZEN_ENGINE_MS * 10)));
+        stale.set_real_fails_source(Arc::new(|| 0));
+        stale.prefill_knee_reading.store(true, Ordering::Release);
+        stale.serving_tx.send_replace(snapshot);
+        *stale.frozen_slots.lock() = Some(FrozenSlots {
+            generation: directory.page_discovery_generation(&root).unwrap(),
+            fingerprint: crate::inference::llama_server::slots_activity_fingerprint_of(&processing)
+                .unwrap(),
+            unchanged_since: std::time::Instant::now() - interval,
+        });
+        probe_once(&stale).await.unwrap();
+        assert!(
+            !stale.force_relaunch.load(Ordering::Acquire),
+            "post-await generation validity is required"
+        );
+        assert!(stale.frozen_slots.lock().is_none());
     }
 
     // what this catches: a lane whose per-slot window froze at ≤ HALF the
@@ -11776,23 +12136,4 @@ pub(crate) mod tests {
         assert_eq!(sidecar_admissible_bytes(floor / 2, 31 * GB, physical), 0);
     }
 
-    // what this catches (Cormac's three arms on #4207 — the 5090's 2 × 17k for 30k coders on
-    // a fresh boot): (1) a live median wins and is the one remembered; (2) no live median +
-    // a record for the SAME model → the plan floors from it; (3) no live median + a record
-    // for a DIFFERENT model, or a 0 on disk → nothing: a seat is never pinned to a stale or
-    // foreign prompt size. Pure over the store's record, so no daemon and no disk.
-    #[test]
-    fn the_typical_prompt_is_live_when_measured_remembered_for_the_same_model_and_never_foreign() {
-        use crate::modules::served_window_store::StoredServedWindow;
-        let rec = |model: &str, typical: u32| StoredServedWindow {
-            model_id: model.into(), per_slot_window: 49_243, lanes: 1, typical_prompt_tokens: typical, set_at_ms: 1,
-        };
-        let same = rec("qwen-27b", 30_000);
-        assert_eq!(typical_prompt_for_plan(Some(31_000), Some("qwen-27b"), Some(&same)), TypicalPrompt::Live(31_000), "arm 1: live wins over the record");
-        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "arm 2: unmeasured → the same model's remembered prompt");
-        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("other-4b", 33_000))), TypicalPrompt::None, "arm 3a: a different model's record floors nothing");
-        assert_eq!(typical_prompt_for_plan(None, Some("qwen-27b"), Some(&rec("qwen-27b", 0))), TypicalPrompt::None, "arm 3b: a 0 on disk is not a floor");
-        assert_eq!(typical_prompt_for_plan(None, None, Some(&same)), TypicalPrompt::None, "no seat model (a cold boot with no record model) floors nothing");
-        assert_eq!(typical_prompt_for_plan(Some(0), Some("qwen-27b"), Some(&same)), TypicalPrompt::Remembered(30_000), "a live 0 is unmeasured, not a measurement");
-    }
 }

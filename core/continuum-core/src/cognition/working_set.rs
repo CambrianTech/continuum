@@ -58,6 +58,41 @@ use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+/// Requested capacity drives growth; only an owned, completed engine call
+/// establishes observed service. A refusal cannot be interpreted as a success.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptSample {
+    Served { endpoint: String, tokens: u32, geometry: crate::modules::served_window_store::ServedGeometry },
+    Requested(u32),
+}
+
+impl PromptSample {
+    pub fn requested(&self) -> Option<u32> {
+        match self {
+            Self::Requested(tokens) if *tokens > 0 => Some(*tokens),
+            _ => None,
+        }
+    }
+
+    pub fn served(&self, endpoint: &str, model: Option<&str>) -> Option<u32> {
+        match self {
+            Self::Served { endpoint: sampled_endpoint, geometry, tokens }
+                if *tokens > 0 && sampled_endpoint == endpoint && model == Some(geometry.model_id.as_str()) => Some(*tokens),
+            _ => None,
+        }
+    }
+
+    /// Exact generation cohort: a later binding never certifies an older sample.
+    pub fn geometry_median(samples: &[Self], endpoint: &str, geometry: &crate::modules::served_window_store::ServedGeometry) -> Option<u32> {
+        let mut observed: Vec<u32> = samples.iter().filter_map(|sample| match sample {
+            Self::Served { geometry: g, .. } if g == geometry => sample.served(endpoint, Some(&geometry.model_id)),
+            _ => None,
+        }).collect();
+        observed.sort_unstable();
+        observed.get(observed.len() / 2).copied()
+    }
+}
+
 /// The process's registry handle — the ONE place a spawning mind and the serving
 /// daemon on the same core meet.
 ///
@@ -119,12 +154,10 @@ pub struct PersonaDemand {
     /// How many turns have been observed. One observation is a measurement; the
     /// count is what lets a reader judge how much to trust the peak.
     pub turns: u64,
-    /// The largest prompt this mind actually SENT (post-fit: framing + fitted
-    /// messages + reserve). `peak_tokens` says how much she COULD use (225k–505k
-    /// measured 2026-09-13 — the whole assembled context); this says how much a turn
-    /// needs to FIT. The served window follows this with headroom, so a 25k working
-    /// set no longer provisions a 137k slot that starves the RAM tier and the lane
-    /// count. Legacy files without it read 0.
+    /// Largest growth sample: post-fit size, or untrimmed demand when the window
+    /// starved the turn (`sent_sample_for_plan`). The legacy name is retained for
+    /// persisted compatibility; this is NOT proof of successful engine service.
+    /// Legacy files without it read 0.
     #[serde(default)]
     pub sent_peak: u32,
     /// The last [`RECENT_TURNS`] untrimmed demands, newest overwriting oldest — what
@@ -480,7 +513,8 @@ impl WorkingSetRegistry {
         }
     }
 
-    /// Record what a turn actually SENT (post-fit). Persisted with the demand.
+    /// Record the starvation-aware growth sample. Persisted with demand, never
+    /// used as evidence that the engine successfully served that many tokens.
     pub fn record_sent(&self, persona: Uuid, sent_tokens: u32, now_ms: u64) {
         if sent_tokens == 0 {
             return;
@@ -547,16 +581,16 @@ impl WorkingSetRegistry {
             .filter(|&t| t > 0)
     }
 
-    /// The TYPICAL sent prompt among `personas` — the median of their measured sent
-    /// peaks. The planner's per-lane floor follows this, not the ceiling: one mind
+    /// Typical growth sample among `personas` — the median of their retained
+    /// starvation-aware peaks. The planner's per-lane floor follows this, not the ceiling: one mind
     /// with a 96k prompt must not size every lane to 120k and starve the roster
     /// (2026-09-14: 16 residents on 3 lanes). The outlier is reconciled down to the
     /// served window instead.
     pub fn sent_median_of(&self, personas: &[Uuid]) -> Option<u32> {
         self.sent_median_with(personas, &[])
     }
-    /// The typical prompt over the residents' sent peaks PLUS `extra` samples — the prompt
-    /// sizes of the generates this seat served for minds hosted on other nodes
+    /// Growth demand over the residents' peaks PLUS `extra` requested samples —
+    /// including refused prompts from minds hosted on other nodes
     /// ([`crate::cognition::resource_admission::leased_in_sent_samples`]). ONE median for
     /// the seat's whole demand pool: a seat that plans lanes for leased-in minds must size
     /// those lanes to the prompts they actually send, not to one local resident's. Zeros
@@ -574,7 +608,7 @@ impl WorkingSetRegistry {
         peaks.sort_unstable();
         Some(peaks[peaks.len() / 2])
     }
-    /// The largest SENT prompt among `personas`, when any has been measured.
+    /// Largest retained growth sample among `personas`, including unmet demand.
     pub fn sent_ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
         personas
             .iter()
@@ -595,6 +629,8 @@ impl WorkingSetRegistry {
     /// channels; a cut inside the think records the peak verbatim and is not a need
     /// sample. Zero-token completions
     /// are the empty-completion fault's territory, not a data point to drag the peak with.
+    /// Returns this exact measurement even when persistence fails, so concern-owned
+    /// demand can retain its evidence without racing a later registry observation.
     pub(crate) fn record_emission(
         &self,
         persona: Uuid,
@@ -602,9 +638,9 @@ impl WorkingSetRegistry {
         reasoning_tokens: u32,
         stop: EmissionStop,
         now_ms: u64,
-    ) {
+    ) -> Option<PersonaEmission> {
         if output_tokens == 0 {
-            return;
+            return None;
         }
         let updated =
             self.record_emission_in_memory(persona, output_tokens, reasoning_tokens, stop, now_ms);
@@ -614,7 +650,7 @@ impl WorkingSetRegistry {
             Ok(path) => path,
             Err(error) => {
                 tracing::warn!(persona_id = %persona, %error, "emission root unavailable — measurement remains in memory");
-                return;
+                return Some(updated);
             }
         };
         let write = || -> std::io::Result<()> {
@@ -631,6 +667,7 @@ impl WorkingSetRegistry {
                 "emission not persisted — this mind re-measures its reply size after the next restart"
             );
         }
+        Some(updated)
     }
 
     /// How much of a past peak survives each new observation (7/8).
@@ -911,6 +948,42 @@ impl WorkingSetRegistry {
 
 #[cfg(test)]
 mod tests {
+    // Regression for card 7028c695: unserved demand invalidated actual restart
+    // geometry while refusal samples also masqueraded as successful service.
+    #[test]
+    fn requested_growth_and_observed_service_remain_distinct_across_restart() {
+        use crate::cognition::serving_plan::ServingDemand;
+
+        let local = Uuid::new_v4();
+        let registry = WorkingSetRegistry::new();
+        let legacy: PersonaDemand = serde_json::from_str(
+            r#"{"peak_tokens":2866096,"last_tokens":2866096,"last_seen_ms":1,"turns":1,"sent_peak":2866096}"#,
+        ).expect("legacy demand");
+        registry.observed.insert(local, legacy);
+        let samples = [
+            PromptSample::Requested(56_057),
+            PromptSample::Served { endpoint: "seat".into(), tokens: 828, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "m".into(), generation: Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 } },
+            PromptSample::Served { endpoint: "seat".into(), tokens: 120_000, geometry: crate::modules::served_window_store::ServedGeometry { model_id: "other".into(), generation: Uuid::new_v4(), per_slot_window: 128_000, lanes: 1 } },
+        ];
+        let requested: Vec<_> = samples.iter().filter_map(PromptSample::requested).collect();
+        let growth = registry.sent_median_with(&[local], &requested).expect("requested demand");
+        assert!(ServingDemand::new(1, Some(2_866_096)).with_sent_median(Some(growth)).window_target() > 2_048);
+        assert_eq!(samples[1].served("seat", Some("m")), Some(828));
+        assert_eq!(samples[1].served("other-seat", Some("m")), None);
+        assert_eq!(samples[1].served("seat", Some("absent")), None);
+        let PromptSample::Served { geometry, .. } = &samples[1] else { unreachable!() };
+        assert_eq!(PromptSample::geometry_median(&samples, "seat", geometry), Some(828));
+        assert_eq!(PromptSample::geometry_median(&samples, "neighbor-seat", geometry), None);
+        let rebound = crate::modules::served_window_store::ServedGeometry {
+            generation: Uuid::new_v4(), ..geometry.clone()
+        };
+        assert_eq!(PromptSample::geometry_median(&samples, "seat", &rebound), None,
+            "same model and geometry on a later generation cannot reuse prior usage");
+        assert_eq!(WorkingSetRegistry::sent_sample_for_plan(56_057, 828, 2_048), 56_057, "starvation still requests growth");
+
+        assert_eq!(registry.sent_median_of(&[local]), Some(2_866_096), "geometry migration never discards requested demand");
+    }
+
 
     // what this catches (BigMama's correction on #4197, 2026-09-18): a seat whose floor is
     // its residents' median alone. The 5090 had two residents; the median WAS one SWE
@@ -1176,7 +1249,7 @@ mod tests {
         let persona = p(9);
         let before = WorkingSetRegistry::new();
         before.record(persona, 24_126, 1_000);
-        before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
+        let _ = before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
         // A fresh process: new registry, nothing in memory.

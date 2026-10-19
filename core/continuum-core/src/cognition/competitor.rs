@@ -50,8 +50,8 @@ pub const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:58300/v1";
 const DEFAULT_API_KEY: &str = "sk-local";
 
 /// Wall-clock ceiling for a single task solve. An external agent (Hermes) runs a full
-/// tool loop, so this is generous; a hung arm is reaped (`kill_on_drop`) at the bound,
-/// never left orphaned.
+/// tool loop, so this is generous; a hung arm and the tools it started are ended at the
+/// bound (`lane_process::run_owned`), never left orphaned.
 const SOLVE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Hermes rejects at STARTUP any auxiliary compression model whose served context is
@@ -264,27 +264,28 @@ impl CompetitorAgent for HermesArm {
             .env("LM_BASE_URL", &req.endpoint)
             .env("LM_API_KEY", &req.api_key)
             .env("HERMES_YOLO_MODE", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
+            .stdin(Stdio::null());
         let started = Instant::now();
-        let output = match tokio::time::timeout(SOLVE_TIMEOUT, cmd.output()).await {
-            Ok(Ok(o)) => o,
-            Ok(Err(e)) => return Err(format!("hermes: spawn/exec failed: {e}")),
-            Err(_) => {
-                return Err(format!(
-                    "hermes: no answer within {}s (agent loop hung)",
-                    SOLVE_TIMEOUT.as_secs()
-                ))
-            }
-        };
-        let answer = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        // owned (lane_process::run_owned): a hung arm and the tools it started are ended at
+        // the bound, or when this solve is dropped
+        let output = crate::inference::lane_process::run_owned(cmd, Some(SOLVE_TIMEOUT), "hermes", std::sync::Arc::default())
+            .await
+            .map_err(|e| format!("hermes: spawn/exec failed: {e}"))?;
+        if let Some(note) = output.capture_note() {
+            return Err(format!("hermes: its answer is not whole: {note}"));
+        }
+        if let crate::inference::lane_process::Ended::TimedOut { unconfirmed } = &output.ended {
+            return Err(format!(
+                "hermes: no answer within {}s (agent loop hung; ended, not confirmed gone: {unconfirmed:?})",
+                SOLVE_TIMEOUT.as_secs()
+            ));
+        }
+        let answer = String::from_utf8_lossy(&output.stdout.bytes).trim().to_string();
         if answer.is_empty() {
             // Fail LOUD with the harness's own stderr — an empty answer is a real
             // failure to surface (e.g. the <64K-context startup rejection), never a
             // silent skip ([[fallbacks-are-illegal-fail-loud]]).
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = String::from_utf8_lossy(&output.stderr.bytes);
             let tail: String = stderr.lines().rev().take(3).collect::<Vec<_>>().join(" | ");
             return Err(format!("hermes: empty answer (stderr: {tail})"));
         }

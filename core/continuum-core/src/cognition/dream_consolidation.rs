@@ -431,6 +431,7 @@ impl SemanticDistiller {
         )
         .await;
         let _lane = crate::cognition::resource_admission::acquire_serving_lane(
+            persona_id,
             crate::cognition::resource_admission::LanePriority::Ambient,
             None,
         )

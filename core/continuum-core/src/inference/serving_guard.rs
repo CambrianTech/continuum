@@ -6,7 +6,7 @@
 //! for the concern, never the wire format). Behaviour-identical to the inline block.
 
 use crate::ai::openai_adapter::OpenAICompatibleConfig;
-use crate::ai::inference_error::InferenceError;
+use crate::ai::inference_error::{transport_diagnostic, InferenceError};
 
 /// Only engine measurements may calibrate the persona's next prompt fit.
 #[derive(Clone, Copy)]
@@ -16,6 +16,14 @@ pub(crate) enum PromptCount {
 }
 
 impl PromptCount {
+    pub(crate) fn check(self, available: u32, provider: &str, caller: &str) -> Result<(), InferenceError> {
+        if let Some(tokens) = prompt_alone_overflows_served(self.tokens(), available) {
+            crate::cognition::resource_admission::note_refused_prompt(tokens.min(u32::MAX as usize) as u32);
+            return Err(self.overflow(available, provider, caller));
+        }
+        Ok(())
+    }
+
     fn tokens(self) -> usize {
         match self {
             Self::Estimated(n) => n,
@@ -41,22 +49,13 @@ impl PromptCount {
     }
 }
 
-/// Every media-bearing local request needs the projector quote. Text requests
-/// retain their existing estimate; cloud providers do not promise this endpoint.
-pub(crate) fn needs_media_quote(body: &serde_json::Value) -> bool {
-    body.get("messages").and_then(|v| v.as_array()).into_iter().flatten()
-        .filter_map(|message| message.get("content").and_then(|v| v.as_array()))
-        .flatten().any(|part| matches!(part.get("type").and_then(|v| v.as_str()),
-            Some("image_url" | "input_audio" | "input_video")))
-}
-
-fn image_quote_request(
+fn prompt_quote_request(
     builder: &reqwest::RequestBuilder,
     patience: std::time::Duration,
 ) -> Result<reqwest::Request, String> {
     let mut request = builder.try_clone()
-        .ok_or("image token quote requires a replayable request")?
-        .build().map_err(|e| format!("image token quote request: {e}"))?;
+        .ok_or("prompt token quote requires a replayable request")?
+        .build().map_err(|e| format!("prompt token quote request: {}", transport_diagnostic(&e)))?;
     // Reuse the actual selected endpoint and authorization, including dedicated
     // vision lanes. Never consult a different lane or load a second projector.
     let path = format!("{}/input_tokens", request.url().path().trim_end_matches('/'));
@@ -68,25 +67,25 @@ fn image_quote_request(
 fn quoted_input_tokens(value: &serde_json::Value) -> Result<usize, String> {
     value.get("input_tokens").and_then(|v| v.as_u64())
         .and_then(|n| usize::try_from(n).ok()).filter(|n| *n > 0)
-        .ok_or_else(|| "image token quote omitted a positive input_tokens count".to_string())
+        .ok_or_else(|| "prompt token quote omitted a positive input_tokens count".to_string())
 }
 
 /// Price the exact finalized wire body with the selected engine's template and
-/// projector. No generation, persistent cache, or guessed per-image allowance.
-/// A failed quote is explicit: a text-only lower bound cannot certify pixels fit.
-pub(crate) async fn quote_image_prompt(
+/// tokenizer/projector. No generation, persistent cache, or guessed per-image allowance.
+/// A failed quote is explicit: an estimate cannot certify the finalized prompt fits.
+pub(crate) async fn quote_prompt(
     client: &reqwest::Client,
     builder: &reqwest::RequestBuilder,
     patience: std::time::Duration,
 ) -> Result<usize, String> {
-    let request = image_quote_request(builder, patience)?;
+    let request = prompt_quote_request(builder, patience)?;
     let response = client.execute(request).await
-        .map_err(|e| format!("image token quote failed: {e}"))?;
+        .map_err(|e| format!("prompt token quote failed: {}", transport_diagnostic(&e)))?;
     if !response.status().is_success() {
-        return Err(format!("image token quote refused with HTTP {}; image context cost is unknown", response.status()));
+        return Err(format!("prompt token quote refused with HTTP {}; prompt cost is unknown", response.status()));
     }
     let value = response.json::<serde_json::Value>().await
-        .map_err(|e| format!("invalid image token quote: {e}"))?;
+        .map_err(|e| format!("invalid prompt token quote: {}", transport_diagnostic(&e)))?;
     quoted_input_tokens(&value)
 }
 
@@ -336,20 +335,11 @@ pub(crate) async fn guard_resident_model(
         // check_redundancy, validate_response, …), which the persona-scoped overshoot
         // WARN below never covered. A refused request fails LOUD naming the caller and
         // never reaches llama_decode, so the slot stays healthy. Threshold is PROMPT
-        // ALONE ≥ window for estimates. Exact image measurements additionally
+        // ALONE ≥ window for estimates. Exact engine measurements additionally
         // reserve the explicit reply allowance; their refusal reports prompt
         // tokens and the full window so the existing fitter can recalibrate.
         // [[fallbacks-are-illegal-fail-loud]] [[llama-compute-error-wedge-is-per-slot-context-overflow]]
-        if let Some(prompt_tokens) =
-            prompt_alone_overflows_served(prompt_count.tokens(), snap.served_context_window)
-        {
-            // The refused size is demand this seat could not hold; it votes on the next
-            // plan's window (the 5090's self-sealed 2048, 2026-09-20).
-            crate::cognition::resource_admission::note_refused_prompt(
-                prompt_tokens.min(u32::MAX as usize) as u32,
-            );
-            return Err(prompt_count.overflow(snap.served_context_window, &cfg.name, caller));
-        }
+        prompt_count.check(snap.served_context_window, &cfg.name, caller)?;
     }
 
     Ok(())
@@ -405,12 +395,6 @@ mod tests {
         ]}]});
         assert_eq!(approx_prompt_tokens(&multipart), approx_prompt_tokens(&body(48_000)));
         assert_eq!(prompt_alone_overflows_served(approx_prompt_tokens(&multipart), 8_000), Some(16_000));
-        assert!(needs_media_quote(&multipart));
-        for kind in ["input_audio", "input_video"] {
-            assert!(needs_media_quote(&serde_json::json!({"messages":[{"content":[{"type":kind}]}]})));
-        }
-        assert!(!needs_media_quote(&body(48_000)));
-        assert!(!needs_media_quote(&serde_json::json!({"messages":[{"content":"image_url"}]})));
         // The quote must preserve the final template options, media, and auth,
         // and target the same lane. It must not mutate the generation builder.
         let client = reqwest::Client::new();
@@ -418,7 +402,7 @@ mod tests {
         let builder = client.post("http://127.0.0.1:1234/v1/chat/completions")
             .header("Authorization", "Bearer test-only").body(encoded.clone());
         let patience = std::time::Duration::from_secs(7);
-        let quote = image_quote_request(&builder, patience).unwrap();
+        let quote = prompt_quote_request(&builder, patience).unwrap();
         assert_eq!(quote.url().as_str(), "http://127.0.0.1:1234/v1/chat/completions/input_tokens");
         assert_eq!(quote.headers()["Authorization"], "Bearer test-only");
         assert_eq!(quote.body().unwrap().as_bytes().unwrap(), encoded);
