@@ -20,9 +20,10 @@ claim is proven by a validator that runs in seconds on far smaller sizes, on eve
 
 ## The memory hierarchy, used on purpose
 
-- **Weights are read once per decode step, whatever the batch.** Decode is bandwidth-bound
-  (16.5 GB per step on 307 GB/s), so batching every ready mind into the same step is nearly
-  free throughput. One shared KV pool, a slot per mind, no queue in front of the engine.
+- **Hypothesis, to measure with KV traffic, latency and fairness:** weights are read once per
+  decode step whatever the batch, so batching ready minds into one step should be cheap
+  throughput (16.5 GB per step on 307 GB/s). Sequence capacity follows the measured contract
+  in #5188, not a fixed slot-per-mind rule.
 - **KV is the scarce tier.** Keep each mind's state warm in its slot; page to RAM (host cache)
   before disk; pages and checkpoint sidecars are 0.6-1.9 GB, so restore IO dominates (p90
   8.4 s). Fewer, better-placed checkpoints; compress sidecars; restore ahead of need.
@@ -58,7 +59,8 @@ claim is proven by a validator that runs in seconds on far smaller sizes, on eve
 
 ## The CPU: many cores, entirely outside the GPU
 
-- SQLite runs on tokio async workers, blocking them 30-44% of the time: move it off.
+- SQLite blocked tokio async workers 30-44% of samples on deployed d90006023 (10-19 ~15Z);
+  canary ca2907d5c already uses spawn_blocking, so re-profile after the next deploy.
 - rayon pools spin ~45% waiting for tiny jobs: no pool for small vector work.
 - Vector search: one contiguous, pre-normalized f32 matrix kept live; coarse pass over
   binary/int8 codes with popcount (SIMD), exact f32 BLAS sgemv to rerank the top few;
