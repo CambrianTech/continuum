@@ -455,7 +455,7 @@ async fn release_surplus_holds(registry: &crate::persona::PersonaAircRuntimeRegi
 /// PURE: whether the one-card reconciler may act on a held card: a benchmark work card,
 /// never a review card (they ride beside it) and never an ordinary project card.
 fn is_one_card_rule_card(title: &str) -> bool {
-    crate::commands::benchmark::parse_review_title(title).is_none()
+    crate::cognition::bench_title::parse_review_title(title).is_none()
         && crate::cognition::bench_title::parse_card_title(title).is_some()
 }
 
@@ -510,7 +510,7 @@ mod tests {
         assert!(is_one_card_rule_card("[bench swe-bench] pytest-dev__pytest-10081: fix it"));
         assert!(!is_one_card_rule_card("career-wrangler: a real product always"));
         assert!(!is_one_card_rule_card("career-wrangler slice 1: transactional outbox"));
-        let review = crate::commands::benchmark::review_card_title(
+        let review = crate::cognition::bench_title::review_card_title(
             uuid::Uuid::from_u128(1),
             "pytest-dev__pytest-10081",
             "kimi",
@@ -773,7 +773,7 @@ async fn settle_from_board_and_return_idle_claims(registry: &crate::persona::Per
         }
         // (2) an idle claim by one of ours goes back to the deck.
         let claimed = matches!(on_board.state, airc_lib::CardState::Claimed | airc_lib::CardState::InProgress);
-        if !claimed || crate::commands::benchmark::parse_review_title(&on_board.title).is_some() {
+        if !claimed || crate::cognition::bench_title::parse_review_title(&on_board.title).is_some() {
             continue;
         }
         let (Some(owner), Some(claim_id)) = (on_board.owner, on_board.claim_id.clone()) else { continue };

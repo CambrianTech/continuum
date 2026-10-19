@@ -9,8 +9,12 @@
 //!
 //! Only grader-backed tasks (bench and coursework cards) can be held out: an ordinary card
 //! has no check to grade, so it is recorded as [`CardTask::NotATask`] and never claimed as a
-//! held-out result. An example written before tasks were recorded names none, so a set
-//! judged against it is reported as NOT known clean, never silently counted as clean.
+//! held-out result. A review card names the task it reviews ([`CardTask::ReviewOf`]): her
+//! review saw that task's patch, so it is never held out from her either.
+//!
+//! Only an explicit record proves anything (Astra on #5183). An example with no task field,
+//! no metadata, or a field that does not read is UNKNOWN, so a set judged against it is
+//! reported as not known clean, never silently counted as clean.
 
 use crate::cognition::eval::EvalTask;
 use crate::genome::fine_tuning::types::TrainingExample;
@@ -36,37 +40,52 @@ pub struct TaskIdentity {
 pub enum CardTask {
     /// A bench or coursework task: graded, so it can be held out.
     Task(TaskIdentity),
-    /// Ordinary work: no grader, so never a held-out claim either way.
+    /// A review of a task's fix, by its instance id: the title names no set, so it is
+    /// matched in every set, which can only hold out more, never less.
+    ReviewOf(String),
+    /// Ordinary work or unlinked conversation: no grader, so never a held-out claim.
     NotATask,
 }
 
 impl CardTask {
-    /// Through the one bench-title parser, so a card's task identity is the same string the
-    /// dispatch wrote and the grader reads.
+    /// Through the one bench and review title parsers, so a card's task identity is the same
+    /// string the dispatch wrote and the grader reads.
     pub fn of_card_title(title: &str) -> Self {
-        crate::cognition::bench_title::parse_card_title(title)
-            .map_or(CardTask::NotATask, |(set, task)| {
-                CardTask::Task(TaskIdentity { set, task })
-            })
+        use crate::cognition::bench_title::{parse_card_title, parse_review_title};
+        if let Some((set, task)) = parse_card_title(title) {
+            CardTask::Task(TaskIdentity { set, task })
+        } else if let Some(task) = parse_review_title(title) {
+            CardTask::ReviewOf(task)
+        } else {
+            CardTask::NotATask
+        }
     }
 }
 
-/// Record a staged row's task on every example built from it. `None` (a row staged before
-/// tasks were recorded) writes nothing, which [`trained`] reads as unknown.
-pub fn stamp_examples(params: &mut serde_json::Value, task: Option<&CardTask>) {
-    let Some(task) = task else {
-        return;
-    };
+/// Write `task` into one example's metadata: the ONE writer of the field.
+fn record(metadata: &mut serde_json::Map<String, serde_json::Value>, task: &CardTask) {
     let encoded = serde_json::to_value(task); // training-trigger submit wire: example metadata IS the job's request.json
-    let Ok(value) = encoded else {
-        // A two-variant enum of strings always serializes; a failure here is a serde bug,
-        // and writing nothing leaves the example reading as unknown, never as clean.
-        return;
-    };
+    if let Ok(value) = encoded {
+        metadata.insert(TASK_METADATA_KEY.to_string(), value);
+    }
+    // A three-variant enum of strings always serializes; were it ever to fail, the field
+    // stays absent and the example reads as unknown, never as clean.
+}
+
+/// Record a staged row's task on every example built from it. `None` (a row staged before
+/// tasks were recorded) leaves no field, which [`trained`] reads as unknown.
+pub fn stamp_examples(params: &mut serde_json::Value, task: Option<&CardTask>) {
     if let Some(examples) = params.get_mut("examples").and_then(|e| e.as_array_mut()) {
-        for example in examples {
-            if let Some(metadata) = example.get_mut("metadata").and_then(|m| m.as_object_mut()) {
-                metadata.insert(TASK_METADATA_KEY.to_string(), value.clone());
+        for metadata in examples
+            .iter_mut()
+            .filter_map(|e| e.get_mut("metadata")?.as_object_mut())
+        {
+            match task {
+                Some(task) => record(metadata, task),
+                // Unknown must read as unknown: never leave an earlier NotATask standing.
+                None => {
+                    metadata.remove(TASK_METADATA_KEY);
+                }
             }
         }
     }
@@ -76,29 +95,38 @@ pub fn stamp_examples(params: &mut serde_json::Value, task: Option<&CardTask>) {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Trained {
     pub tasks: BTreeSet<TaskIdentity>,
-    /// Card-linked examples whose task is unknown (staged before tasks were recorded, or a
-    /// task field that does not read). Any of these and the held-out set is not known clean.
+    /// Instance ids of tasks whose fix she reviewed (their set is not in a review title).
+    pub reviewed: BTreeSet<String>,
+    /// Examples with no readable task record: no metadata, no field, or a field that does
+    /// not read. Any of these and the held-out set is not known clean.
     pub unknown: usize,
 }
 
-/// The tasks a training job's examples worked. An example with no card (live conversation)
-/// worked no task; a card-linked example with no task field is counted unknown.
+/// The tasks a training job's examples worked. Only an explicit record counts: a task field,
+/// or an unlinked producer's `source` with no card. Anything else is unknown.
 pub fn trained(examples: &[TrainingExample]) -> Trained {
+    use crate::persona::training_producer::UNLINKED_SOURCES;
     let mut out = Trained::default();
-    for metadata in examples.iter().filter_map(|e| e.metadata.as_ref()) {
-        match metadata.get(TASK_METADATA_KEY) {
-            Some(value) => {
-                let read = serde_json::from_value::<CardTask>(value.clone()); // read back from the job's request.json on disk
-                match read {
-                    Ok(CardTask::Task(task)) => {
-                        out.tasks.insert(task);
-                    }
-                    Ok(CardTask::NotATask) => {}
-                    Err(_) => out.unknown += 1,
-                }
+    for metadata in examples.iter().map(|e| e.metadata.as_ref()) {
+        let field = metadata.and_then(|m| m.get(TASK_METADATA_KEY));
+        let read = field.map(|value| serde_json::from_value::<CardTask>(value.clone())); // read back from the job's request.json on disk
+        match read {
+            Some(Ok(CardTask::Task(task))) => {
+                out.tasks.insert(task);
             }
-            None if metadata.get("cardId").is_some() => out.unknown += 1,
-            None => {}
+            Some(Ok(CardTask::ReviewOf(task))) => {
+                out.reviewed.insert(task);
+            }
+            Some(Ok(CardTask::NotATask)) => {}
+            // No task field: an UNLINKED producer's source (no card) is the explicit record
+            // that it worked no graded task; anything else is unknown.
+            None if metadata.is_some_and(|m| {
+                m.get("cardId").is_none()
+                    && m.get("source")
+                        .and_then(|s| s.as_str())
+                        .is_some_and(|s| UNLINKED_SOURCES.contains(&s))
+            }) => {}
+            Some(Err(_)) | None => out.unknown += 1,
         }
     }
     out
@@ -122,7 +150,10 @@ impl HeldOut<'_> {
 }
 
 pub fn held_out<'a>(set: &str, tasks: &'a [EvalTask], trained: &Trained) -> HeldOut<'a> {
-    let seen = |t: &EvalTask| trained.tasks.iter().any(|s| s.set == set && s.task == t.id);
+    let seen = |t: &EvalTask| {
+        trained.reviewed.contains(&t.id)
+            || trained.tasks.iter().any(|s| s.set == set && s.task == t.id)
+    };
     let kept: Vec<&EvalTask> = tasks.iter().filter(|t| !seen(t)).collect();
     HeldOut {
         excluded: tasks.len() - kept.len(),
@@ -199,23 +230,75 @@ mod tests {
         );
     }
 
-    // what this catches (Astra on goal 8): an example staged before tasks were recorded must
-    // not make a held-out set look clean, while ordinary work and live conversation, which
-    // worked no graded task, must not make it look dirty.
+    // what this catches (Astra on #5183): only an explicit record may prove an example worked
+    // no held-out task. No metadata, empty metadata, a missing field (a row staged before tasks
+    // were recorded) and an unreadable field are all UNKNOWN; explicit NotATask is not; and a
+    // review of a task holds that task out in every set, because she saw its fix.
     #[test]
-    fn an_example_with_an_unrecorded_task_is_never_counted_clean() {
-        let mut ordinary =
-            json!({"examples": [{"prompt": "p", "completion": "c", "metadata": {"cardId": "b"}}]});
-        stamp_examples(&mut ordinary, Some(&CardTask::NotATask));
-        let mut examples: Vec<TrainingExample> =
-            serde_json::from_value(ordinary["examples"].clone()).expect("examples");
-        examples.push(example(json!({"source": "live-turn"})));
-        let set = [task("t1")];
-        assert!(held_out("s", &set, &trained(&examples)).is_known_clean());
+    fn only_an_explicit_record_proves_an_example_clean() {
+        let set = [task("t1"), task("t2")];
+        let lesson = crate::persona::training_producer::RECEIVED_LESSON_SOURCE;
+        let clean = vec![
+            example(json!({"task": "notATask"})),
+            example(json!({"source": lesson})),
+        ];
+        assert!(held_out("s", &set, &trained(&clean)).is_known_clean());
 
-        examples.push(example(json!({"cardId": "legacy"})));
-        let judged = held_out("s", &set, &trained(&examples));
-        assert_eq!(judged.unknown, 1);
-        assert!(!judged.is_known_clean());
+        let mut legacy = json!({"examples": [{"prompt": "p", "completion": "c", "metadata": {"cardId": "b", "task": "notATask"}}]});
+        stamp_examples(&mut legacy, None);
+        let legacy: Vec<TrainingExample> =
+            serde_json::from_value(legacy["examples"].clone()).expect("examples");
+        let unknowns = [
+            TrainingExample {
+                prompt: "p".into(),
+                completion: "c".into(),
+                metadata: None,
+                lived: None,
+            },
+            example(json!({})),
+            example(json!({"source": "live-turn"})),
+            example(json!({"source": lesson, "cardId": "a card's example without its task"})),
+            example(json!({"task": {"task": "missing its set"}})),
+            legacy[0].clone(),
+        ];
+        for unknown in &unknowns {
+            let judged = held_out("s", &set, &trained(std::slice::from_ref(unknown)));
+            assert_eq!(
+                judged.unknown, 1,
+                "{:?} must read as unknown",
+                unknown.metadata
+            );
+            assert!(!judged.is_known_clean());
+        }
+
+        let mut mixed = clean;
+        mixed.push(example(
+            json!({"task": {"task": {"set": "s", "task": "t1"}}}),
+        ));
+        mixed.push(unknowns[1].clone());
+        let judged = held_out("s", &set, &trained(&mixed));
+        assert_eq!(
+            (judged.excluded, judged.unknown),
+            (1, 1),
+            "a known task is excluded AND the unknown is still reported"
+        );
+
+        let review = CardTask::of_card_title("[review 0a1b2c3d] t2: review Kimi's fix");
+        assert_eq!(review, CardTask::ReviewOf("t2".into()));
+        let mut reviewed =
+            json!({"examples": [{"prompt": "p", "completion": "c", "metadata": {}}]});
+        stamp_examples(&mut reviewed, Some(&review));
+        let reviewed: Vec<TrainingExample> =
+            serde_json::from_value(reviewed["examples"].clone()).expect("examples");
+        let judged = held_out("any-set", &set, &trained(&reviewed));
+        assert_eq!(
+            judged
+                .tasks
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            ["t1"]
+        );
+        assert!(judged.is_known_clean());
     }
 }

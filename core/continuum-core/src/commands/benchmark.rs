@@ -944,24 +944,6 @@ fn duplicates_to_close(holds: &[crate::persona::card_holder::Hold]) -> (Vec<usiz
     (to_close, held.len() > 1)
 }
 
-/// A review card's title: `[review <parent8>] <instance>: …` — ONE writer
-/// ([`crate::modules::work::open_review_card`]), one parser, beside the bench one.
-pub(crate) fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
-    format!(
-        "[review {}] {instance}: review {owner}'s fix",
-        &parent.simple().to_string()[..8]
-    )
-}
-
-/// Parse a review card's title into the INSTANCE it reviews. `None` for any other
-/// title, so a normal work card is never mistaken for a review.
-pub(crate) fn parse_review_title(title: &str) -> Option<String> {
-    let rest = title.strip_prefix("[review ")?;
-    let (_, after) = rest.split_once("] ")?;
-    let instance = after.split(':').next()?.trim();
-    (!instance.is_empty()).then(|| instance.to_string())
-}
-
 /// Compose the card BODY: the full prompt plus a definition of done a citizen
 /// can act on with her own hands. Grading inputs that must stay held out
 /// (`expect`, the harness `test`) are deliberately NOT written to the card —

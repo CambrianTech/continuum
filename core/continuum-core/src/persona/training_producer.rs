@@ -761,7 +761,7 @@ pub(crate) fn received_submission_params(
     let episode = crate::cognition::experience::ExperienceRecord::from_shared_lesson(record);
     let plan = plan_received(classifier, &episode.task.prompt, &episode.answer);
     let mut params =
-        build_submit_params(persona, persona_name, base_model, &plan, "received-lesson");
+        build_submit_params(persona, persona_name, base_model, &plan, RECEIVED_LESSON_SOURCE);
     params["submissionId"] = json!(received_submission_id(persona, base_model, &record.id));
     let metadata = &mut params["examples"][0]["metadata"];
     metadata["memoryRecordId"] = json!(record.id);
@@ -796,6 +796,15 @@ pub(crate) fn received_submission_params(
 ///   scores below [`MIN_TRAINING_QUALITY`] by construction, and the chat score was
 ///   built for a different shape.
 pub const SPEECH_DISCIPLINE_TRAIT: &str = "speech-discipline";
+
+/// The `source` an example carries when no card produced it: a received lesson or a gated
+/// echo. ONE list, written by the producers below and read by the held-out judge
+/// (`cognition::held_out::trained`), where it is the explicit record that such an example
+/// worked no graded task (goal 8). It is the value already on the wire, so a replayed
+/// submission keeps its exact bytes.
+pub const RECEIVED_LESSON_SOURCE: &str = "received-lesson";
+pub const SPEECH_DISCIPLINE_SOURCE: &str = "speech-discipline";
+pub const UNLINKED_SOURCES: [&str; 2] = [RECEIVED_LESSON_SOURCE, SPEECH_DISCIPLINE_SOURCE];
 
 /// The silence token, exactly as [`crate::cognition::deliberation_parse`] reads it.
 pub const SILENCE_COMPLETION: &str = "PASS";
@@ -843,7 +852,7 @@ pub fn produce_speech_discipline(
             base_model,
             executor,
             plan,
-            "speech-discipline",
+            SPEECH_DISCIPLINE_SOURCE,
         )
         .await;
     });
@@ -878,7 +887,7 @@ pub fn produce_received(
             base_model,
             executor,
             plan,
-            "received-lesson",
+            RECEIVED_LESSON_SOURCE,
         )
         .await;
     });

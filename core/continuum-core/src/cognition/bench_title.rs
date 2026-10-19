@@ -58,3 +58,21 @@ pub fn parse_card_title(title: &str) -> Option<(String, String)> {
     }
     Some((bench.trim().to_string(), task.to_string()))
 }
+
+/// A review card's title: `[review <parent8>] <instance>: …` — ONE writer
+/// ([`crate::modules::work::open_review_card`]), one parser, beside the bench one.
+pub fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
+    format!(
+        "[review {}] {instance}: review {owner}'s fix",
+        &parent.simple().to_string()[..8]
+    )
+}
+
+/// Parse a review card's title into the INSTANCE it reviews. `None` for any other
+/// title, so a normal work card is never mistaken for a review.
+pub fn parse_review_title(title: &str) -> Option<String> {
+    let rest = title.strip_prefix("[review ")?;
+    let (_, after) = rest.split_once("] ")?;
+    let instance = after.split(':').next()?.trim();
+    (!instance.is_empty()).then(|| instance.to_string())
+}

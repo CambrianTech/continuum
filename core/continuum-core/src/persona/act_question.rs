@@ -314,7 +314,7 @@ pub(crate) async fn ask_the_act_question(
                         // to benchmark recipes, never to an ordinary project.
                         if held.first().is_some_and(|card| {
                             crate::cognition::bench_title::parse_card_title(&card.title).is_some()
-                                || crate::commands::benchmark::parse_review_title(&card.title).is_some()
+                                || crate::cognition::bench_title::parse_review_title(&card.title).is_some()
                         }) {
                             // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
                             // holder ran `pip install --no-build-isolation -e .`

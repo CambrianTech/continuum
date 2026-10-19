@@ -79,7 +79,7 @@ pub fn checkout_path_for(peer: &Uuid, card: &airc_lib::WorkCard) -> Option<PathB
     // A benchmark REVIEW card's work is in the OWNER's checkout (the fix under review
     // lives there), so the reviewer's hands stand in it. One rule for every turn (card
     // fc9e9fd7: the held-work turn kept its own copy of this resolver).
-    if let Some(instance) = crate::commands::benchmark::parse_review_title(&card.title) {
+    if let Some(instance) = crate::cognition::bench_title::parse_review_title(&card.title) {
         let copies = crate::persona::staged_workspace::owners_of(&instance);
         if let Some(copy) = copies.iter().find(|c| c.has_work).or_else(|| copies.first()) {
             return Some(copy.path.clone());

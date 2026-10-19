@@ -2385,7 +2385,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
                 .map(|rt| rt.agent_name().to_string())
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
-    let title = crate::commands::benchmark::review_card_title(parent.as_uuid(), &instance, &owner);
+    let title = crate::cognition::bench_title::review_card_title(parent.as_uuid(), &instance, &owner);
     let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
     let body = format!(
         "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \
