@@ -362,30 +362,11 @@ mod tests {
     #[test]
     fn expert_pager_step_runs_the_full_cycle_and_settles() {
         use crate::capacity::expert_residency::ExpertActivationProfile;
-        use crate::capacity::{DeviceCapacity, SystemProfile};
-        use crate::governor::types::{HardwareClass, PowerSource, TargetSilicon, ThermalClass};
         use std::collections::HashMap;
         const GB: u64 = 1024 * 1024 * 1024;
 
-        let profile = SystemProfile::from_parts(
-            HardwareClass {
-                silicon: TargetSilicon::NvidiaCuda,
-                silicon_model: "test".into(),
-                vram_mb: 32 * 1024,
-                system_ram_mb: 128 * 1024,
-                power_source: PowerSource::Plugged,
-                thermal_class: ThermalClass::Workstation,
-                battery_pct: None,
-                thermal_headroom_pct: None,
-            },
-            DeviceCapacity {
-                gpu_total_bytes: 32 * GB,
-                gpu_free_bytes_live: 30 * GB, // → 24 GiB budgeted (0.80)
-                system_ram_free_bytes: 100 * GB,
-            },
-            vec![],
-            24,
-        );
+        // 32 GiB VRAM, 30 GiB free → 24 GiB budgeted (0.80).
+        let profile = crate::capacity::system_profile::discrete_fixture(32, 30, vec![]);
         // 8 experts firing on layer 0, descending hit counts → a clear hot ranking.
         let mut hits = HashMap::new();
         for e in 0..8u32 {

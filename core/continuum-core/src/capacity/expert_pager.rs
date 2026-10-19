@@ -130,32 +130,13 @@ pub fn plan_expert_residency_with_resident(
 mod tests {
     use super::*;
     use crate::capacity::expert_residency::ExpertId;
-    use crate::governor::types::{HardwareClass, PowerSource, TargetSilicon, ThermalClass};
     use std::collections::HashMap;
 
     const GB: u64 = 1024 * 1024 * 1024;
 
     /// A 5090-shaped box: 32 GiB VRAM, 30 GiB live-free → 24 GiB *budgeted* (0.80).
     fn bigmama() -> SystemProfile {
-        SystemProfile::from_parts(
-            HardwareClass {
-                silicon: TargetSilicon::NvidiaCuda,
-                silicon_model: "test".into(),
-                vram_mb: 32 * 1024,
-                system_ram_mb: 128 * 1024,
-                power_source: PowerSource::Plugged,
-                thermal_class: ThermalClass::Workstation,
-                battery_pct: None,
-                thermal_headroom_pct: None,
-            },
-            DeviceCapacity {
-                gpu_total_bytes: 32 * GB,
-                gpu_free_bytes_live: 30 * GB,
-                system_ram_free_bytes: 100 * GB,
-            },
-            vec![],
-            24,
-        )
+        crate::capacity::system_profile::discrete_fixture(32, 30, vec![])
     }
 
     fn profile_with_hot_experts(n: u32) -> ExpertActivationProfile {
