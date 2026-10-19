@@ -3311,9 +3311,9 @@ impl LessonSink {
             .filter(|a| !a.trim().is_empty())
             .collect();
         let policy = crate::persona::redaction::RedactionPolicy::new(vec![Box::new(
-            crate::persona::redaction::ExamKeyDetector::new(
+            crate::persona::redaction::HeldOutAnswerDetector::new(
                 answers,
-                crate::persona::redaction::ExamKeyDetector::DEFAULT_MIN_LEN,
+                crate::persona::redaction::HeldOutAnswerDetector::DEFAULT_MIN_LEN,
             ),
         )]);
         let peer_dir = crate::identity::citizen_peer_dir(
@@ -6262,7 +6262,7 @@ mod tests {
     // catching the key, "learn from exams" would either teach nothing or cheat.
     #[test]
     fn learn_mode_lesson_keeps_experience_but_scrubs_the_answer_key() {
-        use crate::persona::redaction::{ExamKeyDetector, RedactionClass, RedactionPolicy};
+        use crate::persona::redaction::{HeldOutAnswerDetector, RedactionClass, RedactionPolicy};
         let task = EvalTask {
             id: "loop-file".into(),
             prompt: "Which file holds the service loop, service_loop.rs perhaps?".into(),
@@ -6276,16 +6276,16 @@ mod tests {
         assert!(lesson.contains("I was asked"));
         assert!(lesson.contains("I solved it"));
 
-        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+        let policy = RedactionPolicy::new(vec![Box::new(HeldOutAnswerDetector::new(
             [task.expect.clone()],
-            ExamKeyDetector::DEFAULT_MIN_LEN,
+            HeldOutAnswerDetector::DEFAULT_MIN_LEN,
         ))]);
         let (redacted, report) = policy.redact(&lesson);
         assert!(
             !redacted.contains("service_loop.rs"),
             "answer key must be scrubbed"
         );
-        assert!(report.count(RedactionClass::ExamKey) >= 1);
+        assert!(report.count(RedactionClass::HeldOutAnswer) >= 1);
         assert!(redacted.contains("I was asked"), "the experience survives");
         assert!(redacted.contains("I solved it"), "the outcome survives");
     }
