@@ -34,23 +34,25 @@ done until its gate is met on the live node and the change is MERGED.
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
 | 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md` | see table below |
 
-**Order of work, now** (10-19; work down it, never stop at a wait; a wait means start the
-next line; update this list when a line lands or its order changes):
+**Order of work, now** (updated 10-19 ~19:30Z; divide and conquer: work down YOUR lines, never stop at a
+wait, a wait means start your next line; update this table when a line lands or changes):
 
-| # | Line | Owner | Next action | Done when |
+| # | Line | Owner | State / next action | Done when |
 |---|---|---|---|---|
-| 1 | The build loop: split the 687,676-line monolith; builds off the serving node; batch, never restart a build | Fable (cuts), Codex (crate graph) | time check with Bevy/LiveKit features off vs on; first cut by that measure | edit-to-checked < 2 min on the M5 |
-| 2 | A mind's context as an epoch materialization; the growing log last (reuse 35% -> 90%) | Fable + Codex | sign #5188, then the materializer | live reuse >= 80%, fresh tokens per act ~1-3k |
-| 3 | `EngineConfig` and KV capacity from #5188's contract; a scratch slot; host cache sized to a state | Fable | resolve-then-adopt owner in inference/planning | no queue wait for a ready mind; warm-ahead running |
-| 4 | Engine flags (tensor API, no CPU fallback, draft placement) | Fable | the after-receipt (deployed e678bb30c) | receipt posted on 9b9f3b59 |
-| 5 | Core CPU waste: vector corpus (race, BLAS, cascade), cosine owner, rayon, tree walks | Codex | cosine patch, then the revisioned corpus | idle-core sample near zero |
-| 6 | Every fast-path miss loud (24 found) | Cormac | top three: rejected restore, unrecorded backend, unpinned turns | each miss class has a fixture |
-| 7 | Delete dead code (~10.7k lines) and migrate duplicates (home path, token estimators) | Fable (batch running), Cormac (home path) | land the batch; claim the home path | rg evidence clean, build time before/after |
-| 8 | No SQL outside the ORM (epoch watermark) | unowned | claim card bbc5b0b6 | no rusqlite outside orm/ |
-| 9 | MTP draft KV at ~5.1k tokens | Cormac | size draft ctx from the slot | no draft decode failure on long turns |
-| 10 | Prefill during the tool call; the instant voice | Fable, Codex | after lines 2-3 | submit-to-first-token per act |
-| 11 | Learned policies (eviction, warming, checkpoints) on our own receipts | open | after line 2's validator | each beats its constant in offline replay |
-| 12 | Land the unwrap sweeps; Atlas silent; Aiko's gaps | Fable | after line 7 | merged |
+| 1 | The build loop: split the monolith; never compile on the serving node | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
+| 2 | A mind's context as an epoch (reuse 48% -> 90%+) | Fable + Codex | continuum-context slices 1-2 pushed (replay: 92-95% reuse, ~3x less fresh); next: wire the faculty's render path into Epoch | live reuse >= 80% |
+| 3 | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10) | Fable | resolve-then-adopt owner in inference/planning | no queue wait; warm-ahead runs |
+| 4 | Engine flags | Fable | DONE e678bb30c: prefill 105 -> 175-206 tok/s; decode drop under builds is line 1's | receipts on 9b9f3b59 |
+| 5 | Core CPU: cosine owner (#5189), revisioned vector corpus + BLAS + cascade, rayon spin | Codex | #5189: drop the two re-exports, then the corpus | idle-core sample near zero |
+| 6 | Every fast-path miss loud | Cormac | #5190: count resident_prefix_lost; #5191: probe wording; then the rest of the 24 | each miss class has a fixture |
+| 7 | Duplicates to one owner: 73 hand-built ~/.continuum paths (correctness), token estimators | Cormac (paths), Fable (tokens) | claim and migrate | rg finds one owner each |
+| 8 | No SQL outside the ORM (epoch watermark, card bbc5b0b6) | OPEN: claim it | migrate to an ORM entity | no rusqlite outside orm/ |
+| 9 | One logging system (clog_* into tracing, card b22ed589) | OPEN: claim it | then the macros move to continuum-base | no write_log_direct outside the layer |
+| 10 | Host-dependent tests (RAM, seats, timing; card c4d84be3) | OPEN: claim it | inject measured inputs via fixtures | same result on every host |
+| 11 | MTP draft KV at ~5.1k tokens | Cormac | size draft ctx from the slot | no draft decode failure |
+| 12 | The PR queue (68 open; ledger on card 397250f5) | everyone: your slice | review within a day, verdict at the exact head; run hygiene on the merged tree before merging | queue < 15 |
+| 13 | Prefill during tool calls; the instant voice | Fable, Codex | after lines 2-3 | submit-to-first-token |
+| 14 | Learned policies on our own receipts; residents review docs PRs; Atlas silent; Aiko gaps | open / residents | after the validators | each beats its constant offline |
 
 **Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
 fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
