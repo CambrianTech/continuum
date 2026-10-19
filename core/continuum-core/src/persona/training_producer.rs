@@ -2227,8 +2227,8 @@ pub(crate) mod tests {
             let examples: Vec<TrainingExample> =
                 serde_json::from_value(params["examples"].clone()).expect("the wire examples are training examples"); // JUSTIFIED: test fixture
             let trained = crate::cognition::held_out::trained(&examples);
-            assert_eq!(trained.unknown, 0, "every example names its task");
-            assert_eq!(trained.tasks.len(), 1);
+            assert_eq!(trained.unknown(), 0, "every example names its task");
+            assert_eq!(trained.tasks().len(), 1);
         }
     }
 

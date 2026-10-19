@@ -91,15 +91,28 @@ pub fn stamp_examples(params: &mut serde_json::Value, task: Option<&CardTask>) {
     }
 }
 
-/// What one training job was trained on, read from its own examples.
+/// What one training job was trained on, read from its own examples. Built only by
+/// [`trained`]: its fields are private, so no caller can hand the judge a hand-made clean one.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Trained {
-    pub tasks: BTreeSet<TaskIdentity>,
+    tasks: BTreeSet<TaskIdentity>,
     /// Instance ids of tasks whose fix she reviewed (their set is not in a review title).
-    pub reviewed: BTreeSet<String>,
+    reviewed: BTreeSet<String>,
     /// Examples with no readable task record: no metadata, no field, or a field that does
     /// not read. Any of these and the held-out set is not known clean.
-    pub unknown: usize,
+    unknown: usize,
+}
+
+impl Trained {
+    /// The graded tasks the job's examples recorded.
+    pub fn tasks(&self) -> &BTreeSet<TaskIdentity> {
+        &self.tasks
+    }
+
+    /// Examples with no readable task record.
+    pub fn unknown(&self) -> usize {
+        self.unknown
+    }
 }
 
 /// The tasks a training job's examples worked. Only an explicit record counts: a task field,
@@ -139,12 +152,23 @@ pub fn trained(examples: &[TrainingExample]) -> Trained {
 pub struct HeldOut<'a> {
     tasks: Vec<&'a EvalTask>,
     /// Tasks of the set left out because the gene trained on them.
-    pub excluded: usize,
+    excluded: usize,
     /// Carried from [`Trained::unknown`]: non-zero means contamination cannot be ruled out.
-    pub unknown: usize,
+    unknown: usize,
 }
 
 impl<'a> HeldOut<'a> {
+    /// Tasks of the set left out because the gene trained on them.
+    pub fn excluded(&self) -> usize {
+        self.excluded
+    }
+
+    /// Trained examples with no readable task record. Read-only: every field is private, so
+    /// [`HeldOut::known_clean`] cannot be talked past (Astra on #5183).
+    pub fn unknown(&self) -> usize {
+        self.unknown
+    }
+
     /// The tasks a held-out result may be claimed on, when every trained example recorded its
     /// task; otherwise `Err` with how many did not, which the caller reports instead of a
     /// lift. It proves the RECORDED training provenance only: not that a lesson's text never
@@ -231,10 +255,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["t1", "t3"]
         );
-        assert_eq!(judged.excluded, 1);
+        assert_eq!(judged.excluded(), 1);
         assert!(judged.known_clean().is_ok());
         assert_eq!(
-            held_out("coursework-ffffffffffff", &set, &trained).excluded,
+            held_out("coursework-ffffffffffff", &set, &trained).excluded(),
             0,
             "same id, other set"
         );
@@ -274,7 +298,8 @@ mod tests {
         for unknown in &unknowns {
             let judged = held_out("s", &set, &trained(std::slice::from_ref(unknown)));
             assert_eq!(
-                judged.unknown, 1,
+                judged.unknown(),
+                1,
                 "{:?} must read as unknown",
                 unknown.metadata
             );
@@ -288,7 +313,7 @@ mod tests {
         mixed.push(unknowns[1].clone());
         let judged = held_out("s", &set, &trained(&mixed));
         assert_eq!(
-            (judged.excluded, judged.unknown),
+            (judged.excluded(), judged.unknown()),
             (1, 1),
             "a known task is excluded AND the unknown is still reported"
         );
