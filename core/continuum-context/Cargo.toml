@@ -1,0 +1,7 @@
+[package]
+name = "continuum-context"
+version = "0.1.0"
+edition = "2021"
+description = "A mind's model view as an epoch materialization: a stable head, then versioned events that only append; compaction is an explicit epoch turnover (docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md)."
+
+[dependencies]
