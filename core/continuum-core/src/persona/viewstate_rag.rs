@@ -424,13 +424,14 @@ impl<V: RagRenderable + RoomScopedView> ViewStateRagSource<V> {
 /// indexes into. Each unit is length-prefixed before hashing so the encoding is
 /// injective over arbitrary rendered text: `["ab","c"]` and `["a","bc"]` join to
 /// the same bytes but must not hash equal, because an offset valid for one list
-/// is NOT valid for the other.
-fn list_fingerprint(units: &[String]) -> String {
+/// is NOT valid for the other. The identity is each unit's rendered `content`, the
+/// text the offset counts over; metadata rides along and does not move an offset.
+fn list_fingerprint(units: &[RagRenderUnit]) -> String {
     use sha2::Digest;
     let mut hasher = sha2::Sha256::new();
     for unit in units {
-        hasher.update(unit.len().to_be_bytes());
-        hasher.update(unit.as_bytes());
+        hasher.update(unit.content.len().to_be_bytes());
+        hasher.update(unit.content.as_bytes());
     }
     format!("{:x}", hasher.finalize())
 }
