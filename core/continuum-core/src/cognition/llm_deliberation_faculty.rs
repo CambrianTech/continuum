@@ -1294,6 +1294,7 @@ impl LlmDeliberationFaculty {
             let lane_or_starved = if ws.attention.requires_priority() {
                 tokio::select! {
                     lane = crate::cognition::resource_admission::acquire_serving_lane(
+                        Some(self.persona_id),
                         crate::cognition::resource_admission::LanePriority::Directed,
                         None,
                     ) => Some(lane),
@@ -1317,7 +1318,7 @@ impl LlmDeliberationFaculty {
                     _ => None,
                 };
                 tokio::select! {
-                    lane = crate::cognition::resource_admission::acquire_serving_lane(priority, expected) => Some(lane),
+                    lane = crate::cognition::resource_admission::acquire_serving_lane(Some(self.persona_id), priority, expected) => Some(lane),
                     _ = tokio::time::sleep(lane_bound) => None,
                     _ = crate::cognition::directed_pending::wait(self.persona_id) => {
                         crate::probe!(
