@@ -142,7 +142,14 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
     let branch = card_branch(card);
     // Already staged: the same lookup a held-card turn uses, so claim time and turn
     // time can never disagree about where her work lives.
-    if let Some(existing) = checkout_path_for(&claimer, card) {
+    // A checkout made as a linked worktree (before card d166e4f2) is NOT returned as-is: it
+    // falls through to the clone path below, whose ensure_card_clone migrates it to a card
+    // clone when nothing can be lost (airc #1582). Returning it here made that migration
+    // unreachable for exactly the checkouts it exists for (the M5, 2026-10-19: 0 of 3
+    // eligible held checkouts migrated in an hour; Fable).
+    if let Some(existing) = checkout_path_for(&claimer, card)
+        .filter(|existing| !airc_lib::work_worktree::is_linked_worktree(existing))
+    {
         // THE WORKSPACE MOVES WITH THE MIND (card 73eefbbb): a checkout that already
         // exists here may be BEHIND what another node pushed on this branch (the card
         // changed hands), or DIVERGED from it. The transfer owner fetches and
@@ -257,6 +264,33 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
         "on-claim staging — a repo card gets airc's per-card worktree"
     );
     staged
+}
+
+/// Restage a HELD card whose checkout is still a linked worktree (staged before card
+/// d166e4f2), as the resident's turn on it starts and before her hands are rooted in it, so
+/// nothing of hers is running in the tree that may move. Residents keep their claims, so the
+/// claim-time staging never comes again for them (the M5, 2026-10-19: 0 of 3 eligible held
+/// checkouts migrated in an hour; Fable). [`stage_for_card`] migrates it when nothing can be
+/// lost and probes the outcome (`work.claim.staged`, `card.checkout.migrated`); if it cannot,
+/// the old tree stays hers and the turn binds to it as before. A card clone is untouched.
+pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard) {
+    if !checkout_path_for(&peer, card)
+        .is_some_and(|existing| airc_lib::work_worktree::is_linked_worktree(&existing))
+    {
+        return;
+    }
+    match crate::paths::continuum_home() {
+        Ok(home) => {
+            stage_for_card(&home, peer, card).await;
+        }
+        Err(error) => crate::probe!(
+            class = "persona.work.restage_skipped",
+            peer = %peer,
+            card = %card.card_id.as_uuid(),
+            error = %error,
+            "a held linked checkout could not be restaged: no continuum home"
+        ),
+    }
 }
 
 /// A card repo this node may clone: exactly `owner/name`. The card's repo id is written by
