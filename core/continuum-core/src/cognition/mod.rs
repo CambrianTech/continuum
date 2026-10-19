@@ -37,7 +37,7 @@ pub mod bench_round;
 pub mod bench_title;
 pub mod held_out;
 pub mod grid_allocation;
-pub mod bench_staging;
+pub mod measurement_staging;
 pub mod bench_task;
 pub mod round_readiness;
 pub mod activity;
