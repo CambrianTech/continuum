@@ -1908,6 +1908,7 @@ impl LlmDeliberationFaculty {
             ctx_floor,
             after_framing,
             tool_tokens,
+            surface_reason,
         } = composition;
         // Offered trailing content before fitting, not an additional claimant.
         // Its retained portion is already included in conversation_tokens; list
@@ -1918,6 +1919,9 @@ impl LlmDeliberationFaculty {
             .filter(|c| c.decision.is_none() && c.trailing)
             .map(|c| est_tokens(&c.content))
             .sum();
+        let affordable_tokens = super::tool_surface::over_affordable_receipt(
+            &self.persona_name, surface_reason, tool_tokens, framing_tokens, context_window,
+        );
         if budget_tokens == 0 {
             // Received-vs-rendered receipt even on the zero-budget path — a turn
             // whose entire context vanished must say so, not render silently empty
@@ -1936,6 +1940,8 @@ impl LlmDeliberationFaculty {
                 after_framing,
                 tool_tokens,
                 registry_tool_tokens = self.describe_tool_tokens(),
+                surface_reason = ?surface_reason,
+                affordable_tokens = ?affordable_tokens,
                 received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
                 rendered = 0usize,
                 dropped = %ws
@@ -2051,6 +2057,10 @@ impl LlmDeliberationFaculty {
             // Actual selected schemas, not the full registry's withheld cost.
             tool_tokens,
             registry_tool_tokens = self.describe_tool_tokens(),
+            // Which arm selected that surface, and the prompt the lane affords: the two
+            // numbers a 10k-token surface on a 2.8k-affordable lane is read against.
+            surface_reason = ?surface_reason,
+            affordable_tokens = ?affordable_tokens,
             // The pool the budget is subtracted FROM, read from the local that
             // actually holds it. First written as
             // `framing + conversation + budget` — a RECONSTRUCTION from the
@@ -3020,6 +3030,7 @@ impl LlmDeliberationFaculty {
                 ctx_floor,
                 after_framing,
                 tool_tokens: selected.tokens,
+                surface_reason: selected.reason,
             },
         );
 
@@ -4080,37 +4091,7 @@ impl LlmDeliberationFaculty {
     }
 }
 
-/// Chars-per-token assumed by the window guard. Deliberately CONSERVATIVE (3,
-/// not the substrate-wide ~4 used for RAG sizing): here a wrong estimate is not
-/// a slightly-off budget but a hard llama-server 500 ("Context size has been
-/// exceeded") that mutes the persona for the whole tick. The deliberation prompt
-/// carries UUID-dense rosters, structured engram observations, and code, which
-/// tokenize far denser than English — so we OVER-count tokens to stay safely
-/// under `n_ctx`. The completion reserve absorbs the remaining slack.
-/// How many tool categories the bookmarked menu may OPEN (list their verbs inline)
-/// WHY a turn's tool surface is what it is.
-///
-/// Carried alongside the cost because the cost alone cannot be interpreted: see
-/// [`SelectedSurface::demand_tokens`], where two of these arms want different
-/// numbers from the same selection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SurfaceReason {
-    /// She has no native specs at all — nothing to offer, nothing to price.
-    NoTools,
-    /// The whole registry fit its share of the served window and was offered.
-    Full,
-    /// A WORK turn takes her hands for FOCUS. The full surface was never wanted
-    /// on this turn, so nothing was truncated and nothing was lost.
-    HandsForWork,
-    /// The full surface did NOT fit its share of the served window. She wanted it
-    /// and the window refused it — this arm is a truncation, the others are not.
-    HandsForBudget,
-    /// The ROOM's recipe declares affordances, and they selected the surface (S1).
-    /// Not a truncation: the recipe is the rule, and a rule is never a loss —
-    /// `demand_tokens` prices what was sent. The discovery pair rides along so a
-    /// withheld verb stays one `commands/list` away.
-    RoomAffordances,
-}
+pub(crate) use super::tool_surface::SurfaceReason;
 
 /// The tool surface a turn actually sends, its cost, and why it is that surface.
 ///
@@ -4463,6 +4444,9 @@ struct ContextComposition {
     ctx_floor: usize,
     after_framing: usize,
     tool_tokens: usize,
+    /// WHY the surface priced in `tool_tokens` is the one sent: the receipt that says which
+    /// arm put a 38-tool surface on a CPU lane (card 3026b83e).
+    surface_reason: SurfaceReason,
 }
 
 /// A borrowed selection of whole source content or its declared atomic prefix.
