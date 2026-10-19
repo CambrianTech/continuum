@@ -149,8 +149,12 @@ Capabilities distinguish compiled support, support for this operation/model/dtyp
 selected configuration, and observed execution. A `has_tensor` boolean cannot express
 that contract. Unknown or unsupported REQUIRED capability refuses with a typed cause.
 Optional alternatives are chosen explicitly during resolution with their reason; never
-silently substitute CPU or a smaller model after launching. A cache miss with a valid
-recovery path is an observable recovery, not automatically a failed conversation.
+silently substitute CPU or a smaller model after launching. Failure to reuse state that
+was promised compatible is a DEFECT EVENT: failure-severity health, explicit cause and
+replay cost, and zero accepted unexplained misses. Correct re-prefill may keep the mind
+alive, but cannot mark the plan healthy or become a path the planner relies on. Intentional
+first load, a declared new epoch or revocation are distinct lifecycle transitions, not
+reuse promises; classify them before execution so permanent alarms do not hide defects.
 
 The inspected `/props` implementation (`get_res_props`, around 5161) reports total slots,
 weight buffers, memory breakdown, build info and chat-template capabilities. It does not
@@ -197,7 +201,8 @@ restore contract explicitly establish that transfer.
 - A required capability is resolved and adopted, or the launch refuses with its cause.
 - Appending an event never changes the token prefix of the current epoch.
 - A new epoch records its invalidation exactly once.
-- Every reuse miss reports its cause, replay cost and recovery outcome.
+- Every broken reuse promise reports a defect, cause, replay cost and recovery outcome;
+  successful re-prefill never clears the defect. Declared cold transitions remain distinct.
 - Cancellation preserves the accepted frontier; incompatible minds/adapters cannot reuse state.
 - Resolve, serialize, launch and observe agree on the same configuration identity.
 - Late artifacts retain source identity; effects reject changed required dependencies.
