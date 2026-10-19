@@ -622,22 +622,22 @@ async fn settle_to_outcome(
                     budget_fact_at = Some(acts);
                     probe_budget_fact("pre_gate");
                     body.working_memory.record_fact(&format!(
-                        "[act-budget] {acts} acts spent, none has changed a file yet.                          This turn's contract withholds further acts after                          {discovery_budget} total unless the workspace has been                          written to — the task is graded on files, and unwritten                          work will not exist for the grader."
+                        "[act-budget] {acts} acts spent, none has changed a file yet.                          This turn's contract withholds further acts after                          {discovery_budget} total unless the workspace has been                          written to — the deliverable is the workspace change, and                          unwritten work is not part of it."
                     ));
                 } else if acts == 0 {
                     budget_fact_at = Some(acts);
                     probe_budget_fact("turn_start");
                     body.working_memory.record_fact(&if max_acts == usize::MAX {
                         "[act-budget] This turn has no fixed act budget: I act until I settle. \
-                         The task is graded on the state of the workspace when I settle — \
-                         work not yet written when I settle does not exist for the grader."
+                         The deliverable is the workspace as I leave it when I settle — \
+                         work not yet written when I settle is not part of it."
                             .to_string()
                     } else {
                         format!(
                             "[act-budget] This turn grants me {max_acts} act→observe \
-                             cycles before I must settle. The task is graded on the state of \
-                             the workspace when I settle — work not yet written when the \
-                             budget ends does not exist for the grader."
+                             cycles before I must settle. The deliverable is the workspace \
+                             as I leave it when I settle — work not yet written when the \
+                             budget ends is not part of it."
                         )
                     });
                 } else if acts == max_acts / 2 {
