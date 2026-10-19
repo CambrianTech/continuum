@@ -1084,7 +1084,7 @@ pub(crate) struct StagedSolveDispatch {
 /// her solve DIRECTLY rather than depend on her re-deriving a `work/claim` from a chat
 /// kickoff (the fragile hop that stalls every run under warm-slot starvation — glass-boxed
 /// 2026-08-11: cards staged + assigned, zero claims, zero solves). The solve is her WHOLE
-/// cognition with an exclusive warm slot (`quiesce_others`), so nothing about "she does the
+/// cognition with an exclusive warm slot (`lease_measured_work`), so nothing about "she does the
 /// work herself" changes — only the trigger moves off the chat turn.
 /// Pre-warm envs for every instance a WORKING round has staged — the resume-side
 /// twin of dispatch's pre-warm (a reboot mid-round otherwise re-discovers env
