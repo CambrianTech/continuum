@@ -534,6 +534,8 @@ pub struct LlmDeliberationFaculty {
     /// Credited from the engine's own count, the cap grows when reuse works and falls back
     /// to the latency target when it does not.
     cached_prefix_tokens: std::sync::atomic::AtomicUsize,
+    /// This resident's ring results collapsed to pointers (`ring_collapse`).
+    collapsed_results: parking_lot::Mutex<super::ring_collapse::StickyCollapse>,
 }
 
 impl LlmDeliberationFaculty {
@@ -569,6 +571,7 @@ impl LlmDeliberationFaculty {
             decoding: relaxed_decoding(),
             working_set: None,
             cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
+            collapsed_results: parking_lot::Mutex::new(super::ring_collapse::StickyCollapse::default()),
         }
     }
 
@@ -3776,23 +3779,16 @@ impl LlmDeliberationFaculty {
             });
         }
         let history_budget = budget_tokens - required_tokens;
-        // 82416bb1: during an ongoing concern WM's ring only appends. Before
-        // dropping a result AND its expansion handle, price the source's compact
-        // alternative. No second store or mutation of WM: custody stays with the
-        // existing saved result, and only the fitted view changes. Unsaved results
-        // never supply an alternative. Ordinary eviction still bounds this view.
+        // 82416bb1: before dropping a saved result, price its pointer; custody stays with WM.
+        // Sticky and all at once: `ring_collapse` owns the rule and its receipt.
         let mut history_tokens = Self::messages_cost(&prompt.history);
-        for (index, pointer) in std::mem::take(&mut prompt.result_pointers) {
-            let Some(message) = prompt.history.get_mut(index) else { continue };
-            let old_cost = Self::message_cost(message);
-            let pointer_cost = Self::message_cost(&pointer);
-            if history_tokens > history_budget && pointer_cost < old_cost {
-                history_tokens = history_tokens.saturating_sub(old_cost - pointer_cost);
-                *message = pointer;
-            } else {
-                prompt.result_pointers.push((index, pointer));
-            }
-        }
+        prompt.result_pointers = self.collapsed_results.lock().apply(
+            &mut prompt.history,
+            std::mem::take(&mut prompt.result_pointers),
+            &mut history_tokens,
+            history_budget,
+            Self::message_cost,
+        );
         // Read BEFORE the history is borrowed for costing: what her own last move and its
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
@@ -8864,7 +8860,10 @@ mod tests {
             }
             let saved = crate::cognition::tool_executor::spill::resolve(persona, &handle).unwrap();
             assert_eq!(std::fs::read_to_string(saved).unwrap(), inventory);
-            // Fitting is a projection: a later roomy request still has the body.
+            // Sticky (ring_collapse): a later roomy fit keeps the pointer until forgotten.
+            let sticky = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
+            assert!(sticky.messages.iter().any(|m| m.content_text() == expected_pointer));
+            faculty.collapsed_results.lock().forget();
             let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
             assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
             // Exact-refusal correction reuses saved alternatives and keeps the
