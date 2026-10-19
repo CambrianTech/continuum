@@ -29,7 +29,7 @@ use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule}
 /// in seconds; this only bounds how long a commit no act announced (a reboot, a shell commit)
 /// can sit local. Five minutes is the delay Joel will tolerate before work shows on origin;
 /// each sweep is a board read per resident and two or three git reads per held card.
-const CARRY_SWEEP: Duration = Duration::from_secs(300);
+pub(crate) const CARRY_SWEEP: Duration = Duration::from_secs(300);
 
 static WAKE: std::sync::LazyLock<tokio::sync::Notify> = std::sync::LazyLock::new(tokio::sync::Notify::new);
 

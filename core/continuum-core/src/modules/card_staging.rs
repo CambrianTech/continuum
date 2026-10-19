@@ -273,12 +273,36 @@ pub async fn stage_for_card(home: &Path, claimer: Uuid, card: &airc_lib::WorkCar
 /// checkouts migrated in an hour; Fable). [`stage_for_card`] migrates it when nothing can be
 /// lost and probes the outcome (`work.claim.staged`, `card.checkout.migrated`); if it cannot,
 /// the old tree stays hers and the turn binds to it as before. A card clone is untouched.
+///
+/// Gated so a tree that cannot migrate is not restaged on every turn (Fable on #5132: each
+/// try is a GitHub fetch, a submodule pass and a branch arrival). It is tried only when the
+/// local checks the migration itself needs already pass (clean, on a branch, nothing
+/// unpushed; local git only, no network), and at most once per carry interval per (resident,
+/// card): the carry is what pushes her commits, so that is when an unpushed tree can become
+/// migratable.
 pub async fn restage_held_linked_checkout(peer: Uuid, card: &airc_lib::WorkCard) {
-    if !checkout_path_for(&peer, card)
-        .is_some_and(|existing| airc_lib::work_worktree::is_linked_worktree(&existing))
+    static TRIED: std::sync::LazyLock<dashmap::DashMap<(Uuid, Uuid), std::time::Instant>> =
+        std::sync::LazyLock::new(dashmap::DashMap::new);
+    let Some(existing) = checkout_path_for(&peer, card)
+        .filter(|existing| airc_lib::work_worktree::is_linked_worktree(existing))
+    else {
+        return;
+    };
+    use crate::persona::workspace_transfer::{current_branch, has_unpushed_work, is_dirty};
+    if !matches!(is_dirty(&existing).await, Ok(false))
+        || current_branch(&existing).await.is_none()
+        || has_unpushed_work(&existing).await
     {
         return;
     }
+    let key = (peer, card.card_id.as_uuid());
+    if TRIED
+        .get(&key)
+        .is_some_and(|at| at.elapsed() < crate::modules::card_carry::CARRY_SWEEP)
+    {
+        return;
+    }
+    TRIED.insert(key, std::time::Instant::now());
     match crate::paths::continuum_home() {
         Ok(home) => {
             stage_for_card(&home, peer, card).await;
