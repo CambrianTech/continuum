@@ -687,7 +687,7 @@ impl LlmDeliberationFaculty {
         // Either way calls map back to canonical commands on return (ONE section:
         // [`crate::cognition::tool_dialect`]). [[joel-boundary-design-values]]
         let style =
-            crate::cognition::tool_dialect::offer_style_for(self.binding.load().requested_model());
+            crate::cognition::tool_dialect::offer_style_for(Some(self.binding.load().requested_model()));
         // The native surface is the DERIVED, bounded agentic core — every command that
         // declares `native: true` at its own site (~a dozen tools), projected once by
         // `native_tool_specs()`. It is offered in FULL, always, in the model's wire dialect.
