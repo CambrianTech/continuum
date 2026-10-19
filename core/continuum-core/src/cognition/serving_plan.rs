@@ -168,14 +168,6 @@ pub struct ServingDemand {
     /// UNCLAMPED, so it is free to exceed what is currently served. That excess is the
     /// signal that the window is too small; nothing else in the system can produce it.
     pub window_tokens: u32,
-    /// A STABLE per-lane window floor demanded by a pinned regime (today: the
-    /// benchmark lease's published REGIME_WINDOW while rounds exist; 0 = none).
-    /// The lane COUNT may honor THIS floor because it is a constant while set —
-    /// never the jittering measured p95 (the 718 lane-flap law). This is the
-    /// "per-lane window floor for solve-class demand" the LANE_CAP=1 receipt
-    /// named as the real fix (measured 2026-08-27: 4 lanes sold the window to
-    /// 20k/slot and every solve starved at the #390 gate).
-    pub window_floor_tokens: u32,
     /// Whether `window_tokens` came from MEASUREMENT or from [`BOOTSTRAP_WORKING_SET`].
     ///
     /// The two are not interchangeable and the plan must not present them as if they
@@ -234,21 +226,6 @@ pub struct ServingDemand {
 /// per plan, geometric, until the demand is met. The untrimmed demand still caps it.
 pub const SENT_HEADROOM: f64 = 1.25;
 
-/// The pinned solve-class window floor (see `ServingDemand::window_floor_tokens`).
-/// ONE writer — the benchmark lease (`benchmark_resume`) — sets it to the
-/// published REGIME constant while Working rounds exist and clears it after.
-/// A process global with a single stable writer, same pattern as the measured
-/// hold cell; generalizing to per-class registry floors rides #2568.
-static SOLVE_WINDOW_FLOOR: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-pub fn set_solve_window_floor(v: u32) {
-    SOLVE_WINDOW_FLOOR.store(v, std::sync::atomic::Ordering::Release);
-}
-
-pub fn solve_window_floor() -> u32 {
-    SOLVE_WINDOW_FLOOR.load(std::sync::atomic::Ordering::Acquire)
-}
-
 impl ServingDemand {
     /// Demand from live measurement, with the cold-start case named explicitly.
     ///
@@ -265,7 +242,6 @@ impl ServingDemand {
             lanes,
             window_tokens: measured.unwrap_or(BOOTSTRAP_WORKING_SET), // JUSTIFIED unwrap_or: cold start is a real state, not a missing measurement; the substituted value is a declared PRIOR and its provenance is preserved on `measured` below rather than discarded here
             measured: measured.is_some(), // the provenance `unwrap_or` would otherwise destroy — UNKNOWN must stay distinguishable from a quantity
-            window_floor_tokens: solve_window_floor(),
             sticky_window: None,
             sent_tokens: None,
             sent_median: None,
@@ -689,15 +665,13 @@ pub enum LaneCapBy {
     Demand,
 }
 
-/// Which term set the per-lane floor: the largest of the three wins.
+/// Which term set the per-lane floor: the largest of the two wins.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]
 #[ts(export, export_to = "../../../protocol/typescript/serving/FloorTerm.ts")]
 #[serde(rename_all = "camelCase")]
 pub enum FloorTerm {
     /// `BOOTSTRAP_WORKING_SET`, one full turn: no larger term applied.
     Bootstrap,
-    /// A pinned regime floor (solve-class work).
-    WindowFloor,
     /// The residents' typical sent prompt, with headroom.
     TypicalPrompt,
 }
@@ -902,9 +876,8 @@ pub fn plan_serving(
     // jittering demand signal is the 718-replan lane-flap that wedged three benchmark runs. The
     // served WINDOW still refines with measurement (below); the slot COUNT rests on a fixed
     // floor. THIS floor — not the `MAX_LANES` backstop — is the binding constraint (#266).
-    // Per-lane floor: the stable bootstrap, RAISED by a pinned regime floor when
-    // one stands (solve-class work). Lanes multiply only while EVERY lane still
-    // fits the floor — parallel to the max, starvation to none.
+    // Per-lane floor: the stable bootstrap, RAISED by the typical prompt. Lanes
+    // multiply only while EVERY lane still fits the floor — parallel to the max, starvation to none.
     // LANES FOLLOW THE ROSTER AT THE TYPICAL PROMPT (2026-09-14). The floor is the
     // residents' median sent prompt with headroom, never the ceiling: one 96k prompt
     // sized every lane to 120k and 16 minds ran on 3 lanes with 40 GB of KV idle.
@@ -913,7 +886,6 @@ pub fn plan_serving(
     // can never fall silently into another's label. Ties go to the earlier term.
     let (per_lane_floor, floor_term) = [
         (BOOTSTRAP_WORKING_SET, FloorTerm::Bootstrap),
-        (demand.window_floor_tokens, FloorTerm::WindowFloor),
         // no sent prompt measured yet = no floor from it, the bootstrap prior stands
         (demand.typical_prompt_floor().unwrap_or(0), FloorTerm::TypicalPrompt), // JUSTIFIED unwrap_or: an absent median contributes no floor; 0 never wins the max
     ]
@@ -1377,20 +1349,6 @@ mod tests {
             coincidence.measured && !cold.measured,
             "identical windows, opposite provenance — the value cannot carry this fact"
         );
-    }
-
-    // what this catches: the per-lane solve floor (the LANE_CAP=1 receipt,
-    // 2026-08-27: 4 lanes sold the window to 20k/slot and every solve starved).
-    // The demand carries a PINNED floor while one stands and clears after —
-    // constant while set, so the lane count cannot flap with p95 (the 718 law).
-    #[test]
-    fn demand_carries_the_pinned_solve_floor() {
-        set_solve_window_floor(40_448);
-        let d = ServingDemand::new(4, Some(50_000));
-        assert_eq!(d.window_floor_tokens, 40_448, "demand carries the standing floor");
-        set_solve_window_floor(0);
-        let d0 = ServingDemand::new(4, Some(50_000));
-        assert_eq!(d0.window_floor_tokens, 0, "cleared floor = bootstrap governs");
     }
 
     // kv_per_token in BYTES; ctx is the model's trained ceiling. The served
@@ -2854,10 +2812,8 @@ mod tests {
                 assert_eq!(rejected_lanes, 2, "the candidate it rejected was a second lane");
                 assert!(rejected_window < floor_tokens, "and that lane's window fell below the floor: {rejected_window} < {floor_tokens}");
                 let typical = demand.typical_prompt_floor().expect("a sent median");
-                assert_eq!(floor_tokens, typical.max(BOOTSTRAP_WORKING_SET).max(demand.window_floor_tokens));
-                if demand.window_floor_tokens < typical {
-                    assert_eq!(floor_term, FloorTerm::TypicalPrompt, "the typical prompt set the floor");
-                }
+                assert_eq!(floor_tokens, typical.max(BOOTSTRAP_WORKING_SET));
+                assert_eq!(floor_term, FloorTerm::TypicalPrompt, "the typical prompt set the floor");
             }
             other => panic!("one lane on a tight host is the floor's decision, not {other:?}"),
         }

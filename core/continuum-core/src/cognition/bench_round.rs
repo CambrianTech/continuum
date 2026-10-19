@@ -597,9 +597,9 @@ fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
 
 /// Boot reconciler — reap-or-ADOPT, and since plan A5 the answer is ADOPT
 /// ([[boot-owns-the-process-tree-reap-or-adopt-never-fight-yourself]],
-/// continuity-is-the-default). A `Working` round on disk is STILL WORKING: the
-/// boot resume (`modules::benchmark_resume`) rejoins it and re-fires its next
-/// unworked card through the ONE driver decision. The old behavior — deleting
+/// continuity-is-the-default). A `Working` round on disk is STILL WORKING: its
+/// room and cards are the durable state, and residents pull from them as they choose
+/// (no runner re-fires anything at boot). The old behavior — deleting
 /// every Working round at boot — destroyed exactly the state a resume needs
 /// (room, cards, assignees, per-card activity rooms) and made "benchmarks never
 /// start themselves" structural. What remains here is the eviction story this
@@ -609,8 +609,7 @@ fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
 pub fn reap_orphaned_rounds() -> Vec<(String, usize)> {
     let dir = rounds_state_dir();
     // TTL expiry only (see [`reap_orphaned_rounds_in`]): a Working round at boot
-    // SURVIVES — it is the durable state the boot resume (modules::benchmark_resume)
-    // rejoins. Expired files are also dropped from the loaded map so live_rounds()
+    // SURVIVES — it is the durable state residents pull from. Expired files are also dropped from the loaded map so live_rounds()
     // agrees this boot.
     let expired = reap_orphaned_rounds_in(&dir);
     if !expired.is_empty() {
