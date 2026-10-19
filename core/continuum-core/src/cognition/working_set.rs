@@ -519,7 +519,15 @@ impl WorkingSetRegistry {
         if sent_tokens == 0 {
             return;
         }
-        let updated = *self
+        let updated = self.record_sent_in_memory(persona, sent_tokens, now_ms);
+        Self::save(persona, &updated);
+    }
+
+    /// The in-memory half of [`Self::record_sent`], without the disk write — the
+    /// sibling of [`Self::record_in_memory`], so a test stands up a sent sample
+    /// without writing into the operator's `~/.continuum/personas`.
+    pub(crate) fn record_sent_in_memory(&self, persona: Uuid, sent_tokens: u32, now_ms: u64) -> PersonaDemand {
+        *self
             .observed
             .entry(persona)
             .and_modify(|d| d.sent_peak = d.sent_peak.max(sent_tokens))
@@ -534,8 +542,7 @@ impl WorkingSetRegistry {
                 recent_next: 0,
                 need_recent: [0; RECENT_TURNS],
                 need_next: 0,
-            });
-        Self::save(persona, &updated);
+            })
     }
 
     /// Record the post-fit size of a turn the fit HELD — her need (see
