@@ -23,7 +23,7 @@
                 .iter()
                 .map(|c| RagItem {
                     content: c.to_string(),
-                    tokens: ((c.len() / 4) as u32).saturating_add(1),
+                    tokens: crate::cognition::token_budget::estimate_prompt_tokens(c),
                     metadata: serde_json::json!({}),
                 })
                 .collect();

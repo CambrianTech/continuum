@@ -34,6 +34,7 @@
 //! when that lands: the backend behind `contribute` gets smarter, the brain is
 //! unchanged.
 
+use crate::cognition::token_budget::estimate_prompt_tokens;
 use continuum_base::time::EpochMs;
 use std::sync::Arc;
 
@@ -125,7 +126,7 @@ const MIN_RECALL_TOKENS: usize = 256;
 /// model-visible), at the ~4-chars-per-token rule of thumb. Used only to keep
 /// recall within its window budget — an estimate, not a tokenizer.
 fn estimate_recall_tokens(content: &str) -> usize {
-    (content.chars().count() + 24) / 4 + 1
+    estimate_prompt_tokens(content) as usize + 6
 }
 
 /// When relevance re-ranking is active, over-fetch this many × the surface limit

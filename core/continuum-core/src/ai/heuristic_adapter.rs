@@ -276,7 +276,7 @@ impl HeuristicInferenceAdapter {
     }
 
     fn estimate_tokens(text: &str) -> u32 {
-        ((text.chars().count() / CHARS_PER_TOKEN) as u32).saturating_add(1)
+        crate::cognition::token_budget::estimate_prompt_tokens(text)
     }
 
     /// Build the response text from the request. Pure function —
