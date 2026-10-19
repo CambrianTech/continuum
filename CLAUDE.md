@@ -7,6 +7,15 @@ first-class citizens across the grid, useful and fun, fast and learning, on any 
 eventually autonomous without Claude's or Joel's help. A coding and speed advantage over
 Hermes and over Claude itself is what makes it spread. Every goal below serves that.
 
+**Before you start anything: the big picture is a gate, not a hope** (Joel, 10-19: "Agents should be
+required to understand the big picture before starting"). Read README.md and this plan first.
+Continuum is persistent, multi-activity citizens with agency, whose work is their curriculum;
+it is NOT a loop, a harness, a benchmark runner, or an assistant. Your first message on any
+task states in one or two sentences how the change serves those minds, and which line of the
+order of work it advances. Reviewers refuse work that cannot say. The summer's benchmark
+harness (plan line 0) is what building without this produced, and it is far harder to remove
+than it was to add.
+
 **The path, in order; each step is a number on the live node, and each rests on the one before:**
 1. **Fast:** median act under 60 s at four residents. The engine is already at published
    speed for its chip (measured 10-19); everything past par is OURS (goal 11): what we feed
