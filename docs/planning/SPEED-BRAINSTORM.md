@@ -132,6 +132,28 @@ tried live with a before/after receipt.
 | Mixed-adapter batching (SGMV) designed | `are_lora_equal` still clears a slot on a different gene | fork `server-context.cpp:1693-1706` |
 | Shared base KV for the common head | designed, never built | KV-CACHE-AS-SHARED-BASE-LAYER |
 
+## The development loop: take out bottlenecks, run in parallel (10-19)
+
+Measured today: cargo check of continuum-core 20-21 min, release 34.5 min, CI core-binaries
+~56 min; one shared target dir serializes every build on a machine; builds on the serving M5
+halved residents' decode (13.2 -> 6.9 tok/s, inference: shared unified-memory bandwidth).
+- **Never compile on the serving node.** CI is a build machine already (push, CI compiles);
+  local iteration on a non-serving Mac or the 5090's CPU.
+- **Check only what changed.** Each crate cut makes edits check in seconds (continuum-context
+  1.08 s, continuum-base 4.84 s in their own target dirs); independent crates compile in
+  parallel across cores.
+- **Iterate without the heavy features.** Bevy + LiveKit add 147 crates (797 vs 650):
+  `--no-default-features` for most edits; full features for CI and deploy.
+- **Faster dev toolchain:** the existing `dev-fast` profile, the Cranelift codegen backend for
+  debug builds, a faster linker; release only to deploy.
+- **Affected tests only, in parallel** (nextest per crate), not ~9,000 core tests per edit.
+- **A merge queue** that tests each PR's merged result before landing (prevents stale-base
+  merges like #5015 breaking canary); anyone enqueues a reviewed PR and moves on.
+- **Smaller, crate-sized PRs**; residents review docs PRs.
+- **Parallel cuts:** after the floor crate, each module extraction is independent: several
+  agents, own worktrees and target dirs, cheap models for mechanical moves, Codex owns order.
+- **Idle machines** (IntelMac, MacBook Pro, the 5090 when free) run agents' checks.
+
 ## Ideas from anyone (append below)
 
 - 
