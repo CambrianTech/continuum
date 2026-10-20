@@ -316,6 +316,8 @@ use crate::cognition::workspace::BurstTurn;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use super::request::output_allowance;
+use super::tool_surface::SelectedSurface;
 
 // ─── Prompt shaping ───────────────────────────────────────────────────────
 //
