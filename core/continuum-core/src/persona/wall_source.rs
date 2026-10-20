@@ -81,7 +81,7 @@ pub(crate) const SOURCE_ID: &str = "room-wall";
 /// Token estimate — the ONE canonical chars/4 estimator
 /// (`cognition::token_budget`), shared by every RAG source so the replay
 /// ledger's numbers match.
-use crate::cognition::token_budget::{estimate_prompt_tokens as estimate_tokens, pack_suffix_units};
+use crate::cognition::token_budget::{estimate_prompt_tokens as estimate_tokens, fit_tail_with_handle, pack_suffix_units};
 
 /// The verb that pages THIS wall: a room's pinned posts.
 const EXPAND_COMMAND: &str = "persona/wall/list";
@@ -300,6 +300,13 @@ impl WallSource {
         format!("{}{}", Self::label(post), post.body)
     }
 
+    /// Fit a single post to `budget` tokens: whole, or its END behind an opening-trimmed
+    /// marker naming `persona/wall/list`, the verb that reads it whole. `None` when the
+    /// budget cannot carry the marker plus real body.
+    fn fit_post(post: &WallPostPublished, budget: u32) -> Option<String> {
+        fit_tail_with_handle(&Self::render(post), budget, "post", Some(EXPAND_COMMAND))
+    }
+
     /// Build a [`RagItem`] for one pinned post from already-fitted content.
     fn item(post: &WallPostPublished, content: String) -> RagItem {
         let tokens = estimate_tokens(&content);
@@ -316,21 +323,18 @@ impl WallSource {
         }
     }
 
-    /// Pack the NEWEST pinned posts that fit `budget`, in publish order. The oldest posts
-    /// are the ones omitted: a marker item at the front counts them and names
-    /// `persona/wall/list`. When even the newest post does not fit alone it is delivered
-    /// as its END behind an opening-trimmed marker naming the same verb, so the
-    /// outcome-bearing end of a long post is never what is cut. A budget too small to
-    /// carry even that yields no block.
-    fn pack(posts: &[WallPostPublished], budget: u32) -> (Vec<RagItem>, u32) {
+    /// Pack the NEWEST pinned posts that fit `budget`, in publish order (the caller sorts).
+    /// The oldest are the ones omitted: a marker item at the front counts them and names
+    /// `persona/wall/list`; a lone post too long for the budget keeps its END. A budget
+    /// too small for that yields no block.
+    fn pack_newest(posts: &[WallPostPublished], budget: u32) -> (Vec<RagItem>, u32) {
         let units: Vec<String> = posts.iter().map(Self::render).collect();
         let Some(packed) = pack_suffix_units(&units, 0, budget, "post", Some(EXPAND_COMMAND)) else {
             return (Vec::new(), 0);
         };
         let marker = packed.items.first().is_some_and(|(c, _)| c.starts_with('…'));
         let skip = usize::from(marker);
-        let delivered = packed.items.len() - skip;
-        let first = posts.len() - delivered;
+        let first = posts.len() - (packed.items.len() - skip);
         let used = packed.items.iter().map(|(_, t)| *t).sum();
         let items = packed
             .items
@@ -346,6 +350,85 @@ impl WallSource {
             .collect();
         (items, used)
     }
+
+    /// Pack whole pinned posts from `start` greedily within `budget`.
+    /// Returns the packed items, the tokens they consumed, and the index of
+    /// the first UNPACKED post (`Some(i)` → more remain, hand back a cursor;
+    /// `None` → the board is fully delivered).
+    ///
+    /// If the very first candidate doesn't fit whole, it is truncated with a
+    /// marker so partial guidance still lands (mirrors the doctrine source);
+    /// a budget too small to carry even a truncated post yields no block and
+    /// no cursor — the budget regime simply can't carry this board.
+    fn pack(
+        posts: &[WallPostPublished],
+        start: usize,
+        budget: u32,
+    ) -> (Vec<RagItem>, u32, Option<usize>) {
+        let mut items: Vec<RagItem> = Vec::new();
+        let mut used: u32 = 0;
+        let mut i = start;
+        while i < posts.len() {
+            let rendered = Self::render(&posts[i]);
+            let toks = estimate_tokens(&rendered);
+            if used.saturating_add(toks) <= budget {
+                // Whole post fits.
+                items.push(Self::item(&posts[i], rendered));
+                used += toks;
+                i += 1;
+            } else if items.is_empty() {
+                // Nothing packed yet and this post overflows alone →
+                // truncate its body to fill the budget, then stop. A
+                // truncated post fills what remains; the rest is the
+                // continuation's.
+                if let Some(truncated) = Self::fit_post(&posts[i], budget) {
+                    let item = Self::item(&posts[i], truncated);
+                    used += item.tokens;
+                    items.push(item);
+                }
+                i += 1;
+                break;
+            } else {
+                // Already packed whole posts; leave the rest for the cursor.
+                break;
+            }
+        }
+        let next = if i < posts.len() { Some(i) } else { None };
+        (items, used, next)
+    }
+
+    /// Wrap a packed slice into a delivery, minting a continuation cursor
+    /// when `next` posts remain. The cursor's opaque carries the resume
+    /// index AND the room it indexes; persona_id + source_id are the substrate
+    /// identity guards.
+    ///
+    /// `room` is the EFFECTIVE room of the delivery that minted this cursor —
+    /// an index without its room is only meaningful while the source reads one
+    /// room forever, which is the assumption #3883 removed.
+    fn delivery(
+        &self,
+        items: Vec<RagItem>,
+        used: u32,
+        next: Option<usize>,
+        resolution: ResolutionPreference,
+        room: Option<uuid::Uuid>,
+    ) -> RagDelivery {
+        let continuation = next.map(|idx| ContinuationCursor {
+            persona_id: self.persona_id,
+            source_id: SOURCE_ID.to_string(),
+            opaque: serde_json::json!({
+                "next_index": idx,
+                "room": room.map(|r| r.to_string()),
+            }),
+        });
+        RagDelivery {
+            source_id: SOURCE_ID.to_string(),
+            items,
+            tokens_used: used,
+            continuation,
+            resolution_used: resolution,
+        }
+    }
 }
 
 #[async_trait]
@@ -355,7 +438,7 @@ impl RagSource for WallSource {
     }
 
     fn expand_command(&self) -> Option<&'static str> {
-        // The verb that pages THIS wall (`persona/wall/list`).
+        // The verb that pages THIS wall: a room's pinned posts (`persona/wall/list`).
         // It named `work/list`, the work board, so a cut wall sent her to the wrong
         // surface (Codex root, review of #5016).
         Some(EXPAND_COMMAND)
@@ -475,15 +558,16 @@ impl RagSource for WallSource {
             crate::experience::wall_records::current_wall_records(posts),
             self.reader.card_labels(effective_room).await.as_ref(),
         );
-        // Publish order, oldest first: the newest posts are the ones kept (stable sort, so
-        // posts sharing a timestamp keep the board's own order).
+        // Publish order, oldest first (stable, so equal stamps keep the board's order): the
+        // NEWEST posts are the ones kept.
         let mut posts = posts;
         posts.sort_by_key(|p| p.published_at_ms);
-        let (items, used) = Self::pack(&posts, budget);
+        let (items, used) = Self::pack_newest(&posts, budget);
         if items.is_empty() {
-            // Budget too small to carry even a truncated first post.
+            // Budget too small to carry even the end of the newest post.
             return empty(resolution);
         }
+        let next = None; // the omitted posts are counted by the marker item, not a cursor
 
         tracing::debug!(
             persona_id = %self.persona_id,
@@ -494,25 +578,70 @@ impl RagSource for WallSource {
             "wall_posts: deliver"
         );
 
-        RagDelivery {
-            source_id: SOURCE_ID.to_string(),
-            items,
-            tokens_used: used,
-            // The omitted posts are counted by the marker item, never by a cursor.
-            continuation: None,
-            resolution_used: resolution,
-        }
+        self.delivery(items, used, next, resolution, effective_room)
     }
 
     async fn deliver_continuation(
         &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
+        ctx: &RagContext,
+        cursor: ContinuationCursor,
+        budget: u32,
     ) -> Option<RagDelivery> {
-        // Nothing mints a cursor: a wall too big for its budget keeps its NEWEST posts and
-        // states how many older ones it left out (and `persona/wall/list` reads them).
-        None
+        // Substrate identity guards — refuse a cursor from another persona
+        // or another source (per the ContinuationCursor contract).
+        if cursor.persona_id != self.persona_id || cursor.source_id != SOURCE_ID {
+            return None;
+        }
+        if ctx.persona_id != self.persona_id {
+            return None;
+        }
+        // A cursor is an offset into ONE room's wall. While this source read a room
+        // fixed at construction that was safe by accident — every cursor indexed the
+        // same list. Resolving the turn's room (above) makes a cursor minted in room
+        // A resumable in room B, where `next_index` would silently skip B's first N
+        // posts. Same defect, same fix, as the `--to` cursor in airc #1398: stamp the
+        // room and refuse a mismatch. An ABSENT stamp counts as a mismatch unless the
+        // turn is equally roomless — dropping one continuation costs a few posts,
+        // resuming into the wrong wall drops content and says nothing.
+        let stamped = cursor.opaque.get("room").cloned().unwrap_or(serde_json::Value::Null); // the default IS the answer: no stamp means a pre-#3883 cursor, and Null mismatches every roomed turn — the refusal we want
+        let effective_room = match ctx.airc_room.as_ref().map(|r| r.as_uuid()) {
+            Some(turn) if turn.is_nil() => return None,
+            Some(turn) => Some(turn),
+            None => self.room_id,
+        };
+        let here = match effective_room {
+            Some(r) => serde_json::Value::String(r.to_string()),
+            None => serde_json::Value::Null,
+        };
+        if stamped != here {
+            crate::probe!(
+                class = "rag.continuation.room_mismatch",
+                source = SOURCE_ID,
+                persona_id = %ctx.persona_id,
+                cursor_room = %stamped,
+                turn_room = %here,
+                "refused to resume a wall continuation minted for a different room —                  the offset indexes another room's posts"
+            );
+            return None;
+        }
+        let start = cursor.opaque.get("next_index").and_then(|v| v.as_u64())? as usize;
+
+        // Re-read the wall: the projection is cheap (a transcript window) and
+        // re-reading keeps the cursor honest against a wall edited between
+        // turns, rather than caching a snapshot that can drift.
+        let posts = ledgers_for_context(
+            crate::experience::wall_records::current_wall_records(self.reader.wall_posts(effective_room).await.ok()?),
+            self.reader.card_labels(effective_room).await.as_ref(),
+        );
+        if start >= posts.len() {
+            return None;
+        }
+
+        let (items, used, next) = Self::pack(&posts, start, budget);
+        if items.is_empty() {
+            return None;
+        }
+        Some(self.delivery(items, used, next, ResolutionPreference::Raw, effective_room))
     }
 }
 
@@ -801,6 +930,64 @@ mod tests {
         );
     }
 
+    /// what this catches: a continuation resumed in the WRONG room. A cursor is an
+    /// offset into ONE room's wall. While this source read a room fixed at
+    /// construction that was safe by accident — every cursor indexed the same list.
+    /// Resolving the turn's room makes an A-issued cursor resumable in B, where
+    /// `next_index` would silently skip B's first N posts. Same defect and same fix
+    /// as the `--to` cursor in airc #1398.
+    #[tokio::test]
+    async fn a_wall_continuation_minted_in_one_room_is_refused_in_another() {
+        let reader = Arc::new(StubReader::new(vec![
+            post("plan", "first post, long enough to need a second page"),
+            post("rules", "second post"),
+            post("rules", "third post"),
+        ]));
+        // safe: literals, valid UUIDs.
+        let bound = Uuid::parse_str("00000000-0000-0000-0000-0000000000cc").unwrap();
+        let room_a = Uuid::parse_str("00000000-0000-0000-0000-00000000000a").unwrap();
+        let room_b = Uuid::parse_str("00000000-0000-0000-0000-00000000000b").unwrap();
+        let source = WallSource::new(persona(), reader).for_room(bound);
+
+        // A tight budget in room A yields a cursor with posts left over.
+        let first = source
+            .deliver(
+                &RagContext::for_persona_in_room(persona(), 1_000_000, room_a),
+                12,
+                ResolutionPreference::Raw,
+            )
+            .await;
+        let _ = first; // a first delivery no longer mints a cursor; stamp one by hand
+        let cursor = ContinuationCursor {
+            persona_id: persona(),
+            source_id: SOURCE_ID.to_string(),
+            opaque: serde_json::json!({ "next_index": 1, "room": room_a.to_string() }),
+        };
+
+        assert!(
+            source
+                .deliver_continuation(
+                    &RagContext::for_persona_in_room(persona(), 1_000_000, room_b),
+                    cursor.clone(),
+                    1_000,
+                )
+                .await
+                .is_none(),
+            "a cursor from room A must not resume in room B"
+        );
+        assert!(
+            source
+                .deliver_continuation(
+                    &RagContext::for_persona_in_room(persona(), 1_000_000, room_a),
+                    cursor,
+                    1_000,
+                )
+                .await
+                .is_some(),
+            "and the SAME room must still resume — a guard that refuses everything              is not a guard"
+        );
+    }
+
     // what this catches: pinned wall posts surface as a delivery the brain
     // renders into the [room-board] grounding block — the shared-layer
     // grounding that lets a persona read the room's plan/instructions.
@@ -897,6 +1084,43 @@ mod tests {
         assert_eq!(delivery.resolution_used, ResolutionPreference::Placeholder);
     }
 
+    // what this catches: a board too large for one budget packs whole posts,
+    // hands back a continuation cursor, and the continuation resumes from
+    // exactly where the first delivery stopped — no post lost, none doubled.
+    #[tokio::test]
+    async fn overflow_paginates_via_continuation() {
+        // Each rendered post ("[c]\n" + 200 chars) ~= 51 tokens; budget 60
+        // admits exactly one whole post per call.
+        let body = "y".repeat(200);
+        let reader = Arc::new(StubReader::new(vec![
+            post("a", &body),
+            post("b", &body),
+            post("c", &body),
+        ]));
+        let source = WallSource::new(persona(), reader);
+
+        let first = source.deliver(&ctx(), 60, ResolutionPreference::Raw).await;
+        // the first delivery keeps the NEWEST post (no cursor is minted for it); resuming forward from a given offset still works
+        assert_eq!(first.items.len(), 1, "budget 60 holds one post, and it is the newest");
+        assert_eq!(first.items[0].metadata["category"], "c");
+        let cursor = ContinuationCursor {
+            persona_id: persona(),
+            source_id: SOURCE_ID.to_string(),
+            opaque: serde_json::json!({ "next_index": 1, "room": null }),
+        };
+
+        let second = source
+            .deliver_continuation(&ctx(), cursor, 60)
+            .await
+            .expect("continuation resumes");
+        assert_eq!(second.items.len(), 1);
+        assert_eq!(second.items[0].metadata["category"], "b");
+        assert_eq!(
+            second.continuation.expect("still one more").opaque["next_index"],
+            2
+        );
+    }
+
     // what this catches: an oversized FIRST post is truncated and NEVER
     // overspends the budget, across the whole budget regime — the same
     // marker-only-overspend bug the doctrine source's adversarial review
@@ -926,6 +1150,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    // what this catches: a continuation cursor minted by another source (or
+    // another persona) is refused — the substrate identity guard on
+    // ContinuationCursor, so a stale/foreign cursor can't resume our wall.
+    #[tokio::test]
+    async fn continuation_refuses_foreign_cursor() {
+        let reader = Arc::new(StubReader::new(vec![post("a", "x"), post("b", "y")]));
+        let source = WallSource::new(persona(), reader);
+
+        let wrong_source = ContinuationCursor {
+            persona_id: persona(),
+            source_id: "some-other-source".to_string(),
+            opaque: serde_json::json!({ "next_index": 0 }),
+        };
+        assert!(source
+            .deliver_continuation(&ctx(), wrong_source, 1_000)
+            .await
+            .is_none());
+
+        let wrong_persona = ContinuationCursor {
+            persona_id: Uuid::parse_str("00000000-0000-0000-0000-000000000bbb").unwrap(),
+            source_id: SOURCE_ID.to_string(),
+            opaque: serde_json::json!({ "next_index": 0 }),
+        };
+        assert!(source
+            .deliver_continuation(&ctx(), wrong_persona, 1_000)
+            .await
+            .is_none());
     }
 
     // what this catches: a wall or post cut from the NEWEST end. Under a tight budget the
