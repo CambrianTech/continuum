@@ -29,6 +29,7 @@ pub use benchmark_dispatch_params::*;
 mod prepare_gym_cards;
 pub(crate) use prepare_gym_cards::*;
 mod benchmark_dispatch;
+mod benchmark_dispatch_recipe;
 mod publish_citizen_deck;
 pub use publish_citizen_deck::*;
 mod resolve_solver_dir;
