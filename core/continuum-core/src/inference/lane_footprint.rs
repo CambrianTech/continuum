@@ -617,6 +617,10 @@ mod tests {
         );
         save_to(&path, &costs);
         assert_eq!(load_from(&path), costs);
+        let mut legacy = serde_json::to_value(&costs).expect("record fixture");
+        legacy["m"].as_object_mut().expect("record object").remove("allocated_tokens");
+        std::fs::write(&path, serde_json::to_vec(&legacy).expect("legacy bytes")).expect("write legacy");
+        assert_eq!(load_from(&path), costs, "old records omit allocated_tokens entirely");
         std::fs::write(&path, b"{not json").expect("write");
         assert!(load_from(&path).is_empty());
     }

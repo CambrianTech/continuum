@@ -32,11 +32,7 @@ impl WeightResidency {
     /// buffer types: `CPU`, `CPU_Mapped`, `CPU_REPACK`, `*_Host` (CUDA pinned host
     /// memory is still RAM), and BLAS (Accelerate on a Mac runs on the CPU).
     pub fn accelerator_bytes(&self) -> u64 {
-        self.per_backend
-            .iter()
-            .filter(|(name, _)| !is_host_backend(name))
-            .map(|(_, b)| *b)
-            .sum()
+        self.per_backend.iter().filter(|(name, _)| !is_host_backend(name)).map(|(_, b)| *b).sum()
     }
 
     pub fn total_bytes(&self) -> u64 {
@@ -45,11 +41,7 @@ impl WeightResidency {
 
     /// One line for a probe or a refusal message: `Metal=4.7GB CPU_Mapped=0.3GB`.
     pub fn summary(&self) -> String {
-        self.per_backend
-            .iter()
-            .map(|(n, b)| format!("{n}={:.2}GB", *b as f64 / 1e9))
-            .collect::<Vec<_>>()
-            .join(" ")
+        self.per_backend.iter().map(|(n, b)| format!("{n}={:.2}GB", *b as f64 / 1e9)).collect::<Vec<_>>().join(" ")
     }
 }
 
@@ -81,11 +73,7 @@ impl EngineMemory {
     /// The bytes BEYOND the weights on accelerators: KV cache + compute buffers on every buffer
     /// type that is not host memory. What the device delta measures on a discrete GPU.
     pub fn accelerator_beyond_weights(&self) -> u64 {
-        self.per_buffer
-            .iter()
-            .filter(|b| !is_host_backend(&b.buffer_type))
-            .map(|b| b.context_bytes + b.compute_bytes)
-            .sum()
+        self.per_buffer.iter().filter(|b| !is_host_backend(&b.buffer_type)).map(|b| b.context_bytes + b.compute_bytes).sum()
     }
 
     /// The KV (context) bytes alone on accelerators, compute buffers excluded.
@@ -133,7 +121,7 @@ impl EngineContextReading {
         // (`{"error": …}`), or a geometry that is missing, null or zero is not an old engine,
         // and a missing breakdown there is no reading (Codex on #4961). The same parse decides
         // here and in `from_props`, so the two cannot disagree about what a geometry is.
-        if slot_geometry(props).is_none() {
+        if slot_geometry(props).and_then(|(slots, window)| allocated_capacity(props, slots, window)).is_none() {
             return Self::Invalid;
         }
         if props.get("memory_breakdown").is_none() {
@@ -149,22 +137,26 @@ impl EngineContext {
     pub fn from_props(props: &serde_json::Value) -> Option<Self> {
         let memory = EngineMemory::from_props(props)?;
         let (slots, n_ctx_per_slot) = slot_geometry(props)?;
-        let allocated_tokens = match props.get("context_geometry") {
-            Some(geometry) => {
-                let tokens = geometry.get("allocated_tokens")?.as_u64()?;
-                let capacity = geometry.get("sequence_capacity")?.as_u64()?;
-                let window = geometry.get("max_tokens_per_sequence")?.as_u64()?;
-                if tokens == 0 || capacity != u64::from(slots) || window != u64::from(n_ctx_per_slot) || window > tokens {
-                    return None;
-                }
-                tokens
-            }
-            // Older managed engines used divided caches. Only absence permits their
-            // legacy geometry; a present malformed receipt must never take this path.
-            None => u64::from(slots) * u64::from(n_ctx_per_slot),
-        };
+        let allocated_tokens = allocated_capacity(props, slots, n_ctx_per_slot)?;
         let context_bytes = memory.accelerator_context();
         (context_bytes > 0).then(|| Self { context_bytes, beyond_weights: memory.accelerator_beyond_weights(), slots, allocated_tokens, n_ctx_per_slot })
+    }
+}
+
+fn allocated_capacity(props: &serde_json::Value, slots: u32, n_ctx_per_slot: u32) -> Option<u64> {
+    match props.get("context_geometry") {
+        Some(geometry) => {
+            let tokens = geometry.get("allocated_tokens")?.as_u64()?;
+            let capacity = geometry.get("sequence_capacity")?.as_u64()?;
+            let window = geometry.get("max_tokens_per_sequence")?.as_u64()?;
+            if tokens == 0 || capacity != u64::from(slots) || window != u64::from(n_ctx_per_slot) || window > tokens {
+                return None;
+            }
+            Some(tokens)
+        }
+        // Older managed engines used divided caches. Only absence permits their
+        // legacy geometry; a present malformed receipt must never take this path.
+        None => Some(u64::from(slots) * u64::from(n_ctx_per_slot)),
     }
 }
 
@@ -227,6 +219,9 @@ mod tests {
         ] {
             unified["context_geometry"] = invalid;
             assert_eq!(EngineContextReading::of(&unified), EngineContextReading::Invalid);
+            let mut no_breakdown = unified.clone();
+            no_breakdown.as_object_mut().expect("props fixture").remove("memory_breakdown");
+            assert_eq!(EngineContextReading::of(&no_breakdown), EngineContextReading::Invalid);
         }
         // present but unusable is no reading, never the legacy fallback (Codex on #4961)
         assert_eq!(EngineContextReading::of(&props), EngineContextReading::Invalid, "no slot geometry");
