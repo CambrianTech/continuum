@@ -106,8 +106,9 @@ pub struct EngineContext {
     /// KV plus compute buffers on accelerators: everything the engine says it holds beyond weights.
     pub beyond_weights: u64,
     pub slots: u32,
-    /// Each slot's context. The lane passes `--parallel` explicitly, so the cache is never unified
-    /// and the engine holds `slots × n_ctx_per_slot` tokens.
+    /// Total physical token capacity; unified caches do not multiply this by slots.
+    pub allocated_tokens: u64,
+    /// Maximum context for one sequence, independently of total physical capacity.
     pub n_ctx_per_slot: u32,
 }
 
@@ -148,13 +149,22 @@ impl EngineContext {
     pub fn from_props(props: &serde_json::Value) -> Option<Self> {
         let memory = EngineMemory::from_props(props)?;
         let (slots, n_ctx_per_slot) = slot_geometry(props)?;
+        let allocated_tokens = match props.get("context_geometry") {
+            Some(geometry) => {
+                let tokens = geometry.get("allocated_tokens")?.as_u64()?;
+                let capacity = geometry.get("sequence_capacity")?.as_u64()?;
+                let window = geometry.get("max_tokens_per_sequence")?.as_u64()?;
+                if tokens == 0 || capacity != u64::from(slots) || window != u64::from(n_ctx_per_slot) || window > tokens {
+                    return None;
+                }
+                tokens
+            }
+            // Older managed engines used divided caches. Only absence permits their
+            // legacy geometry; a present malformed receipt must never take this path.
+            None => u64::from(slots) * u64::from(n_ctx_per_slot),
+        };
         let context_bytes = memory.accelerator_context();
-        (context_bytes > 0).then(|| Self {
-            context_bytes,
-            beyond_weights: memory.accelerator_beyond_weights(),
-            slots,
-            n_ctx_per_slot,
-        })
+        (context_bytes > 0).then(|| Self { context_bytes, beyond_weights: memory.accelerator_beyond_weights(), slots, allocated_tokens, n_ctx_per_slot })
     }
 }
 
@@ -202,7 +212,22 @@ mod tests {
         let ctx = EngineContext::from_props(&with_slots).expect("reads");
         assert_eq!((ctx.context_bytes, ctx.slots, ctx.n_ctx_per_slot), (117440512, 2, 2048));
         assert_eq!(ctx.beyond_weights, 117440512 + 66594944);
+        assert_eq!(ctx.allocated_tokens, 4096);
         assert_eq!(EngineContextReading::of(&with_slots), EngineContextReading::Read(ctx));
+        // A unified cache's per-sequence limit is not independent storage per slot.
+        let mut unified = with_slots.clone();
+        unified["context_geometry"] = serde_json::json!({
+            "allocated_tokens": 2048, "max_tokens_per_sequence": 2048, "sequence_capacity": 2
+        });
+        assert_eq!(EngineContext::from_props(&unified).expect("unified receipt").allocated_tokens, 2048);
+        for invalid in [
+            serde_json::Value::Null,
+            serde_json::json!({"allocated_tokens": 0, "max_tokens_per_sequence": 2048, "sequence_capacity": 2}),
+            serde_json::json!({"allocated_tokens": 2048, "max_tokens_per_sequence": 2048, "sequence_capacity": 3}),
+        ] {
+            unified["context_geometry"] = invalid;
+            assert_eq!(EngineContextReading::of(&unified), EngineContextReading::Invalid);
+        }
         // present but unusable is no reading, never the legacy fallback (Codex on #4961)
         assert_eq!(EngineContextReading::of(&props), EngineContextReading::Invalid, "no slot geometry");
         let mut zero_slots = with_slots.clone();

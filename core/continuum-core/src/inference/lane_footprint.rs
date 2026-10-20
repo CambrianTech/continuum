@@ -44,6 +44,9 @@ pub struct MeasuredCost {
     pub per_token_bytes: u64,
     pub lanes: u32,
     pub window: u32,
+    /// Physical token capacity. Absent only in records written by older cores.
+    #[serde(default)]
+    pub allocated_tokens: Option<u64>,
     pub anon_bytes: u64,
     pub last_ms: u64,
 }
@@ -83,20 +86,19 @@ pub fn window_measurable(window: u32) -> bool {
     window >= MEASURABLE_WINDOW_MIN
 }
 
-pub fn per_token_from(
-    anon_bytes: u64,
-    lanes: u32,
-    window: u32,
-    compute_floor_per_lane: u64,
-    host_cache_bytes: u64,
-) -> Option<u64> {
-    if lanes == 0 || window == 0 {
+pub fn per_token_from(anon_bytes: u64, lanes: u32, window: u32, compute_floor_per_lane: u64, host_cache_bytes: u64) -> Option<u64> {
+    per_token_for_allocation(anon_bytes, lanes, u64::from(lanes) * u64::from(window), compute_floor_per_lane, host_cache_bytes)
+}
+
+/// Attribute bytes to physical token storage, independently of sequence limits.
+fn per_token_for_allocation(anon_bytes: u64, lanes: u32, allocated_tokens: u64, compute_floor_per_lane: u64, host_cache_bytes: u64) -> Option<u64> {
+    if lanes == 0 || allocated_tokens == 0 {
         return None;
     }
     let beyond_cache = anon_bytes.checked_sub(host_cache_bytes)?;
-    let per_lane = beyond_cache / lanes as u64;
-    let beyond_floor = per_lane.checked_sub(compute_floor_per_lane)?;
-    let per_token = beyond_floor / window as u64;
+    let floors = compute_floor_per_lane.checked_mul(u64::from(lanes))?;
+    let beyond_floor = beyond_cache.checked_sub(floors)?;
+    let per_token = beyond_floor / allocated_tokens;
     (per_token > 0).then_some(per_token)
 }
 
@@ -182,14 +184,21 @@ pub fn observe(
     model: &str,
     lanes: u32,
     window: u32,
+    allocated_tokens: u64,
     anon_bytes: u64,
     compute_floor_per_lane: u64,
     host_cache_bytes: u64,
 ) -> Result<Option<u64>, ResidencyChanged> {
     // A pre-1970 clock reads 0 here: every record is stale, so the estimate rules.
     let now = EpochMs::now().millis();
-    let sample = per_token_from(anon_bytes, lanes, window, compute_floor_per_lane, host_cache_bytes)
-        .map(|per_token| MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes, last_ms: now });
+    let sample = per_token_for_allocation(anon_bytes, lanes, allocated_tokens, compute_floor_per_lane, host_cache_bytes).map(|per_token| MeasuredCost {
+        per_token_bytes: per_token,
+        lanes,
+        window,
+        allocated_tokens: Some(allocated_tokens),
+        anon_bytes,
+        last_ms: now,
+    });
     use std::sync::atomic::Ordering;
     let mut costs = COSTS.lock();
     let moved = publish_sample(&mut costs, RESIDENCY_EPOCH.load(Ordering::SeqCst), token, model, sample.as_ref())?;
@@ -262,7 +271,6 @@ pub fn measured_record(model: &str) -> Option<MeasuredCost> {
     let now = EpochMs::now().millis();
     COSTS.lock().get(model).filter(|c| c.fresh_at(now)).cloned()
 }
-
 
 /// The ANONYMOUS memory a process holds — dirty + compressed/swapped, mapped files
 /// excluded. On macOS `proc_pid_rusage` (libproc, no entitlement for our own user's
@@ -444,12 +452,7 @@ fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
 #[cfg(target_os = "linux")]
 fn process_args(pid: u32) -> Option<Vec<String>> {
     let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    Some(
-        raw.split(|b| *b == 0)
-            .filter(|a| !a.is_empty())
-            .map(|a| String::from_utf8_lossy(a).into_owned())
-            .collect(),
-    )
+    Some(raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -536,7 +539,14 @@ mod tests {
         let model = "trapped-fixture";
         COSTS.lock().insert(
             model.to_string(),
-            MeasuredCost { per_token_bytes: per_token, lanes: 1, window: 2_048, anon_bytes: 500_000_000, last_ms: EpochMs::now().millis() },
+            MeasuredCost {
+                per_token_bytes: per_token,
+                lanes: 1,
+                window: 2_048,
+                allocated_tokens: None,
+                anon_bytes: 500_000_000,
+                last_ms: EpochMs::now().millis(),
+            },
         );
         assert!(measured_record(model).is_some(), "the trap record rules before retirement");
         assert!(retire(model), "a record was there to retire");
@@ -561,6 +571,12 @@ mod tests {
         assert_eq!(per_token_from(gb, 0, 51_712, 0, 0), None);
         assert_eq!(per_token_from(gb, 2, 0, 0, 0), None);
         assert_eq!(per_token_from(gb, 2, 4096, gb, 0), None, "under the compute floors: nothing beyond them to attribute");
+        // Unified and divided caches may have equal sequence limits but different
+        // physical capacities. Charge only the capacity in the engine's receipt.
+        assert_eq!(per_token_for_allocation(4096, 2, 2048, 0, 0), Some(2));
+        assert_eq!(per_token_for_allocation(4096, 2, 4096, 0, 0), Some(1));
+        assert_eq!(per_token_for_allocation(4096, 2, 0, 0, 0), None);
+        assert_eq!(per_token_for_allocation(u64::MAX, 2, 2048, u64::MAX, 0), None);
     }
 
     // what this catches (2026-09-19, the M5 starved to one lane while running two): the
@@ -581,7 +597,7 @@ mod tests {
         assert!(beyond < inflated && beyond > 32_768, "{beyond}: less than the inflated read, still a real excess");
 
         let mut costs = BTreeMap::new();
-        let stale = MeasuredCost { per_token_bytes: 133_720, lanes, window, anon_bytes: anon, last_ms: 1 };
+        let stale = MeasuredCost { per_token_bytes: 133_720, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 1 };
         assert!(apply_sample(&mut costs, "m", Some(&stale)), "first record is a move");
         assert!(apply_sample(&mut costs, "m", None), "an unattributable sample retires it — a save is due");
         assert!(costs.get("m").is_none(), "nothing rules the plan from disk");
@@ -595,7 +611,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("lane-footprint.json");
         let mut costs = BTreeMap::new();
-        costs.insert("m".to_string(), MeasuredCost { per_token_bytes: 36_000, lanes: 8, window: 51_712, anon_bytes: 25_700_000_000, last_ms: 5 });
+        costs.insert(
+            "m".to_string(),
+            MeasuredCost { per_token_bytes: 36_000, lanes: 8, window: 51_712, allocated_tokens: None, anon_bytes: 25_700_000_000, last_ms: 5 },
+        );
         save_to(&path, &costs);
         assert_eq!(load_from(&path), costs);
         std::fs::write(&path, b"{not json").expect("write");

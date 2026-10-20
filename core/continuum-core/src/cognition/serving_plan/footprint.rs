@@ -284,7 +284,7 @@ mod tests {
         for _ in 0..4 {
             let per_token = crate::inference::lane_footprint::per_token_from(anon, lanes, window, fp.base_compute_buffer_per_lane(), 0)
                 .expect("test: a reading");
-            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes: anon, last_ms: 0 };
+            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 0 };
             fp.fixed_per_lane_bytes = fixed_per_lane_from(header_rate, &record);
             seen.push(fp.fixed_per_lane_bytes);
         }
@@ -310,7 +310,7 @@ mod tests {
         // sample of 55,925 at 67,340) yields ≈1.56 GB of fixed residency per lane, and
         // across budgets the plan with it fits no more lanes than the header-only plan
         // and no fewer than the raised-rate plan — strictly between them somewhere.
-        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, anon_bytes: 0, last_ms: 0 };
+        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, allocated_tokens: None, anon_bytes: 0, last_ms: 0 };
         let fixed = fixed_per_lane_from(32_768, &record);
         assert!((1_500_000_000..1_620_000_000).contains(&fixed), "{fixed} B per lane");
         assert_eq!(fixed_per_lane_from(65_536, &record), 0, "a sample under the rate carries nothing");
