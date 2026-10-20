@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::cognition::tool_executor::types::PersonaMediaConfigLite;
     use crate::runtime::{

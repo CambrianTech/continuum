@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use async_trait::async_trait;
     use image::{DynamicImage, ImageFormat, Rgba, RgbaImage};

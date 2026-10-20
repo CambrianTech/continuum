@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // Helper for round-trip assertions.

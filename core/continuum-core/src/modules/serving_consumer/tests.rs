@@ -1,3 +1,4 @@
+#![cfg(test)]
     /// what this catches (card 741f5eec, the 5090 on 2026-10-07): serving's own engine filed
     /// as EXTERNAL on a discrete GPU, and a reading credited to the wrong engine. On a
     /// discrete card the credit is what the engine reported, only for the engine it was read

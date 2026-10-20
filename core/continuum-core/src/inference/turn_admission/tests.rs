@@ -1,3 +1,4 @@
+#![cfg(test)]
     // what this catches (the 5090, 2026-09-21): a page switch that costs seconds on a
     // discrete card is not a wedge — the bound rises with this node's measured p90 and
     // never falls below the floor; an unmeasured node is judged by the floor alone.

@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (the 5090, 2026-10-11 02:15Z): a job's 311 examples returned as ONE

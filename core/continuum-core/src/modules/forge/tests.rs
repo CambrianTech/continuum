@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::forge::{AlloyHardware, AlloySource, CorpusRef};
     use uuid::Uuid;

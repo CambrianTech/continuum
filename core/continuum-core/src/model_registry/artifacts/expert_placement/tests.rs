@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::capacity::expert_container::fixtures::write_container;
     struct Custody {

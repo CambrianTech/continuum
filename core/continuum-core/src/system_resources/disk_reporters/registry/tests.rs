@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches: an admission refused on the reporter budget. The shell's cargo-root

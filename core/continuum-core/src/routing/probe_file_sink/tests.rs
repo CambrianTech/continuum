@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use serde_json::Value;
     use std::fs::File;

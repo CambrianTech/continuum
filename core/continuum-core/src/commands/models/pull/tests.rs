@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches: THE multi-shard correctness bug. A giant GGUF ships as N shards;

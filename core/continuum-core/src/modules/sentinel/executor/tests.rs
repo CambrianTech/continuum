@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::modules::sentinel::types::{Pipeline, PipelineStep};
     use crate::runtime::{message_bus::MessageBus, ModuleRegistry};

@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (the 5090, 2026-10-10): a durable dispatch from before #4794

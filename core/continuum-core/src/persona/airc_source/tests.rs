@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::cognition::channel_element::ChannelElementCache;
     use crate::cognition::embedding::EmbeddingProvider;

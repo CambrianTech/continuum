@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (#430): the roster is DATA. with_citizens drives the

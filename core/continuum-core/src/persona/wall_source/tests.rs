@@ -1,3 +1,4 @@
+#![cfg(test)]
 
     // what this catches (cards 4cfd4530 and 7c8c44a1; the 5090 2026-10-11): Kimi lifted a staged
     // revision from ANOTHER card's ledger into her submit, because every ledger read only

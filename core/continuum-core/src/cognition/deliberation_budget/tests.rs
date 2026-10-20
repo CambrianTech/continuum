@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches: a citizen entering a room she has never spoken in must read

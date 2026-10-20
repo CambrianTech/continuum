@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     fn thresh() -> CascadeThresholds {

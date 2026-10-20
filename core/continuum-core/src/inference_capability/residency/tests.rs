@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // ---- Synthetic Qwen variants (published HF model card values) ----

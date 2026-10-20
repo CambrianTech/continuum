@@ -1,3 +1,4 @@
+#![cfg(test)]
     //! End-to-end tests for the local impl. Each test wires a couple
     //! of stub tiers, registers a persona, and verifies the page_in /
     //! page_out / audit_access dispatch.

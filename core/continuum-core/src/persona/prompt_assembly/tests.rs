@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     /// Pin that EVERY assembled prompt includes the silence affordance.

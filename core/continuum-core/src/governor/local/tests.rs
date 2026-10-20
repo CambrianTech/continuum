@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::governor::policy_file::{
         CadenceMultipliersFile, ConcurrencyCapsFile, ConsolidationFileSection,

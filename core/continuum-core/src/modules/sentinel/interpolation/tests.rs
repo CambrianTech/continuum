@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::super::types::StepResult;
     use super::*;
     use serde_json::json;

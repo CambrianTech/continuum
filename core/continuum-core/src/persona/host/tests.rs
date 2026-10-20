@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches: a refused seat re-attempted at pass rate (the 2026-09-12

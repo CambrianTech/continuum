@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use airc_core::PeerId;
     use airc_lib::AircError;

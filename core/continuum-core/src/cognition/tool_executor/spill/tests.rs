@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (Codex on #4982): the restore retain loop untested, a restored

@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     /// Deterministic fake tokenizer: maps each char to its ASCII

@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::airc::realtime::{
         AircPeerCapability, AircPresenceState, AircRealtimePayloadRef, AircRealtimeSchema,

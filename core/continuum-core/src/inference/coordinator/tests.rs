@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
 

@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches: card 98c0ae23 — a core built LOCALLY at a docs- or baseline-only

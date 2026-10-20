@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     /// A canned reader — returns a fixed snapshot, the nav analogue of the

@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::routing::{
         AircEventPublish, AircEventPublishAck, AircEventSubscribe, AircEventSubscribeAck,

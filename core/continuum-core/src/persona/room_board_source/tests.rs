@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use airc_work::{CardState, Priority, RepoId, WorkCard, WorkCardId};
     use std::sync::Mutex;

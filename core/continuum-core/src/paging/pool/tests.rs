@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     fn count_sizer<V>() -> Sizer<V>

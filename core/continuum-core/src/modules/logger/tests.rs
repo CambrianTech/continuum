@@ -1,3 +1,4 @@
+#![cfg(test)]
     //! The module now owns only config + the shared command state + the dep-holding
     //! family. The write/ping behavior contracts are pinned in
     //! `commands/log/{write,write_batch,ping}.rs`; these tests guard the module's

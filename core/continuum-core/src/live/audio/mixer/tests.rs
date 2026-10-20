@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::live::audio::pcm::is_silence;

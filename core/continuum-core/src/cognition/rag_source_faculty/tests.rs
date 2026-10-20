@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::persona::rag_budget::{ContinuationCursor, RagDelivery, RagItem, ResolutionPreference};
     use std::sync::Mutex;

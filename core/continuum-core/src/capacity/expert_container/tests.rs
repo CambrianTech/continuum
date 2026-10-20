@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::fixtures::{write_container, write_tiered_container};
     use super::*;
 

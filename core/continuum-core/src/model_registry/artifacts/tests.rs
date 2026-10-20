@@ -1,3 +1,4 @@
+#![cfg(test)]
     // what this catches: card e8a15ab0. A training request naming a served model by its HF
     // base (Kimi's restored request: `Qwen/Qwen3.8-27B`) must match the lane serving that row
     // (`ggml-org/Qwen3.8-27B-GGUF`); an exact string compare filtered the in-engine trainer

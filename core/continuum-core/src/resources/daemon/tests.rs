@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::resources::capacity::MockCapacitySource;
     use crate::resources::consumer::{ConsumerFootprint, ReclaimRequest, ReclaimStatus};

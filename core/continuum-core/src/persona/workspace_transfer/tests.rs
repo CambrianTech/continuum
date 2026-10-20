@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (Astra on #5026): a claim's close dropping a checkout's sync lock while

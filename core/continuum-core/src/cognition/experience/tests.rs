@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use crate::cognition::act_observe::SettleOutcome;
     use crate::cognition::workspace::{Decision, TurnMetrics};

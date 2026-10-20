@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (#166): the persona's own near-identical recent turns must

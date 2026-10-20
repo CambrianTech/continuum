@@ -1,3 +1,4 @@
+#![cfg(test)]
     // Regression for card 7028c695: unserved demand invalidated actual restart
     // geometry while refusal samples also masqueraded as successful service.
     #[test]

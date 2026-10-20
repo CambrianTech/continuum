@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::super::airc_interceptor::AircInterceptor;
     use super::*;
     use async_trait::async_trait;

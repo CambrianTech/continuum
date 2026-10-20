@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     fn ws(n: u128, bytes: u64, last_active_ms: u64) -> PeerWorkspace {

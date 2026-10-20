@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     fn make_adapter(

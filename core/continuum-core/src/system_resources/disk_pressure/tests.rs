@@ -1,3 +1,4 @@
+#![cfg(test)]
     //! What this catches:
     //!   1. Pressure tier thresholds match the doctrine (80/90/95)
     //!   2. Snapshot Default is Normal at 0.0 pressure

@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (card de9e1342): a capacity refusal decoded as a retry (re-planning

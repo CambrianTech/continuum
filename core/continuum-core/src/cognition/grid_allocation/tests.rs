@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (Astra, Windows 2026-09-22): this node's row in the allocator

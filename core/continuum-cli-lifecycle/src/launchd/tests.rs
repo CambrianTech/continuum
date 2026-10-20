@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches (a1bd8b58): the stage step must write where launchd will exec —

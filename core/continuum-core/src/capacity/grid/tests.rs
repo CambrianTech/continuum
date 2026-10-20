@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     // what this catches: ALL THREE grid invariants on one timeline, deterministically, zero

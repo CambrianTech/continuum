@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
     use airc_core::{ClientId, EventId, MentionTarget, RoomId, TranscriptKind};
 

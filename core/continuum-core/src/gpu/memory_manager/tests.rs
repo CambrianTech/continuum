@@ -1,3 +1,4 @@
+#![cfg(test)]
     use super::*;
 
     fn test_manager(total_mb: u64) -> Arc<GpuMemoryManager> {
