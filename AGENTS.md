@@ -16,6 +16,32 @@ order of work it advances. Reviewers refuse work that cannot say. The summer's b
 harness (plan line 0) is what building without this produced, and it is far harder to remove
 than it was to add.
 
+**STOP ADDING TO THE SLOP: the plan for the code itself (Joel, 2026-10-20: "We need a plan we can't keep
+adding to the slop"; "You can't put it off any longer").** It comes before every feature below,
+because the monolith is why every change is slow, risky and stacked on the last one.
+
+Rules, in force now:
+1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
+2. No builds on a serving node: build with serving down, in CI, or on a non-serving machine (a build
+   beside the lanes downgraded the M5's residents to a 7B on 10-20).
+3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
+   back to canary at once. No "clean hours", no stacked fixes.
+4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
+
+Phases, in order; each owner works its area in parallel:
+- **0 Stabilize.** Nodes run plain canary; features in a large file wait for its split.
+- **1 Split every file over 1,000 lines** by owner (pure moves, test counts unchanged, one PR per
+  directory). Owners: Fable (cognition, persona, code, ai, positron), Codex (serving, inference, grid,
+  routing), Cormac (genome, training), BigMama (live, media). Done when `file_size` reads 0.
+- **2 Crates by the placement map**, floor up: continuum-base (#5194), Store, Perception/RAG, Hands,
+  Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
+  `layer_discipline` forbids upward imports; each crate checks in seconds.
+- **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
+  CI checks only the affected crates.
+- **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
+
+Measured daily: lines past 1,000, crate count, check time per crate, unwrap count, residents' acts/hour.
+
 **The path, in order; each step is a number on the live node, and each rests on the one before:**
 1. **Fast:** median act under 60 s at four residents. The engine is already at published
    speed for its chip (measured 10-19); everything past par is OURS (goal 11): what we feed
