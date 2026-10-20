@@ -6,15 +6,16 @@ describe('contentFamilyOf', () => {
   // Each assertion names the recipe that motivates it; a recipe whose purpose
   // stops resolving here renders `Interface error` in every client (#431).
   it('resolves every shipped recipe purpose to a registered family', () => {
-    expect(contentFamilyOf('benchmark/hard-rs')).toBe('bench'); // recipes/benchmark.json
-    expect(contentFamilyOf('benchmark/swe-lite')).toBe('bench'); // any benchmark variant
+    expect(contentFamilyOf('benchmark/hard-rs')).toBe('chat'); // recipes/benchmark.json
+    expect(contentFamilyOf('benchmark/swe-lite')).toBe('chat'); // any benchmark variant
+    expect(contentFamilyOf('coursework/anything')).toBe('chat'); // coursework rooms
     expect(contentFamilyOf('video-chat')).toBe('live'); // recipes/video-chat.json
     expect(contentFamilyOf('profile')).toBe('persona'); // recipes/profile.json
     expect(contentFamilyOf('chat')).toBe('chat'); // recipes/chat.json (identity)
   });
 
   it('families pass through unchanged and unknown purposes are NOT rewritten', () => {
-    for (const fam of ['chat', 'foundry', 'bench', 'live', 'persona', 'serving', 'grid', 'arena', 'canvas']) {
+    for (const fam of ['chat', 'foundry', 'live', 'persona', 'serving', 'grid', 'arena', 'canvas']) {
       expect(contentFamilyOf(fam)).toBe(fam);
     }
     // fail-loud preserved: the resolver widens what renders, never silences.

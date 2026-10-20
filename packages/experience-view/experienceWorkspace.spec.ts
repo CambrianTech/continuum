@@ -83,6 +83,7 @@ describe('experienceWorkspace', () => {
     };
     const ws = experienceWorkspace({ manifest });
     expect(ws.left).toHaveLength(0);
-    expect(ws.content.purpose).toBe('benchmark/hard-rs');
+    // A benchmark/* purpose resolves to the ordinary chat family, never an unregistered key.
+    expect(ws.content.purpose).toBe('chat');
   });
 });

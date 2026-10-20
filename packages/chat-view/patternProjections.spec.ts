@@ -272,20 +272,11 @@ describe('chat → pattern projections', () => {
 });
 
 describe('recipe-purpose family dispatch (#431)', () => {
-  // what this catches: a dispatched benchmark round's room being UNRENDERABLE.
-  // Recipes bind rooms to hierarchical purposes (benchmark/hard-rs); before the
-  // family resolver, chatWorkspace passed that purpose through with a CHAT body
-  // and the registry threw `no content renderer for room purpose` — measured
-  // live 2026-08-22 on every run room the dispatcher spawned.
-  it('a benchmark-family room renders the bench board, frame-first before the feed', () => {
-    const bench = { ...vm, purpose: 'benchmark/hard-rs', parent_ref: '', display_label: '' };
-    const ws = chatWorkspace(bench);
-    expect(ws.content.purpose).toBe('bench');
-    // Honest pre-feed frame (same contract as arena/serving): the face renders
-    // with feedLive=false rather than falling back to chat or erroring.
-    const body = ws.content.body as { runs: unknown[]; feedLive: boolean };
-    expect(body.feedLive).toBe(false);
-    expect(body.runs).toEqual([]);
+  it('a benchmark-family room renders as an ordinary chat room, never an unregistered purpose', () => {
+    // what this catches: benchmark/* rooms reaching the registry under a raw key (Interface error).
+    const ws = chatWorkspace({ ...vm, purpose: 'benchmark/hard-rs' });
+    expect(ws.content.purpose).toBe('chat');
+    expect(ws.content.body).toHaveProperty('messages');
   });
 
   it('a video-chat room renders the live face; unknown purposes still pass through fail-loud', () => {
