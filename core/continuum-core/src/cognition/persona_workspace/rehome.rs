@@ -4,6 +4,12 @@ use crate::ai::adapter::AIProviderAdapter;
 use std::sync::Arc;
 use uuid::Uuid;
 
+enum Assignment {
+    Local,
+    Remote,
+    Unreadable,
+}
+
 impl PersonaWorkspaceRegistry {
     /// Re-home EVERY resident persona onto a newly served model — atomically swap
     /// the shared {adapter, model, context_window} binding on each cycle (see
@@ -26,29 +32,37 @@ impl PersonaWorkspaceRegistry {
     ) -> usize {
         // A citizen whose brain is assigned OFF-BOX keeps her remote binding: the
         // local lane coming up is not her model changing (card 1d2f65e7 slice 2).
-        let local: std::collections::HashSet<Uuid> = {
+        let assignments: std::collections::HashMap<Uuid, Assignment> = {
             let templates = self.templates.lock();
             templates
                 .iter()
-                .filter(|(_, cfg)| {
-                    match crate::persona::remote_lane_factory::is_remote_bound(root, &cfg.persona_name) {
-                        Ok(remote) => !remote,
+                .map(|(id, cfg)| {
+                    let assignment = match crate::persona::remote_lane_factory::is_remote_bound(root, &cfg.persona_name) {
+                        Ok(false) => Assignment::Local,
+                        Ok(true) => Assignment::Remote,
                         Err(error) => {
                             tracing::error!(persona = %cfg.persona_name, %error, "re-home refused: preserving current binding");
-                            false
+                            Assignment::Unreadable
                         }
-                    }
+                    };
+                    (*id, assignment)
                 })
-                .map(|(id, _)| *id)
                 .collect()
         };
         let cycles = self.cycles.lock();
         let mut rehomed = 0usize;
         for (id, entry) in cycles.iter() {
-            if !local.contains(id) {
+            let reason = match assignments.get(id) {
+                Some(Assignment::Local) => None,
+                Some(Assignment::Remote) => Some("remote"),
+                Some(Assignment::Unreadable) => Some("unreadable"),
+                None => Some("missing_template"),
+            };
+            if let Some(reason) = reason {
                 crate::probe!(
                     class = "persona.rehome.kept_binding",
                     persona_id = %id,
+                    reason,
                     "re-home skipped: local assignment was not established"
                 );
                 continue;
