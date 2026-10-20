@@ -22,11 +22,11 @@ fn a_turn_in_her_mind_room_writes_zero_wire_capture_bytes() {
 // edges so the record cannot crowd the retry the way the payload did.
 #[test]
 fn a_cut_act_records_that_it_did_not_land_and_what_it_was() {
-    let short = super::cut_act_fact("work/note({\"card\": \"a9c8f8ae\"");
+    let short = super::verdict::cut_act_fact("work/note({\"card\": \"a9c8f8ae\"");
     assert!(short.contains("did not land"), "{short}");
     assert!(short.contains("a9c8f8ae"), "{short}");
     let long: String = format!("HEAD{}TAIL", "x".repeat(5_000));
-    let fact = super::cut_act_fact(&long);
+    let fact = super::verdict::cut_act_fact(&long);
     assert!(fact.contains("after 5008 chars"), "{fact}");
     assert!(fact.starts_with("my last act was CUT"), "{fact}");
     assert!(fact.contains("HEAD") && fact.contains("TAIL"), "both edges survive");
@@ -317,6 +317,7 @@ use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 use super::request::output_allowance;
+use super::verdict::{answer_payload_bytes, reasoning_answer_split};
 use super::tool_surface::SelectedSurface;
 
 // ─── Prompt shaping ───────────────────────────────────────────────────────
