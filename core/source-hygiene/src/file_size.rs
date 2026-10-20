@@ -42,7 +42,7 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // persona/viewstate_rag/tests.rs (#![cfg(test)]): #5015 had grown it to 1,458 lines and turned canary red.
 // 157,618 after consolidating the f32 cosine kernel into cognition/embedding/similarity.rs.
 // 157,412 after card a00ab1a6 deleted the standing benchmark autopilot (no harness).
-const BASELINE_LINES_OVER: usize = 157_397;
+const BASELINE_LINES_OVER: usize = 156_841;
 
 pub struct FileSize;
 
