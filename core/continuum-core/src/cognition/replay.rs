@@ -35,7 +35,7 @@ use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::cognition::persona_workspace;
-use crate::cognition::token_budget::estimate_prompt_tokens;
+use crate::ai::token_estimate::estimate_prompt_tokens;
 use crate::cognition::workspace::{Contribution, FacultyId, Workspace};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 

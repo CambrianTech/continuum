@@ -433,7 +433,7 @@ impl RagState {
                     })
                     .collect();
 
-                let tokens_used = sections.iter().map(|s| crate::cognition::token_budget::estimate_prompt_tokens(&s.content) as usize).sum();
+                let tokens_used = sections.iter().map(|s| crate::ai::token_estimate::estimate_prompt_tokens(&s.content) as usize).sum();
 
                 let layers_str = resp
                     .layer_timings
@@ -506,7 +506,7 @@ impl RagState {
                     vec![]
                 };
 
-                let tokens_used = sections.iter().map(|s| crate::cognition::token_budget::estimate_prompt_tokens(&s.content) as usize).sum();
+                let tokens_used = sections.iter().map(|s| crate::ai::token_estimate::estimate_prompt_tokens(&s.content) as usize).sum();
 
                 RagSourceResult {
                     source_type: "consciousness".to_string(),
@@ -584,7 +584,7 @@ impl RagState {
 
         let tokens_used = sections
             .iter()
-            .map(|s| crate::cognition::token_budget::estimate_prompt_tokens(&s.content) as usize)
+            .map(|s| crate::ai::token_estimate::estimate_prompt_tokens(&s.content) as usize)
             .sum::<usize>()
             .min(budget_tokens);
 
@@ -634,7 +634,7 @@ impl RagState {
 
         let tokens_used = sections
             .iter()
-            .map(|s| crate::cognition::token_budget::estimate_prompt_tokens(&s.content) as usize)
+            .map(|s| crate::ai::token_estimate::estimate_prompt_tokens(&s.content) as usize)
             .sum::<usize>()
             .min(budget_tokens);
 
@@ -671,7 +671,7 @@ impl RagState {
 
         let tokens_used = sections
             .iter()
-            .map(|s| crate::cognition::token_budget::estimate_prompt_tokens(&s.content) as usize)
+            .map(|s| crate::ai::token_estimate::estimate_prompt_tokens(&s.content) as usize)
             .sum::<usize>()
             .min(budget_tokens);
 

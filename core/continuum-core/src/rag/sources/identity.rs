@@ -56,7 +56,7 @@ impl RagSource for PersonaIdentitySource {
             options.persona_id
         );
 
-        let tokens = crate::cognition::token_budget::estimate_prompt_tokens(&system_prompt) as usize;
+        let tokens = crate::ai::token_estimate::estimate_prompt_tokens(&system_prompt) as usize;
 
         RagSection {
             source_name: self.name().to_string(),

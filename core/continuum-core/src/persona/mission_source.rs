@@ -25,7 +25,7 @@
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::cognition::token_budget::estimate_prompt_tokens;
+use crate::ai::token_estimate::estimate_prompt_tokens;
 use crate::persona::rag_budget::{
     ContinuationCursor, RagContext, RagDelivery, RagItem, RagSource, ResolutionPreference,
 };

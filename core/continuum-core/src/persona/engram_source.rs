@@ -67,7 +67,7 @@ pub(crate) const SOURCE_ID: &str = "engrams";
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use crate::ai::token_estimate::estimate_prompt_tokens as estimate_tokens;
 
 /// Linear recency over `RECENCY_WINDOW_MS`. Returns 1.0 for
 /// engrams admitted right at `now_ms`, 0.0 for engrams admitted

@@ -20,7 +20,7 @@
 //! resident when you replay). When an exact count is needed against a specific
 //! model, that is the tokenizer's job at the inference seam, not this.
 
-pub use crate::ai::token_estimate::estimate_prompt_tokens;
+use crate::ai::token_estimate::estimate_prompt_tokens;
 
 /// Traverse structured textual payloads using the caller's existing pricing policy.
 /// Deliberation's conservative guard and RAG's relative estimate have different

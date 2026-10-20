@@ -6,7 +6,7 @@
 //! Input: PromptAssemblyInput (persona identity, RAG context, shared analysis angle)
 //! Output: AssembledPrompt (system message + conversation history, ready for ai/generate)
 
-use crate::cognition::token_budget::estimate_prompt_tokens;
+use crate::ai::token_estimate::estimate_prompt_tokens;
 use crate::model_registry::types::MultiPartyChatStrategy;
 use serde::{Deserialize, Serialize};
 use std::fmt::Write as _;
@@ -413,7 +413,7 @@ pub fn assemble(input: &PromptAssemblyInput) -> AssembledPrompt {
         }
     };
 
-        let system_tokens = estimate_prompt_tokens(&system_prompt) as usize;
+    let system_tokens = estimate_prompt_tokens(&system_prompt) as usize;
     let msg_tokens: usize = messages.iter().map(|m| estimate_prompt_tokens(&m.content) as usize).sum();
     let estimated_tokens = system_tokens + msg_tokens;
 
