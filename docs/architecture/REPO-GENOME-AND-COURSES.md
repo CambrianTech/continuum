@@ -361,7 +361,10 @@ an adapter into the same perception stream, and genes are selected by what the m
 
 **Genomics.** What is learned is a gene: shareable, swappable and revocable. A user's agent wears the
 genes for the repos it works in; a team shares them across the grid; a public gene is published like
-§6 and spreads by usage. Revoking a gene removes the skill.
+§6 and spreads by usage. Revoking a gene removes the skill. **One genome for drivers and personas** (Joel: "far smarter persona and they can use the
+genome too"): a gene learned from a driver's sessions or a user's GitHub history is the same
+artifact a resident wears, and a resident's genes serve the drivers. Every driver's work makes the
+personas smarter and every persona's learning reaches the drivers; fitness is usage across both.
 
 **Scope and privacy, by default.** `.continuum/scope` (§1) decides what may be learned from, per repo.
 Private repositories and sessions train only on the user's own nodes unless the user publishes a
