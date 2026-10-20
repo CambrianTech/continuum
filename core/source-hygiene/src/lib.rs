@@ -62,6 +62,40 @@ pub struct SourceFile {
 }
 
 impl SourceFile {
+    /// The module a file's code belongs to, as the path that names it: `x` for `x.rs`,
+    /// `x/mod.rs`, and for a test module moved out of it (`x/tests.rs`,
+    /// `x/tests/mod.rs`, `x/tests/part_2.rs`, each marked `#![cfg(test)]`). A rule that
+    /// asks "outside its own file" asks "outside its owning module": a test that moved
+    /// to a sibling file to keep its owner readable is still that owner's own test.
+    pub fn owning_module(&self) -> &str {
+        let rel = self.rel.as_str();
+        if self.is_moved_test() {
+            let dir = rel.rsplit_once('/').map_or("", |(d, _)| d);
+            return dir.strip_suffix("/tests").unwrap_or(dir); // unwrap_or: `x/tests.rs` is already at `x`
+        }
+        rel.strip_suffix("/mod.rs")
+            .or_else(|| rel.strip_suffix(".rs"))
+            .unwrap_or(rel) // unwrap_or: every scanned file ends in .rs
+    }
+
+    /// A whole file of test code: a test module moved out of its owner, which declares
+    /// `#![cfg(test)]` before any item.
+    pub fn is_moved_test(&self) -> bool {
+        for line in self.raw.lines() {
+            let code = split_code_and_comment(line).0.trim();
+            if code.is_empty() {
+                continue;
+            }
+            if !code.starts_with("#![") {
+                return false;
+            }
+            if code.starts_with("#![cfg(test)]") {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Production lines paired with their 1-indexed line number in the whole file,
     /// so a violation can point at a real editor line.
     pub fn production_lines(&self) -> impl Iterator<Item = (usize, &str)> {

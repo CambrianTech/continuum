@@ -197,6 +197,12 @@ impl CrateRule for ProductionReachability {
 
     fn check_crate(&self, files: &[SourceFile], corpus: &str) -> Vec<Violation> {
         let corpus_counts = Self::identifier_counts(corpus);
+        let mut moved_tests = std::collections::HashMap::<&str, String>::new();
+        for test in files.iter().filter(|f| f.is_moved_test()) {
+            let text = moved_tests.entry(test.owning_module()).or_default();
+            text.push('\n');
+            text.push_str(&test.raw);
+        }
         let mut out = Vec::new();
         for file in files {
             // Own-mentions are counted over the SAME text shape as the corpus — raw,
@@ -205,7 +211,14 @@ impl CrateRule for ProductionReachability {
             // `#[cfg(test)]` mod scored corpus>own and read as externally referenced,
             // so `AgentContext` — the defect this guard exists for — went unreported.
             // Symmetry between the two sides IS the arithmetic.
-            let own_counts = Self::identifier_counts(&file.raw);
+            //
+            // "Its own file" is its owning module: a test module moved into a sibling
+            // `tests.rs` still constructs the type in its OWN tests. Read as external, it
+            // made two test-only types look wired the day #5224 moved 69 test modules.
+            let own_counts = match moved_tests.get(file.owning_module()) {
+                Some(tests) if !file.is_moved_test() => Self::identifier_counts(&format!("{}\n{tests}", file.raw)),
+                _ => Self::identifier_counts(&file.raw),
+            };
             for (line, name) in Self::declared_types(file) {
                 if !Self::is_machinery(file, &name) || Self::surfaced_by_alias(file, &name) {
                     continue;
@@ -317,6 +330,26 @@ mod tests {
              must be reported — that is exactly #27"
         );
         assert!(found[0].source.contains("AgentContext"));
+    }
+
+    /// What this catches: the same #27 shape after its test module moved to a sibling
+    /// `context/agent/tests.rs` (`#![cfg(test)]`) to keep the owner readable. Read as a
+    /// different file, the test's construction looked external and the type read as
+    /// wired: two such types vanished from the count the day #5224 moved 69 test modules.
+    #[test]
+    fn a_type_constructed_only_in_its_moved_tests_is_still_reported() {
+        let own = "pub struct AgentContext {}\n\
+                   impl AgentContext {\n    pub async fn bootstrap() -> Self { Self {} }\n}\n\
+                   #[cfg(test)]\nmod tests;\n";
+        let tests = "//! Tests for agent.\n#![cfg(test)]\nuse super::*;\nfn t() { let _ = AgentContext::bootstrap(); }\n";
+        let files = [
+            SourceFile { rel: "context/agent.rs".into(), production: own.into(), raw: own.into() },
+            SourceFile { rel: "context/agent/tests.rs".into(), production: String::new(), raw: tests.into() },
+        ];
+        assert_eq!(files[1].owning_module(), "context/agent");
+        let corpus = format!("{own}\n{tests}");
+        let found = ProductionReachability.check_crate(&files, &corpus);
+        assert_eq!(found.len(), 1, "a moved test is still the type's own test: {found:?}");
     }
 
     /// What this catches: the machinery predicate widening into a dead-code lint. A
