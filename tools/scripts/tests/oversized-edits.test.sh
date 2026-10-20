@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # what this catches: the two ways past the oversized-edit gate Codex found on #5221: a rename plus
-# edit (numstat's "old => new" is no path) and a final line with no newline (wc -l misses it).
+# edit (numstat's "old => new" is no path) and a final line with no newline (wc -l misses it); then
+# the two after that: a failed git diff read as an empty one, and a quoted non-ASCII path skipped.
 set -euo pipefail
 gate="$(cd "$(dirname "$0")/.." && pwd)/oversized-edits.sh"
 t=$(mktemp -d); trap 'rm -rf "$t"' EXIT; cd "$t"
@@ -12,4 +13,7 @@ echo "// edit" >> small.rs && git commit -qam small; expect 0 "a small file's ed
 git mv big.rs moved.rs && echo "// edit" >> moved.rs && git commit -qam rename; expect 1 "a renamed and edited monolith fails at its destination"
 git reset -q --hard base
 awk 'BEGIN{for(i=0;i<1000;i++) print "x"}' > nonl.rs && printf 'y' >> nonl.rs && git add nonl.rs && git commit -qm nonl; expect 1 "1,001 lines with no final newline fails"
-echo "oversized-edits gate: 3/3"
+git reset -q --hard base
+awk 'BEGIN{for(i=0;i<1200;i++) print "// u"}' > "größe datei.rs" && git add . && git commit -qm unicode; expect 1 "a non-ASCII path with a space is still checked"
+if "$gate" no-such-ref >/dev/null 2>&1; then echo "FAIL: an invalid base ref must refuse, not pass"; exit 1; fi
+echo "oversized-edits gate: 5/5"
