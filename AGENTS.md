@@ -54,6 +54,14 @@ run everywhere and a node's capabilities decide what it hosts; the core builds h
 Before you add code, name the module it belongs to; a change that couples two modules outside their
 seam is the defect, and every crate cut follows this map.
 
+**Be the addendum** (Joel, 10-19): ride the platforms people already use. Joel grew apps this way
+before: a home-decorator app built on Pinterest pins, Instagram's own early history. Being second
+fiddle, or fiftieth, is a viable strategy: it gives inroads, and sometimes you win. So continuum also
+ships as an addendum to other agents: a Hermes driver (then Claude Code, opencode, anything that
+speaks OpenAI) gets our engine's speed through the Serving seam, and continual learning through the
+Dreaming seam, with no special case. That driver is also the outlier-B test of our own interfaces: if
+someone else's agent loop learns through the same seams our residents use, the seams are right.
+
 **Order of work, now** (updated 10-19 ~19:30Z; divide and conquer: work down YOUR lines, never stop at a
 wait, a wait means start your next line; update this table when a line lands or changes):
 
@@ -75,6 +83,7 @@ wait, a wait means start your next line; update this table when a line lands or 
 | 13 | Prefill during tool calls; the instant voice | Fable, Codex | after lines 2-3 | submit-to-first-token |
 | 14 | Learned policies on our own receipts; residents review docs PRs; Atlas silent; Aiko gaps | open / residents | after the validators | each beats its constant offline |
 | 15 | Distributable modules: headless default (`default = []`; avatar-3d and livekit enabled per node by deploy profile), grid trust (every node reads `blocked` on 10-19), checks dispatched to idle grid nodes | Fable (default + profiles), Codex (trust), peers on the 5090/IntelMac (take checks) | profiles first, then flip the default with a before/after check time | a node joins by capability; an AWS box builds the core with no renderer |
+| 16 | Be the addendum: a Hermes driver on our seams. (a) Serving: Hermes on our engine vs Hermes on a stock server, same model and tasks, speed before/after; (b) Learning: once the acceptance test passes (a reviewed correction on unseen tasks, retained after restart, vs the base without the gene), Hermes sessions become perception and its corrections become genes | OPEN: claim it after the queue clears | (a) first, needs no learning claim | Hermes users get our speed, then learning, by pointing at continuum |
 
 **Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
 fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
