@@ -16,6 +16,32 @@ order of work it advances. Reviewers refuse work that cannot say. The summer's b
 harness (plan line 0) is what building without this produced, and it is far harder to remove
 than it was to add.
 
+**STOP ADDING TO THE SLOP: the plan for the code itself (Joel, 2026-10-20: "We need a plan we can't keep
+adding to the slop"; "You can't put it off any longer").** It comes before every feature below,
+because the monolith is why every change is slow, risky and stacked on the last one.
+
+Rules, in force now:
+1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
+2. No builds on a serving node: build with serving down, in CI, or on a non-serving machine (a build
+   beside the lanes downgraded the M5's residents to a 7B on 10-20).
+3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
+   back to canary at once. No "clean hours", no stacked fixes.
+4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
+
+Phases, in order; each owner works its area in parallel:
+- **0 Stabilize.** Nodes run plain canary; features in a large file wait for its split.
+- **1 Split every file over 1,000 lines** by owner (pure moves, test counts unchanged, one PR per
+  directory). Owners: Fable (cognition, persona, code, ai, positron), Codex (serving, inference, grid,
+  routing), Cormac (genome, training), BigMama (live, media). Done when `file_size` reads 0.
+- **2 Crates by the placement map**, floor up: continuum-base (#5194), Store, Perception/RAG, Hands,
+  Serving, Mind, Grid/airc, Clients. Pure moves plus import paths, one owner per cut;
+  `layer_discipline` forbids upward imports; each crate checks in seconds.
+- **3 Locks.** Clippy in CI on split crates, `deny(unwrap_used, expect_used, panic)` on every clean one;
+  CI checks only the affected crates.
+- **4 Then pace work**, one change at a time inside its crate, validator first, then the live read.
+
+Measured daily: lines past 1,000, crate count, check time per crate, unwrap count, residents' acts/hour.
+
 **The path, in order; each step is a number on the live node, and each rests on the one before:**
 1. **Fast:** median act under 60 s at four residents. The engine is already at published
    speed for its chip (measured 10-19); everything past par is OURS (goal 11): what we feed
@@ -34,10 +60,10 @@ done until its gate is met on the live node and the change is MERGED.
 | 1 | airc delivers | every node's send reaches its live peers; gh Registry calls stay under the governor's budget | Sneasel (Fable) |
 | 2 | Residents code at pace | per resident: ≥40 tool calls/h, median act <60 s, prefix reuse ≥80%; ≥1 resident PR merged per day; on a capable model (27B class), several at once | Sneasel (M5), BigMama (5090) — proposed |
 | 3 | Nothing is lost | every pushed branch has a PR (#5154); no PR waits more than a day for a verdict | everyone |
-| 4 | No monolith | `source-hygiene::file_size` (lines past 1,000; 159,720 on 10-18) falls every week; split by OWNER | owner of each file |
+| 4 | No monolith | NEW RULE (Joel, 10-20): "No one can edit a large file." Every Rust file a PR touches ends at most 1,000 lines; the only PR that touches a monolith is the one that breaks it apart (CI gate). `source-hygiene::file_size` (lines past 1,000; 159,720 on 10-18) falls every week; split by OWNER, never one-off fixes appended to a monolith | owner of each file |
 | 5 | No unwraps | `unwrap_justification` (2,135 on 10-18) falls every week; make the state unrepresentable | owner of each file |
 | 6 | Microkernel | `layer_discipline` (256 upward imports on 10-18) falls; crates by device target; edit-to-proven <15 min | Sneasel — proposed |
-| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number | Sneasel |
+| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number; positron/RAG sources too. NEVER CLIP THE NEWEST END: her latest result is the step that ends the recursion; cut it and her next input can equal her last, so she repeats the act (Benchy, 125 identical acts in an hour on 10-20). Keep the newest interaction whole and the full result reachable; shrink oldest-first to a handle she can expand. `source-hygiene::head_cuts` (179 on 10-20) falls | Sneasel |
 | 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama |
 | 9 | One scheduler, the whole grid | every mind on every node (residents and minds leased in from other nodes) is served by ONE RTOS scheduler: one measured activity temperature per mind is its priority, aging means no mind is ever starved, hot minds keep warm KV and cooling minds page to RAM; windows never shrink to seat more; how many minds share the engine at once is the measured admission and sequence-capacity contract of #5188, never a fixed count | Codex — proposed (card b4eed65c) |
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
