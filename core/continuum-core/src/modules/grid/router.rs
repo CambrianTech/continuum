@@ -191,6 +191,11 @@ impl GridRouter {
         params: &serde_json::Value,
         registry: &NodeRegistry,
     ) -> RouteDecision {
+        // Grid handlers own their nodeId operand. Keep this decision shared by
+        // implicit dispatch and dry-run routing, including blocked-node administration.
+        if command.starts_with(super::commands::PREFIX) {
+            return RouteDecision::Local;
+        }
         // 1. Explicit nodeId targeting
         if let Some(value) = params.get("nodeId") {
             let Some(node_id) = value.as_str().filter(|id| !id.trim().is_empty()) else {
@@ -674,6 +679,15 @@ mod tests {
             router.route("genome/train", &serde_json::json!({"nodeId": "100.1.2.3"}), &registry),
             RouteDecision::Refused(RouteRefusal::UntrustedNode(_))
         ));
+        for trust in [TrustLevel::Blocked, TrustLevel::Trusted] {
+            registry.set_trust("100.1.2.3", trust).expect("existing fixture node");
+            for command in [super::super::commands::TRUST, super::super::commands::SEND, super::super::commands::ROUTE] {
+                assert!(matches!(
+                    router.route(command, &serde_json::json!({"nodeId": "100.1.2.3"}), &registry),
+                    RouteDecision::Local
+                ), "control operands stay local for both dry-run and dispatch");
+            }
+        }
     }
 
     #[test]
