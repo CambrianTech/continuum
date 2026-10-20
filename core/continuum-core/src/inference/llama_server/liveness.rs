@@ -1,5 +1,4 @@
 //! Liveness responsibility of the llama-server process owner.
-use super::*;
 /// Wall-clock ms of the last REAL generation that produced tokens on the served lane.
 ///
 /// Health is recent DELIVERY, never a synthetic probe. The decode heartbeat
