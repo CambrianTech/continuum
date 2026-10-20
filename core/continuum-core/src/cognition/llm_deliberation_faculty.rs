@@ -2479,14 +2479,14 @@ impl LlmDeliberationFaculty {
         );
 
         let protocol_error = all_messages.active_protocol_error();
-        let start_tokens = super::context_budget::ContextBudget::fresh_prefill_tokens(crate::inference::prefill_rate::measured_rate_for(model), context_window, crate::cognition::audience::current());
-        let fit = match epoch.turnover_for(all_messages.tokens(), msg_budget, start_tokens) {
-            None => self.fit_messages(all_messages, msg_budget),
+        let start_room = super::context_budget::ContextBudget::fresh_prefill_tokens(crate::inference::prefill_rate::measured_rate_for(model), context_window, crate::cognition::audience::current()).saturating_sub(selected.tokens + framing_tokens);
+        let (room, fit) = match epoch.turnover_for(all_messages.tokens(), msg_budget, start_room) {
+            None => (after_framing, self.fit_messages(all_messages, msg_budget)),
             Some(cause) => {
-                let budget = all_messages.restart_epoch(&mut epoch, cause, &standing, standing_unsaid, headroom, start_tokens.min(msg_budget), &self.persona_name);
+                let budget = all_messages.restart_epoch(&mut epoch, cause, &standing, standing_unsaid, headroom, start_room.min(msg_budget), &self.persona_name);
                 let fit = self.fit_messages(all_messages, budget);
                 if let Ok(f) = &fit { epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at)); }
-                fit
+                (after_framing.min(start_room), fit)
             }
         };
         let (mut fitted, capacity_error) = match fit {
@@ -2574,7 +2574,7 @@ impl LlmDeliberationFaculty {
         // (never re-rendered because the room left over changed); a new or changed one is
         // admitted from the room left after the measured growth.
         if capacity_error.is_none() {
-            let held_room = after_framing
+            let held_room = room
                 .saturating_sub(Self::messages_cost(&fitted.messages))
                 .saturating_sub(epoch.unsaid_tokens(&standing, Self::message_cost));
             grounding.expand_within(held_room.saturating_sub(headroom), held_room, |c| epoch.admitted(c.faculty.as_str(), epoch_view::content_fingerprint(&c.content, &c.parts)));
@@ -2610,7 +2610,7 @@ impl LlmDeliberationFaculty {
         // growth leave.
         let ctx_budget = match epoch.head_grant() {
             Some(grant) => grant.saturating_sub(Self::working_context_header_cost()),
-            None => after_framing
+            None => room
                 .saturating_sub(used_msg_tokens)
                 .saturating_sub(headroom)
                 .saturating_sub(Self::working_context_header_cost())
@@ -3827,8 +3827,8 @@ impl PromptMessages {
     }
 
     /// Her epoch turned over: the history's epoch part becomes the compacted view (with the result
-    /// pointers the fit may substitute), the growth room is freed, and the standing pieces count again.
-    /// Returns its budget: a new epoch is all fresh, so `start`, never below her required input.
+    /// pointers the fit may substitute), the growth room is freed, the standing pieces count again.
+    /// Returns its budget: all fresh, so `start` (net of framing and tools), never below her required input.
     fn restart_epoch(&mut self, epoch: &mut epoch_view::EpochView, cause: epoch_view::TurnoverCause, standing: &[epoch_view::Block], standing_unsaid: usize, headroom: usize, start: usize, persona: &str) -> usize {
         let (len, pointers) = epoch.turn_over(&mut self.history, self.grounding_at, &self.body, cause, persona);
         self.grounding_at = len;

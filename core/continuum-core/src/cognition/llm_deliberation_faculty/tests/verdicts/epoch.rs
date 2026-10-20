@@ -240,9 +240,20 @@ async fn every_new_epoch_starts_at_the_start_bound_cold_or_after_a_window_turnov
         let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
         wm.record_receipt_typed(&[], &format!("RESULT-{i} {}", "x".repeat(GUARD_CHARS_PER_TOKEN * 1_500)), None, custody);
     }
-    assert!(faculty.contribute(&Workspace::new("continue the card")).await.is_some_and(|v| v.fault.is_none()));
-    let cold = LlmDeliberationFaculty::messages_cost(&adapter.seen.lock().expect("recorded request lock")[0].messages);
-    assert!(near_start(cold), "a cold history started near the start bound {start}: {cold} tokens");
+    // Substantial grounding too, in the system context and trailing, so a later stage that
+    // sized itself from the window would refill the started request (Codex on #5210 at 0c1608db7).
+    let mut cold_ws = Workspace::new("continue the card");
+    cold_ws.broadcast = vec![
+        // Each fits the window's room but not the start bound's: sized from the window, it lands.
+        Contribution::context(FacultyId::Recall, format!("RECALL {}", "y".repeat(GUARD_CHARS_PER_TOKEN * start * 3 / 4)), 0.6, "recall").trailing(),
+        Contribution::context(FacultyId::WorldModel, format!("WORLD {}", "w".repeat(GUARD_CHARS_PER_TOKEN * start * 3 / 4)), 0.7, "world"),
+    ];
+    assert!(faculty.contribute(&cold_ws).await.is_some_and(|v| v.fault.is_none()));
+    let seen = adapter.seen.lock().expect("recorded request lock");
+    let system = seen[0].system_prompt.as_deref().map_or(0, LlmDeliberationFaculty::framing_cost);
+    let cold = system + LlmDeliberationFaculty::messages_cost(&seen[0].messages);
+    assert!(near_start(cold), "a cold start's WHOLE request (system {system} + messages) fit the start bound {start}: {cold} tokens");
+    drop(seen);
     // Warm, growing until the window turns it over.
     const ACTS: usize = 120;
     let (faculty, adapter, save) = epoch_faculty(WINDOW, ACTS);
