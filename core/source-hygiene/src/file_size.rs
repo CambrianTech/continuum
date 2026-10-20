@@ -54,7 +54,7 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 155,830 measured on the merge with canary (canary's own cuts, 156,710, plus this branch's).
 // 155,811 after the epoch stopped turning over on the prefill-time bound (its bound, branch and seam deleted).
 // 155,803 after restart_epoch took the new epoch's start budget (one owner for the turnover).
-const BASELINE_LINES_OVER: usize = 149_223;
+const BASELINE_LINES_OVER: usize = 148_858;
 
 pub struct FileSize;
 
