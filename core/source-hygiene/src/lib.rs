@@ -26,6 +26,7 @@
 
 pub mod boundary_serialization;
 pub mod derived_bounds;
+pub mod doc_theft;
 pub mod identity_discipline;
 pub mod production_reachability;
 pub mod tenant_neutrality;
