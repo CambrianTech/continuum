@@ -9,7 +9,7 @@ pub(super) async fn finish_spoken_turn(
     outcome: &mut ServeOutcome,
     trigger: TurnTrigger<'_>,
     spoken: SpokenTurn,
-    phase_timings: PhaseTimings,
+    mut phase_timings: PhaseTimings,
     turn_started: std::time::Instant,
 ) {
     let TurnTrigger { msg, turn_room, .. } = trigger;
