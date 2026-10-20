@@ -47,7 +47,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 154,999 after placement responsibilities split on current canary.
 // 136,485 after #5224 moved 69 oversized files' test modules into sibling tests.rs files.
 // 133,731 after #5225 split eight files just over 1,000 lines by owner.
-const BASELINE_LINES_OVER: usize = 133_731;
+// 57,268 after #5228 split the 59 remaining oversized files into child modules.
+const BASELINE_LINES_OVER: usize = 57_268;
 
 pub struct FileSize;
 

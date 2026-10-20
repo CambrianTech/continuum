@@ -839,11 +839,16 @@ mod tests {
                 if exempt {
                     continue;
                 }
-                let Some(rest) = t.strip_prefix("const ").or_else(|| {
-                    t.strip_prefix("pub const ")
-                        .or_else(|| t.strip_prefix("pub(super) const "))
-                        .or_else(|| t.strip_prefix("pub(crate) const "))
-                }) else {
+                // Any visibility, `pub(in crate::path)` included: a split by owner widens
+                // a moved constant to that form, and a fixed prefix list lost it.
+                let unscoped = match t.strip_prefix("pub") {
+                    Some(after) if after.starts_with('(') => {
+                        after.split_once(')').map_or(t, |(_, rest)| rest.trim_start())
+                    }
+                    Some(after) => after.trim_start(),
+                    None => t,
+                };
+                let Some(rest) = unscoped.strip_prefix("const ") else {
                     continue;
                 };
                 let Some((name, tail)) = rest.split_once(':') else {

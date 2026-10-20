@@ -85,8 +85,12 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
 // 60 -> 61, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
 // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
 // a85454889 + this change, 2026-10-20).
+// 61 -> 57 on #5228 is NOT four types wired. BenchRound, EmbeddingCache,
+// NeuralEmbeddingProvider and CommandRegistration are still constructed only inside their
+// own former file; the split put each constructor call in a sibling chunk, which this
+// file-based rule reads as outside use. Card 7660e70f owns wiring or deleting them.
 #[cfg(test)]
-const BASELINE_UNWIRED: usize = 61;
+const BASELINE_UNWIRED: usize = 57;
 
 pub struct ProductionReachability;
 

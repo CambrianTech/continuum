@@ -112,12 +112,17 @@ const NUMERIC_TYPES: &[&str] = &[
 ];
 
 /// Const declaration prefixes, longest first so `pub const` is not read as `const`.
-const CONST_PREFIXES: &[&str] = &[
-    "pub(crate) const ",
-    "pub(super) const ",
-    "pub const ",
-    "const ",
-];
+/// `const ...` after any visibility: `pub`, `pub(crate)`, `pub(super)`, and the
+/// `pub(in crate::path)` a split by owner widens a moved constant to. A fixed list of
+/// prefixes missed that last form, and the scan lost a constant the day it moved.
+fn strip_const(line: &str) -> Option<&str> {
+    let rest = match line.strip_prefix("pub") {
+        Some(after) if after.starts_with('(') => after.split_once(')')?.1.trim_start(),
+        Some(after) if after.starts_with(' ') => after.trim_start(),
+        _ => line,
+    };
+    rest.strip_prefix("const ")
+}
 
 pub struct DerivedBounds;
 
@@ -188,9 +193,7 @@ impl DerivedBounds {
     /// `(name, type, value)` if this line declares a numeric constant.
     fn const_declaration<'a>(code: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
         let trimmed = code.trim_start();
-        let rest = CONST_PREFIXES
-            .iter()
-            .find_map(|p| trimmed.strip_prefix(*p))?;
+        let rest = strip_const(trimmed)?;
         let (name, tail) = rest.split_once(':')?;
         let (ty, value) = tail.split_once('=')?;
         let ty = ty.trim();
