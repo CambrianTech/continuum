@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Grid integration tests.
 //!
 //! These tests spin up real TCP listeners and verify:

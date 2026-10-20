@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Pure-logic tests for the parts that don't require live inference.
 //! End-to-end inference test happens through chat-validation.
 #![cfg(test)]

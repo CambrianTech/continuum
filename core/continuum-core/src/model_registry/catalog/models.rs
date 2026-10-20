@@ -1,0 +1,1130 @@
+use super::*;
+
+pub fn models() -> Vec<Model> {
+    vec![
+        model(ModelSpec {
+            id: "claude-sonnet-4-5-20250929",
+            name: "Claude Sonnet 4.5",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.003,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "claude-opus-4-20250514",
+            name: "Claude Opus 4",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.015,
+            cost_output_per_1k: 0.075,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "claude-3-5-haiku-20250107",
+            name: "Claude 3.5 Haiku",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00025,
+            cost_output_per_1k: 0.00125,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gpt-4-turbo-preview",
+            name: "GPT-4 Turbo",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 128_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.01,
+            cost_output_per_1k: 0.03,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gpt-4o",
+            name: "GPT-4o",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 128_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::AudioOutput,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.005,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        // OpenAI's embedding + image lanes as MODEL rows (#68): the provider's
+        // embedding/image capability is derived by the adapter SCANNING these
+        // — there is no provider-level `supports_embeddings` bool. These are
+        // capability-routed (not arch-dispatched), so `Arch::Gpt` just groups
+        // them with the OpenAI family.
+        model(ModelSpec {
+            id: "text-embedding-3-small",
+            name: "OpenAI Text Embedding 3 Small",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 8_192,
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[Capability::Embedding],
+            cost_input_per_1k: 0.00002,
+            cost_output_per_1k: 0.0,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "dall-e-3",
+            name: "OpenAI DALL·E 3",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 4_096,
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[Capability::ImageGeneration],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "deepseek-chat",
+            name: "DeepSeek Chat",
+            provider: "deepseek",
+            arch: Arch::Deepseek,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00014,
+            cost_output_per_1k: 0.00028,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "deepseek-reasoner",
+            name: "DeepSeek Reasoner",
+            provider: "deepseek",
+            arch: Arch::Deepseek,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00055,
+            cost_output_per_1k: 0.00219,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+            name: "Llama 3.1 70B (Together)",
+            provider: "together",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00088,
+            cost_output_per_1k: 0.00088,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "llama-3.1-8b-instant",
+            name: "Llama 3.1 8B Instant (Groq)",
+            provider: "groq",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00005,
+            cost_output_per_1k: 0.00008,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            name: "Llama 3.3 70B (Fireworks)",
+            provider: "fireworks",
+            arch: Arch::Llama,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.0009,
+            cost_output_per_1k: 0.0009,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "grok-3",
+            name: "Grok 3",
+            provider: "xai",
+            arch: Arch::Grok,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.003,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gemini-2.0-flash",
+            name: "Gemini 2.0 Flash",
+            provider: "google",
+            arch: Arch::Gemini,
+            context_window: 1_000_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.000075,
+            cost_output_per_1k: 0.0003,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "mistral-large-latest",
+            name: "Mistral Large",
+            provider: "mistral",
+            arch: Arch::Mistral,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.002,
+            cost_output_per_1k: 0.006,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "codestral-latest",
+            name: "Codestral",
+            provider: "mistral",
+            arch: Arch::Mistral,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 60.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.001,
+            cost_output_per_1k: 0.003,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "docker.io/ai/qwen2.5:7B-Q4_K_M",
+            name: "Qwen2.5 7B Q4_K_M (DMR)",
+            provider: "docker-model-runner",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("docker.io/ai/qwen2.5:7B-Q4_K_M"),
+            hf_source: Some("Qwen/Qwen2.5-7B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit:latest",
+            name: "Qwen2.5 7B MLX 4-bit (DMR)",
+            provider: "docker-model-runner",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/mlx-community/qwen2.5-7b-instruct-4bit"),
+            hf_source: Some("Qwen/Qwen2.5-7B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf:latest",
+            name: "Qwen3.5 4B Code-Forged (DMR)",
+            provider: "docker-model-runner",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "continuum-ai/qwen3.5-4b-code-forged-GGUF",
+            name: "Qwen3.5 4B Code-Forged (in-process)",
+            // Provider is "llama-server" (the HTTP llama.cpp /v1 gateway) — NOT
+            // "llamacpp-local" (the retiring in-process Metal path, #41) — because
+            // this is the row llama-server's `default_model` references and the
+            // gateway is what actually serves it (live responses carry
+            // provider=llama-server). It MUST be registered under llama-server so
+            // `OpenAICompatibleAdapter::from_registry("llama-server")` derives
+            // `supports_tools = true` from this model's ToolUse capability (the
+            // adapter's "any model under this provider advertises ToolUse" rule).
+            // With supports_tools=false the adapter SILENTLY dropped the native
+            // `tools` param (openai_adapter.rs gates the tools body on
+            // supports_tools && Native), so the 4B model never got the
+            // grammar-constrained tool channel and hand-emitted unparseable
+            // multi-line `{"tool_call":...}` JSON as prose → demoted to chat →
+            // confabulated success. Registering it here is what makes native tool
+            // calls actually fire in the live cognition path (verified 2026-06-26).
+            provider: "llama-server",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 32_768,
+            tokens_per_second: 33.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+                // llama-server serves /v1/embeddings from the resident model
+                // (`--embedding`), so the embedding capability is a fact of
+                // THIS row — the adapter scans it to advertise the provider's
+                // embedding lane (#68), replacing the old provider-level bool.
+                Capability::Embedding,
+            ],
+            gguf_hint: Some("huggingface.co/continuum-ai/qwen3.5-4b-code-forged-gguf"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            ..ModelSpec::default()
+        }),
+        // Teacher model for the genome cold-start loop ([[genome-loop-trains-on-own-mistakes]]).
+        // The forged 4B is too narrow a teacher — it solves easy gym tasks first-try
+        // (zero corrections) and never converges on hard ones (no corpus), so its
+        // fail-then-fix-to-green band (the only band that teaches the self-correct
+        // reflex) is too thin. Qwen2.5-Coder-14B is meaningfully stronger at the
+        // failure frontier: it fails harder tasks, reads the real rustc error, and
+        // fixes to green — exactly the correction trajectories `genome/teach` distils.
+        // Registered under "llama-server" so `genome/teach`'s
+        // `select(Some("llama-server"), Some(model), …)` can serve it on a lane;
+        // corpus generation is an offline batch (serving/pin it, generate, pin the
+        // 4B back) so the live personas resume on their base. ~9 GB at Q4_K_M.
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-coder-14b-instruct-GGUF",
+            name: "Qwen2.5-Coder-14B-Instruct (teacher)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 12.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-14B-Instruct-GGUF"),
+            // gguf_local_path DERIVED, not hardcoded: resolve_gguf matches this id to
+            // its dir under ~/.continuum/genome/models/ (identity-token subset) and
+            // falls back to the HF cache via gguf_hint — no baked absolute path or quant.
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-Coder-14B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        // DEVSTRAL SMALL 2507 — the AGENTIC coder (Mistral-Small-3.1 base, 24B, 68% SWE-bench
+        // Verified, runs on a 32GB Mac at Q4_K_M ~14GB). The 14B coder ACTS but loops/mis-plans at
+        // repo scale (glass-boxed); Devstral is built for the search→read→edit→verify arc. FIRST
+        // Arch::Mistral row. `chat_template: None` → use the GGUF's embedded Tekken template
+        // (--jinja renders tools). `multi_party_strategy` is the one field to serve-validate against
+        // Tekken (starting with the single-party collapse the coders use); stop uses Mistral's `</s>`.
+        model(ModelSpec {
+            id: "unsloth/Devstral-Small-2507-GGUF",
+            // Joel 2026-09-06: NOT a base model for us — old, text-only. It served the M5 for
+            // 35 minutes that day only because the boot plan picked the smallest fit from the
+            // store (card 40f53419). Benchmark opponent at most; never the citizens' model.
+            persona_serving_eligible: false,
+            name: "Devstral-Small-2507 (agentic coder)",
+            provider: "llama-server",
+            arch: Arch::Mistral,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 10.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/unsloth/Devstral-Small-2507-GGUF"),
+            // The trainable HF safetensors base (mistralai upstream) — what the
+            // genome forge trains LoRA against; the GGUF above is serving-only.
+            // Without this, genome/job-create fails loud ("no hf_source"), which
+            // blocked the first lived-curriculum train (recall-trust, 2026-07-10).
+            hf_source: Some("mistralai/Devstral-Small-2507"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["</s>"],
+            // #181 REFERENCE ROW (#76): Devstral-Small is the model that exhibited
+            // the reasoning-channel repetition loop (identical wrong code block ~5×,
+            // 14k tokens to the length cap, empty answer). Its sampling is pinned
+            // EXPLICITLY to the substrate anti-loop floor so this row is the
+            // documented ESCALATION POINT: if the floor proves insufficient once
+            // measured live post-reboot, the fix is bumping THESE numbers
+            // (repeat_last_n → wider, frequency_penalty → stronger) here — a
+            // one-line per-model tune, not a re-plumb. Values == floor today, so
+            // the reboot cleanly measures the floor as planned
+            // ([[anti-loop-sampling-windowed-vs-unwindowed]]).
+            sampling: ModelSampling::default(),
+            ..ModelSpec::default()
+        }),
+        // QWEN2.5-VL-7B — the VISION lane's model (#106): personas' eyes for live mode.
+        // The FIRST llama-server-provider row with Capability::Vision, which makes it the
+        // first VL model the serving daemon can actually bring up (`--mmproj` spawn path +
+        // the /props `modalities.vision` readiness gate). Why THIS model:
+        //   - ggml-org repo = maintained by the llama.cpp org itself; ships the GGUF AND its
+        //     `mmproj-*-f16.gguf` projector in ONE repo, so `models/pull` acquires both in a
+        //     single command (its Vision-capability mmproj-sibling logic) and
+        //     `find_mmproj_beside` resolves the projector with zero per-machine path edits.
+        //   - Qwen2.5-VL-7B is the small end of the current VL frontier that still carries
+        //     real tool use — a live-mode citizen must SEE *and* ACT, so the vision lane's
+        //     model keeps ToolUse rather than being a caption-only 2-3B.
+        //   - ~4.7 GB Q4_K_M + ~1.4 GB f16 projector: fits an M-series lane comfortably.
+        // capability_rank (GB + tool bonus) leaves the 14B coder the autonomic pick, so this
+        // row never hijacks the live lane by surprise — the operator brings vision up with
+        // `models/pull` + `serving/pin` (or it wins on hosts where it IS the best fit).
+        model(ModelSpec {
+            id: "ggml-org/Qwen2.5-VL-7B-Instruct-GGUF",
+            name: "Qwen2.5-VL-7B-Instruct (vision — the persona eye lane)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 20.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF"),
+            // Trainable HF base for the genome forge (vision LoRA is future work,
+            // but the row follows the Devstral pattern so it's ready when it lands).
+            hf_source: Some("Qwen/Qwen2.5-VL-7B-Instruct"),
+            // Embedded template + --jinja (same pattern as Devstral/Hermes): the
+            // ggml-org GGUF carries Qwen2.5-VL's own ChatML-with-vision template.
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
+        // QWEN3.8-27B — the FRONTIER-TIER lane (Joel, 2026-08-15: "open models just got
+        // released that are better than opus and even fable"). Dense 27B, Arch::Qwen35
+        // (the fork carries LLM_ARCH_QWEN35 + MTP draft spec-decode + the mmproj vision
+        // path for it). Published scores: SWE-bench Pro 61.7 vs Opus 4.6 Max 53.4,
+        // QwenSWEBench 79.0 vs 63.8 — a local model that beats the cloud flagship on
+        // agentic coding, on consumer hardware. Field-measured serving (RTX 4090,
+        // Q4_K_M-class): 40.7 t/s decode plain, 60.1 t/s with native MTP spec-decode
+        // (the `mtp-*.gguf` sibling this catalog's serving spawn now auto-loads, #440),
+        // 262k native context resident in 24GB with q4_0 KV. The ggml-org repo ships
+        // main + mtp draft + mmproj in ONE snapshot, so `models/pull` acquires all
+        // three and the sibling resolvers find them with zero per-machine paths.
+        // context_window is the MODEL's capability; the live served window comes from
+        // the adapter/live serve per #50.
+        model(ModelSpec {
+            id: "ggml-org/Qwen3.8-27B-GGUF",
+            name: "Qwen3.8-27B (frontier agentic coder + vision)",
+            provider: "llama-server",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            // MEASURED on this M5 (2026-08-19, build dd441a664): 200 predicted tokens in
+            // 11,605 ms = 17.2 tok/s generation, 56.8 tok/s prefill, on a pinned lane at a
+            // 19,712 served window with the KV cache warm (cache_n 42 of a 67-token prompt).
+            // Was a conservative 10.0 estimate; the row's own instruction is "corrected by
+            // live measurement, never by wish", so this is the measurement.
+            //
+            // SECOND DATAPOINT, and it does NOT replace the one above (2026-08-20, 6
+            // samples, 150 tok each): 4.74 / 5.25 / 6.55 / 6.57 / 6.66 / 6.67 tok/s,
+            // median 6.56 — at a 22,528 PER-SLOT window with `busy_slots = 2` of 4 on
+            // EVERY sample. That is a CONTENDED rate, so it is not a `ThroughputBaseline`
+            // (that type means single-sequence by its own definition) and it must not be
+            // written into `tokens_per_second`, which the #441 collapse alarm reads as the
+            // single-stream expectation. Recording 6.5 there would raise the alarm's floor
+            // to ~1.6 t/s and let a genuine collapse pass silently.
+            //
+            // Both numbers are true and they measure different machines: 17.2 pinned,
+            // ~6.5 sharing the box with two working citizens. THE GAP IS THE POINT — the
+            // sentinel currently cannot tell "contended" from "degraded" because nothing
+            // records concurrency at measurement time. That is #441's remaining half, the
+            // sibling of the window axis landed in `ThroughputBaseline` (#2339).
+            //
+            // MTP spec-decode held 83.9–84.8% draft acceptance across all six, and across
+            // three earlier samples at a different prompt — the draft head is doing its job
+            // and is NOT the variance source (acceptance is flat while t/s moves 1.4×).
+            tokens_per_second: 17.2,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ggml-org/Qwen3.8-27B-GGUF"),
+            // Trainable HF safetensors base (verified live 2026-08-15: repo exists,
+            // pipeline image-text-to-text, arch qwen3_5) — what the genome forge
+            // trains LoRA against; the GGUF above is serving-only.
+            hf_source: Some("Qwen/Qwen3.8-27B"),
+            // Embedded template + --jinja (same pattern as Devstral/Hermes): the
+            // ggml-org GGUF carries Qwen3.5's own ChatML-with-tools template.
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+                        // AA Intelligence Index v4.2 (2026-09-05 chart): 42.
+            serving: ModelServingPrefs { measured_capability: Some(42), ..ModelServingPrefs::default() },
+..ModelSpec::default()
+        }),
+        // ORNITH-1.5-35B-A3B — the WORK-TIER lane (Joel, 2026-08-22: "Swap it for
+        // sure"), adopted on a same-day tier battery against the incumbent at
+        // identical conditions (fa on, q8 KV, ub 2048, this M5, solo):
+        //
+        //   prefill 4k       896 t/s   vs Qwen3.8-27B 133   (6.7x)
+        //   prefill @16k     532 t/s   vs 106               (5.0x)
+        //   decode            68 t/s   vs 13.6              (5.0x)
+        //   tools        8/8 native calls, valid args, median 1.2s/turn
+        //   vision       mmproj red-square PASS
+        //
+        // MoE 35B with 3B ACTIVE params (256 experts, 41 layers) — the serving
+        // economics, not the param count, are the product. MIT license, ggufs +
+        // mmproj shipped. NO MTP head (llama.cpp: "speculative decoding not
+        // supported") — deliberately fine: MTP is a crutch for slow dense decode,
+        // and A3B's raw 68 t/s exceeds the incumbent's MTP-assisted rate. The
+        // sibling resolvers add no --spec-type when no mtp-* file exists, which is
+        // exactly right here. One-Spark axes: wins Code/Agentic/Tool-use/Long-ctx;
+        // the incumbent keeps Safety/Robustness/Planning — the sliding-mind pairing
+        // when model-tier leasing lands. Receipts: bench-receipts/tier-battery-*.md.
+        model(ModelSpec {
+            id: "ornith-ai/Ornith-1.5-35B-A3B-GGUF",
+            name: "Ornith-1.5-35B-A3B (work-tier MoE: agentic coder + vision)",
+            provider: "llama-server",
+            arch: Arch::Qwen35,
+            context_window: 262_144,
+            max_output_tokens: 16_384,
+            // MEASURED on this M5, solo lane, 2026-08-22 (tg128, llama-bench,
+            // build fa7e0d8e9): 67.7 t/s; 54.0 at 16k depth. Single-stream
+            // expectation per the #441 collapse-alarm contract.
+            tokens_per_second: 67.7,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF"),
+            gguf_local_path: Some("~/.continuum/models/Ornith-1.5-35B-Q4_K_M.gguf"),
+            // mmproj resolves as the *mmproj*.gguf sibling in the same directory.
+            // Trainable HF safetensors base for the genome forge; GGUF is serving-only.
+            hf_source: Some("ornith-ai/Ornith-1.5-35B-A3B"),
+            // Embedded template + --jinja (battery-verified: full native tool caps,
+            // parallel calls, preserved reasoning).
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            // MEASURED 2026-08-24 (llama-server load log, this M5): cache_reuse is
+            // disabled BOTH ways for this model — "not supported by multimodal"
+            // (mmproj) and "not supported by this context" (hybrid attention can't
+            // KV-shift). Main lane stays text-only (the default) and prompt shaping
+            // must treat this row's prefix as extend-only.
+            serving: ModelServingPrefs {
+                mmproj_on_main_lane: false,
+                kv_shiftable: Some(false),
+                ..ModelServingPrefs::default()
+            },
+            ..ModelSpec::default()
+        }),
+        // Qwen3.8-Flash-Next — the M64 disk-resident-n-gram drop (qwen4exp arch,
+        // GDN+QSA hybrid, 512-expert MoE, 6B active). EXCLUSIVE/EXPERIMENTAL brain,
+        // NOT the citizen lane: the pre-registered comparison protocol's depth bar
+        // failed decisively (docs/planning/FLASHNEXT-VS-ORNITH-COMPARISON-PROTOCOL.md
+        // rule 2 — measured 2026-08-28 on the union engine 920eef087, idle box:
+        // decode 16.6-17.5 t/s @31k depth vs Ornith 40.1-40.3; prefill 160 vs 510).
+        // Serving REQUIRES the prefs below, each measured the hard way the same night:
+        // the 35.8 GB `per_layer_token_embd` n-gram table (shard 00002, ONE tensor)
+        // host-pinned or Metal OOMs instantly; warmup skipped or load faults the
+        // whole table into RAM; fit off (its heuristics count the pinned table);
+        // ubatch 512 verified. Re-measure when the expert-pager arc deepens the
+        // hierarchy — the verdict is the hierarchy's, not the model's
+        // [[everything-pages-the-grid-is-one-more-tier]].
+        model(ModelSpec {
+            id: "AtomicChat/Qwen3.8-Flash-Next-GGUF",
+            name: "Qwen3.8-Flash-Next (experimental: disk-resident n-gram MoE)",
+            provider: "llama-server",
+            // ChatML family (Qwen lineage) for template/stop semantics; the true
+            // qwen4exp arch lives in the GGUF and the engine, not this hint.
+            arch: Arch::Qwen35,
+            // VERIFIED serving geometry 2026-08-28 (c=32768, zero OOMs). The model
+            // advertises more; raise only with a measured load at the larger window.
+            context_window: 32_768,
+            max_output_tokens: 8_192,
+            // Short-prompt decode, warm, idle box, union engine (23.2/23.8 t/s runs).
+            // Depth is worse (16.6-17.5 @31k) — see the protocol doc before quoting.
+            tokens_per_second: 23.5,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Streaming,
+                // ToolUse deliberately ABSENT: the tool-shape parse receipt
+                // (protocol Phase-0 §2.2) has not run. Claims are receipts.
+            ],
+            gguf_hint: Some("huggingface.co/AtomicChat/Qwen3.8-Flash-Next-GGUF"),
+            gguf_local_path: Some(
+                "~/.continuum/models/qwen38-flash-next/Qwen3.8-Flash-Next-AD-3.84bpw-IQ4_XS-M64/Qwen3.8-Flash-Next-AD-3.84bpw-IQ4_XS-M64-00001-of-00028.gguf",
+            ),
+            hf_source: Some("AtomicChat/Qwen3.8-Flash-Next"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            serving: ModelServingPrefs {
+                // AA Intelligence Index v4.2 (2026-09-05 chart): 46.
+                measured_capability: Some(46),
+                mmproj_on_main_lane: false,
+                // Hybrid GDN/QSA attention — shift capability unverified on this arch.
+                kv_shiftable: None,
+                host_pinned_tensors: &["per_layer_token_embd.*"],
+                fit_off: true,
+                no_warmup: true,
+                max_ubatch: Some(512),
+                // 8192 thinking tokens inside a 32k window: enough to reason,
+                // impossible to die mid-think (the 40k external receipt).
+                reasoning_budget: Some(8192),
+                verified_ctx_ceiling: Some(32_768),
+            },
+                        // NOT persona_serving_eligible: EXPERIMENTAL — 32k verified, 46848 OOM'd all
+            // night (2026-08-29), depth worse at 31k. Its measured score above is a FACT
+            // about the model; candidacy is a separate decision (IntelMac's review of
+            // #3772), and Joel's call (2026-09-05) is the stock 27B as the high tier.
+            // Flips to true the day it clears the depth bar at the target window.
+            persona_serving_eligible: false,
+..ModelSpec::default()
+        }),
+        // Hermes-3-Llama-3.1-8B — the OPPONENT, made first-class. A general (non-coder) model we
+        // benchmark AGAINST; giving it a real catalog row lets it flow through OURS (base_model_id)
+        // and opencode like any other model, so the head-to-head is model-through-harness fair, not
+        // a hardcoded reference column. Llama-3.1 arch; Hermes ships a ChatML template embedded in
+        // the GGUF, so chat_template: None + --jinja (same pattern as Devstral's Tekken).
+        model(ModelSpec {
+            id: "NousResearch/Hermes-3-Llama-3.1-8B-GGUF",
+            name: "Hermes-3-Llama-3.1-8B (opponent)",
+            provider: "llama-server",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 30.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Hermes-3-Llama-3.1-8B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|eot_id|>"],
+            persona_serving_eligible: false, // opponent: benchmark-only, never the citizens' model
+            hf_source: Some("NousResearch/Hermes-3-Llama-3.1-8B"),
+            ..ModelSpec::default()
+        }),
+        // DeepSeek-V4-Flash via the ds4 sidecar (#306; launched 2026-08-02,
+        // running on this M5 the same night). 304B MoE (256 experts × 48
+        // layers), uniform-2bit routed experts + Q8 decision spine, layer-
+        // dependent compressed attention (KV ≈ hundreds of KB — near-free).
+        // MEASURED here: 2.73 t/s gen cold / ~2.3 t/s warm end-to-end at a
+        // 16GB expert-cache budget with the full stack resident; first-shot
+        // correct Rust (compile-graded 3/3) on the merge_intervals probe.
+        // context_window is the MODEL's capability; the live served window
+        // comes from the adapter/live serve per #50 (tonight's serve: 8192).
+        // NOT persona_serving_eligible yet: the sidecar's lifecycle is
+        // operator-managed (no governed spawn/reconcile), so the autonomic
+        // planner must not adopt her — evals reach her by explicit model id.
+        // Flip deliberately once lifecycle is governed.
+        model(ModelSpec {
+            id: "deepseek-v4-flash",
+            name: "DeepSeek-V4-Flash 304B (ds4 SSD-streaming, deliberator)",
+            provider: "ds4",
+            arch: Arch::Unknown, // CSA+HCA hybrid — served by ds4, never by llama-server
+            context_window: 1_000_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 2.3, // measured warm end-to-end, 2026-08-02
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            chat_template: None, // ds4-server renders its own template
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &[],
+            persona_serving_eligible: false,
+            // ACQUIRABLE. Serving stays ds4's business (see arch/provider above) — this only says
+            // where the artifact comes FROM, which is a separate question from who runs it. Without
+            // it `models/pull` refuses the model entirely, so every V4-Flash tier had to be fetched
+            // by hand and landed outside the catalog: the 84.68 GiB UD-IQ2_M currently on this box
+            // was hand-pulled and the catalog still believes the model is `not_downloaded`.
+            // Verified 2026-08-04: the repo carries 49 GGUFs across UD-IQ1_S … UD-Q8_K_XL, so the
+            // IQ1_S tier the residency work needs is actually satisfiable from here.
+            gguf_hint: Some("huggingface.co/unsloth/DeepSeek-V4-Flash-GGUF"),
+            ..ModelSpec::default()
+        }),
+        // BTL-4-Compact — an OUTSIDE claim we intend to falsify, not adopt. Added to make it
+        // measurable on our own harness rather than argued about from a model card.
+        //
+        // Every field here is read from the artifact's own declarations, never the card:
+        //   • arch: the base repo's config.json says `Qwen3_5MoeForConditionalGeneration` —
+        //     256 experts, 8 per token, 40 layers, hidden 2048. So `qwen3_5_moe`, a routed MoE.
+        //     The card describes it as "35B dense", which contradicts its OWN config; that
+        //     discrepancy is the first thing to check and the reason for the skepticism.
+        //   • context_window: `max_position_embeddings: 262144` from that same config. The live
+        //     served window is still the planner's business (model-max ∩ VRAM-KV fit, #31) —
+        //     the operator running this reported ~250k "was costing you KV", which is exactly
+        //     the intersection our planner is supposed to compute instead of hardcoding.
+        //   • Arch::Unknown is deliberate: qwen3_5_moe is not an enumerated arch here, and
+        //     llama-server reads the real arch from the GGUF header. Naming a wrong enum to
+        //     avoid an `Unknown` would be a guess wearing a type.
+        //
+        // The Compact build is TEXT-ONLY: the base repo carries a vision tower (a nested vision
+        // config with hidden_size 1152 → out_hidden_size 2048), and this GGUF drops it. Hence no
+        // Vision capability and no mmproj — `badtheorylabs/BTL-4-Compact` ships exactly one file,
+        // `BTL-4-IQ2_XXS.gguf` (9,967,966,240 bytes, unsharded). If the vision half is ever
+        // wanted, `bartowski/badtheorylabs_BTL-4-GGUF` carries mmproj + a full IQ2 ladder.
+        //
+        // chat_template: None + --jinja, because BTL-4 uses a
+        // `<tool_call><function=name><parameter=x>` DSL rather than stock Qwen's JSON form; the
+        // correct template ships INSIDE the GGUF. Overriding it here — or letting llama.cpp fall
+        // back to a builtin — silently disables every tool call the model tries to make.
+        //
+        // NOT persona_serving_eligible: unevaluated third-party weights must not be adopted by
+        // the autonomic planner. It reaches this model only by explicit id, for evals. The repo
+        // ships its own `eval/bfcl_compact.py` + `eval/probe_tools.py`, so their methodology can
+        // be run alongside our held-out suite — the point being that a model which has learned
+        // the benchmark scores well on THEIR harness and poorly on ours.
+        model(ModelSpec {
+            id: "badtheorylabs/BTL-4-Compact",
+            name: "BTL-4-Compact IQ2_XXS (third-party claim — evaluate, do not adopt)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // qwen3_5_moe — llama-server reads it from the GGUF header
+            context_window: 262_144,
+            max_output_tokens: 8192,
+            tokens_per_second: 0.0, // UNMEASURED on this grid — do not fill in an estimate
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/badtheorylabs/BTL-4-Compact"),
+            chat_template: None, // the tool-call DSL template is embedded in the GGUF (--jinja)
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &[],
+            persona_serving_eligible: false,
+            ..ModelSpec::default()
+        }),
+        // ── The campaign roster (benchmarks/HERMES-CAMPAIGN.md) ──
+        // Opponents + community champions for the 64GB-class matrix. Arch + context
+        // read from each GGUF's OWN header at add time (#74 — never guessed):
+        // Hermes-4.3-36B is seed_oss (ByteDance Seed-OSS base), not a Llama/Qwen.
+        // All serve via llama-server (--jinja, template embedded in GGUF); GGUFs
+        // land under genome/models/ and resolve by id-token derivation.
+        model(ModelSpec {
+            id: "NousResearch/Hermes-4.3-36B-GGUF",
+            name: "Hermes-4.3-36B (opponent — their current flagship-mid)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // seed_oss — not yet an enumerated arch; llama-server reads the header
+            context_window: 524_288,
+            max_output_tokens: 8192,
+            tokens_per_second: 8.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/NousResearch/Hermes-4.3-36B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // opponent flagship: the planner conscripted this TWICE (2026-07-12)
+            hf_source: Some("NousResearch/Hermes-4.3-36B"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "Qwen/Qwen3-32B-GGUF",
+            name: "Qwen3-32B (aider's 64GB-class local ceiling: 40.0% polyglot)",
+            provider: "llama-server",
+            arch: Arch::Qwen3,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 9.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen_Qwen3-32B-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark reference row (aider 64GB-class ceiling)
+            hf_source: Some("Qwen/Qwen3-32B"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF",
+            name: "Qwen3-Coder-30B-A3B (community champion — MoE, 3B active)",
+            provider: "llama-server",
+            arch: Arch::Qwen3, // qwen3moe header; MoE routing handled by llama-server
+            context_window: 262_144,
+            max_output_tokens: 8192,
+            tokens_per_second: 25.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // campaign row; eligibility revisit gated on #126 consent ranges
+            hf_source: Some("Qwen/Qwen3-Coder-30B-A3B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/phi-4-GGUF",
+            name: "Phi-4-14B (roster — MS small-model line)",
+            provider: "llama-server",
+            arch: Arch::Unknown, // phi3 header — not yet an enumerated arch
+            context_window: 16_384,
+            max_output_tokens: 8192,
+            tokens_per_second: 14.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/phi-4-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark roster row (no ToolUse — unfit for citizens anyway)
+            hf_source: Some("microsoft/phi-4"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/Qwen2.5-Coder-32B-Instruct-GGUF",
+            name: "Qwen2.5-Coder-32B (aider's published 16.4% polyglot — replicate then beat)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 9.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            persona_serving_eligible: false, // benchmark reference row (aider replicate-then-beat)
+            hf_source: Some("Qwen/Qwen2.5-Coder-32B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "bartowski/Qwen2.5-Coder-7B-Instruct-GGUF",
+            name: "Qwen2.5-Coder-7B (roster — small coder tier)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 30.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-7B-Instruct-GGUF"),
+            // Trainable base for the genome forge (mlx LoRA trains against HF
+            // safetensors, not the serving quant) — the battery's benchmark
+            // base becomes gene-forgeable (coder-verify-reflex, 2026-07-23).
+            hf_source: Some("Qwen/Qwen2.5-Coder-7B-Instruct"),
+            chat_template: None,
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>"],
+            ..ModelSpec::default()
+        }),
+        // The Qwen2.5-Coder SIZE LADDER — 0.5B / 1.5B / 3B, so a weak box serves what it can and
+        // we can chart small→large on the same benchmark (what a MacBook — or a Pi — gets away
+        // with). plan_serving still picks the largest that FITS, so these only serve where the
+        // 14B/32B won't. Same Qwen2 arch + ChatML template; tiny GGUFs (~0.4–2 GB Q4_K_M).
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-coder-3b-instruct-GGUF",
+            name: "Qwen2.5-Coder-3B-Instruct",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 45.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-3B-Instruct-GGUF"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-Coder-3B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF",
+            name: "Qwen2.5-Coder-1.5B-Instruct",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 70.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-Coder-1.5B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        // A GENERAL (non-coder) model for the CATEGORY axis — same size class as a coder, so a
+        // chart shows specialist-vs-generalist at equal size (the model-fit thesis, measured).
+        model(ModelSpec {
+            id: "continuum-ai/qwen2.5-3b-instruct-GGUF",
+            name: "Qwen2.5-3B-Instruct (general)",
+            provider: "llama-server",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 45.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-3B-Instruct-GGUF"),
+            chat_template: Some(QWEN35_CHAT_TEMPLATE),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+            hf_source: Some("Qwen/Qwen2.5-3B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        // NOTE: benchmark OPPONENTS (Hermes, unsloth, cloud models) are DELIBERATELY absent
+        // from this catalog — we never depend on either, ever. They are scored as external,
+        // optional /v1 endpoints by the standalone harness in `benchmarks/coder/`, which
+        // imports nothing from the product. Zero coupling by construction.
+        //
+        // Qwen2.5-Coder-32B — downloaded (~20 GB Q4_K_M) and the KV fit-gate fix lets it
+        // serve, but DELIBERATELY NOT registered yet: measured live it DECLINES a directed
+        // coding task (emits a bare "PASS") instead of acting, so serving it as the live
+        // coder is strictly WORSE than the 14B, which reliably uses its tools. Kept verbatim
+        // so re-enabling is a one-line uncomment ONCE its act-reflex is trained (the genome
+        // loop over the DoD + recovery harness). Until then plan_serving keeps the 14B — the
+        // model that actually works.
+        // model(ModelSpec {
+        //     id: "continuum-ai/qwen2.5-coder-32b-instruct-GGUF",
+        //     name: "Qwen2.5-Coder-32B-Instruct",
+        //     provider: "llama-server",
+        //     arch: Arch::Qwen2,
+        //     context_window: 32_768,
+        //     max_output_tokens: 8192,
+        //     tokens_per_second: 8.0,
+        //     capabilities: &[Capability::TextGeneration, Capability::Chat, Capability::ToolUse, Capability::Streaming],
+        //     gguf_hint: Some("huggingface.co/bartowski/Qwen2.5-Coder-32B-Instruct-GGUF"),
+        //     chat_template: Some(QWEN35_CHAT_TEMPLATE),
+        //     multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+        //     stop_sequences: &["<|im_end|>", "<|endoftext|>"],
+        //     hf_source: Some("Qwen/Qwen2.5-Coder-32B-Instruct"),
+        //     ..ModelSpec::default()
+        // }),
+        model(ModelSpec {
+            id: "qwen2-vl-7b-instruct",
+            name: "Qwen2-VL-7B-Instruct (in-process)",
+            provider: "llamacpp-local",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 16.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/bartowski/Qwen2-VL-7B-Instruct-GGUF"),
+            gguf_local_path: Some("~/.continuum/models/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"),
+            mmproj_local_path: Some("~/.continuum/models/mmproj-Qwen2-VL-7B-Instruct-f16.gguf"),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            hf_source: Some("Qwen/Qwen2-VL-7B-Instruct"),
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "qwen2.5-omni-7b-instruct",
+            name: "Qwen2.5-Omni-7B-Instruct (in-process)",
+            provider: "llamacpp-local",
+            arch: Arch::Qwen2,
+            context_window: 32_768,
+            max_output_tokens: 4096,
+            tokens_per_second: 220.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::Streaming,
+            ],
+            gguf_hint: Some("huggingface.co/ggml-org/Qwen2.5-Omni-7B-GGUF"),
+            gguf_local_path: Some("~/.continuum/models/Qwen2.5-Omni-7B-Q4_K_M.gguf"),
+            mmproj_local_path: Some("~/.continuum/models/mmproj-Qwen2.5-Omni-7B-f16.gguf"),
+            multi_party_strategy: MultiPartyChatStrategy::ProperChatMlSingleParty,
+            hf_source: Some("Qwen/Qwen2.5-Omni-7B"),
+            ..ModelSpec::default()
+        }),
+        // THE FLOOR IS 1.5B. There is no 0.5B row: nothing below Qwen2.5-Coder-1.5B is
+        // servable on any tier (Joel, 2026-09-16: "0.5 isn't even supposed to be
+        // available to anyone … 1.5b only"). The 0.5B rows were the fallback the 5090's
+        // planner fell to mid-transition and then relaunched 35 times in silence
+        // (#4145); a floor that can be served is a floor citizens end up living on.
+        // The LCD trainable base for the L3 genome loop is now the 1.5B coder's
+        // `hf_source` (Qwen/Qwen2.5-Coder-1.5B-Instruct).
+        // The grid's canonical retrieval embedder — Qwen3-Embedding-0.6B
+        // (Q8_0 GGUF, ~610 MiB). Served IN-PROCESS by LlamaCppAdapter (GPU
+        // forward, last-token pooled). `resolve_recall_embedder` finds this
+        // row by (provider=llamacpp-local ∧ Capability::Embedding ∧ gguf on
+        // disk) and prefers it over routing embeddings through the chat
+        // gateway. DELIBERATELY DECOUPLED from the chat model: recall vectors
+        // stay in one stable embedding space regardless of which model the
+        // persona's brain runs ([[embeddings-are-per-content-computed-once-shared]]).
+        model(ModelSpec {
+            id: "continuum-ai/qwen3-embedding-0.6b-GGUF",
+            name: "Qwen3-Embedding-0.6B (in-process retrieval embedder)",
+            provider: "llamacpp-local",
+            arch: Arch::Qwen3,
+            context_window: 32_768,
+            // Embedding model — produces vectors, never generated tokens.
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[Capability::Embedding],
+            gguf_hint: Some("huggingface.co/Qwen/Qwen3-Embedding-0.6B-GGUF"),
+            // gguf_local_path DERIVED from the id under genome/models (see coder-14b above).
+            ..ModelSpec::default()
+        }),
+    ]
+}
