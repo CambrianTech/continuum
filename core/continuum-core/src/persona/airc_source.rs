@@ -31,7 +31,7 @@ use airc_core::TranscriptEvent;
 use airc_lib::AircError;
 use async_trait::async_trait;
 
-use crate::cognition::channel_digest::{ChannelDigest, ChannelDigestBuilder, DEFAULT_GROUNDING};
+use crate::cognition::channel_digest::{ChannelDigest, ChannelDigestBuilder, DEFAULT_GROUNDING, FIRST_READ_PAGE};
 use crate::cognition::channel_digest_region::DigestBuffer;
 use crate::cognition::channel_element::ChannelElement;
 use crate::cognition::channel_substrate::{
@@ -253,24 +253,45 @@ impl AircRagSource {
         }
     }
 
-    /// Floor of tokens any packed turn can occupy (sender prefix + separators
-    /// alone — a physical minimum, not a policy). Used ONLY to size the
-    /// candidate window handed to the token packer: `budget / floor`
-    /// candidates can never under-supply it, so the TOKEN budget — never a
-    /// message count — is the binding constraint on what the persona sees.
-    /// The 2026-07-30 glass box: a 5-message grounding pre-trim starved
-    /// pack_digest into a 3–5-message world view while the L1 budget could
-    /// hold dozens — the persona then confabulated generic-assistant filler
-    /// because the actual conversation was invisible (#259).
-    // context-budget-exempt: a FLOOR under a per-turn allocation — it only ever raises, so a large window is never clamped by it
-    const MIN_TOKENS_PER_TURN: u32 = 8;
-
-    /// Turns-that-fit grounding: derive the digest's before-bookmark window
-    /// from the delivery budget. `recipe_floor` (the recipe-defined N, default
-    /// [`DEFAULT_GROUNDING`]) is the floor; there is no ceiling, the budget
-    /// alone sizes the fetch, the digest window and the durable top-up.
-    fn grounding_for_budget(budget: u32, recipe_floor: usize) -> usize {
-        ((budget / Self::MIN_TOKENS_PER_TURN) as usize).max(recipe_floor)
+    /// Page the room newest-first until the window is FULL, measuring what it reads.
+    ///
+    /// The packer decides what shows, so the fetch must cost what is shown plus at most a
+    /// page, never `budget / some floor` rows (a 30k budget fetched ~3,750 rows to show
+    /// ~100). The first page is the digest's own page (`FIRST_READ_PAGE`, at least the
+    /// recipe floor). Each page's measured token cost gives the density; the next request
+    /// sizes the window to `budget / density` plus one page. It stops when the rows read
+    /// cost the whole budget, or when the room returns fewer rows than asked (no more).
+    /// Returns the rows and the depth the budget wants at the measured density (what a
+    /// durable top-up should reach when the live log is shallower).
+    async fn page_to_budget(
+        &self,
+        room: Option<airc_core::RoomId>,
+        budget: u32,
+    ) -> Result<(Vec<TranscriptEvent>, usize), AircError> {
+        let page = FIRST_READ_PAGE;
+        let mut limit = page.max(self.grounding);
+        loop {
+            let events = self.reader.page_recent_in(room, limit).await?;
+            let tokens: u64 = events
+                .iter()
+                .filter_map(|e| crate::airc::realtime_wire::room_content_from_event(e).ok())
+                .map(|turn| u64::from(estimate_tokens(&turn.text)))
+                .sum();
+            // measured density: tokens per row actually read (a row with no text costs 0,
+            // and an all-empty page has no density to extrapolate)
+            let wanted = if tokens == 0 || events.is_empty() {
+                events.len()
+            } else {
+                let rows = u64::from(budget) * events.len() as u64 / tokens;
+                (rows as usize).saturating_add(page)
+            };
+            let exhausted = events.len() < limit;
+            let full = tokens >= u64::from(budget);
+            if exhausted || full || wanted <= limit {
+                return Ok((events, wanted.max(self.grounding)));
+            }
+            limit = wanted.max(limit.saturating_add(page));
+        }
     }
 
     /// Override (or disable) the durable-history top-up — tests inject a stub;
@@ -709,18 +730,10 @@ impl RagSource for AircRagSource {
         // When airc_room is None (room-less work: consolidation, dreams), the
         // pointer-scoped page remains correct and the events' own room is
         // DERIVED below — that fallback is legitimate, not a shim.
-        // Depth follows the budget: every turn costs at least MIN_TOKENS_PER_TURN, so
-        // `budget / MIN_TOKENS_PER_TURN` turns is the most this delivery could ever
-        // show. The fetch asks for exactly that, so it can never cap below what the
-        // packer would have kept, and the same number sizes the digest window and the
-        // durable top-up below (recipe floor `self.grounding` is the minimum).
-        let grounding = Self::grounding_for_budget(budget, self.grounding);
-        let events = match self
-            .reader
-            .page_recent_in(ctx.airc_room, grounding)
-            .await
-        {
-            Ok(e) => e,
+        // Depth follows the budget, measured: the room is paged until the rows read cost the
+        // budget (`page_to_budget`), so the fetch is what is shown plus at most a page.
+        let (events, grounding) = match self.page_to_budget(ctx.airc_room, budget).await {
+            Ok(page) => page,
             Err(err) => {
                 tracing::warn!(
                     error = %err,
@@ -811,7 +824,7 @@ impl RagSource for AircRagSource {
         let digest = match self.buffer.peek(&(self.persona_id, room_id)) {
             // The region pre-stages with the recipe floor; only reuse it when
             // it already covers the budget-derived window — else rebuild wide.
-            Some(d) if live_in_room >= grounding && d.elements.len() >= grounding => d,
+            Some(d) if !(live_in_room < grounding && self.history.is_some()) && d.elements.len() >= live_in_room => d,
             _ => {
                 // The cursor is AIRC's, read per build. A read failure must not mute
                 // her — fall back to 0 (everything unread), which the FIRST_READ_PAGE
@@ -951,12 +964,17 @@ mod tests {
     struct StubReader {
         events: Vec<TranscriptEvent>,
         fail: Mutex<bool>,
+        /// store calls and rows returned, so a test can price the fetch
+        calls: Mutex<usize>,
+        rows_read: Mutex<usize>,
     }
     impl StubReader {
         fn new(events: Vec<TranscriptEvent>) -> Self {
             Self {
                 events,
                 fail: Mutex::new(false),
+                calls: Mutex::new(0),
+                rows_read: Mutex::new(0),
             }
         }
         fn set_fail(&self, fail: bool) {
@@ -969,7 +987,10 @@ mod tests {
             if *self.fail.lock().unwrap() {
                 return Err(AircError::UnknownPeer(PeerId::new()));
             }
-            Ok(self.events.iter().take(limit).cloned().collect())
+            let page: Vec<TranscriptEvent> = self.events.iter().take(limit).cloned().collect();
+            *self.calls.lock().unwrap() += 1;
+            *self.rows_read.lock().unwrap() += page.len();
+            Ok(page)
         }
     }
 
@@ -1481,7 +1502,7 @@ mod tests {
             event_in(room, Some("ccccc"), 3),
         ]));
         let (mut source, _) = isolated_source(reader);
-        // the production recipe floor: a budget under MIN_TOKENS_PER_TURN still pages it
+        // the production recipe floor, which the first page never goes under
         source.grounding = DEFAULT_GROUNDING;
         let delivery = source
             .deliver(&ctx_in(room), 4, ResolutionPreference::Raw)
@@ -1609,10 +1630,32 @@ mod tests {
         let (source, _) = isolated_source(reader);
         let delivery = source.deliver(&ctx_in(room), 8_000, ResolutionPreference::Raw).await;
         assert_eq!(delivery.items[0].content, long, "the whole message, no marker");
+    }
+
+    // what this catches: the fetch sized by an unmeasured floor (`budget / 8` rows: a 30k
+    // budget read ~3,750 rows to show ~100) and the old 100/256 ceilings. The packer drives
+    // the fetch: a big budget over short messages reads about what it shows plus a page, and
+    // depth still follows the budget (more shown than the old 256 ceiling allowed).
+    #[tokio::test]
+    async fn the_fetch_costs_what_is_shown_plus_at_most_a_page() {
+        let room = RoomId::new();
+        let events: Vec<TranscriptEvent> = (1..=3_000u64)
+            .map(|l| event_in(room, Some(&format!("short message number {l:05}")), l))
+            .collect();
+        let reader = Arc::new(StubReader::new(events));
+        let (source, _) = isolated_source(reader.clone());
+        let budget = 4_000;
+        let delivery = source.deliver(&ctx_in(room), budget, ResolutionPreference::Raw).await;
+        let shown = delivery.items.len();
+        let rows = *reader.rows_read.lock().unwrap();
+        let calls = *reader.calls.lock().unwrap();
+        assert!(shown > 256, "depth follows the budget past the old ceiling, shown {shown}");
         assert!(
-            AircRagSource::grounding_for_budget(2_000_000, DEFAULT_GROUNDING) > 256,
-            "no depth ceiling: the budget alone sizes the window"
+            rows <= shown + 3 * FIRST_READ_PAGE,
+            "the fetch read {rows} rows in {calls} calls to show {shown}: it must cost what is shown plus a page or two, not budget/8 = {}",
+            budget / 8
         );
+        assert!(delivery.tokens_used <= budget);
     }
 
     // what this catches: a trim with no handle. A message bigger than its fair share of a
