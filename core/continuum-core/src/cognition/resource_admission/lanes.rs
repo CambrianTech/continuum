@@ -295,10 +295,15 @@ impl LaneAdmission {
         }
     }
 
-    /// Lanes a non-directed (ambient / idle) call may occupy: all but one, floored at 1 so a
-    /// single-lane machine still lets idle work run rather than starving it forever.
+    /// Lanes a non-directed (work / ambient) call may occupy: every lane. A lane held back for
+    /// directed turns idled 80% of the time on the M5 (2026-10-20: slot 1 busy in 6 of 30
+    /// samples, 3 directed grants against 39 work grants in 10 minutes) while four minds queued
+    /// behind the other. Directed priority needs no held lane: a directed call waits on the
+    /// physical lane itself, queued work waits on this budget first, so the next freed lane
+    /// goes to the directed call. Its cost, measured live: a directed call can wait for the
+    /// shortest act in flight (`directed_lane_wait_ms`).
     pub(super) fn nondirected_budget(&self) -> usize {
-        self.lane_count().saturating_sub(1).max(1)
+        self.lane_count()
     }
 
     /// See [`set_served_lane_count`].
@@ -319,17 +324,13 @@ impl LaneAdmission {
             resize_semaphore_to(sem, &self.serving_installed, lanes);
         }
         if let Some(sem) = self.nondirected.get() {
-            resize_semaphore_to(
-                sem,
-                &self.nondirected_installed,
-                lanes.saturating_sub(1).max(1),
-            );
+            resize_semaphore_to(sem, &self.nondirected_installed, lanes);
         }
         // The ambient-turn pool rides the SAME budget, so it grows on the same signal.
         // Missing this is how a pool installed at the boot floor would stay there for the
         // process's life while serving grew underneath it.
         if let Some(sem) = self.ambient.get() {
-            resize_semaphore_to(sem, &self.ambient_installed, lanes.saturating_sub(1).max(1));
+            resize_semaphore_to(sem, &self.ambient_installed, lanes);
         }
         let after = (
             lanes,
@@ -404,56 +405,12 @@ impl LaneAdmission {
     ) -> ServingLanePermit {
         let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
-        // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
-        // acquire below can never let non-directed work starve a directed caller —
-        // EXCEPT a work call whose occupancy is bounded inside the directed wait budget
-        // while nothing directed is pending: it may be LENT the reserved lane, because the
-        // guarantee is the wait, not the lane (`reserve_lendable`). THE LOAN NEVER PARKS
-        // (Cormac's condition on #4250): it is a try-acquire on a physical lane that is
-        // free RIGHT NOW — a lent call that had to wait on the FIFO physical semaphore
-        // would put a later directed arrival behind its whole occupancy (2× the budget
-        // with one parked, 3× with two). No free lane = no loan; she takes the ordinary
-        // Work path and waits for the non-directed budget like before. The loan ends
-        // when the permit drops; a directed line pending at the next acquire re-arms.
-        let (nondirected, lent_lane) = match priority {
+        // Work and ambient calls take the non-directed budget (every lane) first, then the
+        // physical lane; a directed call takes the physical lane directly, so it is first in
+        // line for the next lane any holder releases.
+        let (nondirected, lent_lane): (Option<tokio::sync::OwnedSemaphorePermit>, Option<tokio::sync::OwnedSemaphorePermit>) = match priority {
             LanePriority::Directed => (None, None),
-            LanePriority::Work => {
-                let sem = self.nondirected_lanes().clone();
-                match self.try_acquire_resized(&sem, &self.nondirected_installed, LaneBudget::NonDirected) {
-                    Some(p) => (Some(p), None),
-                    None => {
-                        let reserve_exists = self.nondirected_budget() < self.lane_count();
-                        let budget = crate::inference::prefill_rate::INTERACTIVE_TTFT;
-                        let lendable = reserve_exists
-                            && reserve_lendable(
-                                expected_occupancy,
-                                crate::cognition::directed_pending::any_pending(),
-                                budget,
-                            );
-                        let lent = if lendable {
-                            self.try_acquire_resized(
-                                self.serving_lanes(),
-                                &self.serving_installed,
-                                LaneBudget::Physical,
-                            )
-                        } else {
-                            None
-                        };
-                        match lent {
-                            Some(lane) => {
-                                crate::probe!(
-                                    class = "admission.lane.reserve_lent_to_work",
-                                    expected_ms = expected_occupancy.map(|d| d.as_millis() as u64).unwrap_or(0), // unwrap_or: lendable implies Some; 0 cannot occur
-                                    budget_ms = budget.as_millis() as u64,
-                                    "a free reserved lane is lent to a bounded work call, never parked for — a directed arrival waits at most the call's occupancy"
-                                );
-                                (None, Some(lane))
-                            }
-                            None => (Some(self.acquire_nondirected_as_work().await), None),
-                        }
-                    }
-                }
-            }
+            LanePriority::Work => (Some(self.acquire_nondirected_as_work().await), None),
             LanePriority::Ambient => (Some(self.acquire_nondirected_as_ambient().await), None),
         };
         let lane = match lent_lane {
