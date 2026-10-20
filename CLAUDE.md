@@ -54,6 +54,14 @@ run everywhere and a node's capabilities decide what it hosts; the core builds h
 Before you add code, name the module it belongs to; a change that couples two modules outside their
 seam is the defect, and every crate cut follows this map.
 
+**The pipeline, in order** (Joel, 10-19: "do it as part of our work forward, no distraction, as
+practically as possible"): (1) serving fast, a mind's act in seconds (epoch context live, #5210);
+(2) modules cut by the placement map, so a task fits a driver; (3) the learning acceptance test passes
+on our residents; (4) drivers (Hermes, opencode, our own dev agents on our models) build modules with
+our engine, then learn. Hermes on our engine for speed starts at (1); bounded module work goes to our
+models first, cross-cutting design stays with the frontier agents until receipts (merged PRs, review
+fail rate, time to green) say otherwise. Land before you start the next thing.
+
 **Be the addendum** (Joel, 10-19): ride the platforms people already use. Joel grew apps this way
 before: a home-decorator app built on Pinterest pins, Instagram's own early history. Being second
 fiddle, or fiftieth, is a viable strategy: it gives inroads, and sometimes you win. So continuum also
