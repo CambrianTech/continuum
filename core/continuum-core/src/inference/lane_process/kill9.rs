@@ -1,3 +1,7 @@
+// Only the Windows paths below reach the parent's items (parse_tasklist_image_name).
+#[cfg(windows)]
+use super::*;
+
 
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
 #[cfg(unix)]
