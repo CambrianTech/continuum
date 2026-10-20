@@ -72,8 +72,9 @@ const SHAPES: &[&str] = &[
 // 2,139 after card 0af5d5ec: not code removed, a miscount ended. Files that ARE test
 // modules (`#![cfg(test)]`: contracts/chain_tests.rs, orm/derive_test.rs) were read as
 // production; `production_half` now reads them as test code.
-// Re-measured on canary in CI (2026-10-20) after the column-zero split; see the commit.
-const BASELINE_UNJUSTIFIED: usize = 2_123;
+// 2,123 -> 2,279, not new debt: the column-zero production split sees code that indented
+// test helpers hid (measured in CI on canary a85454889 + this change, 2026-10-20).
+const BASELINE_UNJUSTIFIED: usize = 2_279;
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).

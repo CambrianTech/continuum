@@ -54,7 +54,9 @@ pub fn ring_of(module: &str) -> Option<u8> {
 /// module pairs. **This number may only ever go DOWN.** Each cut in the decomposition plan
 /// lowers it; raising it to green a build is defeating the invariant.
 #[cfg(test)]
-const BASELINE_UPWARD_IMPORTS: usize = 253;
+// 674 coupling LINES across 73 module pairs, re-measured in CI on canary a85454889 when
+// the unit changed from files to lines (2026-10-20); 253 was the same coupling counted per file.
+const BASELINE_UPWARD_IMPORTS: usize = 674;
 
 /// The top-level module of a scanned file: the first path component under `src/`.
 fn module_of(file: &SourceFile) -> Option<&str> {
