@@ -8,6 +8,8 @@ use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
 use super::frame::{GridFrame, GridPayload};
 use super::node::{GridNode, TransportAddress, TrustLevel};
 mod routing;
+pub(crate) mod nodes;
+pub use nodes::handle_nodes;
 pub use routing::handle_route;
 use super::GridState;
 use crate::runtime::CommandResult;
@@ -38,12 +40,6 @@ pub async fn handle_status(state: &Arc<GridState>) -> Result<CommandResult, Stri
         "gridDir": state.grid_dir.to_string_lossy(),
         "localCapabilities": local_caps,
     })))
-}
-
-/// grid/nodes — list known nodes.
-pub async fn handle_nodes(state: &Arc<GridState>) -> Result<CommandResult, String> {
-    let nodes = state.registry.all_nodes();
-    CommandResult::json(&nodes)
 }
 
 /// grid/ping — round-trip latency to a remote node.
