@@ -569,24 +569,7 @@ diff --git a/odd name.py b/odd name.py
     // envs dir, call the function. See swe_cache_dir's doc for the full incident.
     #[test]
     pub(super) fn the_swe_env_root_has_exactly_one_spelling() {
-        fn walk(dir: &std::path::Path, out: &mut Vec<(String, String)>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    walk(&p, out);
-                } else if p.extension().is_some_and(|x| x == "rs") {
-                    if let Ok(t) = std::fs::read_to_string(&p) {
-                        out.push((p.to_string_lossy().to_string(), t));
-                    }
-                }
-            }
-        }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut files = Vec::new();
-        walk(&root, &mut files);
+        let files = crate::test_env::source_tree::crate_sources();
 
         // The retired root, and any hand-spelled sibling of the live one. ASSEMBLED at
         // runtime, never written whole: a literal needle would match its own declaration and
@@ -596,15 +579,12 @@ diff --git a/odd name.py b/odd name.py
         let live_spelled_out = format!("benchmarks/{}/envs", "swe");
         let banned = [retired.as_str(), live_spelled_out.as_str()];
         let mut hits = Vec::new();
-        for (path, text) in &files {
-            for (n, raw) in text.lines().enumerate() {
-                let code = match raw.find("//") {
-                    Some(i) => &raw[..i],
-                    None => raw,
-                };
+        for file in &files {
+            for (n, raw) in file.text.lines().enumerate() {
+                let code = crate::test_env::source_tree::code_only(raw);
                 for b in banned {
                     if code.contains(b) {
-                        hits.push(format!("{path}:{} → {}", n + 1, code.trim()));
+                        hits.push(format!("{}:{} → {}", file.rel, n + 1, code.trim()));
                     }
                 }
             }
