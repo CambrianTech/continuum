@@ -164,6 +164,16 @@ impl ContextBudget {
         Self { total_chars: None, served_chars: None }
     }
 
+/// What a mind's epoch may START at: what the lane prefills at `rate` in the audience's time
+/// to first token, never past the window. A start is all fresh; a live epoch then grows warm.
+pub(crate) fn fresh_prefill_tokens(
+    rate: crate::inference::prefill_rate::MeasuredRate,
+    served: u32,
+    audience: crate::inference::prefill_rate::Audience,
+) -> usize {
+    Self::affordable_for_rate(rate, served, audience, None) as usize
+}
+
 /// PURE: the prompt a turn may cost at `rate`, for a lane serving `served` tokens.
 ///
 /// Split out from [`Self::prefill_affordable_window_for`] so the DECISION is pinned by a test

@@ -198,6 +198,9 @@ fn fingerprint(text: &str) -> u64 {
 pub(super) enum Turnover {
     /// The served window could not hold the epoch with this act appended.
     Window,
+    /// This act starts her epoch (a fresh mind, a restarted core): every token of it is fresh,
+    /// so it starts at what the lane prefills in her time to first token, then grows warm.
+    Start,
     /// She acts in another activity room: its conversation is not this epoch's.
     RoomChanged,
     /// The head's rendering changed (policy, identity, its grounding's content).
@@ -212,6 +215,7 @@ impl Turnover {
     fn as_str(self) -> &'static str {
         match self {
             Self::Window => "window",
+            Self::Start => "start",
             Self::RoomChanged => "room_changed",
             Self::HeadChanged => "head_changed",
             Self::ToolsChanged => "tools_changed",
@@ -434,15 +438,22 @@ impl EpochView {
         self.growth
     }
 
-    /// Whether this act's prompt still extends her epoch. Only the window turns it over: a
-    /// turnover re-prefills the whole new epoch, so it is never cheaper than sending a tail
-    /// (turning over on the prefill-time bound took reuse from 0.92 to 0.35 on the M5,
-    /// c30e660d9, 2026-10-20).
-    pub(super) fn turnover_for(&self, prompt_tokens: usize, window_tokens: usize) -> Option<TurnoverCause> {
-        (prompt_tokens > window_tokens).then(|| TurnoverCause {
-            reason: Turnover::Window,
-            fresh_tokens: prompt_tokens.saturating_sub(self.cached),
-        })
+    /// Whether this act's prompt still extends her epoch. A live epoch turns over only at the
+    /// window: a turnover re-prefills the whole new epoch, never cheaper than a warm tail
+    /// (turning over a live epoch on the prefill-time bound took reuse from 0.92 to 0.35 on
+    /// the M5, c30e660d9). An epoch's START is all fresh, so it starts at `start_tokens`, what
+    /// the lane prefills in her time to first token: started at the window instead, every mind
+    /// on a restarted core prefilled ~110k tokens and no act finished in 42 minutes
+    /// (52f61fc29, 2026-10-20).
+    pub(super) fn turnover_for(&self, prompt_tokens: usize, window_tokens: usize, start_tokens: usize) -> Option<TurnoverCause> {
+        let reason = if prompt_tokens > window_tokens {
+            Turnover::Window
+        } else if self.act_growth.is_none() && prompt_tokens > start_tokens {
+            Turnover::Start
+        } else {
+            return None;
+        };
+        Some(TurnoverCause { reason, fresh_tokens: prompt_tokens.saturating_sub(self.cached) })
     }
 
     /// The window cannot hold the epoch: compact it to each source's current rendering, in the

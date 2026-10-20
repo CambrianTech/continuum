@@ -2479,11 +2479,21 @@ impl LlmDeliberationFaculty {
         );
 
         let protocol_error = all_messages.active_protocol_error();
-        let fit = match epoch.turnover_for(all_messages.tokens(), msg_budget) {
+        let start_tokens = super::context_budget::ContextBudget::fresh_prefill_tokens(
+            crate::inference::prefill_rate::measured_rate_for(model),
+            context_window,
+            crate::cognition::audience::current(),
+        );
+        let fit = match epoch.turnover_for(all_messages.tokens(), msg_budget, start_tokens) {
             None => self.fit_messages(all_messages, msg_budget),
             Some(cause) => {
                 all_messages.restart_epoch(&mut epoch, cause, &standing, standing_unsaid, headroom, &self.persona_name);
-                let fit = self.fit_messages(all_messages, msg_budget);
+                // Priced after the new epoch took its standing pieces back, never below them.
+                let budget = match cause.reason {
+                    epoch_view::Turnover::Start => msg_budget.min(start_tokens.max(all_messages.required_tokens())),
+                    _ => msg_budget,
+                };
+                let fit = self.fit_messages(all_messages, budget);
                 if let Ok(f) = &fit {
                     epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at));
                 }

@@ -186,6 +186,38 @@ async fn a_long_tail_extends_her_epoch_and_never_turns_it_over() {
     assert!(seen[1].messages.iter().any(|m| m.content_text().contains("RESULT-1 rrrr")), "her required result was sent");
 }
 
+// what this catches: an epoch STARTED at the window. A start is all fresh, so a restarted
+// core put every mind's whole history (~110k tokens) into one prefill and no act finished in
+// 42 minutes (the M5 at 52f61fc29, 2026-10-20). It starts at what the lane prefills in her
+// time to first token, then grows warm: the next act extends it.
+#[tokio::test]
+async fn an_epoch_starts_at_what_the_lane_prefills_in_time_then_grows_warm() {
+    let window = 185_856;
+    let (faculty, adapter, wm) = epoch_faculty_with_memory(window, 2, u32::MAX);
+    let start = crate::cognition::context_budget::ContextBudget::fresh_prefill_tokens(
+        crate::inference::prefill_rate::measured_rate_for("epoch-model"),
+        window,
+        crate::cognition::audience::current(),
+    );
+    let results = 4 * start / 1_500 + 8;
+    for i in 0..results {
+        let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
+        wm.record_receipt_typed(&[], &format!("RESULT-{i} {}", "x".repeat(GUARD_CHARS_PER_TOKEN * 1_500)), None, custody);
+    }
+    let ws = Workspace::new("continue the card");
+    let mut bodies = Vec::new();
+    for act in 0..2 {
+        let view = faculty.prompt_view(&ws);
+        assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
+        bodies.push(sent_body_of(&view, &adapter, act));
+    }
+    let seen = adapter.seen.lock().expect("recorded request lock");
+    let first = LlmDeliberationFaculty::messages_cost(&seen[0].messages);
+    assert!(first <= start + start / 4, "the epoch started near what the lane prefills in time ({start}), not the window: {first} tokens");
+    assert!(seen[0].messages.iter().any(|m| m.content_text().contains(&format!("RESULT-{} ", results - 1))), "and kept her newest result");
+    assert!(bodies[1].starts_with(&bodies[0]), "the next act extends the started epoch");
+}
+
 // what this catches: standing pieces re-sent after the body every act (the M5 at
 // c9bc93951: ~11k tokens of own-time, work-turn, steps, open views and notices,
 // always fresh). Unchanged, they live in her epoch and the tail carries none of them.
