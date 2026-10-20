@@ -316,6 +316,7 @@ use crate::cognition::workspace::BurstTurn;
 use serde_json::json;
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use super::prompt::{EvidenceFit, PromptMessages, RecentMove};
 use super::request::output_allowance;
 use super::verdict::{answer_payload_bytes, reasoning_answer_split};
 use super::tool_surface::SelectedSurface;
