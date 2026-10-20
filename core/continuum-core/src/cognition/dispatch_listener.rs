@@ -24,27 +24,34 @@ use crate::runtime::message_bus::MessageBus;
 // `DISPATCH_RESULT_MAX_CHARS = 4_000` is exactly the "4k or smaller window" that makes a
 // 1M-context model useless. [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
 use crate::cognition::context_budget::ContextBudget;
+use crate::cognition::tool_executor::spill::LivePin;
 
 /// Render a command result Value into the compact text the mind reads. A JSON string is
-/// shown bare (no quotes); anything else is compact JSON. Bounded by
-/// the live window (`ContextBudget::dispatch_result_chars`).
-fn summarize_result(value: &serde_json::Value) -> String {
+/// shown bare (no quotes); anything else is compact JSON. Fitted to the live window's share
+/// for a dispatched result (`ContextBudget::dispatch_result_chars`) by the same custody every
+/// tool result gets: whole when it fits, else saved whole and shown as its head plus the
+/// `tool/output` handle for the rest.
+fn fit_to_share(raw: String, persona_id: uuid::Uuid) -> String {
+    fit_to_chars(raw, ContextBudget::live().dispatch_result_chars(), persona_id)
+}
+
+fn fit_to_chars(raw: String, share: usize, persona_id: uuid::Uuid) -> String {
+    let pin = LivePin::new();
+    pin.whole_or_handle(raw, share, persona_id).into_parts().0
+}
+
+fn summarize_result(value: &serde_json::Value, persona_id: uuid::Uuid) -> String {
     let raw = match value {
         serde_json::Value::String(s) => s.clone(),
         other => other.to_string(),
     };
-    let cap = ContextBudget::live().dispatch_result_chars();
-    if raw.chars().count() > cap {
-        raw.chars().take(cap).collect::<String>() + " …[truncated]"
-    } else {
-        raw
-    }
+    fit_to_share(raw, persona_id)
 }
 
 /// Fold ONE completion event into the persona's working memory, IF the persona owns its
 /// handle. Returns `true` when it was ours and recorded. Split out from the loop so it is
 /// deterministically testable without a live bus.
-pub fn fold_completion(wm: &WorkingMemory, ev: CommandCompletedEvent) -> bool {
+pub fn fold_completion(wm: &WorkingMemory, persona_id: uuid::Uuid, ev: CommandCompletedEvent) -> bool {
     // Only tracked background dispatches carry a handle; sync commands don't.
     let Some(handle) = ev.handle else {
         return false;
@@ -58,11 +65,11 @@ pub fn fold_completion(wm: &WorkingMemory, ev: CommandCompletedEvent) -> bool {
         let body = ev
             .result
             .as_ref()
-            .map(summarize_result)
+            .map(|v| summarize_result(v, persona_id))
             .unwrap_or_else(|| "done".to_string());
         (body, DispatchStatus::Done)
     } else {
-        let body = ev.error.unwrap_or_else(|| "failed".to_string());
+        let body = ev.error.map_or_else(|| "failed".to_string(), |e| fit_to_share(e, persona_id));
         (body, DispatchStatus::Failed)
     };
     wm.record_dispatch_event(handle, &label, &content, status);
@@ -73,7 +80,7 @@ pub fn fold_completion(wm: &WorkingMemory, ev: CommandCompletedEvent) -> bool {
 /// receiver; runs until the process exits. A broadcast lag or a non-parsing payload is
 /// skipped, never fatal — the mind keeps perceiving. Idempotent per persona: spawn once at
 /// persona bring-up.
-pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
+pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>, persona_id: uuid::Uuid) {
     let mut rx = bus.receiver();
     tokio::spawn(async move {
         loop {
@@ -90,7 +97,7 @@ pub fn spawn(bus: Arc<MessageBus>, working_memory: Arc<WorkingMemory>) {
             let Ok(ev) = serde_json::from_value::<CommandCompletedEvent>((*event.payload).clone()) else { // typed decode needs owned; one copy at THIS consumer, not per receiver
                 continue;
             };
-            fold_completion(&working_memory, ev);
+            fold_completion(&working_memory, persona_id, ev);
         }
     });
 }
@@ -134,17 +141,20 @@ mod tests {
         // A completion for a handle we never dispatched → ignored.
         assert!(!fold_completion(
             &wm,
+            uuid::Uuid::nil(),
             ev(Some(not_mine), true, serde_json::json!("ok"))
         ));
         // A synchronous completion (no handle) → ignored.
         assert!(!fold_completion(
             &wm,
+            uuid::Uuid::nil(),
             ev(None, true, serde_json::json!("ok"))
         ));
 
         // Our handle completes → folded in as Done with the result.
         assert!(fold_completion(
             &wm,
+            uuid::Uuid::nil(),
             ev(Some(mine), true, serde_json::json!("0 errors, 0 warnings"))
         ));
         let snap = wm.dispatched_snapshot();
@@ -158,11 +168,27 @@ mod tests {
         // A failure on our handle folds in as Failed with the error.
         assert!(fold_completion(
             &wm,
+            uuid::Uuid::nil(),
             ev(Some(mine), false, serde_json::Value::Null)
         ));
         let snap = wm.dispatched_snapshot();
         let ours = snap.iter().find(|(h, ..)| *h == mine).unwrap();
         assert_eq!(ours.3, DispatchStatus::Failed);
         assert_eq!(ours.2, "link error");
+    }
+
+    // what this catches: the old `take(cap) + " …[truncated]"` clip, which left the rest of a
+    // big result unreachable. Over its share a result is saved whole and shown as head + handle;
+    // within it, shown whole.
+    #[test]
+    fn oversize_dispatch_result_carries_a_handle_and_a_fitting_one_rides_whole() {
+        let big = format!("{}error: link failed", "line of compile output\n".repeat(400));
+        let shown = fit_to_chars(big.clone(), 200, uuid::Uuid::nil());
+        assert!(shown.contains("tool/output"), "an over-share result names how to open the rest: {shown}");
+        assert!(shown.len() < big.len());
+        assert!(shown.ends_with("error: link failed"), "the newest end of the result survives: {shown}");
+        assert!(!shown.contains("…[truncated]"));
+        let small = "0 errors".to_string();
+        assert_eq!(fit_to_chars(small.clone(), 200, uuid::Uuid::nil()), small);
     }
 }

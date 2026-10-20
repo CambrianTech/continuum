@@ -447,32 +447,30 @@ fn whole_or_handle_in(root: &Path, full: String, share: usize, persona_id: Uuid,
             handle: r.handle,
         },
         Ok(r) => {
-            // The head rides with the pointer, named as a head. A pointer alone sent a citizen
-            // back to re-read the same file in slices for hours (Benchy, the M5, 2026-10-16: a
-            // 578-line lib.rs read at 27,454 chars against a 26,176-char share came back as
-            // "a single 27454-character line (or the result has been truncated)", 121 acts
-            // without a write). What a person gets from `head` she gets here: the first lines,
-            // the line count, and the handle for the rest. Never passed off as the whole.
-            let (head, head_lines) = head_of(&full, share / HEAD_SHARE_DENOM);
+            // The END rides with the pointer, whole: errors and outcomes sit at the end, and a view
+            // that stops before the newest line is a world where time never moved (Joel,
+            // 2026-10-20). The beginning collapses to its first line and an omitted-range count.
+            let (first, tail, tail_lines) = ends_of(&full, share / HEAD_SHARE_DENOM);
             crate::probe!(
                 class = "tool.output.spilled",
                 handle = %r.handle,
                 chars = %chars,
                 share = %share,
-                head_lines = %head_lines,
+                tail_lines = %tail_lines,
                 "a tool result was larger than the window's share for one result: saved \
-                 whole and handed to the mind as its head and handle"
+                 whole and handed to the mind as its first line, its END and a handle"
             );
             Fitted::Stored {
                 shown: format!(
                     "[this result is {} lines ({chars} chars), more than this window's \
-                     {share}-char share for one result: lines 1-{head_lines} are shown below and \
-                     the WHOLE result is saved as output `{}`. Open the rest with `tool/output`: \
-                     a line range with `startLine`/`endLine`, a `\"pattern\":\"<regex>\"` hunt, or \
+                     {share}-char share for one result: its first line and its LAST {tail_lines} \
+                     lines are shown below and the WHOLE result is saved as output `{}`. Open the \
+                     rest with `tool/output`: a line range with `startLine`/`endLine`, a \
+                     `\"pattern\":\"<regex>\"` hunt, or \
                      `{{\"outputId\":\"{}\",\"filter\":\"errors\"}}` (or `warnings`/`failures`/`summary`). \
-                     For a file, a `code/read` with `start_line`/`end_line` reads a range directly]\n{head}\n\
-                     [lines {}-{} of {} are not shown: open them as above]",
-                    r.lines, r.handle, r.handle, head_lines + 1, r.lines, r.lines,
+                     For a file, a `code/read` with `start_line`/`end_line` reads a range directly]\n{first}\n\
+                     [lines 2-{} of {} are not shown: open them as above]\n{tail}",
+                    r.lines, r.handle, r.handle, r.lines.saturating_sub(tail_lines), r.lines,
                 ),
                 handle: r.handle,
             }
@@ -546,27 +544,32 @@ const PRETTY_JSON_OVER_CHARS: usize = 2_000;
 /// leaves the view room for the next result beside it.
 const HEAD_SHARE_DENOM: usize = 4;
 
-/// The first whole lines of `full` that fit in `max_chars`, and how many lines that is
-/// (at least one line, cut at `max_chars` if even the first line is longer).
-fn head_of(full: &str, max_chars: usize) -> (String, usize) {
-    let mut out = String::new();
-    let mut lines = 0usize;
-    for line in full.lines() {
-        if lines > 0 && out.len() + line.len() + 1 > max_chars {
+/// A result's first line (empty when the tail reaches it) and its END: the last whole lines
+/// that fit `max_chars` (at least one; a longer last line keeps its END chars), and their count.
+fn ends_of(full: &str, max_chars: usize) -> (String, String, usize) {
+    let all: Vec<&str> = full.lines().collect();
+    let mut tail: Vec<&str> = Vec::new();
+    let mut used = 0usize;
+    for line in all.iter().rev() {
+        let n = line.chars().count() + 1;
+        if !tail.is_empty() && used + n > max_chars {
             break;
         }
-        if lines > 0 {
-            out.push('\n');
-        }
-        if lines == 0 && line.len() > max_chars {
-            out.push_str(&line.chars().take(max_chars).collect::<String>());
-            lines = 1;
-            break;
-        }
-        out.push_str(line);
-        lines += 1;
+        tail.push(line);
+        used += n;
     }
-    (out, lines)
+    tail.reverse();
+    let tail_lines = tail.len();
+    let mut tail_text = tail.join("\n");
+    let len = tail_text.chars().count();
+    if tail_lines == 1 && len > max_chars {
+        tail_text = tail_text.chars().skip(len - max_chars).collect();
+    }
+    let first = match all.first() {
+        Some(f) if tail_lines < all.len() => f.chars().take(max_chars).collect(),
+        _ => String::new(),
+    };
+    (first, tail_text, tail_lines)
 }
 
 /// [`Fitted::RetentionFailed`]: the failure said first, then the whole result.
@@ -1021,10 +1024,11 @@ mod tests {
         else {
             panic!("an over-share result is saved")
         };
-        // the head rides along, LABELLED as lines 1-N of M; the tail does not, and the pointer
-        // names the unseen range, so a head is never passed off as the whole
-        assert!(shown.contains("HEAD-MARK") && !shown.contains("TAIL-MARK"), "a labelled head, no tail: {shown}");
-        assert!(shown.contains("lines 1-") && shown.contains("are not shown"), "the head is named and the unseen range is named: {shown}");
+        // the END rides along whole (the newest line is never dropped), the first line names what
+        // it was, and the pointer names the unseen range, so a fragment is never passed off as
+        // the whole
+        assert!(shown.contains("TAIL-MARK error: boom") && shown.contains("HEAD-MARK"), "first line + whole end: {shown}");
+        assert!(shown.contains("are not shown"), "the unseen range is named: {shown}");
         assert!(shown.contains(&handle) && shown.contains("tool/output"), "names the way in: {shown}");
         assert!(shown.contains("\"filter\":\"errors\""), "points at the failure filter: {shown}");
         let path = resolve_in(&tmp, persona, &handle).expect("resolve");
@@ -1051,7 +1055,7 @@ mod tests {
         // head of a one-line body is cut at a CHAR boundary, at most a quarter of the share.
         let (shown, _) = whole_or_handle_in(&tmp, "αβγδε".repeat(2000), 64, persona, &LivePin::new()).into_parts();
         let greek = shown.chars().filter(|c| "αβγδε".contains(*c)).count();
-        assert!(greek > 0 && greek <= 64 / HEAD_SHARE_DENOM, "a char-bounded head: {greek} chars in {shown}");
+        assert!(greek > 0 && greek <= 64 / HEAD_SHARE_DENOM, "a char-bounded end: {greek} chars in {shown}");
         std::fs::remove_dir_all(&tmp).ok();
     }
 
