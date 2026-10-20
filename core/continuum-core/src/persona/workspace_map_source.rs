@@ -59,7 +59,7 @@ pub(crate) const SOURCE_ID: &str = "workspace-map";
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use crate::cognition::token_budget::pack_suffix_units;
 
 /// The real shape of the workspace: the root the tools act in, plus its
 /// top-level directory names (the navigation structure a persona globs against).
@@ -324,28 +324,13 @@ impl WorkspaceMapSource {
         )
     }
 
-    /// Fit the rendered map to `budget` tokens. The map is small (a root path +
-    /// a directory list) and never approaches the standing-framing budget in
-    /// practice; truncation exists only to honor the budget contract. Same shape
-    /// as the doctrine source: truncate with a marker, or emit no block when the
-    /// budget can't carry the marker plus real content.
-    fn fit_body(body: &str, budget: u32) -> Option<String> {
-        if budget == 0 {
-            return None;
-        }
-        if estimate_tokens(body) <= budget {
-            return Some(body.to_string());
-        }
-        const MARKER: &str = "\n…[workspace map truncated]";
-        let marker_chars = MARKER.chars().count();
-        let max_chars = (budget as usize).saturating_mul(4).saturating_sub(4);
-        if max_chars <= marker_chars {
-            return None;
-        }
-        let char_budget = max_chars - marker_chars;
-        let mut out: String = body.chars().take(char_budget).collect();
-        out.push_str(MARKER);
-        Some(out)
+    /// The map as its own units: one line each (root line first, then entries), so
+    /// the join between delivered items reproduces the text exactly. The map is NOT in
+    /// time order (a root headline, repository facts, alphabetical directories, then her
+    /// leased ports): the headline is pinned, the budget decides how many of the TRAILING
+    /// lines show, and the omitted ones are counted in a marker unit naming `code/tree`.
+    fn units(body: &str) -> Vec<String> {
+        body.split('\n').map(str::to_string).collect()
     }
 }
 
@@ -411,10 +396,10 @@ impl RagSource for WorkspaceMapSource {
             body.push('\n');
             body.push_str(&line);
         }
-        let Some(content) = Self::fit_body(&body, budget) else {
+        let Some(packed) = pack_suffix_units(&Self::units(&body), 1, budget, "line", self.expand_command()) else {
             return empty(resolution);
         };
-        let tokens = estimate_tokens(&content);
+        let tokens: u32 = packed.items.iter().map(|(_, t)| *t).sum();
 
         tracing::debug!(
             persona_id = %self.persona_id,
@@ -426,16 +411,20 @@ impl RagSource for WorkspaceMapSource {
 
         RagDelivery {
             source_id: SOURCE_ID.to_string(),
-            items: vec![RagItem {
-                content,
-                tokens,
-                metadata: serde_json::json!({
-                    "root": layout.root.display().to_string(),
-                    "top_level_dirs": layout.top_level_dirs,
-                }),
-            }],
+            items: packed
+                .items
+                .into_iter()
+                .map(|(content, tokens)| RagItem {
+                    content,
+                    tokens,
+                    metadata: serde_json::json!({
+                        "root": layout.root.display().to_string(),
+                        "top_level_dirs": layout.top_level_dirs,
+                    }),
+                })
+                .collect(),
             tokens_used: tokens,
-            // One current layout snapshot per turn; no pagination.
+            // The cut is stated by the marker unit inside `items`, with its count.
             continuation: None,
             resolution_used: resolution,
         }
@@ -463,6 +452,11 @@ mod tests {
 
     fn ctx() -> RagContext {
         RagContext::for_persona(persona(), 1_000_000)
+    }
+
+    /// The delivered map as the prompt renders it: the items joined by newlines.
+    fn joined(d: &RagDelivery) -> String {
+        d.items.iter().map(|i| i.content.as_str()).collect::<Vec<_>>().join("\n")
     }
 
     fn layout(dirs: &[&str]) -> WorkspaceLayout {
@@ -501,7 +495,7 @@ mod tests {
         let delivery = source
             .deliver(&ctx(), 2048, ResolutionPreference::Raw)
             .await;
-        let body = &delivery.items[0].content;
+        let body = &joined(&delivery);
         for fact in [
             "repo acme/project",
             "Observed origin repository: observed/project",
@@ -607,8 +601,7 @@ mod tests {
         let reader = Arc::new(StubReader::ok(&["apps", "core", "docs", "src"]));
         let source = WorkspaceMapSource::new(persona(), reader);
         let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 1);
-        let content = &delivery.items[0].content;
+        let content = &joined(&delivery);
         // Both `core` and `src` are present — the exact ambiguity that tripped
         // the eval. The map names both; it never says which holds the code.
         assert!(content.contains("core"));
@@ -637,7 +630,7 @@ mod tests {
         let reader = Arc::new(StubReader::ok(&["core", "src"]));
         let source = WorkspaceMapSource::new(persona(), reader);
         let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
-        let content = delivery.items[0].content.to_lowercase();
+        let content = joined(&delivery).to_lowercase();
         assert!(
             !content.contains("rust is under") && !content.contains("rust lives"),
             "must not name where code lives — that is steering, not grounding: {content}"
@@ -679,8 +672,7 @@ mod tests {
     async fn empty_layout_grounds_write_first() {
         let source = WorkspaceMapSource::new(persona(), Arc::new(StubReader::ok(&[])));
         let delivery = source.deliver(&ctx(), 512, ResolutionPreference::Raw).await;
-        assert_eq!(delivery.items.len(), 1);
-        let content = &delivery.items[0].content;
+        let content = &joined(&delivery);
         assert!(content.contains("EMPTY"), "states it's empty: {content}");
         assert!(
             content.contains("code/write"),
@@ -1031,5 +1023,27 @@ mod tests {
             "the layer was provisioned under the test's own home: {}",
             layout.root.display()
         );
+    }
+
+    // what this catches: the map clipped from the end. A map bigger than the budget keeps its
+    // pinned root headline and its TRAILING lines (her leased ports sit last), counts the
+    // omitted lines in a marker naming `code/tree`, and is delivered exactly when it fits.
+    #[tokio::test]
+    async fn an_over_budget_map_keeps_the_headline_and_the_trailing_lines() {
+        let dirs: Vec<String> = (0..60).map(|i| format!("directory{i:02}")).collect();
+        let refs: Vec<&str> = dirs.iter().map(String::as_str).collect();
+        let source = WorkspaceMapSource::new(persona(), Arc::new(StubReader::ok(&refs)));
+        let whole = source.deliver(&ctx(), 100_000, ResolutionPreference::Raw).await;
+        let text: String = whole.items.iter().map(|i| i.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(text.contains("directory59") && !text.contains("earlier line(s)"));
+
+        let units = WorkspaceMapSource::units(&text);
+        assert!(units.len() > 2, "the map has several lines to choose between");
+        let cut = source.deliver(&ctx(), 160, ResolutionPreference::Raw).await;
+        assert!(cut.tokens_used <= 160, "{}", cut.tokens_used);
+        let shown: Vec<&str> = cut.items.iter().map(|i| i.content.as_str()).collect();
+        assert_eq!(shown[0], units[0], "the root headline is pinned first");
+        assert!(shown.iter().any(|l| l.contains("earlier line(s) not shown") && l.contains("code/tree")), "{shown:?}");
+        assert_eq!(shown.last().copied(), units.last().map(String::as_str), "the last line survives");
     }
 }

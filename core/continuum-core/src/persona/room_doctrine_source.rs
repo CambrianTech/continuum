@@ -47,7 +47,7 @@ pub(crate) const SOURCE_ID: &str = "room-doctrine";
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use crate::cognition::token_budget::pack_suffix_units;
 
 /// Abstract reader over the airc room operating doctrine. Production
 /// rides on `airc_lib::Airc::room_doctrine`; tests stub it without a
@@ -280,39 +280,20 @@ impl RoomDoctrineSource {
         self
     }
 
-    /// Fit the doctrine body to `budget` tokens. A doctrine is a single
-    /// contract; if it doesn't fit we deliver a truncated prefix (with a
-    /// marker) rather than dropping it entirely — partial guidance still
-    /// grounds the persona in the room's nature.
-    ///
-    /// Returns `None` (no block) when the budget is too small to carry
-    /// the marker PLUS some real content. The alternative — emitting a
-    /// `[Room operating doctrine]` block whose entire content is the
-    /// truncation marker — is strictly worse than no block: it spends
-    /// tokens to say nothing, and (with a naive char budget) overspends
-    /// the allocation. Both the no-content case and overspend are
-    /// guarded here. `estimate_tokens(s) = s.chars()/4 + 1`, so a string
-    /// of `4*budget - 4` chars estimates to exactly `budget` tokens —
-    /// that's the ceiling we fit the (truncated body + marker) under.
-    fn fit_body(body: &str, budget: u32) -> Option<String> {
-        if budget == 0 {
-            return None;
-        }
-        if estimate_tokens(body) <= budget {
-            return Some(body.to_string());
-        }
-        const MARKER: &str = "\n…[doctrine truncated]";
-        let marker_chars = MARKER.chars().count();
-        // Max chars whose estimate stays within `budget` tokens.
-        let max_chars = (budget as usize).saturating_mul(4).saturating_sub(4);
-        if max_chars <= marker_chars {
-            // No room for the marker plus any content → emit no block.
-            return None;
-        }
-        let char_budget = max_chars - marker_chars;
-        let mut out: String = body.chars().take(char_budget).collect();
-        out.push_str(MARKER);
-        Some(out)
+    /// The doctrine as its own units: paragraphs (blank-line separated), each but the
+    /// last carrying the one newline that, with the join between delivered items,
+    /// reproduces the blank line. The budget decides how many TRAILING paragraphs show
+    /// (document order is the only order; the end is where a doctrine's conclusions and
+    /// latest amendments sit); the earlier ones are counted in a marker unit, and a last
+    /// paragraph too big for the whole budget comes back as its end behind a marker.
+    fn units(body: &str) -> Vec<String> {
+        let paragraphs: Vec<&str> = body.split("\n\n").collect();
+        let last = paragraphs.len() - 1; // split yields at least one piece
+        paragraphs
+            .iter()
+            .enumerate()
+            .map(|(i, p)| if i < last { format!("{p}\n") } else { (*p).to_string() })
+            .collect()
     }
 }
 
@@ -333,7 +314,9 @@ impl RagSource for RoomDoctrineSource {
     }
 
     fn expand_command(&self) -> Option<&'static str> {
-        // the room's doctrine is a single standing statement, delivered whole.
+        // No verb reads a room's doctrine yet (the wall verb lists wall posts, a
+        // different stream), so a cut doctrine states how much is omitted and has no
+        // handle to name. Naming a verb that does not return it would be worse.
         None
     }
 
@@ -409,11 +392,11 @@ impl RagSource for RoomDoctrineSource {
             }
         };
 
-        let Some(content) = Self::fit_body(&card.body, budget) else {
+        let Some(packed) = pack_suffix_units(&Self::units(&card.body), 0, budget, "paragraph", self.expand_command()) else {
             let _ = self.report(Outcome::BudgetTooSmall, effective_room, ctx.now_ms);
             return empty(resolution);
         };
-        let tokens = estimate_tokens(&content);
+        let tokens: u32 = packed.items.iter().map(|(_, t)| *t).sum();
 
         tracing::debug!(
             persona_id = %self.persona_id,
@@ -426,17 +409,21 @@ impl RagSource for RoomDoctrineSource {
 
         RagDelivery {
             source_id: SOURCE_ID.to_string(),
-            items: vec![RagItem {
-                content,
-                tokens,
-                metadata: serde_json::json!({
-                    "version": card.version,
-                    "published_by": card.published_by.as_uuid().to_string(),
-                    "published_at_ms": card.published_at_ms,
-                }),
-            }],
+            items: packed
+                .items
+                .into_iter()
+                .map(|(content, tokens)| RagItem {
+                    content,
+                    tokens,
+                    metadata: serde_json::json!({
+                        "version": card.version,
+                        "published_by": card.published_by.as_uuid().to_string(),
+                        "published_at_ms": card.published_at_ms,
+                    }),
+                })
+                .collect(),
             tokens_used: tokens,
-            // One current contract per room; no pagination.
+            // The cut is stated by the marker unit inside `items`, with its count.
             continuation: None,
             resolution_used: resolution,
         }
@@ -793,5 +780,27 @@ mod tests {
         let delivery = source.deliver(&ctx(), 3, ResolutionPreference::Raw).await;
         assert!(delivery.items.is_empty(), "tiny budget must emit no block");
         assert_eq!(delivery.tokens_used, 0);
+    }
+
+    // what this catches: a doctrine cut at a char count with a marker and no handle. A
+    // doctrine bigger than the budget must come back as WHOLE leading paragraphs, the cut
+    // marked on the delivery (continuation) so the workspace notice states what was
+    // omitted; one that fits comes back whole, paragraph breaks intact.
+    #[tokio::test]
+    async fn an_over_budget_doctrine_keeps_its_last_paragraphs_and_counts_the_omitted() {
+        let para = |n: usize| format!("rule {n}: {}", "keep every promise. ".repeat(10));
+        let body = (0..10).map(para).collect::<Vec<_>>().join("\n\n");
+        let source = RoomDoctrineSource::new(persona(), Arc::new(StubReader::new(Some(card(&body)))));
+
+        let whole = source.deliver(&ctx(), 100_000, ResolutionPreference::Raw).await;
+        assert!(whole.continuation.is_none());
+        let text: String = whole.items.iter().map(|i| i.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert_eq!(text, body, "a doctrine that fits is delivered exactly, blank lines included");
+
+        let cut = source.deliver(&ctx(), 200, ResolutionPreference::Raw).await;
+        assert!(cut.items[0].content.contains("earlier paragraph(s) not shown"), "the cut is counted: {}", cut.items[0].content);
+        assert!(cut.items.last().expect("items").content.starts_with("rule 9"), "the END of the doctrine survives");
+        assert!(cut.items[1..].iter().all(|i| i.content.starts_with("rule ")), "only whole paragraphs");
+        assert!(cut.tokens_used <= 200);
     }
 }
