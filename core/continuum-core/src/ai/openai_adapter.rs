@@ -564,15 +564,16 @@ impl OpenAICompatibleAdapter {
     async fn ensure_slot_pool(
         &self,
         endpoints: &OpenAiBase,
-    ) -> Option<std::sync::Arc<crate::inference::slots::KvSlotPool>> {
+    ) -> Result<std::sync::Arc<crate::inference::slots::KvSlotPool>, crate::ai::slot_discovery::SlotDiscoveryMiss> {
+        use crate::ai::slot_discovery::SlotDiscoveryMiss as Miss;
         let root = endpoints.root();
         let dir = crate::inference::slots::directory();
         // Fast path: this server's state already known (process-global directory —
         // every adapter instance talking to the same server shares ONE assignment).
         let existing_pool = match dir.get(root) {
-            Some(Some(pool)) if dir.page_admission_known(root) => return Some(pool),
+            Some(Some(pool)) if dir.page_admission_known(root) => return Ok(pool),
             Some(Some(pool)) => Some(pool),
-            Some(None) => return None, // latched unsupported
+            Some(None) => return Err(Miss::LatchedUnsupported),
             None => None,              // never probed — probe below
         };
         let discovery_generation = dir.page_discovery_generation(root);
@@ -580,10 +581,7 @@ impl OpenAICompatibleAdapter {
         let url = endpoints.props();
         let resp = match self.client.get(&url).send().await {
             Ok(r) => r,
-            Err(e) => {
-                tracing::debug!(error = %e, url = %url, "props probe transport error — slot affinity deferred");
-                return None;
-            }
+            Err(e) => return Err(Miss::Transport { error: e.to_string() }),
         };
         if !resp.status().is_success() {
             let status = resp.status();
@@ -598,34 +596,16 @@ impl OpenAICompatibleAdapter {
             // 2026-08-21. A verdict about what a server IS must never be reached
             // while the server is mid-transition (#442's rule, one layer down).
             if props_status_proves_endpoint_absent(status) {
-                crate::probe!(
-                    class = "inference.slot_affinity.unsupported",
-                    status = status.as_u16() as u64,
-                    "props endpoint absent — slot affinity latched OFF for this server",
-                );
                 dir.latch_unsupported(root);
-            } else {
-                crate::probe!(
-                    class = "inference.slot_affinity.deferred",
-                    status = status.as_u16() as u64,
-                    "props not ready (transient status) — affinity deferred, NOT latched; \
-                     will re-probe on the next persona request",
-                );
+                return Err(Miss::EndpointAbsent { status: status.as_u16() });
             }
-            return None;
+            return Err(Miss::NotReady { status: status.as_u16() });
         }
         let body: serde_json::Value = match resp.json().await {
             Ok(v) => v,
-            Err(_) => {
-                // A malformed body from a live server is also not proof of absence —
-                // mid-load llama-server can answer partial/HTML bodies. Defer, don't latch.
-                crate::probe!(
-                    class = "inference.slot_affinity.deferred",
-                    status = 200u64,
-                    "props answered but body did not parse — affinity deferred, NOT latched",
-                );
-                return None;
-            }
+            // A malformed body from a live server is also not proof of absence —
+            // mid-load llama-server can answer partial/HTML bodies. Defer, don't latch.
+            Err(_) => return Err(Miss::BodyUnparsed),
         };
         // Capture the served PER-SLOT window while we hold the props body —
         // the ONE authoritative source for what a request can actually carry
@@ -643,16 +623,16 @@ impl OpenAICompatibleAdapter {
             .unwrap_or(0) as u32;
         if n_slots == 0 {
             // Missing geometry is not proof that activity paging is unsupported.
-            return None;
+            return Err(Miss::NoGeometry);
         }
         if dir.page_discovery_generation(root) != discovery_generation {
-            return None; // props belongs to the superseded process, not its replacement
+            return Err(Miss::Superseded); // props belongs to the superseded process, not its replacement
         }
         // The directory arbitrates the probe race: only the first writer installs
         // the pool, once per SERVER, not once per adapter.
         let pool = existing_pool.clone().unwrap_or_else(|| dir.ensure_pool(root, n_slots));
         if pool.n_slots() != n_slots {
-            return None; // installed geometry and this props response must agree
+            return Err(Miss::GeometryMismatch { installed: pool.n_slots(), props: n_slots }); // they must agree
         }
         // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
         // so its confirmed saves come from the ledger it left, when that ledger names this
@@ -683,13 +663,13 @@ impl OpenAICompatibleAdapter {
             "an adopted engine's confirmed-save ledger: its saved pages are restorable only when the ledger names this same process"
         );
         if !dir.negotiate_page_admission(root, &pool, discovery_generation, body.get("slot_save_size_version")).await {
-            return None;
+            return Err(Miss::PageAdmissionRefused);
         }
         tracing::info!(
             n_slots,
             "slot affinity enabled — activities lease llama-server slots (props-discovered)"
         );
-        Some(pool)
+        Ok(pool)
     }
 }
 
@@ -1618,7 +1598,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             // Discovery: install this server's slot pool on first use (probes /props).
             // Non-Turn traffic also needs the pool on a single-slot server: it
             // must save the activity resident before borrowing the only slot.
-            let pool = self.ensure_slot_pool(&endpoints).await;
+            let pool = self.ensure_slot_pool(&endpoints).await.map_err(|miss| miss.probe(root)).ok();
             let adm = crate::inference::turn_admission::admit_turn(
                 &self.concurrency,
                 turn_key,
@@ -2680,6 +2660,21 @@ mod tests {
         );
     }
 
+    // what this catches (card 394017ed, f3ba3b56 item 5): a /props transport failure left
+    // the request unpinned with only a debug! line. It is now a typed miss the caller probes,
+    // never a latch: the next request probes again.
+    #[tokio::test]
+    async fn a_props_transport_failure_is_a_named_miss_and_never_latches() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("test: bind");
+        let address = closed.local_addr().expect("test: addr");
+        drop(closed);
+        let mut adapter = test_adapter();
+        adapter.config.base_url = format!("http://{address}");
+        let Err(miss) = adapter.ensure_slot_pool(&adapter.endpoints()).await else { panic!("test: nothing listens, yet a pool came back") };
+        assert_eq!(miss.as_str(), "transport", "{miss:?}");
+        assert!(crate::inference::slots::directory().get(adapter.endpoints().root()).is_none(), "a transport error never latches");
+    }
+
     /// Minimal adapter for pure payload-assembly tests — no network, no registry.
     fn test_adapter() -> OpenAICompatibleAdapter {
         OpenAICompatibleAdapter::new(OpenAICompatibleConfig {
@@ -3032,11 +3027,12 @@ mod tests {
             engine: "fixture-engine".into(), revisions: None,
         }).expect("fixture owned engine readiness");
         drop(transition);
-        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_none(),
+        assert!(matches!(adapter.ensure_slot_pool(&adapter.endpoints()).await,
+            Err(crate::ai::slot_discovery::SlotDiscoveryMiss::GeometryMismatch { .. })),
             "props cannot authorize an already installed pool with different geometry");
         assert!(!crate::inference::slots::directory().page_admission_known(&root));
         props_slots.store(1, Ordering::SeqCst);
-        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_some());
+        assert!(adapter.ensure_slot_pool(&adapter.endpoints()).await.is_ok());
         assert!(crate::inference::slots::directory().page_admission_known(&root));
         let owned_geometry = endpoint.served_geometry().expect("fixture owned geometry");
         let observed_service = || crate::cognition::resource_admission::leased_in_sent_samples()
