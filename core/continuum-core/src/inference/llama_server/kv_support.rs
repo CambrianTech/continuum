@@ -1,0 +1,53 @@
+//! Kv support responsibility of the llama-server process owner.
+use super::*;
+/// Ask the serving binary, ONCE per process, which KV cache types its build accepts,
+/// and record the answer for [`crate::cognition::kv_cache_plan`].
+///
+/// The engine's own `--help` outranks any table in our source — a table can only be a
+/// stale guess about someone else's build. Bounded at 10 s like the `--version` and
+/// `--list-devices` probes beside it, and every outcome is NAMED: `answered`,
+/// `did_not_enumerate` (the flag exists but the build lists no allowed values — we do
+/// NOT guess; the backend table decides), `probe_failed`, `probe_timeout`.
+///
+/// One ask per process even when the answer is "it did not say", so a box whose engine
+/// is silent does not pay a 10 s help probe on every relaunch.
+pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: tokio::process::Command) {
+    static ASKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if ASKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    command.arg("--help");
+    // owned (lane_process::run_owned): a help probe that hangs is ended with anything it started
+    let probe = crate::inference::lane_process::run_owned(command, Some(Duration::from_secs(10)), "engine-help-probe", std::sync::Arc::default()).await;
+    let (outcome, support, error) = match probe {
+        Err(e) => ("probe_failed", None, e.to_string()),
+        Ok(out) => match (&out.ended, out.capture_note()) {
+            (crate::inference::lane_process::Ended::TimedOut { .. }, _) => ("probe_timeout", None, "no answer in 10 s".to_string()),
+            // help text that wasn't read whole can't say which values it lists
+            (_, Some(note)) => ("probe_failed", None, note),
+            (crate::inference::lane_process::Ended::Exited(_), None) => {
+                let mut text = String::from_utf8_lossy(&out.stdout.bytes).into_owned();
+                text.push('\n');
+                text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));
+                let _ = ENGINE_TRAIN_DIR.set(engine_help_lists_train_dir(&text));
+                match crate::cognition::kv_cache_plan::parse_engine_kv_support(&text) {
+                    Some(v) => ("answered", Some(v), String::new()),
+                    None => ("did_not_enumerate", None, String::new()),
+                }
+            }
+        },
+    };
+    if let Some(v) = support {
+        crate::cognition::kv_cache_plan::record_engine_quantized_kv_support(v);
+    }
+    crate::probe!(target: "continuum_core::inference::llama_server", class = "serving.kv_cache.engine_support",
+        bin = bin,
+        outcome = outcome,
+        answered = support.is_some(),
+        quantized_kv = support.unwrap_or(false), // probe field: read it WITH `answered`
+        train_dir = engine_accepts_train_dir(),
+        error = %error,
+        "what the serving binary says its build accepts for --cache-type-k; unanswered \
+         falls through to the backend table, never to a guess"
+    );
+}
