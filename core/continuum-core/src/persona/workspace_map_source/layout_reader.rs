@@ -7,6 +7,8 @@ use std::path::PathBuf;
 #[derive(Debug, Clone, PartialEq)]
 pub struct RepositoryEvidence {
     pub checkout: Result<CheckoutObservation, String>,
+    /// Sanitized board identity only; never retain the credential-bearing remote URL.
+    pub origin_repo: Option<airc_work::RepoId>,
     pub allocation: Result<Option<airc_lib::work_worktree::AllocationEvidence>, String>,
 }
 
@@ -79,12 +81,16 @@ impl LayoutReader {
             Ok(_) => self.read_allocation(&root).await,
             Err(error) => Err(error),
         };
+        let origin_repo = crate::code::git_bridge::origin_repo_slug(&root)
+            .await
+            .and_then(|slug| airc_work::RepoId::new(slug).ok());
         Ok(WorkspaceLayout {
             root,
             top_level_dirs,
             top_level_entries,
             repository: Some(RepositoryEvidence {
                 checkout,
+                origin_repo,
                 allocation,
             }),
         })
@@ -185,6 +191,10 @@ pub(super) fn render_repository(evidence: &RepositoryEvidence) -> String {
         Ok(None) => "Allocation evidence is unavailable for this checkout; its current HEAD does not establish its intended integration base.\n".into(),
         Err(error) => format!("Allocation evidence could not be read: {error}\n"),
     };
+    match &evidence.origin_repo {
+        Some(repo) => body.push_str(&format!("Observed origin repository: {repo}.\n")),
+        None => body.push_str("Observed origin repository identity unavailable (absent, local, unreadable or unrecognized remote).\n"),
+    }
     match &evidence.checkout {
         Ok(git) => {
             body.push_str(&format!(

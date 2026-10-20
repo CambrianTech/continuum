@@ -46,8 +46,8 @@ cargo test tick_db_handle --lib --features vulkan,load-dynamic-ort
 ```
 
 `scripts/cargo-test.sh` reuses the same `cargo-features.sh` detector
-that `git-prepush.sh` and `build-with-loud-failure.sh` already
-source, so there's only one place that knows the platform→features
+that `git-prepush.sh` already
+sources, so there's only one place that knows the platform→features
 mapping.
 
 ## CPU-only debug mode (advanced)

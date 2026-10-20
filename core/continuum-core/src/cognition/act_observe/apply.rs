@@ -127,16 +127,22 @@ pub async fn apply_act(
     // EVERY re-injection bound in this act comes from her LIVE served window, never a
     // constant — an unknown window folds NOTHING rather than inventing a number
     // ([[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]).
-    let budget = cycle
-        .model_loadout()
-        .map(|(_, w)| ContextBudget::from_window(w))
-        .unwrap_or_else(ContextBudget::unknown);
     // WM clips inside its OWN record path (it owns its truncation), so it needs the live
     // window too — pushed from here, the seam that has the cycle. Re-pushed every act so a
     // lane relaunch at a different `-c` is picked up without a restart.
     if let Some((_, w)) = cycle.model_loadout() {
         body.working_memory.set_served_window(w);
     }
+    // ONE budget for what an act's results may hold: working memory's own, which is the
+    // same for every turn of hers. Sized from the running turn's audience, a room turn
+    // (Interactive) cut a 440-line read at 12,960 chars while the ring the result joins next
+    // budgets ~26k (Benchy, the M5, 2026-10-17 23:06Z: "more than this window's 12960-char
+    // share", the same file re-read every turn, no write).
+    let budget = if cycle.model_loadout().is_some() {
+        body.working_memory.budget()
+    } else {
+        ContextBudget::unknown()
+    };
     let ctx = crate::cognition::tool_executor::ToolExecutionContext {
         persona_id: body.persona_id,
         persona_name: body.persona_name.clone(),
@@ -376,36 +382,12 @@ pub async fn apply_act(
         // longer parses. See CommandToolExecutor::execute_native_batch.)
         acts.push(obs);
     }
-    // A pure-background batch (every call was long-running → dispatched, `fg_calls`
-    // empty) still counts as an act — one typed Observation per dispatch so
-    // `produced_an_act()` stays true, matching the old `Some(bg_notes)` return.
-    if acts.is_empty() && !dispatched_calls.is_empty() {
-        for call in &dispatched_calls {
-            acts.push(Observation {
-                call: call.clone(),
-                output: ToolOutput {
-                    image: None,
-                    additional_images: None,
-                    result: ToolResult {
-                        tool_use_id: call.id.clone(),
-                        content: "dispatched — running in background".to_string(),
-                        custody: crate::ai::types::ResultCustody::Unsaved,
-                        is_error: None,
-                    },
-                    verb: ToolVerb::classify(&call.name),
-                    paths: extract_paths(&call.input),
-                    // A dispatched background call is RUNNING by construction —
-                    // that is what "dispatched" means. Saying so here is what stops
-                    // the receipt rendering a tick for work that has not started
-                    // producing anything yet.
-                    verdict: crate::sdk_codegen::ActVerdict::Declared(
-                        crate::sdk_codegen::ToolVerdict::Running,
-                    ),
-                },
-                status: ActStatus::Executed,
-            });
-        }
-    }
+    // Every requested call needs its own truthful receipt, including background
+    // calls in a mixed batch. Native continuation must never omit their IDs.
+    append_dispatched_observations(&mut acts, &dispatched_calls);
+    let call_order: std::collections::HashMap<_, _> = calls.iter()
+        .enumerate().map(|(ordinal, call)| (call.id.as_str(), ordinal)).collect();
+    acts.sort_by_key(|observation| call_order.get(observation.call.id.as_str()).copied());
     // #243 RECEIPT RADIATION: every executed act reaches the room's transcript
     // as a collapsed receipt ("Ran 4 commands ›", the Claude-iOS pattern) —
     // this is the ONE choke point every hand action passes through (live,
@@ -582,29 +564,6 @@ pub async fn apply_act(
         );
     }
 
-    // Investigation-shape perception: once a concern has accumulated a few acts,
-    // render the mind's own act DISTRIBUTION as a standing structural fact. The
-    // fingerprint note above catches exact repeats; this catches the wider
-    // pattern a mind can't otherwise see about itself — e.g. "9 acts so far,
-    // all code/search" (glass-boxed on SWE flask-4045: distinct-but-all-search
-    // acts never tripped the exact-repeat note, and the imbalance itself was
-    // invisible). A tally of her own hands is truth, not steering: it names
-    // what happened, never what to do next.
-    let tally = body.working_memory.action_verb_tally();
-    let tally_total: usize = tally.iter().map(|(_, c)| c).sum();
-    // Recorded as its own FACT entry below (never folded into the receipt):
-    // the tally is truth ABOUT the acts, not an act — folding it in gave a
-    // Fact receipt-numbering (found in Asha's volatile.json, the exact type
-    // confusion WmKind exists to kill).
-    let tally_fact = (tally_total >= 3).then(|| {
-        let dist = tally
-            .iter()
-            .map(|(n, c)| format!("{n} ×{c}"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!("[investigation] my acts this concern so far: {dist}.")
-    });
-
     // Admit the outcome as an Episodic engram through the ONE production admit
     // path (a self-observation message from the persona to itself). This is the
     // result-as-memory choice: next tick, recall can surface "I ran X → got Y" the
@@ -712,12 +671,12 @@ pub async fn apply_act(
     );
     body.working_memory
         .record_receipt_measured(&acts, &observation, Some(room_id), custody, disk);
+    // Each open view this act touched keeps what she understood when she read it.
+    body.working_memory.annotate_open_views(intent);
     // Recorded and published: working memory now names every handle this batch saved, its
     // receipt's and each call's, so the pin that held them since before they were written can go.
     drop(pin);
-    if let Some(f) = &tally_fact {
-        body.working_memory.record_fact(f);
-    }
+    body.working_memory.refresh_recent_action_status();
 
     // WHICH verbs ran — not just how many. Measured 2026-08-06: this probe carried
     // `tools=1` and a char count and NOTHING ELSE, so the substrate could not answer
@@ -758,7 +717,41 @@ pub async fn apply_act(
     crate::modules::citizen_health::note_act(wrote);
     crate::modules::citizen_health::note_act_of(body.persona_id, wrote);
 
+    // An act that changed a checkout wakes the one carry owner (modules::card_carry), which
+    // carries every resident's committed card work; a turn's end is no longer the only push.
+    if disk == super::disk_change::DiskChange::Changed {
+        crate::modules::card_carry::request();
+    }
+
     ActOutcome::Acted { acts }
+}
+
+fn append_dispatched_observations(acts: &mut Vec<Observation>, dispatched_calls: &[ToolCall]) {
+        for call in dispatched_calls {
+            acts.push(Observation {
+                call: call.clone(),
+                output: ToolOutput {
+                    image: None,
+                    additional_images: None,
+                    result: ToolResult {
+                        tool_use_id: call.id.clone(),
+                        content: "dispatched — running in background".to_string(),
+                        custody: crate::ai::types::ResultCustody::Unsaved,
+                        is_error: None,
+                    },
+                    verb: ToolVerb::classify(&call.name),
+                    paths: extract_paths(&call.input),
+                    // A dispatched background call is RUNNING by construction —
+                    // that is what "dispatched" means. Saying so here is what stops
+                    // the receipt rendering a tick for work that has not started
+                    // producing anything yet.
+                    verdict: crate::sdk_codegen::ActVerdict::Declared(
+                        crate::sdk_codegen::ToolVerdict::Running,
+                    ),
+                },
+                status: ActStatus::Executed,
+            });
+        }
 }
 
 #[cfg(test)]
@@ -770,6 +763,14 @@ mod tests {
     // backgrounded — so a `code/read` still returns synchronously in the same turn.
     #[test]
     fn long_running_set_matches_real_command_names() {
+        let call = |id: &str| ToolCall { id: id.into(), name: "code/cargo/test".into(), input: serde_json::json!({}) };
+        let mut receipts = Vec::new();
+        append_dispatched_observations(&mut receipts, &[call("existing")]);
+        append_dispatched_observations(&mut receipts, &[call("new-dispatch")]);
+        assert_eq!(receipts.len(), 2, "a nonempty batch must not suppress dispatched replies");
+        assert_eq!(receipts[1].output.result.tool_use_id, "new-dispatch");
+        assert!(receipts[1].output.verdict.running());
+        assert!(!receipts[1].completed_successfully());
         assert!(is_long_running("code/cargo/test"));
         assert!(is_long_running("code/cargo/check"));
         assert!(is_long_running("cognition/full-evaluate"));

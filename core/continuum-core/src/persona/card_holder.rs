@@ -182,7 +182,7 @@ pub fn refused_on_this_box(title: &str) -> bool {
 /// pull skipped requests-1766 correctly, then Atlas claimed it by id from a message
 /// turn and spent her next hour on it; a refusal that lives in one caller is not a rule).
 pub fn standing_refusal_for_card(title: &str) -> Option<(String, String)> {
-    let Some((_, instance)) = crate::commands::benchmark::parse_card_title(title) else {
+    let Some((_, instance)) = crate::cognition::bench_title::parse_card_title(title) else {
         return None;
     };
     let reason = crate::cognition::swe_verdict_sweep::standing_env_refusal(&instance)?;

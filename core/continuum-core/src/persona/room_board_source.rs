@@ -318,6 +318,7 @@ impl RoomBoardSource {
         self_id: uuid::Uuid,
         now_ms: u64,
         names: &dyn crate::persona::card_holder::PeerNames,
+        include_submission: bool,
     ) -> String {
         let id8: String = card.card_id.as_uuid().to_string().chars().take(8).collect();
         let held = crate::persona::card_holder::holder(card, self_id, now_ms, names);
@@ -333,26 +334,32 @@ impl RoomBoardSource {
             title = card.title,
             prio = card.priority,
         );
-        // The current candidate and its accepted signed verdicts come from the
-        // same room read. Keep evidence addressable; card state is not a verdict.
-        if let Some(candidate) = crate::modules::work::submission::latest_submission(card) {
-            let reviews: Vec<_> = board.submission_reviews.iter().filter(|review| {
-                review.card_id == card.card_id && review.submission_id == candidate.submission_id
-            }).collect();
-            if let Some(review) = reviews.first() {
-                use std::fmt::Write;
-                let outcomes: Vec<_> = reviews.iter().map(|review| review.outcome).collect();
-                if let Some(next) = crate::modules::work::submission::next_after_submission(
-                    Some(candidate.submission_id.as_uuid()), &outcomes,
-                    crate::modules::benchmark_grade::graded_at_submit(&card.title),
-                    Some(review.review_card_id),
-                ) {
-                    let _ = write!(content, "\n{next} Read work/submission card_id={} submission_id={} for all {} signed verdicts, reviewers, and evidence.", card.card_id, candidate.submission_id, reviews.len());
-                }
+        if include_submission {
+            if let Some(guidance) = Self::submission_guidance(card, board) {
+                content.push('\n');
+                content.push_str(&guidance);
             }
         }
         content
     }
+
+    /// Current signed candidate state is independent of a potentially long title.
+    /// Reuse the submission owner's next-action semantics and evidence address.
+    fn submission_guidance(card: &airc_work::WorkCard, board: &BoardSnapshot) -> Option<String> {
+        let candidate = crate::modules::work::submission::latest_submission(card)?;
+        let reviews: Vec<_> = board.submission_reviews.iter().filter(|review| {
+            review.card_id == card.card_id && review.submission_id == candidate.submission_id
+        }).collect();
+        let review = reviews.first()?;
+        let outcomes: Vec<_> = reviews.iter().map(|review| review.outcome).collect();
+        let next = crate::modules::work::submission::next_after_submission(
+            Some(candidate.submission_id.as_uuid()), &outcomes,
+            crate::modules::benchmark_grade::graded_at_submit(&card.title),
+            Some(review.review_card_id),
+        )?;
+        Some(format!("{next} Read work/submission card_id={} submission_id={} for all {} signed verdicts, reviewers, and evidence.", card.card_id, candidate.submission_id, reviews.len()))
+    }
+
 }
 
 /// Mirror of airc-lib's `is_active_claim` (work_roster.rs) — the lease truth this
@@ -418,6 +425,34 @@ impl RagSource for RoomBoardSource {
         ctx: &RagContext,
         budget: u32,
         resolution: ResolutionPreference,
+    ) -> RagDelivery {
+        let working = crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some();
+        self.deliver_with_workspace(ctx, budget, resolution, working)
+            .await
+    }
+
+    async fn deliver_continuation(
+        &self,
+        _ctx: &RagContext,
+        _cursor: ContinuationCursor,
+        _budget: u32,
+    ) -> Option<RagDelivery> {
+        // Atomic units (one card each), truncate-not-paginate — same as the
+        // active-work source. A board that overflows one budget truncates with
+        // a logged count; there is no continuation cursor to resume.
+        None
+    }
+}
+
+impl RoomBoardSource {
+    // The caller observes workspace custody; eligibility and rendering use the
+    // same board snapshot regardless of whether open-deck detail is suppressed.
+    async fn deliver_with_workspace(
+        &self,
+        ctx: &RagContext,
+        budget: u32,
+        resolution: ResolutionPreference,
+        working: bool,
     ) -> RagDelivery {
         // Persona-scoped: a cross-persona ctx gets nothing (defense in depth,
         // same shape as the wall / active-work / roster sources).
@@ -526,30 +561,13 @@ impl RagSource for RoomBoardSource {
         // AVAILABLE-WORK SALIENCE (#122): unclaimed cards are work waiting for
         // someone to pick up. Computed here, before anything is rendered, because the
         // HEADLINE below needs both counts — see its comment for why that matters.
-        // WHILE HER HANDS ARE ROOTED AT A CARD (a work turn), the board she perceives is
-        // her own cards only: the open deck is for pulling, and a holder does not pull
-        // (WIP = 1). Measured 2026-09-05: the 12-card kanban was 3.7k tokens of every act.
-        let working = crate::cognition::persona_workspace::acting_root_of(self.persona_id).is_some();
-        let open: Vec<&airc_work::WorkCard> = if working {
-            Vec::new()
-        } else {
-            board
-                .cards
-                .iter()
-                // Unclaimed-and-Open, OR a non-terminal card whose claim LAPSED — an
-                // expired lease is genuinely available work (claim-contention allows
-                // takeover), and before 2026-08-03 lapsed cards appeared in NEITHER
-                // "available" nor honestly-held: invisible as work, sticky as an
-                // attractor.
-                //
-                // The predicate itself lives in `card_holder` and is shared with
-                // `work/list` — this filter used to re-derive it here and excluded only
-                // Merged|Closed, so `Review` cards (which `work/claim` refuses) were
-                // advertised as available: 11 of the 58 offered on the live board
-                // 2026-08-07. One claimability decision, one place.
-                .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
-                .collect()
-        };
+        // A rooted workspace suppresses the detailed open-deck lead, not the
+        // cards' eligibility. Explicit claims remain available while working.
+        let open: Vec<&airc_work::WorkCard> = board
+            .cards
+            .iter()
+            .filter(|c| crate::persona::card_holder::claimable_now(c, now_ms))
+            .collect();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
         // so a prefix-take can never deliver half of them.
@@ -594,8 +612,29 @@ impl RagSource for RoomBoardSource {
                         "kind": "board-headline",
                         "held_count": mine.len(),
                         "open_count": open.len(),
+                        "open_lead_suppressed": working,
                     }),
                 });
+            }
+        }
+
+        // A title-only lead used to consume the budget before the separate card
+        // containing its signed verdict could fit. Keep the focused candidate's
+        // next action/evidence handle ahead of incidental board detail, within the
+        // same budget. This is one atomic, truthful unit, not unbounded review prose.
+        let mut focused_submission = None;
+        if let Some(card) = crate::persona::work_focus::focus_workspace_card(mine.iter().copied()) {
+            if let Some(content) = Self::submission_guidance(card, &board) {
+                let tokens = estimate_tokens(&content);
+                if tokens_used.saturating_add(tokens) <= budget {
+                    tokens_used += tokens;
+                    focused_submission = Some(card.card_id);
+                    items.push(RagItem {
+                        content,
+                        tokens,
+                        metadata: json!({ "kind": "focused-submission", "card_id": card.card_id.as_uuid().to_string() }),
+                    });
+                }
             }
         }
 
@@ -616,7 +655,7 @@ impl RagSource for RoomBoardSource {
                 n = mine.len(),
             );
             let lead_tokens = estimate_tokens(&lead);
-            if lead_tokens <= budget {
+            if tokens_used.saturating_add(lead_tokens) <= budget {
                 tokens_used += lead_tokens;
                 items.push(RagItem {
                     content: lead,
@@ -635,7 +674,7 @@ impl RagSource for RoomBoardSource {
         // ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still follows
         // verbatim in airc's own order — this adds salience, it does not re-rank or
         // filter the board itself.
-        if !open.is_empty() {
+        if !working && !open.is_empty() {
             // NEWEST FIRST, not board order (measured 2026-08-07).
             //
             // Only five titles are ever shown. Taken in board order, a card dispatched
@@ -679,7 +718,7 @@ impl RagSource for RoomBoardSource {
                 n = open.len(),
             );
             let lead_tokens = estimate_tokens(&lead);
-            if lead_tokens <= budget {
+            if tokens_used.saturating_add(lead_tokens) <= budget {
                 tokens_used += lead_tokens;
                 items.push(RagItem {
                     content: lead,
@@ -738,7 +777,7 @@ impl RagSource for RoomBoardSource {
 
         let mut cards_delivered = 0usize;
         for card in ordered.into_iter().take(render_budget_cards) {
-            let content = Self::render(card, &board, self.persona_id, now_ms, &names);
+            let content = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
             let tokens = estimate_tokens(&content);
             if tokens_used.saturating_add(tokens) > budget {
                 // Budget exhausted — a truncated board is still truthful for the
@@ -817,18 +856,6 @@ impl RagSource for RoomBoardSource {
             continuation: None,
             resolution_used: resolution,
         }
-    }
-
-    async fn deliver_continuation(
-        &self,
-        _ctx: &RagContext,
-        _cursor: ContinuationCursor,
-        _budget: u32,
-    ) -> Option<RagDelivery> {
-        // Atomic units (one card each), truncate-not-paginate — same as the
-        // active-work source. A board that overflows one budget truncates with
-        // a logged count; there is no continuation cursor to resume.
-        None
     }
 }
 
@@ -1137,7 +1164,8 @@ mod tests {
         let open_a = card("Claimable one", CardState::Open, None);
         let open_b = card("Claimable two", CardState::Open, None);
 
-        let reader = Arc::new(StubReader::new(snapshot(vec![held, open_a, open_b])));
+        let cards = vec![held, open_a, open_b];
+        let reader = Arc::new(StubReader::new(snapshot(cards.clone())));
         let source = RoomBoardSource::new(me, reader);
         let delivery = source
             .deliver(&ctx(), 2_000, ResolutionPreference::Raw)
@@ -1157,6 +1185,60 @@ mod tests {
             "headline must stay tiny, was {}",
             first.tokens
         );
+
+        // Rooted hands hide the available-work lead, never actual eligibility.
+        // Also cover work rooted elsewhere: this room has no local held card.
+        for local_hold in [true, false] {
+            let local_cards = cards
+                .iter()
+                .filter(|card| local_hold || card.owner != Some(airc_core::PeerId::from_uuid(me)))
+                .cloned()
+                .collect();
+            let source = RoomBoardSource::new(me, Arc::new(StubReader::new(snapshot(local_cards))));
+            let full = source
+                .deliver_with_workspace(&ctx(), 2_000, ResolutionPreference::Raw, true)
+                .await;
+            let headline = &full.items[0];
+            assert_eq!(headline.metadata["kind"], "board-headline");
+            assert_eq!(headline.metadata["held_count"], usize::from(local_hold));
+            assert_eq!(headline.metadata["open_count"], 2);
+            assert_eq!(headline.metadata["open_lead_suppressed"], true);
+            assert!(
+                headline.content.contains("2 claimable"),
+                "{}",
+                headline.content
+            );
+            assert!(!full
+                .items
+                .iter()
+                .any(|item| item.metadata["kind"] == "available-work-lead"));
+            assert_eq!(
+                full.items
+                    .iter()
+                    .filter(|item| item.metadata.get("card_id").is_some())
+                    .count(),
+                if local_hold { 3 } else { 2 }
+            );
+            let tight = source
+                .deliver_with_workspace(&ctx(), headline.tokens, ResolutionPreference::Raw, true)
+                .await;
+            assert_eq!(tight.items[0].content, headline.content);
+            assert_eq!(tight.items[0].metadata, headline.metadata);
+            assert!(tight.tokens_used <= headline.tokens);
+            let short = source
+                .deliver_with_workspace(
+                    &ctx(),
+                    headline.tokens - 1,
+                    ResolutionPreference::Raw,
+                    true,
+                )
+                .await;
+            assert!(!short
+                .items
+                .iter()
+                .any(|item| item.metadata["kind"] == "board-headline"));
+            assert!(short.tokens_used < headline.tokens);
+        }
     }
 
     // what this catches: THE rule Joel set on 2026-08-06 — "should never say
@@ -1336,16 +1418,32 @@ mod tests {
         for _ in 0..32 {
             board.submission_reviews.push(airc_work::WorkSubmissionReview { review_id: airc_work::WorkReviewId::new(), ..review.clone() });
         }
+        // Reproduce the title-only starvation with the actual held-task title size:
+        // the focused signed guidance fits, but repeating the title/details does not.
+        board.cards[0].title = "Continuation-resume deletion PR: remove deliver_continuation machinery + positional cursor (ruling a) — caller inventory attached, closes prior review with record standing".into();
+        let focused_cost = estimate_tokens(&RoomBoardSource::submission_guidance(&board.cards[0], &board).unwrap());
         let reader = Arc::new(StubReader::new(board).in_room(room));
         let source = RoomBoardSource::new(me, reader.clone()).for_room(room);
         let activity = RagContext::for_persona_in_room(me, ctx().now_ms, room);
         // Production room-kanban desired allocation (rag_budget preset).
         let delivery = source.deliver(&activity, 500, ResolutionPreference::Raw).await;
+        let headline_cost: u32 = delivery.items.iter()
+            .filter(|item| item.metadata.get("kind").and_then(|v| v.as_str()) == Some("board-headline"))
+            .map(|item| item.tokens).sum();
+        let constrained_budget = headline_cost + focused_cost;
+        let constrained = source.deliver(&activity, constrained_budget, ResolutionPreference::Raw).await;
+        let constrained_text = constrained.items.iter().map(|item| item.content.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(constrained_text.contains("Revise the work"), "{constrained_text}");
+        assert!(constrained_text.contains(&candidate.submission_id.to_string()));
+        assert!(constrained_text.contains(&candidate.card_id.to_string()));
+        assert!(!constrained_text.contains("Continuation-resume deletion PR"));
+        assert!(constrained.tokens_used <= constrained_budget);
         let content = delivery.items.iter().map(|item| item.content.as_str()).collect::<Vec<_>>().join("\n");
         assert!(content.contains("Revise the work"));
         assert!(content.contains("all 32 signed verdicts, reviewers, and evidence"));
         assert!(content.contains(&candidate.submission_id.to_string()));
         assert!(content.contains("work/submission"));
+        assert_eq!(content.matches("Revise the work").count(), 1);
         assert!(!content.contains(&old.review_id.to_string()));
         assert_eq!(*reader.last_room.lock().unwrap(), Some(Some(room)));
         let elsewhere = RagContext::for_persona_in_room(me, ctx().now_ms, uuid::Uuid::new_v4());

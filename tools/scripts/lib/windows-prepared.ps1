@@ -250,11 +250,12 @@ function Assert-CoreRecoveryStopped {
 }
 
 function Save-CoreRecoveryEvidence {
-    param($Snapshot, [string]$InstallRoot)
+    param($Snapshot, [string]$InstallRoot,
+        [ValidateSet('damaged', 'superseded')][string]$Disposition = 'damaged')
     $sha = [Security.Cryptography.SHA256]::Create()
     try { $digest = [BitConverter]::ToString($sha.ComputeHash($Snapshot.Bytes)).Replace('-', '').ToLowerInvariant() }
     finally { $sha.Dispose() }
-    $path = Join-Path $InstallRoot ("{0}.damaged-{1}.json" -f [IO.Path]::GetFileNameWithoutExtension($Snapshot.Path), $digest)
+    $path = Join-Path $InstallRoot ("{0}.{1}-{2}.json" -f [IO.Path]::GetFileNameWithoutExtension($Snapshot.Path), $Disposition, $digest)
     Assert-CorePreparedPath -Path $path -Expected $path
     if (Test-Path -LiteralPath $path) {
         if ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -ne $digest) { throw 'Recovery evidence differs; refusing replacement.' }
@@ -267,6 +268,139 @@ function Save-CoreRecoveryEvidence {
         finally { $stream.Dispose() }
         [IO.File]::Move($temporary, $path)
     } finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -ErrorAction Stop } }
+}
+
+# Normal bounded-slot supersession, not damaged-selection recovery. The caller
+# holds install.lock and has validated the incoming artifact before requesting
+# reuse of this inactive service slot. Preserve the original receipt as evidence
+# before withdrawing only its rollback eligibility; Active remains untouched.
+function Retire-CorePreviousSelectionForSlot {
+    param([string]$InstallRoot, [string]$Slot, $Descriptor, [string]$Cli, [switch]$DamagedOnly)
+    $path = Join-Path $InstallRoot 'install-previous.json'
+    if (-not (Test-Path -LiteralPath $path)) { return }
+    $previous = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Previous
+    if ((ConvertTo-CoreImagePath (Split-Path $previous.Receipt.release.artifact -Parent)) -ne (ConvertTo-CoreImagePath $Slot)) { return }
+    $active = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Active
+    if ($active.Changed.Count -or ($active.Receipt.release | ConvertTo-Json -Compress) -cne ($Descriptor | ConvertTo-Json -Compress)) {
+        throw 'Active release changed before inactive selection supersession.'
+    }
+    if ($previous.Changed.Count) {
+        Retire-CoreDamagedPreviousService -Previous $previous -Active $active -InstallRoot $InstallRoot -Slot $Slot -Descriptor $Descriptor
+        return
+    }
+    if ($DamagedOnly) { return }
+    $engine = ConvertTo-CoreImagePath (Split-Path $previous.Receipt.release.engine -Parent)
+    # An independent free engine needs no release retirement. Leave the normal
+    # selector's existing refusal/skip behavior in charge of that case.
+    if ((Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot) -ne $engine) { return }
+    if ((ConvertTo-CoreImagePath (Split-Path $active.Receipt.release.artifact -Parent)) -eq (ConvertTo-CoreImagePath $Slot) -or
+        (ConvertTo-CoreImagePath (Split-Path $active.Receipt.release.engine -Parent)) -eq $engine) {
+        throw 'Inactive selection supersession would withdraw active release custody.'
+    }
+    # Service idleness does not imply engine idleness: independent lanes outlive
+    # cores. Only the current CLI's lane-aware selector can authorize this slot.
+    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+    $registration = $task.Description
+    if (((Get-CoreRegisteredRelease -Task $task -InstallRoot $InstallRoot) | ConvertTo-Json -Compress) -cne ($Descriptor | ConvertTo-Json -Compress)) {
+        throw 'Registered release changed before inactive selection supersession.'
+    }
+    foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+        if ($process.ExecutablePath) {
+            $image = ConvertTo-CoreImagePath $process.ExecutablePath
+            if ($image.StartsWith((ConvertTo-CoreImagePath $Slot) + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                $image.StartsWith($engine + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Previous release still has a live image; refusing supersession.'
+            }
+        }
+    }
+    Save-CoreRecoveryEvidence -Snapshot $previous -InstallRoot $InstallRoot -Disposition superseded
+    # The install lease excludes other installers, not scheduler starts. Keep
+    # every sealed old image exclusively pinned through the eligibility change.
+    $pins = [Collections.Generic.List[IDisposable]]::new()
+    try {
+        foreach ($file in (Get-CoreReleaseFiles -Release $previous.Receipt.release).Values) {
+            $pins.Add([IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None))
+        }
+        foreach ($snapshot in @($active, $previous)) {
+            if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($snapshot.Path)) -cne [Convert]::ToBase64String($snapshot.Bytes)) {
+                throw 'Release receipts changed during inactive selection supersession.'
+            }
+        }
+        if ((Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop).Description -cne $registration) {
+            throw 'Supervisor registration changed during inactive selection supersession.'
+        }
+        if ((Get-CoreEngineIdleSlot -Cli $Cli -InstallRoot $InstallRoot) -ne $engine) {
+            throw 'Engine custody changed during inactive selection supersession.'
+        }
+        Remove-Item -LiteralPath $previous.Path -ErrorAction Stop
+    } finally { foreach ($pin in $pins) { $pin.Dispose() } }
+    # This commits receipt eligibility, not an atomic engine replacement. The
+    # caller reselects with live-lane checks; subsequent Copy-Item still refuses
+    # an image Windows maps after these pins are released. Archived evidence is
+    # retained even when staging later refuses, and Active remains bootable.
+    Write-Step 'Superseded the inactive previous release; its exact receipt is retained as evidence and Active is unchanged.'
+}
+
+# Withdraw only an already-invalid rollback receipt. Shared live engine files
+# remain owned by Active; this operation never stages or retires an engine.
+# Caller holds install.lock and has validated the incoming preparation.
+function Retire-CoreDamagedPreviousService {
+    param($Previous, $Active, [string]$InstallRoot, [string]$Slot, $Descriptor)
+    $slotPath = (ConvertTo-CoreImagePath $Slot) + '\'
+    $oldFiles = Get-CoreReleaseFiles -Release $Previous.Receipt.release
+    if (@(Compare-Object @($Previous.Actual.Keys | Sort-Object) @($oldFiles.Keys | Sort-Object)).Count) {
+        throw 'Previous file set changed during damaged Previous retirement.'
+    }
+    $activeFiles = Get-CoreReleaseFiles -Release $Active.Receipt.release
+    $activePaths = @($activeFiles.Values | ForEach-Object { ConvertTo-CoreImagePath $_ })
+    foreach ($field in $Previous.Changed) {
+        $file = ConvertTo-CoreImagePath $oldFiles[$field]
+        if (-not $file.StartsWith($slotPath, [StringComparison]::OrdinalIgnoreCase) -or $activePaths -contains $file) {
+            throw 'Damaged Previous includes active or non-service files; refusing retirement.'
+        }
+    }
+    if (@($activePaths | Where-Object { $_.StartsWith($slotPath, [StringComparison]::OrdinalIgnoreCase) }).Count) {
+        throw 'Damaged Previous service slot overlaps Active.'
+    }
+    $task = Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop
+    $registration = $task.Description
+    if (((Get-CoreRegisteredRelease -Task $task -InstallRoot $InstallRoot) | ConvertTo-Json -Compress) -cne ($Descriptor | ConvertTo-Json -Compress)) {
+        throw 'Registered release changed before damaged Previous retirement.'
+    }
+    foreach ($process in @(Get-CimInstance Win32_Process -ErrorAction Stop)) {
+        if ($process.ExecutablePath -and (ConvertTo-CoreImagePath $process.ExecutablePath).StartsWith($slotPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Damaged Previous service has a live image; refusing retirement.'
+        }
+    }
+    Save-CoreRecoveryEvidence -Snapshot $Previous -InstallRoot $InstallRoot -Disposition damaged
+    $pins = [Collections.Generic.List[IDisposable]]::new()
+    try {
+        foreach ($field in $oldFiles.Keys) {
+            $file = $oldFiles[$field]
+            if ((ConvertTo-CoreImagePath $file).StartsWith($slotPath, [StringComparison]::OrdinalIgnoreCase)) {
+                $stream = [IO.File]::Open($file, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                $pins.Add($stream)
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try { $hash = [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '') }
+                finally { $sha.Dispose() }
+                if ($hash -ne $Previous.Actual[$field]) { throw 'Previous files changed during damaged Previous retirement.' }
+            } elseif ((Get-FileHash -LiteralPath $file -Algorithm SHA256 -ErrorAction Stop).Hash -ne $Previous.Actual[$field]) {
+                throw 'Previous non-service files changed during damaged Previous retirement.'
+            }
+        }
+        foreach ($snapshot in @($Active, $Previous)) {
+            if ([Convert]::ToBase64String([IO.File]::ReadAllBytes($snapshot.Path)) -cne [Convert]::ToBase64String($snapshot.Bytes)) {
+                throw 'Release receipts changed during damaged Previous retirement.'
+            }
+        }
+        $current = Read-CoreReleaseReceipt -InstallRoot $InstallRoot -Selection Active
+        if ($current.Changed.Count) { throw 'Active files changed during damaged Previous retirement.' }
+        if ((Get-ScheduledTask -TaskName ContinuumCore -TaskPath '\' -ErrorAction Stop).Description -cne $registration) {
+            throw 'Supervisor registration changed during damaged Previous retirement.'
+        }
+        Remove-Item -LiteralPath $Previous.Path -ErrorAction Stop
+    } finally { foreach ($pin in $pins) { $pin.Dispose() } }
+    Write-Step 'Retired invalid Previous rollback eligibility; exact damaged receipt retained, Active and engine unchanged.'
 }
 
 # Called only at the normal registration commit point, after bootstrap validation.
@@ -411,7 +545,7 @@ function Install-CoreSupervisorBootstrap {
         # Repairing task drift must not replace DLLs under its running image.
         Assert-CoreSupervisorBootstrap -Path $expected -UserSid $Plan.userSid
         $protocol = (Invoke-InstallerProcess $expected @('installed-service', '--protocol') | Out-String).Trim()
-        if ($LASTEXITCODE -ne 0 -or $protocol -cne '3') { throw 'Existing protected bootstrap has an incompatible protocol.' }
+        if ($LASTEXITCODE -ne 0 -or $protocol -cne '4') { throw 'Existing protected bootstrap has an incompatible protocol.' }
         return
     }
     if ($expected -cne (Get-CoreSupervisorBootstrap -UserSid $Plan.userSid -Generation ([string]$Plan.bootstrapHashes.cli).ToLowerInvariant())) { throw 'New bootstrap generation differs from candidate identity.' }

@@ -30,38 +30,6 @@ use crate::rag::RagEngine;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Room-roster grounding ceiling as a FRACTION (1/64) of the served window,
-/// never a baked constant (task #124, [[no-hardcoded-context-numbers-derive-from-the-live-window]]).
-/// A roster is a handful of presence lines (tens of tokens), so its SHARE stays
-/// tiny — floorless, always `.min(per_source_max)` — but it now SCALES with the
-/// window: ~256 tokens at the common 16k window (the tuned value), more on a big
-/// model, less on a tight one. Keeps the "never starve airc's recent_history"
-/// property (a small fraction, sorted last) while never clamping a 128k window to
-/// a constant. See the budget-claim rationale in `compose_for_turn`.
-// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
-const ROSTER_WINDOW_FRACTION: u32 = 64;
-
-/// Room-doctrine grounding ceiling as a FRACTION (1/16) of the served window.
-/// A doctrine is a short operating contract (a few paragraphs) — larger than the
-/// roster (prose, not a name list) but still a small, floorless share that scales:
-/// ~1024 tokens at a 16k window (the tuned value), growing so a big model can hold
-/// a richer room contract without competing with engram/airc for grow headroom.
-// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
-const DOCTRINE_WINDOW_FRACTION: u32 = 16;
-/// The strip: one line per activity, a few words each, plus her note. A 32k window
-/// gives it ~680 tokens, a 4k window ~85 (two or three activities), fitted loudest first.
-// context-budget-exempt: a DENOMINATOR — already the window-relative pattern this guard enforces
-const AWARENESS_WINDOW_FRACTION: u32 = 48;
-
-/// What a heavyweight grounding source gets when there IS room — its comfortable
-/// size, not its survival minimum. Formerly this same number was ALSO used as the
-/// floor, which is the bug: the allocator drops a source whole when its floor
-/// doesn't fit, so every source demanded 500 tokens to say anything at all while
-/// its real first unit costs 6..40 (measured 2026-08-06). Floor now comes from
-/// `RagSource::floor_tokens`; this stays the target the grow pass aims at.
-// context-budget-exempt: a per-source TARGET, clamped by per_source_max which IS window-relative
-const COMFORTABLE_SOURCE_TOKENS: u32 = 500;
-
 /// All cognitive state for a single persona — single lock, cache-local.
 pub struct PersonaCognition {
     pub engine: PersonaCognitionEngine,
@@ -414,81 +382,11 @@ impl PersonaCognition {
             sources.push(awareness.clone());
         }
 
-        // Per-source budget claims. The two HEAVYWEIGHT sources (engram
-        // long-term memory + airc recent conversation) split idle
-        // headroom evenly; the recent-conversation floor lives on airc
-        // per the cognition-cache-hierarchy doc. The room-roster source
-        // is LIGHTWEIGHT — a handful of presence lines, tens of tokens —
-        // so it claims a small fixed budget with NO floor. Giving it the
-        // same 500/500/per_source_max claim as the heavyweights would
-        // (a) at small context windows let the floor sum exceed
-        // available and starve airc (the roster, sorted last, would also
-        // drop to 0), and (b) at normal windows split grow-headroom 3
-        // ways instead of 2, shrinking airc's delivered recent_history.
-        // A source's budget should reflect its real appetite.
-        let per_source_max = ((context_window as u64) * 6 / 10) as u32;
-        let per_source_max = per_source_max.min(headroom);
+        // Sources declare appetite through the shared contract. Names identify
+        // capture rows; renaming or decorating a source cannot change its share.
         let budgets: Vec<RagSourceBudget> = sources
             .iter()
-            .map(|s| {
-                // Lightweight grounding sources (roster, doctrine) claim a
-                // small floorless budget matching their real appetite, so
-                // they never starve airc's recent_history or compete for
-                // grow headroom with the heavyweight engram/airc sources.
-                let (floor, min, max) = match s.source_id() {
-                    // "roster" is the LIVE id (ViewStateRagSource<RosterViewState>,
-                    // supervisor.rs); "room-roster" was the replaced airc-fetch
-                    // reader's id — kept matched so a replay of an old capture
-                    // still budgets it lightweight. Without the live arm the
-                    // roster fell to the heavyweight `_` arm and could claim up
-                    // to 60% of the window (found 2026-09-01 during the
-                    // imposter sweep).
-                    "roster" | "room-roster" => (
-                        0,
-                        0,
-                        (context_window / ROSTER_WINDOW_FRACTION).min(per_source_max),
-                    ),
-                    "room-doctrine" => (
-                        0,
-                        0,
-                        (context_window / DOCTRINE_WINDOW_FRACTION).min(per_source_max),
-                    ),
-                    crate::persona::awareness_source::SOURCE_ID => (
-                        0,
-                        0,
-                        (context_window / AWARENESS_WINDOW_FRACTION).min(per_source_max),
-                    ),
-                    _ => {
-                        // FLOOR is what the source needs to say ONE true thing;
-                        // MIN is what it wants when there is room. Conflating them
-                        // (both were a hardcoded 500) is what made grounding
-                        // all-or-nothing: the allocator drops a source WHOLE when
-                        // its floor doesn't fit, so a source that could deliver a
-                        // complete 26-token headline was never asked for it.
-                        //
-                        // Measured 2026-08-06 — real first units are 6..40 tokens
-                        // (~104 for one unit from ALL six sources), against a 500
-                        // floor each. On a node whose grounding budget measured
-                        // 0..214, every source was dropped on 100% of turns (137/137
-                        // and 132/132 for two citizens) while asking 12-80x more than
-                        // it needed. Now the source answers for itself
-                        // (`floor_tokens`) and the comfortable size stays `min`, so
-                        // the heavyweights keep their allocation when budget allows
-                        // AND survive at their headline when it does not.
-                        let floor = s.floor_tokens().min(per_source_max);
-                        let min = COMFORTABLE_SOURCE_TOKENS.min(per_source_max).max(floor);
-                        (floor, min, per_source_max)
-                    }
-                };
-                RagSourceBudget {
-                    source_id: s.source_id().to_string(),
-                    priority: 10,
-                    floor_tokens: floor,
-                    min_tokens: min,
-                    max_tokens: max,
-                    required: false,
-                }
-            })
+            .map(|source| source.budget_claim(context_window, headroom))
             .collect();
 
         // Emit the TurnStart capture so audit/replay sees the
@@ -579,6 +477,10 @@ impl RagSource for ArcRagSource {
     /// Delegates to the inner source — the floor is that source's to declare.
     fn floor_tokens(&self) -> u32 {
         self.0.floor_tokens()
+    }
+
+    fn budget_claim(&self, window: u32, headroom: u32) -> super::rag_budget::RagSourceBudget {
+        self.0.budget_claim(window, headroom)
     }
 
     async fn deliver(
@@ -788,6 +690,7 @@ mod tests {
         id: &'static str,
         tokens_per_item: u32,
         items_offered: usize,
+        share: Option<std::num::NonZeroU32>,
     }
 
     #[async_trait]
@@ -804,6 +707,12 @@ mod tests {
         /// Test/stub source — floorless, so it never encodes a production floor.
         fn floor_tokens(&self) -> u32 {
             0
+        }
+        fn budget_claim(&self, window: u32, headroom: u32) -> RagSourceBudget {
+            match self.share {
+                Some(share) => RagSourceBudget::floorless_share(self.id, window, headroom, share),
+                None => RagSourceBudget::retrieval(self.id, self.floor_tokens(), window, headroom),
+            }
         }
         async fn deliver(
             &self,
@@ -890,6 +799,7 @@ mod tests {
             id: "airc",
             tokens_per_item: 50,
             items_offered: 3,
+            share: None,
         });
         pc.set_airc_source(airc);
 
@@ -918,6 +828,33 @@ mod tests {
                 alloc.source_id
             );
         }
+    }
+
+    // Regression for c44d535a: a new source name keeps its declared appetite
+    // through every decorator and the real composer; no ID allow-list is needed.
+    #[tokio::test]
+    async fn decorated_source_claim_survives_new_name_and_composition() {
+        let source = Arc::new(CannedSource {
+            id: "new-standing-kind",
+            tokens_per_item: 1,
+            items_offered: 3,
+            share: std::num::NonZeroU32::new(64),
+        });
+        let (cached, _) = crate::persona::cached_source::CachedRagSource::new(source.clone());
+        let mut pc = PersonaCognition::new(Uuid::new_v4(), "TestBot".into(), Arc::new(RagEngine::new()));
+        pc.set_roster_source(cached);
+        let wrapped = pc.roster_source.as_ref().unwrap();
+        for window in [0, 256, 2048, 51_712] {
+            let headroom = ReservedTokens::scaled_for_window(window).headroom_within(window);
+            assert_eq!(wrapped.budget_claim(window, headroom), source.budget_claim(window, headroom));
+        }
+        let composed = pc.compose_for_turn(&lcd_profile(), 1_000_000, None).await;
+        let allocation = composed.allocation.allocations.iter()
+            .find(|a| a.source_id == source.id).unwrap();
+        assert_eq!(allocation.requested_max, lcd_profile().context_length / 64);
+        assert_eq!(allocation.requested_min, 0);
+        assert_eq!(allocation.requested_floor, 0);
+        assert!(composed.deliveries.iter().any(|d| d.source_id == source.id && d.items.len() == 3));
     }
 
     /// what this catches: the #426 wiring itself. `BenchViewState` had a
@@ -1004,7 +941,7 @@ mod tests {
         let sink_dyn: Arc<dyn RagCaptureSink> = sink.clone();
         let mut pc =
             PersonaCognition::with_capture_sink(id, "Kimi".into(), Arc::new(RagEngine::new()), 200.0, sink_dyn);
-        pc.set_airc_source(Arc::new(CannedSource { id: "airc", tokens_per_item: 50, items_offered: 2 }));
+        pc.set_airc_source(Arc::new(CannedSource { id: "airc", tokens_per_item: 50, items_offered: 2, share: None }));
         let mind = crate::persona::mind_room::mind_room_id(id);
         let _ = pc.compose_for_turn(&lcd_profile(), 1_000_000, Some(mind)).await;
         assert!(sink.is_empty(), "her mind room: no capture events, got {}", sink.len());
@@ -1029,6 +966,7 @@ mod tests {
             id: "airc",
             tokens_per_item: 50,
             items_offered: 2,
+            share: None,
         });
         pc.set_airc_source(airc);
 

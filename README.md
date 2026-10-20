@@ -956,7 +956,7 @@ The system is a **headless Rust core**. `setup:rust` provisions the native build
 cd continuum
 npm install               # web-client deps + the setup scripts below
 npm run setup:rust        # pinned Rust 1.95 + cmake + vendored submodules (native build prereqs)
-npm run setup:git-hooks   # optional, for commit/pre-push validation
+npm run setup:git-hooks   # optional, installs the pre-push Rust check/test hook
 
 continuum start           # build + run the headless Rust core, wait until ready
 continuum reboot          # after editing: rebuild, relaunch, VERIFY the running build SHA

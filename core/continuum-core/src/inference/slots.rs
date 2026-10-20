@@ -1145,6 +1145,9 @@ struct EndpointState {
     pool: Option<Option<Arc<KvSlotPool>>>,
     // An installed ledger can outlive its child until replacement readiness.
     pool_generation: Option<Uuid>,
+    /// Negotiated for this pool incarnation. None is not yet negotiated;
+    /// Ok(None) is explicitly legacy or remotely owned, not governed coverage.
+    page_admission: Option<Result<Option<std::path::PathBuf>, String>>,
 }
 
 /// The directory's existing endpoint owner also arbitrates engine transitions.
@@ -1607,6 +1610,7 @@ impl EndpointTransition {
             state.ready.send_replace(false);
             (generation, pool)
         };
+        directory().discover_page_admission(client, root).await?;
         let mut residents: Vec<_> = pool
             .holders
             .lock()
@@ -1723,6 +1727,7 @@ impl EndpointTransition {
             );
         }
         state.pool = Some(Some(pool));
+        state.page_admission = None;
         state.pool_generation = Some(generation.id);
         state.contract = Some(contract);
         state.ready.send_replace(true);
@@ -1752,6 +1757,7 @@ impl SlotDirectory {
                         contract: None,
                         pool: None,
                         pool_generation: None,
+                        page_admission: None,
                     }),
                 })
             })
@@ -1770,6 +1776,80 @@ impl SlotDirectory {
     /// `None` = never probed (caller should probe /props).
     pub fn get(&self, root: &str) -> Option<Option<Arc<KvSlotPool>>> {
         self.endpoint(root).state.lock().pool.clone()
+    }
+
+    pub(crate) fn page_admission_known(&self, root: &str) -> bool {
+        // A refused discovery never authorizes a write. It remains retryable:
+        // the existing retained path worker may finish after a bounded wait.
+        matches!(self.endpoint(root).state.lock().page_admission, Some(Ok(_)))
+    }
+
+    pub(crate) fn page_discovery_generation(&self, root: &str) -> Option<Uuid> {
+        self.endpoint(root).state.lock().generation.as_ref().map(|generation| generation.id)
+    }
+
+    pub(crate) fn page_admission_path(&self, root: &str) -> Result<Option<std::path::PathBuf>, String> {
+        self.endpoint(root).state.lock().page_admission.clone()
+            .unwrap_or_else(|| Err("page-write capability has not been negotiated".into()))
+    }
+
+    /// Cold discovery shared by spawned and adopted pools. Only the admission
+    /// path is physical: logical checkpoint filenames and ledger handles do not move.
+    pub(crate) async fn negotiate_page_admission(
+        &self, root: &str, pool: &Arc<KvSlotPool>, generation: Option<Uuid>,
+        capability: Option<&serde_json::Value>,
+    ) -> bool {
+        let admission = match capability {
+            None => Ok(None), // older engines retain their existing paging protocol
+            Some(value) if value.as_u64() == Some(1) => match self.page_dir(root) {
+                None => Ok(None), // remote owner must perform its own volume admission
+                Some(path) => crate::system_resources::disk_reporters::resolve_existing_storage_path(&path).await.map(Some)
+                    .map_err(|error| format!("cannot resolve owned page volume: {error}")),
+            },
+            Some(_) => Err("unrecognized exact page-write capability".into()),
+        };
+        let endpoint = self.endpoint(root);
+        let mut state = endpoint.state.lock();
+        if state.generation.as_ref().map(|current| current.id) != generation
+            || !state.pool.as_ref().and_then(Option::as_ref).is_some_and(|current| Arc::ptr_eq(current, pool)) {
+            return false; // a response from an old incarnation cannot authorize its successor
+        }
+        if !matches!(state.page_admission, Some(Ok(_))) {
+            crate::probe!(class = "inference.kv_page.capability",
+                governed = matches!(&admission, Ok(Some(_))),
+                refused = admission.is_err(),
+                "page-write negotiation; legacy and remote ownership remain unactivated");
+            state.page_admission = Some(admission);
+        }
+        true
+    }
+
+    /// Lifecycle checkpoints can precede the first adapter request. They use
+    /// the same endpoint capability publication, never an unnegotiated fallback.
+    pub(crate) async fn discover_page_admission(&self, client: &reqwest::Client, root: &str) -> Result<(), String> {
+        if self.page_admission_known(root) { return self.page_admission_path(root).map(|_| ()); }
+        let generation = self.page_discovery_generation(root);
+        let pool = self.get(root).flatten().ok_or("page-write discovery requires a pool")?;
+        let body = super::llama_server::engine_props(root, client).await
+            .map_err(|error| format!("page-write capability request failed: {error}"))?;
+        if body.get("total_slots").and_then(serde_json::Value::as_u64) != Some(pool.n_slots() as u64) {
+            return Err("page-write capabilities do not identify this pool geometry".into());
+        }
+        if !self.negotiate_page_admission(root, &pool, generation, body.get("slot_save_size_version")).await {
+            return Err("engine changed during page-write discovery".into());
+        }
+        self.page_admission_path(root).map(|_| ())
+    }
+
+    /// Actual page directory of the admitted engine, never a reconstructed default.
+    pub(crate) fn page_dir(&self, root: &str) -> Option<std::path::PathBuf> {
+        let endpoint = self.endpoint(root);
+        let state = endpoint.state.lock();
+        if let Some(path) = state.contract.as_ref().and_then(|contract| contract.page_dir.clone()) {
+            return Some(path);
+        }
+        // Adoption installs a ledger only after checking the live process incarnation.
+        state.pool.as_ref()?.as_ref()?.ledger.get()?.path.parent().map(std::path::Path::to_path_buf)
     }
 
     /// Install (or return the already-installed) pool for a probed server.
@@ -2331,8 +2411,9 @@ mod tests {
 
     // what this catches: the directory latch — an unsupported server must never
     // hand out a pool, and the first probe outcome wins for the process life.
-    #[test]
-    fn directory_latch_and_ensure() {
+    #[tokio::test]
+    async fn directory_latch_and_ensure() {
+        crate::system_resources::disk_reporters::prepare_writer_fixture().await;
         let dir = SlotDirectory {
             endpoints: dashmap::DashMap::new(),
         };
@@ -2342,6 +2423,37 @@ mod tests {
         let p = dir.ensure_pool("s2", 4);
         assert_eq!(p.n_slots(), 4);
         assert!(matches!(dir.get("s2"), Some(Some(_))));
+        assert!(dir.negotiate_page_admission("s2", &p, None, None).await);
+        assert_eq!(dir.page_admission_path("s2").unwrap(), None, "legacy remains unactivated");
+        let capability = serde_json::json!(1);
+        let remote = dir.ensure_pool("remote", 1);
+        assert!(dir.negotiate_page_admission("remote", &remote, None, Some(&capability)).await);
+        assert_eq!(dir.page_admission_path("remote").unwrap(), None, "remote needs its owning node");
+        let page_dir = tempfile::tempdir().unwrap();
+        let local = dir.ensure_pool("local", 1);
+        local.attach_ledger(SavedLedger::in_dir(page_dir.path(), "fixture".into()), false);
+        assert!(dir.negotiate_page_admission("local", &local, None, Some(&capability)).await);
+        assert_eq!(dir.page_admission_path("local").unwrap(), Some(page_dir.path().canonicalize().unwrap()));
+        let replacement = Arc::new(KvSlotPool::new("local", 1));
+        dir.endpoint("local").state.lock().pool = Some(Some(replacement));
+        assert!(!dir.negotiate_page_admission("local", &local, None, Some(&capability)).await,
+            "late props cannot authorize a replacement pool");
+        let invalid = dir.ensure_pool("invalid", 1);
+        assert!(dir.negotiate_page_admission("invalid", &invalid, None, Some(&serde_json::json!("1"))).await);
+        assert!(dir.page_admission_path("invalid").is_err(), "invalid capability is not a legacy fallback");
+        let missing = dir.ensure_pool("missing", 1);
+        missing.attach_ledger(SavedLedger::in_dir(page_dir.path().join("not-created").as_path(), "fixture".into()), false);
+        assert!(dir.negotiate_page_admission("missing", &missing, None, Some(&capability)).await);
+        assert!(dir.page_admission_path("missing").is_err(), "local path resolution failure never falls back to ungoverned save");
+        assert!(!dir.page_admission_known("missing"), "unavailable storage must permit governed rediscovery");
+        std::fs::create_dir(page_dir.path().join("not-created")).unwrap();
+        assert!(dir.negotiate_page_admission("missing", &missing, None, Some(&capability)).await);
+        assert!(dir.page_admission_known("missing"));
+        assert_eq!(dir.page_admission_path("missing").unwrap(),
+            Some(page_dir.path().join("not-created").canonicalize().unwrap()),
+            "the same generation recovers without ungoverned fallback");
+        assert!(!dir.negotiate_page_admission("remote", &remote, Some(Uuid::new_v4()), Some(&capability)).await,
+            "props for a different generation cannot publish capability");
     }
 
     // What this catches (the M5, 2026-10-10 18:49Z: turn_cached 0 of 31,811 after a
@@ -2489,6 +2601,8 @@ mod tests {
         );
         let admitted = endpoint.admit().await.expect("old request");
         let old_pool = admitted.pool.as_ref().expect("pool").clone();
+        assert!(dir.negotiate_page_admission("test://generation", &old_pool, Some(old.id), None).await);
+        assert!(dir.page_admission_known("test://generation"));
         let activity = key(73, 74);
         old_pool
             .lease_paged(activity)
@@ -2571,6 +2685,7 @@ mod tests {
         transition
             .ready("test://generation", &new, contract.clone())
             .expect("replacement ready");
+        assert!(!dir.page_admission_known("test://generation"), "replacement renegotiates instead of inheriting capability");
         // Refreshing readiness for this generation must preserve its current ledger.
         let new_pool = dir
             .get("test://generation")

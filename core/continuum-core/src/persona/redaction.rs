@@ -29,7 +29,7 @@
 //! Detectors are polymorphic: adding a new concern is one new `impl`, not a
 //! change to the redactor. Two shipped here prove the interface across its
 //! extremes — a stateless shape-matcher (`SecretDetector`) and a stateful
-//! corpus-matcher (`ExamKeyDetector`).
+//! corpus-matcher (`HeldOutAnswerDetector`).
 
 use std::collections::BTreeMap;
 
@@ -49,7 +49,9 @@ pub enum RedactionClass {
     /// Personally-identifying information (persona-share export hygiene).
     Pii,
     /// A held-out benchmark answer key (proctored-exam integrity).
-    ExamKey,
+    #[serde(rename = "ExamKey")]
+    #[ts(rename = "ExamKey")]
+    HeldOutAnswer,
 }
 
 impl RedactionClass {
@@ -60,7 +62,7 @@ impl RedactionClass {
         match self {
             RedactionClass::Secret => "[redacted:secret]",
             RedactionClass::Pii => "[redacted:pii]",
-            RedactionClass::ExamKey => "[redacted:exam-key]",
+            RedactionClass::HeldOutAnswer => "[redacted:exam-key]",
         }
     }
 }
@@ -283,7 +285,7 @@ impl RedactionDetector for SecretDetector {
 }
 
 //=============================================================================
-// OUTLIER B — ExamKeyDetector (stateful, corpus-based)
+// OUTLIER B — HeldOutAnswerDetector (stateful, corpus-based)
 //=============================================================================
 
 /// Detects occurrences of a HELD-OUT answer key inside text. The stateful
@@ -298,14 +300,14 @@ impl RedactionDetector for SecretDetector {
 /// Answers shorter than `min_len` are dropped at construction: redacting a
 /// 1–2 char answer everywhere it appears would shred unrelated memory, so those
 /// are left to the durable `forget_context` episode-drop instead.
-pub struct ExamKeyDetector {
+pub struct HeldOutAnswerDetector {
     /// Held-out answers, pre-lowercased ASCII bytes, longest-first so the
     /// greedy overlap pass prefers the most specific match.
     answers: Vec<Vec<u8>>,
     min_len: usize,
 }
 
-impl ExamKeyDetector {
+impl HeldOutAnswerDetector {
     /// Minimum answer length to be redactable. Below this, an answer is too
     /// generic to scrub safely (`forget_context` covers those episodes).
     pub const DEFAULT_MIN_LEN: usize = 4;
@@ -342,9 +344,9 @@ impl ExamKeyDetector {
     }
 }
 
-impl RedactionDetector for ExamKeyDetector {
+impl RedactionDetector for HeldOutAnswerDetector {
     fn class(&self) -> RedactionClass {
-        RedactionClass::ExamKey
+        RedactionClass::HeldOutAnswer
     }
 
     fn detect(&self, text: &str) -> Vec<RedactionSpan> {
@@ -360,7 +362,7 @@ impl RedactionDetector for ExamKeyDetector {
                     spans.push(RedactionSpan {
                         start: i,
                         end: i + needle.len(),
-                        class: RedactionClass::ExamKey,
+                        class: RedactionClass::HeldOutAnswer,
                     });
                     i += needle.len();
                 } else {
@@ -400,23 +402,23 @@ mod tests {
             .is_empty());
     }
 
-    // what this catches: ExamKeyDetector (outlier B) finds held-out answers
+    // what this catches: HeldOutAnswerDetector (outlier B) finds held-out answers
     // case-insensitively at their exact byte offsets, and drops too-short ones.
     #[test]
-    fn exam_key_detector_finds_answers_case_insensitively() {
-        let d = ExamKeyDetector::new(
+    fn held_out_answer_detector_finds_answers_case_insensitively() {
+        let d = HeldOutAnswerDetector::new(
             [
                 "service_loop.rs".to_string(),
                 "3000".to_string(),
                 "x".to_string(),
             ],
-            ExamKeyDetector::DEFAULT_MIN_LEN,
+            HeldOutAnswerDetector::DEFAULT_MIN_LEN,
         );
         // "x" is below min_len → not loaded.
         assert_eq!(d.answer_count(), 2);
         let spans = d.detect("edit Service_Loop.RS and set port 3000");
         assert_eq!(spans.len(), 2);
-        assert!(spans.iter().all(|s| s.class == RedactionClass::ExamKey));
+        assert!(spans.iter().all(|s| s.class == RedactionClass::HeldOutAnswer));
     }
 
     // ── The core guarantee: keep the experience, excise only the key ──
@@ -426,14 +428,14 @@ mod tests {
     // not the crib sheet" invariant.
     #[test]
     fn redact_keeps_experience_and_excises_only_the_key() {
-        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+        let policy = RedactionPolicy::new(vec![Box::new(HeldOutAnswerDetector::new(
             ["service_loop.rs".to_string()],
-            ExamKeyDetector::DEFAULT_MIN_LEN,
+            HeldOutAnswerDetector::DEFAULT_MIN_LEN,
         ))]);
         let memory =
             "I was asked which file holds the loop; I answered service_loop.rs and it passed.";
         let (out, report) = policy.redact(memory);
-        assert_eq!(report.count(RedactionClass::ExamKey), 1);
+        assert_eq!(report.count(RedactionClass::HeldOutAnswer), 1);
         assert!(out.contains("I was asked which file holds the loop"));
         assert!(out.contains("it passed."));
         assert!(!out.contains("service_loop.rs"));
@@ -446,9 +448,9 @@ mod tests {
     fn redact_leaves_clean_text_untouched() {
         let policy = RedactionPolicy::new(vec![
             Box::new(SecretDetector::new()),
-            Box::new(ExamKeyDetector::new(
+            Box::new(HeldOutAnswerDetector::new(
                 ["service_loop.rs".to_string()],
-                ExamKeyDetector::DEFAULT_MIN_LEN,
+                HeldOutAnswerDetector::DEFAULT_MIN_LEN,
             )),
         ]);
         let clean = "We talked about the weather and I felt curious about recursion.";
@@ -463,15 +465,15 @@ mod tests {
     fn multiple_detectors_compose_without_overlap_corruption() {
         let policy = RedactionPolicy::new(vec![
             Box::new(SecretDetector::new()),
-            Box::new(ExamKeyDetector::new(
+            Box::new(HeldOutAnswerDetector::new(
                 ["3000".to_string()],
-                ExamKeyDetector::DEFAULT_MIN_LEN,
+                HeldOutAnswerDetector::DEFAULT_MIN_LEN,
             )),
         ]);
         let text = "key sk-live-abcdef123456 port 3000 done";
         let (out, report) = policy.redact(text);
         assert_eq!(report.count(RedactionClass::Secret), 1);
-        assert_eq!(report.count(RedactionClass::ExamKey), 1);
+        assert_eq!(report.count(RedactionClass::HeldOutAnswer), 1);
         assert!(out.starts_with("key [redacted:secret] port [redacted:exam-key] done"));
     }
 
@@ -479,13 +481,13 @@ mod tests {
     // redaction stays on char boundaries and preserves the surrounding glyphs.
     #[test]
     fn redact_is_utf8_safe_around_multibyte() {
-        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+        let policy = RedactionPolicy::new(vec![Box::new(HeldOutAnswerDetector::new(
             ["3000".to_string()],
-            ExamKeyDetector::DEFAULT_MIN_LEN,
+            HeldOutAnswerDetector::DEFAULT_MIN_LEN,
         ))]);
         let text = "café ☕ port 3000 déjà";
         let (out, report) = policy.redact(text);
-        assert_eq!(report.count(RedactionClass::ExamKey), 1);
+        assert_eq!(report.count(RedactionClass::HeldOutAnswer), 1);
         assert!(out.contains("café ☕ port [redacted:exam-key] déjà"));
     }
 
@@ -493,7 +495,7 @@ mod tests {
     // fail-loud signal the command surfaces, never a silent all-clear).
     #[test]
     fn empty_holdout_set_is_inert_and_reports_zero() {
-        let d = ExamKeyDetector::new(Vec::<String>::new(), ExamKeyDetector::DEFAULT_MIN_LEN);
+        let d = HeldOutAnswerDetector::new(Vec::<String>::new(), HeldOutAnswerDetector::DEFAULT_MIN_LEN);
         assert_eq!(d.answer_count(), 0);
         assert!(d.detect("anything at all service_loop.rs 3000").is_empty());
     }
@@ -503,14 +505,14 @@ mod tests {
     #[test]
     fn report_merge_aggregates_across_engrams() {
         let mut total = RedactionReport::default();
-        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+        let policy = RedactionPolicy::new(vec![Box::new(HeldOutAnswerDetector::new(
             ["service_loop.rs".to_string()],
-            ExamKeyDetector::DEFAULT_MIN_LEN,
+            HeldOutAnswerDetector::DEFAULT_MIN_LEN,
         ))]);
         for mem in ["answer service_loop.rs", "again service_loop.rs here"] {
             let (_, r) = policy.redact(mem);
             total.merge(&r);
         }
-        assert_eq!(total.count(RedactionClass::ExamKey), 2);
+        assert_eq!(total.count(RedactionClass::HeldOutAnswer), 2);
     }
 }

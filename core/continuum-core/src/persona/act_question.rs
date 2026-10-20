@@ -184,7 +184,7 @@ pub(crate) async fn ask_the_act_question(
                                     let id8: String =
                                         c.card_id.as_uuid().to_string().chars().take(8).collect();
                                     let inst =
-                                        crate::commands::benchmark::parse_card_title(&c.title)
+                                        crate::cognition::bench_title::parse_card_title(&c.title)
                                             .map(|(_, i)| i)
                                             .unwrap_or_default(); // unwrap_or: a non-bench title has no instance to scope on
                                     [id8, inst]
@@ -313,8 +313,8 @@ pub(crate) async fn ask_the_act_question(
                         // Prepared environments and hidden grading belong only
                         // to benchmark recipes, never to an ordinary project.
                         if held.first().is_some_and(|card| {
-                            crate::commands::benchmark::parse_card_title(&card.title).is_some()
-                                || crate::commands::benchmark::parse_review_title(&card.title).is_some()
+                            crate::cognition::bench_title::parse_card_title(&card.title).is_some()
+                                || crate::cognition::bench_title::parse_review_title(&card.title).is_some()
                         }) {
                             // THE ENVIRONMENT, as a fact. Live 2026-09-07: a
                             // holder ran `pip install --no-build-isolation -e .`
@@ -349,14 +349,10 @@ pub(crate) async fn ask_the_act_question(
                         // turn, the previous holder's, or the owner's for a
                         // review card. Absence is named with the instruction
                         // (2026-09-12: 78 acts of re-orientation on worked cards).
-                        body.working_memory.pin_fact(
-                            "ledger",
-                            &crate::persona::card_ledger_fact::ledger_fact_for(
-                                ctx.identity.peer_id.as_uuid(),
-                                &held,
-                            )
-                            .await,
-                        );
+                        let (reference, detail) = crate::persona::card_ledger_fact::ledger_fact_for(
+                            ctx.identity.peer_id.as_uuid(), &held,
+                        ).await;
+                        body.working_memory.pin_expandable_fact("ledger", &reference, detail);
                     }
                     if let Some(ws) = &card_root {
                         crate::probe!(
@@ -426,7 +422,7 @@ pub(crate) async fn ask_the_act_question(
                     // The turn's work is synced to its card's branch; her hands stay where
                     // they are, because nothing moved them (card fc9e9fd7).
                     if let Some(hands) = work_hands {
-                        crate::cognition::persona_workspace::end_card_turn(hands).await;
+                        crate::cognition::persona_workspace::end_card_turn(hands, work.acts).await;
                     }
                     if let Some(body) = cycle.acting() {
                         // One turn ended: 1-turn pins ([hands], [env]) leave now; the

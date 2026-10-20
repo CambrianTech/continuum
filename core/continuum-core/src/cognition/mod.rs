@@ -34,8 +34,10 @@ pub mod directed_pending;
 pub mod act_replay;
 pub mod audit;
 pub mod bench_round;
+pub mod bench_title;
+pub mod held_out;
 pub mod grid_allocation;
-pub mod bench_staging;
+pub mod measurement_staging;
 pub mod bench_task;
 pub mod round_readiness;
 pub mod activity;
@@ -79,11 +81,16 @@ pub mod inference_session;
 pub mod introspect_commands;
 pub mod learning_policy;
 pub mod llm_deliberation_faculty;
+pub(crate) mod tool_surface;
+pub mod model_binding;
 pub mod memory_consolidation_region;
 pub mod model_resolver;
+/// Paging cursors over large data she is working through, kept in working memory.
+pub mod open_views;
 pub mod parroted_perception;
 pub mod pass_intent;
 pub mod perception_facts;
+pub mod ring_collapse;
 pub mod persona_tools;
 pub mod persona_workspace;
 /// The handoff record: her state at the seam, written before a stop, read first on wake

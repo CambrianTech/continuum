@@ -148,21 +148,24 @@ pub fn project_ledger(
         .find(|l| l.card_id == card)
 }
 
+/// Required status contains only source identity and an executable expansion route.
+/// Unbounded author text remains in the store and the optional inline rendering.
+pub fn render_reference_for_turn(l: &CardLedger, reader: uuid::Uuid) -> String {
+    format!("[ledger] {} Full saved note is expandable with work/get(card_id=\"{}\"); inline detail may yield to the conversation budget.", attribution(l, reader), l.card_id)
+}
+
+fn attribution(l: &CardLedger, reader: uuid::Uuid) -> String {
+    let relation = if l.by.is_nil() { "author unknown" }
+        else if l.by == reader { "your saved note" }
+        else { "peer handoff; not your own observation" };
+    format!("Card {} | author {} | recorded at {} Unix ms | {relation}:", l.card_id, l.by, l.at_ms)
+}
+
 /// The ledger as an attributed note her work turn opens with. The current reader
 /// distinguishes her own record from a peer handoff; neither overrides newer receipts.
 pub fn render_for_turn(l: &CardLedger, reader: uuid::Uuid) -> String {
     const CAP: usize = 6;
-    let relation = if l.by.is_nil() {
-        "author unknown"
-    } else if l.by == reader {
-        "your saved note"
-    } else {
-        "peer handoff; not your own observation"
-    };
-    let mut out = format!(
-        "[ledger] Card {} | author {} | recorded at {} Unix ms | {relation}:",
-        l.card_id, l.by, l.at_ms
-    );
+    let mut out = format!("[ledger] {}", attribution(l, reader));
     if !l.known.is_empty() {
         out.push_str("\n  Reported findings:");
         for k in l.known.iter().take(CAP) {

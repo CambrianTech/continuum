@@ -532,8 +532,41 @@ pub(crate) async fn kv_page_action(
     key: &ActivityKey,
     action: &str,
 ) -> PageOutcome {
+    let path = if action == "save" {
+        match crate::inference::slots::directory().page_admission_path(root) {
+            Ok(path) => path,
+            Err(reason) => {
+                crate::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
+                    reason = %reason, "page save refused before any checkpoint file write");
+                return PageOutcome::Rejected;
+            }
+        }
+    } else { None };
+    kv_page_action_with_capacity(client, root, slot, key, action, path.is_some(), |bytes| {
+        let path = path.ok_or_else(|| "page directory is not owned by this node".to_string())?;
+        let volume = crate::system_resources::DiskPressureMonitor::volume_for(&path)
+            .ok_or_else(|| "page volume has no disk monitor sample".to_string())?;
+        crate::paging::pool::ensure_projected_disk_capacity(
+            "kv-pages", volume.total_bytes.saturating_sub(volume.available_bytes),
+            volume.total_bytes, bytes,
+        ).map_err(|error| error.to_string())
+    }).await
+}
+
+// The page-action boundary accepts capacity evidence from its existing owner;
+// HTTP fixtures can exercise the same protocol without a global monitor override.
+async fn kv_page_action_with_capacity(
+    client: &reqwest::Client,
+    root: &str,
+    slot: u32,
+    key: &ActivityKey,
+    action: &str,
+    governed: bool,
+    admit_bytes: impl FnOnce(u64) -> Result<(), String>,
+) -> PageOutcome {
     let url = format!("{}/slots/{}?action={}", root.trim_end_matches('/'), slot, action);
     let filename = crate::inference::slots::page_filename(key);
+    let operation = (action == "restore").then(uuid::Uuid::new_v4);
     let (p50_ms, p90_ms, measured) = KV_PAGE_SWITCH_MS.p50_p90();
     let bound = kv_page_wedge_bound(p90_ms);
     let started = std::time::Instant::now();
@@ -547,14 +580,52 @@ pub(crate) async fn kv_page_action(
     // queue this switch sits in is moving and the switch keeps waiting. A queue that
     // stops moving, or an engine that stops answering, turns the switch uncertain at
     // that checkpoint, and a dead engine ends it sooner when its socket drops.
+    let mut payload = json!({ "filename": filename });
+    if let Some(operation) = operation {
+        payload["operation_id"] = json!(operation);
+    }
+    if action == "save" && governed {
+        // A separate action is required: older engines must not mistake a quote for a write.
+        let quote = async {
+            let response = client.post(format!("{}/slots/{slot}?action=save-size", root.trim_end_matches('/')))
+                .json(&json!({ "filename": filename })).send().await.ok()?;
+            if !response.status().is_success() {
+                return None;
+            }
+            let body = response.json::<serde_json::Value>().await.ok()?;
+            (body["id_slot"].as_u64() == Some(slot as u64)
+                && body["filename"].as_str() == Some(filename.as_str()))
+                .then(|| body["projected_bytes"].as_u64()).flatten().filter(|bytes| *bytes > 0)
+        };
+        let projected = wait_while_engine_progresses(
+            quote, bound,
+            || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
+            |_| {},
+        ).await.flatten();
+        let admission = projected.ok_or_else(|| "exact page file quote unavailable; no write requested".to_string())
+            .and_then(|bytes| { admit_bytes(bytes)?; Ok(bytes) });
+        match admission {
+            Ok(bytes) => payload["admitted_bytes"] = json!(bytes),
+            Err(reason) => {
+                crate::probe!(class = "inference.kv_page.admission_refused", slot = slot as u64,
+                    reason = %reason, "page save refused before any checkpoint file write");
+                return PageOutcome::Rejected;
+            }
+        }
+    }
     let send = client
         .post(&url)
-        .json(&json!({ "filename": filename }))
+        .json(&payload)
         .send();
     let resp = wait_while_engine_progresses(
         send,
         bound,
-        || crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client),
+        || async {
+            match operation {
+                Some(operation) => crate::inference::llama_server::restore_probe(root.trim_end_matches('/'), client, operation, slot).await,
+                None => crate::inference::llama_server::engine_probe(root.trim_end_matches('/'), client).await,
+            }
+        },
         |busy_checkpoints| {
             crate::probe!(
                 class = "inference.kv_page.busy_not_dead",
@@ -786,6 +857,9 @@ mod tests {
                     let saves = saves.clone();
                     async move {
                         let action = query.get("action").cloned().unwrap_or_default(); // unwrap_or_default: a fixture request with no action is a restore
+                        if action == "save-size" {
+                            return (StatusCode::OK, Json(json!({"id_slot": slot, "filename": body["filename"], "projected_bytes": 100})));
+                        }
                         if action == "save" {
                             saves.lock().expect("test: fixture mutex").push(slot);
                         }
@@ -798,12 +872,29 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
         let root = format!("http://{}", listener.local_addr().expect("test: addr"));
         let server = tokio::spawn(async move { axum::serve(listener, app).await });
-        let pool = Arc::new(KvSlotPool::new(&root, 2));
+        let pool = crate::inference::slots::directory().ensure_pool(&root, 2);
+        assert!(crate::inference::slots::directory()
+            .negotiate_page_admission(&root, &pool, None, None).await,
+            "this fixture advertises the legacy paging protocol");
         assert!(pool.scratch_slot().is_none(), "two lanes reserve no scratch slot");
         let sem = Arc::new(Semaphore::new(4));
         let client = reqwest::Client::new();
         let a = ActivityKey::new(Uuid::from_u128(1), Uuid::from_u128(2)).expect("test: non-nil ids");
         let b = ActivityKey::new(Uuid::from_u128(3), Uuid::from_u128(4)).expect("test: non-nil ids");
+        // Exact pre-write admission uses the same HTTP boundary and policy, with
+        // supplied volume evidence instead of mutating the process-wide monitor.
+        assert_eq!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
+            crate::paging::pool::ensure_projected_disk_capacity("fixture", 900, 1000, bytes)
+                .map_err(|error| error.to_string())
+        }).await, PageOutcome::Rejected);
+        assert!(saves.lock().unwrap().is_empty(), "capacity refusal must not issue a save");
+        assert_eq!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
+            assert_eq!(bytes, 100);
+            crate::paging::pool::ensure_projected_disk_capacity("fixture", 800, 1000, bytes)
+                .map_err(|error| error.to_string())
+        }).await, PageOutcome::Completed);
+        assert_eq!(saves.lock().unwrap().as_slice(), &[0]);
+        saves.lock().unwrap().clear();
         // Two residents warm their slots: a large working set and a small one. Each
         // turn COMPLETES (a dropped, uncommitted turn forgets its attribution — the
         // cancellation rule — and would leave both slots reading as free).
@@ -998,7 +1089,9 @@ mod tests {
         let entered = Arc::new(tokio::sync::Notify::new());
         let release = Arc::new(tokio::sync::Notify::new());
         let finished = Arc::new(tokio::sync::Notify::new());
-        let app = Router::new().route(
+        let app = Router::new().route("/props", axum::routing::get(|| async {
+            Json(json!({"total_slots": 3}))
+        })).route(
             "/slots/{slot}",
             post({
                 let mode = mode.clone();
@@ -1270,6 +1363,10 @@ mod tests {
                 "identity refusals issue no HTTP"
             );
             mode.store(behavior, Ordering::SeqCst);
+            assert!(!crate::inference::slots::directory().page_admission_known(&root),
+                "a new ready generation has not received an adapter probe");
+            assert!(crate::inference::slots::directory().page_admission_path(&root).is_err(),
+                "unknown capability cannot authorize a save");
             if behavior == 5 {
                 {
                     let saving = checkpointing.checkpoint_residents(&client, &root);
@@ -1307,6 +1404,8 @@ mod tests {
                     .checkpoint_residents(&client, &root)
                     .await
                     .expect("both residents saved");
+                assert!(crate::inference::slots::directory().page_admission_known(&root),
+                    "lifecycle checkpoint negotiates before any adapter request");
                 assert!(
                     receipt.transition_for(&prior).is_err(),
                     "receipt refuses predecessor"

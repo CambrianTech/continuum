@@ -536,6 +536,7 @@ pub async fn ensure_storage<T: Transport>(
         StagedCreditGeneration::COLLECTION,
         CreditTransferIntent::COLLECTION,
         CreditTransferAcceptance::COLLECTION,
+        graded::BenchmarkCreditAttribution::COLLECTION,
         WorkCreditBinding::COLLECTION,
         CreditGenerationReservation::COLLECTION,
         CreditReviewDecision::COLLECTION,
@@ -853,7 +854,7 @@ pub async fn read_one<T: Transport, E: OrmEntity + DeserializeOwned>(
         .transpose()
 }
 
-fn create<E: OrmEntity + Serialize>(id: String, entity: &E) -> Result<BatchOperation, ClientError> {
+pub(super) fn create<E: OrmEntity + Serialize>(id: String, entity: &E) -> Result<BatchOperation, ClientError> {
     Ok(BatchOperation {
         operation_type: BatchOperationType::Create,
         collection: E::COLLECTION.into(),
@@ -894,7 +895,7 @@ fn same_intent(
         && prior.completion == row.completion
 }
 
-async fn write_batch<T: Transport>(
+pub(super) async fn write_batch<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     operations: Vec<BatchOperation>,
@@ -911,7 +912,7 @@ async fn write_batch<T: Transport>(
     storage_ok(&value, "data/batch", WorkCreditBinding::COLLECTION)
 }
 
-pub(super) async fn transfer_accepted<T: Transport>(
+pub(crate) async fn transfer_accepted<T: Transport>(
     conn: &Connection<T>,
     persona_name: &str,
     revision: Uuid,

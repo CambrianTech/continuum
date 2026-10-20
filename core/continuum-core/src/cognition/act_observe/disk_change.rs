@@ -11,9 +11,9 @@ use std::hash::{Hash, Hasher};
 use std::path::Path;
 use std::time::Duration;
 
-/// Bound on each git read; a checkout on a cold disk answers well inside it, and a hang
-/// is an unreadable fingerprint, never waited out.
-const READ_BOUND: Duration = Duration::from_secs(5);
+/// Bound on each git read: the one launch-path filesystem bound; a hang is an unreadable
+/// fingerprint, never waited out.
+const READ_BOUND: Duration = crate::runtime::daemon::LAUNCH_PATH_FS_BOUND;
 
 /// PURE: the fingerprint of a checkout from what git and the filesystem said: HEAD, the
 /// porcelain status, and each listed path's size and modification time. The stats matter

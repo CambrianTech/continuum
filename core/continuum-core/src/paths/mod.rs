@@ -22,6 +22,34 @@
 
 pub mod docker;
 pub mod cargo;
+pub mod artifacts;
+pub mod native;
+
+/// Configured storage tier, without inventing a machine-specific destination.
+/// Writers still resolve its physical volume and perform capacity admission.
+pub fn configured_storage_root() -> Option<std::path::PathBuf> {
+    configured("CONTINUUM_STORAGE_PATH")
+}
+
+/// Component-prefix comparison without filesystem IO. Windows normal and
+/// verbatim drive/UNC prefixes name the same spelling; other components remain
+/// exact. This does not resolve junctions, symlinks or relative paths: callers
+/// retain their existing physical-path custody contract.
+pub fn has_path_prefix(path: &std::path::Path, base: &std::path::Path) -> bool {
+    let mut components = path.components();
+    base.components().all(|expected| components.next().is_some_and(|actual| {
+        #[cfg(windows)]
+        if let (std::path::Component::Prefix(a), std::path::Component::Prefix(b)) = (actual, expected) {
+            use std::path::Prefix::{Disk, UNC, VerbatimDisk, VerbatimUNC};
+            return match (a.kind(), b.kind()) {
+                (Disk(a) | VerbatimDisk(a), Disk(b) | VerbatimDisk(b)) => a.eq_ignore_ascii_case(&b),
+                (UNC(a, share_a) | VerbatimUNC(a, share_a), UNC(b, share_b) | VerbatimUNC(b, share_b)) => a == b && share_a == share_b,
+                (a, b) => a == b,
+            };
+        }
+        actual == expected
+    }))
+}
 
 /// The continuum home dir (`$CONTINUUM_HOME` else `~/.continuum`) — the same
 /// resolution the dispatch workspace + progress ledger use. `pub(crate)` so the

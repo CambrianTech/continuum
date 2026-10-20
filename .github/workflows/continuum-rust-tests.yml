@@ -108,11 +108,15 @@ jobs:
           bash tools/scripts/tests/install-llama-server-slots.test.sh
           python3 tools/scripts/tests/test_ci_lib_test_artifact.py
           python3 -m unittest discover -s core/continuum-core/src/genome/fine_tuning -p cuda_train_test.py -v
+          export CONTINUUM_NATIVE_CONTAINER_LEASE_TEST="$RUNNER_TEMP/continuum-container-custody-test"
+          c++ -std=c++17 -O1 -pthread -I core/vendor/llama.cpp/ggml/src -I core/vendor/llama.cpp/ggml/include \
+            core/vendor/llama.cpp/tests/test-moe-residency.cpp -o "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
+          "$CONTINUUM_NATIVE_CONTAINER_LEASE_TEST"
           # `json` (not `json-render-diagnostics`): the warning ratchet below reads the
           # compiler-message records, which the render-diagnostics form sends to stderr
           # as text instead. The artifact script reads compiler-artifact records, present
           # in both.
-          cargo test -p continuum-core --lib --profile dev-fast --no-run --message-format=json > lib-artifacts.jsonl
+          python3 tools/scripts/ci-lib-test-artifact.py --capture lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --no-run --timings --message-format=json
           # Warning debt is monotonic: the same stream, counted against
           # scripts/ratchets/rust-warnings-baseline.txt (grow = red; shrink = lower it here).
           bash scripts/ratchets/check-rust-warnings.sh lib-artifacts.jsonl
@@ -121,11 +125,27 @@ jobs:
           cat lib-test.env >> "$GITHUB_ENV"
           while IFS='=' read -r name value; do export "$name=$value"; done < lib-test.env
           cd core/continuum-core
+          interop_output=$(LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
+            model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes \
+            --exact --ignored --nocapture)
+          printf '%s\n' "$interop_output"
+          [[ "$interop_output" == *"1 passed;"* ]]
           LD_LIBRARY_PATH="$CONTINUUM_LIB_TEST_LD_LIBRARY_PATH" "$CONTINUUM_LIB_TEST" \
             --skip 'gpu::memory_manager::' \
             --skip 'modules::gpu::' \
             --skip 'modules::persona_allocator::' \
             --skip 'persona::allocator::tests::test_allocate'
+
+      - name: Retain Unix build evidence
+        if: always() && needs.changes.outputs.rust != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: unix-lib-build-evidence
+          path: |
+            lib-artifacts.jsonl
+            ${{ env.CONTINUUM_CARGO_TIMINGS }}
+          if-no-files-found: ignore
+          retention-days: 1
 
       # --lib never runs the CLI's handoff admission tests, nor the deploy consumer's
       # verdict and per-build attempt ledger (card f7826d97). Use this existing
@@ -137,6 +157,7 @@ jobs:
           set -o pipefail
           for test in \
             tests::prebuilt_reboot_options_are_explicit_and_strict \
+            tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
             tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
             tests::the_deploy_consumer_deploys_only_a_clean_checkout_toward_a_tip_not_running; do
             cargo test -p continuum-core --bin continuum --profile dev-fast "$test" -- --exact 2>&1 | tee cli-handoff.log
@@ -230,27 +251,19 @@ jobs:
               ;;
           esac
 
-  cargo-check-windows:
-    name: cargo check windows-msvc (lib + tests)
+  windows-core-contract:
+    name: Windows core compilation and custody
     needs: changes
     if: ${{ !cancelled() }}
     runs-on: windows-latest
-    timeout-minutes: 45
+    # Run39000527521 spent >39m before the CLI fixture; its prior measured8m46
+    # makes ~48m total. Keep shared compilation, plus12m for runner variation.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-        if: needs.changes.outputs.installer != 'false'
+        if: needs.changes.outputs.rust != 'false'
         with:
-          submodules: ${{ needs.changes.outputs.rust != 'false' && 'recursive' || 'false' }}
-      - name: Windows hidden installer process regression
-        if: needs.changes.outputs.installer != 'false'
-        shell: powershell
-        run: |
-          ./tools/scripts/sync-windows-bootstrap.ps1 -Check
-          ./tools/scripts/tests/windows-process.test.ps1 -CheckDescendants
-      - name: Windows bounded AIRC entry download
-        if: needs.changes.outputs.installer != 'false'
-        shell: powershell
-        run: ./tools/scripts/tests/windows-airc-download.test.ps1
+          submodules: recursive
       - name: Install Rust toolchain from rust-toolchain.toml
         if: needs.changes.outputs.rust != 'false'
         run: |
@@ -276,10 +289,19 @@ jobs:
         run: |
           python tools/scripts/tests/test_ci_lib_test_artifact.py
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          . ./tools/scripts/lib/install-common.ps1
+          Enter-MsvcEnv
+          $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST = Join-Path $env:RUNNER_TEMP 'continuum-container-custody-test.exe'
+          $nativeObject = Join-Path $env:RUNNER_TEMP 'continuum-container-custody-test.obj'
+          & cl /nologo /std:c++17 /EHsc /O1 /DNOMINMAX /D_CRT_SECURE_NO_WARNINGS /Icore/vendor/llama.cpp/ggml/src /Icore/vendor/llama.cpp/ggml/include core/vendor/llama.cpp/tests/test-moe-residency.cpp "/Fe:$env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST" "/Fo:$nativeObject"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $env:CONTINUUM_NATIVE_CONTAINER_LEASE_TEST
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           # Replace the lib-only type check with a runnable artifact. The existing
           # reduced-debug profile avoids the full-debug PDB size failure; compile
           # once and reuse it for these native custody tests, not a second lane.
-          cargo test -p continuum-core --lib --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures --no-run --message-format=json > windows-lib-artifacts.jsonl
+          # Shared streaming capture keeps compiler errors visible before failure or cancellation.
+          python tools/scripts/ci-lib-test-artifact.py --capture windows-lib-artifacts.jsonl -- cargo test -p continuum-core --lib --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures --no-run --timings --message-format=json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $testEnv = python tools/scripts/ci-lib-test-artifact.py windows-lib-artifacts.jsonl core/continuum-core (rustc --print target-libdir)
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -290,17 +312,79 @@ jobs:
           $env:PATH = $env:CONTINUUM_LIB_TEST_LD_LIBRARY_PATH + ';' + $env:PATH
           $env:CONTINUUM_REQUIRE_WINDOWS_REPARSE_TEST = '1'
           Push-Location core/continuum-core
-          foreach ($test in @('broker_reclaims_release_incremental_only_after_profile_custody', 'redirected_profile_or_incremental_child_never_reaches_external_data', 'ladder_frees_in_order_and_preserves_release_outputs')) {
-            $output = & $env:CONTINUUM_LIB_TEST "system_resources::disk_eviction::tests::$test" --exact --nocapture 2>&1
+          $interop = & $env:CONTINUUM_LIB_TEST 'model_registry::artifacts::expert_placement::tests::fs2_and_native_container_locks_interoperate_across_processes' --exact --ignored --nocapture 2>&1
+          $interopResult = $LASTEXITCODE
+          $interop | Write-Output
+          if ($interopResult -ne 0) { exit $interopResult }
+          if (($interop -join "`n") -notmatch '1 passed;') { throw 'Native/fs2 custody fixture did not execute' }
+          foreach ($test in @(
+            'model_registry::artifacts::expert_placement::tests::online_preparation_preserves_readers_until_explicit_final_exclusion',
+            'model_registry::artifacts::expert_placement::tests::actual_lazy_reader_excludes_freeze_until_its_lifetime_ends',
+            'inference::engine_install::tests::installed_engine_receipt_binds_bytes_and_candidate_membership',
+            'system_resources::disk_eviction::tests::broker_reclaims_release_incremental_only_after_profile_custody',
+            'system_resources::disk_eviction::tests::redirected_profile_or_incremental_child_never_reaches_external_data',
+            'system_resources::disk_eviction::tests::ladder_frees_in_order_and_preserves_release_outputs'
+          )) {
+            $output = & $env:CONTINUUM_LIB_TEST $test --exact --nocapture 2>&1
             $result = $LASTEXITCODE
             $output | Write-Output
             if ($result -ne 0) { exit $result }
             if (($output -join "`n") -notmatch '1 passed;') { throw "Fixture did not execute: $test" }
           }
           Pop-Location
+      - name: Retain Windows build evidence
+        if: always() && needs.changes.outputs.rust != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-lib-build-evidence
+          path: |
+            windows-lib-artifacts.jsonl
+            ${{ env.CONTINUUM_CARGO_TIMINGS }}
+          if-no-files-found: ignore
+          retention-days: 1
       - name: Type-check integration targets using the same headless profile
         if: needs.changes.outputs.rust != 'false'
         run: cargo check -p continuum-core --test '*' --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures
+      - name: Windows maintenance durable-stop regression
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          foreach ($test in @(
+            'tests::legacy_core_requires_explicit_recovery_before_reboot_teardown'
+          )) {
+            $output = & cargo test -p continuum-core --bin continuum --profile dev-fast --no-default-features --features livekit-webrtc,test-fixtures $test -- --exact 2>&1
+            $result = $LASTEXITCODE
+            $output | Write-Output
+            if ($result -ne 0) { exit $result }
+            if (($output -join "`n") -notmatch '1 passed;') { throw "Maintenance CLI fixture did not execute: $test" }
+          }
+
+  # Standalone installer/lifecycle checks do not link continuum-core. Keep their
+  # contract independent of the measured core build + integration + CLI link,
+  # which consumed the previous shared job's 45-minute budget before these ran.
+  windows-lifecycle-contract:
+    name: Windows standalone installer and lifecycle
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        if: needs.changes.outputs.installer != 'false' || needs.changes.outputs.rust != 'false'
+      - name: Install Rust toolchain from rust-toolchain.toml
+        if: needs.changes.outputs.rust != 'false'
+        run: |
+          rustup show active-toolchain
+          rustc --version
+      - name: Windows hidden installer process regression
+        if: needs.changes.outputs.installer != 'false'
+        shell: powershell
+        run: |
+          ./tools/scripts/sync-windows-bootstrap.ps1 -Check
+          ./tools/scripts/tests/windows-process.test.ps1 -CheckDescendants
+      - name: Windows bounded AIRC entry download
+        if: needs.changes.outputs.installer != 'false'
+        shell: powershell
+        run: ./tools/scripts/tests/windows-airc-download.test.ps1
       - name: Windows installed release and supervisor regressions
         if: needs.changes.outputs.installer != 'false'
         shell: powershell
@@ -346,3 +430,18 @@ jobs:
       - name: continuum-cli-lifecycle tests (the CLI's platform lifecycle, no core link)
         if: needs.changes.outputs.rust != 'false'
         run: cargo test -p continuum-cli-lifecycle
+
+  # Preserve the required Windows context; neither child can silently disappear.
+  cargo-check-windows:
+    name: cargo check windows-msvc (lib + tests)
+    needs: [windows-core-contract, windows-lifecycle-contract]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require both Windows contracts
+        env:
+          CORE_RESULT: ${{ needs.windows-core-contract.result }}
+          LIFECYCLE_RESULT: ${{ needs.windows-lifecycle-contract.result }}
+        run: |
+          test "$CORE_RESULT" = success && test "$LIFECYCLE_RESULT" = success

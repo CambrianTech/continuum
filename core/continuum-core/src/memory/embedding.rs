@@ -10,7 +10,6 @@
 //! model.
 //!
 //! This module now owns only:
-//! - [`cosine_similarity`] — the pure relevance math the Rayon recall layers run.
 //! - [`DeterministicEmbeddingProvider`] — a deterministic, word-overlap-sensitive
 //!   test embedder that implements the canonical async trait (so semantic recall
 //!   can be exercised without a model or a network round-trip).
@@ -24,31 +23,6 @@ use async_trait::async_trait;
 
 // ─── Vector Math ───────────────────────────────────────────────────────────────
 
-/// Cosine similarity between two embedding vectors.
-/// Returns 0.0 for zero-length or mismatched vectors.
-/// Auto-vectorized by rustc in release mode (SIMD).
-pub fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
-    }
-
-    let mut dot = 0.0f32;
-    let mut norm_a = 0.0f32;
-    let mut norm_b = 0.0f32;
-
-    for i in 0..a.len() {
-        dot += a[i] * b[i];
-        norm_a += a[i] * a[i];
-        norm_b += b[i] * b[i];
-    }
-
-    let denom = norm_a.sqrt() * norm_b.sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        dot / denom
-    }
-}
 
 // ─── Deterministic Embedding Provider (for testing) ───────────────────────────
 
@@ -138,6 +112,7 @@ impl EmbeddingProvider for DeterministicEmbeddingProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::embedding::cosine_similarity;
 
     #[test]
     fn test_cosine_similarity_identical() {

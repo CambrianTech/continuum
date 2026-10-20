@@ -40,7 +40,7 @@ pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
 ];
 
 /// Every `Command::new(` in production code on 2026-09-12 (canary 48fbbfd44). May only fall.
-pub const BASELINE_SPAWN_SITES: usize = 166;
+pub const BASELINE_SPAWN_SITES: usize = 124;
 
 /// Per-program baselines for [`ANSWERED_BY_A_LIBRARY`] on the same day. May only fall.
 pub const BASELINE_BY_PROGRAM: &[(&str, usize)] = &[
@@ -132,6 +132,7 @@ mod tests {
              route a real subprocess through system_resources::bounded_command. Newest-looking:\n{}",
             sites.iter().rev().take(8).map(|v| format!("  {}:{}  {}", v.file, v.line, v.source)).collect::<Vec<_>>().join("\n")
         );
+        crate::assert_baseline_is_current("BASELINE_SPAWN_SITES", total, BASELINE_SPAWN_SITES);
         // the calibration read: per-program counts, for the next baseline edit
         eprintln!("spawn sites: {total}; by program: {:?}", per.iter().map(|(p, v)| (*p, v.len())).collect::<Vec<_>>());
     }

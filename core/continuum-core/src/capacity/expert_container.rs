@@ -58,6 +58,58 @@ pub struct TierSpec {
     pub record_bytes: u64,
 }
 
+/// The native foundry emits `MoecQuant` integers, while older Rust producers
+/// emit quant labels. Preserve the original representation in provenance and
+/// round trips; interpreting a tag must not rewrite the producer's manifest.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(untagged)]
+pub enum ContainerFormat {
+    Label(String),
+    Native(u32),
+}
+
+impl From<&str> for ContainerFormat {
+    fn from(label: &str) -> Self {
+        Self::Label(label.to_owned())
+    }
+}
+
+impl ContainerFormat {
+    fn quant_label(&self) -> String {
+        match self {
+            Self::Label(label) => label.clone(),
+            // ggml-moe-container.h::MoecQuant is the producer authority.
+            Self::Native(1) => "RVQ3".to_owned(),
+            Self::Native(2) => "IQ2".to_owned(),
+            Self::Native(3) => "MXFP4".to_owned(),
+            Self::Native(tag) => format!("native:{tag}"),
+        }
+    }
+}
+
+/// A whole-container storage observation. This is geometry evidence, not a
+/// producer-completion certificate or permission to retire the source. Migration
+/// must additionally retain reader custody and verify every copied byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompleteContainer {
+    pub root: PathBuf,
+    pub manifest: ContainerManifest,
+    /// Original producer bytes, including unknown metadata. Placement receipts
+    /// can fingerprint these; they must never synthesize a replacement manifest.
+    pub manifest_bytes: Vec<u8>,
+    pub bank_bytes: u64,
+    /// All original flat entries, including auxiliary producer evidence. A
+    /// migration must preserve these too, not just regenerate a manifest.
+    pub files: Vec<ContainerFile>,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContainerFile {
+    pub name: std::ffi::OsString,
+    pub bytes: u64,
+}
+
 /// `manifest.json` at the container root — the seam contract with the
 /// foundry (#268). The foundry WRITES this; nothing on the serving side ever
 /// hand-authors one. Versioned so the format can grow without silent
@@ -71,7 +123,7 @@ pub struct ContainerManifest {
     pub model: String,
     /// Record encoding (e.g. "VQ3R", "VQ2R"). Decode-stage concern; the
     /// fetch seam only carries it through.
-    pub fmt: String,
+    pub fmt: ContainerFormat,
     /// Fixed size of every expert record in every bank, in bytes. MUST be a
     /// multiple of [`RECORD_ALIGN`].
     pub record_bytes: u64,
@@ -110,7 +162,7 @@ impl ContainerManifest {
         if self.tiers.is_empty() {
             vec![TierSpec {
                 id: 0,
-                quant: self.fmt.clone(),
+                quant: self.fmt.quant_label(),
                 record_bytes: self.record_bytes,
             }]
         } else {
@@ -124,6 +176,8 @@ impl ContainerManifest {
 /// on from the message alone is a bug in the error, not just the container.
 #[derive(Debug, thiserror::Error)]
 pub enum ContainerError {
+    #[error("container {path}: invalid whole-container geometry: {reason}")]
+    WholeGeometry { path: PathBuf, reason: String },
     #[error("container manifest {path}: {source}")]
     ManifestIo {
         path: PathBuf,
@@ -310,11 +364,14 @@ impl ExpertBank {
 pub struct ExpertContainer {
     root: PathBuf,
     manifest: ContainerManifest,
+    manifest_bytes: Vec<u8>,
     /// Effective tier table (synthesized single tier for v1) — validated at
     /// open so fetch-time indexing is pure arithmetic.
     tiers: Vec<TierSpec>,
     /// Lazily-opened banks, indexed `layer × n_tiers + tier`.
     banks: Vec<Option<ExpertBank>>,
+    /// Declared last so bank handles are dropped before reader custody ends.
+    _reader_lease: Option<File>,
 }
 
 impl ExpertContainer {
@@ -323,9 +380,115 @@ impl ExpertContainer {
     /// locked 2026-07-31).
     pub const KNOWN_VERSION: u32 = 2;
 
+    /// Observe the entire container for placement, unlike lazy shard serving.
+    /// A manifest is written before banks by the native packer, so parsing it
+    /// alone never establishes that an artifact is complete.
+    pub fn observe_complete(root: &Path) -> Result<CompleteContainer, ContainerError> {
+        let refuse = |reason: String| ContainerError::WholeGeometry {
+            path: root.to_path_buf(),
+            reason,
+        };
+        let plain_metadata = |path: &Path| -> Result<std::fs::Metadata, ContainerError> {
+            let metadata = std::fs::symlink_metadata(path)
+                .map_err(|error| refuse(format!("{}: {error}", path.display())))?;
+            #[cfg(windows)]
+            let redirected = {
+                use std::os::windows::fs::MetadataExt;
+                metadata.file_attributes() & 0x400 != 0
+            };
+            #[cfg(not(windows))]
+            let redirected = metadata.file_type().is_symlink();
+            if redirected {
+                return Err(refuse(format!("redirected entry {}", path.display())));
+            }
+            Ok(metadata)
+        };
+        if !plain_metadata(root)?.is_dir()
+            || !plain_metadata(&root.join("manifest.json"))?.is_file()
+        {
+            return Err(refuse("expected plain directory and manifest file".into()));
+        }
+        let container = Self::open_physical(root)?;
+        if container.manifest.version == 0
+            || container.manifest.n_layers == 0
+            || container.manifest.experts_per_layer == 0
+        {
+            return Err(refuse("empty or unversioned container".into()));
+        }
+        let mut bank_bytes = 0u64;
+        let mut bank_paths = std::collections::HashSet::new();
+        for layer in 0..container.manifest.n_layers {
+            for tier in &container.tiers {
+                let expected = tier
+                    .record_bytes
+                    .checked_mul(container.manifest.experts_per_layer as u64)
+                    .ok_or_else(|| refuse("bank size overflow".into()))?;
+                let path = container.bank_path(layer, tier.id);
+                if !bank_paths.insert(path.clone()) {
+                    return Err(refuse(format!(
+                        "multiple tiers name the same bank {}",
+                        path.display()
+                    )));
+                }
+                let metadata = plain_metadata(&path)?;
+                if !metadata.is_file() || metadata.len() != expected {
+                    return Err(refuse(format!(
+                        "{}: expected {expected} bytes, observed {}",
+                        path.display(),
+                        metadata.len()
+                    )));
+                }
+                bank_bytes = bank_bytes
+                    .checked_add(expected)
+                    .ok_or_else(|| refuse("container size overflow".into()))?;
+            }
+        }
+        let mut files = Vec::new();
+        let mut total_bytes = 0u64;
+        for entry in std::fs::read_dir(root).map_err(|error| refuse(error.to_string()))? {
+            let entry = entry.map_err(|error| refuse(error.to_string()))?;
+            let metadata = plain_metadata(&entry.path())?;
+            if !metadata.is_file() {
+                return Err(refuse(format!(
+                    "non-file container entry {}",
+                    entry.path().display()
+                )));
+            }
+            total_bytes = total_bytes
+                .checked_add(metadata.len())
+                .ok_or_else(|| refuse("whole artifact size overflow".into()))?;
+            files.push(ContainerFile {
+                name: entry.file_name(),
+                bytes: metadata.len(),
+            });
+        }
+        files.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(CompleteContainer {
+            root: root.to_path_buf(),
+            manifest: container.manifest,
+            manifest_bytes: container.manifest_bytes,
+            bank_bytes,
+            files,
+            total_bytes,
+        })
+    }
+
     /// Open a container directory: parse + verify the manifest. No bank IO
     /// happens here.
     pub fn open(root: &Path) -> Result<Self, ContainerError> {
+        let (resolved, lease) = crate::model_registry::artifacts::expert_placement::reader_lease(
+            root,
+        )
+        .map_err(|reason| ContainerError::WholeGeometry {
+            path: root.to_path_buf(),
+            reason,
+        })?;
+        let mut container = Self::open_physical(&resolved)?;
+        container._reader_lease = Some(lease);
+        Ok(container)
+    }
+
+    fn open_physical(root: &Path) -> Result<Self, ContainerError> {
         let manifest_path = root.join("manifest.json");
         let mut raw = String::new();
         File::open(&manifest_path)
@@ -378,8 +541,10 @@ impl ExpertContainer {
         Ok(Self {
             root: root.to_path_buf(),
             manifest,
+            manifest_bytes: raw.into_bytes(),
             tiers,
             banks,
+            _reader_lease: None,
         })
     }
 
@@ -563,6 +728,89 @@ pub mod fixtures {
 mod tests {
     use super::fixtures::{write_container, write_tiered_container};
     use super::*;
+
+    #[test]
+    fn native_numeric_manifest_preserves_producer_encoding() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut manifest = write_container(dir.path(), 1, 4);
+        manifest.fmt = ContainerFormat::Native(2);
+        let path = dir.path().join("manifest.json");
+        let raw = serde_json::to_vec(&manifest).expect("serialize manifest");
+        std::fs::write(&path, &raw).expect("native manifest");
+        let mut container = ExpertContainer::open(dir.path()).expect("numeric format");
+        assert_eq!(container.manifest().fmt, ContainerFormat::Native(2));
+        assert_eq!(container.tiers()[0].quant, "IQ2");
+        assert_eq!(
+            serde_json::to_value(container.manifest()).expect("value")["fmt"],
+            2
+        );
+        let mut record = vec![0; manifest.record_bytes as usize];
+        container
+            .fetch(ExpertKey::sharp(0, 0), &mut record)
+            .expect("record envelope");
+        assert_eq!(std::fs::read(path).expect("manifest unchanged"), raw);
+        // This exercises the envelope, not native IQ2 payload decoding.
+        assert_eq!(
+            serde_json::to_value(ContainerFormat::from("IQ2")).expect("label"),
+            "IQ2"
+        );
+        assert!(serde_json::from_str::<ContainerFormat>("-1").is_err());
+    }
+
+    #[test]
+    fn whole_container_observation_refuses_partial_native_production() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let manifest = write_container(dir.path(), 2, 4);
+        std::fs::write(dir.path().join("producer.trace"), b"original provenance").expect("trace");
+        let observed = ExpertContainer::observe_complete(dir.path()).expect("complete");
+        assert_eq!(
+            observed.manifest_bytes,
+            std::fs::read(dir.path().join("manifest.json")).expect("producer bytes")
+        );
+        assert_eq!(observed.bank_bytes, manifest.record_bytes * 8);
+        assert_eq!(observed.files.len(), 4);
+        assert!(observed
+            .files
+            .iter()
+            .any(|file| file.name == "producer.trace"));
+        assert_eq!(
+            observed.total_bytes,
+            observed.files.iter().map(|file| file.bytes).sum::<u64>()
+        );
+        let last_bank = dir.path().join("experts-L1.bin");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&last_bank)
+            .expect("bank")
+            .set_len(manifest.record_bytes)
+            .expect("partial write");
+        assert!(ExpertContainer::observe_complete(dir.path()).is_err());
+        // Lazy serving of an independent shard remains supported, but is not
+        // evidence that the whole artifact can be migrated.
+        assert!(ExpertContainer::open(dir.path()).is_ok());
+        std::fs::remove_file(last_bank).expect("unfinished producer");
+        assert!(ExpertContainer::observe_complete(dir.path()).is_err());
+    }
+
+    #[test]
+    fn whole_container_never_counts_one_v1_bank_as_two_tiers() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut manifest = write_container(dir.path(), 1, 4);
+        manifest.tiers = (0..2)
+            .map(|id| TierSpec {
+                id,
+                quant: "IQ2".into(),
+                record_bytes: manifest.record_bytes,
+            })
+            .collect();
+        std::fs::write(
+            dir.path().join("manifest.json"),
+            serde_json::to_vec(&manifest).expect("manifest"),
+        )
+        .expect("write");
+        let error = ExpertContainer::observe_complete(dir.path()).expect_err("aliased tiers");
+        assert!(error.to_string().contains("same bank"));
+    }
 
     #[test]
     fn fetch_round_trips_every_expert_in_one_read() {

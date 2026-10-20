@@ -170,10 +170,20 @@ SLOT=""
 CLI="${CONTINUUM_CLI:-$(command -v continuum || true)}"
 engine_cli() { CONTINUUM_HOME="$CONTINUUM_HOME" "$CLI" engine "$@"; }
 promote_slot() {
-  engine_cli promote "$SLOT" "$STAMP_WANT" >&2 || {
+  local result=0
+  engine_cli promote "$SLOT" "$STAMP_WANT" >&2 || result=$?
+  if [ "$result" -eq 4 ]; then
+    echo "Engine attempt deferred; verified current engine preserved." >&2
+    local kept
+    kept="$(tr -d '[:space:]' < "$INSTALL_DIR/current")"
+    case "$kept" in engine-a|engine-b|engine-c) ;; *) exit 1 ;; esac
+    printf '%s\n' "$INSTALL_DIR/$kept/llama-server"
+    exit 0
+  fi
+  if [ "$result" -ne 0 ]; then
     echo "✗ FATAL: the engine in $SLOT verified but was not promoted; the lanes keep the engine they have." >&2
     exit 1
-  }
+  fi
 }
 case "$(uname -s)" in
   Darwin|Linux)

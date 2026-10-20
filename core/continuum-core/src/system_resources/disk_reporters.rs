@@ -35,6 +35,11 @@ pub struct TrackedDir {
     name: &'static str,
     path: PathBuf,
     bytes: AtomicU64,
+    /// Historical targets discovered beneath a citizen retain their hands owner.
+    citizen: parking_lot::RwLock<Option<uuid::Uuid>>,
+    /// Advances on a fresh measurement, not eviction write-through. Expensive
+    /// negative custody checks may wait for this existing scanner cadence.
+    observation: AtomicU64,
     /// Whether the scanner has completed at least one walk — before that,
     /// the reporter labels the value as pending instead of claiming "0 B"
     /// (an honest void, never a false zero).
@@ -47,23 +52,70 @@ pub struct TrackedDir {
     /// Scanner-clock ms (monotonic, from the scanner's own start) before which
     /// this dir is NOT walked again. 0 = due now.
     next_due_ms: AtomicU64,
+    /// Suffixes naming files this class owns beside a FILE root — a SQLite store's
+    /// `-wal`/`-shm`, a log's rotated `.1`. Declared by the class, never inferred
+    /// from a name prefix (that admitted `events.sqlite.backup`), and weighed
+    /// whether or not the root file itself exists (a log between rotation and
+    /// reopen is all predecessor). Empty for a directory class.
+    companions: &'static [&'static str],
 }
 
 impl TrackedDir {
     pub fn new(name: &'static str, path: PathBuf) -> Arc<Self> {
+        Self::with_companions(name, path, &[])
+    }
+
+    /// A class rooted at one FILE plus the companion files it owns (see `companions`).
+    pub fn with_companions(name: &'static str, path: PathBuf, companions: &'static [&'static str]) -> Arc<Self> {
         Arc::new(Self {
             name,
             path,
             bytes: AtomicU64::new(0),
+            citizen: parking_lot::RwLock::new(None),
+            observation: AtomicU64::new(0),
             scanned: std::sync::atomic::AtomicBool::new(false),
             entries: AtomicU64::new(0),
             walk_ms: AtomicU64::new(0),
             next_due_ms: AtomicU64::new(0),
+            companions,
         })
+    }
+
+    /// Everything this class holds: its root's walk plus each declared companion's.
+    pub(crate) fn walk(&self) -> TreeWalk {
+        let mut total = walk_tree(&self.path);
+        for suffix in self.companions {
+            let mut companion = self.path.as_os_str().to_owned();
+            companion.push(suffix);
+            let part = walk_tree(std::path::Path::new(&companion));
+            total.bytes = total.bytes.saturating_add(part.bytes);
+            total.entries = total.entries.saturating_add(part.entries);
+        }
+        total
     }
 
     pub fn path(&self) -> &std::path::Path {
         &self.path
+    }
+
+    pub(crate) fn citizen(&self) -> Option<uuid::Uuid> {
+        *self.citizen.read()
+    }
+
+    pub(super) fn bind_citizen(&self, peer: uuid::Uuid) -> Result<(), String> {
+        // An eviction holds the read guard through its last filesystem action.
+        // Discovery retries on the existing scan tick instead of blocking an
+        // async worker or changing custody beneath an in-flight generic eviction.
+        let mut owner = self.citizen.try_write().ok_or("Cargo eviction is in flight; resident binding deferred")?;
+        if owner.is_some_and(|prior| prior != peer) {
+            return Err("Cargo root already belongs to another citizen".into());
+        }
+        *owner = Some(peer);
+        Ok(())
+    }
+
+    pub(crate) fn eviction_custody(&self) -> parking_lot::RwLockReadGuard<'_, Option<uuid::Uuid>> {
+        self.citizen.read()
     }
 
     /// The cache CLASS this directory is. Public because a pool's identity must be
@@ -90,12 +142,17 @@ impl TrackedDir {
         self.bytes.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn observation(&self) -> u64 {
+        self.observation.load(Ordering::Relaxed)
+    }
+
     /// The scanner's write seam (also the test seam for pools built on
     /// this measurement). Marks the dir scanned — a set value is a real
     /// value, never "pending".
     pub(crate) fn set_bytes(&self, bytes: u64) {
         self.bytes.store(bytes, Ordering::Relaxed);
         self.scanned.store(true, Ordering::Relaxed);
+        self.observation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The scanner's write seam proper: the walk's yield AND its cost. The cost
@@ -140,6 +197,8 @@ impl TrackedDir {
 /// writers all use the same TrackedDir instances and scanner.
 mod registry;
 pub use registry::{admit_cargo_target, bind_cargo_owners, register_cargo_target, restore_cargo_roots};
+pub(crate) use registry::resolve_existing_storage_path;
+pub(crate) use registry::citizen_has_cargo_owner;
 #[cfg(test)]
 pub(crate) use registry::prepare_writer_fixture;
 use registry::TRACKED_DIRS;
@@ -170,6 +229,14 @@ impl DiskReporter for TrackedDir {
     }
 
     fn report(&self) -> DiskPathReport {
+        // Also suppress a reporter already queued in an off-lock monitor poll.
+        // Its bytes remain available to the scanner/broker through bytes().
+        if self.citizen().is_some() {
+            return DiskPathReport {
+                name: self.name.to_string(), path: self.path.clone(), bytes: 0,
+                detail: "included in citizens parent; child measured by Cargo pool".into(),
+            };
+        }
         let scanned = self.scanned.load(Ordering::Relaxed);
         DiskPathReport {
             name: self.name.to_string(),
@@ -290,7 +357,7 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // under our own cache root is one the monitor can weigh and the reaper can clear.
         TrackedDir::new("eye-profiles", home.join(".continuum/cache/eye-profiles")),
         // CI-built cores the deploy consumer downloads instead of compiling (card 50ca737e):
-        // ~200 MB per build, bounded by its writer to the newest three.
+        // Legacy placement remains observable after configured storage redirects future writes.
         TrackedDir::new("core-artifacts", home.join(".continuum/cache/artifacts")),
         // The served-weights store. UNTRACKED until 2026-09-06 — the largest class on the
         // volume (360 GB on the M5 that day: Flash-Next 123, Kimi-Linear 95, DeepSeek-V4-Flash
@@ -354,6 +421,20 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
         // 2026-07-13 rule exists to catch before it is the incident.
         TrackedDir::new("airc-board-cache", home.join(".airc/work-board-cache")),
         TrackedDir::new("airc-wall-cache", home.join(".airc/wall-cache")),
+        // airc's own durable state on the machine-account scope, unweighed until card
+        // 0af5d5ec. Measured IntelMac 2026-10-15T22:28Z: worktrees 103 GB (one per claimed
+        // card, never drained), events.sqlite 678 MiB, the daemon log 523 MiB (written into
+        // whichever scope spawned the daemon, here the project's `.airc`). airc owns every
+        // byte; continuum weighs them so pressure names its biggest holder.
+        TrackedDir::new("airc-worktrees", home.join(".airc/worktrees")),
+        // File roots with the companions they own: the store's WAL and shared-memory
+        // index, the log's one rotated predecessor (airc 551fe5ae).
+        TrackedDir::with_companions("airc-store", home.join(".airc/events.sqlite"), &["-wal", "-shm"]),
+        TrackedDir::with_companions("airc-daemon-log", home.join(".airc/airc-daemon.log"), &[".1"]),
+        // The node's bare repo mirrors that residents' card clones borrow objects from
+        // (card d166e4f2). One per repo; it grows with the repo's history and is never
+        // pruned (preciousObjects), so its size is the class to watch.
+        TrackedDir::new("airc-mirrors", home.join(".airc/mirrors")),
         TrackedDir::new("logs", home.join(".continuum/logs")),
         TrackedDir::new("probes", home.join(".continuum/probes")),
         // #312 ephemeral exam worlds: one CoW clone of the checkout per eval run
@@ -387,6 +468,14 @@ pub fn standard_tracked_dirs(home: &std::path::Path) -> Vec<Arc<TrackedDir>> {
     // CONDITIONAL rather than defaulted: fabricating a path here is how a class
     // gets "tracked" at a location nothing writes to, which reads as an empty
     // cache forever.
+    // Preserve the historical cache; relocation changes future writes only.
+    match crate::paths::artifacts::root(home) {
+        Ok(root) if root != home.join(".continuum/cache/artifacts") => {
+            dirs.push(TrackedDir::new("core-artifacts-configured", root));
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!(probe_class = "disk.tracked_dirs", %error, "configured artifact root unavailable"),
+    }
     if let Some(root) = hf_root {
         dirs.push(TrackedDir::new("hf-hub", root));
     }
@@ -412,8 +501,14 @@ pub struct TreeWalk {
 
 /// Recursive size of `path` with the count of entries visited. Same contract as
 /// [`dir_size_bytes`]: symlinks are counted as entries but never followed, an
-/// unreadable entry is skipped, a missing root is an empty walk.
+/// unreadable entry is skipped, a missing root is an empty walk. A FILE root is its
+/// own length: a class can be one file another program keeps beside tracked
+/// directories (airc's event store in `~/.airc`); the files it owns beside it are
+/// the class's declared companions ([`TrackedDir::walk`]), never a name prefix.
 pub(crate) fn walk_tree(path: &std::path::Path) -> TreeWalk {
+    if let Some(file) = std::fs::symlink_metadata(path).ok().filter(std::fs::Metadata::is_file) {
+        return TreeWalk { bytes: file.len(), entries: 1 };
+    }
     let Ok(entries) = std::fs::read_dir(path) else {
         return TreeWalk::default();
     };
@@ -433,6 +528,54 @@ pub(crate) fn walk_tree(path: &std::path::Path) -> TreeWalk {
         }
     }
     walk
+}
+
+struct CitizenTargetObservation {
+    path: PathBuf,
+    peer: uuid::Uuid,
+    walk: TreeWalk,
+}
+
+/// One inclusive citizen scan, also observing Cargo-marked derived subtrees.
+/// Names shortlist candidates; Cargo's markers establish class. Children belong
+/// to the scanner/broker only: the parent remains the single disk reporter even
+/// when publication fails, or a durable child is restored before this scan.
+fn walk_citizen_tree(root: &std::path::Path) -> (TreeWalk, Vec<CitizenTargetObservation>) {
+    fn walk(path: &std::path::Path, root: &std::path::Path, found: &mut Vec<CitizenTargetObservation>) -> TreeWalk {
+        let mut measured = TreeWalk::default();
+        let Ok(entries) = std::fs::read_dir(path) else { return measured };
+        for entry in entries.flatten() {
+            measured.entries = measured.entries.saturating_add(1);
+            let Ok(metadata) = std::fs::symlink_metadata(entry.path()) else { continue };
+            #[cfg(windows)]
+            { use std::os::windows::fs::MetadataExt;
+              if metadata.file_attributes() & 0x400 != 0 { continue; } }
+            if metadata.file_type().is_symlink() { continue; }
+            if metadata.is_dir() {
+                let child = entry.path();
+                let name = entry.file_name();
+                let candidate = name.to_str().is_some_and(|name| name == "target" || name.starts_with("target-"));
+                let peer = child.strip_prefix(root.join("peers")).ok()
+                    .and_then(|relative| relative.components().next())
+                    .and_then(|component| component.as_os_str().to_str())
+                    .and_then(|id| uuid::Uuid::parse_str(id).ok());
+                if let Some(peer) = peer.filter(|_| candidate && super::citizen_workspace_pool::is_cargo_target(&child)) {
+                    let child_walk = walk_tree(&child);
+                    measured.entries = measured.entries.saturating_add(child_walk.entries);
+                    measured.bytes = measured.bytes.saturating_add(child_walk.bytes);
+                    found.push(CitizenTargetObservation { path: child, peer, walk: child_walk });
+                } else {
+                    let child_walk = walk(&child, root, found);
+                    measured.entries = measured.entries.saturating_add(child_walk.entries);
+                    measured.bytes = measured.bytes.saturating_add(child_walk.bytes);
+                }
+            } else { measured.bytes = measured.bytes.saturating_add(metadata.len()); }
+        }
+        measured
+    }
+    let mut found = Vec::new();
+    let measured = walk(root, root, &mut found);
+    (measured, found)
 }
 
 /// Scanner tick — 5 minutes, and the FLOOR between two walks of one tree.
@@ -526,14 +669,27 @@ impl Daemon for DiskUsageScanner {
             if !dir.due(self.started.elapsed().as_millis() as u64) {
                 continue;
             }
-            let path = dir.path.clone();
+            let class = dir.clone();
+            let citizens = dir.class() == "citizens";
             // Walk on the blocking pool — a deep tree must never stall
-            // the async runtime the substrate's minds run on.
+            // the async runtime the substrate's minds run on. The citizens tree also
+            // observes Cargo targets; every other class weighs itself and the
+            // companions it declares (`TrackedDir::walk`, card 0af5d5ec).
             let began = Instant::now();
-            let walked = tokio::task::spawn_blocking(move || walk_tree(&path)).await;
+            let walked = tokio::task::spawn_blocking(move || {
+                if citizens { walk_citizen_tree(&class.path) } else { (class.walk(), Vec::new()) }
+            }).await;
             let took = began.elapsed();
             match walked {
-                Ok(walk) => {
+                Ok((walk, targets)) => {
+                    for target in targets {
+                        match registry::observe_citizen_target(&target.path, target.peer).await {
+                            Ok(child) => child.record_walk(target.walk, took, self.started.elapsed().as_millis() as u64),
+                            Err(error) => {
+                                tracing::warn!(%error, "citizen Cargo observation remains charged to its parent");
+                            }
+                        }
+                    }
                     dir.record_walk(walk, took, self.started.elapsed().as_millis() as u64);
                     crate::probe!(
                         class = "disk.scan.walk",
@@ -701,6 +857,41 @@ mod tests {
         assert_eq!(walk.bytes, 1500);
         assert_eq!(walk.entries, 3 + u64::from(cfg!(unix)));
         assert_eq!(walk_tree(std::path::Path::new("/nonexistent-xyz")), TreeWalk::default());
+        let citizen = tempfile::tempdir().unwrap();
+        let peer = uuid::Uuid::new_v4();
+        let workspace = citizen.path().join("peers").join(peer.to_string()).join("workspace");
+        let target = workspace.join("checkout/target-historical");
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("CACHEDIR.TAG"), b"Signature: 8a477f597d28d172789f06886806bc55\n").unwrap();
+        std::fs::write(target.join(".rustc_info.json"), b"{}").unwrap();
+        std::fs::write(target.join("derived"), vec![0u8; 4096]).unwrap();
+        std::fs::create_dir_all(workspace.join("target-not-cargo")).unwrap();
+        std::fs::write(workspace.join("target-not-cargo/work"), b"authored").unwrap();
+        let (parent, children) = walk_citizen_tree(citizen.path());
+        assert_eq!(children.len(), 1, "a target name without both Cargo markers stays work");
+        assert_eq!(children[0].peer, peer);
+        assert_eq!(children[0].path, target);
+        assert_eq!(parent.bytes, walk_tree(citizen.path()).bytes,
+            "parent always retains the complete charge, including failed child publication");
+        assert_eq!(parent.bytes - children[0].walk.bytes, 8);
+        // A file root is its own length; a class weighs exactly the companions it
+        // declares (card 0af5d5ec, Codex review of #5080): a rotated predecessor
+        // counts while its live file is absent, and a same-prefix file the class
+        // does not own (a backup, an unrelated `-x` file) never does. Before, read_dir
+        // failed on a file and the class reported a false 0 B.
+        let family = tempfile::tempdir().expect("tempdir");
+        std::fs::write(family.path().join("events.sqlite"), vec![0u8; 1000]).expect("write");
+        std::fs::write(family.path().join("events.sqlite-wal"), vec![0u8; 300]).expect("write");
+        std::fs::write(family.path().join("events.sqlite.backup"), vec![0u8; 70]).expect("write");
+        std::fs::write(family.path().join("airc-daemon.log.1"), vec![0u8; 400]).expect("write");
+        std::fs::write(family.path().join("airc-daemon.log-unrelated"), vec![0u8; 90]).expect("write");
+        assert_eq!(walk_tree(&family.path().join("events.sqlite")), TreeWalk { bytes: 1000, entries: 1 });
+        let store = TrackedDir::with_companions("airc-store", family.path().join("events.sqlite"), &["-wal", "-shm"]);
+        assert_eq!(store.walk(), TreeWalk { bytes: 1300, entries: 2 });
+        let log = TrackedDir::with_companions("airc-daemon-log", family.path().join("airc-daemon.log"), &[".1"]);
+        assert_eq!(log.walk(), TreeWalk { bytes: 400, entries: 1 }, "the predecessor counts with no live log");
+        #[cfg(unix)]
+        assert_eq!(walk_tree(&tmp.path().join("link.bin")), TreeWalk::default());
     }
 
     // what this catches (the M5, 2026-09-19): a 2.44 M-entry `citizens` tree walked

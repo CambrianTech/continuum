@@ -442,3 +442,15 @@ running and undecodable command results do not establish a completed mutation.
 Ongoing Act reads after the last settlement boundary; Speak reads the concern
 ending at the boundary it just recorded. This changes evidence, not the caller's
 workspace-deliverable contract or the citizen's ability to answer by speaking.
+
+### Admission-deferred directed input (2e3f0eab)
+
+The wake owner retains an admitted priority message when the entire settle attempt
+never dispatched a generation or performed an action. This is a distinct deferred
+outcome, not a voluntary Pass. The existing heartbeat retries the exact event,
+room, media, admitted attention and causal engram without repeating input admission
+or heard receipts. Changing peer presence does not reclassify that admitted input.
+New arrivals remain in the existing conversation inbox and can be perceived during
+the retry. A completed decision or prior dispatched work does not replay the input;
+ambient input keeps its existing transcript/re-perception policy. This custody is
+local to the running loop, not a claim of durable restart recovery.

@@ -448,6 +448,9 @@ async fn serve_persona_loop_inner(
         .map_err(|e| format!("high_water_mark failed: {e}"))?;
     // Event-id ring for staleness at the loop head (see `wake_backlog::is_stale`).
     let mut seen_ids = crate::persona::wake_backlog::SeenIds::new(256);
+    // One admitted trigger remains owned until the model actually gets a turn.
+    // Fresh arrivals stay in the conversation's existing retained inbox meanwhile.
+    let mut deferred_input = crate::persona::wake_backlog::PendingInput::default();
 
     // The persona's adapter (`ctx.adapter`) is reached by the
     // cognition layer through the global provider registry — slice
@@ -488,7 +491,7 @@ async fn serve_persona_loop_inner(
     let mut recent_inbound: std::collections::VecDeque<String> =
         std::collections::VecDeque::with_capacity(RECENT_INBOUND_WINDOW);
     // Roster-name memory for engram attribution: harvested from each turn's
-    // composed `room-roster` delivery (zero extra I/O — the roster scan already
+    // composed roster delivery (zero extra I/O — the shared projection already
     // runs per turn), consulted at admit time so her MEMORY records
     // "Joel said…" / "Claude said…", never "peer-7711fe60 said…". First-class
     // peers — humans, outside agents, personas — all resolve through the one
@@ -534,11 +537,11 @@ async fn serve_persona_loop_inner(
         let pending_before_wake = crate::cognition::directed_pending::observe(ctx.identity.peer_id.as_uuid());
         let wake = tokio::select! {
             biased;
-            ev = next_event(conversation, &mut outcome) => match ev {
+            ev = next_event(conversation, &mut outcome), if deferred_input.message().is_none() => match ev {
                 Some(m) => Wake::Msg(m),
                 None => Wake::Stop,
             },
-            w = next_mind_wake(&mut wakes) => match w {
+            w = next_mind_wake(&mut wakes), if deferred_input.message().is_none() => match w {
                 crate::persona::perception_region::Wake::Perceive { activity, .. } => {
                     perceive_recheck = Some((tokio::time::Instant::now() + PERCEIVE_SETTLE, activity));
                     Wake::Idle
@@ -546,7 +549,7 @@ async fn serve_persona_loop_inner(
                 crate::persona::perception_region::Wake::Continuation => Wake::Mind { why: "continuation", room: her_continuation_room(me) },
                 crate::persona::perception_region::Wake::Resume => Wake::Mind { why: "resume", room: her_continuation_room(me) },
             },
-            _ = sleep_until_some(perceive_recheck.map(|(at, _)| at)) => {
+            _ = sleep_until_some(perceive_recheck.map(|(at, _)| at)), if deferred_input.message().is_none() => {
                 let activity = perceive_recheck.take().map(|(_, a)| a);
                 match activity {
                     Some(a) if crate::persona::perception_feed::with_region(me, |r| r.is_pending(a)).unwrap_or(false) => {
@@ -555,7 +558,7 @@ async fn serve_persona_loop_inner(
                     _ => Wake::Idle,
                 }
             },
-            _ = sleep_until_some(next_mind_check) => {
+            _ = sleep_until_some(next_mind_check), if deferred_input.message().is_none() => {
                 let now = (opts.now_ms)();
                 let looked = crate::persona::perception_feed::with_region(me, |r| {
                     let wake = r.wake_for(now);
@@ -584,7 +587,10 @@ async fn serve_persona_loop_inner(
                     }
                 }
             },
-            _ = tokio::time::sleep(next_beat) => Wake::Tick,
+            retry = deferred_input.at_next_beat(next_beat) => match retry {
+                Some(message) => Wake::Retry(message),
+                None => Wake::Tick,
+            },
         };
         if matches!(wake, Wake::Idle) {
             continue;
@@ -619,7 +625,7 @@ async fn serve_persona_loop_inner(
                 // Her own wake under the lease is skipped like a beat; it is not lost:
                 // a due continuation or a loud room re-yields on her next mind check.
                 Wake::Tick | Wake::Mind { .. } | Wake::Idle => continue,
-                Wake::Msg(_) => crate::probe!(
+                Wake::Msg(_) | Wake::Retry(_) => crate::probe!(
                     class = "persona.quiesced.directed_served",
                     "quiesced citizen serving an inbound turn — leases suspend wandering, never reachability"
                 ),
@@ -653,6 +659,7 @@ async fn serve_persona_loop_inner(
             Wake::Mind { room, .. } => *room,
             _ => None,
         };
+        let admitted_retry = matches!(&wake, Wake::Retry(_));
         let msg = match wake {
             Wake::Stop => break,
             Wake::Idle => continue,
@@ -746,7 +753,7 @@ async fn serve_persona_loop_inner(
             }
             // A message means life in the room — snap back to a quick beat so she's present
             // and responsive, not drifting in rest.
-            Wake::Msg(m) => {
+            Wake::Msg(m) | Wake::Retry(m) => {
                 next_beat = engaged_beat;
                 m
             }
@@ -767,97 +774,102 @@ async fn serve_persona_loop_inner(
         // on. Same always-latest coalescing the substrate uses everywhere else
         // (watch channels; positron's resync contract: reconnect RESYNCS state,
         // never replays stale events).
-        let pending_before_drain = crate::cognition::directed_pending::observe(ctx.identity.peer_id.as_uuid());
-        let mut backlog: Vec<IncomingMessage> = vec![msg];
-        let mut stream_ended = false;
-        loop {
-            // Zero-ish window: anything already buffered resolves immediately;
-            // an empty queue times out and we proceed. ≤50ms per wake vs the
-            // 60s-per-stale-turn it replaces.
-            match tokio::time::timeout(
-                std::time::Duration::from_millis(50),
-                next_event(conversation, &mut outcome),
-            )
-            .await
-            {
-                Ok(Some(next)) => backlog.push(next),
-                Ok(None) => {
-                    stream_ended = true;
-                    break;
-                }
-                Err(_) => break, // nothing more queued — backlog drained
-            }
-        }
-        // Qualifying = newer than the high-water mark and not her own echo.
-        // Advance the high-water past EVERYTHING drained so a stale item can
-        // never re-trigger; count skips honestly.
         let self_id = ctx.identity.peer_id.as_uuid();
-        let mut qualifying: Vec<IncomingMessage> = Vec::with_capacity(backlog.len());
-        for m in backlog {
-            // Staleness by EVENT ID (a lamport is the publisher's clock, not a
-            // room order — see `wake_backlog`); the clock rule only for id-less
-            // scripted sources.
-            let stale = crate::persona::wake_backlog::is_stale(&m, &mut seen_ids, high_water);
-            high_water = m.lamport.max(high_water);
-            if stale || m.peer_id == self_id {
-                outcome.turns_skipped += 1;
-            } else {
-                qualifying.push(m);
-            }
-        }
-        // Acknowledge the pre-drain generation only; a newer input keeps its wake.
-        crate::cognition::directed_pending::acknowledge(self_id, pending_before_drain);
-        // Both a literal mention and a human's opportunity to speak receive
-        // priority. Only the former can tell the mind "this message names you".
-        let priority_line = |m: &IncomingMessage| {
-            crate::cognition::workspace::TurnAttention::for_message(
-                ctx.identity.persona_identity().mentions(&m.text),
-                crate::ipc::positron_presence::is_human_peer(m.peer_id),
-            )
-            .requires_priority()
-        };
-        // Every directed line drained is HEARD (delivery receipt), whether or
-        // not it becomes the trigger.
-        for m in qualifying.iter().filter(|m| priority_line(m)) {
-            crate::persona::wake_backlog::publish_heard(self_id, m);
-        }
-        // An undirected AGENT line (neither human nor citizen, not naming her)
-        // is perceived — it is in the transcript she reads — but it is never
-        // the trigger of a turn: no lane for a peer's status wall
-        // (wake_backlog::triggers_a_turn; Joaquin's 34/60, 2026-09-05).
-        let before = qualifying.len();
-        qualifying.retain(|m| {
-            let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
-                .is_some_and(|r| r.get(m.peer_id).is_some());
-            crate::persona::wake_backlog::triggers_a_turn(
-                priority_line(m),
-                sender_is_citizen,
-                crate::persona::wake_backlog::is_receipt(&m.text),
-            )
-        });
-        let perceived_only = before - qualifying.len();
-        if perceived_only > 0 {
-            outcome.turns_skipped += perceived_only;
-            crate::probe!(
-                class = "persona.wake.agent_lines_perceived_only",
-                persona_id = %self_id,
-                lines = perceived_only as u64,
-                "undirected agent lines drained into perception without a turn — no lane for a status wall"
-            );
-        }
-        // Trigger = newest DIRECTED line in the backlog (a question put to her
-        // outranks newer ambient chatter — she answers it WITH the newer
-        // context visible in the transcript), else the newest overall.
-        let (msg, coalesced) =
-            match crate::persona::wake_backlog::pick_trigger(qualifying, priority_line) {
-                Some(picked) => picked,
-                None => {
-                    if stream_ended {
+        let (msg, coalesced) = if admitted_retry {
+            (msg, 0)
+        } else {
+            let pending_before_drain = crate::cognition::directed_pending::observe(ctx.identity.peer_id.as_uuid());
+            let mut backlog: Vec<IncomingMessage> = vec![msg];
+            let mut stream_ended = false;
+            loop {
+                // Zero-ish window: anything already buffered resolves immediately;
+                // an empty queue times out and we proceed. ≤50ms per wake vs the
+                // 60s-per-stale-turn it replaces.
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(50),
+                    next_event(conversation, &mut outcome),
+                )
+                .await
+                {
+                    Ok(Some(next)) => backlog.push(next),
+                    Ok(None) => {
+                        stream_ended = true;
                         break;
                     }
-                    continue; // everything drained was stale/self — no turn
+                    Err(_) => break, // nothing more queued — backlog drained
                 }
+            }
+            // Qualifying = newer than the high-water mark and not her own echo.
+            // Advance the high-water past EVERYTHING drained so a stale item can
+            // never re-trigger; count skips honestly.
+            let mut qualifying: Vec<IncomingMessage> = Vec::with_capacity(backlog.len());
+            for m in backlog {
+                // Staleness by EVENT ID (a lamport is the publisher's clock, not a
+                // room order — see `wake_backlog`); the clock rule only for id-less
+                // scripted sources.
+                let stale = crate::persona::wake_backlog::is_stale(&m, &mut seen_ids, high_water);
+                high_water = m.lamport.max(high_water);
+                if stale || m.peer_id == self_id {
+                    outcome.turns_skipped += 1;
+                } else {
+                    qualifying.push(m);
+                }
+            }
+            // Acknowledge the pre-drain generation only; a newer input keeps its wake.
+            crate::cognition::directed_pending::acknowledge(self_id, pending_before_drain);
+            // Both a literal mention and a human's opportunity to speak receive
+            // priority. Only the former can tell the mind "this message names you".
+            let priority_line = |m: &IncomingMessage| {
+                crate::cognition::workspace::TurnAttention::for_message(
+                    ctx.identity.persona_identity().mentions(&m.text),
+                    crate::ipc::positron_presence::is_human_peer(m.peer_id),
+                )
+                .requires_priority()
             };
+            // Every directed line drained is HEARD (delivery receipt), whether or
+            // not it becomes the trigger.
+            for m in qualifying.iter().filter(|m| priority_line(m)) {
+                crate::persona::wake_backlog::publish_heard(self_id, m);
+            }
+            // An undirected AGENT line (neither human nor citizen, not naming her)
+            // is perceived — it is in the transcript she reads — but it is never
+            // the trigger of a turn: no lane for a peer's status wall
+            // (wake_backlog::triggers_a_turn; Joaquin's 34/60, 2026-09-05).
+            let before = qualifying.len();
+            qualifying.retain(|m| {
+                let sender_is_citizen = crate::persona::PersonaAircRuntimeRegistry::try_global()
+                    .is_some_and(|r| r.get(m.peer_id).is_some());
+                crate::persona::wake_backlog::triggers_a_turn(
+                    priority_line(m),
+                    sender_is_citizen,
+                    crate::persona::wake_backlog::is_receipt(&m.text),
+                )
+            });
+            let perceived_only = before - qualifying.len();
+            if perceived_only > 0 {
+                outcome.turns_skipped += perceived_only;
+                crate::probe!(
+                    class = "persona.wake.agent_lines_perceived_only",
+                    persona_id = %self_id,
+                    lines = perceived_only as u64,
+                    "undirected agent lines drained into perception without a turn — no lane for a status wall"
+                );
+            }
+            // Trigger = newest DIRECTED line in the backlog (a question put to her
+            // outranks newer ambient chatter — she answers it WITH the newer
+            // context visible in the transcript), else the newest overall.
+            let (msg, coalesced) =
+                match crate::persona::wake_backlog::pick_trigger(qualifying, priority_line) {
+                    Some(picked) => picked,
+                    None => {
+                        if stream_ended {
+                            break;
+                        }
+                        continue; // everything drained was stale/self — no turn
+                    }
+                };
+            (msg, coalesced)
+        };
         if coalesced > 0 {
             outcome.turns_skipped += coalesced;
             crate::probe!(
@@ -896,7 +908,7 @@ async fn serve_persona_loop_inner(
         // ([[no-hardcoded-heuristics-to-steer-cognition]]).
         // This heuristic compares text only. Equal captions do not establish
         // that two media-bearing messages are repeated input.
-        if msg.media.is_empty() && crate::persona::loop_dedup::defer_as_loop_filler(
+        if !admitted_retry && msg.media.is_empty() && crate::persona::loop_dedup::defer_as_loop_filler(
             &msg.text,
             recent_inbound.make_contiguous(),
         ) {
@@ -940,9 +952,11 @@ async fn serve_persona_loop_inner(
             outcome.turns_skipped += 1;
             continue;
         }
-        recent_inbound.push_back(msg.text.clone());
-        if recent_inbound.len() > RECENT_INBOUND_WINDOW {
-            recent_inbound.pop_front();
+        if !admitted_retry {
+            recent_inbound.push_back(msg.text.clone());
+            if recent_inbound.len() > RECENT_INBOUND_WINDOW {
+                recent_inbound.pop_front();
+            }
         }
 
         // Per-turn latency clock starts AFTER the filters above —
@@ -994,13 +1008,15 @@ async fn serve_persona_loop_inner(
         );
         // She takes in this room up to this line: her region's view of it drains, so the
         // same line cannot also wake a Perceive turn (EVENT-MIND §1b).
-        crate::persona::perception_feed::mark_perceived(
-            ctx.identity.peer_id.as_uuid(),
-            turn_room,
-            msg.lamport,
-            Some(msg.event_id),
-            (opts.now_ms)(),
-        );
+        if !admitted_retry {
+            crate::persona::perception_feed::mark_perceived(
+                ctx.identity.peer_id.as_uuid(),
+                turn_room,
+                msg.lamport,
+                Some(msg.event_id),
+                (opts.now_ms)(),
+            );
+        }
 
         // ===========================================================
         // The brain services the turn through the WorkspaceCycle:
@@ -1062,9 +1078,9 @@ async fn serve_persona_loop_inner(
         // The engram of the message that woke this turn — the root its acts chain back
         // to. Bound here (outer scope) because it is written at admission and read at
         // burst assembly, two blocks apart.
-        let mut wake_engram: Option<uuid::Uuid> = None;
+        let mut wake_engram = deferred_input.wake_engram();
 
-        {
+        if !admitted_retry {
             let cognition = ctx.cognition.lock().await;
             // recall BEFORE admit so the ranking is "what I knew going in" — the
             // current message is the trigger, not recall.
@@ -1140,20 +1156,9 @@ async fn serve_persona_loop_inner(
         phase_timings.compose_ms = compose_started.elapsed().as_millis() as u64;
         // Harvest the roster resolution this compose already fetched into the
         // admit-time name memory (see `roster_names` above).
-        for d in composed
-            .deliveries
-            .iter()
-            .filter(|d| d.source_id == "room-roster")
-        {
-            for item in &d.items {
-                if let (Some(peer), Some(name)) = (
-                    item.metadata.get("peer_id").and_then(|v| v.as_str()),
-                    item.metadata.get("display_name").and_then(|v| v.as_str()),
-                ) {
-                    if let Ok(id) = Uuid::parse_str(peer) {
-                        roster_names.insert(id, name.to_string());
-                    }
-                }
+        for (peer, name) in roster_identities(&composed.deliveries) {
+            if let Ok(id) = Uuid::parse_str(peer) {
+                roster_names.insert(id, name.to_string());
             }
         }
 
@@ -1340,10 +1345,11 @@ async fn serve_persona_loop_inner(
                 // store (#89); this is the addressing half, unblocked today.
                 // Human opportunity retains priority, but sender kind can be stale
                 // or shared across clients: it cannot assert that she was named.
-                let attention = crate::cognition::workspace::TurnAttention::for_message(
-                    ctx.identity.persona_identity().mentions(&msg.text),
-                    crate::ipc::positron_presence::is_human_peer(msg.peer_id),
-                );
+                let attention = admitted_retry.then(|| deferred_input.attention()).flatten()
+                    .unwrap_or_else(|| crate::cognition::workspace::TurnAttention::for_message(
+                        ctx.identity.persona_identity().mentions(&msg.text),
+                        crate::ipc::positron_presence::is_human_peer(msg.peer_id),
+                    ));
                 if attention.requires_priority() {
                     // Focus = she is TAKING the turn on it; the heard receipt
                     // already fired at the drain (`wake_backlog::publish_heard`).
@@ -1529,7 +1535,7 @@ async fn serve_persona_loop_inner(
                 // The turn's work is synced to its card's branch; her hands stay where they
                 // are, because nothing moved them (card fc9e9fd7).
                 if let Some(hands) = &held_card.hands {
-                    crate::cognition::persona_workspace::end_card_turn(hands).await;
+                    crate::cognition::persona_workspace::end_card_turn(hands, turn_act_count).await;
                 }
                 cycle.set_token_sink(None);
                 let _ = forwarder.await;
@@ -1550,7 +1556,11 @@ async fn serve_persona_loop_inner(
                         "deliberation generation cost"
                     );
                 }
+                deferred_input.settle(&msg, wake_engram, attention, &step);
                 match step {
+                    crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch => {
+                        continue;
+                    }
                     crate::cognition::act_observe::SettleStep::Spoke(text) => text,
                     crate::cognition::act_observe::SettleStep::Acted { calls, intent } => {
                         crate::probe!(
@@ -1906,6 +1916,8 @@ pub(crate) const LIVE_MAX_ACTS: usize = usize::MAX;
 /// `conversation` taken inside the select ends before the handler reuses it.
 enum Wake {
     Msg(IncomingMessage),
+    /// An already-admitted input whose previous attempt never dispatched.
+    Retry(IncomingMessage),
     Tick,
     /// Her own mind woke her (EVENT-MIND §1b): a room still unread and loud past her
     /// dial, her continuation falling due, or resuming a saved one after a restart.
@@ -2012,21 +2024,40 @@ pub(crate) struct RoomRosterProjection {
     pub(crate) other_persona_names: Vec<String>,
 }
 
-/// Fold the `room-roster` delivery into its two grounding consumers, routed by
-/// `source_id`. Pure and extracted from the heartbeat loop (sibling of
-/// [`build_workspace_turns`]) so the live path and the convergence seam-proof
-/// test exercise the IDENTICAL projection — one roster truth, no inline
-/// duplication. See docs/grid/AIRC-NATIVE-IDENTITY-ROOMS-SECURITY.md §5 slice 1.
+/// The shared roster projection's admitted atoms. The legacy source remains
+/// readable for existing replay/diagnostic deliveries; live turns use KIND.
+fn roster_items(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+) -> impl Iterator<Item = &crate::persona::rag_budget::RagItem> {
+    deliveries
+        .iter()
+        .filter(|d| {
+            d.source_id == continuum_positron::RosterViewState::KIND
+                || d.source_id == super::room_roster_source::SOURCE_ID
+        })
+        .flat_map(|d| d.items.iter())
+}
+
+/// Resolve identity from admitted roster atoms, never rendered text or a second
+/// unbudgeted roster read. Legacy replay deliveries carry the same metadata.
+fn roster_identities(
+    deliveries: &[crate::persona::rag_budget::RagDelivery],
+) -> impl Iterator<Item = (&str, &str)> {
+    roster_items(deliveries).filter_map(|item| {
+        Some((
+            item.metadata.get("peer_id")?.as_str()?,
+            item.metadata.get("display_name")?.as_str()?,
+        ))
+    })
+}
+
+/// Project the same admitted roster atoms for the legacy prompt-assembly seam.
 pub(crate) fn project_room_roster(
     deliveries: &[crate::persona::rag_budget::RagDelivery],
 ) -> RoomRosterProjection {
     let mut room_roster: Vec<String> = Vec::new();
     let mut other_persona_names: Vec<String> = Vec::new();
-    for item in deliveries
-        .iter()
-        .filter(|d| d.source_id == "room-roster")
-        .flat_map(|d| d.items.iter())
-    {
+    for item in roster_items(deliveries) {
         room_roster.push(item.content.clone());
         if let Some(name) = item.metadata.get("display_name").and_then(|v| v.as_str()) {
             other_persona_names.push(name.to_string());
@@ -2179,22 +2210,13 @@ pub(crate) fn build_workspace_turns(
 ) -> Vec<crate::cognition::workspace::BurstTurn> {
     use crate::cognition::workspace::BurstTurn;
     use std::collections::HashMap;
-    // airc owns identity: the `room-roster` source already joined peer_id → display
-    // name in one batched scan ([[airc-native-identity-rooms-security]]). Reuse THAT
+    // airc owns identity: roster atoms carry peer_id → display name from the
+    // shared projection ([[airc-native-identity-rooms-security]]). Reuse THAT
     // resolution — same deliveries slice — so the history reads `Joel:`, `BigMama:`
     // instead of raw UUIDs. A peer not in the roster (or an eval-synthesized delivery
     // with no roster) falls back to its own peer_id: honest, never invisible, never a
     // fabricated name ([[fallbacks-are-illegal-fail-loud]]).
-    let names: HashMap<&str, &str> = deliveries
-        .iter()
-        .filter(|d| d.source_id == "room-roster")
-        .flat_map(|d| d.items.iter())
-        .filter_map(|item| {
-            let peer = item.metadata.get("peer_id").and_then(|v| v.as_str())?;
-            let name = item.metadata.get("display_name").and_then(|v| v.as_str())?;
-            Some((peer, name))
-        })
-        .collect();
+    let names: HashMap<&str, &str> = roster_identities(deliveries).collect();
     let mut turns: Vec<BurstTurn> = deliveries
         .iter()
         .filter(|d| d.source_id == "airc")
@@ -2446,11 +2468,8 @@ pub(crate) fn build_workspace_turns(
     // denials. An authorless opaque FACT block (same shape as [pattern]) —
     // orientation, never instruction ([[no-hardcoded-heuristics-to-steer-cognition]]).
     if turns.is_empty() {
-        let peers: Vec<&str> = deliveries
-            .iter()
-            .filter(|d| d.source_id == "room-roster")
-            .flat_map(|d| d.items.iter())
-            .filter_map(|i| i.metadata.get("display_name").and_then(|v| v.as_str()))
+        let peers: Vec<&str> = roster_identities(deliveries)
+            .map(|(_, name)| name)
             .filter(|n| *n != agent_name)
             .take(8)
             .collect();

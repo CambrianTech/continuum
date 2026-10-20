@@ -97,6 +97,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        crate::assert_baseline_is_current("BASELINE_EXCESS_TEST_MODS", count, BASELINE_EXCESS_TEST_MODS);
     }
 
     /// What this catches: the detector counting the wrong thing — a gated helper

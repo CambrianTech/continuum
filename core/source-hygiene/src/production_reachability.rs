@@ -83,7 +83,7 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
 /// cost days. If your new type trips this, the fix is to WIRE it or to not land it
 /// yet; a type with no caller is not finished work.
 #[cfg(test)]
-const BASELINE_UNWIRED: usize = 61;
+const BASELINE_UNWIRED: usize = 60;
 
 pub struct ProductionReachability;
 
@@ -259,6 +259,7 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
+        crate::assert_baseline_is_current("BASELINE_UNWIRED", count, BASELINE_UNWIRED);
     }
 
     /// What this catches: the two exclusions that decide whether this rule is useful

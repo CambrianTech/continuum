@@ -11,7 +11,7 @@ use std::{
 };
 
 pub const MAX_RECEIPT_BYTES: u64 = 65536;
-pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 3;
+pub const SUPERVISOR_PROTOCOL_VERSION: u32 = 4;
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Envelope {
@@ -209,7 +209,7 @@ pub fn resolve_receipt(
     payload: &Path,
     sid: &str,
 ) -> Result<Release, String> {
-    Ok(validate_receipt_inner(text, home, payload, sid, false)?.release)
+    Ok(validate_receipt_inner(text, home, payload, sid, false, &mut pinned_file)?.release)
 }
 pub fn validate_receipt(
     text: &str,
@@ -217,14 +217,71 @@ pub fn validate_receipt(
     payload: &Path,
     sid: &str,
 ) -> Result<ValidatedRelease, String> {
-    validate_receipt_inner(text, home, payload, sid, true)
+    validate_receipt_inner(text, home, payload, sid, true, &mut pinned_file)
 }
+/// Invocation-owned Windows file exclusion, shared by the installed receipt and
+/// engine-slot authorities. Pinning is not source authorization: each caller
+/// still validates its own exact layout, hashes and selection evidence.
+#[cfg(windows)]
+#[derive(Debug, Default)]
+pub struct ExclusiveFiles {
+    held: BTreeMap<PathBuf, File>,
+}
+
+#[cfg(windows)]
+impl ExclusiveFiles {
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.held.keys().map(PathBuf::as_path)
+    }
+
+    pub fn pin(&mut self, path: &Path) -> Result<File, String> {
+        use std::os::windows::fs::OpenOptionsExt;
+        unredirected(path)?;
+        let key = path.canonicalize().map_err(|e| e.to_string())?;
+        if let Some(file) = self.held.get(&key) {
+            let mut copy = file.try_clone().map_err(|e| e.to_string())?;
+            copy.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
+            return Ok(copy);
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path)
+            .map_err(|e| format!("cannot exclude installed image {}: {e}", path.display()))?;
+        if !file.metadata().map_err(|e| e.to_string())?.is_file() {
+            return Err("installed image is not regular".into());
+        }
+        let copy = file.try_clone().map_err(|e| e.to_string())?;
+        self.held.insert(key, file);
+        Ok(copy)
+    }
+}
+
+/// Offline Windows custody over the exact sealed installed closure. Duplicate
+/// members (including a shared rollback engine) clone the same held handle.
+/// The caller must already own scheduler exclusion and confirm all readers exited.
+#[cfg(windows)]
+pub fn exclude_receipts(
+    texts: &[String],
+    home: &Path,
+    payload: &Path,
+    sid: &str,
+    files: &mut ExclusiveFiles,
+) -> Result<Vec<ValidatedRelease>, String> {
+    let mut pin = |path: &Path| files.pin(path);
+    texts
+        .iter()
+        .map(|text| validate_receipt_inner(text, home, payload, sid, true, &mut pin))
+        .collect()
+}
+
 fn validate_receipt_inner(
     text: &str,
     home: &Path,
     payload: &Path,
     sid: &str,
     verify_payload: bool,
+    pin: &mut impl FnMut(&Path) -> Result<File, String>,
 ) -> Result<ValidatedRelease, String> {
     if text.len() as u64 > MAX_RECEIPT_BYTES {
         return Err("active release receipt is oversized".into());
@@ -300,7 +357,7 @@ fn validate_receipt_inner(
     let manifest = expected.join("runtime-libs.txt");
     let mut pins = Vec::new();
     if manifest.exists() {
-        let mut file = pinned_file(&manifest)?;
+        let mut file = pin(&manifest)?;
         let mut names = String::new();
         (&mut file)
             .take(MAX_RECEIPT_BYTES + 1)
@@ -335,7 +392,7 @@ fn validate_receipt_inner(
         if expected_hash.len() != 64 || !expected_hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err(format!("invalid active hash for {key}"));
         }
-        let mut file = pinned_file(&path)?;
+        let mut file = pin(&path)?;
         if verify_payload {
             let mut hasher = Sha256::new();
             std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
@@ -438,6 +495,52 @@ mod tests {
             format!("{:x}", Sha256::digest(b"one.dll\n")).into();
         receipt["hashes"]["runtime:one.dll"] = format!("{:x}", Sha256::digest(b"runtime")).into();
         assert!(validate_receipt(&encode(&receipt), home, home, "SID").is_ok());
+        #[cfg(windows)]
+        {
+            // The actual sealed validator must handle a shared rollback closure
+            // and its own repeated manifest read without conflicting with itself.
+            let text = encode(&receipt);
+            let mut files = ExclusiveFiles::default();
+            let exclusions =
+                exclude_receipts(&[text.clone(), text.clone()], home, home, "SID", &mut files)
+                    .unwrap();
+            assert!(File::open(&r.artifact).is_err());
+            drop(exclusions);
+            drop(files);
+            assert!(File::open(&r.artifact).is_ok());
+            let existing = File::open(&r.artifact).unwrap();
+            assert!(
+                exclude_receipts(&[text], home, home, "SID", &mut ExclusiveFiles::default())
+                    .is_err()
+            );
+            drop(existing);
+            let source =
+                PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/cmd.exe");
+            std::fs::copy(&source, &r.artifact).unwrap();
+            receipt["hashes"]["artifact"] =
+                format!("{:x}", Sha256::digest(std::fs::read(&r.artifact).unwrap())).into();
+            let mut files = ExclusiveFiles::default();
+            let exclusions =
+                exclude_receipts(&[encode(&receipt)], home, home, "SID", &mut files).unwrap();
+            let error = crate::process::quiet_command(&r.artifact)
+                .args(["/d", "/c", "exit 0"])
+                .status()
+                .unwrap_err();
+            assert_eq!(
+                error.raw_os_error(),
+                Some(32),
+                "actual CreateProcess must respect held image custody"
+            );
+            drop(exclusions);
+            drop(files);
+            assert!(crate::process::quiet_command(&r.artifact)
+                .args(["/d", "/c", "exit 0"])
+                .status()
+                .unwrap()
+                .success());
+            std::fs::write(&r.artifact, b"payload").unwrap();
+            receipt["hashes"]["artifact"] = format!("{:x}", Sha256::digest(b"payload")).into();
+        }
         std::fs::write(slot.join("runtime-libs.txt"), "one.dll\nONE.dll\n").unwrap();
         assert!(validate_receipt(&encode(&receipt), home, home, "SID")
             .unwrap_err()

@@ -240,6 +240,7 @@ mod tests {
     fn receipt(acts: Vec<Observation>) -> WmEntry {
         WmEntry {
             disk_change: Default::default(),
+            native_calls: Vec::new(),
             kind: WmKind::Receipt { n: 1 },
             text: String::new(),
             acts,
@@ -249,6 +250,7 @@ mod tests {
     fn settle() -> WmEntry {
         WmEntry {
             disk_change: Default::default(),
+            native_calls: Vec::new(),
             kind: WmKind::Settlement,
             text: crate::cognition::working_memory::WM_SETTLEMENT_PREFIX.to_string(),
             acts: Vec::new(),
@@ -451,6 +453,7 @@ mod tests {
         assert!(!any_real_receipt(&[settle()]));
         let facty = WmEntry {
             disk_change: Default::default(),
+            native_calls: Vec::new(),
             kind: WmKind::Fact,
             text: "[unfulfilled] real executions leave [action #n] receipts".to_string(),
             acts: Vec::new(),

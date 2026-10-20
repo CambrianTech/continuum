@@ -4,7 +4,7 @@
 //! ## The defect this closes (measured 2026-08-28)
 //!
 //! `agent/solve` quiesces the other citizens' service loops
-//! (`quiesce_others`, verified `quiesced_peers=3`) — and the GPU still spent
+//! (`lease_measured_work`, verified `quiesced_peers=3`) — and the GPU still spent
 //! ~half its generations on `dream-belief-review` (52 of 109
 //! `inference.prefill.complete` rows) DURING a measured solve. Dreams don't run
 //! in the service loop the lease gates; they spawn their own tasks and walked

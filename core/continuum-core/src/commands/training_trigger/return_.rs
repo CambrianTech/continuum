@@ -28,7 +28,8 @@ use uuid::Uuid;
 use super::submit::{return_request, ReturnScope, SubmitOutcome};
 use crate::genome::fine_tuning::TrainingJobBoard;
 use crate::genome::fine_tuning::engine_lora_adapter::read_partition;
-use crate::modules::training_trigger::{genome_root, job_dir_under, read_job_request, TrainingTriggerState};
+use crate::genome::fine_tuning::job_dir::{genome_root, job_dir_under, read_job_request};
+use crate::modules::training_trigger::TrainingTriggerState;
 use crate::sdk_codegen::CommandError;
 
 /// `genome/training-trigger/return` input.
@@ -99,27 +100,23 @@ pub(crate) async fn return_job(
     Ok(outcome)
 }
 
-/// THE input of a job, as its registration proves it: its `request.json` when one stands in
-/// `dir`, else the durable dispatch that produced it (registration -> trigger dispatch ->
-/// `dispatched_request`), which keeps the exact job/dispatch/submission relationship and the
-/// native base. A canonical job the trigger dispatched may have no request file at all (Kimi's
-/// 55f2e6de on the 5090: only adapters/ and partition.json). Both returns read it here.
+/// THE original input of a trigger-owned job comes from its verified durable dispatch.
+/// Adapter request files can materialize provider defaults; treating those as producer
+/// policy makes a return into an empty bucket incompatible with the next producer.
+/// Only jobs without a trigger dispatch use their legacy request file.
 async fn job_request(
     state: &Arc<TrainingTriggerState>,
     job: &crate::genome::fine_tuning::job_board::OrphanedJob,
     dir: &std::path::Path,
 ) -> Result<crate::genome::fine_tuning::types::TrainingJobRequest, CommandError> {
     let job_id = job.local_id;
-    if dir.join("request.json").try_exists().map_err(|e| CommandError::Internal(e.to_string()))? {
-        return read_job_request(dir).map_err(CommandError::NotFound);
+    if let Some(dispatch) = job.trigger_dispatch_id {
+        let key = crate::modules::training_trigger::BucketKey {
+            persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone(),
+        };
+        return state.dispatched_request(&key, dispatch, job_id).await.map_err(CommandError::Invalid);
     }
-    let dispatch = job.trigger_dispatch_id.ok_or_else(|| CommandError::NotFound(format!(
-        "job {job_id} has neither request.json nor a recorded trigger dispatch; cannot recover its input"
-    )))?;
-    let key = crate::modules::training_trigger::BucketKey {
-        persona_id: job.persona_id, trait_kind: job.trait_kind.clone(), base_model: job.base_model.clone(),
-    };
-    state.dispatched_request(&key, dispatch, job_id).await.map_err(CommandError::Invalid)
+    read_job_request(dir).map_err(CommandError::NotFound)
 }
 
 /// What returning a trained job's parked remainder did.
@@ -152,8 +149,8 @@ struct RemainderReceipt {
 /// ([`return_job`]). The caller has established that `job` completed training: the sentinel
 /// claimed it Completed, or the ledger's terminal row says so.
 ///
-/// - The examples are the job's own input as [`job_request`] proves it (its request.json, else
-///   its durable dispatch): native base, whole payloads, never the partition's measured rows.
+/// - The examples are the job's own input as [`job_request`] proves it (its durable dispatch,
+///   or a legacy request.json): native base, whole payloads, never the partition's measured rows.
 /// - The partition is read strictly: only a confirmed-absent file means nothing was parked; an
 ///   unreadable or corrupt one is an error the next pass retries.
 /// - The partition must account for every request example ([`remainder_of`]); one that doesn't

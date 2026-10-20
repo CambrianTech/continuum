@@ -292,7 +292,7 @@ const FOOTPRINT_PROCESSES: usize = 8;
 
 /// Each process's recent readings, `(at_ms, bytes)`, keyed by (pid, OS start time) so a
 /// recycled pid never inherits another process's peak.
-type FootprintWindows = std::collections::VecDeque<((u32, u64), std::collections::VecDeque<(u64, u64)>)>;
+type FootprintWindows = std::collections::VecDeque<((u32, u64), crate::system_resources::sustained::Sustained)>;
 static RECENT_FOOTPRINTS: LazyLock<parking_lot::Mutex<FootprintWindows>> =
     LazyLock::new(|| parking_lot::Mutex::new(std::collections::VecDeque::new()));
 
@@ -300,17 +300,11 @@ static RECENT_FOOTPRINTS: LazyLock<parking_lot::Mutex<FootprintWindows>> =
 /// [`FOOTPRINT_WINDOW`]. Bounded by [`FOOTPRINT_SAMPLES`] per process and
 /// [`FOOTPRINT_PROCESSES`] processes (the least recently read is dropped).
 fn recent_max(windows: &mut FootprintWindows, process: (u32, u64), now_ms: u64, reading: u64) -> u64 {
-    let horizon = now_ms.saturating_sub(FOOTPRINT_WINDOW.as_millis() as u64);
-    let mut ring = match windows.iter().position(|(p, _)| *p == process) {
-        Some(i) => windows.remove(i).map(|(_, r)| r).unwrap_or_default(), // unwrap_or_default: position just found it, so this is always Some
-        None => std::collections::VecDeque::new(),
-    };
-    ring.retain(|(at, _)| *at >= horizon);
-    ring.push_back((now_ms, reading));
-    while ring.len() > FOOTPRINT_SAMPLES {
-        ring.pop_front();
+    if let Some((_, ring)) = windows.iter_mut().find(|(p, _)| *p == process) {
+        return ring.observe(now_ms, reading).max;
     }
-    let max = ring.iter().map(|(_, b)| *b).max().unwrap_or(reading); // unwrap_or: the ring holds at least this reading
+    let mut ring = crate::system_resources::sustained::Sustained::bounded(FOOTPRINT_WINDOW, FOOTPRINT_SAMPLES);
+    let max = ring.observe(now_ms, reading).max;
     windows.push_back((process, ring));
     while windows.len() > FOOTPRINT_PROCESSES {
         windows.pop_front();

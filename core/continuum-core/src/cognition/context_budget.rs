@@ -77,6 +77,9 @@ pub struct ContextBudget {
     /// Total prompt chars this window can hold, conservatively estimated. `None` when the
     /// live window is unknown, which means every bound below is "no bound".
     total_chars: Option<usize>,
+    /// The served window itself in chars, unbounded by prefill affordability: the floor the
+    /// one-result share stands on (see [`Self::latest_action_chars`]).
+    served_chars: Option<usize>,
 }
 
 impl ContextBudget {
@@ -94,20 +97,30 @@ impl ContextBudget {
     /// tier gets the prompt it can afford. No trusted rate for the served model = the
     /// served window rules, as before.
     pub fn from_window(context_window: u32) -> Self {
-        let affordable = Self::prefill_affordable_window(context_window);
+        Self::from_window_for(context_window, crate::cognition::audience::current())
+    }
+
+    /// [`Self::from_window`] for a named audience instead of the running turn's. For STATE
+    /// that outlives a turn (a mind's results ring): budgeted against the turn that happens
+    /// to be running, it shrank 3x on every Interactive turn and regrew on the next
+    /// Unattended one, rewriting its collapsed-pointer block each swing and re-prefilling
+    /// everything after it (M5 2026-10-17: affordable 17-19k vs ~6k tokens alternating; the
+    /// pointer block was the first divergence on 40 of 62 turns, ~9k fresh tokens each).
+    pub fn from_window_for(context_window: u32, audience: crate::inference::prefill_rate::Audience) -> Self {
+        let affordable = Self::prefill_affordable_window_for(context_window, audience);
         Self {
             total_chars: (affordable > 0)
                 .then(|| (affordable as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
+            served_chars: (context_window > 0)
+                .then(|| (context_window as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
         }
     }
 
     /// The served window only — the KV-capacity reading, for seams that must not be
     /// prefill-bounded (a test fixture, a capacity report).
     pub fn from_window_unbounded(context_window: u32) -> Self {
-        Self {
-            total_chars: (context_window > 0)
-                .then(|| (context_window as usize).saturating_mul(GUARD_CHARS_PER_TOKEN)),
-        }
+        let chars = (context_window > 0).then(|| (context_window as usize).saturating_mul(GUARD_CHARS_PER_TOKEN));
+        Self { total_chars: chars, served_chars: chars }
     }
 
     /// Bounds from the window the local lane is serving RIGHT NOW — for seams that have no
@@ -148,12 +161,12 @@ impl ContextBudget {
     /// The honest "I don't know the window" budget: nothing is folded. See the module doc's
     /// unknown-window contract — the deliberation guard is the real backstop.
     pub fn unknown() -> Self {
-        Self { total_chars: None }
+        Self { total_chars: None, served_chars: None }
     }
 
 /// PURE: the prompt a turn may cost at `rate`, for a lane serving `served` tokens.
 ///
-/// Split out from [`Self::prefill_affordable_window`] so the DECISION is pinned by a test
+/// Split out from [`Self::prefill_affordable_window_for`] so the DECISION is pinned by a test
 /// rather than by a probe nobody reads until it fires — the caller is all process globals
 /// (the serving snapshot, the audience seam, the rates map) and cannot be exercised
 /// without them.
@@ -165,8 +178,9 @@ fn affordable_for_rate(
     rate: crate::inference::prefill_rate::MeasuredRate,
     served: u32,
     audience: crate::inference::prefill_rate::Audience,
+    cache_fraction: Option<f64>,
 ) -> u32 {
-    match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
+    let affordable = match rate.tps.filter(|t| t.is_finite() && *t > 0.0) {
         Some(tps) => crate::inference::prefill_rate::affordable_prompt_tokens(
             tps,
             crate::inference::planning::MIN_SERVE_CTX,
@@ -179,8 +193,28 @@ fn affordable_for_rate(
         None => u32::try_from(crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS)
             .unwrap_or(served) // unwrap_or: a floor that cannot be a u32 is not a floor; the window is the only other truth
             .min(served),
-    }
+    };
+    // THE TIME BUDGET IS SPENT ON FRESH TOKENS. The rate above prices every token of the
+    // prompt as if the lane had to read it; a warm lane serves most of it from its KV
+    // cache. Measured on the M5 2026-10-17: prefix reuse 55-75%, a ~18k-token bound on a
+    // 34,560-token lane, so a resident's results ring (a quarter of the bound) could not
+    // hold one 320-line read and she re-read the same file every turn. The measured cached
+    // fraction scales the bound up, counted at most MAX_CACHE_CREDIT so a turn that does
+    // lose its cache stays within a few multiples of its budget.
+    let credited = cache_fraction.filter(|f| f.is_finite() && *f > 0.0).map(|f| f.min(Self::MAX_CACHE_CREDIT)).unwrap_or(0.0);
+    let affordable = ((affordable as f64) / (1.0 - credited)).min(u32::MAX as f64) as u32;
+    // The planning helper may raise a proposed lane to MIN_SERVE_CTX. This
+    // owner budgets an already-resolved window: a serving floor cannot enlarge
+    // its capacity, including small explicit evaluation windows.
+    affordable.min(served)
 }
+
+/// The most of the measured cache fraction the bound credits: at 0.75 the bound grows at
+/// most 4x, so a turn that misses its cache entirely costs at most four times its
+/// time-to-first-token budget. Above it the bound would buy a whole-window cold prefill.
+// derived-or-floor: floor — measured prefix reuse on the M5 2026-10-17 ran 0.55-0.75; the
+// cap sits at the top of that range so the credit never exceeds what was observed.
+const MAX_CACHE_CREDIT: f64 = 0.75;
 
 /// The served window clamped to what the served lane can prefill inside the turn's
 /// time-to-first-token budget.
@@ -191,14 +225,13 @@ fn affordable_for_rate(
 /// cannot be right when nothing is known (card a2578811). `served` is still returned when
 /// there is no served MODEL to have a rate for: an absent subject, not an absent
 /// measurement. One row when the clamp binds, lifts, or changes rung; never per call.
-fn prefill_affordable_window(served: u32) -> u32 {
+fn prefill_affordable_window_for(served: u32, audience: crate::inference::prefill_rate::Audience) -> u32 {
     if served == 0 {
         return 0;
     }
     let Some(model) = crate::inference::llama_server::current_serving().active_model else {
         return served;
     };
-    let audience = crate::cognition::audience::current();
     // AN UNKNOWN RATE IS NOT PERMISSION FOR THE WHOLE WINDOW (card a2578811). This read
     // was `rate_for` — fresh-only — and its `None` fell through to `served`: the LARGEST
     // prompt the box can be asked for, handed out in exactly the state where nothing is
@@ -232,7 +265,7 @@ fn prefill_affordable_window(served: u32) -> u32 {
     // so each cancel shrinks the next prompt until one completes and re-measures for real.
     // The failure becomes the evidence. Card a2578811; not in this change.
     let rate = crate::inference::prefill_rate::measured_rate_for(&model);
-    let affordable = Self::affordable_for_rate(rate, served, audience);
+    let affordable = Self::affordable_for_rate(rate, served, audience, crate::inference::prefill_knee::cache_fraction());
     static LAST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(u64::MAX);
     let shape = ((served as u64) << 32)
         | (affordable as u64) << 3
@@ -261,6 +294,19 @@ fn prefill_affordable_window(served: u32) -> u32 {
 
 /// Share of the served window recall may spend. See [`ContextBudget::recall_tokens`].
 const RECALL_DENOM: usize = 10;
+
+    /// Whether a window is known: every bound below is a real number, not "no bound".
+    pub fn is_known(&self) -> bool {
+        self.total_chars.is_some()
+    }
+
+    /// The whole prompt this window affords, in tokens: the served window bounded by what
+    /// the lane can prefill inside the turn's TTFT budget ([`Self::from_window`]). `None`
+    /// when the window is unknown. The receipt a turn's tool and framing cost is read
+    /// against (card 3026b83e).
+    pub fn affordable_tokens(&self) -> Option<usize> {
+        self.total_chars.map(|total| total / GUARD_CHARS_PER_TOKEN)
+    }
 
     /// `1/denom` of the window in chars; `usize::MAX` (no bound) when the window is unknown.
     fn fraction(&self, denom: usize) -> usize {
@@ -306,12 +352,15 @@ const RECALL_DENOM: usize = 10;
         (TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM).max(1)
     }
 
-    /// The FULL most-recent-action block. This one rides in the volatile prompt tail and
-    /// re-prefills every turn it is present, so it is the biggest latency lever in the
-    /// prompt — a quarter of the window is the balance between "she can work with what her
-    /// hands just fetched" and "one `code/tree` dump costs 30s of re-prefill per turn".
+    /// The result of her most recent act: WHOLE, up to the window she is served. It used to be
+    /// a quarter of a prefill-bounded total (later floored at an eighth of the window), so her
+    /// own file reads came back cut and she re-read them in slices for hours (Benchy, the M5,
+    /// 2026-10-16 and 10-17, "more than this window's 12960-char share"). Joel 2026-10-17:
+    /// "Stop coding in shit to stop them from choosing what to do." A result larger than the
+    /// whole window cannot fit and is still saved whole behind its handle (spill); nothing
+    /// smaller is cut.
     pub fn latest_action_chars(&self) -> usize {
-        self.fraction(4)
+        self.served_chars.or(self.total_chars).unwrap_or(usize::MAX)
     }
 
     /// A dispatched command's result (a compile log, a sentinel's report) folded back in.
@@ -325,6 +374,20 @@ const RECALL_DENOM: usize = 10;
     /// [`Self::latest_action_chars`] so a normal investigation is not itself re-spilled.
     pub fn render_slice_chars(&self) -> usize {
         self.fraction(4)
+    }
+
+    /// One source's grounding offer, in tokens. Preserve the source bridge's
+    /// window-relative share (task #124: 4096 on a 16k window), but apply the
+    /// same measured prefill affordability as recall, tools and working memory.
+    /// This is an offer ceiling, not a reservation: the existing prompt fitter
+    /// still allocates the assembled context and preserves complete source units.
+    /// Grounding and tool-output rendering have separate policy names even though
+    /// their current shares agree; changing one must not silently change the other.
+    pub fn grounding_tokens(&self) -> usize {
+        match self.total_chars {
+            Some(total) => (total / GUARD_CHARS_PER_TOKEN) / 4,
+            None => usize::MAX,
+        }
     }
 
     /// ONE tool's one-line summary in the catalog she is offered. A catalog lists ~100 tools,
@@ -472,11 +535,11 @@ const RECALL_DENOM: usize = 10;
     /// the latest action gets, because a working mind's own results ARE its work.
     /// Storage bound (same leak-honesty contract as [`Self::receipt_archive_chars`]).
     pub fn recent_results_chars(&self) -> usize {
-        match self.total_chars {
-            Some(_) => self.fraction(4),
-            None => {
-                Self::from_window(crate::inference::planning::MIN_SERVE_CTX).fraction(4)
-            }
+        // Her results stay until her WINDOW is full (Joel 2026-10-17: no machinery choosing
+        // for her). The prompt's own fit drops the oldest history when a turn does not fit.
+        match self.served_chars.or(self.total_chars) {
+            Some(chars) => chars,
+            None => Self::from_window(crate::inference::planning::MIN_SERVE_CTX).served_chars.unwrap_or(0),
         }
     }
 }
@@ -494,11 +557,27 @@ mod tests {
     //
     // The rungs that matter, at the numbers that were measured. If any absence resolves to
     // `served` again, the cancel loop comes back.
+    // what this catches: the prefill time bound charging cached tokens as if they had to
+    // be read (the M5 2026-10-17: ~100 t/s x 180 s = ~18k on a 34,560 lane with 57% reuse,
+    // so a resident's ring could not hold one 320-line read). The measured cache fraction
+    // scales the bound, credited at most MAX_CACHE_CREDIT, never past the window.
+    #[test]
+    fn the_prefill_bound_credits_the_measured_cache() {
+        use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
+        let rate = MeasuredRate { tps: Some(100.0), source: RateSource::Fresh };
+        let cold = ContextBudget::affordable_for_rate(rate, 34_560, Audience::Unattended, None);
+        let half = ContextBudget::affordable_for_rate(rate, 200_000, Audience::Unattended, Some(0.5));
+        assert_eq!(half, cold * 2, "half the prompt cached: twice the prompt fits the same fresh-token budget");
+        let all = ContextBudget::affordable_for_rate(rate, 200_000, Audience::Unattended, Some(0.99));
+        assert_eq!(all, cold * 4, "credited at most MAX_CACHE_CREDIT (4x), whatever the measured fraction");
+        assert_eq!(ContextBudget::affordable_for_rate(rate, 34_560, Audience::Unattended, Some(0.9)), 34_560, "never past the served window");
+    }
+
     #[test]
     fn an_unmeasured_prefill_rate_never_buys_the_whole_window() {
         use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
         let served = 26_000;
-        let afford = |r| ContextBudget::affordable_for_rate(r, served, Audience::Interactive);
+        let afford = |r| ContextBudget::affordable_for_rate(r, served, Audience::Interactive, None);
 
         // A rung with a number governs — even a STALE one: 12.5 t/s x 60 s = 750, under
         // MIN_SERVE_CTX, so the serve floor carries the prompt instead of the window.
@@ -537,9 +616,30 @@ mod tests {
         // A window SMALLER than the unmeasured floor clamps to the window: the floor is a
         // floor on the prompt, never a licence to exceed the lane.
         assert_eq!(
-            ContextBudget::affordable_for_rate(MeasuredRate::UNKNOWN, 1_024, Audience::Interactive),
+            ContextBudget::affordable_for_rate(MeasuredRate::UNKNOWN, 1_024, Audience::Interactive, None),
             1_024
         );
+
+        // Card 2bbee27a: grounding previously bypassed this rate ladder and
+        // offered a quarter of raw KV capacity while the other context sources
+        // used measured affordability. Exercise those same known/unknown rungs
+        // at the current 51,712-token geometry and a smaller-than-serve-floor
+        // window. These are deterministic policy inputs, not hardware receipts.
+        for (window, rate, expected) in [
+            (51_712, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 12_928),
+            (51_712, MeasuredRate::UNKNOWN, crate::inference::prefill_rate::UNMEASURED_FILL_FLOOR_TOKENS / 4),
+            (256, MeasuredRate::UNKNOWN, 64),
+            (256, MeasuredRate { tps: Some(12.5), source: RateSource::Stale }, 64),
+            (0, MeasuredRate { tps: Some(1_000.0), source: RateSource::Fresh }, 0),
+        ] {
+            let affordable = ContextBudget::affordable_for_rate(rate, window, Audience::Interactive, None);
+            assert!(affordable <= window);
+            if window > 0 {
+                let budget = ContextBudget::from_window_unbounded(affordable);
+                assert_eq!(budget.grounding_tokens(), expected as usize);
+                assert!(budget.grounding_tokens() <= window as usize);
+            }
+        }
     }
 
     /// what this catches: the fractions drifting away from the constants they replaced.
@@ -557,7 +657,9 @@ mod tests {
             );
         };
         near(b.trail_head_chars(), 800); // WM_ACTION_HEAD_CHARS
-        near(b.latest_action_chars(), 12_000); // WM_ACTION_FULL_MAX_CHARS
+        // Her own act's result is no longer a tuned share: it is the whole served window
+        // (Joel 2026-10-17), so it is pinned to the window, not to the old 12,000.
+        assert_eq!(b.latest_action_chars(), 16_384 * GUARD_CHARS_PER_TOKEN);
         near(b.dispatch_result_chars(), 4_000); // DISPATCH_RESULT_MAX_CHARS
         near(b.render_slice_chars(), 12_000); // RENDER_BUDGET_CHARS
         near(b.catalog_summary_chars(), 96); // SUMMARY_MAX_CHARS

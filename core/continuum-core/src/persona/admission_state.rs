@@ -1785,7 +1785,7 @@ mod tests {
     /// memorize the crib sheet, but her autobiography of struggling stays.
     #[test]
     fn redact_scrubs_exam_key_from_memory_keeping_the_experience() {
-        use crate::persona::redaction::{ExamKeyDetector, RedactionClass, RedactionPolicy};
+        use crate::persona::redaction::{HeldOutAnswerDetector, RedactionClass, RedactionPolicy};
         let state = AdmissionState::new(Arc::new(
             crate::persona::recall_metadata::RecallMetadataRegistry::new(),
         ));
@@ -1795,12 +1795,12 @@ mod tests {
         );
         state.admit_reflection(mem).expect("admits");
 
-        let policy = RedactionPolicy::new(vec![Box::new(ExamKeyDetector::new(
+        let policy = RedactionPolicy::new(vec![Box::new(HeldOutAnswerDetector::new(
             ["service_loop.rs".to_string()],
-            ExamKeyDetector::DEFAULT_MIN_LEN,
+            HeldOutAnswerDetector::DEFAULT_MIN_LEN,
         ))]);
         let report = state.redact(&policy);
-        assert_eq!(report.count(RedactionClass::ExamKey), 1);
+        assert_eq!(report.count(RedactionClass::HeldOutAnswer), 1);
 
         let recalled = state.recall_recent(1);
         assert_eq!(recalled.len(), 1);

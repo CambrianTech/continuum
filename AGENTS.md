@@ -1,5 +1,33 @@
 # AGENTS.md — entry point for Codex and other agent runtimes
 
+## ⛳ THE PLAN — read before every change (Joel, 2026-10-18)
+
+The project degraded in the week of 2026-10-12 while every part stayed green. This is the
+whole plan. Each item has a GATE (a number that says done or not) and an OWNER. Nothing is
+done until its gate is met on the live node and the change is MERGED.
+
+| # | Goal | Gate (done when) | Owner |
+|---|---|---|---|
+| 1 | airc delivers | every node's send reaches its live peers; gh Registry calls stay under the governor's budget | Sneasel (Fable) |
+| 2 | Residents code at pace | per resident: ≥40 tool calls/h, median act <60 s, prefix reuse ≥80%; ≥1 resident PR merged per day; on a capable model (27B class), several at once | Sneasel (M5), BigMama (5090) — proposed |
+| 3 | Nothing is lost | every pushed branch has a PR (#5154); no PR waits more than a day for a verdict | everyone |
+| 4 | No monolith | `source-hygiene::file_size` (lines past 1,000; 159,720 on 10-18) falls every week; split by OWNER | owner of each file |
+| 5 | No unwraps | `unwrap_justification` (2,135 on 10-18) falls every week; make the state unrepresentable | owner of each file |
+| 6 | Microkernel | `layer_discipline` (256 upward imports on 10-18) falls; crates by device target; edit-to-proven <15 min | Sneasel — proposed |
+| 7 | One budget | everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number | Sneasel |
+| 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama — proposed |
+
+**Rules for every change, no exceptions:**
+- **Merged or it does not exist.** A branch is not done. A green test is not done.
+- **Measure the live node before and after**: tool calls/h and seconds per act. Worse = fix it the same hour or back it out. One change per deploy.
+- **One owner per fact, no logic twice**: look up, never re-derive (model identity, rates, budgets).
+- **No constant where a measurement exists. No unwrap. Typed ids, never strings.**
+- **No claim without a receipt**: the command or file:line, the build SHA, the time.
+- **Mechanical work goes to a cheap model or a script**; the top model is for diagnosis, design, review.
+- **Talk on airc, and check that the send reached someone** ("reached 0 of N" = nobody heard).
+
+
+
 **The guidance for this repo lives in [CLAUDE.md](CLAUDE.md).** Read it before you
 write code. This file exists because Codex-family agents look for `AGENTS.md` and
 would otherwise find nothing here and start guessing.
@@ -128,6 +156,16 @@ Apply the same pattern-finding discipline to production code: common behavior be
 Apply continual refinement to ALL work, not only tests or CI. Look for reusable patterns in production code, scripts, integrations, model engines, and dependencies. Do not add another local workaround merely because the correct shared implementation belongs to another module, repository, or owner. Inspect and improve that implementation, coordinate concurrent edits, update its callers, and remove superseded duplication. Ownership establishes coordination, not a prohibition on improving shared code. For vendored/upstream code, preserve provenance and a maintainable patch path.
 
 Existing review must ask: Where does this behavior already exist? Can the shared function/adapter serve these callers? Which duplicate paths disappear? What evidence verifies the affected callers? Record concrete answers when applicable; do not create a new ceremonial CI gate. Exceptions require a concrete technical reason in the change, not an assumption that adjacent code is untouchable.
+
+## Joel: build as if you were the AI in the system (2026-10-13)
+
+Before any change, picture yourself as the persona living inside Continuum. What tools, context and errors would YOU need to do real work, the way a good agent environment gives you read/shell/search with honest truncation and clear errors? Build that, once, in shared code.
+
+- **Don't hand-code her problems.** When a persona stumbles (a wrong id, a malformed call, a loop), she reads the error, uses her tools and learns, as any AI does. Add substrate code only for what normal AI tooling has, or what is broken for everyone (authorization, deploys, data loss, a wrong verb). Push back when a review expands a small fix into a framework for one incident.
+- **No undue hurdles.** A step a normal tool would not require (an extra verb to open her own output, a full UUID where "latest" is obvious, identity or worktree ceremony) is removed, not documented.
+- **Ask why it exists.** Before hardening or polishing anything: is it half-built work someone abandoned, and does it belong in prod at all? Half-built and unused is deleted, not hardened. An unenforced declaration is enforced or deleted.
+- **Good code is shared code.** Most tool code has been written before, and has a pattern and an owner (positron, runtime, sdk_codegen, orm). Search for the pattern BEFORE writing a helper; if copies exist, extract them into one shared type in the same change (see "Refine shared code wherever it lives" above).
+- **Python is never load-bearing.** Use it for your own throwaway work. Never put it in a substrate or serving path: it takes systems down under load and cannot run at the edge.
 
 ## Joel: ORM-only storage access
 

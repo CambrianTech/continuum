@@ -645,7 +645,13 @@ impl ToolExecutor for CommandToolExecutor {
                         dispatch_handle,
                     });
 
-                    let full = value.to_string(); // boundary: tool-result transcript now contains a durable image reference.
+                    // boundary: tool-result transcript now contains a durable image reference.
+                    // The result goes on as TEXT: a result whose body is one long string field
+                    // (code/read's `content`, a shell's `stdout`) kept that body JSON-escaped,
+                    // so its newlines were `\n` sequences, the spill counted it as ONE line,
+                    // and the line-range way into it was meaningless (Benchy, the M5,
+                    // 2026-10-16: a 248-line read arrived as "1 lines (13449 chars)").
+                    let full = crate::cognition::tool_executor::spill::result_text(&value);
                     {
                         // Whole, or saved whole and handed back as its handle: never a
                         // fragment. The HANDLE rides the result type-level so working

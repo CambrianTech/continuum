@@ -2368,6 +2368,10 @@ mod tests {
     #[tokio::test]
     async fn node_local_catalog_cannot_follow_a_remote_main_database() {
         let node = tempfile::tempdir().unwrap();
+        // CONTINUUM_HOME precedes the process test home. Hold the existing shared
+        // guard through adapter I/O so another fixture cannot remove its home
+        // between path resolution and SQLite open (5067 hosted regression).
+        let _home = crate::test_env::HomeGuard::set(node.path()).await;
         let remote = "postgres://shared.example/fleet";
         let backend = || DataState::resolve_handle_with("main", |key| {
             assert_eq!(key, "DATABASE_URL");
@@ -2377,8 +2381,10 @@ mod tests {
         assert_eq!(DataState::resolve_node_or_backend("@node", || Ok(node.path().into()), || panic!("node catalog must never resolve DATABASE_URL")).unwrap(), node.path().join("database/node.db").to_str().unwrap());
         // Broker initialization may precede DataModule::initialize. The actual
         // adapter owner must open independently and reuse its resolved backend.
-        // continuum_home supplies the existing process-local test isolation.
+        // The held home guard supplies isolation through both adapter awaits.
         let state = DataState::new();
+        assert_eq!(state.resolve_handle("@node").unwrap(),
+            node.path().join(".continuum/database/node.db").to_str().unwrap());
         assert!(state.context.read().unwrap().is_none());
         let first = state.get_adapter("@node").await.unwrap();
         let second = state.get_adapter("@node").await.unwrap();
