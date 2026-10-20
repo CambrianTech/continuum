@@ -34,6 +34,8 @@ pub mod vector;
 
 #[cfg(test)]
 mod derive_test;
+#[cfg(test)]
+pub(crate) mod gated_adapter;
 
 pub use adapter::StorageAdapter;
 pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};

@@ -1535,7 +1535,6 @@ mod tests {
             tests::turn_capture, CapturedCredit, StagedCredit, StagedCreditGeneration,
         };
 
-        use crate::orm::OrmEntity;
         let home = tempfile::tempdir().unwrap();
         let _home = crate::test_env::HomeGuard::set(home.path()).await;
         crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global())
@@ -1629,28 +1628,11 @@ mod tests {
             _ = &mut drive => panic!("driver must still be working after its fourth persisted act"),
             _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("fifth act never reached its pause"),
         }
-        // Her staged credit, read back the way every other reader does: through the ORM.
-        let longterm: Arc<dyn crate::orm::StorageAdapter> = Arc::new(
-            crate::orm::SqliteAdapter::open(
-                &home
-                    .path()
-                    .join(".continuum/personas/capture-owner/data/longterm.db"),
-            )
-            .await
-            .expect("open her longterm store"),
-        );
-        let staged = crate::orm::OrmStore::<StagedCredit>::new(Arc::clone(&longterm))
-            .await
-            .expect("staged credit store");
+        // Her staged credit, read back through the ORM like every other reader.
+        let longterm: Arc<dyn crate::orm::StorageAdapter> = Arc::new(crate::orm::SqliteAdapter::open(&home.path().join(".continuum/personas/capture-owner/data/longterm.db")).await.expect("open her longterm store"));
+        let staged = crate::orm::OrmStore::<StagedCredit>::new(Arc::clone(&longterm)).await.expect("staged credit store");
         let read = || async {
-            let mut rows = staged
-                .find_matching(
-                    crate::orm::QueryBuilder::new(StagedCredit::COLLECTION)
-                        .filter_eq("cardId", card.to_string())
-                        .build(),
-                )
-                .await
-                .expect("read staged credit");
+            let mut rows = staged.find_eq("cardId", card.to_string()).await.expect("read staged credit");
             assert_eq!(rows.len(), 1, "one staged credit row per card");
             rows.remove(0).1
         };
@@ -1741,16 +1723,8 @@ mod tests {
             finished.id,
             "identical retry reuses its revision identity"
         );
-        assert_eq!(
-            crate::orm::OrmStore::<StagedCreditGeneration>::new(Arc::clone(&longterm))
-                .await
-                .expect("generation store")
-                .find_all()
-                .await
-                .expect("read generations")
-                .len(),
-            5
-        );
+        let generations = crate::orm::OrmStore::<StagedCreditGeneration>::new(Arc::clone(&longterm)).await.expect("generation store");
+        assert_eq!(generations.find_all().await.expect("read generations").len(), 5);
         drop(capture);
         let other_card = Uuid::new_v4();
         let mut other = turn_capture(

@@ -29,6 +29,8 @@ use super::types::{
     RecordMetadata, StorageResult, METADATA_KEYS, UUID,
 };
 
+mod conditional;
+
 /// Format a tokio-postgres error with full detail chain.
 /// The default Display for these errors often just says "db error" — useless.
 fn format_pg_error(e: &tokio_postgres::Error) -> String {
@@ -206,31 +208,7 @@ impl PostgresAdapter {
         // Get column types for type-aware parameter coercion
         let col_types = self.cached_column_types(client, &bare_table).await;
 
-        // Build column list and values
-        let mut columns = vec![
-            "id".to_string(),
-            "created_at".to_string(),
-            "updated_at".to_string(),
-            "version".to_string(),
-        ];
-        let mut params: Vec<Box<dyn ToSql + Sync + Send>> = vec![
-            Box::new(record.id.clone()),
-            Box::new(now),
-            Box::new(now),
-            Box::new(1_i64),
-        ];
-
-        if let Value::Object(data) = &record.data {
-            for (key, value) in data {
-                if METADATA_KEYS.contains(&key.as_str()) {
-                    continue;
-                }
-                let col_name = naming::to_snake_case(key);
-                let pg_type = col_types.get(&col_name).map(|s| s.as_str());
-                columns.push(col_name);
-                params.push(value_to_pg_typed(value, pg_type));
-            }
-        }
+        let (columns, params) = conditional::insert_columns(&record, now, &col_types);
 
         let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("${}", i)).collect();
         let sql = format!(
@@ -1300,6 +1278,14 @@ impl StorageAdapter for PostgresAdapter {
         self.delete_on(&client, collection, id).await
     }
 
+    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool> {
+        self.upsert_monotonic_statement(record, field).await
+    }
+
+    async fn delete_matching(&self, query: StorageQuery) -> StorageResult<usize> {
+        self.delete_matching_statement(query).await
+    }
+
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
         // ONE checked-out connection for the whole batch. Dispatching through
         // `self.create(...)` per operation (as this did before) takes a DIFFERENT
@@ -1533,7 +1519,7 @@ impl StorageAdapter for PostgresAdapter {
         for field in &schema.fields {
             if field.indexed {
                 let col_name = naming::to_snake_case(&field.name);
-                let idx_name = format!("idx_{}_{}", table, col_name);
+                let idx_name = format!("idx_{}_{}", naming::to_table_name(&schema.collection), col_name); // an index lives in its table's schema: a qualified table name made `idx_ns.table_col`, a syntax error
                 let idx_sql = format!(
                     "CREATE INDEX IF NOT EXISTS {} ON {} ({})",
                     idx_name, table, col_name

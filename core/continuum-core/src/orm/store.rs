@@ -181,6 +181,16 @@ where
             .collect()
     }
 
+    /// Load the rows whose `field` equals `value`, paired with their row ids.
+    pub async fn find_eq(
+        &self,
+        field: &str,
+        value: impl Into<serde_json::Value>,
+    ) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
+        self.find_matching(QueryBuilder::new(T::COLLECTION).filter_eq(field, value).build())
+            .await
+    }
+
     /// Resolve a single row by id. Returns `Ok(None)` when the row
     /// doesn't exist — clean Option semantics, not the adapter's
     /// "Record not found" error-string convention.
@@ -249,22 +259,23 @@ where
         })
     }
 
-    /// Delete every row in `ids` ATOMICALLY: all of them, or none. An empty set is a
-    /// no-op.
-    pub async fn delete_all(&self, ids: impl IntoIterator<Item = Uuid>) -> Result<(), OrmStoreError> {
-        let operations: Vec<BatchOperation> = ids
-            .into_iter()
-            .map(|id| BatchOperation {
-                operation_type: BatchOperationType::Delete,
-                collection: T::COLLECTION.to_string(),
-                id: Some(id.to_string()),
-                data: None,
-            })
-            .collect();
-        if operations.is_empty() {
-            return Ok(());
-        }
-        commit(&self.adapter, operations).await
+    /// Save `entity` as row `id` unless that row already holds a GREATER `field`: ONE
+    /// atomic backend operation ([`StorageAdapter::upsert_monotonic`]), so the compare
+    /// can never be separated from the write. Returns whether it was written.
+    pub async fn save_monotonic(&self, id: Uuid, entity: &T, field: &str) -> Result<bool, OrmStoreError> {
+        let record = DataRecord {
+            id: id.to_string(),
+            collection: T::COLLECTION.to_string(),
+            data: row_data(entity)?,
+            metadata: RecordMetadata::default(),
+        };
+        unwrap_adapter(self.adapter.upsert_monotonic(record, field).await, "upsert_monotonic", T::COLLECTION)
+    }
+
+    /// Delete every row `query` selects, judged when the delete runs: ONE backend
+    /// statement ([`StorageAdapter::delete_matching`]). Returns the count removed.
+    pub async fn delete_matching(&self, query: StorageQuery) -> Result<usize, OrmStoreError> {
+        unwrap_adapter(self.adapter.delete_matching(query).await, "delete_matching", T::COLLECTION)
     }
 
     /// Delete a row. Returns `Ok(true)` if a row was deleted,

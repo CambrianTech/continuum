@@ -32,7 +32,6 @@ use airc_core::PeerId;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
-use tokio::sync::Mutex;
 
 use crate::orm::legacy_grant_watermark::{self, LegacyWatermarkImportError};
 use crate::orm::query::{QueryBuilder, QueryOperator};
@@ -160,12 +159,13 @@ pub struct GrantEpochWatermark {
 const MAX_EXACT_EPOCH: u64 = 1 << 53;
 
 /// Durable ORM-backed watermark — survives restart. One [`GrantEpochWatermark`] row per
-/// grantee. The ORM has no compare-and-swap, so the read-then-write of
-/// [`check_and_advance`](EpochWatermarkStore::check_and_advance) (and eviction, which
-/// must not delete a row an accept just advanced) runs under one in-process lock: the
-/// check and the advance are one critical section across concurrent callers.
+/// grantee. Check-and-advance is ONE atomic ORM operation
+/// ([`OrmStore::save_monotonic`]: write unless the stored epoch is greater) and eviction
+/// is ONE conditional delete, so no in-process lock is needed or relied on: a caller
+/// cancelled mid-write, a write landing late, or a second store over the same adapter
+/// can never apply a decision made against a stale read.
 pub struct OrmEpochWatermark {
-    store: Mutex<OrmStore<GrantEpochWatermark>>,
+    store: OrmStore<GrantEpochWatermark>,
 }
 
 impl std::fmt::Debug for OrmEpochWatermark {
@@ -204,9 +204,7 @@ impl OrmEpochWatermark {
     /// The watermark over an already-open ORM adapter.
     pub async fn over(adapter: Arc<dyn StorageAdapter>) -> Result<Self, WatermarkError> {
         let store = OrmStore::new(adapter).await.map_err(store_error)?;
-        Ok(Self {
-            store: Mutex::new(store),
-        })
+        Ok(Self { store })
     }
 }
 
@@ -225,36 +223,32 @@ impl EpochWatermarkStore for OrmEpochWatermark {
         if epoch > MAX_EXACT_EPOCH {
             return Err(WatermarkError::EpochOutOfRange(epoch));
         }
-        let store = self.store.lock().await;
-        let id = grantee.as_uuid();
         let row = GrantEpochWatermark {
             id: grantee,
             epoch,
             updated_at_ms: now_ms,
         };
-        match store.find_by_id(id).await.map_err(store_error)? {
-            Some(current) if epoch < current.epoch => return Ok(WatermarkDecision::Superseded),
-            Some(_) => store.update(id, &row).await.map_err(store_error)?,
-            None => store.save(id, &row).await.map_err(store_error)?,
-        }
-        Ok(WatermarkDecision::Accepted)
+        let advanced = self
+            .store
+            .save_monotonic(grantee.as_uuid(), &row, "epoch")
+            .await
+            .map_err(store_error)?;
+        Ok(if advanced {
+            WatermarkDecision::Accepted
+        } else {
+            WatermarkDecision::Superseded
+        })
     }
 
     async fn evict_older_than(&self, cutoff_ms: u64) -> Result<usize, WatermarkError> {
-        let store = self.store.lock().await;
-        let stale = store
-            .find_matching(
+        self.store
+            .delete_matching(
                 QueryBuilder::new(GrantEpochWatermark::COLLECTION)
                     .filter("updatedAtMs", QueryOperator::Lt(cutoff_ms.into()))
                     .build(),
             )
             .await
-            .map_err(store_error)?;
-        store
-            .delete_all(stale.iter().map(|(id, _)| *id))
-            .await
-            .map_err(store_error)?;
-        Ok(stale.len())
+            .map_err(store_error)
     }
 }
 
@@ -404,6 +398,65 @@ mod tests {
         }
     }
 
+    // regression for Codex's review of #5205 at 1e0a8c7ef — what this catches: a write
+    // runs detached (spawn_blocking), so a presentation cancelled mid-write must not land
+    // its LOWER epoch after a newer one was accepted. Pause the first mutation, cancel its
+    // caller, accept a newer epoch, release, and the durable watermark is still the newer.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_cancelled_presentation_cannot_land_a_lower_epoch_later() {
+        use crate::orm::gated_adapter::GatedAdapter;
+        let (inner, _dir) = crate::orm::store::fresh_adapter().await;
+        let gated = Arc::new(GatedAdapter::new(inner));
+        let store = Arc::new(OrmEpochWatermark::over(Arc::clone(&gated) as Arc<dyn StorageAdapter>).await.expect("open"));
+        let g = peer(9);
+        store.check_and_advance(g, 5, 1).await.unwrap();
+        let paused = gated.pause_next_write();
+        let first = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.check_and_advance(g, 7, 2).await }
+        });
+        paused.entered.notified().await;
+        first.abort();
+        assert!(first.await.is_err(), "the first presentation was cancelled mid-write");
+        assert_eq!(store.check_and_advance(g, 10, 3).await.unwrap(), WatermarkDecision::Accepted);
+        paused.release.notify_one();
+        paused.done.notified().await;
+        assert_eq!(
+            store.check_and_advance(g, 9, 4).await.unwrap(),
+            WatermarkDecision::Superseded,
+            "the cancelled presentation's lower epoch 7 landed over the accepted 10"
+        );
+    }
+
+    // regression for Codex's review of #5205 at 1e0a8c7ef — what this catches: an
+    // eviction cancelled mid-delete must not erase a grantee advanced after it selected
+    // its rows; the advanced grantee's replay stays superseded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_cancelled_eviction_cannot_erase_a_grantee_advanced_after_it() {
+        use crate::orm::gated_adapter::GatedAdapter;
+        let (inner, _dir) = crate::orm::store::fresh_adapter().await;
+        let gated = Arc::new(GatedAdapter::new(inner));
+        let store = Arc::new(OrmEpochWatermark::over(Arc::clone(&gated) as Arc<dyn StorageAdapter>).await.expect("open"));
+        let g = peer(10);
+        store.check_and_advance(g, 5, 1_000).await.unwrap();
+        let paused = gated.pause_next_write();
+        let eviction = tokio::spawn({
+            let store = Arc::clone(&store);
+            async move { store.evict_older_than(3_000).await }
+        });
+        paused.entered.notified().await;
+        eviction.abort();
+        assert!(eviction.await.is_err(), "the eviction was cancelled mid-delete");
+        assert_eq!(store.check_and_advance(g, 6, 5_000).await.unwrap(), WatermarkDecision::Accepted);
+        paused.release.notify_one();
+        paused.done.notified().await;
+        assert_eq!(
+            store.check_and_advance(g, 5, 6_000).await.unwrap(),
+            WatermarkDecision::Superseded,
+            "the cancelled eviction erased a grantee advanced after it selected its rows"
+        );
+    }
+
     // what this catches: an epoch the ORM's Number column cannot hold exactly is
     // refused (fail closed), never rounded into a value a replay could slip under.
     #[tokio::test]
@@ -444,14 +497,12 @@ mod tests {
     }
 
     // what this catches: under concurrent presentation of many epochs for the SAME
-    // grantee, the store's critical section keeps the watermark monotonic. Two grantees
-    // cover both halves of the read-then-write: `seeded` already has a row, so every
-    // accept is find-then-UPDATE and a missing lock shows as a LOST UPDATE (a lower
-    // epoch overwriting a higher one, so the max no longer supersedes max-1); `fresh`
-    // has none, so racing first accepts are find-then-INSERT and a missing lock shows as
-    // a failed decision (duplicate primary key). A barrier releases every task at once
-    // so the reads interleave before the writes; the watermark is checked after a reopen.
-    // Mutation receipt (lock released before the read, 2026-10-19): see the PR body.
+    // grantee, the atomic compare-and-write keeps the watermark monotonic. Two grantees
+    // cover both shapes of the write: `seeded` already has a row (a non-conditional
+    // overwrite shows as a LOST UPDATE: a lower epoch over a higher, so the max no longer
+    // supersedes max-1); `fresh` has none (racing first writes must not fail or lose).
+    // A barrier releases every task at once; the watermark is checked after a reopen.
+    // Mutation receipts (2026-10-19) are in the PR body.
     #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
     async fn concurrent_same_grantee_epochs_stay_monotonic() {
         const N: u64 = 64;

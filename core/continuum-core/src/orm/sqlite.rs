@@ -25,6 +25,9 @@ use super::types::{
     RecordMetadata, StorageResult, METADATA_KEYS, UUID,
 };
 
+mod conditional;
+mod file;
+
 // No artificial cap on reader pool — AdapterConfig.max_connections controls it.
 // WAL mode supports unlimited concurrent readers.
 
@@ -136,33 +139,9 @@ impl SqliteAdapter {
         }
     }
 
-    /// Open (creating if absent) the SQLite database file at `path`: THE way a store
-    /// that owns its own file (a persona home's engrams, a peer home's grant
-    /// watermark) gets an adapter, so the open is written once, not per store.
-    pub async fn open(path: &std::path::Path) -> Result<Self, String> {
-        let connection_string = path
-            .to_str()
-            .ok_or_else(|| format!("database path {} is not valid UTF-8", path.display()))?
-            .to_string();
-        let mut adapter = Self::new();
-        adapter
-            .initialize(AdapterConfig {
-                connection_string,
-                ..AdapterConfig::default()
-            })
-            .await?;
-        Ok(adapter)
-    }
-
     /// The declared column types of `collection`, when a store registered them.
     fn declared_types(&self, collection: &str) -> Option<Arc<HashMap<String, FieldType>>> {
         self.declared.read().ok()?.get(collection).cloned()
-    }
-
-    /// The writer connection, for an in-`orm/` migration that must run its statements in
-    /// one transaction on the same file ([`super::legacy_grant_watermark`]).
-    pub(super) fn writer(&self) -> Result<Arc<Mutex<Connection>>, String> {
-        self.get_writer()
     }
 
     /// Get writer connection for mutations
@@ -328,31 +307,8 @@ fn do_create(conn: &Connection, record: DataRecord, types: Option<&HashMap<Strin
         return StorageResult::err(e);
     }
 
-    // Build column list and values from data
-    let mut columns = vec![
-        "id".to_string(),
-        "created_at".to_string(),
-        "updated_at".to_string(),
-        "version".to_string(),
-    ];
-    let mut placeholders = vec!["?", "?", "?", "?"];
-    let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![
-        Box::new(record.id.clone()),
-        Box::new(now.clone()),
-        Box::new(now.clone()),
-        Box::new(1i64),
-    ];
-
-    if let Value::Object(data) = &record.data {
-        for (key, value) in data {
-            if METADATA_KEYS.contains(&key.as_str()) {
-                continue;
-            }
-            columns.push(naming::to_snake_case(key));
-            placeholders.push("?");
-            values.push(value_to_sql_boxed(value));
-        }
-    }
+    let (columns, values) = conditional::insert_columns(&record, &now);
+    let placeholders = vec!["?"; columns.len()];
 
     let sql = format!(
         "INSERT INTO {} ({}) VALUES ({})",
@@ -1414,6 +1370,14 @@ impl StorageAdapter for SqliteAdapter {
         })
         .await
         .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {}", e)))
+    }
+
+    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool> {
+        self.upsert_monotonic_on_writer(record, field).await
+    }
+
+    async fn delete_matching(&self, query: StorageQuery) -> StorageResult<usize> {
+        self.delete_matching_on_writer(query).await
     }
 
     async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {

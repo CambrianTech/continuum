@@ -109,6 +109,20 @@ pub trait StorageAdapter: Send + Sync {
     /// Delete a record
     async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool>;
 
+    /// Write `record` unless its row already holds a GREATER `field`, as ONE atomic
+    /// operation on the backend: create the row if absent, overwrite it when the stored
+    /// `field` <= the record's, refuse otherwise. Returns whether it was written.
+    ///
+    /// The compare runs inside the write, so no other writer, second store over this
+    /// adapter, or write that outlives its cancelled caller can slip between a read and
+    /// the write it justified. The primitive for a monotonic high-water mark.
+    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool>;
+
+    /// Delete every row `query`'s filter selects, as ONE statement, returning the count.
+    /// The filter is judged when the delete runs, so a row changed after the caller chose
+    /// to delete is kept or removed by its current values, never by a stale selection.
+    async fn delete_matching(&self, query: StorageQuery) -> StorageResult<usize>;
+
     // ─── Batch Operations ────────────────────────────────────────────────────
 
     /// Execute batch operations ATOMICALLY — all of them commit, or none do.
