@@ -54,7 +54,7 @@ impl SqliteAdapter {
             Err(e) => StorageResult::err(format!("writer lock poisoned: {e}")),
         })
         .await
-        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {e}")))
+        .unwrap_or_else(|e| StorageResult::err(format!("spawn_blocking failed: {e}"))) // a panicked blocking task is this write's error, reported, never swallowed
     }
 }
 

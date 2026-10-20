@@ -72,7 +72,9 @@ const SHAPES: &[&str] = &[
 // 2,139 after card 0af5d5ec: not code removed, a miscount ended. Files that ARE test
 // modules (`#![cfg(test)]`: contracts/chain_tests.rs, orm/derive_test.rs) were read as
 // production; `production_half` now reads them as test code.
-const BASELINE_UNJUSTIFIED: usize = 2_137;
+// 2,135 after card bbc5b0b6 (#5205): the hand-rolled SqliteEpochWatermark and its
+// unwrap_or fallbacks deleted.
+const BASELINE_UNJUSTIFIED: usize = 2_135;
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).

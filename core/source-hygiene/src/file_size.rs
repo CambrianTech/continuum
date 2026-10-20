@@ -42,7 +42,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // persona/viewstate_rag/tests.rs (#![cfg(test)]): #5015 had grown it to 1,458 lines and turned canary red.
 // 157,618 after consolidating the f32 cosine kernel into cognition/embedding/similarity.rs.
 // 157,412 after card a00ab1a6 deleted the standing benchmark autopilot (no harness).
-const BASELINE_LINES_OVER: usize = 157_397;
+// 157,343 after card bbc5b0b6 (#5205): the row insert shape, SqliteAdapter::open and the
+// conditional writes moved out of orm/sqlite.rs and orm/postgres.rs into their own modules.
+const BASELINE_LINES_OVER: usize = 157_343;
 
 pub struct FileSize;
 

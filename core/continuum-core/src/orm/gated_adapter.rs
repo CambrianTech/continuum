@@ -7,6 +7,8 @@
 //! the test opens, so a test can cancel the caller, act, release, and observe what the
 //! orphaned write did. Reads and schema calls pass straight through.
 
+#![cfg(test)]
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -44,7 +46,7 @@ impl GatedAdapter {
             release: Arc::new(Notify::new()),
             done: Arc::new(Notify::new()),
         };
-        *self.next.lock().expect("gate lock") = Some(paused.clone());
+        *self.next.lock().expect("gate lock") = Some(paused.clone()); // test fixture: a poisoned gate means an earlier test thread panicked
         paused
     }
 
@@ -53,7 +55,7 @@ impl GatedAdapter {
         &self,
         write: impl FnOnce(Arc<dyn StorageAdapter>) -> BoxFuture<'static, R> + Send + 'static,
     ) -> R {
-        let gate = self.next.lock().expect("gate lock").take();
+        let gate = self.next.lock().expect("gate lock").take(); // test fixture: a poisoned gate means an earlier test thread panicked
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
             if let Some(gate) = &gate {
@@ -67,7 +69,7 @@ impl GatedAdapter {
             out
         })
         .await
-        .expect("detached write task")
+        .expect("detached write task") // test fixture: a panicking write fails the test that caused it
     }
 }
 
