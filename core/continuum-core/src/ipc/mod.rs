@@ -69,7 +69,6 @@ pub mod endpoint_paths;
 
 pub mod experience_resolver;
 
-pub mod positron_bench_source;
 
 pub mod positron_canvas_source;
 

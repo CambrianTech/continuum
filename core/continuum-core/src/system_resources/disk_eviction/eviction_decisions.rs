@@ -126,6 +126,14 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
              GHOST dirs only — no roster entry AND no recorded turn — which needs a pool \
              that can ask the roster, not a size heuristic",
         ),
+        // Joel 2026-10-19: the retired harness's state is ARCHIVED, never deleted. Written
+        // once at boot and never grown, so it has no pressure story to defer to a pool.
+        (
+            "benchmark-harness-archive",
+            "c4f4b8cd: never evicted by the substrate — Joel decided to archive, not delete; \
+             removal is an operator's decision. Bounded: written once, the receipt stops \
+             any second write",
+        ),
         ("forge", "#155: export trimmer — intermediates only, published artifacts stay"),
         // Registered the day benchmark/swe-* landed, BEFORE a sweep ran. Everything under
         // it is re-creatable — repo clones from git, venvs from uv, the dataset from HF —

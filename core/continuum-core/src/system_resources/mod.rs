@@ -14,6 +14,7 @@
 pub mod absence_watch;
 pub mod citizen_workspace_pool;
 pub mod eye_reaper;
+pub mod harness_archive;
 pub mod process_anomaly;
 pub mod bounded_command;
 pub mod concurrency;
