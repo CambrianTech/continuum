@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use continuum_context::epoch::{self, Epoch, SourceId};
+use continuum_context::epoch::{self, Epoch, Observed, SourceId};
 use uuid::Uuid;
 
 use super::working_memory::RingPart;
@@ -114,6 +114,59 @@ pub(super) fn contribution_blocks<'a, B: AsRef<str>>(contributions: impl Iterato
             Block::new("user", source, text)
         })
         .collect()
+}
+
+/// The standing pieces a turn renders after its body: each changes only when what it says
+/// does, so each is an epoch source.
+pub(super) struct Standing {
+    /// Her own-time and presence framing (`deliberation_prompt::trailing_standing`).
+    pub framing: String,
+    /// The ask of a turn she began herself (the `[work turn]`); an external ask stays per act.
+    pub own_ask: Option<String>,
+    /// The steps-taken ledger, one item per line.
+    pub ledger: Option<String>,
+    /// Substrate notices by fact id; the open-views notice is replaced by `open_views`.
+    pub notices: Vec<(&'static str, String)>,
+    /// Her open views: a header and one `(identity, line)` per view.
+    pub open_views: Option<(String, Vec<(String, String)>)>,
+}
+
+/// One item per line, keyed by what the line says: a new line appends alone.
+fn lines(key: &str, text: &str) -> Vec<(SourceId, String)> {
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    text.lines()
+        .map(|line| {
+            // Identical lines (a notice posted twice) are distinct items, by ordinal.
+            let ordinal = seen.entry(line).or_default();
+            let source = SourceId(format!("standing/{key}/{line}#{ordinal}"));
+            *ordinal += 1;
+            (source, line.to_owned())
+        })
+        .collect()
+}
+
+/// The standing pieces as epoch sources: one per piece, one per ledger or notice line, one per
+/// open view.
+pub(super) fn standing_blocks(s: Standing) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    let one = |key: &str, text: String| Block::new("user", SourceId(format!("standing/{key}")), text);
+    if !s.framing.trim().is_empty() {
+        blocks.push(one("framing", s.framing));
+    }
+    if let Some(ask) = s.own_ask {
+        blocks.push(one("own-ask", ask));
+    }
+    if let Some(ledger) = s.ledger {
+        blocks.push(Block::turns("user", lines("ledger", &ledger)));
+    }
+    for (id, text) in s.notices.into_iter().filter(|(id, _)| *id != "open_views") {
+        blocks.push(Block::turns("user", lines(&format!("notice/{id}"), &text)));
+    }
+    if let Some((header, views)) = s.open_views {
+        blocks.push(one("open-views", header));
+        blocks.extend(views.into_iter().map(|(identity, line)| one(&format!("open-views/{identity}"), line)));
+    }
+    blocks
 }
 
 /// Each turn's identity: who said it, when, and what, plus its ordinal among identical turns
@@ -211,6 +264,9 @@ pub(super) struct EpochView {
     /// Tokens the body grew by on the last act that appended to a live epoch: the measured
     /// room a turnover leaves for the next act.
     growth: usize,
+    /// Tokens this act appended to a live epoch so far; `None` once the act turned it over
+    /// (a turnover's re-appends are not growth).
+    act_growth: Option<usize>,
     /// Tokens of the body as the last answered request carried it: the prefix her slot holds,
     /// so an act prefills only what follows it.
     cached: usize,
@@ -231,6 +287,7 @@ impl Default for EpochView {
             head: None,
             standing: HashMap::new(),
             growth: 0,
+            act_growth: None,
             cached: 0,
             room: None,
         }
@@ -283,27 +340,50 @@ impl EpochView {
     fn observe_blocks(&mut self, blocks: &[Block]) -> Vec<ChatMessage> {
         let mut appended = Vec::new();
         for block in blocks {
-            let alternative = block.alternative.as_deref().map(fingerprint);
-            let unsaid: Vec<&(SourceId, String)> = block
-                .items
-                .iter()
-                .filter(|(source, text)| {
-                    let known = self.known.get(source).copied();
-                    known.is_none() || (known != Some(fingerprint(text)) && known != alternative)
-                })
-                .collect();
+            let unsaid = self.unsaid(block);
             if unsaid.is_empty() {
                 continue;
             }
             let run = self.next_run;
             self.next_run += 1;
+            // The message sent is exactly what the epoch appended, so the next act renders it
+            // byte for byte.
+            let mut said = Vec::with_capacity(unsaid.len());
             for (source, text) in &unsaid {
-                self.epoch.observe(source.clone(), Said { role: block.role.into(), text: text.as_str().into(), run });
+                let event = Said { role: block.role.into(), text: text.as_str().into(), run };
+                if let Observed::Appended { .. } = self.epoch.observe(source.clone(), event) {
+                    said.push(text.as_str());
+                }
                 self.known.insert(source.clone(), fingerprint(text));
             }
-            appended.push(ChatMessage::text(block.role, unsaid.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n")));
+            if !said.is_empty() {
+                appended.push(ChatMessage::text(block.role, said.join("\n")));
+            }
         }
         appended
+    }
+
+    /// The items of `block` this epoch does not hold yet (new, or changed since it last said them).
+    fn unsaid<'b>(&self, block: &'b Block) -> Vec<&'b (SourceId, String)> {
+        let alternative = block.alternative.as_deref().map(fingerprint);
+        block
+            .items
+            .iter()
+            .filter(|(source, text)| {
+                let known = self.known.get(source).copied();
+                known.is_none() || (known != Some(fingerprint(text)) && known != alternative)
+            })
+            .collect()
+    }
+
+    /// What appending `blocks` would cost, without appending: the price of their news.
+    pub(super) fn unsaid_tokens(&self, blocks: &[Block], cost: impl Fn(&ChatMessage) -> usize) -> usize {
+        blocks
+            .iter()
+            .map(|block| self.unsaid(block))
+            .filter(|unsaid| !unsaid.is_empty())
+            .map(|unsaid| cost(&ChatMessage::text("user", unsaid.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n"))))
+            .sum()
     }
 
     /// This act's body as the epoch: `history[..body.len()]` (the canonical render of `body`)
@@ -325,9 +405,8 @@ impl EpochView {
         self.cached = self.render().iter().map(&cost).sum();
         let appended = self.observe_blocks(body);
         let grown: usize = appended.iter().map(&cost).sum();
-        if live {
-            self.growth = self.growth.max(grown);
-        }
+        self.act_growth = live.then_some(grown);
+        self.note_growth();
         crate::probe!(
             class = "context.epoch.append",
             persona = %persona,
@@ -343,6 +422,12 @@ impl EpochView {
         let len = render.len();
         history.splice(..body.len(), render);
         len
+    }
+
+    fn note_growth(&mut self) {
+        if let Some(grown) = self.act_growth {
+            self.growth = self.growth.max(grown);
+        }
     }
 
     /// Tokens of the body her slot already holds from the last answered request.
@@ -391,6 +476,7 @@ impl EpochView {
             }
         }
         self.epoch = self.epoch.turn_over(self.epoch.id() + 1);
+        self.act_growth = None;
         self.head = None;
         self.standing.clear();
         let (render, groups): (Vec<ChatMessage>, Vec<_>) = messages(self.epoch.events().iter()).into_iter().unzip();
@@ -469,8 +555,13 @@ impl EpochView {
 
     /// Blocks priced after the fit (standing grounding): append their news; returns the
     /// appended messages, which go at the epoch's end.
-    pub(super) fn append(&mut self, blocks: &[Block]) -> Vec<ChatMessage> {
-        self.observe_blocks(blocks)
+    pub(super) fn append(&mut self, blocks: &[Block], cost: impl Fn(&ChatMessage) -> usize) -> Vec<ChatMessage> {
+        let appended = self.observe_blocks(blocks);
+        if let Some(grown) = self.act_growth.as_mut() {
+            *grown += appended.iter().map(&cost).sum::<usize>();
+        }
+        self.note_growth();
+        appended
     }
 }
 
@@ -611,6 +702,29 @@ mod tests {
         view.admit("room-kanban", 7, Some(3));
         assert_eq!(view.admitted("room-kanban", 7), Some(Some(3)));
         assert_eq!(view.admitted("room-kanban", 8), None, "a changed source is admitted afresh");
+    }
+
+    // what this catches: the whole open-views block (18.9k chars on the M5) re-sent when one
+    // file's read changed, or a standing piece re-sent when nothing changed.
+    #[test]
+    fn one_changed_open_view_appends_only_that_view() {
+        let mut view = EpochView::default();
+        let room = Uuid::new_v4();
+        let standing = |b_line: &str| standing_blocks(Standing {
+            framing: "[Your own time] yours".into(),
+            own_ask: None,
+            ledger: Some("[steps taken this session]\n[action #1] code/read".into()),
+            notices: vec![("memory_notices", "Notices: hands rooted".into()), ("open_views", "superseded by items".into())],
+            open_views: Some(("[open views] header".into(), vec![
+                ("a.rs".into(), "- a.rs: read 1-40".into()),
+                ("b.rs".into(), b_line.into()),
+            ])),
+        });
+        act(&mut view, room, &[]);
+        let first = view.append(&standing("- b.rs: read 1-10"), |m| m.content_text().len());
+        assert!(texts(&first).iter().all(|t| !t.contains("superseded by items")), "open views render from their items");
+        assert!(view.append(&standing("- b.rs: read 1-10"), |m| m.content_text().len()).is_empty(), "nothing changed, nothing appended");
+        assert_eq!(texts(&view.append(&standing("- b.rs: read 1-80"), |m| m.content_text().len())), ["- b.rs: read 1-80"], "only the view that changed");
     }
 
     // what this catches: one room's conversation riding into another room's prompt.

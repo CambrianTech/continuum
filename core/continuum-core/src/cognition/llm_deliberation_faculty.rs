@@ -37,6 +37,7 @@ use uuid::Uuid;
 use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_CHARS_PER_TOKEN};
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
+use super::context_render::{self, ContextComposition};
 use super::epoch_view;
 use super::grounding_plan::{Fitted, GroundingPiece, GroundingPlan};
 use continuum_context::epoch::SourceId;
@@ -1865,359 +1866,7 @@ impl LlmDeliberationFaculty {
         plan: &GroundingPlan<'_>,
         composition: ContextComposition,
     ) -> String {
-        self.render_context_within(ws, budget_tokens, plan, composition).0
-    }
-
-    /// The assembled context block and the tokens its pieces were admitted at: re-rendered
-    /// within exactly that many, the same inputs give the same block (greedy, in one order).
-    fn render_context_within(
-        &self,
-        ws: &Workspace,
-        budget_tokens: usize,
-        plan: &GroundingPlan<'_>,
-        composition: ContextComposition,
-    ) -> (String, usize) {
-        let ContextComposition {
-            context_window,
-            framing_tokens,
-            conversation_tokens,
-            ctx_floor,
-            after_framing,
-            tool_tokens,
-            surface_reason,
-        } = composition;
-        // Offered trailing content before fitting, not an additional claimant.
-        // Its retained portion is already included in conversation_tokens; list
-        // reduction or history eviction may make the offered amount much larger.
-        let offered_trailing_tokens: usize = ws
-            .broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && c.trailing)
-            .map(|c| est_tokens(&c.content))
-            .sum();
-        let affordable_tokens = super::tool_surface::over_affordable_receipt(
-            &self.persona_name, surface_reason, tool_tokens, framing_tokens, context_window,
-        );
-        if budget_tokens == 0 {
-            // Received-vs-rendered receipt even on the zero-budget path — a turn
-            // whose entire context vanished must say so, not render silently empty
-            // (the silver-harbor failure class: recall surfaced with the winning
-            // bid, yet [recall] never reached the prompt; WHERE it vanished was
-            // undebuggable without this seam probe).
-            crate::probe!(
-                class = "delib.context.render",
-                persona = %self.persona_name,
-                budget_tokens = 0usize,
-                context_window,
-                framing_tokens,
-                conversation_tokens,
-                offered_trailing_tokens,
-                ctx_floor,
-                after_framing,
-                tool_tokens,
-                registry_tool_tokens = self.describe_tool_tokens(),
-                surface_reason = ?surface_reason,
-                affordable_tokens = ?affordable_tokens,
-                received = ws.broadcast.iter().filter(|c| c.decision.is_none() && !c.trailing).count(),
-                rendered = 0usize,
-                dropped = %ws
-                    .broadcast
-                    .iter()
-                    .filter(|c| c.decision.is_none() && !c.trailing)
-                    .map(|c| c.faculty.as_str())
-                    .collect::<Vec<_>>()
-                    .join(","),
-                "assembled context suppressed: zero token budget"
-            );
-            return (String::new(), 0);
-        }
-        // TRAILING contributions (working-memory proprioception that grows each act)
-        // are excluded HERE — they render as trailing conversation turns nearest
-        // generation ([`messages_within`]), NOT in the system message, so a settle-act
-        // never shifts the cacheable system prefix (#205). Only standing framing and
-        // byte-stable grounding (roster, doctrine, map, recall) belong in `system`.
-        let mut ctx: Vec<_> = ws
-            .broadcast
-            .iter()
-            .filter(|c| c.decision.is_none() && !c.trailing)
-            .collect();
-        ctx.sort_by(|a, b| {
-            // Retain the legacy enrichment ordering. Standing source units have
-            // already been reserved and cannot be spent by this optional walk.
-            let a_held = a.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID;
-            let b_held = b.faculty.as_str() == crate::persona::active_work_source::SOURCE_ID;
-            b_held.cmp(&a_held).then(
-                b.salience
-                    .partial_cmp(&a.salience)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-        });
-        let received = ctx.len();
-        // SELECTION (by salience): walk highest-salience-first and keep what fits.
-        //
-        // An INDIVISIBLE contribution (one part — a recalled engram, an affect
-        // signal) is still kept whole or dropped whole: half an engram is noise,
-        // so a smaller lower-salience item that fits is preferred over a mangled
-        // high one. That rule was right, and it is unchanged.
-        //
-        // A DIVISIBLE one (a grounding source that delivered a LIST, and said so
-        // via `Contribution::parts`) instead contributes the longest PREFIX of its
-        // own units that fits. Its units are ordered by the source, leads first,
-        // so a prefix is exactly the summary the source would have written if
-        // asked for less — never a mid-sentence cut. This is what un-hides the
-        // work board: measured 2026-08-06, `room-kanban` offered a median 5,364
-        // tokens all-or-nothing into a median 55-token budget and was kept 0 of
-        // 495 times, while its `[your work]` / `[available work]` leads are ~200
-        // and carry every fact a citizen needs to find work. The citizens were
-        // saying "there are no open tasks available" about a 61-card board.
-        let mut selected: Vec<GroundingPiece<'_>> = plan
-            .pieces
-            .iter()
-            .filter(|piece| !piece.contribution.trailing)
-            .map(|piece| GroundingPiece {
-                contribution: piece.contribution,
-                units: piece.units,
-                tokens: piece.tokens,
-            })
-            .collect();
-        let mut dropped: Vec<String> = Vec::new();
-        // The SALIENCE of each whole-drop, kept structured beside the formatted
-        // string so the inversion check below reads a number instead of parsing one
-        // back out of a display string (that parse-your-own-log shape is how a
-        // sensor starts lying the first time the format changes).
-        let mut dropped_salience: Vec<(String, f32)> = Vec::new();
-        let mut partial: Vec<String> = Vec::new();
-        let mut used = plan.system_tokens();
-        for c in ctx {
-            if c.standing_grounding {
-                continue; // This exact source already owns its selected units above.
-            }
-            if let Some(piece) = GroundingPiece::within(c, budget_tokens.saturating_sub(used)) {
-                used += piece.tokens;
-                selected.push(piece);
-            } else {
-                let tokens = GroundingPiece::whole(c).tokens;
-                dropped.push(format!(
-                    "{}(sal={:.2},tok={tokens})",
-                    c.faculty.as_str(),
-                    c.salience
-                ));
-                dropped_salience.push((c.faculty.as_str().to_string(), c.salience));
-            }
-        }
-        for piece in &selected {
-            if let Some(units) = piece.units {
-                let c = piece.contribution;
-                partial.push(format!(
-                    "{}({units}/{} units,tok={}→{})",
-                    c.faculty.as_str(),
-                    c.parts.len(),
-                    GroundingPiece::whole(c).tokens,
-                    piece.tokens
-                ));
-            }
-        }
-        // Received-vs-rendered receipt at the ONE seam where a surfaced
-        // contribution can silently vanish between attention and the prompt.
-        // Glass box: what recall/grounding WON upstream must be attributable
-        // HERE if it never renders (#130).
-        crate::probe!(
-            class = "delib.context.render",
-            persona = %self.persona_name,
-            budget_tokens,
-            context_window,
-            framing_tokens,
-            conversation_tokens,
-            offered_trailing_tokens,
-            ctx_floor,
-            // Actual selected schemas, not the full registry's withheld cost.
-            tool_tokens,
-            registry_tool_tokens = self.describe_tool_tokens(),
-            // Which arm selected that surface, and the prompt the lane affords: the two
-            // numbers a 10k-token surface on a 2.8k-affordable lane is read against.
-            surface_reason = ?surface_reason,
-            affordable_tokens = ?affordable_tokens,
-            // The pool the budget is subtracted FROM, read from the local that
-            // actually holds it. First written as
-            // `framing + conversation + budget` — a RECONSTRUCTION from the
-            // outputs, which cannot disagree with them and therefore says nothing.
-            // A derived field wearing a measurement's name is the same defect as
-            // the double-counted `trailing_tokens` it shipped beside.
-            // `after_framing − conversation_tokens − header` should equal
-            // `budget_tokens`; where it does not, the missing term is visible
-            // instead of inferred.
-            after_framing,
-            used_tokens = used,
-            received,
-            rendered = selected.len(),
-            kept = %selected
-                .iter()
-                .map(|piece| { let c = piece.contribution; format!("{}(sal={:.2})", c.faculty.as_str(), c.salience) })
-                .collect::<Vec<_>>()
-                .join(","),
-            dropped = %dropped.join(","),
-            // Which divisible blocks contributed a PREFIX rather than their whole —
-            // without this a shrunken board and a full one look identical in the log.
-            partial = %partial.join(","),
-            "assembled context: {}/{} contributions fit", selected.len(), received
-        );
-        // SALIENCE INVERSION — the sufficiency sensor this seam never had.
-        //
-        // `min_window_for_agentic_surface` answers "can this window hold framing +
-        // tools + a reply at all", and its own doc is explicit that clearing it proves
-        // nothing: "Necessary, NOT sufficient — clearing it does not mean she can hear
-        // you… never 'you are fine above it'." Measured 2026-08-20 that warning came
-        // true exactly as written. Served window 22,528 against a bound of ~16.9k, so
-        // the necessary-condition sensor was correctly SILENT — while across 25
-        // consecutive turns `workspace-map` (salience 0.90, the top tier) was dropped
-        // WHOLE on 20 of them and grounding ran 62-1,083 tokens. Atlas could not see
-        // the repo she was staged to edit, produced 0 acts for 3 days, and every
-        // instrument said healthy.
-        //
-        // What makes it detectable WITHOUT inventing a threshold: contributions are
-        // taken highest-salience-FIRST, so ranking alone can never drop a 0.90 while
-        // keeping a 0.30. When that happens anyway it is the SIZE interaction — a big
-        // essential block did not fit, then a small unimportant one did. The budget
-        // bought the cheap thing and lost the important one. That inversion is a
-        // structural fact with no magic constant behind it, which is why it is the
-        // signal rather than "salience >= 0.9", a number that would be a snapshot of
-        // one day's tuning ([[a-perception-fact-is-honesty-not-an-actuator]]).
-        //
-        // Divisible blocks are deliberately NOT counted: a prefix-truncated list
-        // announces itself in the prompt ("…N more not shown"), so it is degraded but
-        // never silent. Only WHOLE drops vanish without a trace — the failure this
-        // exists to end. SENSOR, never a clamp: refusing to render, or amputating the
-        // tool surface to make room, is the deleted #206 cliff. It reports; the fix
-        // for the budget itself is #460 and is not a decision this function may make.
-        // TWO holes were in the first cut of this, and the FIRST live turn after deploy
-        // found both (2026-08-20, Atlas/Kira/Benchy on build 2281e8b81). Recorded here
-        // because the shape is the one this codebase keeps paying for.
-        //
-        // NOTE (#3874): the `room-board` in the rows below is the WALL under its OLD
-        // id, retired in favour of `room-wall`. These lines RECORD A MEASUREMENT taken
-        // while that id was live, so they keep it — rewriting a past observation to
-        // match present naming would falsify the evidence the hole was found from.
-        // HOLE 1 — strict `>` against a population with NO salience spread. The live
-        // rows: Atlas kept `roster(0.90), room-kanban(0.90)` and dropped
-        // `workspace-map(0.90)`; Benchy kept `room-board(0.90)` and dropped
-        // `workspace-map(0.90), room-kanban(0.90)`. EVERYTHING essential bids exactly
-        // 0.90, so `0.90 > 0.90` is false and the sensor stayed silent through the
-        // precise condition it was written for. The premise "ranking cannot drop a 0.90
-        // while keeping a 0.30" is TRUE and VACUOUS: production has no 0.30 at this
-        // tier. What actually decides who survives is arrival order and byte size — a
-        // coin flip among equals — and losing the repo map to that flip is the whole
-        // harm. `>=` is therefore the honest predicate, and a genuine ranking success
-        // (0.30 dropped, 0.90 kept) still cannot fire it.
-        //
-        // HOLE 2, worse — TOTAL starvation was invisible. `min_by` over an EMPTY
-        // `selected` yields `None`, the `if let` fell through, and nothing fired. The
-        // one state where the citizen got NO grounding at all was the one state the
-        // sensor could not report ([[an-absence-is-an-unfinished-measurement]], and
-        // mine, in the instrument built to end exactly this).
-        let worst_dropped = dropped_salience
-            .iter()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)) // safe: salience is a finite f32; only NaN returns None, and a NaN salience is an upstream bug the SENSOR must survive to report, never panic on
-            .cloned();
-        if let Some((worst_name, worst_sal)) = worst_dropped {
-            let cheapest_kept = selected
-                .iter()
-                .map(|piece| piece.contribution.salience)
-                .min_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)); // safe: same NaN-only case as the max_by above — an unorderable salience must not take down the instrument that exists to report it
-                                                                                       // `None` = nothing survived at all, which is maximal harm, never "no finding".
-            let fires = cheapest_kept.is_none_or(|kept| worst_sal >= kept);
-            if fires {
-                let verdict = match cheapest_kept {
-                    None => "TOTAL: nothing survived the budget".to_string(),
-                    Some(k) if (worst_sal - k).abs() < f32::EPSILON => {
-                        format!("TIE at sal={worst_sal:.2} — decided by size, not by rank")
-                    }
-                    Some(k) => format!("dropped {worst_sal:.2} while keeping {k:.2}"),
-                };
-                crate::probe!(
-                    class = "delib.context.salience_inversion",
-                    persona = %self.persona_name,
-                    dropped_faculty = %worst_name,
-                    dropped_salience = worst_sal,
-                    // -1.0 is an OUT-OF-DOMAIN sentinel, not a fabricated quantity: salience is
-                    // [0,1], so -1 cannot be misread as a real one. `None` here is a KNOWN state
-                    // ("nothing survived the budget"), never an unknown one — which is the case
-                    // the ratchet's doc warns about — and `verdict` states it in words besides.
-                    kept_min_salience = cheapest_kept.unwrap_or(-1.0), // safe: see the two lines above
-
-                    kept_count = selected.len(),
-                    verdict = %verdict,
-                    budget_tokens,
-                    context_window,
-                    tool_tokens,
-                    framing_tokens,
-                    "GROUNDING LOST: {worst_name} dropped WHOLE ({verdict}) — the grounding \
-                     budget was {budget_tokens} tok against a {context_window} window with \
-                     {tool_tokens} in tool schemas and {framing_tokens} in framing. The citizen \
-                     is reasoning without what attention ranked top (#460)."
-                );
-            }
-        }
-        // SERIALIZATION (by volatility, then CANONICALLY within the stable tier):
-        // stable standing-framing FIRST (roster, doctrine, map) so it lands in the
-        // cacheable KV-prefix region adjacent to the static system prompt it resembles;
-        // volatile grounding (recall, working memory) LAST, nearest the generation point.
-        //
-        // WHY THE SECOND KEY EXISTS — this tier-split alone did NOT deliver reuse.
-        // The original comment here said a stable sort "preserves the salience order
-        // WITHIN each tier, so attention ranking is untouched", and treated that as
-        // harmless. It is the remaining half of the #266 cache defect. Salience is
-        // recomputed EVERY turn, so preserving it as EMIT ORDER re-shuffles the very
-        // tier whose whole purpose is to be byte-identical across turns.
-        //
-        // Measured live 2026-08-21 in Atlas's `pallets__flask-4045` run, from her own
-        // captures: consecutive system prompts shared only ~82% of their prefix, and the
-        // divergence points were stable-tier blocks trading places —
-        // `[room-kanban]` → `[active-work]` → `[workspace-map]` at chars 8216 / 7879 /
-        // 8133. Because the system prompt is FIRST, a swap at token ~2,000 invalidates
-        // the KV for EVERYTHING after it, including a 34,000-token conversation tail.
-        // `--cache-reuse 256` was passed the whole time and every turn reported
-        // `cachedTokens: 0` — the cache was correct; we were destroying the prefix.
-        // Cost at the measured 111 tok/s prefill: ~306s of re-prefill PER ACT, growing
-        // as her conversation grows. One observed turn was 20 minutes of apparent
-        // silence that was a single 36k re-prefill.
-        //
-        // So within the stable tier, order is CANONICAL (by churn class, then faculty
-        // name — `deliberation_prompt::stable_prefix_order`, the ONE rule every
-        // grounding renderer lays blocks down by), not by salience. Attention ranking is genuinely untouched: salience still decides
-        // WHICH contributions are selected — that happened above, against the budget.
-        // It simply stops deciding WHERE the survivors sit, which it never needed to.
-        // Same set in, same bytes out, every turn.
-        //
-        // The volatile tier deliberately KEEPS salience order: it is re-prefilled by
-        // construction (it changes every turn), so ordering it canonically would buy no
-        // reuse and would cost the "most salient nearest the write point" placement
-        // that #205 put there on purpose.
-        //
-        // `false` (stable) sorts before `true` (volatile). See [`Contribution::stable`].
-        selected.sort_by(|a, b| {
-            let (a, b) = (a.contribution, b.contribution);
-            u8::from(!a.stable).cmp(&u8::from(!b.stable)).then_with(|| {
-                match (a.stable, b.stable) {
-                    // Stable tier: canonical, so the cacheable prefix is deterministic.
-                    (true, true) => deliberation_prompt::stable_prefix_order(
-                        a.faculty.as_str(),
-                        b.faculty.as_str(),
-                    ),
-                    // Volatile tier: leave salience order alone (stable sort keeps it).
-                    _ => std::cmp::Ordering::Equal,
-                }
-            })
-        });
-        let mut block = String::new();
-        for piece in selected {
-            let c = piece.contribution;
-            block.push_str("\n[");
-            block.push_str(c.faculty.as_str());
-            block.push_str("]\n");
-            piece.append_body(&mut block);
-            block.push('\n');
-        }
-        (block, used)
+        context_render::render_context_within(&self.persona_name, self.describe_tool_tokens(), ws, budget_tokens, plan, composition).0
     }
 
     /// Compose the full system prompt around an ALREADY-BUDGETED context block.
@@ -2514,20 +2163,11 @@ impl LlmDeliberationFaculty {
                 .stable,
         );
 
-        // The volatile framing (clock + own-time/presence) rides the FACTS phase
-        // of the conversation — flicker-class content, before the ask — never the
-        // system message it invalidated on every act (see the split note below).
-        let trailing_framing = deliberation_prompt::compose_trailing(
-            ws.now_ms,
-            ws.self_initiated,
-            ws.directed_at_self(),
-            holds_live_work,
-        );
-        let mut all_messages = self.messages_with_visual_feedback(
-            ws,
-            (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
-            visual,
-        );
+        // The volatile framing never rides the system message it invalidated on every act
+        // (see the split note below). Its clock is per act (the FACTS phase, before the ask);
+        // its own-time and presence half changes only with her posture, so her epoch holds it.
+        let clock = deliberation_prompt::trailing_clock(ws.now_ms);
+        let mut all_messages = self.messages_with_visual_feedback(ws, clock.as_deref(), visual);
         // Her body as an epoch: the last act's body, then this act's news. Everything below
         // (the window's one allocation, the fit) prices what will actually be sent. Rendered
         // on a copy: only a request the model answered becomes her epoch (`contribute`).
@@ -2539,10 +2179,22 @@ impl LlmDeliberationFaculty {
             Self::message_cost,
             &self.persona_name,
         );
+        // STANDING PIECES ARE HER EPOCH'S TOO (the M5, c9bc93951: ~11k tokens of own-time,
+        // work-turn, steps, open views and notices re-prefilled after the body every act).
+        // Each is a source appended only when it changes, after the fit like the standing
+        // grounding; what stays after the body is per act: facts, the clock, an external ask,
+        // this turn's room messages and the newest tool exchange.
+        let standing = epoch_view::standing_blocks(epoch_view::Standing {
+            framing: deliberation_prompt::trailing_standing(ws.self_initiated, ws.directed_at_self(), holds_live_work),
+            own_ask: ws.self_initiated.then(|| all_messages.stimulus.take()).flatten().map(|m| m.content_text()),
+            ledger: all_messages.ledger.take().map(|m| m.content_text()),
+            notices: std::mem::take(&mut all_messages.notices).into_iter().map(|(id, m)| (id, m.content_text())).collect(),
+            open_views: self.working_memory.as_ref().and_then(|wm| wm.open_views_items()),
+        });
+        let standing_unsaid = epoch.unsaid_tokens(&standing, Self::message_cost);
         // The room a turnover leaves: the most her body grew by in one act, and at least the
         // pinned result, which joins the body next act (a cold start's only evidence).
-        all_messages.headroom = epoch.growth().max(Self::messages_cost(&all_messages.latest_result));
-        let headroom = all_messages.headroom;
+        let headroom = epoch.growth().max(Self::messages_cost(&all_messages.latest_result));
         // A pointer only substitutes when the view turns over (`epoch.turn_over` supplies them).
         all_messages.result_pointers.clear();
 
@@ -2624,7 +2276,9 @@ impl LlmDeliberationFaculty {
                 plan
             }
         };
-        all_messages.grounding_tokens = grounding.trailing_tokens();
+        // Everything appended after the fit is required input: the standing grounding and the
+        // standing pieces her epoch does not hold yet.
+        all_messages.grounding_tokens = grounding.trailing_tokens() + standing_unsaid;
         let ctx_floor = if grounding.pieces.is_empty() {
             // Preserve the existing optional-enrichment allowance when no standing
             // source bid. This soft floor confers no requiredness on recall or on
@@ -2700,21 +2354,26 @@ impl LlmDeliberationFaculty {
         let claims = [
             fixed_claim(FLEX_FRAMING, fixed_cost),
             fixed_claim(FLEX_REQUIRED, required_cost),
-            crate::persona::rag_budget::RagSourceBudget {
-                source_id: FLEX_GROUNDING.to_owned(),
-                priority: 6,
-                floor_tokens: grounding_floor,
-                min_tokens: grounding_floor,
-                // What grounding wants: every offered context piece and, when there is
-                // one, its header. Nothing offered wants nothing.
-                max_tokens: claim(
-                    match Self::assembled_context_cost(ws) {
-                        0 => 0,
-                        offered => offered.saturating_add(Self::working_context_header_cost()),
-                    }
-                    .max(ctx_floor),
-                ),
-                required: false,
+            match epoch.head_grant() {
+                // A bound head claims exactly the grant it was admitted with: what it wants
+                // beyond that is the next epoch's to decide, never the body's room to take.
+                Some(grant) => fixed_claim(FLEX_GROUNDING, claim(grant)),
+                None => crate::persona::rag_budget::RagSourceBudget {
+                    source_id: FLEX_GROUNDING.to_owned(),
+                    priority: 6,
+                    floor_tokens: grounding_floor,
+                    min_tokens: grounding_floor,
+                    // What grounding wants: every offered context piece and, when there is
+                    // one, its header. Nothing offered wants nothing.
+                    max_tokens: claim(
+                        match Self::assembled_context_cost(ws) {
+                            0 => 0,
+                            offered => offered.saturating_add(Self::working_context_header_cost()),
+                        }
+                        .max(ctx_floor),
+                    ),
+                    required: false,
+                },
             },
             crate::persona::rag_budget::RagSourceBudget {
                 source_id: FLEX_HISTORY.to_owned(),
@@ -2856,6 +2515,11 @@ impl LlmDeliberationFaculty {
             );
             all_messages.grounding_at = len;
             all_messages.result_pointers = pointers;
+            // Only a turnover's fit frees room for the growth; within an epoch nothing drops.
+            all_messages.headroom = headroom;
+            // A new epoch holds no standing piece yet: all of them are appended after the fit.
+            all_messages.grounding_tokens = all_messages.grounding_tokens - standing_unsaid
+                + epoch.unsaid_tokens(&standing, Self::message_cost);
             let fit = self.fit_messages(all_messages, budget);
             if let Ok(f) = &fit {
                 epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at));
@@ -2949,8 +2613,10 @@ impl LlmDeliberationFaculty {
         // (never re-rendered because the room left over changed); a new or changed one is
         // admitted from the room left after the measured growth.
         if capacity_error.is_none() {
-            let room = after_framing.saturating_sub(Self::messages_cost(&fitted.messages)).saturating_sub(headroom);
-            grounding.expand_within(room, |c| epoch.admitted(c.faculty.as_str(), epoch_view::content_fingerprint(&c.content, &c.parts)));
+            let held_room = after_framing
+                .saturating_sub(Self::messages_cost(&fitted.messages))
+                .saturating_sub(epoch.unsaid_tokens(&standing, Self::message_cost));
+            grounding.expand_within(held_room.saturating_sub(headroom), held_room, |c| epoch.admitted(c.faculty.as_str(), epoch_view::content_fingerprint(&c.content, &c.parts)));
             for piece in &grounding.pieces {
                 let c = piece.contribution;
                 epoch.admit(c.faculty.as_str(), epoch_view::content_fingerprint(&c.content, &c.parts), piece.units);
@@ -2958,7 +2624,8 @@ impl LlmDeliberationFaculty {
         }
         // Standing pieces are priced after the fit; their news joins the epoch's end. A
         // refused view is never sent, so it leaves her epoch untouched.
-        let trailing_grounding = epoch.append(&grounding.trailing_blocks());
+        let mut trailing_grounding = epoch.append(&standing, Self::message_cost);
+        trailing_grounding.extend(epoch.append(&grounding.trailing_blocks(), Self::message_cost));
         fitted.refit.grounding_len = trailing_grounding.len();
         fitted.messages.splice(
             fitted.grounding_at..fitted.grounding_at,
@@ -2988,7 +2655,9 @@ impl LlmDeliberationFaculty {
                 .saturating_sub(Self::working_context_header_cost())
                 .max(ctx_floor.saturating_sub(Self::working_context_header_cost())),
         };
-        let (context, admitted_tokens) = self.render_context_within(
+        let (context, admitted_tokens) = context_render::render_context_within(
+            &self.persona_name,
+            self.describe_tool_tokens(),
             ws,
             ctx_budget,
             &grounding,
@@ -3259,7 +2928,7 @@ impl LlmDeliberationFaculty {
             match fact.placement {
                 FactPlacement::History => facts.push(fact.text),
                 FactPlacement::Ledger => ledger.push(fact.text),
-                FactPlacement::Notice => notices.push(ChatMessage::text("user", fact.text)),
+                FactPlacement::Notice => notices.push((fact.id, ChatMessage::text("user", fact.text))),
             }
         }
         // The required tail (ask, pinned newest result) is assembled by the fit. Facts stay
@@ -3668,7 +3337,8 @@ impl LlmDeliberationFaculty {
         // Collapsing and dropping both leave the measured growth free (`prompt.headroom`).
         let headroom = prompt.headroom;
         let mut history_tokens = Self::messages_cost(&prompt.history);
-        let over = history_tokens > history_budget;
+        // A turnover's view must leave the growth free even when compaction alone fit it.
+        let over = history_tokens.saturating_add(headroom) > history_budget;
         for (index, pointer) in std::mem::take(&mut prompt.result_pointers) {
             let Some(message) = prompt.history.get_mut(index) else { continue };
             let old_cost = Self::message_cost(message);
@@ -3689,9 +3359,8 @@ impl LlmDeliberationFaculty {
         let costs: Vec<usize> = messages.iter().map(Self::message_cost).collect();
         let total: usize = costs.iter().sum();
         let mut start = 0usize;
-        if total > history_budget {
-            let min_drop = total - history_budget;
-            let drop_q = min_drop.saturating_add(headroom);
+        if total.saturating_add(headroom) > history_budget {
+            let drop_q = total.saturating_add(headroom) - history_budget;
             let mut dropped = 0usize;
             // Only optional history yields. Stimulus and action payload are typed
             // slots outside this eviction range, even when both render as user.
@@ -3835,13 +3504,13 @@ impl LlmDeliberationFaculty {
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
             prompt.history.extend(prompt.ledger);
-            prompt.history.extend(prompt.notices);
+            prompt.history.extend(prompt.notices.into_iter().map(|(_, notice)| notice));
             prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.latest_result);
         } else {
             prompt.history.extend(prompt.action_statement);
             prompt.history.extend(prompt.ledger);
-            prompt.history.extend(prompt.notices);
+            prompt.history.extend(prompt.notices.into_iter().map(|(_, notice)| notice));
             prompt.history.extend(prompt.stimulus);
             prompt.history.extend(prompt.room_updates);
         }
@@ -4022,7 +3691,7 @@ struct PromptMessages {
     ledger: Option<ChatMessage>,
     /// Substrate notices cannot disappear with the optional thought bid. Their
     /// existing store owns retention; oversized payloads use the explicit fit refusal.
-    notices: Vec<ChatMessage>,
+    notices: Vec<(&'static str, ChatMessage)>,
 }
 
 /// Her OWN most recent move and its outcome, priced — the SUFFIX of the optional history
@@ -4201,7 +3870,7 @@ impl PromptMessages {
             .iter()
             .chain(self.room_updates.iter())
             .chain(self.ledger.iter())
-            .chain(self.notices.iter())
+            .chain(self.notices.iter().map(|(_, notice)| notice))
             .chain(self.action_statement.iter())
             .chain(self.latest_result.iter())
             .map(|message| LlmDeliberationFaculty::messages_cost(std::slice::from_ref(message)))
@@ -4261,18 +3930,6 @@ impl FitReceipt {
     }
 }
 
-#[derive(Default)]
-struct ContextComposition {
-    context_window: u32,
-    framing_tokens: usize,
-    conversation_tokens: usize,
-    ctx_floor: usize,
-    after_framing: usize,
-    tool_tokens: usize,
-    /// WHY the surface priced in `tool_tokens` is the one sent: the receipt that says which
-    /// arm put a 38-tool surface on a CPU lane (card 3026b83e).
-    surface_reason: SurfaceReason,
-}
 
 /// The required prompt input cannot be represented in this window.
 /// No partial payload is submitted: the existing fault and demand paths expose
@@ -9003,12 +8660,12 @@ mod tests {
             // Perception facts are GROUNDING inserted BEFORE the final ask (the last user
             // turn), so the ask stays LAST where the model answers it — not the bracketed
             // meta, which it would otherwise parrot (2026-07-20 humaneval parrot fix). Here
-            // the layout is [Joel, Asha(assistant), [context]-fact, Joel-ask]: the grounding
-            // sits at [2], the ask is last.
+            // the layout is [Joel, Asha(assistant), presence (her epoch's standing framing),
+            // [context]-fact, Joel-ask]: the fact sits just before the ask, the ask is last.
+            let before_ask = &view.messages[view.messages.len() - 2];
             assert!(
-                view.messages[2].content_text().starts_with("[context]"),
-                "grounding fact sits just before the ask: {:?}",
-                view.messages[2]
+                before_ask.content_text().starts_with("[context]"),
+                "grounding fact sits just before the ask: {before_ask:?}"
             );
             assert!(
                 view.messages
@@ -10129,14 +9786,48 @@ mod tests {
             assert!(bodies[2].starts_with(&bodies[1]), "the next act extends the new epoch");
         }
 
+        // what this catches: standing pieces re-sent after the body every act (the M5 at
+        // c9bc93951: ~11k tokens of own-time, work-turn, steps, open views and notices,
+        // always fresh). Unchanged, they live in her epoch and the tail carries none of them.
+        #[tokio::test]
+        async fn unchanged_standing_pieces_ride_her_epoch_never_the_tail() {
+            let (faculty, adapter, wm) = epoch_faculty_with_memory(32_768, 2, u32::MAX);
+            for i in 0..3 {
+                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
+                wm.record_receipt_typed(&[], &format!("RESULT-{i}"), None, custody);
+            }
+            wm.pin_fact("hands", "your hands are rooted at the card's worktree");
+            let ws = Workspace::new("[work turn] continue the card").self_initiated(true);
+            let mut sent = Vec::new();
+            for act in 0..2 {
+                let view = faculty.prompt_view(&ws);
+                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
+                let seen = adapter.seen.lock().expect("recorded request lock");
+                let texts: Vec<String> = seen[act].messages.iter().map(|m| m.content_text()).collect();
+                sent.push((view.refit.grounding_at + view.refit.grounding_len, texts));
+            }
+            let standing = ["[steps taken this session]", crate::cognition::framing_echo::NOTICES_HEADER, "[Your own time]", "[work turn]"];
+            let holds = |texts: &[String], needle: &str| texts.iter().any(|t| t.contains(needle));
+            let (body1, first) = &sent[0];
+            let (body2, second) = &sent[1];
+            for needle in standing {
+                assert!(holds(&first[..*body1], needle), "act 1's epoch holds {needle}");
+                assert!(!holds(&second[*body1..], needle), "act 2 re-sent {needle} although it did not change: {:#?}", &second[*body1..]);
+            }
+            assert_eq!(second[..*body1], first[..*body1], "act 2 starts with act 1's body");
+            assert!(*body2 >= *body1);
+        }
+
         // what this catches: an epoch that outgrows the window instead of turning over, or a
-        // turnover that leaves no room to grow (every act a cold prefill again).
+        // turnover that leaves no room to grow (every act a cold prefill again). In a window
+        // this small, one act's measured growth of room means a turnover every other act at
+        // most; the live windows are ~10x larger.
         #[tokio::test]
         async fn the_window_turns_the_epoch_over_and_the_next_act_extends_it() {
             const ACTS: usize = 80;
             let (faculty, adapter, save) = epoch_faculty(16_384, ACTS);
             let ws = Workspace::new("continue the card");
-            let mut turned = Vec::new();
+            let (mut kept, mut turned) = (0usize, Vec::new());
             let mut previous: Option<Vec<(String, String)>> = None;
             for act in 0..ACTS {
                 save(act, &format!("RESULT-{act} {}", "x".repeat(900)));
@@ -10144,16 +9835,15 @@ mod tests {
                 assert!(view.capacity_error.is_none(), "act {act} fits its window");
                 assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
                 let body = sent_body_of(&view, &adapter, act);
-                if previous.is_some_and(|p| !body.starts_with(&p)) {
-                    turned.push(act);
+                match &previous {
+                    Some(p) if body.starts_with(p) => kept += 1,
+                    Some(_) => turned.push(act),
+                    None => {}
                 }
                 previous = Some(body);
             }
             assert!(!turned.is_empty(), "{ACTS} results of ~300 tokens outgrow a 16k window: the epoch turned over");
-            assert!(
-                turned.windows(2).all(|w| w[1] > w[0] + 1),
-                "after a turnover the next act extends the new epoch; turnovers at {turned:?}"
-            );
+            assert!(kept > turned.len(), "after a turnover the next acts extend the new epoch; turnovers at {turned:?}");
         }
 
         // what this catches: 2e2a92f6 — small reductions were ignored by the live

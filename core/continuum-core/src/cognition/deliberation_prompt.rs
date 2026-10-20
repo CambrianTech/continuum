@@ -238,11 +238,20 @@ pub(super) fn compose_trailing(
     directed: bool,
     holds_live_work: bool,
 ) -> String {
-    let mut trailing = String::with_capacity(512);
-    for block in volatile_blocks(now_ms, self_initiated, directed, holds_live_work) {
-        trailing.push_str(&block);
-    }
+    let mut trailing: String = trailing_clock(now_ms).into_iter().collect();
+    trailing.push_str(&trailing_standing(self_initiated, directed, holds_live_work));
     trailing
+}
+
+/// The per-act half of the trailing framing: her `[now …]` clock.
+pub(super) fn trailing_clock(now_ms: Option<u64>) -> Option<String> {
+    volatile_blocks(now_ms, false, false, false).next().filter(|_| now_ms.is_some()).map(Cow::into_owned)
+}
+
+/// The standing half of the trailing framing (own time, presence): it changes only when the
+/// turn's posture does, so a mind's epoch holds it.
+pub(super) fn trailing_standing(self_initiated: bool, directed: bool, holds_live_work: bool) -> String {
+    volatile_blocks(None, self_initiated, directed, holds_live_work).map(Cow::into_owned).collect()
 }
 
 /// Assemble the WHOLE system prompt as one string — `stable ++ trailing`, byte-identical

@@ -1639,6 +1639,12 @@ impl WorkingMemory {
     /// Her open views as one compact block, one line per view visible from where her hands
     /// stand ([`super::open_views::OpenViews::render`]). Rendered as a required notice
     /// (`perception_facts::OpenViews`), so the history fit never drops it.
+    /// Her open views as a header and one `(identity, line)` per view (`OpenViews::render_items`).
+    pub(crate) fn open_views_items(&self) -> Option<(String, Vec<(String, String)>)> {
+        let scope = self.scope.lock().clone();
+        self.open_views.lock().render_items(scope.as_deref())
+    }
+
     pub fn open_views_block(&self) -> Option<String> {
         let scope = self.scope.lock().clone();
         self.open_views.lock().render(scope.as_deref())

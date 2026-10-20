@@ -247,6 +247,17 @@ impl OpenViews {
     }
 
     pub fn render(&self, scope: Option<&str>) -> Option<String> {
+        let (mut out, views) = self.render_items(scope)?;
+        for (_, line) in views {
+            out.push_str("\n");
+            out.push_str(&line);
+        }
+        Some(out)
+    }
+
+    /// The block's header and one `(identity, line)` per visible view, in render order: a
+    /// mind's epoch keys each view by what it is open on, so one read changes one line.
+    pub fn render_items(&self, scope: Option<&str>) -> Option<(String, Vec<(String, String)>)> {
         let mut visible: Vec<&OpenView> = self
             .views
             .iter()
@@ -256,17 +267,23 @@ impl OpenViews {
             return None;
         }
         visible.sort_by(|a, b| a.subject.cmp(&b.subject));
-        let mut out = String::from(
+        let header = String::from(
             "[open views] Files and outputs I have open, and which lines of each I have read \
              (kept across turns and restarts; not a message from anyone). code/read with \
              start_line/end_line pages a file; tool/output with outputId and startLine/endLine \
              pages an output:",
         );
-        for view in visible {
-            out.push_str("\n- ");
-            out.push_str(&render_line(view));
-        }
-        Some(out)
+        let views = visible
+            .into_iter()
+            .map(|view| {
+                let identity = match &view.subject {
+                    ViewSubject::File { path } => path.clone(),
+                    ViewSubject::Output { handle } => handle.clone(),
+                };
+                (identity, format!("- {}", render_line(view)))
+            })
+            .collect();
+        Some((header, views))
     }
 }
 

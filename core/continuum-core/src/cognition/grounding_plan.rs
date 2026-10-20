@@ -230,14 +230,19 @@ impl<'a> GroundingPlan<'a> {
 
     /// Spend `budget` on optional units. A source `admitted` names keeps that size while it
     /// fits; the rest take what they can.
-    pub(super) fn expand_within(&mut self, budget: usize, admitted: impl Fn(&Contribution) -> Option<Option<usize>>) {
+    ///
+    /// `budget` is the room for a new admission; `held_budget` is the room an admitted source
+    /// may keep its size in (it includes the growth room the admission left, which the body's
+    /// growth is entitled to spend, never the head).
+    pub(super) fn expand_within(&mut self, budget: usize, held_budget: usize, admitted: impl Fn(&Contribution) -> Option<Option<usize>>) {
         let mut used = self.system_reserve() + self.trailing_tokens();
         // Every minimum remains owned before optional details can spend spare
         // room. Preserve broadcast order for standing sources' trailing KV tier.
         for piece in &mut self.pieces {
             let c = piece.contribution;
             let available = budget.saturating_sub(used) + piece.tokens;
-            let held = admitted(c).map(|units| GroundingPiece::at(c, units)).filter(|p| p.tokens <= available);
+            let held_room = held_budget.saturating_sub(used) + piece.tokens;
+            let held = admitted(c).map(|units| GroundingPiece::at(c, units)).filter(|p| p.tokens <= held_room);
             if let Some(expanded) = held.or_else(|| GroundingPiece::within(c, available)) {
                 used = used - piece.tokens + expanded.tokens;
                 *piece = expanded;
