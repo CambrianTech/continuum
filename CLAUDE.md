@@ -43,6 +43,17 @@ done until its gate is met on the live node and the change is MERGED.
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
 | 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md` | see table below |
 
+**Every major module is distributable** (Joel, 10-19: "really would help with speed and grid
+distribution, independent development amongst our agents and machines, and personas themselves
+working on more isolated components"). The placement map is `docs/architecture/MODULE-ARCHITECTURE.md`
+§9.2: Mind, Serving, Dreaming, Rendering, Media, Perception, Store, Hands, Grid, Clients. Each is its
+own crate with one typed protocol at its seam, the same in-process or across the grid, so it can run on
+any node (serve or render on the 1080 Ti, view from a phone), be built and tested alone in seconds,
+and be owned by one agent, one machine or one persona without touching the others. The same binaries
+run everywhere and a node's capabilities decide what it hosts; the core builds headless by default.
+Before you add code, name the module it belongs to; a change that couples two modules outside their
+seam is the defect, and every crate cut follows this map.
+
 **Order of work, now** (updated 10-19 ~19:30Z; divide and conquer: work down YOUR lines, never stop at a
 wait, a wait means start your next line; update this table when a line lands or changes):
 

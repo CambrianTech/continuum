@@ -43,13 +43,24 @@ done until its gate is met on the live node and the change is MERGED.
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
 | 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md` | see table below |
 
+**Every major module is distributable** (Joel, 10-19: "really would help with speed and grid
+distribution, independent development amongst our agents and machines, and personas themselves
+working on more isolated components"). The placement map is `docs/architecture/MODULE-ARCHITECTURE.md`
+§9.2: Mind, Serving, Dreaming, Rendering, Media, Perception, Store, Hands, Grid, Clients. Each is its
+own crate with one typed protocol at its seam, the same in-process or across the grid, so it can run on
+any node (serve or render on the 1080 Ti, view from a phone), be built and tested alone in seconds,
+and be owned by one agent, one machine or one persona without touching the others. The same binaries
+run everywhere and a node's capabilities decide what it hosts; the core builds headless by default.
+Before you add code, name the module it belongs to; a change that couples two modules outside their
+seam is the defect, and every crate cut follows this map.
+
 **Order of work, now** (updated 10-19 ~19:30Z; divide and conquer: work down YOUR lines, never stop at a
 wait, a wait means start your next line; update this table when a line lands or changes):
 
 | # | Line | Owner | State / next action | Done when |
 |---|---|---|---|---|
 | 0 | Remove the benchmark harness from the mind (Joel: "cancerous tumor ... turning everyone into a harness"): ~16k lines of runner (benchmark.rs, swe_bench.rs, agent/solve, verdict sweep, standing) + benchmark concepts in 75 cognition/persona files; benchmarks become adapters into activities (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md) | Fable (map, plan), Codex (adapter boundary), Cormac (review) | removal map running read-only; then crate-sized PRs, each deleting more than it adds | no benchmark concept in cognition/ or persona/; no runner; a benchmark is a recipe the room runs |
-| 1 | The build loop: split the monolith; never compile on the serving node | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
+| 1 | The build loop: split the monolith BY THE PLACEMENT MAP (MODULE-ARCHITECTURE.md §9.2: each major module runs on any node); never compile on the serving node, use every grid machine | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
 | 2 | A mind's context as an epoch (reuse 48% -> 90%+) | Fable + Codex | continuum-context slices 1-2 pushed (replay: 92-95% reuse, ~3x less fresh); next: wire the faculty's render path into Epoch | live reuse >= 80% |
 | 3 | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10) | Fable | resolve-then-adopt owner in inference/planning | no queue wait; warm-ahead runs |
 | 4 | Engine flags | Fable | DONE e678bb30c: prefill 105 -> 175-206 tok/s; decode drop under builds is line 1's | receipts on 9b9f3b59 |
@@ -63,6 +74,7 @@ wait, a wait means start your next line; update this table when a line lands or 
 | 12 | The PR queue (68 open; ledger on card 397250f5) | everyone: your slice | review within a day, verdict at the exact head; run hygiene on the merged tree before merging | queue < 15 |
 | 13 | Prefill during tool calls; the instant voice | Fable, Codex | after lines 2-3 | submit-to-first-token |
 | 14 | Learned policies on our own receipts; residents review docs PRs; Atlas silent; Aiko gaps | open / residents | after the validators | each beats its constant offline |
+| 15 | Distributable modules: headless default (`default = []`; avatar-3d and livekit enabled per node by deploy profile), grid trust (every node reads `blocked` on 10-19), checks dispatched to idle grid nodes | Fable (default + profiles), Codex (trust), peers on the 5090/IntelMac (take checks) | profiles first, then flip the default with a before/after check time | a node joins by capability; an AWS box builds the core with no renderer |
 
 **Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
 fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
