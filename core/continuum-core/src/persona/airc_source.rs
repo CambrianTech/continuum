@@ -54,7 +54,7 @@ const EXPAND_COMMAND: &str = "chat/history";
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
 use crate::cognition::token_budget::{
-    estimate_prompt_tokens as estimate_tokens, fair_share_cap, fit_tail_with_handle, mark_tail_kept,
+    estimate_prompt_tokens as estimate_tokens, fair_share_cap, fit_tail_with_handle,
 };
 
 /// Abstract reader over airc transcript events. Production impl rides on
