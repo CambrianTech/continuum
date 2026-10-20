@@ -49,7 +49,7 @@ wait, a wait means start your next line; update this table when a line lands or 
 | # | Line | Owner | State / next action | Done when |
 |---|---|---|---|---|
 | 0 | Remove the benchmark harness from the mind (Joel: "cancerous tumor ... turning everyone into a harness"): ~16k lines of runner (benchmark.rs, swe_bench.rs, agent/solve, verdict sweep, standing) + benchmark concepts in 75 cognition/persona files; benchmarks become adapters into activities (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md) | Fable (map, plan), Codex (adapter boundary), Cormac (review) | removal map running read-only; then crate-sized PRs, each deleting more than it adds | no benchmark concept in cognition/ or persona/; no runner; a benchmark is a recipe the room runs |
-| 1 | The build loop: split the monolith; never compile on the serving node | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
+| 1 | The build loop: split the monolith BY THE PLACEMENT MAP (MODULE-ARCHITECTURE.md §9.2: each major module runs on any node); never compile on the serving node, use every grid machine | Fable (cuts), Codex (crate graph, parallel cut order) | #5194 continuum-base + gates cover split crates (CI); #5195 deletes 13,275 dead lines (CI); next: parallel cuts by several agents, own worktrees and target dirs | edit-to-checked < 2 min |
 | 2 | A mind's context as an epoch (reuse 48% -> 90%+) | Fable + Codex | continuum-context slices 1-2 pushed (replay: 92-95% reuse, ~3x less fresh); next: wire the faculty's render path into Epoch | live reuse >= 80% |
 | 3 | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10) | Fable | resolve-then-adopt owner in inference/planning | no queue wait; warm-ahead runs |
 | 4 | Engine flags | Fable | DONE e678bb30c: prefill 105 -> 175-206 tok/s; decode drop under builds is line 1's | receipts on 9b9f3b59 |
@@ -63,6 +63,7 @@ wait, a wait means start your next line; update this table when a line lands or 
 | 12 | The PR queue (68 open; ledger on card 397250f5) | everyone: your slice | review within a day, verdict at the exact head; run hygiene on the merged tree before merging | queue < 15 |
 | 13 | Prefill during tool calls; the instant voice | Fable, Codex | after lines 2-3 | submit-to-first-token |
 | 14 | Learned policies on our own receipts; residents review docs PRs; Atlas silent; Aiko gaps | open / residents | after the validators | each beats its constant offline |
+| 15 | Distributable modules: headless default (`default = []`; avatar-3d and livekit enabled per node by deploy profile), grid trust (every node reads `blocked` on 10-19), checks dispatched to idle grid nodes | Fable (default + profiles), Codex (trust), peers on the 5090/IntelMac (take checks) | profiles first, then flip the default with a before/after check time | a node joins by capability; an AWS box builds the core with no renderer |
 
 **Goal 11 workstreams** (10-19; each card carries its receipts). Obsess over making this the
 fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
