@@ -2,8 +2,11 @@ use super::*;
 
 mod fit;
 mod messages;
+mod segments;
 mod types;
 mod view;
+
+pub(super) use self::segments::segment_map;
 
 pub use self::types::{DeliberationPromptView, PromptCapacityError};
 pub(crate) use self::types::EvidenceFit;
