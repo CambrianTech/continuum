@@ -68,7 +68,7 @@ fiddle, or fiftieth, is a viable strategy: it gives inroads, and sometimes you w
 ships as an addendum to other agents: a Hermes driver (then Claude Code, opencode, anything that
 speaks OpenAI) gets our engine's speed through the Serving seam, and continual learning through the
 Dreaming seam, with no special case. That driver is also the outlier-B test of our own interfaces: if
-someone else's agent loop learns through the same seams our residents use, the seams are right.
+someone else's agent loop learns through the same seams our residents use, the seams are right. Drivers learn from all of their user's work and GitHub history (`docs/architecture/REPO-GENOME-AND-COURSES.md` §17).
 
 **Order of work, now** (updated 10-19 ~19:30Z; divide and conquer: work down YOUR lines, never stop at a
 wait, a wait means start your next line; update this table when a line lands or changes):
