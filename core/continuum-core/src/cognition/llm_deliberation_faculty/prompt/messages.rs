@@ -148,7 +148,7 @@ impl LlmDeliberationFaculty {
         let mut ledger = Vec::new();
         let mut facts = perceived;
         let mut notices = Vec::new();
-        for fact in super::perception_facts::render_facts(
+        for fact in super::super::super::perception_facts::render_facts(
             &fact_cx,
             &super::super::super::perception_facts::FactPolicy::default(),
         ) {
