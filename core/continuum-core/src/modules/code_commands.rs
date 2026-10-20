@@ -1137,7 +1137,7 @@ pub struct CodeTreeParams {
     /// to the workspace root.
     #[serde(default)]
     pub path: Option<String>,
-    /// Maximum recursion depth. Defaults to 10.
+    /// Maximum depth. Omit for all.
     #[serde(default)]
     pub max_depth: Option<u32>,
     /// Include hidden entries. Defaults to false.
@@ -1165,7 +1165,7 @@ impl ActionCommand for CodeTree {
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         Ok(tree::generate_tree(
             &target,
-            p.max_depth.unwrap_or(10),
+            p.max_depth,
             p.include_hidden.unwrap_or(false),
         ))
     }
@@ -1200,7 +1200,9 @@ pub struct CodeSearchParams {
     /// e.g. `**/*.rs` (NOT `src/**/*.rs` — don't assume the code lives under src/).
     #[serde(default)]
     pub file_glob: Option<String>,
-    /// Cap on the number of matches returned. Defaults to 100.
+    // Omitted = every match; a result over the window's share is saved whole and shown as its
+    // head and a handle by the tool executor, never clipped here.
+    /// Cap on matches returned. Omit for all.
     #[serde(default)]
     pub max_results: Option<u32>,
 }
@@ -1217,7 +1219,7 @@ impl ActionCommand for CodeSearch {
 
     async fn run(&self, ctx: &Ctx, p: CodeSearchParams) -> Result<SearchResult, CommandError> {
         let engine = engine!(self, ctx);
-        let max = p.max_results.unwrap_or(100);
+        let cap = p.max_results.map(|n| n as usize);
 
         // FORGIVENESS: models routinely conflate code/search (grep file CONTENTS — `pattern`
         // is the search TERM, `file_glob` filters which files) with code/glob (find files BY
@@ -1234,7 +1236,7 @@ impl ActionCommand for CodeSearch {
             let matches: Vec<SearchMatch> = g
                 .matches
                 .iter()
-                .take(max as usize)
+                .take(cap.unwrap_or(usize::MAX))
                 .map(|path| SearchMatch {
                     file_path: path.clone(),
                     line_number: 0,
@@ -1260,20 +1262,14 @@ impl ActionCommand for CodeSearch {
         // Search every searchable root (workspace + read-only roots), merging and
         // de-duplicating by (file, line) since roots may overlap.
         let mut matches: Vec<SearchMatch> = Vec::new();
-        let mut total_matches = 0u32;
         let mut files_searched = 0u32;
         for root in engine.searchable_roots() {
-            let remaining = max.saturating_sub(matches.len() as u32);
-            if remaining == 0 {
-                break;
-            }
-            let r = search::search_files(&root, &p.pattern, p.file_glob.as_deref(), remaining);
+            let r = search::search_files(&root, &p.pattern, p.file_glob.as_deref());
             if !r.success {
                 // Preserve the search owner's typed refusal; an invalid regex/glob is
                 // not a successful empty search with orientation guidance.
                 return Ok(r);
             }
-            total_matches += r.total_matches;
             files_searched += r.files_searched;
             matches.extend(r.matches);
         }
@@ -1283,7 +1279,11 @@ impl ActionCommand for CodeSearch {
                 .then(a.line_number.cmp(&b.line_number))
         });
         matches.dedup_by(|a, b| a.file_path == b.file_path && a.line_number == b.line_number);
-        matches.truncate(max as usize);
+        // The true total, after de-duplication across overlapping roots and before any cap.
+        let total_matches = matches.len() as u32;
+        if let Some(cap) = cap {
+            matches.truncate(cap);
+        }
 
         // Preserve the caller-bounded result. The shared tool executor owns
         // window-aware whole-or-handle delivery and durable expansion; compressing

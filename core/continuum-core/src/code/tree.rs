@@ -11,8 +11,10 @@ use super::types::{TreeNode, TreeResult};
 /// Generate a directory tree starting from `root`.
 ///
 /// Respects .gitignore, skips hidden files by default,
-/// and limits depth to prevent runaway recursion.
-pub fn generate_tree(root: &Path, max_depth: u32, include_hidden: bool) -> TreeResult {
+/// and descends only as deep as the caller asked: `None` is the whole tree (the filesystem
+/// bounds it: a symlink cycle ends in ELOOP, which `read_dir` reports as an unreadable
+/// directory). A depth is the caller's request, never a default invented here.
+pub fn generate_tree(root: &Path, max_depth: Option<u32>, include_hidden: bool) -> TreeResult {
     if !root.exists() || !root.is_dir() {
         // Defensive only: the LIVE code/tree path resolves through
         // `FileEngine::resolve_dir`, which owns the actionable persona-facing errors
@@ -55,7 +57,7 @@ fn build_tree_node(
     entry_path: &Path,
     root: &Path,
     current_depth: u32,
-    max_depth: u32,
+    max_depth: Option<u32>,
     include_hidden: bool,
     total_files: &mut u32,
     total_directories: &mut u32,
@@ -81,7 +83,7 @@ fn build_tree_node(
 
         let mut children = Vec::new();
 
-        if current_depth < max_depth {
+        if max_depth.map_or(true, |max| current_depth < max) {
             // Read directory entries
             if let Ok(entries) = fs::read_dir(entry_path) {
                 let mut entries: Vec<_> = entries.filter_map(|e| e.ok()).collect();
@@ -184,11 +186,27 @@ mod tests {
     #[test]
     fn test_generate_tree() {
         let dir = setup_tree_dir();
-        let result = generate_tree(dir.path(), 10, false);
+        let result = generate_tree(dir.path(), None, false);
         assert!(result.success);
         assert!(result.root.is_some());
         assert!(result.total_files > 0);
         assert!(result.total_directories > 0);
+    }
+
+    // what this catches: the invented default depth of 10 silently cutting a deeper tree; with no
+    // depth requested the whole tree is walked.
+    #[test]
+    fn test_tree_without_a_depth_walks_everything() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut deep = dir.path().to_path_buf();
+        for i in 0..14 {
+            deep.push(format!("d{i}"));
+        }
+        fs::create_dir_all(&deep).unwrap();
+        fs::write(deep.join("leaf.txt"), "x").unwrap();
+        let result = generate_tree(dir.path(), None, false);
+        assert_eq!(result.total_files, 1, "a file 14 levels down is still in the tree");
+        assert_eq!(result.total_directories, 15);
     }
 
     #[test]
@@ -196,13 +214,13 @@ mod tests {
         let dir = setup_tree_dir();
 
         // Depth 0: only root, no children explored
-        let shallow = generate_tree(dir.path(), 0, false);
+        let shallow = generate_tree(dir.path(), Some(0), false);
         assert!(shallow.success);
         let root = shallow.root.unwrap();
         assert!(root.children.is_empty());
 
         // Depth 1: root's immediate children
-        let one_deep = generate_tree(dir.path(), 1, false);
+        let one_deep = generate_tree(dir.path(), Some(1), false);
         assert!(one_deep.success);
         let root = one_deep.root.unwrap();
         assert!(!root.children.is_empty());
@@ -217,7 +235,7 @@ mod tests {
     #[test]
     fn test_tree_sorted() {
         let dir = setup_tree_dir();
-        let result = generate_tree(dir.path(), 10, false);
+        let result = generate_tree(dir.path(), None, false);
         let root = result.root.unwrap();
 
         // Directories should come before files
@@ -237,7 +255,7 @@ mod tests {
         fs::create_dir_all(dir.path().join("node_modules/foo")).unwrap();
         fs::write(dir.path().join("node_modules/foo/index.js"), "x").unwrap();
 
-        let result = generate_tree(dir.path(), 10, false);
+        let result = generate_tree(dir.path(), None, false);
         let root = result.root.unwrap();
 
         // node_modules should not appear
@@ -252,7 +270,7 @@ mod tests {
         fs::create_dir_all(dir.path().join(".hidden")).unwrap();
         fs::write(dir.path().join(".hidden/secret"), "s").unwrap();
 
-        let result = generate_tree(dir.path(), 10, false);
+        let result = generate_tree(dir.path(), None, false);
         let root = result.root.unwrap();
 
         for child in &root.children {
@@ -266,7 +284,7 @@ mod tests {
         fs::create_dir_all(dir.path().join(".config")).unwrap();
         fs::write(dir.path().join(".config/settings.json"), "{}").unwrap();
 
-        let result = generate_tree(dir.path(), 10, true);
+        let result = generate_tree(dir.path(), None, true);
         let root = result.root.unwrap();
 
         let has_hidden = root.children.iter().any(|c| c.name == ".config");
@@ -278,7 +296,7 @@ mod tests {
         // Defensive guard for direct callers — the actionable persona-facing message
         // lives in FileEngine::resolve_dir (tested there). Here we only assert the
         // guard fires.
-        let result = generate_tree(Path::new("/nonexistent/path"), 10, false);
+        let result = generate_tree(Path::new("/nonexistent/path"), None, false);
         assert!(!result.success);
         assert!(result.error.unwrap().contains("not a directory"));
     }
@@ -286,7 +304,7 @@ mod tests {
     #[test]
     fn test_tree_file_sizes() {
         let dir = setup_tree_dir();
-        let result = generate_tree(dir.path(), 10, false);
+        let result = generate_tree(dir.path(), None, false);
         let root = result.root.unwrap();
 
         // Find a file and check it has size

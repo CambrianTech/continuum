@@ -10,13 +10,11 @@ use super::types::{SearchMatch, SearchResult};
 /// Search for a regex pattern across files in a directory.
 ///
 /// Respects .gitignore rules and supports file glob filtering.
-/// Returns matches up to `max_results`.
-pub fn search_files(
-    root: &Path,
-    pattern: &str,
-    file_glob: Option<&str>,
-    max_results: u32,
-) -> SearchResult {
+/// Returns EVERY match and the true `total_matches`: how many of them a caller may see is the
+/// caller's share to decide (the command's explicit cap, then the executor's whole-or-handle
+/// custody), never this scan's. It used to stop at a cap and report the count it had reached
+/// as the total, a lower bound passed off as the answer.
+pub fn search_files(root: &Path, pattern: &str, file_glob: Option<&str>) -> SearchResult {
     let regex = match regex::Regex::new(pattern) {
         Ok(r) => r,
         Err(e) => {
@@ -70,7 +68,6 @@ pub fn search_files(
     let mut matches = Vec::new();
     let mut files_searched = 0u32;
     let mut total_matches = 0u32;
-    let max = max_results as usize;
 
     for entry in builder.build().flatten() {
         let path = entry.path();
@@ -93,27 +90,20 @@ pub fn search_files(
             for mat in regex.find_iter(line) {
                 total_matches += 1;
 
-                if matches.len() < max {
-                    let relative_path = path
-                        .strip_prefix(root)
-                        .unwrap_or(path)
-                        .display()
-                        .to_string();
+                let relative_path = path
+                    .strip_prefix(root)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string();
 
-                    matches.push(SearchMatch {
-                        file_path: relative_path,
-                        line_number: (line_idx + 1) as u32,
-                        line_content: line.to_string(),
-                        match_start: mat.start() as u32,
-                        match_end: mat.end() as u32,
-                    });
-                }
+                matches.push(SearchMatch {
+                    file_path: relative_path,
+                    line_number: (line_idx + 1) as u32,
+                    line_content: line.to_string(),
+                    match_start: mat.start() as u32,
+                    match_end: mat.end() as u32,
+                });
             }
-        }
-
-        // Early exit if we have enough results
-        if matches.len() >= max {
-            break;
         }
     }
 
@@ -152,7 +142,7 @@ mod tests {
     #[test]
     fn test_search_basic() {
         let dir = setup_search_dir();
-        let result = search_files(dir.path(), "function", None, 100);
+        let result = search_files(dir.path(), "function", None);
         assert!(result.success);
         assert_eq!(result.total_matches, 2); // hello() and greet()
         assert!(result.files_searched >= 2);
@@ -161,7 +151,7 @@ mod tests {
     #[test]
     fn test_search_with_glob() {
         let dir = setup_search_dir();
-        let result = search_files(dir.path(), "function", Some("*.ts"), 100);
+        let result = search_files(dir.path(), "function", Some("*.ts"));
         assert!(result.success);
         assert_eq!(result.total_matches, 2);
         // All matches should be .ts files
@@ -170,18 +160,25 @@ mod tests {
         }
     }
 
+    // what this catches: the scan stopped at the caller's cap and reported the count it had
+    // reached as `total_matches` (a lower bound posing as a total). Every match is returned
+    // and counted; the cap is applied by the command, after the true total is known.
     #[test]
-    fn test_search_max_results() {
+    fn test_search_reports_the_true_total() {
         let dir = setup_search_dir();
-        let result = search_files(dir.path(), ".", None, 3);
+        for i in 0..50 {
+            fs::write(dir.path().join(format!("many{i}.txt")), "needle\nneedle\n").unwrap();
+        }
+        let result = search_files(dir.path(), "needle", None);
         assert!(result.success);
-        assert!(result.matches.len() <= 3);
+        assert_eq!(result.total_matches, 100);
+        assert_eq!(result.matches.len(), 100);
     }
 
     #[test]
     fn test_search_no_matches() {
         let dir = setup_search_dir();
-        let result = search_files(dir.path(), "zzz_nonexistent_zzz", None, 100);
+        let result = search_files(dir.path(), "zzz_nonexistent_zzz", None);
         assert!(result.success);
         assert_eq!(result.total_matches, 0);
         assert!(result.matches.is_empty());
@@ -190,7 +187,7 @@ mod tests {
     #[test]
     fn test_search_regex() {
         let dir = setup_search_dir();
-        let result = search_files(dir.path(), r"function\s+\w+", None, 100);
+        let result = search_files(dir.path(), r"function\s+\w+", None);
         assert!(result.success);
         assert_eq!(result.total_matches, 2);
     }
@@ -198,7 +195,7 @@ mod tests {
     #[test]
     fn test_search_invalid_regex() {
         let dir = setup_search_dir();
-        let result = search_files(dir.path(), "[invalid", None, 100);
+        let result = search_files(dir.path(), "[invalid", None);
         assert!(!result.success);
         assert!(result.error.is_some());
     }
@@ -206,7 +203,7 @@ mod tests {
     #[test]
     fn test_search_match_positions() {
         let dir = setup_search_dir();
-        let result = search_files(dir.path(), "hello", None, 100);
+        let result = search_files(dir.path(), "hello", None);
         assert!(result.success);
         for m in &result.matches {
             assert!(m.match_start < m.match_end);
