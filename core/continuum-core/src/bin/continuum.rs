@@ -1214,7 +1214,7 @@ impl PrebuiltCore {
         // HEAD refused every such tip in two seconds ("DEPLOY MISMATCH ... shipped build
         // 937976559 (git HEAD)" on the M5, 2026-10-05 01:55Z, for the key f8c69966e).
         let expected = match checkout_sha.as_deref() {
-            Some(head) => Some(prebuilt_checkout_build_key(&cwd, git_dir.as_deref(), head)),
+            Some(head) => Some(continuum_cli_lifecycle::prebuilt_artifact::prebuilt_expectation(&cwd, git_dir.as_deref(), head, &build_sha)),
             None => None,
         };
         Self::from_report(path, build_sha, expected.as_ref().map(|(sha, src)| (sha.as_str(), *src)))
@@ -5137,7 +5137,7 @@ async fn prepare_prebuilt(args: Vec<String>) -> Result<(), String> {
     }
     let repo = Path::new(&args[0]);
     let head = git_in(repo, &["rev-parse", "HEAD"])?;
-    let (tip, _) = prebuilt_checkout_build_key(repo, None, head.trim());
+    let tip = continuum_cli_lifecycle::prebuilt_artifact::checkout_build_key(repo, None, head.trim()).sha().to_string();
     let platform = continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH)
         .ok_or("No compatible prebuilt is published for this platform")?;
     let core = prepare_ci_core(repo, &tip, platform, Some(Path::new(&args[1])), prepare_note)
@@ -5454,34 +5454,6 @@ async fn prebuilt_checkout_sha(
         return Err("prebuilt checkout HEAD lookup returned no SHA".into());
     }
     Ok(Some(head.to_owned()))
-}
-
-/// The checkout's BUILD KEY: the newest commit at or before `head` that touched a build
-/// input (`prebuilt_artifact::BUILD_INPUTS`), which is the commit CI built a core for. Falls
-/// back to `head` itself, named as such, when git cannot say.
-fn prebuilt_checkout_build_key(cwd: &Path, git_dir: Option<&std::ffi::OsStr>, head: &str) -> (String, &'static str) {
-    let args = continuum_cli_lifecycle::prebuilt_artifact::build_key_log_args(head);
-    let mut cmd = std::process::Command::new("git");
-    cmd.current_dir(cwd).args(&args).env_remove("GIT_DIR").stdin(Stdio::null());
-    if let Some(git_dir) = git_dir {
-        cmd.env("GIT_DIR", git_dir);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    match cmd.output() {
-        Ok(out) if out.status.success() => {
-            let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if key.is_empty() {
-                (head.to_string(), "git HEAD of this checkout (no build key found)")
-            } else {
-                (key, "build key of this checkout (newest commit touching a build input)")
-            }
-        }
-        _ => (head.to_string(), "git HEAD of this checkout (build key unreadable)"),
-    }
 }
 
 /// Detect repository metadata without asking Git to read HEAD. Both a normal
@@ -8671,9 +8643,10 @@ mod tests {
         git(&["commit", "-qm", "docs only"]);
         let head = git(&["rev-parse", "HEAD"]);
         assert_ne!(key, head);
-        let (expected, source) = super::prebuilt_checkout_build_key(&repo, None, &head);
+        let resolved = continuum_cli_lifecycle::prebuilt_artifact::checkout_build_key(&repo, None, &head);
+        assert!(matches!(resolved, continuum_cli_lifecycle::prebuilt_artifact::KeyResolution::BuildKey(_)), "{resolved:?}");
+        let (expected, source) = (resolved.sha().to_string(), resolved.source());
         assert_eq!(expected, key, "the expectation is the key, not HEAD");
-        assert!(source.starts_with("build key"), "{source}");
         // The key's artifact is accepted; HEAD's would not have been built by CI at all.
         assert!(super::PrebuiltCore::from_report(repo.join("core-bin"), key.clone(), Some((&expected, source))).is_ok());
         assert!(super::PrebuiltCore::from_report(repo.join("core-bin"), head.clone(), Some((&expected, source))).is_err());

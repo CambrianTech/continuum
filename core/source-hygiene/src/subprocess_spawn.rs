@@ -40,7 +40,7 @@ pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
 ];
 
 /// Every `Command::new(` in production code on 2026-09-12 (canary 48fbbfd44). May only fall.
-pub const BASELINE_SPAWN_SITES: usize = 123;
+pub const BASELINE_SPAWN_SITES: usize = 122;
 
 /// Per-program baselines for [`ANSWERED_BY_A_LIBRARY`] on the same day. May only fall.
 pub const BASELINE_BY_PROGRAM: &[(&str, usize)] = &[
