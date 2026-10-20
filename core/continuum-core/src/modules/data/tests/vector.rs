@@ -319,4 +319,43 @@ async fn test_vector_cache_invalidation() {
     if let Ok(CommandResult::Json(stats)) = stats_after {
         assert_eq!(stats["cachedVectors"].as_u64().unwrap(), 0);
     }
+    // Each acknowledged mutation must retire the warmed corpus before the next search.
+    for operation in ["delete", "batch", "truncate", "clear"] {
+        module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before create");
+        let created = module.state.create_record(
+            &db_path, "test_cache".into(), Some("mutation-target".into()),
+            json!({"embedding": vec![1.0; 384]}),
+        ).await.expect("create through mutation owner");
+        assert!(created.success, "{created:?}");
+        let warm = module.state.vector_search(
+            &db_path, "test_cache", vec![1.0; 384], 10, 0.0, true,
+        ).await.expect("warm corpus");
+        assert!(warm.results.iter().any(|hit| hit.id == "mutation-target"));
+        let updated = module.state.update_record(&db_path, "test_cache".into(), "mutation-target".into(),
+            json!({"embedding": vec![-1.0; 384]}), false).await.expect("update embedding");
+        assert!(updated.success);
+        let changed = module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.5, true)
+            .await.expect("search updated corpus");
+        assert!(changed.results.iter().all(|hit| hit.id != "mutation-target"));
+        match operation {
+            "batch" => {
+                let result = module.state.batch_operations(&db_path, vec![crate::orm::types::BatchOperation {
+                    operation_type: crate::orm::types::BatchOperationType::Delete,
+                    collection: "test_cache".into(), id: Some("mutation-target".into()), data: None,
+                }]).await.expect("batch delete");
+                assert!(result.success, "{result:?}");
+            }
+            "delete" => assert!(module.state.delete_record(&db_path, "test_cache".into(), "mutation-target".into()).await.expect("delete").success),
+            "truncate" => assert!(module.state.truncate_collection(&db_path, "test_cache").await.expect("truncate").success),
+            "clear" => assert!(module.state.clear_all_collections(&db_path).await.expect("clear").success),
+            _ => unreachable!("fixture operation"),
+        }
+        let after = module.state.vector_search(
+            &db_path, "test_cache", vec![1.0; 384], 10, 0.0, true,
+        ).await.expect("search after acknowledged mutation");
+        assert!(after.results.iter().all(|hit| hit.id != "mutation-target"));
+        let expected = if matches!(operation, "truncate" | "clear") { 0 } else { warm.corpus_size - 1 };
+        assert_eq!(after.corpus_size, expected, "{operation} must refresh the corpus");
+    }
+
 }
