@@ -156,6 +156,7 @@ impl GridState {
         params: &serde_json::Value,
     ) -> Result<Option<crate::runtime::CommandResult>, String> {
         match self.router.route(command, params, &self.registry) {
+            RouteDecision::Refused(reason) => Err(reason.to_string()),
             RouteDecision::Local => Ok(None),
             RouteDecision::Remote { node, reason } => {
                 tracing::debug!(
@@ -178,7 +179,7 @@ impl ServiceModule for GridModule {
         ModuleConfig {
             name: "grid",
             priority: ModulePriority::Normal,
-            command_prefixes: &["grid/"],
+            command_prefixes: &[commands::PREFIX],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
