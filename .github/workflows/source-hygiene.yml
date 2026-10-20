@@ -44,19 +44,8 @@ jobs:
       - name: no edit to an oversized file without breaking it apart
         if: github.event_name == 'pull_request'
         run: |
-          base="origin/${{ github.base_ref }}"
-          bad=0
-          while IFS=$'\t' read -r added deleted path; do
-            case "$path" in *.rs) ;; *) continue ;; esac
-            case "$path" in core/vendor/*|*/vendored/*) continue ;; esac
-            [ -f "$path" ] || continue
-            lines=$(wc -l < "$path")
-            if [ "$lines" -gt 1000 ]; then
-              echo "::error file=$path::$path is $lines lines and this PR edits it (+$added -$deleted). No one edits a large file: break it apart by owner in this PR (pure moves, one owner per file) so it ends at most 1,000 lines."
-              bad=1
-            fi
-          done < <(git diff --numstat "$base"...HEAD)
-          exit $bad
+          tools/scripts/tests/oversized-edits.test.sh
+          tools/scripts/oversized-edits.sh "origin/${{ github.base_ref }}"
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup show
