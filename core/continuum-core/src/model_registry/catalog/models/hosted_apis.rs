@@ -1,0 +1,297 @@
+use super::super::*;
+
+/// Hosted cloud API models: Anthropic, OpenAI, DeepSeek, Together, Groq, Fireworks, xAI, Google, Mistral.
+pub(super) fn hosted_apis() -> Vec<Model> {
+    vec![
+        model(ModelSpec {
+            id: "claude-sonnet-4-5-20250929",
+            name: "Claude Sonnet 4.5",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.003,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "claude-opus-4-20250514",
+            name: "Claude Opus 4",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.015,
+            cost_output_per_1k: 0.075,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "claude-3-5-haiku-20250107",
+            name: "Claude 3.5 Haiku",
+            provider: "anthropic",
+            arch: Arch::Claude,
+            context_window: 200_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00025,
+            cost_output_per_1k: 0.00125,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gpt-4-turbo-preview",
+            name: "GPT-4 Turbo",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 128_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.01,
+            cost_output_per_1k: 0.03,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gpt-4o",
+            name: "GPT-4o",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 128_000,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::AudioOutput,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.005,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        // OpenAI's embedding + image lanes as MODEL rows (#68): the provider's
+        // embedding/image capability is derived by the adapter SCANNING these
+        // — there is no provider-level `supports_embeddings` bool. These are
+        // capability-routed (not arch-dispatched), so `Arch::Gpt` just groups
+        // them with the OpenAI family.
+        model(ModelSpec {
+            id: "text-embedding-3-small",
+            name: "OpenAI Text Embedding 3 Small",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 8_192,
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[Capability::Embedding],
+            cost_input_per_1k: 0.00002,
+            cost_output_per_1k: 0.0,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "dall-e-3",
+            name: "OpenAI DALL·E 3",
+            provider: "openai",
+            arch: Arch::Gpt,
+            context_window: 4_096,
+            max_output_tokens: 0,
+            tokens_per_second: 0.0,
+            capabilities: &[Capability::ImageGeneration],
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "deepseek-chat",
+            name: "DeepSeek Chat",
+            provider: "deepseek",
+            arch: Arch::Deepseek,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00014,
+            cost_output_per_1k: 0.00028,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "deepseek-reasoner",
+            name: "DeepSeek Reasoner",
+            provider: "deepseek",
+            arch: Arch::Deepseek,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00055,
+            cost_output_per_1k: 0.00219,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo",
+            name: "Llama 3.1 70B (Together)",
+            provider: "together",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 4096,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00088,
+            cost_output_per_1k: 0.00088,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "llama-3.1-8b-instant",
+            name: "Llama 3.1 8B Instant (Groq)",
+            provider: "groq",
+            arch: Arch::Llama,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.00005,
+            cost_output_per_1k: 0.00008,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "accounts/fireworks/models/llama-v3p3-70b-instruct",
+            name: "Llama 3.3 70B (Fireworks)",
+            provider: "fireworks",
+            arch: Arch::Llama,
+            context_window: 128_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.0009,
+            cost_output_per_1k: 0.0009,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "grok-3",
+            name: "Grok 3",
+            provider: "xai",
+            arch: Arch::Grok,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.003,
+            cost_output_per_1k: 0.015,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "gemini-2.0-flash",
+            name: "Gemini 2.0 Flash",
+            provider: "google",
+            arch: Arch::Gemini,
+            context_window: 1_000_000,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Vision,
+                Capability::AudioInput,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.000075,
+            cost_output_per_1k: 0.0003,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "mistral-large-latest",
+            name: "Mistral Large",
+            provider: "mistral",
+            arch: Arch::Mistral,
+            context_window: 131_072,
+            max_output_tokens: 8192,
+            tokens_per_second: 50.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.002,
+            cost_output_per_1k: 0.006,
+            ..ModelSpec::default()
+        }),
+        model(ModelSpec {
+            id: "codestral-latest",
+            name: "Codestral",
+            provider: "mistral",
+            arch: Arch::Mistral,
+            context_window: 32_768,
+            max_output_tokens: 8192,
+            tokens_per_second: 60.0,
+            capabilities: &[
+                Capability::TextGeneration,
+                Capability::Chat,
+                Capability::ToolUse,
+                Capability::Streaming,
+            ],
+            cost_input_per_1k: 0.001,
+            cost_output_per_1k: 0.003,
+            ..ModelSpec::default()
+        }),
+    ]
+}
