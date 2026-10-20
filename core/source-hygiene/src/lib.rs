@@ -28,6 +28,7 @@ pub mod boundary_serialization;
 pub mod continuum_home;
 pub mod derived_bounds;
 pub mod grab_bag;
+pub mod head_cuts;
 pub mod file_size;
 pub mod identity_discipline;
 pub mod layer_discipline;
