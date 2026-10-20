@@ -38,6 +38,7 @@ use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
 use super::epoch_view;
+use super::grounding_plan::{Fitted, GroundingPiece, GroundingPlan};
 use continuum_context::epoch::SourceId;
 use super::persona_tools;
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace};
@@ -1873,6 +1874,7 @@ impl LlmDeliberationFaculty {
 
     /// Inputs measured at the request boundary, including the selected native
     /// surface, let the render receipt reconcile with the whole-window budget.
+    #[cfg(test)]
     fn render_assembled_context_within(
         &self,
         ws: &Workspace,
@@ -1880,6 +1882,18 @@ impl LlmDeliberationFaculty {
         plan: &GroundingPlan<'_>,
         composition: ContextComposition,
     ) -> String {
+        self.render_context_within(ws, budget_tokens, plan, composition).0
+    }
+
+    /// The assembled context block and the tokens its pieces were admitted at: re-rendered
+    /// within exactly that many, the same inputs give the same block (greedy, in one order).
+    fn render_context_within(
+        &self,
+        ws: &Workspace,
+        budget_tokens: usize,
+        plan: &GroundingPlan<'_>,
+        composition: ContextComposition,
+    ) -> (String, usize) {
         let ContextComposition {
             context_window,
             framing_tokens,
@@ -1932,7 +1946,7 @@ impl LlmDeliberationFaculty {
                     .join(","),
                 "assembled context suppressed: zero token budget"
             );
-            return String::new();
+            return (String::new(), 0);
         }
         // TRAILING contributions (working-memory proprioception that grows each act)
         // are excluded HERE — they render as trailing conversation turns nearest
@@ -2220,7 +2234,7 @@ impl LlmDeliberationFaculty {
             piece.append_body(&mut block);
             block.push('\n');
         }
-        block
+        (block, used)
     }
 
     /// Compose the full system prompt around an ALREADY-BUDGETED context block.
@@ -2574,8 +2588,13 @@ impl LlmDeliberationFaculty {
             &mut all_messages.history,
             &all_messages.body,
             ws.activity_room_id,
+            Self::message_cost,
             &self.persona_name,
         );
+        // The room a turnover leaves: the most her body grew by in one act, and at least the
+        // pinned result, which joins the body next act (a cold start's only evidence).
+        all_messages.headroom = epoch.growth().max(Self::messages_cost(&all_messages.latest_result));
+        let headroom = all_messages.headroom;
         // A pointer only substitutes when the view turns over (`epoch.turn_over` supplies them).
         all_messages.result_pointers.clear();
 
@@ -2830,8 +2849,8 @@ impl LlmDeliberationFaculty {
                 cached_history,
                 // WHAT THE CLIP COSTS HER, in kind and amount — so "she repeated
                 // herself" is traceable to "we cut the evidence she had already done
-                // it" without anyone opening a capture file. At-least figures: the real
-                // drop rounds up to a quantum.
+                // it" without anyone opening a capture file. At-least figures: a turnover
+                // also frees the measured growth.
                 shed_messages = shed.messages,
                 shed_tokens = shed.tokens,
                 shed_own_moves = shed.own_moves,
@@ -2854,6 +2873,11 @@ impl LlmDeliberationFaculty {
             required_tokens
                 .saturating_add(calibration.prompt_budget(plan.granted(FLEX_HISTORY) as usize)),
         );
+        // A bound head keeps the grant it was admitted with; the body has what is left of it.
+        let msg_budget = match epoch.head_grant() {
+            Some(grant) => msg_budget.min(after_framing.saturating_sub(grant)),
+            None => msg_budget,
+        };
 
         // WHAT THIS TURN WOULD HAVE COST WITH NO BUDGET — recorded before either
         // fitting step throws the evidence away, and deliberately free to exceed
@@ -2946,7 +2970,7 @@ impl LlmDeliberationFaculty {
                 kept_messages = r.kept_messages,
                 dropped_messages = r.dropped_messages,
                 dropped_tokens = r.dropped_tokens,
-                quantum = r.quantum,
+                headroom = r.headroom,
                 "the fit dropped optional history from the front; history_emptied means nothing \
                  optional survived and the turn composes with no room messages at all"
             );
@@ -3004,9 +3028,16 @@ impl LlmDeliberationFaculty {
         // Only the source's truthful minimum outranks optional conversation.
         // Additional declared list units use actual leftover room after fitting;
         // a large list cannot turn every detail into mandatory input.
+        // A standing source keeps the size her epoch admitted it at while it says the same thing
+        // (never re-rendered because the room left over changed); a new or changed one is
+        // admitted from the room left after the measured growth.
         if capacity_error.is_none() {
-            grounding
-                .expand_within(after_framing.saturating_sub(Self::messages_cost(&fitted.messages)));
+            let room = after_framing.saturating_sub(Self::messages_cost(&fitted.messages)).saturating_sub(headroom);
+            grounding.expand_within(room, |c| epoch.admitted(c.faculty.as_str(), epoch_view::content_fingerprint(&c.content, &c.parts)));
+            for piece in &grounding.pieces {
+                let c = piece.contribution;
+                epoch.admit(c.faculty.as_str(), epoch_view::content_fingerprint(&c.content, &c.parts), piece.units);
+            }
         }
         // Standing pieces are priced after the fit; their news joins the epoch's end. A
         // refused view is never sent, so it leaves her epoch untouched.
@@ -3029,11 +3060,18 @@ impl LlmDeliberationFaculty {
         let used_msg_tokens = Self::messages_cost(&messages);
         // Grounding gets everything the conversation did not actually use — never
         // less than the floor reserved above.
-        let ctx_budget = after_framing
-            .saturating_sub(used_msg_tokens)
-            .saturating_sub(Self::working_context_header_cost())
-            .max(ctx_floor.saturating_sub(Self::working_context_header_cost()));
-        let context = self.render_assembled_context_within(
+        // Bound to her epoch, the head renders inside the grant it was admitted with, so the
+        // body's growth never re-renders it; a fresh head takes what the body and its measured
+        // growth leave.
+        let ctx_budget = match epoch.head_grant() {
+            Some(grant) => grant.saturating_sub(Self::working_context_header_cost()),
+            None => after_framing
+                .saturating_sub(used_msg_tokens)
+                .saturating_sub(headroom)
+                .saturating_sub(Self::working_context_header_cost())
+                .max(ctx_floor.saturating_sub(Self::working_context_header_cost())),
+        };
+        let (context, admitted_tokens) = self.render_context_within(
             ws,
             ctx_budget,
             &grounding,
@@ -3077,6 +3115,18 @@ impl LlmDeliberationFaculty {
                 holds_live_work,
             )
             .stable;
+        epoch.bind_head(
+            epoch_view::Head {
+                system: system.as_str().into(),
+                tools: epoch_view::tools_fingerprint(
+                    selected.specs.iter().flat_map(|specs| specs.iter().map(|spec| spec.name.as_str())),
+                    selected.tokens,
+                ),
+                model: model.into(),
+                grant: if context.is_empty() { 0 } else { admitted_tokens + Self::working_context_header_cost() },
+            },
+            &self.persona_name,
+        );
         // This is the native request estimate, not a backend tokenizer count.
         // Adapters may add model-specific framing; live acceptance still checks
         // their captured request/usage rather than assuming this estimate exact.
@@ -3444,6 +3494,7 @@ impl LlmDeliberationFaculty {
             input_identity: input.finalize().into(),
             history: messages,
             body,
+            headroom: 0,
             result_pointers,
             grounding_tokens: 0,
             grounding_at,
@@ -3605,14 +3656,14 @@ impl LlmDeliberationFaculty {
     /// at the budget edge the fitted thread measured over the window by a token
     /// (glass-boxed 2026-07-13). Round UP like every other estimate here.
     // context-budget-exempt: fixed chat-template overhead per message (role tags + separators) — a property of the prompt FORMAT, not a budget that should scale with the window
-    const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
+    pub(super) const PER_MESSAGE_TEMPLATE_TOKENS: usize = 5;
 
-    fn context_piece_tokens(faculty: &str, body_bytes: usize) -> usize {
+    pub(super) fn context_piece_tokens(faculty: &str, body_bytes: usize) -> usize {
         // The actual rendered shape is "\n[faculty]\n<body>\n".
         (faculty.len() + body_bytes + "\n[]\n\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
     }
 
-    fn working_context_header_cost() -> usize {
+    pub(super) fn working_context_header_cost() -> usize {
         deliberation_prompt::WORKING_CONTEXT_HEADER
             .len()
             .div_ceil(GUARD_CHARS_PER_TOKEN)
@@ -3662,18 +3713,11 @@ impl LlmDeliberationFaculty {
         tokens + Self::PER_MESSAGE_TEMPLATE_TOKENS
     }
 
-    /// The window-start advance QUANTUM divisor: when the conversation outgrows
-    /// its budget, the front is dropped in chunks of `budget/8` (floored at 512
-    /// tokens) rather than message-by-message. See [`Self::fit_messages`].
-    // context-budget-exempt: an epoch-headroom ratio, not a token budget — the actual chunk derives from the live budget at the call
-    const FRONT_DROP_QUANTUM_DIVISOR: usize = 8;
-
-    /// Fit an already-built conversation to `budget_tokens` with a QUANTIZED, whole-message
-    /// front drop. Within an epoch nothing is dropped (`epoch_view`); this drop runs when the
-    /// epoch turns over, and it frees at least one chunk (`budget/8`, ≥512 tokens) past the
-    /// minimum, rounded to chunks: the room the new epoch grows into before it turns over
-    /// again. An exact fit moved the front on every act (measured 2026-09-01 as consecutive
-    /// prompts diverging at ~1% depth on this seam). Whole turns only, never a mid-message shear
+    /// Fit an already-built conversation to `budget_tokens` with a whole-message front drop.
+    /// Within an epoch nothing is dropped (`epoch_view`); this drop runs when the epoch turns
+    /// over, and it frees `prompt.headroom` past the minimum: her measured per-act growth, the
+    /// room the new epoch grows into before it turns over again (an exact fit turned over on
+    /// every act). Whole turns only, never a mid-message shear
     /// ([[collapse-dont-clip-condense-the-past-never-erode-it]]).
     fn fit_messages(
         &self,
@@ -3705,16 +3749,15 @@ impl LlmDeliberationFaculty {
         // alternative. No second store or mutation of WM: custody stays with the
         // existing saved result, and only the fitted view changes. Unsaved results
         // never supply an alternative. Ordinary eviction still bounds this view.
-        // Collapsing and dropping both leave a quantum free: the room her next epoch grows
-        // into before it turns over again (an exact fit turned over on every act).
-        let quantum = (budget_tokens / Self::FRONT_DROP_QUANTUM_DIVISOR).max(512);
+        // Collapsing and dropping both leave the measured growth free (`prompt.headroom`).
+        let headroom = prompt.headroom;
         let mut history_tokens = Self::messages_cost(&prompt.history);
         let over = history_tokens > history_budget;
         for (index, pointer) in std::mem::take(&mut prompt.result_pointers) {
             let Some(message) = prompt.history.get_mut(index) else { continue };
             let old_cost = Self::message_cost(message);
             let pointer_cost = Self::message_cost(&pointer);
-            if over && history_tokens > history_budget.saturating_sub(quantum) && pointer_cost < old_cost {
+            if over && history_tokens > history_budget.saturating_sub(headroom) && pointer_cost < old_cost {
                 history_tokens = history_tokens.saturating_sub(old_cost - pointer_cost);
                 *message = pointer;
             } else {
@@ -3732,7 +3775,7 @@ impl LlmDeliberationFaculty {
         let mut start = 0usize;
         if total > history_budget {
             let min_drop = total - history_budget;
-            let drop_q = (min_drop + quantum).div_ceil(quantum).saturating_mul(quantum);
+            let drop_q = min_drop.saturating_add(headroom);
             let mut dropped = 0usize;
             // Only optional history yields. Stimulus and action payload are typed
             // slots outside this eviction range, even when both render as user.
@@ -3852,7 +3895,7 @@ impl LlmDeliberationFaculty {
             dropped_tokens: costs[..start].iter().sum(),
             required_tokens,
             history_budget,
-            quantum,
+            headroom,
         };
         // Move the surviving messages; fitting never clones the entire prompt.
         prompt.history.drain(..start);
@@ -3930,6 +3973,7 @@ impl LlmDeliberationFaculty {
         let frozen_grounding_tokens = Self::messages_cost(&grounding);
         let prompt = PromptMessages {
             body: Vec::new(),
+            headroom: 0,
             input_identity: view.input_identity,
             history: view.messages,
             result_pointers: view.refit.result_pointers,
@@ -4044,6 +4088,8 @@ struct PromptMessages {
     history: Vec<ChatMessage>,
     /// The keyed sources `history[..grounding_at]` renders; her epoch appends their news.
     body: Vec<epoch_view::Block>,
+    /// Tokens a front drop frees past the minimum: the room her next epoch grows into.
+    headroom: usize,
     /// Source-owned compact alternatives, indexed into history; never inferred from prose.
     result_pointers: Vec<(usize, ChatMessage)>,
     /// Kept before the append-only result ring even when older history yields.
@@ -4226,7 +4272,7 @@ impl PromptMessages {
     /// What a `history_budget`-sized fill sheds, in kind and amount — oldest first, whole
     /// messages, the same ORDER the evictor drops in.
     ///
-    /// AT LEAST this much: the real drop rounds up to a quantum and may advance past a
+    /// AT LEAST this much: the real drop also frees the measured growth and may advance past a
     /// broken cluster opener, so this under-reports rather than over-reports. It is a
     /// receipt, not a second evictor — the decision stays in one place
     /// ([`LlmDeliberationFaculty::fit_messages`]).
@@ -4332,7 +4378,7 @@ struct FitReceipt {
     dropped_tokens: usize,
     required_tokens: usize,
     history_budget: usize,
-    quantum: usize,
+    headroom: usize,
 }
 
 impl FitReceipt {
@@ -4353,267 +4399,6 @@ struct ContextComposition {
     /// WHY the surface priced in `tool_tokens` is the one sent: the receipt that says which
     /// arm put a 38-tool surface on a CPU lane (card 3026b83e).
     surface_reason: SurfaceReason,
-}
-
-/// A borrowed selection of whole source content or its declared atomic prefix.
-/// Reserving and expanding it never copies the source payload.
-struct GroundingPiece<'a> {
-    contribution: &'a Contribution,
-    /// None keeps the source's original rendering, including its separators.
-    units: Option<usize>,
-    tokens: usize,
-}
-
-impl<'a> GroundingPiece<'a> {
-    fn cost(c: &Contribution, body_bytes: usize) -> usize {
-        if c.trailing {
-            (c.faculty.as_str().len() + body_bytes + "[]\n".len()).div_ceil(GUARD_CHARS_PER_TOKEN)
-                + LlmDeliberationFaculty::PER_MESSAGE_TEMPLATE_TOKENS
-        } else {
-            LlmDeliberationFaculty::context_piece_tokens(c.faculty.as_str(), body_bytes)
-        }
-    }
-
-    fn whole(c: &'a Contribution) -> Self {
-        // A block whose SOURCE cut it short still owes its reader the notice, even
-        // when every delivered part fits: reserve it here so the budget stays exact.
-        let notice = if c.source_truncated {
-            usize::from(!c.content.is_empty()) + Self::notice_bytes(c, 0)
-        } else {
-            0
-        };
-        Self {
-            contribution: c,
-            units: None,
-            tokens: Self::cost(c, c.content.len() + notice),
-        }
-    }
-
-    const NOTICE_SUFFIX: &'static str = " more not shown (context budget)";
-    const EXPAND_PREFIX: &'static str = " — run `";
-    const EXPAND_SUFFIX: &'static str = "` to see all ";
-
-    /// The omission notice, exactly as `append_notice` writes it. `omitted` is what
-    /// THIS packing left out of `parts`. A source that cut its own list short adds
-    /// an uncounted remainder: the count becomes `N+` (or no number when the packing
-    /// omitted nothing), and the verb says "see all" with no total, because the
-    /// true total is unknown.
-    fn notice_text(c: &Contribution, omitted: usize) -> String {
-        let count = match (omitted, c.source_truncated) {
-            (0, true) => String::new(),
-            (n, true) => format!("{n}+"),
-            (n, false) => n.to_string(),
-        };
-        // With no number to show, the suffix's leading space would dangle ("… more").
-        let suffix = if count.is_empty() { Self::NOTICE_SUFFIX.trim_start() } else { Self::NOTICE_SUFFIX };
-        let mut text = format!("…{count}{suffix}");
-        if let Some(cmd) = c.expand_command {
-            text.push_str(Self::EXPAND_PREFIX);
-            text.push_str(cmd);
-            if c.source_truncated {
-                text.push_str(Self::EXPAND_SUFFIX.trim_end());
-            } else {
-                text.push_str(Self::EXPAND_SUFFIX);
-                text.push_str(&c.parts.len().to_string());
-            }
-        }
-        text
-    }
-
-    fn notice_bytes(c: &Contribution, omitted: usize) -> usize {
-        Self::notice_text(c, omitted).len()
-    }
-
-    fn append_notice(c: &Contribution, omitted: usize, out: &mut String) {
-        out.push_str(&Self::notice_text(c, omitted));
-    }
-
-    fn minimum(c: &'a Contribution) -> Self {
-        let whole = Self::whole(c);
-        if c.parts.len() < 2 {
-            return whole;
-        }
-        let tokens = Self::cost(
-            c,
-            c.parts[0].len() + 1 + Self::notice_bytes(c, c.parts.len() - 1),
-        );
-        if tokens >= whole.tokens {
-            return whole;
-        }
-        Self {
-            contribution: c,
-            units: Some(1),
-            tokens,
-        }
-    }
-
-    fn within(c: &'a Contribution, budget: usize) -> Option<Self> {
-        let whole = Self::whole(c);
-        if whole.tokens <= budget {
-            return Some(whole);
-        }
-        // Reserve the actual omission notice before accepting complete units.
-        let mut bytes = 0usize;
-        let mut selected = None;
-        for (index, unit) in c
-            .parts
-            .iter()
-            .take(c.parts.len().saturating_sub(1))
-            .enumerate()
-        {
-            bytes += unit.len() + usize::from(index > 0);
-            let units = index + 1;
-            let tokens = Self::cost(c, bytes + 1 + Self::notice_bytes(c, c.parts.len() - units));
-            if tokens > budget {
-                break;
-            }
-            selected = Some(Self {
-                contribution: c,
-                units: Some(units),
-                tokens,
-            });
-        }
-        selected
-    }
-
-    fn append_body(&self, out: &mut String) {
-        let c = self.contribution;
-        match self.units {
-            None => {
-                out.push_str(&c.content);
-                if c.source_truncated {
-                    if !c.content.is_empty() {
-                        out.push('\n');
-                    }
-                    Self::append_notice(c, 0, out);
-                }
-            }
-            Some(units) => {
-                for (index, unit) in c.parts[..units].iter().enumerate() {
-                    if index > 0 {
-                        out.push('\n');
-                    }
-                    out.push_str(unit);
-                }
-                out.push('\n');
-                Self::append_notice(c, c.parts.len() - units, out);
-            }
-        }
-    }
-}
-
-/// The reservation retains the exact source units rendering will emit. An
-/// equal-salience list cannot spend a peer's reservation; KV placement never
-/// determines whether standing activity context may be evicted.
-#[derive(Default)]
-struct GroundingPlan<'a> {
-    pieces: Vec<GroundingPiece<'a>>,
-}
-
-/// A plan that fit as asked, or one that had to give something up — with the size it
-/// WANTED carried out, so the caller can say by how much rather than only that it did.
-/// A reduction that cannot report its own magnitude is the saturating-subtract mistake
-/// one layer up.
-enum Fitted<T> {
-    Whole(T),
-    Reduced { plan: T, wanted: usize },
-}
-
-impl<'a> GroundingPlan<'a> {
-    /// The standing sources' truthful minimums, whatever the budget — the plan the
-    /// caller WANTS. Fitting it is [`GroundingPlan::within_budget`]'s job.
-    fn minimum(ws: &'a Workspace) -> Self {
-        Self {
-            pieces: ws
-                .broadcast
-                .iter()
-                .filter(|c| c.decision.is_none() && c.standing_grounding)
-                .map(GroundingPiece::minimum)
-                .collect(),
-        }
-    }
-
-    /// Fit the standing minimums into `budget`, SHEDDING rather than failing.
-    ///
-    /// This returned `Err` until 2026-09-09, and that error muted citizens: it was
-    /// promoted ahead of every other capacity check into a hard deliberation fault, so a
-    /// persona whose enrichment overflowed refused the turn entirely — and kept her held
-    /// card while refusing. Grounding is enrichment; its shortfall is not a reason to
-    /// stop thinking.
-    ///
-    /// What sheds first, and why: the SYSTEM half goes before the TRAILING half. Trailing
-    /// pieces sit nearest the generation and carry the act-shaped facts (the pinned
-    /// result, the live board); the system half is standing background, and dropping it
-    /// also frees `working_context_header_cost` in one go. Pieces are shed newest-kept /
-    /// oldest-first within each half, so what survives is the freshest world she has.
-    fn within_budget(ws: &'a Workspace, budget: usize) -> Fitted<Self> {
-        let whole = Self::minimum(ws);
-        let wanted = whole.system_reserve() + whole.trailing_tokens();
-        if wanted <= budget {
-            return Fitted::Whole(whole);
-        }
-        // Trailing-only: keep the half nearest generation, drop the standing background
-        // and its header.
-        let mut plan = whole;
-        plan.pieces.retain(|p| p.contribution.trailing);
-        // Still over: shed oldest-first until it fits. A single piece larger than the
-        // whole budget leaves an empty plan — honestly nothing, never a truncated
-        // fragment that reads as complete.
-        while plan.trailing_tokens() > budget && !plan.pieces.is_empty() {
-            plan.pieces.remove(0);
-        }
-        Fitted::Reduced { plan, wanted }
-    }
-
-    fn expand_within(&mut self, budget: usize) {
-        let mut used = self.system_reserve() + self.trailing_tokens();
-        // Every minimum remains owned before optional details can spend spare
-        // room. Preserve broadcast order for standing sources' trailing KV tier.
-        for piece in &mut self.pieces {
-            let available = budget.saturating_sub(used) + piece.tokens;
-            if let Some(expanded) = GroundingPiece::within(piece.contribution, available) {
-                used = used - piece.tokens + expanded.tokens;
-                *piece = expanded;
-            }
-        }
-    }
-
-    fn trailing_tokens(&self) -> usize {
-        self.pieces
-            .iter()
-            .filter(|p| p.contribution.trailing)
-            .map(|p| p.tokens)
-            .sum()
-    }
-
-    fn system_tokens(&self) -> usize {
-        self.pieces
-            .iter()
-            .filter(|p| !p.contribution.trailing)
-            .map(|p| p.tokens)
-            .sum()
-    }
-
-    fn system_reserve(&self) -> usize {
-        let tokens = self.system_tokens();
-        tokens
-            + if tokens > 0 {
-                LlmDeliberationFaculty::working_context_header_cost()
-            } else {
-                0
-            }
-    }
-
-    /// The trailing standing pieces as keyed blocks for her epoch, in plan order: within an
-    /// epoch an unchanged piece is already said wherever it sits, so no wire order is needed
-    /// for stability (the `stable_prefix_order` sort that lived here, card c119ace7).
-    fn trailing_blocks(&self) -> Vec<epoch_view::Block> {
-        epoch_view::contribution_blocks(self.pieces.iter().filter(|p| p.contribution.trailing).map(|piece| {
-            let mut body = String::with_capacity(piece.tokens * GUARD_CHARS_PER_TOKEN);
-            piece.append_body(&mut body);
-            (piece.contribution.faculty.as_str(), body)
-        }))
-    }
 }
 
 /// The required prompt input cannot be represented in this window.
@@ -9381,6 +9166,7 @@ mod tests {
             let stimulus = ChatMessage::text("user", "operator: do the thing ".repeat(40));
             let prompt = |history: Vec<ChatMessage>| PromptMessages {
                 body: Vec::new(),
+                headroom: 0,
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
@@ -9403,7 +9189,7 @@ mod tests {
             let tight = faculty.fit_messages(prompt(history.clone()), required + total / 2).expect("fits");
             assert!(tight.receipt.dropped_messages > 0 && tight.receipt.kept_messages > 0, "{:?}", tight.receipt);
             assert_eq!(tight.receipt.dropped_messages + tight.receipt.kept_messages, 12);
-            assert!(tight.receipt.dropped_tokens >= (total / 2).saturating_sub(tight.receipt.quantum), "{:?}", tight.receipt);
+            assert!(tight.receipt.dropped_tokens >= total - total / 2, "{:?}", tight.receipt);
 
             // A budget that holds only the stimulus: the whole history goes, and the
             // receipt says emptied (the turn Kimi could not see).
@@ -9419,7 +9205,7 @@ mod tests {
         // next act turns over again, every act a cold prefill), shears a message, or opens
         // on an answer without its question.
         #[test]
-        fn a_turnover_fit_frees_a_chunk_on_whole_messages_and_clean_clusters() {
+        fn a_turnover_fit_frees_her_growth_on_whole_messages_and_clean_clusters() {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let msgs: Vec<ChatMessage> = (0..40)
@@ -9428,6 +9214,7 @@ mod tests {
             let budget = 2000;
             let history = |history: Vec<ChatMessage>| PromptMessages {
                 body: Vec::new(),
+                headroom: 0,
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
@@ -9437,11 +9224,13 @@ mod tests {
                 latest_result: Vec::new(), action_statement: None,
                 room_updates: Vec::new(), ledger: None, notices: Vec::new(),
             };
-            let last_fit = faculty.fit_messages(history(msgs.clone()), budget).expect("a suffix fits").messages;
-            let chunk = (budget / LlmDeliberationFaculty::FRONT_DROP_QUANTUM_DIVISOR).max(512);
+            // Her measured growth per act: what a turnover must leave free.
+            let growth = 300;
+            let fit = PromptMessages { headroom: growth, ..history(msgs.clone()) };
+            let last_fit = faculty.fit_messages(fit, budget).expect("a suffix fits").messages;
             assert!(
-                LlmDeliberationFaculty::messages_cost(&last_fit) + chunk <= budget,
-                "a turnover leaves a chunk free: {} of {budget}",
+                LlmDeliberationFaculty::messages_cost(&last_fit) + growth <= budget,
+                "a turnover leaves her measured growth free: {} of {budget}",
                 LlmDeliberationFaculty::messages_cost(&last_fit)
             );
             let first = last_fit.first().map(|m| m.content_text());
@@ -9450,7 +9239,7 @@ mod tests {
                 "front message must be a whole original message"
             );
             // CLUSTER GRANULARITY (Joel 9/1): the window must open on a clean
-            // opener — when the quantized cut lands on an assistant answer or a
+            // opener — when the cut lands on an assistant answer or a
             // tool-result continuation, the front advances past the fragment.
             let mut clustered: Vec<ChatMessage> = Vec::new();
             for i in 0..30 {
@@ -9496,6 +9285,7 @@ mod tests {
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let prompt = |result: bool| PromptMessages {
                 body: Vec::new(),
+                headroom: 0,
                 result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
@@ -9531,6 +9321,7 @@ mod tests {
             let expected = LlmDeliberationFaculty::messages_cost(&history);
             let prompt = PromptMessages {
                 body: Vec::new(),
+                headroom: 0,
                 result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
@@ -9546,6 +9337,7 @@ mod tests {
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let prompt = PromptMessages {
                 body: Vec::new(),
+                headroom: 0,
                 result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history: vec![
@@ -9638,6 +9430,7 @@ mod tests {
             history.push(ChatMessage::text("user", format!("Full result of code/write {}", "word ".repeat(60))));
             let prompt = || PromptMessages {
                 body: Vec::new(),
+                headroom: 0,
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
@@ -9723,6 +9516,7 @@ mod tests {
             let msg = |role: &str, body: &str| ChatMessage::text(role, body.to_string());
             let of = |history: Vec<ChatMessage>| PromptMessages {
                 body: Vec::new(),
+                headroom: 0,
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
@@ -10333,6 +10127,15 @@ mod tests {
         /// A faculty at `window` whose model answers every act, reporting that it reused the
         /// whole prompt it was sent (as a warm slot does); receipts are saved through `save`.
         fn epoch_faculty(window: u32, acts: usize) -> (LlmDeliberationFaculty, Arc<ScriptedAdapter>, impl Fn(usize, &str)) {
+            let (faculty, adapter, wm) = epoch_faculty_with_memory(window, acts);
+            let save = move |i: usize, text: &str| {
+                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
+                wm.record_receipt_typed(&[], text, None, custody);
+            };
+            (faculty, adapter, save)
+        }
+
+        fn epoch_faculty_with_memory(window: u32, acts: usize) -> (LlmDeliberationFaculty, Arc<ScriptedAdapter>, Arc<crate::cognition::working_memory::WorkingMemory>) {
             let answered = || TextGenerationResponse {
                 usage: UsageMetrics { input_tokens: 1, ..Default::default() },
                 timing: Some(crate::ai::types::GenerationTiming { cached_tokens: u32::MAX, ..Default::default() }),
@@ -10344,11 +10147,7 @@ mod tests {
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
                 .with_model_binding(model_binding(adapter.clone(), Some("epoch-model".into()), window))
                 .with_working_memory(Arc::clone(&wm));
-            let save = move |i: usize, text: &str| {
-                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
-                wm.record_receipt_typed(&[], text, None, custody);
-            };
-            (faculty, adapter, save)
+            (faculty, adapter, wm)
         }
 
         /// The body of the request act `n` sent (everything before the facts and the ask),
@@ -10388,6 +10187,64 @@ mod tests {
             let news: Vec<&str> = second[first.len()..].iter().map(|(_, t)| t.as_str()).collect();
             assert!(news.iter().any(|t| t.contains("RESULT-2")), "the settled result appended: {news:?}");
             assert!(news.iter().any(|t| t.contains("RECALL v2")), "the changed grounding appended: {news:?}");
+        }
+
+        // what this catches: a system head re-rendered because the body grew (Codex on #5210):
+        // the head's grounding took whatever room the conversation left, so every act that
+        // grew the body moved the first bytes of the request and nothing behind them was reused.
+        #[tokio::test]
+        async fn the_whole_request_holds_its_prefix_while_the_body_grows() {
+            let window = 16_384;
+            let (faculty, adapter, wm) = epoch_faculty_with_memory(window, 2);
+            let save = |i: usize, text: String| {
+                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
+                wm.record_receipt_typed(&[], &text, None, custody);
+            };
+            // Two system-side sources larger than the room left over, so their admitted size
+            // is decided by that room: one standing, one ordinary.
+            let list = |name: &str, n: usize| {
+                let parts: Vec<String> = (0..n).map(|i| format!("{name} item {i:04} with a line of ordinary length")).collect();
+                Contribution::context(FacultyId::Custom(name.into()), parts.join("\n"), 0.9, "list").with_parts(parts)
+            };
+            let mut ws = Workspace::new("continue the card");
+            ws.broadcast.push(list("room-kanban", 600).standing_grounding());
+            ws.broadcast.push(list("workspace-map", 600));
+            save(0, "RESULT-0".into());
+            // The pinned result is a cold start's evidence of growth (it joins the body next act).
+            save(1, format!("RESULT-1 {}", "x".repeat(3_000)));
+            // The body grows between the acts by a changed recall: within that growth, so the
+            // epoch holds, and enough that the room left over for the head changes.
+            let recall = |v: &str| Contribution::context(FacultyId::Recall, format!("RECALL {v} {}", "y".repeat(600)), 0.6, "recall").trailing();
+            let mut views = Vec::new();
+            for (act, version) in ["v1", "v2"].into_iter().enumerate() {
+                ws.broadcast.retain(|c| c.faculty != FacultyId::Recall);
+                ws.broadcast.push(recall(version));
+                views.push(faculty.prompt_view(&ws));
+                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
+            }
+            let seen = adapter.seen.lock().expect("recorded request lock");
+            let (first, second) = (&seen[0], &seen[1]);
+            assert!(first.system_prompt.as_deref().is_some_and(|s| s.contains("room-kanban item 0000")));
+            let (h1, h2) = (first.system_prompt.clone().unwrap_or_default(), second.system_prompt.clone().unwrap_or_default());
+            let at = h1.bytes().zip(h2.bytes()).position(|(a, b)| a != b).unwrap_or(h1.len().min(h2.len()));
+            let near = |h: &str| h.get(at.saturating_sub(200)..(at + 200).min(h.len())).unwrap_or("").to_string();
+            assert_eq!(h2, h1, "the head is the epoch's, not the leftover's; first difference at {at}:\n{}\n---\n{}", near(&h1), near(&h2));
+            assert_eq!(
+                second.tools.as_ref().map(|t| t.iter().map(|s| s.name.clone()).collect::<Vec<_>>()),
+                first.tools.as_ref().map(|t| t.iter().map(|s| s.name.clone()).collect::<Vec<_>>()),
+            );
+            let body = views[0].refit.grounding_at + views[0].refit.grounding_len;
+            let said = |r: &TextGenerationRequest| r.messages[..body].iter().map(|m| (m.role.clone(), m.content_text())).collect::<Vec<_>>();
+            assert_eq!(said(second), said(first), "after the head, the second request starts with the first's body");
+            // Not vacuous: a head rendered fresh for the second act's state takes less room.
+            let fresh = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
+                .with_model_binding(model_binding(adapter.clone(), Some("epoch-model".into()), window))
+                .with_working_memory(Arc::clone(&wm));
+            assert_ne!(
+                Some(fresh.prompt_view(&ws).system),
+                second.system_prompt,
+                "rendered fresh for this state the head differs (it takes the room left over): only the binding held it"
+            );
         }
 
         // what this catches: an epoch that outgrows the window instead of turning over, or a
@@ -11043,12 +10900,10 @@ mod tests {
                 .with_context_window(window);
             let before = faculty.prompt_view(&ws);
             // precondition: the fit binds (history was trimmed to the window), or a refit
-            // has nothing to show and this test would pass for the wrong reason. A trimmed fit
-            // leaves under two drop chunks free (`fit_messages`: one past the minimum, rounded).
-            let chunks = 2 * u64::from(window) / LlmDeliberationFaculty::FRONT_DROP_QUANTUM_DIVISOR as u64;
+            // has nothing to show and this test would pass for the wrong reason
             assert!(
                 before.estimated_prompt_tokens as u64 + u64::from(before.completion_reserve)
-                    >= u64::from(window) - chunks,
+                    >= u64::from(window) * 9 / 10,
                 "fixture must fill its window: {} + {} of {window}",
                 before.estimated_prompt_tokens,
                 before.completion_reserve

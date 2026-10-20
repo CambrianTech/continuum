@@ -44,7 +44,10 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 157,412 after card a00ab1a6 deleted the standing benchmark autopilot (no harness).
 // 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
 // 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
-const BASELINE_LINES_OVER: usize = 156_825;
+// 156,582 after the deliberation body became an epoch (cognition/epoch_view.rs): the stability
+// reordering and sticky collapse it superseded were deleted, and the standing grounding plan
+// moved to cognition/grounding_plan.rs.
+const BASELINE_LINES_OVER: usize = 156_582;
 
 pub struct FileSize;
 

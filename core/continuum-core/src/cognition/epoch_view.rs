@@ -10,10 +10,14 @@
 //! ring grew mid-prompt and re-prefilled 17-29k tokens per act; replaying those captures
 //! through an epoch reused 92-95%.
 //!
+//! The epoch also binds the rendered system head and tool surface, inside the grant the head
+//! was admitted with, and each standing source's admitted size: body growth never re-renders
+//! either; only a change in what they say does.
+//!
 //! The epoch turns over, compacting to each source's current rendering, only when the
-//! window's budget says the view no longer fits, or when she acts in another activity room.
-//! Every turnover is a
-//! `context.epoch.turnover` probe with its reason and the characters it reclaimed.
+//! window's budget says the view no longer fits (leaving room for the measured per-act
+//! growth), when she acts in another activity room, or when the head changes. Every turnover
+//! is a `context.epoch.turnover` probe with its reason and the characters it reclaimed.
 //!
 //! A view renders on a copy of the epoch; the faculty commits it only when the model answered
 //! that view. A refused, refitted or failed request leaves her epoch as it was.
@@ -22,18 +26,22 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-use continuum_context::epoch::{self, Epoch, Observed, SourceId};
+use continuum_context::epoch::{self, Epoch, SourceId};
 use uuid::Uuid;
 
 use super::working_memory::RingPart;
 use super::workspace::BurstTurn;
 use crate::ai::types::ChatMessage;
 
-/// One message as the epoch holds it. Shared text: a view renders on a copy of the epoch.
+/// One source item as the epoch holds it: one event per item, so a turnover keeps or retires
+/// each item on its own. Items appended together from one block share a `run` and render as
+/// one message; a later item never joins an earlier run, so a rendered message never changes.
+/// Shared text: a view renders on a copy of the epoch.
 #[derive(Clone, Debug, PartialEq)]
 struct Said {
     role: Arc<str>,
     text: Arc<str>,
+    run: u64,
 }
 
 impl epoch::Block for Said {
@@ -42,11 +50,6 @@ impl epoch::Block for Said {
     }
 }
 
-impl Said {
-    fn message(&self) -> ChatMessage {
-        ChatMessage::text(&*self.role, self.text.to_string())
-    }
-}
 
 /// What one source rendered this act, as one message. A run of same-role turns renders as
 /// one message with an item per turn, so a turn that joins the run appends alone.
@@ -143,6 +146,12 @@ enum Turnover {
     Budget,
     /// She acts in another activity room: its conversation is not this epoch's.
     RoomChanged,
+    /// The head's rendering changed (policy, identity, its grounding's content).
+    HeadChanged,
+    /// The offered tool surface changed.
+    ToolsChanged,
+    /// The model (and with it the template and tokenizer) changed.
+    ModelChanged,
 }
 
 impl Turnover {
@@ -150,8 +159,24 @@ impl Turnover {
         match self {
             Self::Budget => "budget",
             Self::RoomChanged => "room_changed",
+            Self::HeadChanged => "head_changed",
+            Self::ToolsChanged => "tools_changed",
+            Self::ModelChanged => "model_changed",
         }
     }
+}
+
+/// The rendered system head and tool surface an epoch was opened with (Codex on #5210): the
+/// head renders inside the grant it was admitted with, so body growth never re-renders it.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct Head {
+    pub system: Arc<str>,
+    /// The offered tool surface's identity (names and priced schema size).
+    pub tools: u64,
+    /// The model the request names; its chat template and tokenizer come with it.
+    pub model: Arc<str>,
+    /// Tokens the head's grounding context was admitted with, from the act's one allocation.
+    pub grant: usize,
 }
 
 /// One persona's user-side view, held across acts.
@@ -161,24 +186,62 @@ pub(super) struct EpochView {
     /// The fingerprint of what each source item last placed in this epoch, or of what a
     /// turnover elided: an item whose rendering matches it is already said.
     known: HashMap<SourceId, u64>,
-    /// The source of each message of a compacted render, until the fit says which survive.
-    compacted: Vec<SourceId>,
+    /// The events of each message of a compacted render, until the fit says which survive.
+    compacted: Vec<Vec<epoch::Event<Said>>>,
+    next_run: u64,
+    head: Option<Head>,
+    /// Each standing source's admitted units, by its content fingerprint: an unchanged source
+    /// renders at its admitted size for the epoch's life, whatever room is left over.
+    standing: HashMap<String, (u64, Option<usize>)>,
+    /// Tokens the body grew by on the last act that appended to a live epoch: the measured
+    /// room a turnover leaves for the next act.
+    growth: usize,
+    // TODO(fable, follow-up to #5210 with Codex): one epoch across her activities. Source ids
+    // carry their room, access scope is bound separately from attention, and a scope change
+    // that must remove data turns over at once; until then another room starts a new epoch.
     /// The activity room this epoch's conversation belongs to.
     room: Option<Uuid>,
 }
 
 impl Default for EpochView {
     fn default() -> Self {
-        Self { epoch: Epoch::new(0, Vec::new()), known: HashMap::new(), compacted: Vec::new(), room: None }
+        Self {
+            epoch: Epoch::new(0, Vec::new()),
+            known: HashMap::new(),
+            compacted: Vec::new(),
+            next_run: 0,
+            head: None,
+            standing: HashMap::new(),
+            growth: 0,
+            room: None,
+        }
     }
+}
+
+/// Consecutive events of one run as one message, with the events it carries.
+fn messages<'a>(events: impl Iterator<Item = &'a epoch::Event<Said>>) -> Vec<(ChatMessage, Vec<epoch::Event<Said>>)> {
+    let mut runs: Vec<(String, Vec<epoch::Event<Said>>)> = Vec::new();
+    for e in events {
+        match runs.last_mut() {
+            Some((text, group)) if group.last().is_some_and(|g| g.text.run == e.text.run) => {
+                text.push('\n');
+                text.push_str(&e.text.text);
+                group.push(e.clone());
+            }
+            _ => runs.push((e.text.text.to_string(), vec![e.clone()])),
+        }
+    }
+    runs.into_iter()
+        .filter_map(|(text, group)| Some((ChatMessage::text(&*group.first()?.text.role, text), group)))
+        .collect()
 }
 
 impl EpochView {
     fn render(&self) -> Vec<ChatMessage> {
-        self.epoch.render().map(Said::message).collect()
+        messages(self.epoch.events().iter()).into_iter().map(|(m, _)| m).collect()
     }
 
-    fn start_next(&mut self, reason: Turnover, persona: &str) {
+    fn probe_turnover(&self, reason: Turnover, persona: &str) {
         crate::probe!(
             class = "context.epoch.turnover",
             persona = %persona,
@@ -186,14 +249,18 @@ impl EpochView {
             epoch = self.epoch.id(),
             superseded_chars = self.epoch.superseded_chars(),
             epoch_chars = self.epoch.chars(),
-            "her view starts a new epoch: the next request re-prefills from the system head"
+            "her view starts a new epoch: the next request re-prefills from where it changed"
         );
-        self.epoch = Epoch::new(self.epoch.id() + 1, Vec::new());
-        self.known.clear();
-        self.compacted.clear();
     }
 
-    /// Append what each block says that this epoch has not; returns nothing when nothing changed.
+    /// A new epoch with nothing carried: everything is re-admitted.
+    fn start_next(&mut self, reason: Turnover, persona: &str) {
+        self.probe_turnover(reason, persona);
+        *self = Self { epoch: Epoch::new(self.epoch.id() + 1, Vec::new()), next_run: self.next_run, ..Self::default() };
+    }
+
+    /// Append what each block says that this epoch has not, one event per item; returns one
+    /// message per block that appended (its items together), nothing when nothing changed.
     fn observe_blocks(&mut self, blocks: &[Block]) -> Vec<ChatMessage> {
         let mut appended = Vec::new();
         for block in blocks {
@@ -206,41 +273,48 @@ impl EpochView {
                     known.is_none() || (known != Some(fingerprint(text)) && known != alternative)
                 })
                 .collect();
-            let Some(((first, _), _)) = unsaid.split_first() else { continue };
-            let said = Said {
-                role: block.role.into(),
-                text: unsaid.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n").into(),
-            };
-            if let Observed::Appended { .. } = self.epoch.observe(first.clone(), said.clone()) {
-                appended.push(said.message());
+            if unsaid.is_empty() {
+                continue;
             }
-            for (source, text) in unsaid {
+            let run = self.next_run;
+            self.next_run += 1;
+            for (source, text) in &unsaid {
+                self.epoch.observe(source.clone(), Said { role: block.role.into(), text: text.as_str().into(), run });
                 self.known.insert(source.clone(), fingerprint(text));
             }
+            appended.push(ChatMessage::text(block.role, unsaid.iter().map(|(_, t)| t.as_str()).collect::<Vec<_>>().join("\n")));
         }
         appended
     }
 
-    /// This act's body as the epoch: `history[..body_len]` (the canonical render of `body`)
+    /// This act's body as the epoch: `history[..body.len()]` (the canonical render of `body`)
     /// becomes the epoch with this act's news appended. Returns the epoch's length in messages.
+    /// `cost` prices the news, which a live epoch records as its measured growth.
     pub(super) fn materialize(
         &mut self,
         history: &mut Vec<ChatMessage>,
         body: &[Block],
         room: Uuid,
+        cost: impl Fn(&ChatMessage) -> usize,
         persona: &str,
     ) -> usize {
         if self.room.is_some_and(|old| old != room) {
             self.start_next(Turnover::RoomChanged, persona);
         }
         self.room = Some(room);
+        let live = !self.epoch.events().is_empty();
         let appended = self.observe_blocks(body);
+        let grown: usize = appended.iter().map(&cost).sum();
+        if live {
+            self.growth = self.growth.max(grown);
+        }
         crate::probe!(
             class = "context.epoch.append",
             persona = %persona,
             epoch = self.epoch.id(),
             appended_messages = appended.len(),
-            appended_chars = appended.iter().map(|m| m.content_text().len()).sum::<usize>(),
+            appended_tokens = grown,
+            measured_growth_tokens = self.growth,
             epoch_chars = self.epoch.chars(),
             superseded_chars = self.epoch.superseded_chars(),
             "this act's news appended to her view; everything before it is the last act's prefix"
@@ -251,11 +325,16 @@ impl EpochView {
         len
     }
 
+    /// The most a live epoch has grown by in one act: the room a turnover leaves.
+    pub(super) fn growth(&self) -> usize {
+        self.growth
+    }
+
     /// The window cannot hold the epoch: compact it to each source's current rendering, in the
-    /// order those renderings arrived, dropping sources `body` no longer offers. Replaces
+    /// order those renderings arrived, retiring each item `body` no longer offers. Replaces
     /// `history[..epoch_len]` and returns the compacted length with the saved results' compact
     /// alternatives (index into history), which the fit may substitute. [`Self::keep`] then
-    /// records which messages the fit kept.
+    /// records which messages the fit kept. The head and standing grants are re-admitted.
     pub(super) fn turn_over(
         &mut self,
         history: &mut Vec<ChatMessage>,
@@ -263,54 +342,92 @@ impl EpochView {
         body: &[Block],
         persona: &str,
     ) -> (usize, Vec<(usize, ChatMessage)>) {
-        crate::probe!(
-            class = "context.epoch.turnover",
-            persona = %persona,
-            reason = Turnover::Budget.as_str(),
-            epoch = self.epoch.id(),
-            superseded_chars = self.epoch.superseded_chars(),
-            epoch_chars = self.epoch.chars(),
-            "her view no longer fits its budget: compacted to each source's latest version"
-        );
+        self.probe_turnover(Turnover::Budget, persona);
         let offered: HashMap<&SourceId, Option<&String>> = body
             .iter()
             .flat_map(|b| b.items.iter().map(move |(s, _)| (s, b.alternative.as_ref())))
             .collect();
         for source in self.epoch.live_sources() {
             if !offered.contains_key(&source) {
-                self.epoch.retire(source.clone(), Said { role: "".into(), text: "".into() });
+                self.epoch.retire(source.clone(), Said { role: "".into(), text: "".into(), run: 0 });
                 self.known.remove(&source);
             }
         }
         self.epoch = self.epoch.turn_over(self.epoch.id() + 1);
-        self.compacted = self.epoch.events().iter().map(|e| e.source.clone()).collect();
-        let pointers = self
-            .compacted
+        self.head = None;
+        self.standing.clear();
+        let (render, groups): (Vec<ChatMessage>, Vec<_>) = messages(self.epoch.events().iter()).into_iter().unzip();
+        let pointers = groups
             .iter()
             .enumerate()
-            .filter_map(|(index, source)| match offered.get(source) {
-                Some(Some(alternative)) => Some((index, ChatMessage::text("user", alternative.as_str()))),
+            .filter_map(|(index, group)| match group.as_slice() {
+                [single] => offered.get(&single.source).copied().flatten().map(|alt| (index, ChatMessage::text("user", alt.as_str()))),
                 _ => None,
             })
             .collect();
-        let render = self.render();
+        self.compacted = groups;
         let len = render.len();
         history.splice(..epoch_len, render);
         (len, pointers)
     }
 
     /// The fit kept `survivors`, after dropping the first `dropped` compacted messages. The
-    /// epoch becomes exactly what was sent; the dropped sources stay known, so an unchanged
-    /// one does not come back on the next act.
+    /// epoch becomes exactly what was sent; the dropped items stay known, so an unchanged one
+    /// does not come back on the next act. A survivor the fit replaced is a result collapsed
+    /// to its pointer, held under that result's source.
     pub(super) fn keep<'a>(&mut self, dropped: usize, survivors: impl IntoIterator<Item = &'a ChatMessage>) {
         let mut next = Epoch::new(self.epoch.id(), Vec::new());
-        for (source, message) in self.compacted.iter().skip(dropped).zip(survivors) {
+        for (group, message) in std::mem::take(&mut self.compacted).into_iter().skip(dropped).zip(survivors) {
             let text = message.content_text();
-            self.known.insert(source.clone(), fingerprint(&text));
-            next.observe(source.clone(), Said { role: message.role.as_str().into(), text: text.into() });
+            match group.as_slice() {
+                [single] if *single.text.text != *text => {
+                    self.known.insert(single.source.clone(), fingerprint(&text));
+                    next.observe(single.source.clone(), Said { text: text.into(), ..single.text.clone() });
+                }
+                _ => group.into_iter().for_each(|e| {
+                    next.observe(e.source, e.text);
+                }),
+            }
         }
         self.epoch = next;
-        self.compacted.clear();
+    }
+
+    /// The head this epoch renders inside: its grant bounds the head, never the body's leftover.
+    pub(super) fn head_grant(&self) -> Option<usize> {
+        self.head.as_ref().map(|h| h.grant)
+    }
+
+    /// Bind this act's rendered head. Within an epoch it renders inside the same grant, so a
+    /// difference is a real change of policy, identity, grounding, tools or model: the binding
+    /// is invalidated once, with its reason, and the body (already fitted) carries into the
+    /// next epoch unchanged.
+    pub(super) fn bind_head(&mut self, head: Head, persona: &str) {
+        let reason = match &self.head {
+            None => None,
+            Some(old) if old.model != head.model => Some(Turnover::ModelChanged),
+            Some(old) if old.tools != head.tools => Some(Turnover::ToolsChanged),
+            Some(old) if old.system != head.system => Some(Turnover::HeadChanged),
+            Some(_) => return,
+        };
+        if let Some(reason) = reason {
+            self.probe_turnover(reason, persona);
+            let mut next = Epoch::new(self.epoch.id() + 1, Vec::new());
+            for e in self.epoch.events() {
+                next.observe(e.source.clone(), e.text.clone());
+            }
+            self.epoch = next;
+        }
+        self.head = Some(head);
+    }
+
+    /// The units this epoch admitted a standing source at, while its content is unchanged.
+    pub(super) fn admitted(&self, source: &str, content: u64) -> Option<Option<usize>> {
+        self.standing.get(source).filter(|(fp, _)| *fp == content).map(|(_, units)| *units)
+    }
+
+    /// Record a standing source's admitted units for the epoch.
+    pub(super) fn admit(&mut self, source: &str, content: u64, units: Option<usize>) {
+        self.standing.insert(source.to_owned(), (content, units));
     }
 
     /// Blocks priced after the fit (standing grounding): append their news; returns the
@@ -318,6 +435,21 @@ impl EpochView {
     pub(super) fn append(&mut self, blocks: &[Block]) -> Vec<ChatMessage> {
         self.observe_blocks(blocks)
     }
+}
+
+/// The offered tool surface's identity: its names and the priced size of their schemas.
+pub(super) fn tools_fingerprint<'a>(names: impl Iterator<Item = &'a str>, tokens: usize) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    names.for_each(|n| n.hash(&mut h));
+    tokens.hash(&mut h);
+    h.finish()
+}
+
+/// A standing source's content identity: what it says, never how much room was left for it.
+pub(super) fn content_fingerprint(content: &str, parts: &[String]) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (content, parts).hash(&mut h);
+    h.finish()
 }
 
 #[cfg(test)]
@@ -336,7 +468,7 @@ mod tests {
     fn act(view: &mut EpochView, room: Uuid, body: &[Block]) -> (Vec<ChatMessage>, usize) {
         let mut history: Vec<ChatMessage> = body.iter().map(Block::message).collect();
         history.push(ChatMessage::text("user", "[fact] flickers every act"));
-        let len = view.materialize(&mut history, body, room, "test");
+        let len = view.materialize(&mut history, body, room, |m| m.content_text().len(), "test");
         (history, len)
     }
 
@@ -391,6 +523,53 @@ mod tests {
         view.keep(1, &survivors);
         let (next, n) = act(&mut view, room, &body);
         assert_eq!(texts(&next[..n]), ["[result #1 — collapsed]", "board v2"], "nothing dropped or collapsed returns");
+    }
+
+    // what this catches: a merged run of turns kept and retired as ONE event under its first
+    // turn (Codex on #5210): when the window slides past the first turn but still offers the
+    // later ones, a turnover dropped the later turns while marking them already said.
+    #[test]
+    fn turnover_keeps_the_turns_a_sliding_window_still_offers() {
+        let mut view = EpochView::default();
+        let room = Uuid::new_v4();
+        let t = |s: &str| (SourceId(format!("turn/{s}")), format!("Ana: {s}"));
+        act(&mut view, room, &[Block::turns("user", vec![t("a"), t("b"), t("c")])]);
+        let body = [Block::turns("user", vec![t("b"), t("c"), t("d")])];
+        let (mut history, len) = act(&mut view, room, &body);
+        let (compacted, _) = view.turn_over(&mut history, len, &body, "test");
+        let kept = texts(&history[..compacted]).join("\n");
+        assert_eq!(kept, "Ana: b\nAna: c\nAna: d", "the turns still offered survive the turnover");
+    }
+
+    // what this catches: a head change that goes unrecorded, or that rewrites the body that
+    // was already fitted and sent with it.
+    #[test]
+    fn a_changed_head_starts_one_new_epoch_and_keeps_the_body() {
+        let mut view = EpochView::default();
+        let (_, n) = act(&mut view, Uuid::new_v4(), &[block("ring/#1", "r1")]);
+        let head = |system: &str| Head { system: system.into(), tools: 1, model: "m".into(), grant: 10 };
+        view.bind_head(head("identity v1"), "test");
+        let (id, body) = (view.epoch.id(), view.render());
+        view.bind_head(head("identity v1"), "test");
+        assert_eq!(view.epoch.id(), id, "an unchanged head is no turnover");
+        view.bind_head(head("identity v2"), "test");
+        assert_eq!(view.epoch.id(), id + 1, "a changed head is a new epoch");
+        assert_eq!(texts(&view.render()), texts(&body[..n]), "the fitted body carries over unchanged");
+    }
+
+    // what this catches: turnover headroom measured from a cold start's whole first render
+    // (which would leave no body), or a standing source re-admitted when only room changed.
+    #[test]
+    fn growth_is_measured_on_a_live_epoch_and_an_unchanged_source_keeps_its_size() {
+        let mut view = EpochView::default();
+        let room = Uuid::new_v4();
+        act(&mut view, room, &[block("ring/#1", "a long first render")]);
+        assert_eq!(view.growth(), 0, "a cold start's first render is not growth");
+        act(&mut view, room, &[block("ring/#1", "a long first render"), block("ring/#2", "r2")]);
+        assert_eq!(view.growth(), 2, "the second act appended two chars");
+        view.admit("room-kanban", 7, Some(3));
+        assert_eq!(view.admitted("room-kanban", 7), Some(Some(3)));
+        assert_eq!(view.admitted("room-kanban", 8), None, "a changed source is admitted afresh");
     }
 
     // what this catches: one room's conversation riding into another room's prompt.

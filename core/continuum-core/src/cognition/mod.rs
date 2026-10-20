@@ -61,6 +61,7 @@ pub mod deliberation_budget;
 pub mod deliberation_parse;
 pub mod deliberation_prompt;
 mod epoch_view;
+mod grounding_plan;
 pub mod dispatch_listener;
 pub mod activity_gate;
 pub mod turn_ingress;
