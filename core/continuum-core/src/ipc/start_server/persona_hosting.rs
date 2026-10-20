@@ -182,8 +182,7 @@ pub(super) fn start_persona_host(
             &crate::modules::persona_instance_manager::resolve_continuum_root(),
         );
         RecipeExperienceSource::grid_citizens(&overlay_dir)
-            .unwrap_or_else(|_| RecipeExperienceSource::grid_citizens_embedded())
-        // unwrap_or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
+            .unwrap_or_else(|_| RecipeExperienceSource::grid_citizens_embedded()) // unwrap_or_else: a refused overlay was already reported by the resident read above; the embedded activities stand
     };
     runtime.register(Arc::new(
         crate::modules::grid_allocator::GridAllocatorModule::new(
