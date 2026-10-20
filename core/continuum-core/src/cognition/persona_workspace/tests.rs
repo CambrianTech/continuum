@@ -849,6 +849,34 @@
         state
     }
 
+    // Serving-edge rehome must preserve a resident's binding when its assignment is corrupt.
+    #[tokio::test]
+    async fn rehome_requires_a_readable_local_assignment() {
+        let root = tempfile::tempdir().expect("root");
+        let _native = crate::paths::NativeHomeOverride::install(root.path());
+        let registry = PersonaWorkspaceRegistry::new();
+        let id = Uuid::new_v4();
+        let cycle = registry.register_from_cfg(cfg_for(id)).expect("resident");
+        let (original, original_model) = cycle.current_model_route().expect("binding");
+        let airc = crate::context::citizen_home_path(root.path(), crate::identity::IdentityKind::Persona, None, "Ivar");
+        let home = crate::persona::home::PersonaHome::from_root(airc.parent().expect("parent").to_path_buf());
+        let remote = crate::persona::PersonaModelOverride::new_remote("remote/model", None, 1, Uuid::new_v4().to_string());
+        remote.write(&home).expect("remote override");
+        let replacement: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+        for corrupt in [false, true] {
+            if corrupt { std::fs::write(home.model_override_json(), b"{").expect("corrupt"); }
+            assert_eq!(registry.re_home_all_at(root.path(), replacement.clone(), Some("new/local".into()), 4096), 0);
+            let (actual, model) = cycle.current_model_route().expect("preserved");
+            assert!(Arc::ptr_eq(&original, &actual));
+            assert_eq!(model, original_model);
+        }
+        crate::persona::PersonaModelOverride::new("local/model", None, 2).write(&home).expect("local override");
+        assert_eq!(registry.re_home_all_at(root.path(), replacement.clone(), Some("new/local".into()), 4096), 1);
+        let (actual, model) = cycle.current_model_route().expect("rebound");
+        assert!(Arc::ptr_eq(&replacement, &actual));
+        assert_eq!(model.as_deref(), Some("new/local"));
+    }
+
     fn cfg_for(persona_id: Uuid) -> PersonaBrainConfig {
         PersonaBrainConfig {
             persona_id,

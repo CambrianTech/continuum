@@ -51,7 +51,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // latency fill cap, its shed preview and prefill_rate::latency_fill_cap were deleted.
 // 156,160 after the system head's context render moved to cognition/context_render.rs.
 // 155,945 after the epoch's contract tests moved to llm_deliberation_faculty/tests/verdicts/epoch.rs.
-const BASELINE_LINES_OVER: usize = 155_945;
+// 155,830 measured on the merge with canary (canary's own cuts, 156,710, plus this branch's).
+const BASELINE_LINES_OVER: usize = 155_830;
 
 pub struct FileSize;
 
