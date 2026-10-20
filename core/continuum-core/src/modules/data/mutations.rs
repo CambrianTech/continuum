@@ -1,4 +1,6 @@
 //! Public storage mutations and their vector-corpus invalidation boundary.
+//! Acknowledged writes detach the backend corpus. Detached writes after caller
+//! cancellation and direct adapter writes still require their own invalidation.
 use super::{DataState, require_public_collection, require_record_fields};
 use crate::orm::types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID};
 use serde_json::{json, Value};
@@ -30,12 +32,12 @@ impl DataState {
             metadata: RecordMetadata::default(),
         };
 
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
         let result = adapter.create(record).await;
         self.log_slow_query("create", &collection, start.elapsed().as_millis());
 
         if result.success {
-            self.vector_cache.invalidate(handle, &collection);
+            self.vector_cache.invalidate(&scope, &collection);
             self.publish_event(
                 &collection,
                 "created",
@@ -58,13 +60,13 @@ impl DataState {
     ) -> Result<StorageResult<DataRecord>, String> {
         require_public_collection(&collection)?;
         require_record_fields(&data)?;
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
         let result = adapter
             .update(&collection, &id, data, increment_version)
             .await;
 
         if result.success {
-            self.vector_cache.invalidate(handle, &collection);
+            self.vector_cache.invalidate(&scope, &collection);
             self.publish_event(
                 &collection,
                 "updated",
@@ -84,11 +86,11 @@ impl DataState {
         id: UUID,
     ) -> Result<StorageResult<bool>, String> {
         require_public_collection(&collection)?;
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
         let result = adapter.delete(&collection, &id).await;
 
         if result.success {
-            self.vector_cache.invalidate(handle, &collection);
+            self.vector_cache.invalidate(&scope, &collection);
             self.publish_event(
                 &collection,
                 "deleted",
@@ -114,11 +116,11 @@ impl DataState {
         }
         let op_count = operations.len();
 
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
         let result = adapter.batch(operations).await;
 
         // Batch operations can touch several collections in this store.
-        self.vector_cache.invalidate_scope(handle);
+        self.vector_cache.invalidate_scope(&scope);
         // Publish batch event on success
         if result.success {
             self.publish_event(
@@ -142,9 +144,9 @@ impl DataState {
         collection: &str,
     ) -> Result<StorageResult<bool>, String> {
         require_public_collection(collection)?;
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
         let result = adapter.truncate(collection).await;
-        self.vector_cache.invalidate(handle, collection);
+        self.vector_cache.invalidate(&scope, collection);
         Ok(result)
     }
 
@@ -153,9 +155,9 @@ impl DataState {
         &self,
         handle: &str,
     ) -> Result<StorageResult<crate::orm::adapter::ClearAllResult>, String> {
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
         let result = adapter.clear_all().await;
-        self.vector_cache.invalidate_scope(handle);
+        self.vector_cache.invalidate_scope(&scope);
         Ok(result)
     }
 

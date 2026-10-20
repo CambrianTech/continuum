@@ -227,7 +227,11 @@ async fn test_vector_search_basic() {
 #[tokio::test]
 async fn test_vector_cache_invalidation() {
     let module = DataModule::new();
-    let (_tmp, db_path) = test_db_path("vector_cache");
+    let home = tempfile::tempdir().unwrap();
+    let _home = crate::test_env::HomeGuard::set(home.path()).await;
+    let db_path = "@node".to_string();
+    let alias = module.state.resolve_handle(&db_path).expect("resolve isolated node store");
+    assert_ne!(db_path, alias);
 
     // Create schema
     let schema = CollectionSchema {
@@ -323,7 +327,7 @@ async fn test_vector_cache_invalidation() {
     for operation in ["delete", "batch", "truncate", "clear"] {
         module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before create");
         let created = module.state.create_record(
-            &db_path, "test_cache".into(), Some("mutation-target".into()),
+            &alias, "test_cache".into(), Some("mutation-target".into()),
             json!({"embedding": vec![1.0; 384]}),
         ).await.expect("create through mutation owner");
         assert!(created.success, "{created:?}");
@@ -331,7 +335,15 @@ async fn test_vector_cache_invalidation() {
             &db_path, "test_cache", vec![1.0; 384], 10, 0.0, true,
         ).await.expect("warm corpus");
         assert!(warm.results.iter().any(|hit| hit.id == "mutation-target"));
-        let updated = module.state.update_record(&db_path, "test_cache".into(), "mutation-target".into(),
+        let alias_stats = module.state.vector_stats(&alias, "test_cache").await.expect("alias stats");
+        assert_eq!(alias_stats.cached_vectors, warm.corpus_size);
+        assert!(module.state.invalidate_vector_cache(&alias, "test_cache").await.expect("alias invalidation").cache_invalidated);
+        assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("sentinel stats").cached_vectors, 0);
+        module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before index");
+        assert!(module.state.index_vector(&alias, "test_cache", "mutation-target".into(), vec![1.0; 384]).await.expect("alias index").success);
+        assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("indexed stats").cached_vectors, 0);
+        module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.0, true).await.expect("warm before update");
+        let updated = module.state.update_record(&alias, "test_cache".into(), "mutation-target".into(),
             json!({"embedding": vec![-1.0; 384]}), false).await.expect("update embedding");
         assert!(updated.success);
         let changed = module.state.vector_search(&db_path, "test_cache", vec![1.0; 384], 10, 0.5, true)
@@ -339,15 +351,15 @@ async fn test_vector_cache_invalidation() {
         assert!(changed.results.iter().all(|hit| hit.id != "mutation-target"));
         match operation {
             "batch" => {
-                let result = module.state.batch_operations(&db_path, vec![crate::orm::types::BatchOperation {
+                let result = module.state.batch_operations(&alias, vec![crate::orm::types::BatchOperation {
                     operation_type: crate::orm::types::BatchOperationType::Delete,
                     collection: "test_cache".into(), id: Some("mutation-target".into()), data: None,
                 }]).await.expect("batch delete");
                 assert!(result.success, "{result:?}");
             }
-            "delete" => assert!(module.state.delete_record(&db_path, "test_cache".into(), "mutation-target".into()).await.expect("delete").success),
-            "truncate" => assert!(module.state.truncate_collection(&db_path, "test_cache").await.expect("truncate").success),
-            "clear" => assert!(module.state.clear_all_collections(&db_path).await.expect("clear").success),
+            "delete" => assert!(module.state.delete_record(&alias, "test_cache".into(), "mutation-target".into()).await.expect("delete").success),
+            "truncate" => assert!(module.state.truncate_collection(&alias, "test_cache").await.expect("truncate").success),
+            "clear" => assert!(module.state.clear_all_collections(&alias).await.expect("clear").success),
             _ => unreachable!("fixture operation"),
         }
         let after = module.state.vector_search(

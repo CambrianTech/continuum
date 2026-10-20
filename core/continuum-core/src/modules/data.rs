@@ -109,6 +109,7 @@ fn require_public_collection(collection: &str) -> Result<(), String> {
 // Vector Search Types and Cache
 // ============================================================================
 
+mod adapters;
 mod mutations;
 mod vector_corpus;
 mod vector_search;
@@ -160,7 +161,7 @@ pub struct DataState {
     adapters: DashMap<String, Arc<dyn StorageAdapter>>,
     /// Mutex only used during adapter initialization (one-time setup)
     init_lock: Mutex<()>,
-    /// Each handle/collection owns a detachable, fallibly initialized corpus cell.
+    /// Each resolved backend/collection owns a detachable corpus cell.
     vector_cache: crate::runtime::shared_compute::SharedCompute,
     /// Paginated query state: queryId -> per-cursor mutex.
     ///
@@ -411,75 +412,7 @@ impl DataState {
         ))
     }
 
-    /// Get or create adapter for the given caller handle.
-    ///
-    /// Two-step resolution:
-    ///   1. `resolve_handle(handle)` → opaque backend connection string
-    ///   2. Route connection string to concrete adapter (Postgres / SQLite /
-    ///      future). Adapters are cached keyed by connection string so two
-    ///      handles resolving to the same backend share one pool.
-    pub(crate) async fn get_adapter(
-        &self,
-        handle: &str,
-    ) -> Result<Arc<dyn StorageAdapter>, String> {
-        let connection_string = self.resolve_handle(handle)?;
 
-        // Check cache (keyed by resolved connection string, not by handle —
-        // different handles can point to the same backend).
-        if let Some(adapter) = self.adapters.get(&connection_string) {
-            return Ok(adapter.clone());
-        }
-
-        let _guard = self.init_lock.lock().await;
-
-        if let Some(adapter) = self.adapters.get(&connection_string) {
-            return Ok(adapter.clone());
-        }
-
-        // Scale pool size based on role. Main DB (full pool) vs per-persona
-        // (small pool). Detection is post-resolution, on the connection
-        // string, since that's where the backend shape is visible.
-        let is_main_db = connection_string.contains("database/main.db")
-            || connection_string.contains("database\\main.db")
-            || connection_string.starts_with("postgres://")
-            || connection_string.starts_with("postgresql://");
-        let max_connections = if is_main_db { 20 } else { 4 };
-
-        let config = AdapterConfig {
-            connection_string: connection_string.clone(),
-            namespace: None,
-            timeout_ms: 30_000,
-            max_connections,
-        };
-
-        let adapter: Arc<dyn StorageAdapter> = if connection_string.starts_with("postgres://")
-            || connection_string.starts_with("postgresql://")
-        {
-            log_info!(
-                "data",
-                "get_adapter",
-                "Creating PostgresAdapter for handle='{}' (resolved)",
-                handle
-            );
-            let mut pg = PostgresAdapter::new();
-            pg.initialize(config).await?;
-            Arc::new(pg)
-        } else {
-            log_info!(
-                "data",
-                "get_adapter",
-                "Creating SqliteAdapter for handle='{}' → {}",
-                handle,
-                connection_string
-            );
-            let mut sqlite = SqliteAdapter::new();
-            sqlite.initialize(config).await?;
-            Arc::new(sqlite)
-        };
-
-        self.adapters.insert(connection_string, adapter.clone());
-        Ok(adapter)
-    }
 }
 
 /// Phase 1 typed-IPC: deserialize raw IPC params into the typed struct
@@ -1236,7 +1169,7 @@ impl DataState {
         use std::time::Instant;
         let start = Instant::now();
 
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
         // Update the record's embedding field
         let update_data = json!({ "embedding": embedding });
@@ -1244,7 +1177,7 @@ impl DataState {
         let result = adapter.update(collection, &id, update_data, false).await;
 
         // Invalidate vector cache for this collection since we modified an embedding
-        self.vector_cache.invalidate(handle, collection);
+        self.vector_cache.invalidate(&scope, collection);
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
@@ -1269,7 +1202,7 @@ impl DataState {
         use std::time::Instant;
         let start = Instant::now();
 
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
         // Get total record count
         let total_query = StorageQuery {
@@ -1306,7 +1239,7 @@ impl DataState {
         }
 
         // Check cache status
-        let cached_count = self.vector_cache.get::<Vec<CachedVector>>(handle, collection)
+        let cached_count = self.vector_cache.get::<Vec<CachedVector>>(&scope, collection)
             .map_or(0, |vectors| vectors.len());
 
         let total_ms = start.elapsed().as_millis();
@@ -1339,7 +1272,8 @@ impl DataState {
         collection: &str,
     ) -> Result<VectorCacheInvalidation, String> {
         require_public_collection(collection)?;
-        let removed = self.vector_cache.invalidate(handle, collection);
+        let scope = self.resolve_handle(handle)?;
+        let removed = self.vector_cache.invalidate(&scope, collection);
 
         log_info!(
             "data",
@@ -1400,7 +1334,7 @@ impl DataState {
             );
         }
 
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
         // Query all records from collection
         let query = StorageQuery {
@@ -1496,7 +1430,7 @@ impl DataState {
         }
 
         // Invalidate vector cache since we modified embeddings
-        self.vector_cache.invalidate(handle, collection);
+        self.vector_cache.invalidate(&scope, collection);
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
