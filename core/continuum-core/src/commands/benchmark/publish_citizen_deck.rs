@@ -1,29 +1,5 @@
 use super::*;
 
-// Descriptor only — the CONSTRUCTOR comes from WorkModule::commands(), which
-// holds the airc registry this command needs. This is the dep-holding half of
-// the descriptor/constructor pair (`register_stateless_command!` is for
-// Default-constructible commands; this one is not).
-crate::register_command!(BenchmarkDispatch);
-
-/// Publish through the same caller authority that created the activity and its cards.
-pub(super) async fn publish_citizen_deck(
-    author: &airc_lib::Airc,
-    room: uuid::Uuid,
-    benchmark: &str,
-    cards: &[String],
-) -> Result<airc_core::EventId, airc_lib::AircError> {
-    let text = format!(
-        "{} cards are OPEN on this board ({}): {}. Whoever is free may claim one with \
-         claim_task <id>; the claim stages the work in YOUR workspace. Work it there; \
-         when your fix is verified green say `work/state <id> done` — that is what fires \
-         your grade. One card at a time; talk here when you are stuck or when you can \
-         review a teammate's diff.",
-        cards.len(), benchmark, cards.join(", ")
-    );
-    crate::persona::airc_citizen::publish_text_in_room(author, room, &text).await
-}
-
 /// Inputs to `benchmark/swe-grade`.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -141,7 +117,7 @@ impl ActionCommand for BenchmarkSweGrade {
 }
 
 /// Paths that are NEVER part of a solution — the ONE list, shared by every reading of
-/// "her work" ([`workspace_candidate_diff`] here and `agent::solve::workspace_patch`).
+/// "her work" ([`workspace_candidate_diff_from`] and every staged-workspace reader).
 ///
 /// Two kinds, and the second is a SECURITY boundary, not tidiness:
 ///
@@ -162,9 +138,8 @@ impl ActionCommand for BenchmarkSweGrade {
 ///    the curriculum. A credential could have been written into training data as
 ///    "I changed: .airc/identity.key".
 ///
-/// That divergence is exactly what [`workspace_candidate_diff`]'s own doc warned about — "a
-/// second inline `git diff` would drift on the exclude rules" — so the rule now lives in ONE
-/// place and both readings consume it ([[the-compression-principle]]).
+/// A second inline `git diff` drifts on the exclude rules, so the rule lives in ONE place
+/// and every reading consumes it ([[the-compression-principle]]).
 pub(crate) const SOLUTION_PATH_EXCLUDES: &[&str] = &[
     // Agent/substrate scope — never authored by the solver, and credential-bearing.
     ":(exclude,glob)**/.airc/**",
@@ -179,16 +154,6 @@ pub(crate) const SOLUTION_PATH_EXCLUDES: &[&str] = &[
     ":(exclude,glob)**/node_modules/**",
     ":(exclude,glob)**/.DS_Store",
 ];
-
-/// The candidate diff of a solver workspace — the ONE reading of "her work"
-/// (grade_swe's candidate arm and agent/solve's attempt-patch receipt both
-/// call this; a second inline `git diff` would drift on the exclude rules).
-/// `diff HEAD` (not bare `diff`) so STAGED edits count as her work too, and
-/// [`SOLUTION_PATH_EXCLUDES`] keeps substrate-authored files out — see its doc
-/// for the two incidents that make the `.airc` entry load-bearing.
-pub(crate) fn workspace_candidate_diff(ws: &str) -> Result<String, CommandError> {
-    workspace_candidate_diff_from(ws, None)
-}
 
 /// Her work is everything since the instance's BASE COMMIT — committed,
 /// staged, and unstaged alike. The old `diff HEAD` collector read only the

@@ -481,11 +481,10 @@ mod tests {
         // must be made only of verbs, so a recipe can be re-authored without a compiler.
         // The verbs an authored benchmark round is allowed to be made of. A new step
         // means a new verb, added here on purpose — never a Rust call the recipe cannot
-        // make. (S4a: the round is authored; dispatch remains the Rust door beside it.)
+        // make.
         // coursework/round is the same round with its own card source (ONE-RESIDENT §10.4).
         const ROUND_VERBS: &[&str] = &[
-            "benchmark/import", "coursework/import", "benchmark/round-open", "work/create",
-            "benchmark/round-track", "activity/invite", "chat/send",
+            "benchmark/import", "coursework/import", "work/create", "activity/invite", "chat/send",
         ];
         for recipe in RecipeExperienceSource::embedded() {
             if recipe.purpose == "benchmark/round" || recipe.purpose == "coursework/round" {

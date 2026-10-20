@@ -213,11 +213,6 @@ impl ShellSession {
             )
             .await;
             custody.completed = true;
-            // A finished command may have written anywhere under its cwd (a build, a
-            // `git apply`, a `sed -i`). Announce it for EVERY execution, handed back or
-            // not — observers re-read the workspace on this event instead of
-            // polling it with git on a clock (card f860e59c).
-            super::super::workspace_events::note_written(&cwd);
             })).await;
             if let Err(error) = result {
                 if let Ok(mut state) = state.lock() {

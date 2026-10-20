@@ -321,8 +321,5 @@ impl ActionCommand for BenchmarkFetch {
     }
 }
 
-crate::register_stateless_command!(BenchmarkRuns);
-
-crate::register_stateless_command!(BenchmarkRounds);
 
 crate::register_stateless_command!(BenchmarkFetch);
