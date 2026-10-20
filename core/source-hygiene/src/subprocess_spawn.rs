@@ -40,6 +40,7 @@ pub const ANSWERED_BY_A_LIBRARY: &[(&str, &str)] = &[
 ];
 
 /// Every `Command::new(` in production code on 2026-09-12 (canary 48fbbfd44). May only fall.
+// Re-measured on canary in CI (2026-10-20) after the column-zero split; see the commit.
 pub const BASELINE_SPAWN_SITES: usize = 122;
 
 /// Per-program baselines for [`ANSWERED_BY_A_LIBRARY`] on the same day. May only fall.

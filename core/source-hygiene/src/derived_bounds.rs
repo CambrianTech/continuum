@@ -122,32 +122,6 @@ const CONST_PREFIXES: &[&str] = &[
 pub struct DerivedBounds;
 
 impl DerivedBounds {
-    /// The file's PRODUCTION half, cut at the first COLUMN-ZERO `#[cfg(test)]`.
-    ///
-    /// This rule cannot use [`SourceFile::production`], and the reason is the motivating
-    /// defect itself. The shared split cuts at the first `#[cfg(test)]` anywhere,
-    /// including an indented test-only helper inside an `impl` — and
-    /// `cognition/llm_deliberation_faculty.rs` has one at line 2275, three hundred lines
-    /// ABOVE the `30 × 500` clip at 2496. Scanned through the shared split, this guard
-    /// reports zero on the very line it exists for: silence that looks like health.
-    ///
-    /// A test MOD sits at file scope by convention, so column zero is the honest cut. The
-    /// cost is that a `#[cfg(test)]` helper function mid-file is scanned as production —
-    /// erring toward noise here rather than toward silence, deliberately, because this
-    /// rule has already been shown a case where silence was wrong.
-    fn production_lines<'a>(file: &'a SourceFile) -> impl Iterator<Item = (usize, &'a str)> + 'a {
-        let end = file
-            .raw
-            .lines()
-            .position(|l| l.starts_with("#[cfg(test)]"))
-            .unwrap_or(usize::MAX); // no test mod in this file = every line is production
-        file.raw
-            .lines()
-            .enumerate()
-            .take_while(move |(i, _)| *i < end)
-            .map(|(i, l)| (i + 1, l))
-    }
-
     /// Is `token` a SCREAMING_SNAKE constant name? At least one underscore, so a type
     /// (`Duration`) or a single-letter generic is never mistaken for one.
     fn is_constant(token: &str) -> bool {
@@ -283,7 +257,7 @@ impl SourceRule for DerivedBounds {
         let lines: Vec<&str> = file.raw.lines().collect();
         let live = LIVE_PATHS.iter().any(|p| file.rel.starts_with(p));
         let mut out = Vec::new();
-        for (line_no, line) in Self::production_lines(file) {
+        for (line_no, line) in file.production_lines() {
             let (code, _) = split_code_and_comment(line);
             if Self::justified(&lines, line_no - 1) {
                 continue;
@@ -395,10 +369,10 @@ mod tests {
 
     /// What this catches: the guard going blind to the exact line it was written for.
     ///
-    /// `cognition/llm_deliberation_faculty.rs` gates a test-only helper `#[cfg(test)]`
-    /// INSIDE an `impl`, three hundred lines above the clip. Scanned through the shared
-    /// production split — which cuts at the first `#[cfg(test)]` anywhere — this rule
-    /// reports nothing at all on that file. Column zero is the honest cut.
+    /// `cognition/llm_deliberation_faculty.rs` gated a test-only helper `#[cfg(test)]`
+    /// INSIDE an `impl`, above the clip. A production split that cut at the first
+    /// `#[cfg(test)]` anywhere reported nothing below it; the shared split cuts at column
+    /// zero, where a test mod lives.
     #[test]
     fn a_mid_file_cfg_test_helper_does_not_blind_the_scan() {
         let raw = "impl Faculty {\n    #[cfg(test)]\n    fn helper() {}\n}\n\
@@ -406,14 +380,14 @@ mod tests {
                    #[cfg(test)]\nmod tests {}\n";
         let file = SourceFile {
             rel: "cognition/llm_deliberation_faculty.rs".into(),
-            // The shared split stops at the INDENTED attribute, losing the clip entirely.
-            production: "impl Faculty {".into(),
+            production: crate::production_half(raw),
             raw: raw.into(),
         };
         let found = DerivedBounds.check(&file);
         assert_eq!(found.len(), 1, "the clip below an indented #[cfg(test)] must still be seen");
         assert!(found[0].source.contains("TARGET_SECONDS * CONSERVATIVE_TOKENS_PER_S"));
         assert_eq!(found[0].line, 5);
+        assert!(!file.production.contains("mod tests"), "the column-zero test mod ends production");
     }
 
     /// What this catches: the two predicates that decide whether this rule is useful or

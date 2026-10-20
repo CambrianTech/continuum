@@ -45,15 +45,10 @@ pub struct SourceFile {
     /// Path relative to `src/`, forward-slashed — the form a rule's allow-list and
     /// a failure message should both use.
     pub rel: String,
-    /// The PRODUCTION half: everything before the file's first `#[cfg(test)]` line.
+    /// The PRODUCTION half: everything before the file's first column-zero `#[cfg(test)]`.
     ///
-    /// This is an APPROXIMATION and callers must know which way it errs. Test mods
-    /// conventionally sit at the end of a file, so this captures production exactly
-    /// in the common case. Where a file gates a helper `#[cfg(test)]` mid-file, the
-    /// split lands early and the rule sees LESS production code than exists — it
-    /// under-reports, never over-reports. A hygiene rule that under-reports lets a
-    /// violation slip; one that over-reports cries wolf and gets deleted. Erring
-    /// toward the first is the deliberate choice.
+    /// A test-only helper gated mid-file is scanned as production: this errs toward a
+    /// little noise, never toward the silence an early cut produced (see [`production_half`]).
     pub production: String,
     /// The WHOLE file, test mods included.
     ///
@@ -205,10 +200,16 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
 /// inner `#![cfg(test)]` on its first code line: the whole file is test code. Without
 /// this, every `mod tests;` split read as all-production and charged its unwraps and
 /// spawns to the ratchets (card 0af5d5ec, 2026-10-18).
+///
+/// The cut is a COLUMN-ZERO `#[cfg(test)]`: a test mod sits at file scope. An indented
+/// `#[cfg(test)]` (a test-only helper inside an `impl`) is not the end of production: cut
+/// there, `cognition/llm_deliberation_faculty.rs` hid ~9,000 production lines from every
+/// ratchet but `derived_bounds`, which had already cut at column zero for this reason
+/// (found 2026-10-20 when deleting one such helper surfaced 4 hidden unwraps).
 pub fn production_half(src: &str) -> String {
     match src.lines().position(|l| {
         let code = split_code_and_comment(l).0;
-        code.contains("#[cfg(test)]") || code.trim_start().starts_with("#![cfg(test)]")
+        code.starts_with("#[cfg(test)]") || code.trim_start().starts_with("#![cfg(test)]")
     }) {
         Some(line_idx) => src.lines().take(line_idx).collect::<Vec<_>>().join("\n"),
         None => src.to_string(),
