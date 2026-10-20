@@ -46,4 +46,4 @@ mod tests;
 mod forge_module;
 pub use forge_module::*;
 mod stays;
-pub use stays::*;
+use stays::*;

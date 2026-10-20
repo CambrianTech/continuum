@@ -30,7 +30,6 @@ use crate::runtime;
 mod validate_embedding_model;
 pub use validate_embedding_model::*;
 mod llama_cpp_backend;
-pub use llama_cpp_backend::*;
 
 #[cfg(test)]
 mod tests;

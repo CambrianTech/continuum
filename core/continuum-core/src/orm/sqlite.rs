@@ -31,9 +31,8 @@ use super::types::{
 mod open_connection;
 pub use open_connection::*;
 mod do_ensure_schema;
-pub use do_ensure_schema::*;
+use do_ensure_schema::*;
 mod sqlite_adapter;
-pub use sqlite_adapter::*;
 
 #[cfg(test)]
 mod tests;

@@ -40,7 +40,7 @@ pub use max_output_lines_per_execution::*;
 mod shell_session;
 pub use shell_session::*;
 mod run_shell_command;
-pub use run_shell_command::*;
+pub(crate) use run_shell_command::*;
 
 #[cfg(test)]
 mod tests;

@@ -34,13 +34,11 @@ use crate::commands::benchmark::SOLUTION_PATH_EXCLUDES as PATCH_EXCLUDES;
 mod default_max_acts;
 pub use default_max_acts::*;
 mod agent_solve;
-pub use agent_solve::*;
 mod with;
-pub use with::*;
+pub(crate) use with::*;
 mod agent_solve_2;
-pub use agent_solve_2::*;
 mod lesson_task_excerpt_chars;
-pub use lesson_task_excerpt_chars::*;
+use lesson_task_excerpt_chars::*;
 
 #[cfg(test)]
 mod tests;

@@ -1,5 +1,4 @@
 #![cfg(test)]
-use super::*;
 
     // ════════════════════════════════════════════════════════════════
     // Concurrency stress tests for the query-cursor surface — gated

@@ -1,4 +1,3 @@
-use super::*;
 
 /// `SIGKILL` the pid. Best-effort: a race where it already exited is fine.
 #[cfg(unix)]

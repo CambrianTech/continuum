@@ -28,7 +28,7 @@ pub use dataset_manifest::*;
 mod dataset_service;
 pub use dataset_service::*;
 mod turn_to_example;
-pub use turn_to_example::*;
+use turn_to_example::*;
 
 #[cfg(test)]
 mod tests;

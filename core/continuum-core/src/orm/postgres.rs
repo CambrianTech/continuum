@@ -32,11 +32,10 @@ use super::types::{
 mod format_pg_error;
 pub use format_pg_error::*;
 mod build_where_clause;
-pub use build_where_clause::*;
+use build_where_clause::*;
 mod postgres_adapter;
-pub use postgres_adapter::*;
 mod ensure_table_exists_pg;
-pub use ensure_table_exists_pg::*;
+use ensure_table_exists_pg::*;
 
 #[cfg(test)]
 mod tests;

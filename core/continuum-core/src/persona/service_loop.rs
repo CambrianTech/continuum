@@ -52,11 +52,11 @@ use uuid::Uuid;
 mod remains;
 pub use remains::*;
 mod serve_persona_loop_inner;
-pub use serve_persona_loop_inner::*;
+use serve_persona_loop_inner::*;
 mod beat_outcome;
 pub use beat_outcome::*;
 mod burst_fingerprint;
-pub use burst_fingerprint::*;
+use burst_fingerprint::*;
 
 #[cfg(test)]
 mod tests;

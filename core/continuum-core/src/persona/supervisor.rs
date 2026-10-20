@@ -53,7 +53,7 @@ pub use persona_adapter_factory::*;
 mod materialize_adapters;
 pub use materialize_adapters::*;
 mod build_persona_system_prompt;
-pub use build_persona_system_prompt::*;
+pub(in crate::persona) use build_persona_system_prompt::*;
 
 #[cfg(test)]
 mod tests;

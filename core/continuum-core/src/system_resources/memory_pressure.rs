@@ -77,7 +77,6 @@ use crate::{clog_info, clog_warn};
 mod poll_interval;
 pub use poll_interval::*;
 mod memory_pressure_monitor;
-pub use memory_pressure_monitor::*;
 
 #[cfg(test)]
 mod tests;

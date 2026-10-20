@@ -12,7 +12,6 @@ pub use latest_submission::*;
 mod next_after_submission;
 pub use next_after_submission::*;
 mod work_submission;
-pub use work_submission::*;
 
 #[cfg(test)]
 mod tests;

@@ -27,9 +27,8 @@ pub use grader::*;
 mod benchmark_dispatch_params;
 pub use benchmark_dispatch_params::*;
 mod prepare_gym_cards;
-pub use prepare_gym_cards::*;
+pub(crate) use prepare_gym_cards::*;
 mod benchmark_dispatch;
-pub use benchmark_dispatch::*;
 mod publish_citizen_deck;
 pub use publish_citizen_deck::*;
 mod resolve_solver_dir;
@@ -39,7 +38,6 @@ pub use fold_run_card::*;
 mod scan_workspace_artifact_cards;
 pub use scan_workspace_artifact_cards::*;
 mod benchmark_fetch;
-pub use benchmark_fetch::*;
 
 #[cfg(test)]
 mod tests;

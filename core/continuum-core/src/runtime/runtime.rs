@@ -35,6 +35,5 @@ pub use runtime::*;
 mod service_profile;
 pub use service_profile::*;
 mod the_receipt_survives_every_observer_going_away;
-pub use the_receipt_survives_every_observer_going_away::*;
 mod recording_module;
-pub use recording_module::*;
+use recording_module::*;

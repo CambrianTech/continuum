@@ -20,7 +20,7 @@ use super::types::{SettleOutcome, SettleStep};
 mod tick_deadline;
 pub use tick_deadline::*;
 mod settle_to_outcome;
-pub use settle_to_outcome::*;
+use settle_to_outcome::*;
 mod settle_step;
 pub use settle_step::*;
 

@@ -40,7 +40,6 @@ use tokio::sync::{OnceCell, RwLock};
 mod dmr_provider_id;
 pub use dmr_provider_id::*;
 mod block;
-pub use block::*;
 mod a_i_provider_module;
 pub use a_i_provider_module::*;
 

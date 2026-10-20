@@ -40,9 +40,7 @@ pub use cause::*;
 mod arbiter;
 pub use arbiter::*;
 mod workspace_cycle;
-pub use workspace_cycle::*;
 mod workspace_cycle_2;
-pub use workspace_cycle_2::*;
 
 #[cfg(test)]
 mod tests;

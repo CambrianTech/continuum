@@ -31,7 +31,6 @@ use std::sync::Arc;
 mod voice_response_field_responder_ids;
 pub use voice_response_field_responder_ids::*;
 mod voice_module;
-pub use voice_module::*;
 
 #[cfg(test)]
 mod tests;

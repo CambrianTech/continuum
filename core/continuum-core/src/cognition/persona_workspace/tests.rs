@@ -15,8 +15,7 @@
     use crate::persona::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
 
 mod she_is_told_when_her_hands_move_and_only_then;
-pub use she_is_told_when_her_hands_move_and_only_then::*;
 mod final_checkpoint_drains_admitted_periodic_writer_before_ack;
-pub use final_checkpoint_drains_admitted_periodic_writer_before_ack::*;
+use final_checkpoint_drains_admitted_periodic_writer_before_ack::*;
 mod gated_grounding;
-pub use gated_grounding::*;
+use gated_grounding::*;

@@ -126,7 +126,7 @@ pub(super) fn unsupported_harness(instance: &SweInstance, name: &str) -> String 
 /// `run_tests` for either harness. A script harness runs the marked command in the
 /// checkout (bounded by `SUBPROCESS_CEILING`) and reads stdout+stderr with the
 /// named parser; an id the log never names reads as failed.
-pub async fn run_harness(
+pub(crate) async fn run_harness(
     repo_dir: &Path,
     harness: &Harness,
     ids: &[String],

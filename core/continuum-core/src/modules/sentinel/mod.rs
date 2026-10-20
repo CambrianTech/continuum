@@ -41,7 +41,6 @@ use crate::runtime::params::Params;
 mod global_sentinel;
 pub use global_sentinel::*;
 mod sentinel_module;
-pub use sentinel_module::*;
 
 #[cfg(test)]
 mod tests;

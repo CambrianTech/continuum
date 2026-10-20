@@ -66,4 +66,4 @@ pub use acting_hands::*;
 mod root_acting_workspace;
 pub use root_acting_workspace::*;
 mod own_speech_persisted;
-pub use own_speech_persisted::*;
+pub(crate) use own_speech_persisted::*;

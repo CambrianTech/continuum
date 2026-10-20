@@ -66,9 +66,8 @@ use uuid::Uuid;
 mod citizen_commons_room;
 pub use citizen_commons_room::*;
 mod persona_airc_runtime;
-pub use persona_airc_runtime::*;
 mod persona_airc_runtime_2;
-pub use persona_airc_runtime_2::*;
+pub(crate) use persona_airc_runtime_2::*;
 
 #[cfg(test)]
 mod tests;

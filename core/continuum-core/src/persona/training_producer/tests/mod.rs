@@ -547,12 +547,9 @@
     }
 
 mod part_2;
-pub use part_2::*;
+pub(crate) use part_2::*;
 mod part_3;
-pub use part_3::*;
+use part_3::*;
 mod part_4;
-pub use part_4::*;
 mod part_5;
-pub use part_5::*;
 mod part_6;
-pub use part_6::*;

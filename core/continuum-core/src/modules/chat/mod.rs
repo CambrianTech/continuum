@@ -60,7 +60,7 @@ use types::{ChatPollParams, ChatPollResult, ChatSendParams, ChatSendResult, CHAT
 mod chat_data_handle;
 pub use chat_data_handle::*;
 mod chat_module;
-pub use chat_module::*;
+use chat_module::*;
 
 #[cfg(test)]
 mod tests;

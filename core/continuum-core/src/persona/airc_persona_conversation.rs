@@ -56,7 +56,7 @@ use super::durable_history::event_from_row;
 mod polled;
 pub use polled::*;
 mod inbox_capacity;
-pub use inbox_capacity::*;
+pub(crate) use inbox_capacity::*;
 
 #[cfg(test)]
 mod tests;

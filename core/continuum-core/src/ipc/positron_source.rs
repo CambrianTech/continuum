@@ -90,7 +90,7 @@ use crate::experience::{Experience, ExperienceSource, Member, RecipeExperienceSo
 use crate::runtime::MessageBus;
 
 mod rather;
-pub use rather::*;
+pub(crate) use rather::*;
 mod chat_projection;
 pub use chat_projection::*;
 

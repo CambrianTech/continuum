@@ -38,7 +38,7 @@ use crate::inference::llama_server::LanePlacement;
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 mod default_eval_set;
-pub use default_eval_set::*;
+pub(crate) use default_eval_set::*;
 mod spawn_gene_eval_lane;
 pub use spawn_gene_eval_lane::*;
 mod sweep_orphan_eval_roots;
@@ -46,17 +46,16 @@ pub use sweep_orphan_eval_roots::*;
 mod eval_task_result;
 pub use eval_task_result::*;
 mod cognition_eval;
-pub use cognition_eval::*;
 mod format_exam_lesson;
 pub use format_exam_lesson::*;
 mod fork_eval_cycle_waiting;
 pub use fork_eval_cycle_waiting::*;
 mod infra_verdict;
-pub use infra_verdict::*;
+use infra_verdict::*;
 mod run_pass;
-pub use run_pass::*;
+use run_pass::*;
 mod eval_settle;
-pub use eval_settle::*;
+use eval_settle::*;
 
 #[cfg(test)]
 mod tests;

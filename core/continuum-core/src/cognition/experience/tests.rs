@@ -711,9 +711,12 @@
                  that is the thing to reconsider.",
                 callers.len()
             );
-            // `rel` is forward-slashed on every OS, so this compare holds on Windows.
+            // The settle module, whichever of its files holds the driver: splitting
+            // `settle.rs` by owner moves the call without changing who makes it. `rel` is
+            // forward-slashed on every OS, so this compare holds on Windows.
             assert!(
-                callers[0] == "cognition/act_observe/settle.rs",
+                callers[0] == "cognition/act_observe/settle.rs"
+                    || callers[0].starts_with("cognition/act_observe/settle/"),
                 "the one caller must be the settle driver — the only place a \
                  SettleOutcome is born; found {}",
                 callers[0]

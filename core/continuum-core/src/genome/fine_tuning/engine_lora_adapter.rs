@@ -49,9 +49,9 @@ pub use governed_training_free::*;
 mod train_status;
 pub use train_status::*;
 mod move_adapter;
-pub use move_adapter::*;
+use move_adapter::*;
 mod engine_lora_fine_tuner;
-pub use engine_lora_fine_tuner::*;
+use engine_lora_fine_tuner::*;
 
 #[cfg(test)]
 mod tests;

@@ -50,17 +50,11 @@ pub mod physics;
 pub mod room;
 mod slot;
 
-pub use animation::AnimationConfig;
 pub use avatar::*;
 pub use birther::birth_scene_for_identity;
 pub use builder::*;
-pub use builder_api::SceneBuilder;
-pub use description::*;
 pub use instantiate::{
     build_scene_from_description, spawn_global_lights, InstantiateParams, SceneInstance,
 };
-pub use library::resolve_scene;
-pub use object::*;
-pub use physics::*;
 pub use room::{scene_model_path, select_scene_for_identity, RoomConfig};
 pub use slot::*;

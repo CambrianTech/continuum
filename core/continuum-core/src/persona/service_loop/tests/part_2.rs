@@ -1,5 +1,4 @@
 #![cfg(test)]
-use super::*;
 
     /// what this catches: a remote peer's message must render with their roster
     /// display name (`Joel: ...`), not the raw peer UUID. Regression for the live
