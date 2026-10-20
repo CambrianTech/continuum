@@ -80,7 +80,7 @@ foreach ($entry in $saved.tasks) {{
 // Reuse the installer's exact protected-loader policy, compiled into this
 // reader. Never dot-source a mutable checkout or probe an unchecked command.
 pub(super) fn bootstrap_policy_script() -> Result<String, String> {
-    let source = include_str!("../../../../../tools/scripts/lib/windows-prepared.ps1");
+    let source = include_str!("../../../../../../../tools/scripts/lib/windows-prepared.ps1");
     let mut script = String::from("$ErrorActionPreference='Stop';\n");
     for name in [
         "ConvertTo-CoreImagePath",
