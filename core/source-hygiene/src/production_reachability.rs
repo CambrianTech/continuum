@@ -83,7 +83,7 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
 /// cost days. If your new type trips this, the fix is to WIRE it or to not land it
 /// yet; a type with no caller is not finished work.
 #[cfg(test)]
-const BASELINE_UNWIRED: usize = 60;
+const BASELINE_UNWIRED: usize = 59;
 
 pub struct ProductionReachability;
 
