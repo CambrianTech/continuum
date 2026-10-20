@@ -338,7 +338,7 @@ mod tests {
     /// scans the merge commit, the ratchet's slack is shared across branches in flight,
     /// and a branch can be green alone and red on the merge. Same property the unwrap
     /// ratchet documents.
-    const BASELINE_UNDERIVED_BOUNDS: usize = 158;
+    const BASELINE_UNDERIVED_BOUNDS: usize = 157;
 
     /// What this catches: a new bound landing on a live path as a constant, with nothing
     /// measured behind it and no line saying why a constant is right there.

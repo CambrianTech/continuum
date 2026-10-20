@@ -73,7 +73,7 @@ const SHAPES: &[&str] = &[
 // modules (`#![cfg(test)]`: contracts/chain_tests.rs, orm/derive_test.rs) were read as
 // production; `production_half` now reads them as test code.
 // 2,119 measured on the merge with canary (2,124 there, this branch's removals on top).
-const BASELINE_UNJUSTIFIED: usize = 2_119;
+const BASELINE_UNJUSTIFIED: usize = 2_116;
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).
