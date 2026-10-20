@@ -464,45 +464,13 @@ mod tests {
             ),
         ];
 
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut offenders = Vec::new();
-        let mut stack = vec![root.clone()];
-        while let Some(dir) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                    continue;
-                }
-                if path.extension().is_none_or(|e| e != "rs") {
-                    continue;
-                }
-                let Ok(src) = std::fs::read_to_string(&path) else {
-                    continue;
-                };
-                // Strip line comments + doc comments so prose can neither fake
-                // nor trip the check.
-                let code: String = src
-                    .lines()
-                    .filter(|l| !l.trim_start().starts_with("//"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                if !code.contains("impl GpuMonitor for") {
-                    continue;
-                }
-                let rel = path
-                    .strip_prefix(&root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                if !SANCTIONED.iter().any(|(f, _)| rel == *f) {
-                    offenders.push(rel);
-                }
-            }
-        }
+        // Comments are stripped (`source_tree`) so prose can neither fake nor trip the check.
+        let offenders: Vec<String> = crate::source_tree::crate_sources()
+            .into_iter()
+            .filter(|f| f.code().contains("impl GpuMonitor for"))
+            .filter(|f| !SANCTIONED.iter().any(|(sanctioned, _)| f.rel == *sanctioned))
+            .map(|f| f.rel)
+            .collect();
 
         assert!(
             offenders.is_empty(),

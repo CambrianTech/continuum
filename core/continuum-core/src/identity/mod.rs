@@ -320,26 +320,7 @@ mod loose_id_guard {
     ];
 
     fn rs_files() -> Vec<(String, String)> {
-        fn walk(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
-            let Ok(entries) = std::fs::read_dir(dir) else {
-                return;
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    walk(&path, root, out);
-                } else if path.extension().is_some_and(|e| e == "rs") {
-                    if let Ok(text) = std::fs::read_to_string(&path) {
-                        let rel = path.strip_prefix(root).unwrap_or(&path);
-                        out.push((rel.to_string_lossy().replace('\\', "/"), text));
-                    }
-                }
-            }
-        }
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-        let mut out = Vec::new();
-        walk(&root, &root, &mut out);
-        out
+        crate::source_tree::crate_sources().into_iter().map(|f| (f.rel, f.text)).collect()
     }
 
     /// `  pub persona_id: String,` / `  room_id: Option<String>,` — field decls only.

@@ -679,39 +679,10 @@
         // ([[the-same-bug-at-two-sites-is-a-missing-constraint]]).
         #[test]
         fn the_lived_turn_producer_has_exactly_one_production_caller_the_settle_driver() {
-            // `//`-prefixed content is dropped so prose naming the function — this
-            // very comment, and the doc on `record_lived_turn` — can never read as a
-            // call. Crude on purpose: a `//` inside a string literal could only ever
-            // HIDE a call from us, and a hidden call still trips the count if real.
-            fn code_only(src: &str) -> String {
-                src.lines()
-                    .map(|l| match l.find("//") {
-                        Some(i) => &l[..i],
-                        None => l,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
-            fn walk(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
-                let Ok(entries) = std::fs::read_dir(dir) else {
-                    return;
-                };
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_dir() {
-                        walk(&path, out);
-                    } else if path.extension().is_some_and(|e| e == "rs") {
-                        if let Ok(text) = std::fs::read_to_string(&path) {
-                            out.push((path, text));
-                        }
-                    }
-                }
-            }
-            let mut files = Vec::new();
-            walk(
-                &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-                &mut files,
-            );
+            // Production code only (`source_tree`): prose naming the function — this
+            // very comment, and the doc on `record_lived_turn` — never reads as a call,
+            // and neither does a test module, inline or moved to a sibling file.
+            let files = crate::source_tree::crate_sources();
             assert!(
                 !files.is_empty(),
                 "the source walk found nothing — the guard \
@@ -719,14 +690,13 @@
             );
 
             let mut callers: Vec<String> = Vec::new();
-            for (path, src) in &files {
-                // This file DEFINES it and its own tests exercise it — neither is a
-                // production call site.
-                if path.ends_with("cognition/experience.rs") {
+            for file in &files {
+                // This file DEFINES it — not a production call site.
+                if file.rel == "cognition/experience.rs" {
                     continue;
                 }
-                if code_only(src).contains("record_lived_turn(") {
-                    callers.push(path.display().to_string());
+                if file.production().contains("record_lived_turn(") {
+                    callers.push(file.rel.clone());
                 }
             }
 
@@ -741,10 +711,9 @@
                  that is the thing to reconsider.",
                 callers.len()
             );
-            // Compare path COMPONENTS: a display string carries `\` on Windows, so a
-            // string `ends_with` with `/` failed there with the one right caller.
+            // `rel` is forward-slashed on every OS, so this compare holds on Windows.
             assert!(
-                std::path::Path::new(&callers[0]).ends_with("cognition/act_observe/settle.rs"),
+                callers[0] == "cognition/act_observe/settle.rs",
                 "the one caller must be the settle driver — the only place a \
                  SettleOutcome is born; found {}",
                 callers[0]
