@@ -84,9 +84,9 @@ pub(crate) use genome::gene_stage_name;
 pub use genome::{engine_accepts_train_dir, engine_train_dir, GenomeInPlace};
 use genome::{engine_help_lists_train_dir, ENGINE_TRAIN_DIR};
 mod engine_install;
-pub(crate) use engine_install::{
-    engine_override, installed_engine_commit, lane_runs_installed_engine,
-};
+#[cfg(windows)]
+pub(crate) use engine_install::engine_override;
+pub(crate) use engine_install::{installed_engine_commit, lane_runs_installed_engine};
 pub use engine_install::{
     engine_stale, warm_build_jobs_for_memory, WARM_BUILD_FIRST_JOB_BYTES, WARM_BUILD_JOB_BYTES,
     WARM_BUILD_MIN_FREE_BYTES, WARM_BUILD_RESERVE_BYTES, WARM_BUILD_UNCAPPED_FREE_BYTES,
@@ -116,7 +116,7 @@ pub(crate) use progress::{
 
 mod slot_work;
 pub(crate) use slot_work::{
-    in_flight_slot, slot_advanced, slot_work, slot_work_of, InFlightSlot, InFlightSlotGuard,
+    in_flight_slot, slot_advanced, slot_work, slot_work_of, InFlightSlotGuard,
     SlotWork,
 };
 

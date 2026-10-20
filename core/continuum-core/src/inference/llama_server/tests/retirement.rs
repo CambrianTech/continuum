@@ -1,5 +1,6 @@
 //! Retirement regression fixtures.
 #![cfg(test)]
+#[cfg(windows)]
 use super::*;
 // Regression for #4069: failed signalling and unknown wait must not free
 // pages while the actual owned process remains alive. Generation-bound receipts
