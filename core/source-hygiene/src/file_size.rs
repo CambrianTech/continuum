@@ -49,7 +49,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 133,731 after #5225 split eight files just over 1,000 lines by owner.
 // 57,268 after #5228 split the 59 remaining oversized files into child modules.
 // 57,131 after launch_gate, models and benchmark_dispatch were decomposed.
-const BASELINE_LINES_OVER: usize = 57_131;
+// 54,053 after start_server, serve_persona_loop_inner, voice_module, launch_gate, models and
+// benchmark_dispatch were decomposed by responsibility (#5234-#5237).
+const BASELINE_LINES_OVER: usize = 54_053;
 
 pub struct FileSize;
 
