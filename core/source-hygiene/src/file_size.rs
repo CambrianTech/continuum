@@ -44,7 +44,7 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 157,412 after card a00ab1a6 deleted the standing benchmark autopilot (no harness).
 // 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
 // 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
-const BASELINE_LINES_OVER: usize = 156_825;
+const BASELINE_LINES_OVER: usize = 156_800;
 
 pub struct FileSize;
 

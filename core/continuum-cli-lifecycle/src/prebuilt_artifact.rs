@@ -15,6 +15,8 @@
 use serde::Deserialize;
 
 use crate::deploy_provenance::sha_matches;
+use std::path::Path;
+use std::process::Stdio;
 
 /// Cooperating consumers hold the shared ledger lease for their entire command.
 pub const CONSUMER_LEASE_PROTOCOL: u32 = 1;
@@ -509,9 +511,103 @@ pub fn request_superseded(waiting_on: &str, now_requested: Option<&str>) -> Opti
     }
 }
 
+/// What a prebuilt artifact stamped `stamp` must be, for the checkout at `head`: the
+/// checkout's build key (CI publishes at key commits), or the stamp itself when the stamp's
+/// own build key IS that key. The second case is a core built locally at a commit above the
+/// key (a docs- or baseline-only commit): the same build inputs, so the same core. Without
+/// it, every local deploy after such a commit refused as a false mismatch (#5210 on the M5,
+/// 10-19: stamped 29a474d34, key 9f97bc775; card 98c0ae23).
+pub fn prebuilt_expectation(
+    cwd: &Path,
+    git_dir: Option<&std::ffi::OsStr>,
+    head: &str,
+    stamp: &str,
+) -> (String, &'static str) {
+    let (key, source) = checkout_build_key(cwd, git_dir, head);
+    if sha_matches(stamp, &key) {
+        return (key, source);
+    }
+    let (stamp_key, stamp_source) = checkout_build_key(cwd, git_dir, stamp);
+    if stamp_source.starts_with("build key") && sha_matches(&stamp_key, &key) {
+        (stamp.to_string(), "built at a commit above this checkout's build key (same build inputs)")
+    } else {
+        (key, source)
+    }
+}
+
+/// `head`'s build key in the checkout at `cwd` (the newest commit at or before it touching a
+/// [`BUILD_INPUTS`] path), with where the answer came from; HEAD itself when git cannot say.
+pub fn checkout_build_key(cwd: &Path, git_dir: Option<&std::ffi::OsStr>, head: &str) -> (String, &'static str) {
+    let args = build_key_log_args(head);
+    let mut cmd = std::process::Command::new("git");
+    cmd.current_dir(cwd).args(&args).env_remove("GIT_DIR").stdin(Stdio::null());
+    if let Some(git_dir) = git_dir {
+        cmd.env("GIT_DIR", git_dir);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if key.is_empty() {
+                (head.to_string(), "git HEAD of this checkout (no build key found)")
+            } else {
+                (key, "build key of this checkout (newest commit touching a build input)")
+            }
+        }
+        _ => (head.to_string(), "git HEAD of this checkout (build key unreadable)"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: card 98c0ae23 — a core built LOCALLY at a docs- or baseline-only
+    // commit above the build key was refused as a false DEPLOY MISMATCH (#5210 on the M5,
+    // 10-19: stamped 29a474d34, key 9f97bc775), while a stamp whose build inputs differ
+    // must still refuse.
+    #[test]
+    fn a_local_build_above_the_key_is_the_keys_core_but_a_source_change_is_not() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path();
+        let git = |args: &[&str]| -> String {
+            let out = std::process::Command::new("git")
+                .current_dir(repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"])
+                .env_remove("GIT_DIR")
+                .args(args)
+                .output()
+                .expect("git runs");
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        git(&["init", "-q"]);
+        std::fs::create_dir_all(repo.join("core")).expect("mkdir");
+        std::fs::write(repo.join("core/lib.rs"), "// core").expect("write");
+        git(&["add", "."]);
+        git(&["commit", "-qm", "core change"]);
+        let key = git(&["rev-parse", "HEAD"]);
+        std::fs::write(repo.join("README.md"), "docs only").expect("write");
+        git(&["add", "."]);
+        git(&["commit", "-qm", "docs only"]);
+        let head = git(&["rev-parse", "HEAD"]);
+
+        let (ci, _) = prebuilt_expectation(repo, None, &head, &key);
+        assert!(sha_matches(&ci, &key), "a CI artifact at the key is expected as the key");
+        let (local, source) = prebuilt_expectation(repo, None, &head, &head);
+        assert!(sha_matches(&local, &head), "a local build at the docs-only HEAD is accepted: {source}");
+
+        std::fs::write(repo.join("core/lib.rs"), "// core changed").expect("write");
+        git(&["add", "."]);
+        git(&["commit", "-qm", "core change 2"]);
+        let newer = git(&["rev-parse", "HEAD"]);
+        let (expected, _) = prebuilt_expectation(repo, None, &head, &newer);
+        assert!(sha_matches(&expected, &key) && !sha_matches(&expected, &newer), "different build inputs still refuse");
+    }
 
     // what this catches (M5, 2026-10-04 22:32-00:20Z): a consumer waiting on b85287366,
     // whose CI run was cancelled as superseded, while 3d81d1b09 was built and ready. A moved
