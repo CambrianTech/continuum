@@ -45,7 +45,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
 // 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
 // 154,999 after placement responsibilities split on current canary.
-const BASELINE_LINES_OVER: usize = 154_999;
+// 136,485 after #5224 moved 69 oversized files' test modules into sibling tests.rs files.
+const BASELINE_LINES_OVER: usize = 136_485;
 
 pub struct FileSize;
 

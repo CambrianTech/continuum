@@ -810,7 +810,7 @@ mod tests {
                 .any(|k| n.contains(k))
         };
         let mut offenders = Vec::new();
-        for file in crate::source_tree::crate_sources() {
+        for file in crate::test_env::source_tree::crate_sources() {
             // Vendored upstream code (candle/llama ports) is not ours to restyle; its
             // constants are the upstream model's own defaults.
             if file.rel.split('/').any(|c| c == "vendored") {

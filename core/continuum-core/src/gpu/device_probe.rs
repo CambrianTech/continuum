@@ -465,7 +465,7 @@ mod tests {
         ];
 
         // Comments are stripped (`source_tree`) so prose can neither fake nor trip the check.
-        let offenders: Vec<String> = crate::source_tree::crate_sources()
+        let offenders: Vec<String> = crate::test_env::source_tree::crate_sources()
             .into_iter()
             .filter(|f| f.code().contains("impl GpuMonitor for"))
             .filter(|f| !SANCTIONED.iter().any(|(sanctioned, _)| f.rel == *sanctioned))

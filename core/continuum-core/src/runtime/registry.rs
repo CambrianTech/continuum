@@ -772,7 +772,7 @@ mod tests {
     // (ProbeStreamModule) and #325 (GeneratorModule, which shipped
     // unregistered and was found only by live dispatch).
     fn every_service_module_is_registered_or_declares_why_not() {
-        let files = crate::source_tree::crate_sources();
+        let files = crate::test_env::source_tree::crate_sources();
         assert!(
             files.len() > 100,
             "source scan found only {} files — the walk is broken, and a \

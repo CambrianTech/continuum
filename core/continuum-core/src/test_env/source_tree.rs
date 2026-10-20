@@ -168,6 +168,6 @@ mod tests {
     fn the_walk_sees_the_crate() {
         let files = crate_sources();
         assert!(files.len() > 100, "found only {} files", files.len());
-        assert!(files.iter().any(|f| f.rel == "source_tree.rs"));
+        assert!(files.iter().any(|f| f.rel == "test_env/source_tree.rs"));
     }
 }

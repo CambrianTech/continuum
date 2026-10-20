@@ -682,7 +682,7 @@
             // Production code only (`source_tree`): prose naming the function — this
             // very comment, and the doc on `record_lived_turn` — never reads as a call,
             // and neither does a test module, inline or moved to a sibling file.
-            let files = crate::source_tree::crate_sources();
+            let files = crate::test_env::source_tree::crate_sources();
             assert!(
                 !files.is_empty(),
                 "the source walk found nothing — the guard \

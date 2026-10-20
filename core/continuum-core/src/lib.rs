@@ -74,8 +74,6 @@ pub mod sdk_codegen;
 pub mod secrets;
 pub mod sensory;
 pub mod shell_portable;
-#[cfg(test)]
-pub(crate) mod source_tree;
 pub mod system_resources;
 #[cfg(test)]
 pub(crate) mod test_env;

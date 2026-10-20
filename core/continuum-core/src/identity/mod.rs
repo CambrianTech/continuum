@@ -320,7 +320,7 @@ mod loose_id_guard {
     ];
 
     fn rs_files() -> Vec<(String, String)> {
-        crate::source_tree::crate_sources().into_iter().map(|f| (f.rel, f.text)).collect()
+        crate::test_env::source_tree::crate_sources().into_iter().map(|f| (f.rel, f.text)).collect()
     }
 
     /// `  pub persona_id: String,` / `  room_id: Option<String>,` — field decls only.

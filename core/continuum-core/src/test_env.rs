@@ -16,6 +16,11 @@
 //! drop, panic included. Real-toolchain fixtures use [`HomeGuard::preserve`]
 //! instead: rustup must inherit the installed home, not another fixture's tempdir.
 //! Acquire once at the fixture boundary; guards are exclusive, not reentrant.
+//!
+//! [`source_tree`] is the other half of the test environment: the crate's own source,
+//! read by the tests that guard its shape.
+pub(crate) mod source_tree;
+
 use std::path::Path;
 use std::sync::{Arc, LazyLock};
 
