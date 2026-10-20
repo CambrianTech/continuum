@@ -523,21 +523,51 @@ pub fn prebuilt_expectation(
     head: &str,
     stamp: &str,
 ) -> (String, &'static str) {
-    let (key, source) = checkout_build_key(cwd, git_dir, head);
-    if sha_matches(stamp, &key) {
-        return (key, source);
+    let checkout = checkout_build_key(cwd, git_dir, head);
+    if sha_matches(stamp, checkout.sha()) {
+        return (checkout.sha().to_string(), checkout.source());
     }
-    let (stamp_key, stamp_source) = checkout_build_key(cwd, git_dir, stamp);
-    if stamp_source.starts_with("build key") && sha_matches(&stamp_key, &key) {
-        (stamp.to_string(), "built at a commit above this checkout's build key (same build inputs)")
-    } else {
-        (key, source)
+    match checkout_build_key(cwd, git_dir, stamp) {
+        KeyResolution::BuildKey(stamp_key) if sha_matches(&stamp_key, checkout.sha()) => {
+            (stamp.to_string(), "built at a commit above this checkout's build key (same build inputs)")
+        }
+        _ => (checkout.sha().to_string(), checkout.source()),
+    }
+}
+
+/// How a commit's build key was resolved. Only [`KeyResolution::BuildKey`] is evidence about
+/// build inputs; the other two name `head` itself because git could not say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyResolution {
+    /// The newest commit at or before `head` touching a [`BUILD_INPUTS`] path.
+    BuildKey(String),
+    /// Git answered, but no commit at or before `head` touched a build input: `head` itself.
+    NoKey(String),
+    /// Git could not answer: `head` itself.
+    Unreadable(String),
+}
+
+impl KeyResolution {
+    /// The SHA this resolution names.
+    pub fn sha(&self) -> &str {
+        match self {
+            Self::BuildKey(sha) | Self::NoKey(sha) | Self::Unreadable(sha) => sha,
+        }
+    }
+
+    /// Where the SHA came from, for receipts; never consulted for a decision.
+    pub fn source(&self) -> &'static str {
+        match self {
+            Self::BuildKey(_) => "build key of this checkout (newest commit touching a build input)",
+            Self::NoKey(_) => "git HEAD of this checkout (no build key found)",
+            Self::Unreadable(_) => "git HEAD of this checkout (build key unreadable)",
+        }
     }
 }
 
 /// `head`'s build key in the checkout at `cwd` (the newest commit at or before it touching a
-/// [`BUILD_INPUTS`] path), with where the answer came from; HEAD itself when git cannot say.
-pub fn checkout_build_key(cwd: &Path, git_dir: Option<&std::ffi::OsStr>, head: &str) -> (String, &'static str) {
+/// [`BUILD_INPUTS`] path); `head` itself, typed as such, when git cannot say.
+pub fn checkout_build_key(cwd: &Path, git_dir: Option<&std::ffi::OsStr>, head: &str) -> KeyResolution {
     let args = build_key_log_args(head);
     let mut cmd = std::process::Command::new("git");
     cmd.current_dir(cwd).args(&args).env_remove("GIT_DIR").stdin(Stdio::null());
@@ -553,12 +583,12 @@ pub fn checkout_build_key(cwd: &Path, git_dir: Option<&std::ffi::OsStr>, head: &
         Ok(out) if out.status.success() => {
             let key = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if key.is_empty() {
-                (head.to_string(), "git HEAD of this checkout (no build key found)")
+                KeyResolution::NoKey(head.to_string())
             } else {
-                (key, "build key of this checkout (newest commit touching a build input)")
+                KeyResolution::BuildKey(key)
             }
         }
-        _ => (head.to_string(), "git HEAD of this checkout (build key unreadable)"),
+        _ => KeyResolution::Unreadable(head.to_string()),
     }
 }
 

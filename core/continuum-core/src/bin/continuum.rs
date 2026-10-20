@@ -5137,7 +5137,7 @@ async fn prepare_prebuilt(args: Vec<String>) -> Result<(), String> {
     }
     let repo = Path::new(&args[0]);
     let head = git_in(repo, &["rev-parse", "HEAD"])?;
-    let (tip, _) = continuum_cli_lifecycle::prebuilt_artifact::checkout_build_key(repo, None, head.trim());
+    let tip = continuum_cli_lifecycle::prebuilt_artifact::checkout_build_key(repo, None, head.trim()).sha().to_string();
     let platform = continuum_cli_lifecycle::prebuilt_artifact::platform_key(std::env::consts::OS, std::env::consts::ARCH)
         .ok_or("No compatible prebuilt is published for this platform")?;
     let core = prepare_ci_core(repo, &tip, platform, Some(Path::new(&args[1])), prepare_note)
@@ -5456,9 +5456,6 @@ async fn prebuilt_checkout_sha(
     Ok(Some(head.to_owned()))
 }
 
-/// The checkout's BUILD KEY: the newest commit at or before `head` that touched a build
-/// input (`prebuilt_artifact::BUILD_INPUTS`), which is the commit CI built a core for. Falls
-/// back to `head` itself, named as such, when git cannot say.
 /// Detect repository metadata without asking Git to read HEAD. Both a normal
 /// `.git` directory and a linked worktree/submodule's `.git` file count, even if
 /// broken; Git must then verify the selected checkout. Bare repositories count
@@ -8646,9 +8643,10 @@ mod tests {
         git(&["commit", "-qm", "docs only"]);
         let head = git(&["rev-parse", "HEAD"]);
         assert_ne!(key, head);
-        let (expected, source) = continuum_cli_lifecycle::prebuilt_artifact::checkout_build_key(&repo, None, &head);
+        let resolved = continuum_cli_lifecycle::prebuilt_artifact::checkout_build_key(&repo, None, &head);
+        assert!(matches!(resolved, continuum_cli_lifecycle::prebuilt_artifact::KeyResolution::BuildKey(_)), "{resolved:?}");
+        let (expected, source) = (resolved.sha().to_string(), resolved.source());
         assert_eq!(expected, key, "the expectation is the key, not HEAD");
-        assert!(source.starts_with("build key"), "{source}");
         // The key's artifact is accepted; HEAD's would not have been built by CI at all.
         assert!(super::PrebuiltCore::from_report(repo.join("core-bin"), key.clone(), Some((&expected, source))).is_ok());
         assert!(super::PrebuiltCore::from_report(repo.join("core-bin"), head.clone(), Some((&expected, source))).is_err());
