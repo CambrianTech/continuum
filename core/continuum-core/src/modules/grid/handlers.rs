@@ -7,7 +7,8 @@ use crate::time::EpochMs;
 use super::audit::{AuditDirection, AuditEntry, AuditOutcome};
 use super::frame::{GridFrame, GridPayload};
 use super::node::{GridNode, TransportAddress, TrustLevel};
-use super::router::RouteDecision;
+mod routing;
+pub use routing::handle_route;
 use super::GridState;
 use crate::runtime::CommandResult;
 use serde_json::{json, Value};
@@ -1396,30 +1397,6 @@ pub async fn handle_setup_check(state: &Arc<GridState>) -> Result<CommandResult,
         "actions": actions,
         "summary": summary,
     })))
-}
-
-/// grid/route — dry-run routing check.
-pub async fn handle_route(state: &Arc<GridState>, params: Value) -> Result<CommandResult, String> {
-    let command = params
-        .get("targetCommand")
-        .and_then(|v| v.as_str())
-        .or_else(|| params.get("command").and_then(|v| v.as_str()))
-        .ok_or("command or targetCommand parameter required")?;
-
-    let decision = state.router.route(command, &params, &state.registry);
-
-    match decision {
-        RouteDecision::Local => Ok(CommandResult::Json(json!({
-            "route": "local",
-            "reason": "default or local capability",
-        }))),
-        RouteDecision::Remote { node, reason } => Ok(CommandResult::Json(json!({
-            "route": "remote",
-            "nodeId": node.node_id,
-            "nodeName": node.node_name,
-            "reason": reason,
-        }))),
-    }
 }
 
 #[cfg(test)]

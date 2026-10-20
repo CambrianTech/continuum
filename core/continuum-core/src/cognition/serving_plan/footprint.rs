@@ -76,7 +76,7 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
     );
     if header_rate.is_some() {
         if let Some(record) = &measured {
-            fp.fixed_per_lane_bytes = fixed_per_lane_from(fp.kv_per_token, record);
+            fp.fixed_per_lane_bytes = fixed_per_lane_from(fp.kv_per_token, record)?;
             // One row when the value CHANGES: this runs on every footprint read (measured
             // 2026-09-19 23:2xZ on the M5: 840 identical rows in 12 minutes, 70/min — the
             // ledger-rotation class, the same shape the knee clamp's row had).
@@ -100,13 +100,19 @@ pub fn footprint_for(model: &Model) -> Option<ModelFootprint> {
 }
 
 /// The residency a sample measured BEYOND the header's per-token rate, as fixed bytes per
-/// lane: `(measured − rate) × the window it was measured at`. Zero when the sample agrees
-/// with the header. The rate stays physics; the residency stays counted.
-pub fn fixed_per_lane_from(header_rate: u64, record: &crate::inference::lane_footprint::MeasuredCost) -> u64 {
-    record
-        .per_token_bytes
-        .saturating_sub(header_rate)
-        .saturating_mul(record.window as u64)
+/// lane: excess per physical token × allocated tokens / lanes. Historical records without
+/// allocation retain their divided-cache window semantics. Invalid geometry is not a footprint.
+pub fn fixed_per_lane_from(header_rate: u64, record: &crate::inference::lane_footprint::MeasuredCost) -> Option<u64> {
+    if record.lanes == 0 || record.window == 0 {
+        return None;
+    }
+    let tokens = match record.allocated_tokens {
+        Some(0) => return None,
+        Some(tokens) => u128::from(tokens),
+        None => u128::from(record.lanes) * u128::from(record.window),
+    };
+    let excess = u128::from(record.per_token_bytes.saturating_sub(header_rate));
+    u64::try_from(excess * tokens / u128::from(record.lanes)).ok()
 }
 
 /// THE PROCESS BEATS THE ARITHMETIC. When the live lane's anonymous footprint, read
@@ -284,8 +290,8 @@ mod tests {
         for _ in 0..4 {
             let per_token = crate::inference::lane_footprint::per_token_from(anon, lanes, window, fp.base_compute_buffer_per_lane(), 0)
                 .expect("test: a reading");
-            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, anon_bytes: anon, last_ms: 0 };
-            fp.fixed_per_lane_bytes = fixed_per_lane_from(header_rate, &record);
+            let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: per_token, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 0 };
+            fp.fixed_per_lane_bytes = fixed_per_lane_from(header_rate, &record).expect("valid fixture geometry");
             seen.push(fp.fixed_per_lane_bytes);
         }
         let tolerance = u64::from(window); // integer division loses under one byte per token
@@ -310,10 +316,20 @@ mod tests {
         // sample of 55,925 at 67,340) yields ≈1.56 GB of fixed residency per lane, and
         // across budgets the plan with it fits no more lanes than the header-only plan
         // and no fewer than the raised-rate plan — strictly between them somewhere.
-        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, anon_bytes: 0, last_ms: 0 };
-        let fixed = fixed_per_lane_from(32_768, &record);
+        let record = crate::inference::lane_footprint::MeasuredCost { per_token_bytes: 55_925, lanes: 1, window: 67_340, allocated_tokens: None, anon_bytes: 0, last_ms: 0 };
+        let fixed = fixed_per_lane_from(32_768, &record).expect("valid fixture geometry");
         assert!((1_500_000_000..1_620_000_000).contains(&fixed), "{fixed} B per lane");
-        assert_eq!(fixed_per_lane_from(65_536, &record), 0, "a sample under the rate carries nothing");
+        assert_eq!(fixed_per_lane_from(65_536, &record), Some(0), "a sample under the rate carries nothing");
+        let mut unified = record.clone();
+        unified.per_token_bytes = 200;
+        unified.lanes = 2;
+        unified.window = 32_768;
+        unified.allocated_tokens = Some(32_768);
+        assert_eq!(fixed_per_lane_from(100, &unified), Some(1_638_400));
+        unified.allocated_tokens = None;
+        assert_eq!(fixed_per_lane_from(100, &unified), Some(3_276_800), "legacy divided allocation");
+        unified.lanes = 0;
+        assert_eq!(fixed_per_lane_from(100, &unified), None);
         let base = ModelFootprint {
             model_id: "m5-27b".into(), weights_bytes: 16_500_000_000, kv_per_token: 32_768, context_window: 262_144, capability_rank: 42, fixed_per_lane_bytes: 0,
         };

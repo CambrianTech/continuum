@@ -715,7 +715,7 @@ mod router_integration {
                 assert_eq!(node.node_id, "100.124.122.107");
                 assert_eq!(reason, "no local GPU");
             }
-            RouteDecision::Local => panic!("Should route to 5090, not local"),
+            RouteDecision::Local | RouteDecision::Refused(_) => panic!("Should route to 5090, not local"),
         }
     }
 
@@ -733,7 +733,7 @@ mod router_integration {
             RouteDecision::Remote { node, .. } => {
                 assert_eq!(node.node_id, "100.124.122.107");
             }
-            RouteDecision::Local => panic!("Should route to 5090"),
+            RouteDecision::Local | RouteDecision::Refused(_) => panic!("Should route to 5090"),
         }
     }
 
@@ -765,7 +765,7 @@ mod router_integration {
                 assert_eq!(node.node_name, Some("bigmama".into()));
                 assert_eq!(reason, "named node hint");
             }
-            RouteDecision::Local => panic!("Should route to bigmama"),
+            RouteDecision::Local | RouteDecision::Refused(_) => panic!("Should route to bigmama"),
         }
     }
 
