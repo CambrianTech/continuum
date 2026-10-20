@@ -142,6 +142,8 @@ fn classes_of(node: &GridNode) -> CapabilitySet {
 /// Routing decision for a command.
 #[derive(Debug, Clone)]
 pub enum RouteDecision {
+    /// An explicit destination cannot be honored; the caller must not execute locally.
+    Refused(RouteRefusal),
     /// Execute locally on this node.
     Local,
     /// Forward to a specific remote node.
@@ -149,6 +151,16 @@ pub enum RouteDecision {
         node: GridNode,
         reason: &'static str,
     },
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum RouteRefusal {
+    #[error("nodeId must be a nonempty string")]
+    InvalidNodeId,
+    #[error("explicit grid node {0} is unknown")]
+    UnknownNode(String),
+    #[error("explicit grid node {0} is not trusted for routing")]
+    UntrustedNode(String),
 }
 
 /// Routing hints that can be passed as params.
@@ -180,7 +192,10 @@ impl GridRouter {
         registry: &NodeRegistry,
     ) -> RouteDecision {
         // 1. Explicit nodeId targeting
-        if let Some(node_id) = params.get("nodeId").and_then(|v| v.as_str()) {
+        if let Some(value) = params.get("nodeId") {
+            let Some(node_id) = value.as_str().filter(|id| !id.trim().is_empty()) else {
+                return RouteDecision::Refused(RouteRefusal::InvalidNodeId);
+            };
             if let Some(node) = registry.get(node_id) {
                 if node.trust_level >= TrustLevel::Provisional {
                     return RouteDecision::Remote {
@@ -188,9 +203,9 @@ impl GridRouter {
                         reason: "explicit nodeId",
                     };
                 }
+                return RouteDecision::Refused(RouteRefusal::UntrustedNode(node_id.to_owned()));
             }
-            // If nodeId specified but not found/trusted, fall through to local
-            return RouteDecision::Local;
+            return RouteDecision::Refused(RouteRefusal::UnknownNode(node_id.to_owned()));
         }
 
         let requirement = requirement_from(params);
@@ -489,7 +504,7 @@ mod tests {
                     node.node_id, "10.0.0.2",
                     "the adequate node must win over the cheap shell"
                 ),
-                RouteDecision::Local => panic!("expected the adequate node, got Local"),
+                other => panic!("expected the adequate node, got {other:?}"),
             }
         }
 
@@ -507,7 +522,7 @@ mod tests {
                     assert_eq!(node.node_id, "10.0.0.3");
                     assert_eq!(reason, "no local GPU");
                 }
-                RouteDecision::Local => panic!("undeclared jobs must route as they always did"),
+                RouteDecision::Local | RouteDecision::Refused(_) => panic!("undeclared jobs must route as they always did"),
             }
         }
 
@@ -534,7 +549,7 @@ mod tests {
                     assert_eq!(node.node_id, "10.0.0.4");
                     assert_eq!(reason, "prefer-gpu hint");
                 }
-                RouteDecision::Local => {
+                RouteDecision::Local | RouteDecision::Refused(_) => {
                     panic!("an 8GB local card must not keep a 24GB job just because it is ours")
                 }
             }
@@ -641,8 +656,24 @@ mod tests {
                 assert_eq!(node.node_id, "100.1.2.3");
                 assert_eq!(reason, "explicit nodeId");
             }
-            RouteDecision::Local => panic!("Expected remote routing"),
+            RouteDecision::Local | RouteDecision::Refused(_) => panic!("Expected remote routing"),
         }
+        // An explicit destination must never turn into local execution on failure.
+        for invalid in [serde_json::Value::Null, serde_json::json!(7), serde_json::json!(""), serde_json::json!("  ")] {
+            assert!(matches!(
+                router.route("genome/train", &serde_json::json!({"nodeId": invalid}), &registry),
+                RouteDecision::Refused(RouteRefusal::InvalidNodeId)
+            ));
+        }
+        assert!(matches!(
+            router.route("genome/train", &serde_json::json!({"nodeId": "missing"}), &registry),
+            RouteDecision::Refused(RouteRefusal::UnknownNode(_))
+        ));
+        registry.set_trust("100.1.2.3", TrustLevel::Blocked).expect("existing fixture node");
+        assert!(matches!(
+            router.route("genome/train", &serde_json::json!({"nodeId": "100.1.2.3"}), &registry),
+            RouteDecision::Refused(RouteRefusal::UntrustedNode(_))
+        ));
     }
 
     #[test]
@@ -657,7 +688,7 @@ mod tests {
                 assert_eq!(node.node_id, "100.1.2.3");
                 assert_eq!(reason, "no local GPU");
             }
-            RouteDecision::Local => panic!("Expected remote routing"),
+            RouteDecision::Local | RouteDecision::Refused(_) => panic!("Expected remote routing"),
         }
     }
 

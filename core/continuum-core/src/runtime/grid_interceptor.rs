@@ -8,7 +8,7 @@
 //! dispatch:
 //!
 //! - `crate::modules::grid::router::GridRouter::route(command, params, registry)`
-//!   returns `Local` or `Remote { node }` based on explicit `nodeId`
+//!   returns `Local`, `Remote { node }`, or `Refused` based on explicit `nodeId`
 //!   params, `routingHint` hints, and capability matching.
 //! - `crate::modules::grid::handlers::dispatch_to_node(state, node, cmd, params)`
 //!   opens a transport connection, sends a CommandRequest frame, awaits
@@ -148,10 +148,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn declines_when_target_node_not_in_registry() {
-        // Explicit nodeId pointing at a node that doesn't exist in the
-        // registry → router falls back to Local (per its existing
-        // behavior at router.rs:54-64) → interceptor declines.
+    async fn refuses_when_target_node_not_in_registry() {
+        // A destination error must propagate to the caller, never become
+        // local execution through an interceptor decline.
         let state = make_state();
         let interceptor = GridInterceptor::new(state);
         let outcome = interceptor
@@ -161,11 +160,10 @@ mod tests {
                 None,
             )
             .await
-            .expect("unknown-node routing must not error");
-        assert!(
-            matches!(outcome, InterceptorOutcome::Decline),
-            "unknown nodeId must fall through (not error) so the kernel can serve the command \
-             locally — the existing GridRouter contract"
+            .expect_err("unknown-node routing must fail");
+        assert_eq!(
+            outcome,
+            "explicit grid node nonexistent-node-id is unknown"
         );
     }
 }
