@@ -2479,24 +2479,13 @@ impl LlmDeliberationFaculty {
         );
 
         let protocol_error = all_messages.active_protocol_error();
-        let start_tokens = super::context_budget::ContextBudget::fresh_prefill_tokens(
-            crate::inference::prefill_rate::measured_rate_for(model),
-            context_window,
-            crate::cognition::audience::current(),
-        );
+        let start_tokens = super::context_budget::ContextBudget::fresh_prefill_tokens(crate::inference::prefill_rate::measured_rate_for(model), context_window, crate::cognition::audience::current());
         let fit = match epoch.turnover_for(all_messages.tokens(), msg_budget, start_tokens) {
             None => self.fit_messages(all_messages, msg_budget),
             Some(cause) => {
-                all_messages.restart_epoch(&mut epoch, cause, &standing, standing_unsaid, headroom, &self.persona_name);
-                // Priced after the new epoch took its standing pieces back, never below them.
-                let budget = match cause.reason {
-                    epoch_view::Turnover::Start => msg_budget.min(start_tokens.max(all_messages.required_tokens())),
-                    _ => msg_budget,
-                };
+                let budget = all_messages.restart_epoch(&mut epoch, cause, &standing, standing_unsaid, headroom, start_tokens.min(msg_budget), &self.persona_name);
                 let fit = self.fit_messages(all_messages, budget);
-                if let Ok(f) = &fit {
-                    epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at));
-                }
+                if let Ok(f) = &fit { epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at)); }
                 fit
             }
         };
@@ -3837,24 +3826,17 @@ impl PromptMessages {
             .then(|| "active tool receipt has missing, duplicate, or mismatched native call/result IDs; refusing an invalid continuation".to_string())
     }
 
-    /// Her epoch turned over: the history's epoch part becomes the compacted view, the result
-    /// pointers the fit may substitute come with it, the growth room is freed, and the standing
-    /// pieces count again because a new epoch holds none of them yet.
-    fn restart_epoch(
-        &mut self,
-        epoch: &mut epoch_view::EpochView,
-        cause: epoch_view::TurnoverCause,
-        standing: &[epoch_view::Block],
-        standing_unsaid: usize,
-        headroom: usize,
-        persona: &str,
-    ) {
+    /// Her epoch turned over: the history's epoch part becomes the compacted view (with the result
+    /// pointers the fit may substitute), the growth room is freed, and the standing pieces count again.
+    /// Returns its budget: a new epoch is all fresh, so `start`, never below her required input.
+    fn restart_epoch(&mut self, epoch: &mut epoch_view::EpochView, cause: epoch_view::TurnoverCause, standing: &[epoch_view::Block], standing_unsaid: usize, headroom: usize, start: usize, persona: &str) -> usize {
         let (len, pointers) = epoch.turn_over(&mut self.history, self.grounding_at, &self.body, cause, persona);
         self.grounding_at = len;
         self.result_pointers = pointers;
         self.headroom = headroom;
         self.grounding_tokens = self.grounding_tokens - standing_unsaid
             + epoch.unsaid_tokens(standing, LlmDeliberationFaculty::message_cost);
+        start.max(self.required_tokens())
     }
 
     fn required_tokens(&self) -> usize {

@@ -441,15 +441,16 @@ impl EpochView {
     /// Whether this act's prompt still extends her epoch. A live epoch turns over only at the
     /// window: a turnover re-prefills the whole new epoch, never cheaper than a warm tail
     /// (turning over a live epoch on the prefill-time bound took reuse from 0.92 to 0.35 on
-    /// the M5, c30e660d9). An epoch's START is all fresh, so it starts at `start_tokens`, what
-    /// the lane prefills in her time to first token: started at the window instead, every mind
-    /// on a restarted core prefilled ~110k tokens and no act finished in 42 minutes
-    /// (52f61fc29, 2026-10-20).
+    /// the M5, c30e660d9). Every NEW epoch is all fresh, whatever started it, so the caller
+    /// fits any turnover to `start_tokens`, what the lane prefills in her time to first token:
+    /// started at the window instead, every mind on a restarted core prefilled ~110k tokens
+    /// and no act finished in 42 minutes (52f61fc29, 2026-10-20). A start is checked first, so
+    /// a cold prompt past the window is still a start (Codex on #5210).
     pub(super) fn turnover_for(&self, prompt_tokens: usize, window_tokens: usize, start_tokens: usize) -> Option<TurnoverCause> {
-        let reason = if prompt_tokens > window_tokens {
-            Turnover::Window
-        } else if self.act_growth.is_none() && prompt_tokens > start_tokens {
+        let reason = if self.act_growth.is_none() && prompt_tokens > start_tokens {
             Turnover::Start
+        } else if prompt_tokens > window_tokens {
+            Turnover::Window
         } else {
             return None;
         };

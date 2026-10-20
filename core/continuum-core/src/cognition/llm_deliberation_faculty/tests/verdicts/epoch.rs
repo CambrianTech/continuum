@@ -218,6 +218,53 @@ async fn an_epoch_starts_at_what_the_lane_prefills_in_time_then_grows_warm() {
     assert!(bodies[1].starts_with(&bodies[0]), "the next act extends the started epoch");
 }
 
+// what this catches: a new epoch fitted to the window instead of the start bound (Codex on
+// #5210 at 852c16551): a live epoch's window turnover re-prefilled a whole window (34,068
+// tokens against a 16,384 start bound, mutation-checked). Every new epoch is all fresh, so
+// every turnover fits to the start bound, which also covers a cold prompt past the window
+// (this fixture's working memory caps a cold prompt below the window, so that case is held by
+// the one budget for every turnover, not by the cold assertion below).
+#[tokio::test]
+async fn every_new_epoch_starts_at_the_start_bound_cold_or_after_a_window_turnover() {
+    const WINDOW: u32 = 65_536;
+    let start = crate::cognition::context_budget::ContextBudget::fresh_prefill_tokens(
+        crate::inference::prefill_rate::measured_rate_for("epoch-model"),
+        WINDOW,
+        crate::cognition::audience::current(),
+    );
+    assert!(start < WINDOW as usize / 2, "the fixture needs a start bound well under the window: {start}");
+    let near_start = |tokens: usize| tokens <= start + start / 4;
+    // Cold, with a large history.
+    let (faculty, adapter, wm) = epoch_faculty_with_memory(WINDOW, 1, u32::MAX);
+    for i in 0..(WINDOW as usize / 1_500 + 16) {
+        let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
+        wm.record_receipt_typed(&[], &format!("RESULT-{i} {}", "x".repeat(GUARD_CHARS_PER_TOKEN * 1_500)), None, custody);
+    }
+    assert!(faculty.contribute(&Workspace::new("continue the card")).await.is_some_and(|v| v.fault.is_none()));
+    let cold = LlmDeliberationFaculty::messages_cost(&adapter.seen.lock().expect("recorded request lock")[0].messages);
+    assert!(near_start(cold), "a cold history started near the start bound {start}: {cold} tokens");
+    // Warm, growing until the window turns it over.
+    const ACTS: usize = 120;
+    let (faculty, adapter, save) = epoch_faculty(WINDOW, ACTS);
+    let ws = Workspace::new("continue the card");
+    let mut previous: Option<Vec<(String, String)>> = None;
+    let mut turnovers = Vec::new();
+    for act in 0..ACTS {
+        save(act, &format!("RESULT-{act} {}", "x".repeat(GUARD_CHARS_PER_TOKEN * 1_000)));
+        let view = faculty.prompt_view(&ws);
+        assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
+        let body = sent_body_of(&view, &adapter, act);
+        if previous.as_ref().is_some_and(|p| !body.starts_with(p)) {
+            turnovers.push((act, LlmDeliberationFaculty::messages_cost(&adapter.seen.lock().expect("recorded request lock")[act].messages)));
+        }
+        previous = Some(body);
+    }
+    assert!(!turnovers.is_empty(), "{ACTS} results of ~1k tokens outgrow a {WINDOW}-token window");
+    for (act, tokens) in &turnovers {
+        assert!(near_start(*tokens), "the window turnover at act {act} started near the start bound {start}: {tokens} tokens");
+    }
+}
+
 // what this catches: standing pieces re-sent after the body every act (the M5 at
 // c9bc93951: ~11k tokens of own-time, work-turn, steps, open views and notices,
 // always fresh). Unchanged, they live in her epoch and the tail carries none of them.
