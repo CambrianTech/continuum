@@ -1638,24 +1638,30 @@ mod tests {
     // depth still follows the budget (more shown than the old 256 ceiling allowed).
     #[tokio::test]
     async fn the_fetch_costs_what_is_shown_plus_at_most_a_page() {
-        let room = RoomId::new();
-        let events: Vec<TranscriptEvent> = (1..=3_000u64)
-            .map(|l| event_in(room, Some(&format!("short message number {l:05}")), l))
-            .collect();
-        let reader = Arc::new(StubReader::new(events));
-        let (source, _) = isolated_source(reader.clone());
         let budget = 4_000;
-        let delivery = source.deliver(&ctx_in(room), budget, ResolutionPreference::Raw).await;
-        let shown = delivery.items.len();
-        let rows = *reader.rows_read.lock().unwrap();
-        let calls = *reader.calls.lock().unwrap();
-        assert!(shown > 256, "depth follows the budget past the old ceiling, shown {shown}");
-        assert!(
-            rows <= shown + 3 * FIRST_READ_PAGE,
-            "the fetch read {rows} rows in {calls} calls to show {shown}: it must cost what is shown plus a page or two, not budget/8 = {}",
-            budget / 8
-        );
-        assert!(delivery.tokens_used <= budget);
+        // (message body, whether the window should exceed the old 256-turn ceiling)
+        for (body, past_old_ceiling) in [("lorem ipsum dolor sit amet ".repeat(9), false), ("ok".to_string(), true)] {
+            let room = RoomId::new();
+            let events: Vec<TranscriptEvent> = (1..=3_000u64)
+                .map(|l| event_in(room, Some(&format!("{body} {l:05}")), l))
+                .collect();
+            let reader = Arc::new(StubReader::new(events));
+            let (source, _) = isolated_source(reader.clone());
+            let delivery = source.deliver(&ctx_in(room), budget, ResolutionPreference::Raw).await;
+            let shown = delivery.items.len();
+            let rows = *reader.rows_read.lock().unwrap();
+            let calls = *reader.calls.lock().unwrap();
+            if past_old_ceiling {
+                assert!(shown > 256, "depth follows the budget past the old ceiling, shown {shown}");
+            }
+            assert!(
+                rows <= shown + 3 * FIRST_READ_PAGE,
+                "{} chars/msg: read {rows} rows in {calls} calls to show {shown}; budget/8 would read {}",
+                body.len(),
+                budget / 8
+            );
+            assert!(delivery.tokens_used <= budget);
+        }
     }
 
     // what this catches: a trim with no handle. A message bigger than its fair share of a
