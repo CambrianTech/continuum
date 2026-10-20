@@ -330,6 +330,23 @@ pub(crate) fn format_messages(
     result
 }
 
+/// The engine's `checkpoint_user_message` for a request whose stable prefix ends before
+/// `messages[stable]`: the index of that message among the request's user turns, as the engine
+/// counts them after the chat template. The system prompt and assistant turns are not user
+/// turns, and neither is a tool result: `wire_messages` sends it as `role: tool`, and the fork's
+/// message delimiters classify a tool response as TOOL even where the template renders it inside
+/// a user turn (`common/chat.cpp`, Qwen3.x: `<|im_start|>user\n<tool_response>` is listed as
+/// COMMON_CHAT_ROLE_TOOL before the plain user delimiter). `None` when the tail does not begin
+/// with a user turn: the engine anchors only at a user turn's start.
+pub(crate) fn checkpoint_user_message(messages: &[ChatMessage], stable: usize) -> Option<usize> {
+    let wires_as_user = |m: &ChatMessage| {
+        m.role == "user"
+            && !matches!(&m.content, MessageContent::Parts(parts)
+                if parts.iter().any(|p| matches!(p, ContentPart::ToolResult { .. })))
+    };
+    wires_as_user(messages.get(stable)?).then(|| messages[..stable].iter().filter(|m| wires_as_user(m)).count())
+}
+
 /// The wire messages for a request: the system prompt, then each message with its
 /// tool calls kept on assistant turns and its tool results split into `role: tool`
 /// messages. The one mapping serving sends and the engine trainer renders a lived
@@ -617,6 +634,37 @@ pub(crate) fn build_base_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a checkpoint anchor counted off by the system prompt, an assistant turn
+    // or a tool result, so the engine checkpoints somewhere other than where the stable prefix
+    // ends and the next act rolls back to an earlier checkpoint anyway.
+    #[test]
+    fn the_checkpoint_anchor_names_the_tails_first_user_turn_as_the_engine_counts_them() {
+        use crate::ai::types::{ToolCall, ToolResult};
+        let text = |role: &str, t: &str| ChatMessage::text(role, t);
+        let call = ToolCall { id: "c1".into(), name: "code/read".into(), input: json!({}) };
+        let result = ToolResult { tool_use_id: "c1".into(), content: "ok".into(), is_error: None, custody: crate::ai::types::ResultCustody::Unsaved };
+        let messages = vec![
+            text("user", "Operator: fix it"),
+            text("assistant", "on it"),
+            ChatMessage::assistant_tool_use(std::slice::from_ref(&call)),
+            ChatMessage::tool_results(std::slice::from_ref(&result)),
+            text("user", "[result #1] ok"),
+            text("user", "[steps taken this session]"),
+            // the tail
+            text("user", "[context] 1 input turn was available"),
+            text("user", "[now 2026-10-20 03:00]"),
+            ChatMessage::assistant_tool_use(std::slice::from_ref(&call)),
+            ChatMessage::tool_results(std::slice::from_ref(&result)),
+        ];
+        let stable = 6;
+        let anchor = checkpoint_user_message(&messages, stable).expect("the tail opens with a user turn");
+        let wire = wire_messages(&messages, Some("You are Ivar."), false, false, "llama-server");
+        let users: Vec<&Value> = wire.iter().filter(|m| m["role"] == "user").collect();
+        assert_eq!(users[anchor]["content"], "[context] 1 input turn was available", "anchor {anchor} of {users:?}");
+        assert_eq!(checkpoint_user_message(&messages, 8), None, "a tail that opens with her own call has no user start to anchor");
+        assert_eq!(checkpoint_user_message(&messages, messages.len()), None, "no tail, no anchor");
+    }
 
     // Tool protocol results must not silently discard sibling sensory evidence.
     #[test]

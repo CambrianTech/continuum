@@ -80,6 +80,7 @@ pub async fn rate_proposals_with_ai(
     let prompt_text = build_rating_prompt(&context, &reviewer_name);
 
     let inference_request = TextGenerationRequest {
+        stable_prefix_messages: None,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),

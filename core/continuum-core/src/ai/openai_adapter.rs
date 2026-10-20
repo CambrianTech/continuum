@@ -1487,6 +1487,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 // maximal. Same typed capability gate as repeat_penalty/lora: cloud
                 // OpenAI-compat providers reject the non-standard field.
                 obj.insert("cache_prompt".to_string(), json!(true));
+                // THE STABLE PREFIX'S END IS A CHECKPOINT (CambrianTech/llama.cpp #68). A hybrid
+                // or SWA model resumes only from a checkpoint; the engine places them at the last
+                // user turn and every --checkpoint-min-step, so a mind's epoch body ending
+                // between them rolled back up to a step on every act (the M5, 2026-10-20: engine
+                // cached 21,729 twice while the shared prefix was ~34k tokens).
+                if let Some(anchor) = request
+                    .stable_prefix_messages
+                    .and_then(|stable| crate::inference::request_body::checkpoint_user_message(&request.messages, stable))
+                {
+                    obj.insert("checkpoint_user_message".to_string(), json!(anchor));
+                }
                 // PREFILL VISIBILITY — the llama.cpp `return_progress` extension.
                 // MEASURED 2026-08-13 on the live lane: with this field absent
                 // (its server-side default), a ~20k-token prompt produced ZERO

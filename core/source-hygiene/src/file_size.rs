@@ -50,7 +50,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 156,464 after the epoch bounded only an act's fresh tail by prefill time: the faculty's
 // latency fill cap, its shed preview and prefill_rate::latency_fill_cap were deleted.
 // 156,160 after the system head's context render moved to cognition/context_render.rs.
-const BASELINE_LINES_OVER: usize = 156_160;
+// 155,945 after the epoch's contract tests moved to llm_deliberation_faculty/tests/verdicts/epoch.rs.
+const BASELINE_LINES_OVER: usize = 155_945;
 
 pub struct FileSize;
 

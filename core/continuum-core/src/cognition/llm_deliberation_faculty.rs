@@ -1520,6 +1520,7 @@ impl LlmDeliberationFaculty {
             "the turn's output allowance — the reply's flex grant plus what no other claim took, under its runaway bound; time × her rate and her measured think + answer are what she is expected to use"
         );
         TextGenerationRequest {
+            stable_prefix_messages: None,
             messages,
             system_prompt: Some(system_prompt),
             model: binding.model.clone(),
@@ -3986,6 +3987,12 @@ pub struct DeliberationPromptView {
 }
 
 impl DeliberationPromptView {
+    /// Index of the first message after her epoch body: the body, then the standing pieces
+    /// and grounding appended after the fit, end here; the per-act tail starts here.
+    pub(crate) fn stable_prefix_messages(&self) -> usize {
+        self.refit.grounding_at + self.refit.grounding_len
+    }
+
     /// The conversation rendered as flat text — the role-tagged thread joined for
     /// human-readable introspection (glass-box `eprintln!`, debug logs, assertions).
     /// The canonical form the model receives is [`messages`](Self::messages); this
@@ -4351,7 +4358,7 @@ impl LlmDeliberationFaculty {
                 // owned inference request needs a copy of the selected surface.
                 let tools = selected.specs.map(std::borrow::Cow::into_owned);
 
-                let request = self.build_request_within(
+                let mut request = self.build_request_within(
                     &binding,
                     view.completion_reserve,
                     view.messages.clone(),
@@ -4368,6 +4375,8 @@ impl LlmDeliberationFaculty {
                     Some(ws.room_id),
                     self.turn_kind(ws),
                 );
+                // Her epoch body ends here; a local engine checkpoints at the tail's first message.
+                request.stable_prefix_messages = Some(view.stable_prefix_messages());
 
                 let mut template = request;
                 template.messages.clear();
@@ -9467,6 +9476,9 @@ mod tests {
     mod verdicts {
         use super::*;
 
+        /// Her epoch through the real `contribute()` path (`epoch_view`).
+        mod epoch;
+
         fn make_response(
             finish: FinishReason,
             text: &str,
@@ -9595,255 +9607,6 @@ mod tests {
                     .pop_front()
                     .ok_or_else(|| "scripted adapter exhausted".to_string())
             }
-        }
-
-        /// A faculty at `window` whose model answers every act, reporting that it reused the
-        /// whole prompt it was sent (as a warm slot does); receipts are saved through `save`.
-        fn epoch_faculty(window: u32, acts: usize) -> (LlmDeliberationFaculty, Arc<ScriptedAdapter>, impl Fn(usize, &str)) {
-            let (faculty, adapter, wm) = epoch_faculty_with_memory(window, acts, u32::MAX);
-            let save = move |i: usize, text: &str| {
-                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
-                wm.record_receipt_typed(&[], text, None, custody);
-            };
-            (faculty, adapter, save)
-        }
-
-        /// `reused`: the prefix the scripted engine reports it reused on every reply.
-        fn epoch_faculty_with_memory(window: u32, acts: usize, reused: u32) -> (LlmDeliberationFaculty, Arc<ScriptedAdapter>, Arc<crate::cognition::working_memory::WorkingMemory>) {
-            let answered = || TextGenerationResponse {
-                usage: UsageMetrics { input_tokens: 1, ..Default::default() },
-                timing: Some(crate::ai::types::GenerationTiming { cached_tokens: reused, ..Default::default() }),
-                ..make_response(FinishReason::Stop, "PASS", None)
-            };
-            let adapter = Arc::new(ScriptedAdapter::new((0..acts).map(|_| answered()).collect()));
-            let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(64));
-            wm.set_served_window(window);
-            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
-                .with_model_binding(model_binding(adapter.clone(), Some("epoch-model".into()), window))
-                .with_working_memory(Arc::clone(&wm))
-                .with_prefill_rate(rate_for_a_42k_tail);
-            (faculty, adapter, wm)
-        }
-
-        /// The M5's measured bound on 2026-10-20 (`cognition.budget.prefill_bound`
-        /// affordable_tokens=42152): a rate that prefills 42,000 tokens in an interactive
-        /// time to first token.
-        fn rate_for_a_42k_tail(model: &str) -> crate::inference::prefill_rate::MeasuredRate {
-            use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
-            assert_eq!(model, "epoch-model", "the bound reads the request's model, never current serving");
-            MeasuredRate { tps: Some(TAIL_BOUND as f64 / Audience::Interactive.ttft().as_secs_f64()), source: RateSource::Fresh }
-        }
-
-        const TAIL_BOUND: usize = 42_000;
-
-        /// The body of the request act `n` sent (everything before the facts and the ask),
-        /// bounded by the view rendered for it just before it was sent.
-        fn sent_body_of(view: &DeliberationPromptView, adapter: &ScriptedAdapter, n: usize) -> Vec<(String, String)> {
-            let seen = adapter.seen.lock().expect("recorded request lock");
-            seen[n].messages[..view.refit.grounding_at + view.refit.grounding_len]
-                .iter()
-                .map(|m| (m.role.clone(), m.content_text()))
-                .collect()
-        }
-
-        // what this catches: an act whose request rewrites the last act's body. On the M5
-        // (2026-10-19, `delib.prompt.reuse_split`) the results ring sat mid-prompt and grew by
-        // one result per act, so everything behind it re-prefilled: 17-29k tokens per act.
-        #[tokio::test]
-        async fn consecutive_acts_send_the_last_acts_body_as_their_prefix() {
-            let (faculty, adapter, save) = epoch_faculty(32_768, 2);
-            save(0, "RESULT-1");
-            save(1, "RESULT-2");
-            let recall = |text: &str| Contribution::context(FacultyId::Recall, text, 0.6, "recall").trailing();
-            let mut ws = Workspace::new("continue the card");
-            ws.broadcast.push(recall("RECALL v1"));
-            let mut bodies = Vec::new();
-            for act in 0..2 {
-                let view = faculty.prompt_view(&ws);
-                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
-                bodies.push(sent_body_of(&view, &adapter, act));
-                if act == 0 {
-                    save(2, "RESULT-3");
-                    ws.broadcast = vec![recall("RECALL v2")];
-                }
-            }
-            let (first, second) = (&bodies[0], &bodies[1]);
-            assert!(!first.is_empty(), "the first act has a body");
-            assert_eq!(second[..first.len()], first[..], "the second request starts with the first's body");
-            let news: Vec<&str> = second[first.len()..].iter().map(|(_, t)| t.as_str()).collect();
-            assert!(news.iter().any(|t| t.contains("RESULT-2")), "the settled result appended: {news:?}");
-            assert!(news.iter().any(|t| t.contains("RECALL v2")), "the changed grounding appended: {news:?}");
-        }
-
-        // what this catches: a system head re-rendered because the body grew (Codex on #5210):
-        // the head's grounding took whatever room the conversation left, so every act that
-        // grew the body moved the first bytes of the request and nothing behind them was reused.
-        #[tokio::test]
-        async fn the_whole_request_holds_its_prefix_while_the_body_grows() {
-            let window = 16_384;
-            let (faculty, adapter, wm) = epoch_faculty_with_memory(window, 2, u32::MAX);
-            let save = |i: usize, text: String| {
-                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
-                wm.record_receipt_typed(&[], &text, None, custody);
-            };
-            // Two system-side sources larger than the room left over, so their admitted size
-            // is decided by that room: one standing, one ordinary.
-            let list = |name: &str, n: usize| {
-                let parts: Vec<String> = (0..n).map(|i| format!("{name} item {i:04} with a line of ordinary length")).collect();
-                Contribution::context(FacultyId::Custom(name.into()), parts.join("\n"), 0.9, "list").with_parts(parts)
-            };
-            let mut ws = Workspace::new("continue the card");
-            ws.broadcast.push(list("room-kanban", 600).standing_grounding());
-            ws.broadcast.push(list("workspace-map", 600));
-            save(0, "RESULT-0".into());
-            // The pinned result is a cold start's evidence of growth (it joins the body next act).
-            save(1, format!("RESULT-1 {}", "x".repeat(3_000)));
-            // The body grows between the acts by a changed recall: within that growth, so the
-            // epoch holds, and enough that the room left over for the head changes.
-            let recall = |v: &str| Contribution::context(FacultyId::Recall, format!("RECALL {v} {}", "y".repeat(600)), 0.6, "recall").trailing();
-            let mut views = Vec::new();
-            for (act, version) in ["v1", "v2"].into_iter().enumerate() {
-                ws.broadcast.retain(|c| c.faculty != FacultyId::Recall);
-                ws.broadcast.push(recall(version));
-                views.push(faculty.prompt_view(&ws));
-                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
-            }
-            let seen = adapter.seen.lock().expect("recorded request lock");
-            let (first, second) = (&seen[0], &seen[1]);
-            assert!(first.system_prompt.as_deref().is_some_and(|s| s.contains("room-kanban item 0000")));
-            let (h1, h2) = (first.system_prompt.clone().unwrap_or_default(), second.system_prompt.clone().unwrap_or_default());
-            let at = h1.bytes().zip(h2.bytes()).position(|(a, b)| a != b).unwrap_or(h1.len().min(h2.len()));
-            let near = |h: &str| h.get(at.saturating_sub(200)..(at + 200).min(h.len())).unwrap_or("").to_string();
-            assert_eq!(h2, h1, "the head is the epoch's, not the leftover's; first difference at {at}:\n{}\n---\n{}", near(&h1), near(&h2));
-            assert_eq!(
-                second.tools.as_ref().map(|t| t.iter().map(|s| s.name.clone()).collect::<Vec<_>>()),
-                first.tools.as_ref().map(|t| t.iter().map(|s| s.name.clone()).collect::<Vec<_>>()),
-            );
-            let body = views[0].refit.grounding_at + views[0].refit.grounding_len;
-            let said = |r: &TextGenerationRequest| r.messages[..body].iter().map(|m| (m.role.clone(), m.content_text())).collect::<Vec<_>>();
-            assert_eq!(said(second), said(first), "after the head, the second request starts with the first's body");
-            // Not vacuous: a head rendered fresh for the second act's state takes less room.
-            let fresh = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
-                .with_model_binding(model_binding(adapter.clone(), Some("epoch-model".into()), window))
-                .with_working_memory(Arc::clone(&wm));
-            assert_ne!(
-                Some(fresh.prompt_view(&ws).system),
-                second.system_prompt,
-                "rendered fresh for this state the head differs (it takes the room left over): only the binding held it"
-            );
-        }
-
-        // what this catches: the live loop on the M5 (#5210 at 9f97bc775, 2026-10-20): the whole
-        // prompt was bounded by prefill time credited with the engine's lagging reuse, so low
-        // reuse made a small budget, the epoch turned over at 3-15k tokens of a 185,856-token
-        // window (16 turnovers in 25 acts, all budget) and reuse never came. Her epoch knows
-        // its own cached share: small tails never turn it over before the window is reached.
-        #[tokio::test]
-        async fn small_tails_never_turn_the_epoch_over_before_the_window_is_reached() {
-            const ACTS: usize = 64;
-            // The engine reports no reuse at all, the worst the lagging report can say.
-            let (faculty, adapter, wm) = epoch_faculty_with_memory(185_856, ACTS, 0);
-            let ws = Workspace::new("continue the card");
-            let (mut previous, mut turned) = (None::<Vec<(String, String)>>, Vec::new());
-            for act in 0..ACTS {
-                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{act:016x}") };
-                wm.record_receipt_typed(&[], &format!("RESULT-{act} {}", "x".repeat(1_500)), None, custody);
-                let view = faculty.prompt_view(&ws);
-                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
-                let body = sent_body_of(&view, &adapter, act);
-                if previous.is_some_and(|p| !body.starts_with(&p)) {
-                    turned.push(act);
-                }
-                previous = Some(body);
-            }
-            assert!(turned.is_empty(), "small tails far from a full window turned the epoch over at acts {turned:?}");
-        }
-
-        // what this catches: one act whose tail is more than the lane prefills in her time to
-        // first token kept whole (minutes of prefill), or a turnover that then fails to
-        // shrink the request to what that time holds. The tail here is optional (a recall far
-        // over the bound); her own act's result is required and stays whole, bound or not.
-        #[tokio::test]
-        async fn a_tail_over_the_time_bound_turns_over_to_what_the_time_holds() {
-            let (faculty, adapter, wm) = epoch_faculty_with_memory(185_856, 3, 0);
-            for i in 0..4 {
-                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
-                wm.record_receipt_typed(&[], &format!("RESULT-{i} {}", "x".repeat(1_500)), None, custody);
-            }
-            let recall = |chars: usize| Contribution::context(FacultyId::Recall, format!("RECALL {}", "y".repeat(chars)), 0.6, "recall").trailing();
-            let mut ws = Workspace::new("continue the card");
-            let mut bodies = Vec::new();
-            for (act, chars) in [600, 3 * GUARD_CHARS_PER_TOKEN * TAIL_BOUND, 600].into_iter().enumerate() {
-                ws.broadcast = vec![recall(chars + act)];
-                let view = faculty.prompt_view(&ws);
-                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
-                bodies.push(sent_body_of(&view, &adapter, act));
-            }
-            let seen = adapter.seen.lock().expect("recorded request lock");
-            let sent = LlmDeliberationFaculty::messages_cost(&seen[1].messages);
-            assert!(!bodies[1].starts_with(&bodies[0]), "the act over the time bound turned the epoch over");
-            assert!(sent <= TAIL_BOUND, "and its request holds what the time bound holds: {sent} tokens");
-            assert!(bodies[2].starts_with(&bodies[1]), "the next act extends the new epoch");
-        }
-
-        // what this catches: standing pieces re-sent after the body every act (the M5 at
-        // c9bc93951: ~11k tokens of own-time, work-turn, steps, open views and notices,
-        // always fresh). Unchanged, they live in her epoch and the tail carries none of them.
-        #[tokio::test]
-        async fn unchanged_standing_pieces_ride_her_epoch_never_the_tail() {
-            let (faculty, adapter, wm) = epoch_faculty_with_memory(32_768, 2, u32::MAX);
-            for i in 0..3 {
-                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
-                wm.record_receipt_typed(&[], &format!("RESULT-{i}"), None, custody);
-            }
-            wm.pin_fact("hands", "your hands are rooted at the card's worktree");
-            let ws = Workspace::new("[work turn] continue the card").self_initiated(true);
-            let mut sent = Vec::new();
-            for act in 0..2 {
-                let view = faculty.prompt_view(&ws);
-                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
-                let seen = adapter.seen.lock().expect("recorded request lock");
-                let texts: Vec<String> = seen[act].messages.iter().map(|m| m.content_text()).collect();
-                sent.push((view.refit.grounding_at + view.refit.grounding_len, texts));
-            }
-            let standing = ["[steps taken this session]", crate::cognition::framing_echo::NOTICES_HEADER, "[Your own time]", "[work turn]"];
-            let holds = |texts: &[String], needle: &str| texts.iter().any(|t| t.contains(needle));
-            let (body1, first) = &sent[0];
-            let (body2, second) = &sent[1];
-            for needle in standing {
-                assert!(holds(&first[..*body1], needle), "act 1's epoch holds {needle}");
-                assert!(!holds(&second[*body1..], needle), "act 2 re-sent {needle} although it did not change: {:#?}", &second[*body1..]);
-            }
-            assert_eq!(second[..*body1], first[..*body1], "act 2 starts with act 1's body");
-            assert!(*body2 >= *body1);
-        }
-
-        // what this catches: an epoch that outgrows the window instead of turning over, or a
-        // turnover that leaves no room to grow (every act a cold prefill again). In a window
-        // this small, one act's measured growth of room means a turnover every other act at
-        // most; the live windows are ~10x larger.
-        #[tokio::test]
-        async fn the_window_turns_the_epoch_over_and_the_next_act_extends_it() {
-            const ACTS: usize = 80;
-            let (faculty, adapter, save) = epoch_faculty(16_384, ACTS);
-            let ws = Workspace::new("continue the card");
-            let (mut kept, mut turned) = (0usize, Vec::new());
-            let mut previous: Option<Vec<(String, String)>> = None;
-            for act in 0..ACTS {
-                save(act, &format!("RESULT-{act} {}", "x".repeat(900)));
-                let view = faculty.prompt_view(&ws);
-                assert!(view.capacity_error.is_none(), "act {act} fits its window");
-                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
-                let body = sent_body_of(&view, &adapter, act);
-                match &previous {
-                    Some(p) if body.starts_with(p) => kept += 1,
-                    Some(_) => turned.push(act),
-                    None => {}
-                }
-                previous = Some(body);
-            }
-            assert!(!turned.is_empty(), "{ACTS} results of ~300 tokens outgrow a 16k window: the epoch turned over");
-            assert!(kept > turned.len(), "after a turnover the next acts extend the new epoch; turnovers at {turned:?}");
         }
 
         // what this catches: 2e2a92f6 — small reductions were ignored by the live

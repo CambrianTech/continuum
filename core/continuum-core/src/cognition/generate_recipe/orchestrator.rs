@@ -107,6 +107,7 @@ pub async fn generate_recipe_with_ai(
     let model_id = resolve_model_id(&provider_id, model)?;
 
     let inference_request = TextGenerationRequest {
+        stable_prefix_messages: None,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),

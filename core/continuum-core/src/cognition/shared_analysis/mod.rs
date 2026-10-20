@@ -240,6 +240,7 @@ async fn run_analysis(
         .map_err(|e| AnalysisError::from_inference(e.to_string()))?;
 
     let request = TextGenerationRequest {
+        stable_prefix_messages: None,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),

@@ -105,6 +105,7 @@ fn parse_request(params: &Value) -> Result<TextGenerationRequest, String> {
     }
 
     Ok(TextGenerationRequest {
+        stable_prefix_messages: None,
         messages,
         system_prompt: p.string_opt_alias("system_prompt", "systemPrompt"),
         model: p.str_opt("model").map(String::from),

@@ -314,6 +314,13 @@ pub struct TextGenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "{ secs: number, nanos: number }")]
     pub turn_bound: Option<std::time::Duration>,
+    /// Index into `messages` of the first message after the sender's stable prefix (a mind's
+    /// epoch body). A local engine checkpoints there (`checkpoint_user_message`), so the next
+    /// request sharing the prefix resumes at it instead of the engine's last step-spaced
+    /// checkpoint. `None` = no stable prefix named; cloud providers never see it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number")]
+    pub stable_prefix_messages: Option<usize>,
 }
 
 /// Constrains the model's output format. OpenAI-compatible serialization:

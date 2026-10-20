@@ -757,6 +757,7 @@ async fn call_llm(
 
     // Use AI provider module - routes to DeepSeek, Anthropic, OpenAI, etc.
     let request = TextGenerationRequest {
+        stable_prefix_messages: None,
         messages,
         system_prompt: None,
         model: Some(model.to_string()),

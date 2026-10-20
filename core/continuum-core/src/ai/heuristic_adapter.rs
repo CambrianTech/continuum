@@ -574,6 +574,7 @@ mod tests {
 
     fn req_with(messages: Vec<ChatMessage>) -> TextGenerationRequest {
         TextGenerationRequest {
+            stable_prefix_messages: None,
             messages,
             system_prompt: None,
             model: Some(HEURISTIC_DEFAULT_MODEL.to_string()),

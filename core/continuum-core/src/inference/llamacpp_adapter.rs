@@ -756,6 +756,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // off the first turn; on M5 Metal with a larger model the
         // save is multiples of that.
         let warmup_request = TextGenerationRequest {
+            stable_prefix_messages: None,
             messages: vec![crate::ai::types::ChatMessage::text("user", "Hi")],
             system_prompt: None,
             model: None,
@@ -1501,6 +1502,7 @@ mod tests {
 
     fn text_request(response_format: Option<ResponseFormat>) -> TextGenerationRequest {
         TextGenerationRequest {
+            stable_prefix_messages: None,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: MessageContent::Text("Return JSON.".to_string()),
@@ -1731,6 +1733,7 @@ mod tests {
         let prompt = "Write a Rust function `fn is_palindrome(s: &str) -> bool` \
             that ignores case and non-alphanumeric characters. Reply with only the code.";
         let make_req = |adapters: Option<Vec<ActiveAdapterRequest>>| TextGenerationRequest {
+            stable_prefix_messages: None,
             messages: vec![ChatMessage {
                 role: "user".to_string(),
                 content: MessageContent::Text(prompt.to_string()),

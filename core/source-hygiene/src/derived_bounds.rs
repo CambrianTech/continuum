@@ -139,7 +139,8 @@ impl DerivedBounds {
         let end = file
             .raw
             .lines()
-            .position(|l| l.starts_with("#[cfg(test)]"))
+            // A file whose own inner attribute gates it to tests has no production half.
+            .position(|l| l.starts_with("#[cfg(test)]") || l.starts_with("#![cfg(test)]"))
             .unwrap_or(usize::MAX); // no test mod in this file = every line is production
         file.raw
             .lines()

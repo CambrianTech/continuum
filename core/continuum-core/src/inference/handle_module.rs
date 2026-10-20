@@ -675,6 +675,7 @@ mod tests {
 
     fn empty_request() -> TextGenerationRequest {
         TextGenerationRequest {
+            stable_prefix_messages: None,
             messages: vec![user_msg("test prompt")],
             system_prompt: None,
             model: None,

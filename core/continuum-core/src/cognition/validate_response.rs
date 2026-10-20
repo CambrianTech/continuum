@@ -210,6 +210,7 @@ fn build_validate_generation_request(
     model: String,
 ) -> TextGenerationRequest {
     TextGenerationRequest {
+        stable_prefix_messages: None,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),

@@ -184,6 +184,7 @@ pub async fn evaluate_gating(
     let prompt = build_gating_prompt(&request.context);
 
     let gen_request = TextGenerationRequest {
+        stable_prefix_messages: None,
         messages: vec![
             ChatMessage {
                 role: "system".to_string(),

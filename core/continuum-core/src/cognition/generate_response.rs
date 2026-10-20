@@ -408,6 +408,7 @@ pub fn build_response_generation_request(
     start_ms: u64,
 ) -> TextGenerationRequest {
     TextGenerationRequest {
+        stable_prefix_messages: None,
         messages: build_response_messages(&request.context, start_ms),
         system_prompt: None,
         model: Some(model),

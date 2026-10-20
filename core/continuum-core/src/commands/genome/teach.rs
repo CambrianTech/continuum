@@ -483,6 +483,7 @@ async fn teacher_generate(
 ) -> Result<TeacherGeneration, CommandError> {
     let request_id = uuid::Uuid::new_v4().to_string();
     let request = TextGenerationRequest {
+        stable_prefix_messages: None,
         messages,
         system_prompt: None,
         model: Some(model.to_string()),

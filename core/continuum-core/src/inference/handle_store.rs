@@ -420,6 +420,7 @@ mod tests {
 
     fn req_with_text(text: &str) -> TextGenerationRequest {
         TextGenerationRequest {
+            stable_prefix_messages: None,
             messages: vec![user_msg(text)],
             system_prompt: None,
             model: None,

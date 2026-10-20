@@ -59,4 +59,11 @@ personaId?: string,
  * floors govern alone. Serialized as serde's `{secs, nanos}` so the SERVING peer's
  * lane honours it too.
  */
-turnBound?: { secs: number, nanos: number }, };
+turnBound?: { secs: number, nanos: number }, 
+/**
+ * Index into `messages` of the first message after the sender's stable prefix (a mind's
+ * epoch body). A local engine checkpoints there (`checkpoint_user_message`), so the next
+ * request sharing the prefix resumes at it instead of the engine's last step-spaced
+ * checkpoint. `None` = no stable prefix named; cloud providers never see it.
+ */
+stablePrefixMessages?: number, };
