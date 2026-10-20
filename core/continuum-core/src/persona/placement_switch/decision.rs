@@ -164,7 +164,7 @@ pub(crate) struct SeatFit {
 }
 
 impl SeatFit {
-    pub(super) fn of(i: &PlacementInputs) -> Self {
+    pub(crate) fn of(i: &PlacementInputs) -> Self {
         Self { window: i.seat_window, requirement: i.requirement }
     }
 }
@@ -361,4 +361,3 @@ pub fn choose_offloads(
     }
     out
 }
-

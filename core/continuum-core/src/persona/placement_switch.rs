@@ -10,7 +10,8 @@
 //!
 //! The switch is the adapter she runs on. It holds her REMOTE lane and, built on first
 //! need, her HOME adapter from the same local factory every resident uses; the seat she
-//! is on is one atomic. [`decide`] is the pure rule (unit-tested); [`follow_the_fleet`]
+//! is on is one atomic. [`decide`] is the pure rule (unit-tested);
+//! `modules::grid::placement::follow_the_fleet` owns the Grid orchestration and
 //! applies it once per grid tick from the capacity ledger's beacon ages and the
 //! breaker's cold state. Every move is a probe AND a line for the org room — this is a
 //! decided, receipted, reversible move, not the silent substitution
@@ -36,8 +37,6 @@ use uuid::Uuid;
 
 mod adapter;
 mod decision;
-mod fleet;
-mod opportunity;
 #[cfg(test)]
 mod tests;
 
@@ -52,8 +51,6 @@ pub(crate) use decision::{
     decide_opportunity, opportunity_cooldown_ms, seat_starves, OpportunityInputs,
     SeatFit, SELF_SEAT_REASON,
 };
-pub use fleet::follow_the_fleet;
-pub(crate) use opportunity::follow_the_allocation;
 
 /// Every live switch on this node, by persona. The factory registers at bind; the grid
 /// tick walks it. A despawned persona's switch stays until her id is re-bound (a stale

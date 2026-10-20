@@ -1,5 +1,14 @@
 //! Beacon-driven recovery and offload orchestration.
-use super::*;
+use crate::persona::placement_switch::{
+    choose_offloads, decide, moves_between_machines, seat_starves, switches, LocalShape,
+    PeerOffer, PlacementInputs, PlacementMove, PlacementSwitch, Seat, SeatFit,
+    MOVE_COOLDOWN_MS, REMOTE_SEAT_FRESH_MS,
+};
+use std::sync::Arc;
+use uuid::Uuid;
+
+mod opportunity;
+use opportunity::follow_the_allocation;
 
 /// One pass: read beacon ages, decide per switch (fall home / return), then offload a
 /// starved node's tail minds onto peers' free lanes. Returns the org-room lines. Called
@@ -284,4 +293,3 @@ pub async fn follow_the_fleet(
     lines.extend(follow_the_allocation(now_ms).await);
     lines
 }
-

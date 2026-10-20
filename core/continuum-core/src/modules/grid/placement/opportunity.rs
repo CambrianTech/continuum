@@ -1,5 +1,7 @@
 //! Apply the allocator's better-seat opportunities between turns.
-use super::*;
+use crate::persona::placement_switch::{
+    decide_opportunity, opportunity_cooldown_ms, switches, OpportunityInputs, Seat,
+};
 
 /// The opportunity pass (card 10bba591): read the grid allocator's last publish and,
 /// for every switch the allocation seats somewhere strictly better than where she sits,
@@ -150,4 +152,3 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
     }
     lines
 }
-

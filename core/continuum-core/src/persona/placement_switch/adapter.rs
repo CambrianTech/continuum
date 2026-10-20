@@ -491,4 +491,3 @@ impl AIProviderAdapter for PlacementSwitch {
         self.current().is_production_capable()
     }
 }
-
