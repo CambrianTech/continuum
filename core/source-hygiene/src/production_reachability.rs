@@ -82,8 +82,11 @@ const CONSTRUCTOR_SHAPES: &[&str] = &[
 /// five defects above were each individually "not worth blocking on" and collectively
 /// cost days. If your new type trips this, the fix is to WIRE it or to not land it
 /// yet; a type with no caller is not finished work.
+// 60 -> 61, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
+// production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
+// a85454889 + this change, 2026-10-20).
 #[cfg(test)]
-const BASELINE_UNWIRED: usize = 60;
+const BASELINE_UNWIRED: usize = 61;
 
 pub struct ProductionReachability;
 

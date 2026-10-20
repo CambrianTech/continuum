@@ -190,8 +190,8 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
     roots
 }
 
-/// The PRODUCTION half of a source file (see [`SourceFile::production`]): everything
-/// before its first `#[cfg(test)]` that is CODE, not prose. Matching the raw string
+/// The PRODUCTION half of a source file (see [`SourceFile::production`]): every line
+/// not gated by a `#[cfg(test)]` that is CODE, not prose. Matching the raw string
 /// would truncate at the first doc comment that merely MENTIONS test-gating, and module
 /// headers in this crate do exactly that, including this one. Found by the guard's own
 /// positive control: the naive form excluded nearly all of `source_hygiene/mod.rs` from
@@ -202,19 +202,138 @@ pub fn workspace_src_roots() -> Vec<PathBuf> {
 /// this, every `mod tests;` split read as all-production and charged its unwraps and
 /// spawns to the ratchets (card 0af5d5ec, 2026-10-18).
 ///
-/// The cut is a COLUMN-ZERO `#[cfg(test)]`: a test mod sits at file scope. An indented
-/// `#[cfg(test)]` (a test-only helper inside an `impl`) is not the end of production: cut
-/// there, `cognition/llm_deliberation_faculty.rs` hid ~9,000 production lines from every
-/// ratchet but `derived_bounds`, which had already cut at column zero for this reason
-/// (found 2026-10-20 when deleting one such helper surfaced 4 hidden unwraps).
+/// A COLUMN-ZERO `#[cfg(test)]` gates one file-scope item: that item is test code and
+/// nothing else is. An indented `#[cfg(test)]` (a test-only helper inside an `impl`) is
+/// scanned as production, erring toward noise: cut there, `cognition/llm_deliberation_faculty.rs`
+/// hid ~9,000 production lines from every ratchet (found 2026-10-20).
+///
+/// Only the gated ITEM is test code, never the rest of the file. The first cut stopped
+/// at the first column-zero `#[cfg(test)]`, which is the end of production only when the
+/// test mod is the file's last item. A split that declares `#[cfg(test)] mod tests;` with
+/// the other modules near the top (llamacpp_adapter.rs, line 93 of 934), or a gated test
+/// const above the code (generate_response.rs, line 75 of 644), hid everything below it:
+/// a split read as 10 unwraps removed when none were (found on #5225, 2026-10-20).
+/// Lines of a gated item are blanked, not dropped, so line numbers stay true.
 pub fn production_half(src: &str) -> String {
-    match src.lines().position(|l| {
-        let code = split_code_and_comment(l).0;
-        code.starts_with("#[cfg(test)]") || code.trim_start().starts_with("#![cfg(test)]")
-    }) {
-        Some(line_idx) => src.lines().take(line_idx).collect::<Vec<_>>().join("\n"),
-        None => src.to_string(),
+    let lines: Vec<&str> = src.lines().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    let mut gated = false;
+    let mut i = 0;
+    while i < lines.len() {
+        let code = split_code_and_comment(lines[i]).0;
+        if code.trim_start().starts_with("#![cfg(test)]") {
+            gated = true;
+            break; // the whole file from here is a test module moved out of its owner
+        }
+        if !code.starts_with("#[cfg(test)]") {
+            out.push(lines[i]);
+            i += 1;
+            continue;
+        }
+        let end = gated_item_end(&lines, i + 1);
+        out.extend(std::iter::repeat_n("", end + 1 - i));
+        gated = true;
+        i = end + 1;
     }
+    if !gated {
+        return src.to_string();
+    }
+    while out.last().is_some_and(|l| l.trim().is_empty()) {
+        out.pop();
+    }
+    out.join("\n")
+}
+
+/// Index of the last line of the item starting at or after `from` (attributes, blank
+/// lines and comments before it belong to it). The item ends on the line where its
+/// braces close, or on its `;` at depth zero when it opens none (`mod tests;`, a
+/// multi-line `static ... = ...;`). Read as one character stream, not line by line: a
+/// test module's multi-line string fixtures (JSON, source snippets, raw strings) carry
+/// braces that a per-line count read as the module's end, leaking the rest of the tests
+/// into production. An item that never closes runs to the end of the file.
+fn gated_item_end(lines: &[&str], from: usize) -> usize {
+    let last = lines.len().saturating_sub(1);
+    let Some(head) = (from..lines.len()).find(|&k| {
+        let code = split_code_and_comment(lines[k]).0.trim();
+        !code.is_empty() && !code.starts_with("#[")
+    }) else {
+        return last;
+    };
+    let text = lines[head..].join("\n");
+    let b = text.as_bytes();
+    let ident = |at: usize| b[at].is_ascii_alphanumeric() || b[at] == b'_';
+    let (mut depth, mut line, mut i, mut opened) = (0usize, head, 0usize, false);
+    while i < b.len() {
+        match b[i] {
+            b'\n' => line += 1,
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i + 1 < b.len() && b[i + 1] != b'\n' {
+                    i += 1;
+                }
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
+                    line += usize::from(b[i] == b'\n');
+                    i += 1;
+                }
+                i += 1;
+            }
+            // A raw string, r"…" / r#"…"# / br#"…"#: no escapes, ends at `"` + the same hashes.
+            b'r' if (i == 0 || !ident(i - 1)) || (b[i - 1] == b'b' && (i < 2 || !ident(i - 2))) => {
+                let hashes = b[i + 1..].iter().take_while(|&&c| c == b'#').count();
+                if b.get(i + 1 + hashes) == Some(&b'"') {
+                    i += 2 + hashes;
+                    while i < b.len() && !(b[i] == b'"' && b[i + 1..].iter().take(hashes).all(|&c| c == b'#') && b.len() - i > hashes) {
+                        line += usize::from(b[i] == b'\n');
+                        i += 1;
+                    }
+                    i += hashes;
+                }
+            }
+            b'"' => {
+                i += 1;
+                while i < b.len() && b[i] != b'"' {
+                    if b[i] == b'\\' {
+                        // An escape, including the `\` + newline continuation: its newline still counts.
+                        line += usize::from(b.get(i + 1) == Some(&b'\n'));
+                        i += 2;
+                        continue;
+                    }
+                    line += usize::from(b[i] == b'\n');
+                    i += 1;
+                }
+            }
+            // A char literal ('{', '\'', '\u{7d}') is skipped whole; a lifetime ('a, 'static)
+            // has no closing quote right after its first character and is left alone.
+            b'\'' => {
+                if b.get(i + 1) == Some(&b'\\') {
+                    i += 2;
+                    while i < b.len() && b[i] != b'\'' {
+                        i += 1;
+                    }
+                } else if b.get(i + 2) == Some(&b'\'') {
+                    i += 2;
+                }
+            }
+            b'{' => {
+                depth += 1;
+                opened = true;
+            }
+            b'}' => {
+                depth = depth.saturating_sub(1);
+                // `};` / `});` closes the item on this line too; the `;` arm takes it.
+                let rest = text[i + 1..].split('\n').next().unwrap_or(""); // unwrap_or: split always yields one piece
+                if depth == 0 && opened && !rest.contains(';') {
+                    return line;
+                }
+            }
+            b';' if depth == 0 => return line,
+            _ => {}
+        }
+        i += 1;
+    }
+    last
 }
 
 /// Read every `.rs` file under `root`, pre-split into production and test halves.
@@ -580,6 +699,24 @@ mod tests {
         assert_eq!(production_half(inline), "fn real() {}");
         let prose = "//! Mentions #![cfg(test)] in prose only.\nfn real() {}\n";
         assert_eq!(production_half(prose), prose, "a mention in a comment is not the marker");
+    }
+
+    // what this catches: the first cut's blind spot. A `mod tests;` declared with the other
+    // modules near the top, or a gated test const above the code, hid every production line
+    // below it (llamacpp_adapter.rs on #5225: 10 unwraps read as removed when none were).
+    #[test]
+    fn only_the_gated_item_is_test_code_never_the_rest_of_the_file() {
+        let declared = "mod a;\n#[cfg(test)]\nmod tests;\nfn real() { x.unwrap(); }\n";
+        assert_eq!(production_half(declared), "mod a;\n\n\nfn real() { x.unwrap(); }");
+        let konst = "#[cfg(test)]\n#[allow(dead_code)]\nstatic LOCK: Lazy<M> =\n    Lazy::new(|| M::new());\nfn real() { y.unwrap(); }\n";
+        assert!(production_half(konst).ends_with("fn real() { y.unwrap(); }"));
+        assert!(!production_half(konst).contains("LOCK"));
+        let mid = "#[cfg(test)]\nmod tests {\n    fn t() { let s = \"}\"; let c = '}'; }\n}\nfn after() { z.unwrap(); }\n";
+        let p = production_half(mid);
+        assert!(p.contains("fn after()") && !p.contains("fn t()"), "{p:?}");
+        assert_eq!(p.lines().count(), 5, "line numbers stay true");
+        let helper = "fn real() {}\n#[cfg(test)]\nfn helper() {\n    q.unwrap();\n}\nfn more() {}\n";
+        assert_eq!(production_half(helper), "fn real() {}\n\n\n\n\nfn more() {}");
     }
 
     /// What this catches: the production/test split silently swallowing the whole
