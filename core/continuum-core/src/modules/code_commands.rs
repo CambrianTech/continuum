@@ -157,11 +157,8 @@ pub(crate) fn hands_of(ctx: &Ctx) -> HandsKey {
 /// citizens/peers/<peer>/workspace`, keyed by the peer's `peer_id.to_string()`
 /// exactly as [`caller_id`] forms it.
 pub(crate) fn citizen_layer_path(peer: &str) -> Result<std::path::PathBuf, CommandError> {
-    let home = std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| CommandError::Internal("no home dir for citizen layer".into()))?;
+    let home = crate::paths::continuum_home()
+        .map_err(|e| CommandError::Internal(format!("citizen layer: {e}")))?;
     Ok(home
         .join("citizens")
         .join("peers")

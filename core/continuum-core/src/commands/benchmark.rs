@@ -5366,12 +5366,7 @@ pub(crate) fn scan_run_cards(
     run_id_filter: Option<&str>,
     limit: usize,
 ) -> Result<RunScan, String> {
-    let base = std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| "no home dir".to_string())?
-        .join("progress");
+    let base = crate::paths::continuum_home()?.join("progress");
     let now_ms = crate::time::EpochMs::now().millis();
     let mut cards: Vec<BenchRunCard> = Vec::new();
     let entries = std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;

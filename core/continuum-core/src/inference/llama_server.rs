@@ -1067,7 +1067,7 @@ fn engine_help_lists_train_dir(help: &str) -> bool {
 /// decision in `disk_eviction`). `None` without a home directory: training is then off,
 /// never pointed at a temp dir nothing governs.
 pub fn engine_train_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".continuum").join("cache").join("engine-train"))
+    crate::paths::continuum_home().ok().map(|h| h.join("cache").join("engine-train"))
 }
 
 /// PURE: the bare file name a gene is staged under inside the engine's --train-dir, the
