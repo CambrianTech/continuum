@@ -215,10 +215,11 @@ impl CrateRule for ProductionReachability {
             // "Its own file" is its owning module: a test module moved into a sibling
             // `tests.rs` still constructs the type in its OWN tests. Read as external, it
             // made two test-only types look wired the day #5224 moved 69 test modules.
-            let own_counts = match moved_tests.get(file.owning_module()) {
-                Some(tests) if !file.is_moved_test() => Self::identifier_counts(&format!("{}\n{tests}", file.raw)),
-                _ => Self::identifier_counts(&file.raw),
+            let own_text = match moved_tests.get(file.owning_module()) {
+                Some(tests) if !file.is_moved_test() => format!("{}\n{tests}", file.raw),
+                _ => file.raw.clone(),
             };
+            let own_counts = Self::identifier_counts(&own_text);
             for (line, name) in Self::declared_types(file) {
                 if !Self::is_machinery(file, &name) || Self::surfaced_by_alias(file, &name) {
                     continue;
