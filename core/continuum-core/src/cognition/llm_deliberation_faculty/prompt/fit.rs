@@ -71,7 +71,7 @@ impl LlmDeliberationFaculty {
     /// its budget, the front is dropped in chunks of `budget/8` (floored at 512
     /// tokens) rather than message-by-message. See [`Self::fit_messages`].
     // context-budget-exempt: a stability/latency trade ratio, not a token budget — the actual chunk derives from the live budget at the call
-    const FRONT_DROP_QUANTUM_DIVISOR: usize = 8;
+    pub(in super::super) const FRONT_DROP_QUANTUM_DIVISOR: usize = 8;
 
     /// Fit an already-built conversation to `budget_tokens` — with a
     /// QUANTIZED, whole-message front drop, because the fit's cut point is the
@@ -371,10 +371,10 @@ impl LlmDeliberationFaculty {
 #[derive(Default)]
 pub(in super::super) struct ContextComposition {
     pub(in super::super) context_window: u32,
-    framing_tokens: usize,
+    pub(in super::super) framing_tokens: usize,
     pub(in super::super) conversation_tokens: usize,
-    ctx_floor: usize,
-    after_framing: usize,
+    pub(in super::super) ctx_floor: usize,
+    pub(in super::super) after_framing: usize,
     pub(in super::super) tool_tokens: usize,
     /// WHY the surface priced in `tool_tokens` is the one sent: the receipt that says which
     /// arm put a 38-tool surface on a CPU lane (card 3026b83e).
@@ -415,18 +415,18 @@ impl<'a> GroundingPiece<'a> {
         }
     }
 
-    const NOTICE_SUFFIX: &'static str = " more not shown (context budget)";
+    pub(in super::super) const NOTICE_SUFFIX: &'static str = " more not shown (context budget)";
 
-    const EXPAND_PREFIX: &'static str = " — run `";
+    pub(in super::super) const EXPAND_PREFIX: &'static str = " — run `";
 
-    const EXPAND_SUFFIX: &'static str = "` to see all ";
+    pub(in super::super) const EXPAND_SUFFIX: &'static str = "` to see all ";
 
     /// The omission notice, exactly as `append_notice` writes it. `omitted` is what
     /// THIS packing left out of `parts`. A source that cut its own list short adds
     /// an uncounted remainder: the count becomes `N+` (or no number when the packing
     /// omitted nothing), and the verb says "see all" with no total, because the
     /// true total is unknown.
-    fn notice_text(c: &Contribution, omitted: usize) -> String {
+    pub(in super::super) fn notice_text(c: &Contribution, omitted: usize) -> String {
         let count = match (omitted, c.source_truncated) {
             (0, true) => String::new(),
             (n, true) => format!("{n}+"),
@@ -448,11 +448,11 @@ impl<'a> GroundingPiece<'a> {
         text
     }
 
-    fn notice_bytes(c: &Contribution, omitted: usize) -> usize {
+    pub(in super::super) fn notice_bytes(c: &Contribution, omitted: usize) -> usize {
         Self::notice_text(c, omitted).len()
     }
 
-    fn append_notice(c: &Contribution, omitted: usize, out: &mut String) {
+    pub(in super::super) fn append_notice(c: &Contribution, omitted: usize, out: &mut String) {
         out.push_str(&Self::notice_text(c, omitted));
     }
 

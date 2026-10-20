@@ -149,7 +149,7 @@ impl EvidenceFit {
 /// last moves away has to say so on its own receipt: "she repeated herself" must be
 /// traceable to "we cut the evidence she had already done it" without reading a capture.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ShedPreview {
+pub(in super::super) struct ShedPreview {
     pub(in super::super) messages: usize,
     pub(in super::super) tokens: usize,
     pub(in super::super) own_moves: usize,
