@@ -34,6 +34,28 @@ jobs:
           # The scans read `core/continuum-core/src`; vendor_pin additionally asks git
           # for the recorded submodule pointer, so the checkout must be able to answer.
           submodules: recursive
+          # The oversized-edit gate diffs against the PR's base.
+          fetch-depth: 0
+
+      # NEW RULE (Joel, 2026-10-20): no edit to a file over 1,000 lines without breaking it
+      # apart. Every Rust file a PR adds or modifies is at most 1,000 lines at its head; an
+      # edit that only deletes lines is exempt, because it shrinks the monolith. Seconds, no build.
+      - name: no edit to an oversized file without breaking it apart
+        if: github.event_name == 'pull_request'
+        run: |
+          base="origin/${{ github.base_ref }}"
+          bad=0
+          while IFS=$'\t' read -r added deleted path; do
+            case "$path" in *.rs) ;; *) continue ;; esac
+            case "$path" in core/vendor/*|*/vendored/*) continue ;; esac
+            [ -f "$path" ] || continue
+            lines=$(wc -l < "$path")
+            if [ "$lines" -gt 1000 ] && [ "$added" != "0" ]; then
+              echo "::error file=$path::$path is $lines lines and this PR adds $added to it. Break it apart by owner in this PR (pure moves, one owner per file) so it ends at most 1,000 lines."
+              bad=1
+            fi
+          done < <(git diff --numstat "$base"...HEAD)
+          exit $bad
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup show
