@@ -58,6 +58,15 @@
 /// disabled classes entirely.
 #[macro_export]
 macro_rules! probe {
+    // Preserve an established tracing target when a responsibility moves modules.
+    (target: $target:expr, class = $class:expr, $($rest:tt)*) => {
+        ::tracing::event!(
+            target: $target,
+            ::tracing::Level::INFO,
+            probe_class = $class,
+            $($rest)*
+        )
+    };
     // probe!(class = "foo", field = val, ..., "message format" args...)
     (class = $class:expr, $($rest:tt)*) => {
         ::tracing::event!(
@@ -438,6 +447,7 @@ mod tests {
         let total = crate::time_sync!("outer", {
             let inner_result = crate::time_sync!("inner", { 21 + 21 });
             crate::probe!(class = "state", inner = inner_result);
+            crate::probe!(target: "continuum_core::inference::llama_server", class = "state", inner = inner_result);
             inner_result
         });
         assert_eq!(total, 42);
