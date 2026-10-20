@@ -764,7 +764,7 @@ impl LlmDeliberationFaculty {
     /// so it neither bleeds identity nor replays the transcript (the echo-loop root
     /// cause — PERSONA-COGNITION-PIPELINE §7.5).
     #[cfg(test)]
-    fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
+    pub(in super::super) fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
         self.fit_messages(self.messages_unfitted(ws, None), budget_tokens)
             .expect("test workspace must fit its complete current stimulus and action result")
             .messages
