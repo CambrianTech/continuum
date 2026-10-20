@@ -68,26 +68,14 @@ use crate::persona::rag_budget::{ContinuationCursor, RagContext, RagDelivery, Ra
 /// misleading `room-board` in #3874).
 pub(crate) const SOURCE_ID: &str = "room-kanban";
 
-/// Most cards this source will render in full, per turn.
-///
-/// NOT a token budget — a RELEVANCE bound. The per-card loop below used to be limited only
-/// by whatever budget remained, so the board grew to fill the prompt: measured 2026-08-17,
-/// 38 cards / 9,284 chars / 49.7% of an 18,697-char system prompt on a routine ambient turn.
-/// That makes every citizen think slower as the backlog grows, which is exactly backwards
-/// for a work board.
-///
-/// Sized from what it MUST cover, not picked: the `[your work]` and `[available work]` leads
-/// each name up to 5 cards, so the detailed render must be able to carry both (10) or the
-/// summaries would promise cards the detail then omits — a citizen seeing "you hold 5" above
-/// a list of 3 would reasonably read the substrate as inconsistent. Two spare keeps a
-/// just-created card visible in the same turn it arrives. Ten is the floor this cannot go
-/// below without re-deriving the lead caps with it.
-const MAX_RENDERED_CARDS: usize = 12;
-
 /// Token estimate — the ONE canonical chars/4 estimator
 /// (`cognition::token_budget`), shared by every RAG source so the replay
 /// ledger's numbers match.
-use crate::cognition::token_budget::estimate_prompt_tokens as estimate_tokens;
+use crate::cognition::token_budget::{estimate_prompt_tokens as estimate_tokens, fair_share_cap};
+
+/// The verb that lists the whole board; named on every lead and on the delivery when
+/// cards were omitted (whole-or-handle).
+const EXPAND_COMMAND: &str = "work/list";
 
 /// Reads the CURRENT ROOM's complete work board from airc. Production rides
 /// `airc_lib::Airc::work_board_complete` (the WHOLE board, not the recent
@@ -410,7 +398,7 @@ impl RagSource for RoomBoardSource {
     }
 
     fn expand_command(&self) -> Option<&'static str> {
-        Some("work/list")
+        Some(EXPAND_COMMAND)
     }
 
     /// MEASURED 26 tokens: the `[board] you hold N card(s); M claimable.`
@@ -530,7 +518,6 @@ impl RoomBoardSource {
 
         let mut items: Vec<RagItem> = Vec::new();
         let mut tokens_used: u32 = 0;
-        let mut dropped: usize = 0;
         // One clock reading per delivery — every lease judgment in this block
         // (held / lapsed / available) agrees on the same instant.
         let now_ms = crate::time::EpochMs::now().millis();
@@ -638,102 +625,9 @@ impl RoomBoardSource {
             }
         }
 
-        if !mine.is_empty() {
-            let titles = mine
-                .iter()
-                .take(5)
-                .map(|c| {
-                    let checkout = crate::modules::card_staging::checkout_path_for(&self.persona_id, c);
-                    held_card_line(c, checkout.as_deref())
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let lead = format!(
-                "[your work] you HOLD {n} card(s) on this board — claimed by you, not \
-                 yet done:\n{titles}\nThey remain yours until finished (work/state) or \
-                 released (work/release); your tools do the work.",
-                n = mine.len(),
-            );
-            let lead_tokens = estimate_tokens(&lead);
-            if tokens_used.saturating_add(lead_tokens) <= budget {
-                tokens_used += lead_tokens;
-                items.push(RagItem {
-                    content: lead,
-                    tokens: lead_tokens,
-                    metadata: serde_json::json!({ "kind": "your-work-lead" }),
-                });
-            }
-        }
-
-        // The detailed available-work lead (#122): unclaimed cards are work waiting for
-        // someone to pick up. Glass-boxed live 2026-07-10: with hands proven and an
-        // open card sitting on the board, both personas drifted to identity-monologue
-        // chatter instead of noticing the available work — an unclaimed card, flat in
-        // the list, out-salienced by nothing. Names their count + titles + how to pick
-        // one up. A true structural fact she WEIGHS — it never says she must
-        // ([[no-hardcoded-heuristics-to-steer-cognition]]). Whole board still follows
-        // verbatim in airc's own order — this adds salience, it does not re-rank or
-        // filter the board itself.
-        if !working && !open.is_empty() {
-            // NEWEST FIRST, not board order (measured 2026-08-07).
-            //
-            // Only five titles are ever shown. Taken in board order, a card dispatched
-            // MINUTES AGO lands at the end and is structurally unshowable: the citizen reads
-            // an honest "N card(s) are claimable" above five titles that are all weeks old,
-            // and the work someone just handed her is not among them. Measured live — three
-            // freshly dispatched bench cards were in every citizen's board cache and in none
-            // of their prompt windows, while the count was correct the whole time. The count
-            // was never the lie; the sample was.
-            //
-            // Recency is the right key because a just-created card is the one most likely to
-            // be waiting on THIS citizen right now, and because it is the only ordering under
-            // which "someone dispatched you work" is reliably visible within one turn. Ties
-            // keep board order, so a static board renders exactly as before.
-            //
-            // Bounded-window eviction: a chatty writer pushes the signal out of a fixed-size
-            // view, and the diagnostic goes blind precisely when the board is busiest. The
-            // five-title cap is fine; taking the OLDEST five was not.
-            let mut newest: Vec<&&airc_work::WorkCard> = open.iter().collect();
-            newest.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
-            let titles = newest
-                .iter()
-                .take(5)
-                .map(|c| {
-                    let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
-                    format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-            let more = open.len().saturating_sub(5);
-            let tail = if more > 0 {
-                format!("\n  …and {more} more unclaimed")
-            } else {
-                String::new()
-            };
-            let lead = format!(
-                "[available work] {n} card(s) on this board are claimable — unclaimed, \
-                 or their holder's claim lease lapsed:\n{titles}{tail}\nA card is \
-                 picked up with `work/claim` (its id); once claimed it is yours to \
-                 work with your tools. Claimable work waits until someone chooses it.",
-                n = open.len(),
-            );
-            let lead_tokens = estimate_tokens(&lead);
-            if tokens_used.saturating_add(lead_tokens) <= budget {
-                tokens_used += lead_tokens;
-                items.push(RagItem {
-                    content: lead,
-                    tokens: lead_tokens,
-                    metadata: json!({ "kind": "available-work-lead", "open_count": open.len() }),
-                });
-            }
-        }
-
-        // Resolve every DISTINCT non-self owner on this board to a published
-        // name, in ONE pass, before rendering. Joel's rule (2026-08-06): a card
-        // must say WHO holds it — "someone" (or an 8-hex prefix that reads as
-        // one) leaves a citizen unable to reach out, which turns a coordination
-        // problem into a dead end. Owners with nothing published stay absent
-        // from the map and render as their short id, which is still addressable.
+        // Resolve every DISTINCT non-self owner on this board to a published name, in ONE
+        // pass, before rendering. Joel's rule (2026-08-06): a card must say WHO holds it —
+        // an owner with nothing published renders as its short id, still addressable.
         let mut owner_peers: Vec<airc_core::PeerId> = Vec::new();
         for card in &board.cards {
             if let Some(o) = card.owner {
@@ -744,51 +638,115 @@ impl RoomBoardSource {
         }
         let names = self.reader.peer_names(&owner_peers).await;
 
-        // RELEVANCE ORDER + A HARD CAP, not "however many the budget happens to fit".
-        //
-        // Measured 2026-08-17 on a live ambient turn (capture 762a806b): this loop rendered
-        // 38 distinct cards into 9,284 chars — 49.7% of an 18,697-char system prompt, ~3,100
-        // of the turn's ~12,286 prefill tokens. Every citizen paid it on every self-tick.
-        //
-        // Two things make that wrong rather than merely expensive:
-        //
-        // 1. IT IS REDUNDANT. The `[board]` headline and the `[your work]` / `[available
-        //    work]` leads above already carry the counts and the top titles — and they were
-        //    ADDED because this dump is unreliable under budget (see the Asha 2026-08-06
-        //    note above). Rendering the summary AND the exhaustive list means the same facts
-        //    are paid for twice, and the expensive copy is the one that gets truncated.
-        // 2. IT SCALES THE WRONG WAY. Bounded only by remaining budget, the board grows to
-        //    fill the prompt, so every citizen thinks SLOWER as the backlog grows. A team
-        //    that accumulates work gets progressively less able to do it — the opposite of
-        //    what a work board is for.
-        //
-        // So: order by what she can act on (her own holds first, then newest claimable —
-        // the same recency argument the available-work lead already makes), take at most
-        // `MAX_RENDERED_CARDS`, and let the leads plus `work/list` carry the tail. Counts in
-        // the headline stay the TRUE totals; nothing here makes the board smaller than it is,
-        // only shorter than it was.
+        // RELEVANCE ORDER, then the BUDGET decides how many cards show: her own holds
+        // first, then newest claimable (a just-created card is the one most likely waiting
+        // on her). Before 2026-10-19 a count of 12 cut this list whatever the window held;
+        // a large window now shows every card it can pay for, and the cards that do not fit
+        // are COUNTED and named with `work/list` (the delivery's continuation), never
+        // silently cut. The headline keeps the TRUE totals.
         let mut ordered: Vec<&airc_work::WorkCard> = board.cards.iter().collect();
         ordered.sort_by_key(|c| {
             let mine_first = !(c.owner.map(|o| o.as_uuid()) == Some(self.persona_id));
             // Negate for newest-first without needing a reversed comparator.
             (mine_first, std::cmp::Reverse(c.created_at_ms))
         });
-        let render_budget_cards = MAX_RENDERED_CARDS.min(ordered.len());
+        let rendered: Vec<(&airc_work::WorkCard, String, u32)> = ordered
+            .into_iter()
+            .map(|card| {
+                let content = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
+                let tokens = estimate_tokens(&content);
+                (card, content, tokens)
+            })
+            .collect();
+
+        // The leads (what she holds, what is claimable) are summaries that name their
+        // cards; the card list is the detail. They are participants in ONE budget: each
+        // asks for its whole self, and when the asks exceed what is left they share it
+        // max-min (`fair_share_cap`), so a small board shows everything and a large one
+        // cannot let a lead eat the detail or the detail eat the leads.
+        // Newest first, so what a tight window omits is the OLDEST hold (the cards below are
+        // in the same relevance order: hers, then newest claimable).
+        let mut mine_newest = mine.clone();
+        mine_newest.sort_by_key(|c| std::cmp::Reverse(c.created_at_ms));
+        let mine_lines: Vec<String> = mine_newest
+            .iter()
+            .map(|c| {
+                let checkout = crate::modules::card_staging::checkout_path_for(&self.persona_id, c);
+                held_card_line(c, checkout.as_deref())
+            })
+            .collect();
+        let mine_header = format!(
+            "[your work] you HOLD {n} card(s) on this board — claimed by you, not yet done:",
+            n = mine.len(),
+        );
+        let mine_footer = "They remain yours until finished (work/state) or released \
+                           (work/release); your tools do the work.";
+        // NEWEST FIRST, not board order (measured 2026-08-07): a card dispatched minutes
+        // ago must be visible in the one turn it matters; the count was never the lie, the
+        // sample was. Ties keep board order.
+        let mut newest: Vec<&&airc_work::WorkCard> = open.iter().collect();
+        newest.sort_by(|a, b| b.created_at_ms.cmp(&a.created_at_ms));
+        let open_lines: Vec<String> = newest
+            .iter()
+            .map(|c| {
+                let id8: String = c.card_id.as_uuid().to_string().chars().take(8).collect();
+                format!("  {id8}: \"{}\" ({:?})", c.title, c.priority)
+            })
+            .collect();
+        let open_header = format!(
+            "[available work] {n} card(s) on this board are claimable — unclaimed, or their \
+             holder's claim lease lapsed:",
+            n = open.len(),
+        );
+        let open_footer = "A card is picked up with `work/claim` (its id); once claimed it is \
+                           yours to work with your tools. Claimable work waits until someone \
+                           chooses it.";
+        let show_open = !working && !open.is_empty();
+        let left = budget.saturating_sub(tokens_used);
+        let mut demands: Vec<u32> = Vec::new();
+        if !mine.is_empty() {
+            demands.push(Lead::new(&mine_header, &mine_lines, mine_footer, "held").fit(u32::MAX).map_or(0, |l| l.tokens));
+        }
+        if show_open {
+            demands.push(Lead::new(&open_header, &open_lines, open_footer, "unclaimed").fit(u32::MAX).map_or(0, |l| l.tokens));
+        }
+        demands.push(rendered.iter().fold(0u32, |a, (_, _, t)| a.saturating_add(*t)));
+        let lead_share = fair_share_cap(&demands, left).unwrap_or(u32::MAX); // None = every ask fits whole: no share binds
+
+        if !mine.is_empty() {
+            if let Some(lead) = Lead::new(&mine_header, &mine_lines, mine_footer, "held").fit(lead_share.min(budget.saturating_sub(tokens_used))) {
+                tokens_used += lead.tokens;
+                items.push(RagItem {
+                    content: lead.text,
+                    tokens: lead.tokens,
+                    metadata: serde_json::json!({ "kind": "your-work-lead", "shown": lead.shown }),
+                });
+            }
+        }
+        if show_open {
+            if let Some(lead) = Lead::new(&open_header, &open_lines, open_footer, "unclaimed").fit(lead_share.min(budget.saturating_sub(tokens_used))) {
+                tokens_used += lead.tokens;
+                items.push(RagItem {
+                    content: lead.text,
+                    tokens: lead.tokens,
+                    metadata: json!({ "kind": "available-work-lead", "open_count": open.len(), "shown": lead.shown }),
+                });
+            }
+        }
 
         let mut cards_delivered = 0usize;
-        for card in ordered.into_iter().take(render_budget_cards) {
-            let content = Self::render(card, &board, self.persona_id, now_ms, &names, focused_submission != Some(card.card_id));
-            let tokens = estimate_tokens(&content);
-            if tokens_used.saturating_add(tokens) > budget {
-                // Budget exhausted — a truncated board is still truthful for the
-                // cards it names. Count the drops so truncation is visible, not
-                // silent. Atomic unit = one card; no continuation (see module doc).
-                // Counted over CARDS, excluding the available-work lead item.
-                dropped = board.cards.len() - cards_delivered;
+        // Cards the window cannot pay for are not cut silently: a closing marker item
+        // counts them and names `work/list`. Its cost is reserved up front, at the widest
+        // count the board could omit.
+        let omitted_notice = |n: usize| format!("…{n} more card(s) not shown (context budget) — run `{EXPAND_COMMAND}` to see all {}", board.cards.len());
+        let notice_reserve = estimate_tokens(&omitted_notice(board.cards.len()));
+        for (card, content, tokens) in rendered {
+            if tokens_used.saturating_add(tokens).saturating_add(notice_reserve) > budget
+                && !(cards_delivered + 1 == board.cards.len() && tokens_used.saturating_add(tokens) <= budget)
+            {
+                // The window is spent. Every card after this one is omitted, counted
+                // against the TRUE board size and named by the marker below.
                 break;
-                // (unchanged: `dropped` is measured against the TRUE board size, so a
-                // budget-truncated render and a cap-truncated one report the same honest
-                // "how many did she not see".)
             }
             tokens_used += tokens;
             cards_delivered += 1;
@@ -797,41 +755,29 @@ impl RoomBoardSource {
                 tokens,
                 metadata: json!({
                     "card_id": card.card_id.as_uuid().to_string(),
-                    // Serde, NOT `format!("{:?}")`. Debug output is a developer convenience
-                    // with NO stability guarantee — renaming a variant silently changes it
-                    // and nothing fails to compile. It also gave the substrate TWO string
-                    // forms of one enum: `{:?}` wrote "Claimed" here while `work/list`'s
-                    // serde wrote "claimed", so a reader that guessed wrong compared against
-                    // a spelling that never occurs. Consumers parse this straight back into
-                    // `CardState` and match on VARIANTS, so the compiler owns the mapping.
-                    // Joel 2026-08-06: "use constants or enums so you can't make
-                    // capitalization type issues. Use rust as it is meant to be used, for
-                    // predictable behavior."
+                    // Serde, NOT `format!("{:?}")`: Debug has no stability guarantee and gave
+                    // the substrate two spellings of one enum. Consumers parse this back into
+                    // `CardState` and match on VARIANTS.
                     "state": card.state,
                     "owner": card.owner.map(|o| o.as_uuid().to_string()),
-                    // Is the hold STILL GOOD? `state` alone cannot answer it: a card sits in
-                    // `Claimed` forever while its lease quietly expires, so a consumer reading
-                    // only the state sees "taken" for work that is free to take. That is the
-                    // exact blindness that stalled every citizen on this node 2026-08-06 —
-                    // 19 cards, all Claimed, all leases stale, all held by the four residents,
-                    // and each of them read the board as "nothing available" and passed.
-                    //
-                    // Carried as a BOOLEAN FACT from the same `claim_is_live` the card line
-                    // renders from, so the anchor and the line can never disagree about whether
-                    // work is takeable. A consumer that wants "available" must not re-derive it
-                    // from a string.
+                    // Is the hold STILL GOOD? `state` alone cannot answer it (a card sits in
+                    // `Claimed` while its lease quietly expires). A BOOLEAN FACT from the same
+                    // `claim_is_live` the card line renders from, so the anchor and the line
+                    // can never disagree about whether work is takeable.
                     "claim_live": claim_is_live(card, now_ms),
                     "priority": card.priority,
                     "lane_id": card.lane_id.map(|l| l.as_uuid().to_string()),
                 }),
             });
         }
-
-        // Cap-truncation counts as dropped just like budget-truncation. Without this the
-        // debug line would report dropped=0 on a capped board and the shortening would be
-        // invisible in the one place an operator looks for it.
-        if dropped == 0 && cards_delivered < board.cards.len() {
-            dropped = board.cards.len() - cards_delivered;
+        let dropped = board.cards.len() - cards_delivered;
+        if dropped > 0 {
+            let content = omitted_notice(dropped);
+            let tokens = estimate_tokens(&content);
+            if tokens_used.saturating_add(tokens) <= budget {
+                tokens_used += tokens;
+                items.push(RagItem { content, tokens, metadata: json!({ "kind": "omitted-cards", "omitted_cards": dropped }) });
+            }
         }
 
         // Budget too small to carry even one card → no block.
@@ -856,6 +802,69 @@ impl RoomBoardSource {
             continuation: None,
             resolution_used: resolution,
         }
+    }
+}
+
+/// A lead: a header, one line per card it names, a footer. `fit` shows the most lines
+/// whose whole lead costs at most `budget` tokens and says how many it left out and the
+/// verb that lists them — the budget, not a count, decides how many titles show.
+struct Lead<'a> {
+    header: &'a str,
+    lines: &'a [String],
+    footer: &'a str,
+    noun: &'a str,
+}
+
+struct FittedLead {
+    text: String,
+    tokens: u32,
+    shown: usize,
+}
+
+impl<'a> Lead<'a> {
+    fn new(header: &'a str, lines: &'a [String], footer: &'a str, noun: &'a str) -> Self {
+        Self { header, lines, footer, noun }
+    }
+
+    fn render(&self, shown: usize) -> String {
+        let titles = self.lines[..shown].join("\n");
+        let omitted = self.lines.len() - shown;
+        let tail = if omitted > 0 {
+            format!("\n  …and {omitted} more {} — `{EXPAND_COMMAND}` lists them all", self.noun)
+        } else {
+            String::new()
+        };
+        format!("{}\n{titles}{tail}\n{}", self.header, self.footer)
+    }
+
+    /// The fullest lead within `budget`, or None when not even one line fits.
+    fn fit(&self, budget: u32) -> Option<FittedLead> {
+        let cost = |k: usize| estimate_tokens(&self.render(k));
+        let n = self.lines.len();
+        // everything shown has no tail, so it is checked on its own: it can cost less than
+        // showing one fewer (which carries the tail)
+        let shown = if n == 0 {
+            return None;
+        } else if cost(n) <= budget {
+            n
+        } else {
+            // below n the tail has a fixed shape, so cost grows with k: binary search
+            let (mut lo, mut hi) = (0usize, n - 1);
+            while lo < hi {
+                let mid = (lo + hi).div_ceil(2);
+                if cost(mid) <= budget {
+                    lo = mid;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            if lo == 0 {
+                return None;
+            }
+            lo
+        };
+        let text = self.render(shown);
+        Some(FittedLead { tokens: estimate_tokens(&text), text, shown })
     }
 }
 
@@ -1040,72 +1049,56 @@ mod tests {
     // renders into the [room-kanban] grounding block — every card with its
     // column, title, priority, and owner. This is the Observer perceiving the
     // board (task #117 O6), distinct from active-work's own-claims-only view.
-    // what this catches: THE BOARD EATING THE PROMPT. The per-card loop used to be bounded
-    // only by remaining budget, so it grew with the backlog — measured live 2026-08-17 at 38
-    // cards / 9,284 chars / 49.7% of an 18,697-char system prompt on a routine ambient turn,
-    // ~3,100 of ~12,286 prefill tokens, paid by every citizen on every self-tick. The
-    // property that makes it a defect and not just a cost: a team accumulating work gets
-    // progressively SLOWER at doing it.
-    //
-    // Pins all three halves of the fix — the cap holds, her OWN card survives the cut even
-    // when it is the oldest on the board (relevance order, not board order), and the headline
-    // still reports the TRUE totals so nothing is hidden, only shortened.
+    // what this catches: a constant deciding how much of the board she sees. The list was cut
+    // at 12 cards whatever the window held (and the leads named five), so a large window
+    // still showed twelve. The budget alone decides now: a window that holds the board shows
+    // ALL of it, her own card first even as the oldest, with the TRUE totals in the headline;
+    // a window that cannot is COUNTED and handed the verb, never silently cut.
     #[tokio::test]
-    async fn a_large_board_is_capped_and_keeps_her_own_card_first() {
+    async fn the_budget_decides_how_many_cards_show_and_the_rest_are_named() {
         let mut cards: Vec<WorkCard> = Vec::new();
-        // Hers, and DELIBERATELY the oldest — under the old board-order loop with a cap this
-        // would be the first thing cut, which is the worst possible card to lose.
         let mut mine = card("MY held card", CardState::InProgress, Some(
             airc_core::PeerId::from_uuid(persona()),
         ));
-        mine.created_at_ms = 1; // oldest on the board
+        mine.created_at_ms = 1; // oldest on the board: the worst card to lose
         cards.push(mine);
         for i in 0..40 {
             let mut c = card(&format!("filler card {i}"), CardState::Open, None);
-            c.created_at_ms = 1_000_000 + i as u64; // all newer than hers
+            c.created_at_ms = 1_000_000 + i as u64;
             cards.push(c);
         }
         let total = cards.len();
-
         let reader = Arc::new(StubReader::new(snapshot(cards)));
         let source = RoomBoardSource::new(persona(), reader);
-        // A budget large enough that the CAP, not the budget, is what binds — otherwise this
-        // would pass for the old reason and prove nothing.
-        let delivery = source
-            .deliver(&ctx(), 100_000, ResolutionPreference::Raw)
-            .await;
+        let card_items = |d: &RagDelivery| -> Vec<String> {
+            d.items.iter().filter(|i| i.metadata.get("card_id").is_some()).map(|i| i.content.clone()).collect()
+        };
 
-        let rendered: Vec<&RagItem> = delivery
-            .items
-            .iter()
-            .filter(|i| i.metadata.get("card_id").is_some())
-            .collect();
-        assert!(
-            rendered.len() <= MAX_RENDERED_CARDS,
-            "board must be capped at {MAX_RENDERED_CARDS}, rendered {} of {total} — \
-             an uncapped board grows into the prompt as the backlog grows",
-            rendered.len()
-        );
-        assert!(
-            rendered.len() >= 10,
-            "the cap must still cover both 5-card leads, got {}",
-            rendered.len()
-        );
-        assert!(
-            rendered[0].content.contains("MY held card"),
-            "her OWN card must survive the cut and lead, even as the oldest on the board: {}",
-            rendered[0].content
-        );
-        // Counts stay TRUE — shortening the render must never shrink the reported board.
-        let headline = &delivery.items[0];
+        let big = source.deliver(&ctx(), 100_000, ResolutionPreference::Raw).await;
+        let rendered = card_items(&big);
+        assert_eq!(rendered.len(), total, "a window that holds the board shows every card, not twelve");
+        assert!(rendered[0].contains("MY held card"), "her own card leads: {}", rendered[0]);
+        assert!(big.items.iter().all(|i| i.metadata["kind"] != "omitted-cards"), "nothing omitted, nothing to name");
+        let headline = &big.items[0];
         assert_eq!(headline.metadata["kind"], "board-headline");
-        assert_eq!(headline.metadata["held_count"], 1);
-        assert_eq!(headline.metadata["open_count"], 40);
-        assert!(
-            headline.content.contains("40 claimable"),
-            "headline reports the real total, not the rendered slice: {}",
-            headline.content
-        );
+        assert!(headline.content.contains("40 claimable"), "{}", headline.content);
+        let lead = big.items.iter().find(|i| i.metadata["kind"] == "available-work-lead").expect("lead");
+        assert_eq!(lead.metadata["shown"], 40, "the lead names every claimable card the window holds");
+
+        let small = source.deliver(&ctx(), 400, ResolutionPreference::Raw).await;
+        let shown = card_items(&small);
+        assert!(!shown.is_empty() && shown.len() < total);
+        let marker = small.items.iter().find(|i| i.metadata["kind"] == "omitted-cards").expect("omitted cards are counted");
+        assert_eq!(marker.metadata["omitted_cards"], total - shown.len(), "the omitted count is exact");
+        assert!(marker.content.contains("work/list"), "{}", marker.content);
+        assert_eq!(source.expand_command(), Some("work/list"));
+        assert!(small.tokens_used <= 400, "{}", small.tokens_used);
+        let lead = small.items.iter().find(|i| i.metadata["kind"] == "available-work-lead").expect("lead");
+        // the order is relevance (hers, then newest claimable): the NEWEST claimable card is
+        // the first one named and the oldest are the ones left out
+        assert!(lead.content.contains("filler card 39"), "the newest claimable card survives: {}", lead.content);
+        assert!(!lead.content.contains("filler card 0\""), "the oldest is the one omitted: {}", lead.content);
+        assert!(lead.content.contains("more unclaimed") && lead.content.contains("work/list"), "{}", lead.content);
     }
 
     #[tokio::test]
@@ -1613,7 +1606,7 @@ mod tests {
             delivery.tokens_used
         );
         assert!(delivery.items.len() < 50, "truncated below the full board");
-        assert!(delivery.continuation.is_none());
+        assert!(delivery.items.iter().any(|i| i.metadata["kind"] == "omitted-cards"), "the omitted cards are counted");
     }
 
     // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,
