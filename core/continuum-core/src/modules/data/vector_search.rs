@@ -32,11 +32,11 @@ impl DataState {
 
         let corpus = self.vector_corpus(handle, collection).await?;
 
-        if corpus.is_empty() {
+        if corpus.is_empty() || k == 0 {
             return Ok(VectorSearchResults {
                 results: Vec::new(),
                 count: 0,
-                corpus_size: 0,
+                corpus_size: corpus.len(),
             });
         }
 
@@ -45,22 +45,38 @@ impl DataState {
         // Step 2: Parallel cosine similarity with rayon
         let query_vec = &query_vector;
 
-        let mut scored: Vec<(String, f64)> = corpus
+        let mut scored: Vec<(usize, f64)> = corpus
             .par_iter()
-            .filter_map(|cv| {
+            .enumerate()
+            .filter_map(|(index, cv)| {
                 let score = Self::cosine_similarity(query_vec, &cv.embedding);
                 if score >= threshold {
-                    Some((cv.id.clone(), score))
+                    Some((index, score))
                 } else {
                     None
                 }
             })
             .collect();
 
-        // Sort by score descending
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let top_k: Vec<(String, f64)> = scored.into_iter().take(k).collect();
+        // Preserve stable corpus order for equal scores, including signed zero.
+        // NaNs never enter this list: they fail the threshold comparison above.
+        let rank = |a: &(usize, f64), b: &(usize, f64)| {
+            if a.1 == b.1 {
+                a.0.cmp(&b.0)
+            } else {
+                b.1.total_cmp(&a.1)
+            }
+        };
+        if k < scored.len() {
+            scored.select_nth_unstable_by(k, rank);
+            scored.truncate(k);
+        }
+        scored.sort_unstable_by(rank);
+        // Only selected hits acquire owned IDs; rejected candidates borrow the corpus.
+        let top_k: Vec<(String, f64)> = scored
+            .into_iter()
+            .map(|(index, score)| (corpus[index].id.clone(), score))
+            .collect();
         let count = top_k.len();
 
         // Build results
@@ -74,7 +90,9 @@ impl DataState {
                 if !result.success {
                     return Err(match result.error {
                         Some(error) => format!("vector result {collection}/{id}: {error}"),
-                        None => format!("vector result {collection}/{id} read failed without an error receipt"),
+                        None => format!(
+                            "vector result {collection}/{id} read failed without an error receipt"
+                        ),
                     });
                 }
                 let record = result.data.ok_or_else(|| {
@@ -115,5 +133,4 @@ impl DataState {
             corpus_size,
         })
     }
-
 }
