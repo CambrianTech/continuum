@@ -366,7 +366,7 @@ mod tests {
         const GB: u64 = 1024 * 1024 * 1024;
 
         // 32 GiB VRAM, 30 GiB free → 24 GiB budgeted (0.80).
-        let profile = crate::capacity::system_profile::discrete_fixture(32, 30, vec![]);
+        let profile = crate::capacity::profile_fixtures::discrete_fixture(32, 30, vec![]);
         // 8 experts firing on layer 0, descending hit counts → a clear hot ranking.
         let mut hits = HashMap::new();
         for e in 0..8u32 {

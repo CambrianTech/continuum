@@ -212,7 +212,7 @@ mod tests {
                 role: DriveRole::Cold,
             });
         }
-        crate::capacity::system_profile::discrete_fixture(vram_gb, gpu_free_gb, drives)
+        crate::capacity::profile_fixtures::discrete_fixture(vram_gb, gpu_free_gb, drives)
     }
 
     fn footprint(weights_gb: u64) -> ModelFootprint {

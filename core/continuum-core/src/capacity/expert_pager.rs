@@ -136,7 +136,7 @@ mod tests {
 
     /// A 5090-shaped box: 32 GiB VRAM, 30 GiB live-free → 24 GiB *budgeted* (0.80).
     fn bigmama() -> SystemProfile {
-        crate::capacity::system_profile::discrete_fixture(32, 30, vec![])
+        crate::capacity::profile_fixtures::discrete_fixture(32, 30, vec![])
     }
 
     fn profile_with_hot_experts(n: u32) -> ExpertActivationProfile {

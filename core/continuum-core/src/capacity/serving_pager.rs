@@ -254,7 +254,7 @@ mod tests {
     // serving budget fits a small number of experts, forcing the hot set to be a SUBSET —
     // which is the whole point of residency.
     fn small_budget_profile() -> SystemProfile {
-        crate::capacity::system_profile::discrete_fixture(32, 30, vec![])
+        crate::capacity::profile_fixtures::discrete_fixture(32, 30, vec![])
     }
 
     // what this catches: the observer→driver wiring — the Arc the driver hands out is the
