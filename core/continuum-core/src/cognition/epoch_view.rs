@@ -15,8 +15,9 @@
 //! either; only a change in what they say does.
 //!
 //! The epoch turns over, compacting to each source's current rendering, only when the
-//! window's budget says the view no longer fits (leaving room for the measured per-act
-//! growth), when she acts in another activity room, or when the head changes. Every turnover
+//! served window cannot hold it (leaving room for the measured per-act growth), when one act
+//! adds more than the lane prefills in the audience's time to first token, when she acts in
+//! another activity room, or when the head changes. Every turnover
 //! is a `context.epoch.turnover` probe with its reason and the characters it reclaimed.
 //!
 //! A view renders on a copy of the epoch; the faculty commits it only when the model answered
@@ -141,9 +142,12 @@ fn fingerprint(text: &str) -> u64 {
 
 /// Why the view started a new epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Turnover {
-    /// The window's budget could not hold the epoch with this act appended.
-    Budget,
+pub(super) enum Turnover {
+    /// The served window could not hold the epoch with this act appended.
+    Window,
+    /// What this one act adds is more than the lane prefills in the audience's time to first
+    /// token; the epoch turns over to what that time holds.
+    TailOverTimeBound,
     /// She acts in another activity room: its conversation is not this epoch's.
     RoomChanged,
     /// The head's rendering changed (policy, identity, its grounding's content).
@@ -157,13 +161,24 @@ enum Turnover {
 impl Turnover {
     fn as_str(self) -> &'static str {
         match self {
-            Self::Budget => "budget",
+            Self::Window => "window",
+            Self::TailOverTimeBound => "tail_over_time_bound",
             Self::RoomChanged => "room_changed",
             Self::HeadChanged => "head_changed",
             Self::ToolsChanged => "tools_changed",
             Self::ModelChanged => "model_changed",
         }
     }
+}
+
+/// Why a budget turnover happened, with the numbers that decided it.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TurnoverCause {
+    pub reason: Turnover,
+    /// Tokens after her epoch's cached prefix: what this act would prefill.
+    pub fresh_tokens: usize,
+    /// What the lane prefills in the audience's time to first token at its measured rate.
+    pub tail_bound_tokens: usize,
 }
 
 /// The rendered system head and tool surface an epoch was opened with (Codex on #5210): the
@@ -196,6 +211,9 @@ pub(super) struct EpochView {
     /// Tokens the body grew by on the last act that appended to a live epoch: the measured
     /// room a turnover leaves for the next act.
     growth: usize,
+    /// Tokens of the body as the last answered request carried it: the prefix her slot holds,
+    /// so an act prefills only what follows it.
+    cached: usize,
     // TODO(fable, follow-up to #5210 with Codex): one epoch across her activities. Source ids
     // carry their room, access scope is bound separately from attention, and a scope change
     // that must remove data turns over at once; until then another room starts a new epoch.
@@ -213,6 +231,7 @@ impl Default for EpochView {
             head: None,
             standing: HashMap::new(),
             growth: 0,
+            cached: 0,
             room: None,
         }
     }
@@ -303,6 +322,7 @@ impl EpochView {
         }
         self.room = Some(room);
         let live = !self.epoch.events().is_empty();
+        self.cached = self.render().iter().map(&cost).sum();
         let appended = self.observe_blocks(body);
         let grown: usize = appended.iter().map(&cost).sum();
         if live {
@@ -325,6 +345,11 @@ impl EpochView {
         len
     }
 
+    /// Tokens of the body her slot already holds from the last answered request.
+    pub(super) fn cached_tokens(&self) -> usize {
+        self.cached
+    }
+
     /// The most a live epoch has grown by in one act: the room a turnover leaves.
     pub(super) fn growth(&self) -> usize {
         self.growth
@@ -340,9 +365,21 @@ impl EpochView {
         history: &mut Vec<ChatMessage>,
         epoch_len: usize,
         body: &[Block],
+        cause: TurnoverCause,
         persona: &str,
     ) -> (usize, Vec<(usize, ChatMessage)>) {
-        self.probe_turnover(Turnover::Budget, persona);
+        crate::probe!(
+            class = "context.epoch.turnover",
+            persona = %persona,
+            reason = cause.reason.as_str(),
+            epoch = self.epoch.id(),
+            superseded_chars = self.epoch.superseded_chars(),
+            epoch_chars = self.epoch.chars(),
+            cached_tokens = self.cached,
+            fresh_tokens = cause.fresh_tokens,
+            tail_bound_tokens = cause.tail_bound_tokens,
+            "her view no longer fits: compacted to each source's latest version"
+        );
         let offered: HashMap<&SourceId, Option<&String>> = body
             .iter()
             .flat_map(|b| b.items.iter().map(move |(s, _)| (s, b.alternative.as_ref())))
@@ -456,6 +493,10 @@ pub(super) fn content_fingerprint(content: &str, parts: &[String]) -> u64 {
 mod tests {
     use super::*;
 
+    fn cause() -> TurnoverCause {
+        TurnoverCause { reason: Turnover::Window, fresh_tokens: 0, tail_bound_tokens: 0 }
+    }
+
     fn block(source: &str, text: &str) -> Block {
         Block::new("user", SourceId(source.into()), text.into())
     }
@@ -514,7 +555,7 @@ mod tests {
         act(&mut view, room, &[block("turn/old", "old turn"), ring(1, "r1 long"), block("faculty/board#0", "board v1")]);
         let body = [block("turn/old", "old turn"), ring(1, "r1 long"), block("faculty/board#0", "board v2")];
         let (mut history, len) = act(&mut view, room, &body);
-        let (compacted, pointers) = view.turn_over(&mut history, len, &body, "test");
+        let (compacted, pointers) = view.turn_over(&mut history, len, &body, cause(), "test");
         assert_eq!(compacted, 3, "board v1 superseded away");
         assert_eq!(texts(&history[..compacted]), ["old turn", "r1 long", "board v2"]);
         assert_eq!(pointers.len(), 1);
@@ -536,7 +577,7 @@ mod tests {
         act(&mut view, room, &[Block::turns("user", vec![t("a"), t("b"), t("c")])]);
         let body = [Block::turns("user", vec![t("b"), t("c"), t("d")])];
         let (mut history, len) = act(&mut view, room, &body);
-        let (compacted, _) = view.turn_over(&mut history, len, &body, "test");
+        let (compacted, _) = view.turn_over(&mut history, len, &body, cause(), "test");
         let kept = texts(&history[..compacted]).join("\n");
         assert_eq!(kept, "Ana: b\nAna: c\nAna: d", "the turns still offered survive the turnover");
     }

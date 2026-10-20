@@ -47,7 +47,9 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 156,582 after the deliberation body became an epoch (cognition/epoch_view.rs): the stability
 // reordering and sticky collapse it superseded were deleted, and the standing grounding plan
 // moved to cognition/grounding_plan.rs.
-const BASELINE_LINES_OVER: usize = 156_582;
+// 156,464 after the epoch bounded only an act's fresh tail by prefill time: the faculty's
+// latency fill cap, its shed preview and prefill_rate::latency_fill_cap were deleted.
+const BASELINE_LINES_OVER: usize = 156_464;
 
 pub struct FileSize;
 

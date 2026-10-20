@@ -191,23 +191,6 @@ impl PromptFeedback {
 /// voice, not so much it drifts.
 const DEFAULT_TEMPERATURE: f32 = 0.7;
 
-/// The act-latency target the CONVERSATION fill budgets against — how long a turn's
-/// history prefill is allowed to take. From the act-latency law: human expectations set
-/// the bar; a turn that spends minutes re-reading history before thinking is disqualified
-/// regardless of how smart the answer is. Window HEADROOM above this is reserve, not
-/// default fill.
-///
-/// This is the LATENCY INTENT and nothing else — the half of the cap that is a product
-/// decision. The other half, tokens-per-second, is MEASURED on this node
-/// ([`crate::inference::prefill_rate::latency_fill_cap`]); it used to be a companion
-/// constant of 500 t/s, and `30 × 500` made the fill a flat 15,000 tokens on every box in
-/// the fleet. Measured on the M5 the night that was found (`inference.prefill.complete`):
-/// `ingest_tok_per_s` of 70, 90 and 92, and the IntelMac at ~25 — so the constant was
-/// 5–20× optimistic, the "30 second" target was really ~187 s, and the clip took 27% of a
-/// 67,072-token lane away from Aiko while failing its own stated purpose on every machine.
-// context-budget-exempt: a TIME target, not a token budget — the token cap is time x THIS node's MEASURED prefill rate (`prefill_rate::latency_fill_cap`)
-const PREFILL_TARGET_SECONDS: usize = 30;
-
 /// The kind of turn a completion is for — its latency budget and its runaway bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TurnKind {
@@ -527,16 +510,9 @@ pub struct LlmDeliberationFaculty {
     /// the ceiling; deliberately NOT a process global, because that value feeds a
     /// decision and a global read inside a decision makes tests order-dependent.
     working_set: Option<super::working_set::WorkingSetRegistry>,
-    /// The prefix the engine REPORTED it reused on her last answered prompt (`cache_n`),
-    /// bounded by the conversation that prompt carried. That much rides free on the next
-    /// turn; the act-latency cap bounds only what is new beyond it. MEASURED, never
-    /// assumed: the first cut of this credited her whole last conversation on the premise
-    /// that her slot held it, and on the M5 (2026-10-18) it did not (reuse 13-18%), so the
-    /// prompt grew with the window (median 8.5k tokens at a 25.6k window to 50.6k at 74k)
-    /// and every act paid it cold: 76 s to 547 s per prefill at the same ~105 tokens/s.
-    /// Credited from the engine's own count, the cap grows when reuse works and falls back
-    /// to the latency target when it does not.
-    cached_prefix_tokens: std::sync::atomic::AtomicUsize,
+    /// This node's measured prefill rate for a model (`prefill_rate::measured_rate_for`): the
+    /// time bound on what an act adds to her epoch. A seam so tests name the rate.
+    prefill_rate: fn(&str) -> crate::inference::prefill_rate::MeasuredRate,
     /// Her user-side view, held across acts: it only appends until it turns over.
     epoch: parking_lot::Mutex<epoch_view::EpochView>,
 }
@@ -573,7 +549,7 @@ impl LlmDeliberationFaculty {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
-            cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
+            prefill_rate: crate::inference::prefill_rate::measured_rate_for,
             epoch: parking_lot::Mutex::new(epoch_view::EpochView::default()),
         }
     }
@@ -581,6 +557,13 @@ impl LlmDeliberationFaculty {
     /// Share the registry this mind reports its turn demand into — the measurement
     /// `serving_plan` provisions the window from. Wired by the live spawn path; absent
     /// in tests, where there is no planner to inform.
+    /// Name the prefill rate the fresh-tail bound reads, instead of this box's measurements.
+    #[cfg(test)]
+    fn with_prefill_rate(mut self, rate: fn(&str) -> crate::inference::prefill_rate::MeasuredRate) -> Self {
+        self.prefill_rate = rate;
+        self
+    }
+
     pub fn with_working_set(mut self, registry: super::working_set::WorkingSetRegistry) -> Self {
         self.working_set = Some(registry);
         self
@@ -2366,35 +2349,6 @@ impl LlmDeliberationFaculty {
         bound
     }
 
-    /// The conversation fill this turn may cost, and the rate it was derived from.
-    ///
-    /// `PREFILL_TARGET_SECONDS` is the latency INTENT; the tokens it buys are THIS
-    /// node's, read through the same ladder the decode side landed (#4283) — fresh, else
-    /// stale, else the box's most conservative measured rate, and only with nothing ever
-    /// measured a named floor ([`crate::inference::prefill_rate::latency_fill_cap`]).
-    /// Use the captured request binding: a degraded serving snapshot may temporarily
-    /// clear active_model while this same model still owns the pending turn.
-    fn latency_fill_cap(
-        model: &str,
-        rate_for: impl FnOnce(&str) -> crate::inference::prefill_rate::MeasuredRate,
-    ) -> (usize, crate::inference::prefill_rate::MeasuredRate) {
-        // `model` is the one the request carries (`ModelBinding::requested_model`), never
-        // absent: an unbound spawn binding keyed nothing and fell to the unmeasured floor
-        // (card b406e901; Fable on #5130).
-        let rate = rate_for(model);
-        (
-            crate::inference::prefill_rate::latency_fill_cap(PREFILL_TARGET_SECONDS, rate),
-            rate,
-        )
-    }
-
-    /// How much conversation a turn may carry: the NEW prefill the latency target buys at
-    /// this node's rate (never less than the evidence of her own last move), on top of the
-    /// prefix her slot already holds from her last answered prompt, which costs no prefill.
-    fn history_fill_cap(derived_new: usize, last_move_evidence: usize, cached_history: usize) -> usize {
-        derived_new.max(last_move_evidence).saturating_add(cached_history)
-    }
-
     fn holds_work_card(ws: &Workspace) -> bool {
         ws.broadcast
             .iter()
@@ -2454,7 +2408,6 @@ impl LlmDeliberationFaculty {
         binding: &Arc<ModelBinding>,
         view: &DeliberationPromptView,
         engine_prompt_tokens: u32,
-        engine_cached_tokens: u32,
         available: u32,
     ) {
         let Some(calibration) =
@@ -2467,11 +2420,6 @@ impl LlmDeliberationFaculty {
             calibration,
             available,
         })));
-        // What the engine measured as reused is the only prefix credited as free next turn.
-        self.cached_prefix_tokens.store(
-            (engine_cached_tokens as usize).min(view.history_tokens),
-            std::sync::atomic::Ordering::Relaxed,
-        );
         crate::probe!(
             class = "delib.prompt.density",
             persona = %self.persona_name,
@@ -2715,29 +2663,12 @@ impl LlmDeliberationFaculty {
         // turn that cut Benchy's first write mid-call (2026-10-18 02:10Z). Now it trades
         // against history and grounding by priority and never takes from required input.
         //
-        // LATENCY-BUDGETED FILL (act-latency law + compression ladder): a bigger served
-        // window is only a gift if its content earns the prefill time. When the honest
-        // kv-rate fix grew slots to ~134k, the demand-derived budgets happily filled them
-        // — prompts ballooned 19-24k → 24-43k in an afternoon and five concurrent 35k
-        // prefills serialized acts to 339-888s (measured 2026-09-01, the worst of the day,
-        // WITH the best hit rates). So history's claim is capped by a time target — and
-        // the tokens that target buys are THIS node's, never a constant's:
-        // `PREFILL_TARGET_SECONDS × the measured prefill rate`
-        // (`prefill_rate::latency_fill_cap`, the #4283 ladder: fresh → stale → the box's
-        // most conservative curve → a named floor).
-        let (derived_fill_cap, fill_rate) = Self::latency_fill_cap(
-            model, crate::inference::prefill_rate::measured_rate_for,
-        );
-        // A LATENCY BUDGET MAY NOT BUY ITSELF A REPEATED ACT. The cap exists to bound
-        // time-to-first-token; clipping away her own last move and its result costs a
-        // WHOLE EXTRA TURN when she re-issues it, so history's FLOOR is what that evidence
-        // costs — ahead of every optional claim, the reply's desire included. `fit_messages`
-        // then refuses to evict it; this floor is what makes that refusal satisfiable.
+        // HER LAST MOVE IS HISTORY'S FLOOR: re-issuing an act she already ran costs a whole
+        // extra turn, so what her own last move and its outcome cost comes ahead of every
+        // optional claim, the reply's desire included; `fit_messages` refuses to evict it.
+        // History's ceiling is the window: what a turn may cost in prefill TIME is a bound on
+        // what this act adds to her epoch (below), never on the epoch she already holds.
         let evidence = all_messages.recent_move_evidence();
-        // The latency target bounds NEW prefill; what the engine reported it reused on her
-        // last answered prompt rides free (see `cached_prefix_tokens`).
-        let cached_history = self.cached_prefix_tokens.load(std::sync::atomic::Ordering::Relaxed);
-        let latency_fill_cap = Self::history_fill_cap(derived_fill_cap, evidence.tokens, cached_history);
         let required_tokens = all_messages.required_tokens();
         let optional_history = all_messages.tokens().saturating_sub(required_tokens);
         // A quiet self-tick (no required input) still sends her newest whole message.
@@ -2790,7 +2721,7 @@ impl LlmDeliberationFaculty {
                 priority: 5,
                 floor_tokens: history_floor,
                 min_tokens: history_floor,
-                max_tokens: claim(latency_fill_cap.min(optional_history)).max(history_floor),
+                max_tokens: claim(optional_history).max(history_floor),
                 required: false,
             },
             reply,
@@ -2831,43 +2762,6 @@ impl LlmDeliberationFaculty {
             .saturating_sub(selected.tokens)
             .saturating_sub(framing_tokens);
         let window_msg_budget = after_framing.saturating_sub(ctx_floor);
-        let fill_budget = required_tokens.saturating_add(latency_fill_cap);
-        if window_msg_budget > fill_budget {
-            let shed = all_messages.shed_preview(latency_fill_cap);
-            crate::probe!(
-                class = "delib.fill.latency_capped",
-                persona = %self.persona_name,
-                window_budget = window_msg_budget,
-                cap = latency_fill_cap,
-                // A clip is never again invisible: the rate that produced it and where
-                // that rate came from ride the same row. `rate_source="none"` means the
-                // named floor governed and nothing was measured on this box.
-                rate_source = fill_rate.source.label(),
-                measured_prefill_tps = fill_rate.tps.unwrap_or(0.0), // unwrap_or: 0.0 on the receipt means NO rate — rate_source says "none" and the floor governed
-                target_seconds = PREFILL_TARGET_SECONDS,
-                derived_cap = derived_fill_cap,
-                cached_history,
-                // WHAT THE CLIP COSTS HER, in kind and amount — so "she repeated
-                // herself" is traceable to "we cut the evidence she had already done
-                // it" without anyone opening a capture file. At-least figures: a turnover
-                // also frees the measured growth.
-                shed_messages = shed.messages,
-                shed_tokens = shed.tokens,
-                shed_own_moves = shed.own_moves,
-                shed_move_results = shed.results,
-                // …and what it is structurally forbidden to cost her.
-                kept_recent_move_messages = evidence.messages,
-                kept_recent_move_tokens = evidence.tokens,
-                // 0 messages = her last move is further back than the scan bound and is
-                // NOT protected; `truncated` = only a suffix of a longer chain is. The
-                // protection's limits ride its own receipt.
-                kept_recent_move_truncated = evidence.truncated,
-                "conversation fill capped by the act-latency target at THIS node's \
-                 measured prefill rate — window headroom is reserve for content that \
-                 earns its prefill, never default fill; her own last move and its \
-                 result are held out of the drop",
-            );
-        }
         // History gets its grant; the required input is never part of the trade.
         let msg_budget = window_msg_budget.min(
             required_tokens
@@ -2927,25 +2821,48 @@ impl LlmDeliberationFaculty {
         );
 
         let protocol_error = all_messages.active_protocol_error();
-        // The window's budget is the turnover's only budget trigger: while the epoch fits whole
-        // the fit drops nothing and the prefix only grows; when it does not, the epoch
-        // compacts and the fit's quantized front drop leaves it room to grow again.
-        let fit = if all_messages.tokens() <= msg_budget {
-            self.fit_messages(all_messages, msg_budget)
+        // THE PREFILL-TIME BOUND IS ON WHAT THIS ACT ADDS. Her epoch's prefix is already on
+        // her slot; the act prefills only what follows it. Bounding the WHOLE prompt by time
+        // (credited with the engine's lagging reuse) turned the epoch over at 3-15k tokens of
+        // a 185,856-token window, 16 times in 25 acts, and reuse never came (the M5, #5210 at
+        // 9f97bc775). So: the window bounds the epoch; the time bound (this node's measured
+        // rate over the audience's time to first token) bounds the fresh tail.
+        let tail_bound = super::context_budget::ContextBudget::fresh_prefill_tokens(
+            (self.prefill_rate)(model),
+            context_window,
+            crate::cognition::audience::current(),
+        );
+        let fresh = all_messages.tokens().saturating_sub(epoch.cached_tokens());
+        let turnover = if fresh > tail_bound {
+            Some(epoch_view::Turnover::TailOverTimeBound)
+        } else if all_messages.tokens() > msg_budget {
+            Some(epoch_view::Turnover::Window)
         } else {
+            None
+        };
+        let fit = if let Some(reason) = turnover {
+            // Turn over to what fits: after a turnover the whole body is fresh, so a tail over
+            // the time bound fits the time bound (never below the required input).
+            let budget = match reason {
+                epoch_view::Turnover::TailOverTimeBound => msg_budget.min(tail_bound.max(required_tokens)),
+                _ => msg_budget,
+            };
             let (len, pointers) = epoch.turn_over(
                 &mut all_messages.history,
                 all_messages.grounding_at,
                 &all_messages.body,
+                epoch_view::TurnoverCause { reason, fresh_tokens: fresh, tail_bound_tokens: tail_bound },
                 &self.persona_name,
             );
             all_messages.grounding_at = len;
             all_messages.result_pointers = pointers;
-            let fit = self.fit_messages(all_messages, msg_budget);
+            let fit = self.fit_messages(all_messages, budget);
             if let Ok(f) = &fit {
                 epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at));
             }
             fit
+        } else {
+            self.fit_messages(all_messages, msg_budget)
         };
         let (mut fitted, capacity_error) = match fit {
             Ok(fitted) => (fitted, None),
@@ -3149,7 +3066,6 @@ impl LlmDeliberationFaculty {
             input_identity,
             estimated_prompt_tokens,
             completion_reserve: completion_reserve as u32,
-            history_tokens: used_msg_tokens.saturating_sub(required_tokens),
             capacity_error,
             protocol_error,
             messages,
@@ -4170,17 +4086,6 @@ impl EvidenceFit {
     }
 }
 
-/// What a binding fill budget costs her, in KIND and amount. A clip that takes her own
-/// last moves away has to say so on its own receipt: "she repeated herself" must be
-/// traceable to "we cut the evidence she had already done it" without reading a capture.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ShedPreview {
-    messages: usize,
-    tokens: usize,
-    own_moves: usize,
-    results: usize,
-}
-
 impl RecentMove {
     /// Can this unit be held out of a drop against `history_budget`? See [`EvidenceFit`]
     /// — a `CannotFit` is declared and named, never a silent fallback.
@@ -4267,38 +4172,6 @@ impl PromptMessages {
                 .max()
                 .unwrap_or(0), // unwrap_or: the span is non-empty by construction here; 0 is unreachable
         }
-    }
-
-    /// What a `history_budget`-sized fill sheds, in kind and amount — oldest first, whole
-    /// messages, the same ORDER the evictor drops in.
-    ///
-    /// AT LEAST this much: the real drop also frees the measured growth and may advance past a
-    /// broken cluster opener, so this under-reports rather than over-reports. It is a
-    /// receipt, not a second evictor — the decision stays in one place
-    /// ([`LlmDeliberationFaculty::fit_messages`]).
-    fn shed_preview(&self, history_budget: usize) -> ShedPreview {
-        let mut out = ShedPreview::default();
-        let total: usize = self
-            .history
-            .iter()
-            .map(LlmDeliberationFaculty::message_cost)
-            .sum();
-        let mut must_drop = total.saturating_sub(history_budget);
-        for message in &self.history {
-            if must_drop == 0 {
-                break;
-            }
-            let cost = LlmDeliberationFaculty::message_cost(message);
-            must_drop = must_drop.saturating_sub(cost);
-            out.messages += 1;
-            out.tokens += cost;
-            if LlmDeliberationFaculty::is_move_result(message) {
-                out.results += 1;
-            } else if LlmDeliberationFaculty::is_own_move(message) {
-                out.own_moves += 1;
-            }
-        }
-        out
     }
 
     /// Native active batches must preserve exact one-to-one correlation. Legacy
@@ -4435,9 +4308,6 @@ pub struct DeliberationPromptView {
     /// took, under its runaway bound) — charged against the window here, and carried
     /// verbatim as the wire request's `max_tokens`.
     pub completion_reserve: u32,
-    /// The conversation tokens this prompt carries beyond its required input: once the
-    /// engine answers it, the cached prefix the next turn's latency cap rides free.
-    history_tokens: usize,
     pub capacity_error: Option<PromptCapacityError>,
     pub protocol_error: Option<String>,
     /// The role-attributed conversation thread sent to the model — the persona's
@@ -4929,8 +4799,6 @@ impl LlmDeliberationFaculty {
                         &binding,
                         &view,
                         response.usage.input_tokens,
-                        // No timing on the reply = nothing measured as reused = nothing rides free.
-                        response.timing.as_ref().map_or(0, |t| t.cached_tokens),
                         fit_window,
                     );
                     // What she was sent and answered is her epoch now. A refitted view
@@ -8547,7 +8415,7 @@ mod tests {
             let estimate = LlmDeliberationFaculty::messages_cost(&roomy.messages);
             let snapshot = DeliberationPromptView {
                 refit: roomy.refit, system: String::new(), input_identity: [0; 32],
-                estimated_prompt_tokens: estimate, completion_reserve: 0, history_tokens: 0,
+                estimated_prompt_tokens: estimate, completion_reserve: 0,
                 capacity_error: None, protocol_error: None, segments: Vec::new(),
                 messages: roomy.messages, epoch: None,
             };
@@ -9365,35 +9233,6 @@ mod tests {
                 "a bound faculty always names the model it is bound to");
         }
 
-        // what this catches: the latency cap charging her slot's CACHED prefix as fresh
-        // prefill. On the M5 (2026-10-18 09:46-10:00Z) history was granted exactly 16,384
-        // tokens every turn with 15-29k of the window unallocated; the squeezed fit folded
-        // results and dropped grounding differently each turn, the engine matched 40-574
-        // tokens of a 15-20k prompt, and re-prefilled the rest at 75-111 tokens/s. What her
-        // last answered prompt carried rides free; only new history is latency-capped.
-        #[test]
-        fn the_latency_cap_bounds_new_history_and_her_cached_prefix_rides_free() {
-            assert_eq!(LlmDeliberationFaculty::history_fill_cap(16_384, 900, 0), 16_384,
-                "a cold slot: the latency target alone");
-            assert_eq!(LlmDeliberationFaculty::history_fill_cap(16_384, 900, 20_000), 36_384,
-                "a warm slot: her last prompt's history plus the target's worth of new");
-            assert_eq!(LlmDeliberationFaculty::history_fill_cap(10, 900, 20_000), 20_900,
-                "her own last move still floors the new part");
-            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
-            let binding = faculty.binding.load_full();
-            let mut view = faculty.prompt_view_within(&Workspace::new("continue"), 16_384);
-            view.history_tokens = 12_345;
-            let engine_prompt = view.estimated_prompt_tokens as u32 + 1;
-            let credited = |faculty: &LlmDeliberationFaculty| faculty.cached_prefix_tokens.load(std::sync::atomic::Ordering::Relaxed);
-            faculty.learn_prompt_density(&binding, &view, engine_prompt, 0, 16_384);
-            assert_eq!(credited(&faculty), 0, "the engine reused nothing: nothing rides free, the cap is the latency target");
-            faculty.learn_prompt_density(&binding, &view, engine_prompt, 5_000, 16_384);
-            assert_eq!(credited(&faculty), 5_000, "only what the engine measured as reused is credited");
-            faculty.learn_prompt_density(&binding, &view, engine_prompt, 40_000, 16_384);
-            assert_eq!(credited(&faculty), 12_345, "never more than the conversation that prompt carried");
-        }
-
         // what this catches: THE CLIP TAKING AWAY THE EVIDENCE OF WHAT SHE JUST DID.
         //
         // The chain, measured on the M5 2026-09-20: the conversation assembly is
@@ -9407,19 +9246,6 @@ mod tests {
         // consequence, and her own last move is the LAST thing to go.
         #[test]
         fn a_binding_fill_budget_keeps_her_own_last_move_and_its_result() {
-            // card e370a673: a degraded serving snapshot must not erase the
-            // captured request model's measured fill allowance on a retry.
-            use crate::inference::prefill_rate::{MeasuredRate, RateSource};
-            let measured = MeasuredRate { tps: Some(28.4), source: RateSource::Fresh };
-            let (cap, retained) = LlmDeliberationFaculty::latency_fill_cap("bound-model", |model| {
-                assert_eq!(model, "bound-model", "look up the request binding, not current serving readiness");
-                measured
-            });
-            assert_eq!(retained, measured);
-            assert_eq!(cap, (PREFILL_TARGET_SECONDS as f64 * 28.4).floor() as usize);
-            // An absent request model is unrepresentable: the key is always the model the
-            // request carries (`ModelBinding::requested_model`), so no other model's rate
-            // can be borrowed (card b406e901).
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let mut history: Vec<ChatMessage> = (0..40)
@@ -9476,16 +9302,6 @@ mod tests {
             assert!(
                 LlmDeliberationFaculty::messages_cost(&fitted) <= budget,
                 "protecting her last move must never push the prompt over the window"
-            );
-
-            // The clip is LOUD: it says what it cost her, in kind and amount, so "she
-            // repeated herself" is traceable without opening a capture file.
-            let shed = prompt().shed_preview(budget);
-            assert!(shed.messages > 0 && shed.tokens > 0, "a binding clip drops something");
-            assert_eq!(
-                (shed.own_moves, shed.results),
-                (0, 0),
-                "what it sheds is old conversation — never her own move or its result"
             );
 
             // When the budget cannot hold the act and its result at all, the turn
@@ -10127,7 +9943,7 @@ mod tests {
         /// A faculty at `window` whose model answers every act, reporting that it reused the
         /// whole prompt it was sent (as a warm slot does); receipts are saved through `save`.
         fn epoch_faculty(window: u32, acts: usize) -> (LlmDeliberationFaculty, Arc<ScriptedAdapter>, impl Fn(usize, &str)) {
-            let (faculty, adapter, wm) = epoch_faculty_with_memory(window, acts);
+            let (faculty, adapter, wm) = epoch_faculty_with_memory(window, acts, u32::MAX);
             let save = move |i: usize, text: &str| {
                 let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
                 wm.record_receipt_typed(&[], text, None, custody);
@@ -10135,10 +9951,11 @@ mod tests {
             (faculty, adapter, save)
         }
 
-        fn epoch_faculty_with_memory(window: u32, acts: usize) -> (LlmDeliberationFaculty, Arc<ScriptedAdapter>, Arc<crate::cognition::working_memory::WorkingMemory>) {
+        /// `reused`: the prefix the scripted engine reports it reused on every reply.
+        fn epoch_faculty_with_memory(window: u32, acts: usize, reused: u32) -> (LlmDeliberationFaculty, Arc<ScriptedAdapter>, Arc<crate::cognition::working_memory::WorkingMemory>) {
             let answered = || TextGenerationResponse {
                 usage: UsageMetrics { input_tokens: 1, ..Default::default() },
-                timing: Some(crate::ai::types::GenerationTiming { cached_tokens: u32::MAX, ..Default::default() }),
+                timing: Some(crate::ai::types::GenerationTiming { cached_tokens: reused, ..Default::default() }),
                 ..make_response(FinishReason::Stop, "PASS", None)
             };
             let adapter = Arc::new(ScriptedAdapter::new((0..acts).map(|_| answered()).collect()));
@@ -10146,9 +9963,21 @@ mod tests {
             wm.set_served_window(window);
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
                 .with_model_binding(model_binding(adapter.clone(), Some("epoch-model".into()), window))
-                .with_working_memory(Arc::clone(&wm));
+                .with_working_memory(Arc::clone(&wm))
+                .with_prefill_rate(rate_for_a_42k_tail);
             (faculty, adapter, wm)
         }
+
+        /// The M5's measured bound on 2026-10-20 (`cognition.budget.prefill_bound`
+        /// affordable_tokens=42152): a rate that prefills 42,000 tokens in an interactive
+        /// time to first token.
+        fn rate_for_a_42k_tail(model: &str) -> crate::inference::prefill_rate::MeasuredRate {
+            use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
+            assert_eq!(model, "epoch-model", "the bound reads the request's model, never current serving");
+            MeasuredRate { tps: Some(TAIL_BOUND as f64 / Audience::Interactive.ttft().as_secs_f64()), source: RateSource::Fresh }
+        }
+
+        const TAIL_BOUND: usize = 42_000;
 
         /// The body of the request act `n` sent (everything before the facts and the ask),
         /// bounded by the view rendered for it just before it was sent.
@@ -10195,7 +10024,7 @@ mod tests {
         #[tokio::test]
         async fn the_whole_request_holds_its_prefix_while_the_body_grows() {
             let window = 16_384;
-            let (faculty, adapter, wm) = epoch_faculty_with_memory(window, 2);
+            let (faculty, adapter, wm) = epoch_faculty_with_memory(window, 2, u32::MAX);
             let save = |i: usize, text: String| {
                 let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
                 wm.record_receipt_typed(&[], &text, None, custody);
@@ -10245,6 +10074,59 @@ mod tests {
                 second.system_prompt,
                 "rendered fresh for this state the head differs (it takes the room left over): only the binding held it"
             );
+        }
+
+        // what this catches: the live loop on the M5 (#5210 at 9f97bc775, 2026-10-20): the whole
+        // prompt was bounded by prefill time credited with the engine's lagging reuse, so low
+        // reuse made a small budget, the epoch turned over at 3-15k tokens of a 185,856-token
+        // window (16 turnovers in 25 acts, all budget) and reuse never came. Her epoch knows
+        // its own cached share: small tails never turn it over before the window is reached.
+        #[tokio::test]
+        async fn small_tails_never_turn_the_epoch_over_before_the_window_is_reached() {
+            const ACTS: usize = 64;
+            // The engine reports no reuse at all, the worst the lagging report can say.
+            let (faculty, adapter, wm) = epoch_faculty_with_memory(185_856, ACTS, 0);
+            let ws = Workspace::new("continue the card");
+            let (mut previous, mut turned) = (None::<Vec<(String, String)>>, Vec::new());
+            for act in 0..ACTS {
+                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{act:016x}") };
+                wm.record_receipt_typed(&[], &format!("RESULT-{act} {}", "x".repeat(1_500)), None, custody);
+                let view = faculty.prompt_view(&ws);
+                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
+                let body = sent_body_of(&view, &adapter, act);
+                if previous.is_some_and(|p| !body.starts_with(&p)) {
+                    turned.push(act);
+                }
+                previous = Some(body);
+            }
+            assert!(turned.is_empty(), "small tails far from a full window turned the epoch over at acts {turned:?}");
+        }
+
+        // what this catches: one act whose tail is more than the lane prefills in her time to
+        // first token kept whole (minutes of prefill), or a turnover that then fails to
+        // shrink the request to what that time holds. The tail here is optional (a recall far
+        // over the bound); her own act's result is required and stays whole, bound or not.
+        #[tokio::test]
+        async fn a_tail_over_the_time_bound_turns_over_to_what_the_time_holds() {
+            let (faculty, adapter, wm) = epoch_faculty_with_memory(185_856, 3, 0);
+            for i in 0..4 {
+                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
+                wm.record_receipt_typed(&[], &format!("RESULT-{i} {}", "x".repeat(1_500)), None, custody);
+            }
+            let recall = |chars: usize| Contribution::context(FacultyId::Recall, format!("RECALL {}", "y".repeat(chars)), 0.6, "recall").trailing();
+            let mut ws = Workspace::new("continue the card");
+            let mut bodies = Vec::new();
+            for (act, chars) in [600, 3 * GUARD_CHARS_PER_TOKEN * TAIL_BOUND, 600].into_iter().enumerate() {
+                ws.broadcast = vec![recall(chars + act)];
+                let view = faculty.prompt_view(&ws);
+                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
+                bodies.push(sent_body_of(&view, &adapter, act));
+            }
+            let seen = adapter.seen.lock().expect("recorded request lock");
+            let sent = LlmDeliberationFaculty::messages_cost(&seen[1].messages);
+            assert!(!bodies[1].starts_with(&bodies[0]), "the act over the time bound turned the epoch over");
+            assert!(sent <= TAIL_BOUND, "and its request holds what the time bound holds: {sent} tokens");
+            assert!(bodies[2].starts_with(&bodies[1]), "the next act extends the new epoch");
         }
 
         // what this catches: an epoch that outgrows the window instead of turning over, or a

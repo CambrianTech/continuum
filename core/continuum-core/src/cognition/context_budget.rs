@@ -164,6 +164,17 @@ impl ContextBudget {
         Self { total_chars: None, served_chars: None }
     }
 
+/// What one act may ADD to a mind's epoch: what the lane prefills at `rate` in the
+/// audience's time to first token, never past the window. No cache credit: the epoch knows
+/// its own cached prefix, and this bounds only what follows it.
+pub(crate) fn fresh_prefill_tokens(
+    rate: crate::inference::prefill_rate::MeasuredRate,
+    served: u32,
+    audience: crate::inference::prefill_rate::Audience,
+) -> usize {
+    Self::affordable_for_rate(rate, served, audience, None) as usize
+}
+
 /// PURE: the prompt a turn may cost at `rate`, for a lane serving `served` tokens.
 ///
 /// Split out from [`Self::prefill_affordable_window_for`] so the DECISION is pinned by a test
@@ -201,6 +212,12 @@ fn affordable_for_rate(
     // hold one 320-line read and she re-read the same file every turn. The measured cached
     // fraction scales the bound up, counted at most MAX_CACHE_CREDIT so a turn that does
     // lose its cache stays within a few multiples of its budget.
+    // TODO(fable, after #5210 is measured live): the deliberation prompt no longer reads this
+    // credit (her epoch knows its own cached share). Its remaining readers size shares from
+    // `total_chars`: the working-memory trail (`trail_head_chars`), `recall_tokens`,
+    // `tool_surface_tokens`, the other `fraction` shares, and `affordable_tokens` (the tool
+    // surface's receipt). Move them onto the epoch's accounting, then delete the credit
+    // and MAX_CACHE_CREDIT.
     let credited = cache_fraction.filter(|f| f.is_finite() && *f > 0.0).map(|f| f.min(Self::MAX_CACHE_CREDIT)).unwrap_or(0.0);
     let affordable = ((affordable as f64) / (1.0 - credited)).min(u32::MAX as f64) as u32;
     // The planning helper may raise a proposed lane to MIN_SERVE_CTX. This

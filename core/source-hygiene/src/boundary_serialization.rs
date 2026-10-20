@@ -69,7 +69,7 @@ const SHAPES: &[&str] = &[
 /// for the same reason as the unwrap ratchet: pressure on the whole surface.
 #[cfg(test)]
 // 237 after card 0af5d5ec: the same `#![cfg(test)]` files stop counting as production.
-const BASELINE_UNJUSTIFIED: usize = 235;
+const BASELINE_UNJUSTIFIED: usize = 234;
 
 pub struct BoundarySerialization;
 
