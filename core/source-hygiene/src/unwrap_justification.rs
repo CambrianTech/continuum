@@ -77,7 +77,8 @@ const SHAPES: &[&str] = &[
 // 2_279 -> 2_377, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
 // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
 // a85454889 + this change, 2026-10-20).
-const BASELINE_UNJUSTIFIED: usize = 2_377;
+// 2,377 -> 2,376: the loop's duplicated InboxMessage build (one unwrap_or_else) is now one.
+const BASELINE_UNJUSTIFIED: usize = 2_376;
 // 2264 -> 2257 on the extraction: seven of the counted unwraps were in this scanner's
 // own 2,173 lines, which left `continuum-core` with it. Taking the win rather than
 // keeping seven tokens of free slack ([[a-measurement-that-can-only-rise-is-not-a-measurement]]).
