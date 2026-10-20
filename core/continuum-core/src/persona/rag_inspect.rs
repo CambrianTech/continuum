@@ -84,7 +84,6 @@ pub struct RagInspectionRequest {
     pub airc_max: u32,
     pub airc_priority: u8,
     pub airc_required: bool,
-    pub airc_fetch_limit: usize,
     /// Wall-clock "now" the inspection should reason against. Caller
     /// supplies this so the function stays pure-of-clock (testable +
     /// deterministic replay).
@@ -172,7 +171,6 @@ impl RagInspectionRequest {
             airc_max,
             airc_priority: 10,
             airc_required: true,
-            airc_fetch_limit: 100,
             now_ms,
             trace_path: None,
         }
@@ -327,8 +325,7 @@ pub async fn inspect_persona_rag_with_inference(
     airc_reader: Arc<dyn AircTranscriptReader>,
     inference_probe: Option<Arc<dyn crate::ai::adapter::AIProviderAdapter>>,
 ) -> Result<RagInspection, String> {
-    let airc_source = AircRagSource::new(request.persona_id, airc_reader)
-        .with_fetch_limit(request.airc_fetch_limit);
+    let airc_source = AircRagSource::new(request.persona_id, airc_reader);
 
     let sink: Arc<dyn RagCaptureSink> = match &request.trace_path {
         Some(path) => {

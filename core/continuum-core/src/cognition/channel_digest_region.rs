@@ -30,17 +30,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use uuid::Uuid;
 
-use crate::cognition::channel_digest::{ChannelDigest, ChannelDigestBuilder, DEFAULT_GROUNDING};
+use crate::cognition::channel_digest::{
+    ChannelDigest, ChannelDigestBuilder, DEFAULT_GROUNDING, FIRST_READ_PAGE,
+};
 use crate::persona::airc_source::AircTranscriptReader;
 use crate::runtime::brain_region::{
     BrainRegion, CadenceHint, ComputeClass, MemoryClass, PressureProfile, RegionContext, RegionId,
     TickOutcome,
 };
 use crate::runtime::ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
-
-/// Default newest-events fetch cap per digest build (mirrors `AircRagSource`'s
-/// production default). The recipe-defined grounding window slices within this.
-const DEFAULT_FETCH_LIMIT: usize = 100;
 
 /// Yields the personas to pre-stage for and, per persona, a transcript reader +
 /// the channel (room) to digest. Implemented on `PersonaAircRuntimeRegistry` in
@@ -62,7 +60,6 @@ pub struct ChannelDigestRegion {
     personas: Arc<dyn PersonaChannelReader>,
     digests: Arc<DigestBuffer>,
     grounding: usize,
-    fetch_limit: usize,
 }
 
 impl ChannelDigestRegion {
@@ -87,19 +84,12 @@ impl ChannelDigestRegion {
             personas,
             digests,
             grounding: DEFAULT_GROUNDING,
-            fetch_limit: DEFAULT_FETCH_LIMIT,
         }
     }
 
     /// Override the N-before-bookmark grounding window (recipe-defined in time).
     pub fn with_grounding(mut self, grounding: usize) -> Self {
         self.grounding = grounding;
-        self
-    }
-
-    /// Override the newest-events fetch cap.
-    pub fn with_fetch_limit(mut self, fetch_limit: usize) -> Self {
-        self.fetch_limit = fetch_limit;
         self
     }
 
@@ -126,7 +116,11 @@ impl ChannelDigestRegion {
                 persona_id,
                 room,
                 reader.as_ref(),
-                self.fetch_limit,
+                // The newest events the digest can hold: its recipe window before the
+                // cursor plus the first-sight page. A consumer whose budget wants a
+                // deeper window rebuilds wider (`AircRagSource::deliver`), so the
+                // pre-stage is never a cap on what a persona sees.
+                self.grounding + FIRST_READ_PAGE,
                 self.grounding,
             )
             .await

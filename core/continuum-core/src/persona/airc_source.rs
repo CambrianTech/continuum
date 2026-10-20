@@ -45,14 +45,17 @@ use crate::runtime::ready_buffer::ReadyBuffer;
 /// Source identifier — used by budget presets, telemetry, cursor scope checks.
 pub(crate) const SOURCE_ID: &str = "airc";
 
-/// Default newest-events fetch cap when building a digest on demand (mirrors the
-/// region's). The recipe-defined grounding window slices within this.
-const FETCH_LIMIT: usize = 100;
+/// The verb that reads this room's transcript whole. (`collaboration/chat/export`,
+/// named here before, is a stub that answers "not yet migrated" — a handle that fails
+/// is worse than none.) Takes `roomId`; each message's id is on its trimmed marker.
+const EXPAND_COMMAND: &str = "chat/history";
 
 /// Token estimate — the ONE canonical chars/4 estimator (`cognition::token_budget`),
 /// shared by every RAG source so the replay ledger's numbers match. (Was a private
 /// copy — converged.)
-use crate::cognition::token_budget::{estimate_prompt_tokens as estimate_tokens, head_to_tokens};
+use crate::cognition::token_budget::{
+    estimate_prompt_tokens as estimate_tokens, fair_share_cap, fit_tail_with_handle, mark_tail_kept,
+};
 
 /// Abstract reader over airc transcript events. Production impl rides on
 /// `airc_lib::Airc`; tests use a stub that returns canned events without a daemon.
@@ -208,7 +211,6 @@ pub struct AircRagSource {
     builder: Arc<ChannelDigestBuilder>,
     buffer: Arc<DigestBuffer>,
     grounding: usize,
-    fetch_limit: usize,
     /// #249: durable-transcript top-up for a shallow live window (post-reboot the
     /// persona's airc runtime log holds only events since ITS boot). `Some` in
     /// production (default); tests without a store see a loud-skip, not a panic.
@@ -246,7 +248,6 @@ impl AircRagSource {
             builder: global_channel_digest_builder(),
             buffer: global_channel_digest_buffer(),
             grounding: DEFAULT_GROUNDING,
-            fetch_limit: FETCH_LIMIT,
             history: Some(Arc::new(crate::persona::durable_history::ChatStoreHistory)),
             anchors: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
@@ -266,10 +267,10 @@ impl AircRagSource {
 
     /// Turns-that-fit grounding: derive the digest's before-bookmark window
     /// from the delivery budget. `recipe_floor` (the recipe-defined N, default
-    /// [`DEFAULT_GROUNDING`]) is the floor; the ceiling bounds the durable
-    /// top-up fetch, not what the packer may keep.
+    /// [`DEFAULT_GROUNDING`]) is the floor; there is no ceiling, the budget
+    /// alone sizes the fetch, the digest window and the durable top-up.
     fn grounding_for_budget(budget: u32, recipe_floor: usize) -> usize {
-        ((budget / Self::MIN_TOKENS_PER_TURN) as usize).clamp(recipe_floor, 256)
+        ((budget / Self::MIN_TOKENS_PER_TURN) as usize).max(recipe_floor)
     }
 
     /// Override (or disable) the durable-history top-up — tests inject a stub;
@@ -299,12 +300,6 @@ impl AircRagSource {
         })
     }
 
-    /// Override the newest-events fetch cap used when building a digest on demand.
-    pub fn with_fetch_limit(mut self, fetch_limit: usize) -> Self {
-        self.fetch_limit = fetch_limit;
-        self
-    }
-
     /// Format a digest into budget-packed `RagItem`s. Walks the window newest-first
     /// accumulating tokens until budget, then emits chronological (oldest-first) so
     /// the chat template reads turns in order. Each item is tagged `unread` vs
@@ -318,7 +313,7 @@ impl AircRagSource {
     /// exchange survived. A conversation is legible from turn HEADS; it is not
     /// legible from two verbatim essays. So each turn now costs at most a
     /// per-turn cap (a budget fraction, never a hardcoded model tier) and long
-    /// turns are head-trimmed with an explicit marker — the same
+    /// turns keep their END behind an explicit marker — the same
     /// straddling-trim law the prompt fitter applies to messages, one level down.
     /// The NEWEST turn is exempt (kept verbatim up to the whole budget): it is
     /// what the persona is responding to.
@@ -336,10 +331,6 @@ impl AircRagSource {
         working: bool,
         anchor: Option<HistoryAnchor>,
     ) -> (Vec<RagItem>, u32, Option<Arc<ChannelElement>>, Option<HistoryAnchor>) {
-        // Per-turn cap: budget/8 → a useful window holds ~8+ turns; clamped so
-        // tiny budgets still render a sentence and huge ones don't let one
-        // essay crowd the window.
-        let per_turn_cap = (budget / 8).clamp(48, 256);
         let (units, quarantined) = Self::collapse_work_receipts(digest, working);
         if quarantined > 0 {
             crate::probe!(
@@ -349,48 +340,52 @@ impl AircRagSource {
                 "transcript lines the speak gate would refuse were kept out of her burst — the contagion carrier (card 169eb543)"
             );
         }
-        // Cost every unit once, newest-first (the newest is exempt from the per-turn
-        // cap: it is what she is responding to). `costed` is oldest-first after the
-        // reverse, parallel to `units`, with None for a unit that has no text.
-        let mut costed: Vec<Option<(u32, Option<String>)>> = Vec::with_capacity(units.len());
-        let mut newest_kept = true;
-        for unit in units.iter().rev() {
-            let idx = unit.last_idx;
-            let text: &str = match unit.collapsed.as_deref() {
-                Some(t) => t,
-                None => match digest.elements[idx].text() {
-                    Some(t) => t,
-                    None => {
-                        costed.push(None);
-                        continue;
+        // Every unit is a WHOLE message with its measured cost (oldest-first, parallel to
+        // `units`; None = a unit with no text). The window below decides how many fit.
+        let texts: Vec<Option<&str>> = units
+            .iter()
+            .map(|unit| match unit.collapsed.as_deref() {
+                Some(t) => Some(t),
+                None => digest.elements[unit.last_idx].text(),
+            })
+            .collect();
+        let fulls: Vec<Option<u32>> = texts.iter().map(|t| t.map(estimate_tokens)).collect();
+        // THE SHARE. The newest turn is what she is answering: it is never collapsed. What
+        // the budget has left after it is shared max-min among the earlier messages
+        // (`fair_share_cap`): a message that fits its share is delivered whole, and only
+        // one bigger than the share collapses to its END behind a marker that names the verb for the whole
+        // text. The share is derived from the measured costs and the budget; there is no
+        // per-turn constant, so a large window shows essays whole and a small one still
+        // holds many turns (breadth over verbatim depth, #128/#146, now by share).
+        let newest = fulls.iter().rposition(Option::is_some);
+        let share = newest.and_then(|n| {
+            let left = budget.saturating_sub(fulls[n].unwrap_or(0));
+            let earlier: Vec<u32> = fulls[..n].iter().flatten().copied().collect();
+            if left == 0 { None } else { fair_share_cap(&earlier, left) } // nothing left after the newest: the window is the newest alone, nothing to collapse
+        });
+        let costed: Vec<Option<(u32, Option<String>)>> = units
+            .iter()
+            .zip(texts.iter().zip(&fulls))
+            .enumerate()
+            .map(|(i, (unit, (text, full)))| {
+                let (text, full) = ((*text)?, (*full)?);
+                Some(match share {
+                    Some(cap) if full > cap && Some(i) != newest => {
+                        let id = digest.elements[unit.last_idx].event_id();
+                        let handle = format!("`{EXPAND_COMMAND}` shows it whole, id {id}");
+                        // the END is kept: a message's outcome, answer or question sits there
+                        match fit_tail_with_handle(text, cap, "message", Some(&handle)) {
+                            Some(shown) => (estimate_tokens(&shown), Some(shown)),
+                            // the share cannot carry the marker plus any of the end: collapsing
+                            // would deliver a handle and no content, so the message stays whole
+                            // and the window omits the OLDEST instead
+                            None => (full, unit.collapsed.clone()),
+                        }
                     }
-                },
-            };
-            let full = estimate_tokens(text);
-            let cap = if newest_kept { budget } else { per_turn_cap };
-            let (cost, trimmed) = if full <= cap {
-                (full, unit.collapsed.clone())
-            } else {
-                let head = head_to_tokens(text, cap);
-                let head_cost = estimate_tokens(&head).saturating_add(2); // marker
-                // The marker SPELLING is shared with the tail-trim site so the two
-                // cannot drift apart again (card 3833b472). The +2 reserve above is
-                // left as it was on purpose: `trim_marker_tokens()` measures the real
-                // cost at 8, so this site under-reserves, but raising it changes how
-                // many turns fit in every prompt — a packing change that belongs in
-                // its own card with its own before/after, not smuggled into a
-                // disclosure fix.
-                (
-                    head_cost,
-                    Some(crate::cognition::token_budget::mark_head_kept(
-                        &head, full,
-                    )),
-                )
-            };
-            newest_kept = false;
-            costed.push(Some((cost, trimmed)));
-        }
-        costed.reverse();
+                    _ => (full, unit.collapsed.clone()),
+                })
+            })
+            .collect();
         // THE START HOLDS STILL. The window is the suffix of units from `start`; its
         // cost is the sum from there to the newest. Where the fill would naturally
         // begin (newest-first to the budget) is `natural`. The anchor from last turn
@@ -681,7 +676,7 @@ impl RagSource for AircRagSource {
     }
 
     fn expand_command(&self) -> Option<&'static str> {
-        Some("collaboration/chat/export")
+        Some(EXPAND_COMMAND)
     }
 
     /// One conversation turn — a speaker and what they said. The recent-history
@@ -710,9 +705,15 @@ impl RagSource for AircRagSource {
         // When airc_room is None (room-less work: consolidation, dreams), the
         // pointer-scoped page remains correct and the events' own room is
         // DERIVED below — that fallback is legitimate, not a shim.
+        // Depth follows the budget: every turn costs at least MIN_TOKENS_PER_TURN, so
+        // `budget / MIN_TOKENS_PER_TURN` turns is the most this delivery could ever
+        // show. The fetch asks for exactly that, so it can never cap below what the
+        // packer would have kept, and the same number sizes the digest window and the
+        // durable top-up below (recipe floor `self.grounding` is the minimum).
+        let grounding = Self::grounding_for_budget(budget, self.grounding);
         let events = match self
             .reader
-            .page_recent_in(ctx.airc_room, self.fetch_limit)
+            .page_recent_in(ctx.airc_room, grounding)
             .await
         {
             Ok(e) => e,
@@ -745,7 +746,6 @@ impl RagSource for AircRagSource {
         // Turns-that-fit: the budget sizes the candidate window; the packer's
         // token walk decides what survives. self.grounding stays only as the
         // recipe floor (#259 — kills the 5-message world-view starvation).
-        let grounding = Self::grounding_for_budget(budget, self.grounding);
         let mut events = events;
         let live_in_room = events
             .iter()
@@ -1036,7 +1036,6 @@ mod tests {
             builder,
             buffer: buffer.clone(),
             grounding: 0,
-            fetch_limit: FETCH_LIMIT,
             // Isolated tests exercise the live window; hydration has its own test
             // (a stub DurableRoomHistory) and stays off here.
             history: None,
@@ -1160,9 +1159,10 @@ mod tests {
             delivery.items.len()
         );
         assert!(
-            delivery.items[0].content.starts_with("OPERATOR")
-                && delivery.items[0].content.contains("trimmed"),
-            "oldest low-frequency speaker survives, trimmed: {:?}",
+            delivery.items[0].content.starts_with("(…")
+                && delivery.items[0].content.contains("trimmed")
+                && delivery.items[0].content.trim_end().ends_with("sit amet"),
+            "oldest low-frequency speaker survives, its end kept behind a marker: {:?}",
             delivery.items[0].content
         );
         let newest = &delivery.items.last().unwrap().content;
@@ -1476,7 +1476,9 @@ mod tests {
             event_in(room, Some("bbbbb"), 2),
             event_in(room, Some("ccccc"), 3),
         ]));
-        let (source, _) = isolated_source(reader);
+        let (mut source, _) = isolated_source(reader);
+        // the production recipe floor: a budget under MIN_TOKENS_PER_TURN still pages it
+        source.grounding = DEFAULT_GROUNDING;
         let delivery = source
             .deliver(&ctx_in(room), 4, ResolutionPreference::Raw)
             .await;
@@ -1585,5 +1587,55 @@ mod tests {
         };
         let event = AircRagSource::hydrated_event(room.as_uuid(), uuid::Uuid::parse_str(&sender).expect("peer uuid"), &line);
         assert_eq!(event.occurred_at_ms, 1791078791935, "a hydrated line keeps its own time");
+    }
+
+    // what this catches: THE PER-MESSAGE CLIP. A message was cut to budget/8 clamped to
+    // 48..256 tokens whatever the window held, so a 300-token message was trimmed even
+    // when the window could hold ten of them. With a large window it must arrive WHOLE,
+    // and the depth ceiling (256) must be gone: the fetch and the window follow the budget.
+    #[tokio::test]
+    async fn a_large_window_shows_a_long_message_whole_and_depth_follows_the_budget() {
+        let room = RoomId::new();
+        let long = format!("essay: {}", "lorem ipsum dolor sit amet ".repeat(45)); // ~300 tokens
+        let reader = Arc::new(StubReader::new(vec![
+            event_in(room, Some(&long), 1),
+            event_in(room, Some("short reply"), 2),
+            event_in(room, Some("newest"), 3),
+        ]));
+        let (source, _) = isolated_source(reader);
+        let delivery = source.deliver(&ctx_in(room), 8_000, ResolutionPreference::Raw).await;
+        assert_eq!(delivery.items[0].content, long, "the whole message, no marker");
+        assert!(
+            AircRagSource::grounding_for_budget(2_000_000, DEFAULT_GROUNDING) > 256,
+            "no depth ceiling: the budget alone sizes the window"
+        );
+    }
+
+    // what this catches: a trim with no handle. A message bigger than its fair share of a
+    // small window collapses to its end, led by a marker that names the verb and the id that return
+    // it whole; the small messages around it keep every token, and the newest is verbatim.
+    #[tokio::test]
+    async fn an_over_share_message_keeps_its_end_behind_a_marker_that_names_how_to_read_it() {
+        let room = RoomId::new();
+        let long = format!("OPERATOR: {}THE ANSWER IS 42", "lorem ipsum dolor sit amet ".repeat(80));
+        let long_event = event_in(room, Some(&long), 1);
+        let long_id = long_event.event_id.as_uuid().to_string();
+        let reader = Arc::new(StubReader::new(vec![
+            long_event,
+            event_in(room, Some("peer: short one"), 2),
+            event_in(room, Some("peer: short two"), 3),
+            event_in(room, Some("newest question"), 4),
+        ]));
+        let (source, _) = isolated_source(reader);
+        let delivery = source.deliver(&ctx_in(room), 200, ResolutionPreference::Raw).await;
+        let first = &delivery.items[0].content;
+        assert!(first.starts_with("(…") && first.ends_with("THE ANSWER IS 42"), "the end is kept whole: {first}");
+        assert!(
+            first.contains(EXPAND_COMMAND) && first.contains(&long_id) && first.contains("opening trimmed"),
+            "the head names the verb and the id: {first}"
+        );
+        assert_eq!(delivery.items[1].content, "peer: short one", "a message within its share is not touched");
+        assert_eq!(delivery.items.last().map(|i| i.content.as_str()), Some("newest question"));
+        assert!(delivery.tokens_used <= 200, "{}", delivery.tokens_used);
     }
 }

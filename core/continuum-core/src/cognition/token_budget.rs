@@ -61,116 +61,206 @@ pub fn estimate_message_content_tokens(
     }
 }
 
-/// Keep the HEAD of `content` up to ~`budget_tokens` (same chars/4 unit as
-/// [`estimate_prompt_tokens`]), cutting on a char boundary and preferring the
-/// last newline inside the kept slice so the cut lands between lines, not
-/// mid-word. Used when a RAG source explicitly offers a shortened projection;
-/// deliberation fitting preserves complete current stimulus/action payloads
-/// and evicts whole historical messages. Used by the breadth-over-depth
-/// packer (#128): long turns render as heads with an explicit trim marker so
-/// a small budget holds MANY turns instead of two verbatim essays.
-pub fn head_to_tokens(content: &str, budget_tokens: u32) -> String {
+/// Keep the END of `content` up to ~`budget_tokens` (chars/4, as [`estimate_prompt_tokens`]),
+/// cutting on a char boundary and preferring the first newline inside the kept slice so the
+/// cut lands between lines. The END is what is kept because it is what happened last: an
+/// outcome, an answer, a question put to her sit there, and a prompt that loses them acts on
+/// a world where time never moved.
+pub fn tail_to_tokens(content: &str, budget_tokens: u32) -> String {
     let budget_chars = (budget_tokens as usize).saturating_mul(4);
-    if content.chars().count() <= budget_chars {
+    let total = content.chars().count();
+    if total <= budget_chars {
         return content.to_string();
     }
-    let end = content
+    let start = content
         .char_indices()
-        .nth(budget_chars)
+        .nth(total - budget_chars)
         .map(|(i, _)| i)
-        .unwrap_or(content.len());
-    let slice = &content[..end];
-    match slice.rfind('\n') {
-        // Only prefer the newline cut when it keeps a useful fraction — a
-        // message whose only newline sits three chars in must not collapse
-        // to three characters.
-        Some(nl) if nl >= budget_chars / 2 => slice[..nl].to_string(),
+        .unwrap_or(0); // total > budget_chars, so nth always exists; 0 keeps everything if not
+    let slice = &content[start..];
+    match slice.find('\n') {
+        // only prefer the line cut when it keeps a useful fraction of the slice
+        Some(nl) if slice.len() - nl > budget_chars / 2 => slice[nl + 1..].to_string(),
         _ => slice.to_string(),
     }
 }
 
-/// The ONE vocabulary for telling a mind her copy of a message was shortened.
+/// The ONE vocabulary for telling a mind her copy of something was shortened.
 ///
-/// Two sites originally shortened a message on the way into a mind and disagreed about
-/// whether to say so: the per-turn head trim (`persona::airc_source`) appended
-/// `(…N-token message trimmed)`, while the newest-message tail trim
-/// (`cognition::llm_deliberation_faculty`) returned the body BARE. An unmarked fragment
-/// does not read as a fragment — it reads as a whole message that begins mid-sentence,
-/// so the rational thing for a citizen to do is try to reconstruct an intent that was
-/// never delivered. Measured 2026-09-06 (card 3833b472): citizens on two nodes did
-/// exactly that, one of them for five consecutive turns, against text like ", so it is …".
-/// The deliberation tail cut was removed by f09424d4: current stimulus/action
-/// payloads now remain complete or produce a capacity fault. These markers still
-/// describe explicit shortened projections; a marker alone is not a payload.
+/// An unmarked fragment does not read as a fragment: it reads as a whole message that begins
+/// mid-sentence, and a citizen reconstructs an intent that was never delivered (card
+/// 3833b472). The marker LEADS, because the OPENING is what went missing (the end is always
+/// kept, see [`tail_to_tokens`]) and a citizen reading left-to-right must learn that first.
 ///
-/// Keeping both spellings here means the next site that shortens something inherits the
-/// disclosure instead of re-deciding it ([[logic-deepest-level-thin-on-the-way-out]]).
-///
-/// Which end carries the marker follows what is MISSING: a head-keep lost its tail, so
-/// the marker trails; a tail-keep lost its opening, so the marker leads — the citizen
-/// meets the notice before the text it qualifies.
-pub fn mark_head_kept(head: &str, full_tokens: u32) -> String {
-    format!("{head} (…{full_tokens}-token message trimmed)")
+/// `what` names the kind of thing ("message", "post"); `expand` is the HANDLE, the exact verb
+/// (and the id it takes) that yields the whole of it, when one exists. A trim with no handle
+/// is a clip (whole-or-handle, PERSONA-COGNITION-PIPELINE.md §3).
+pub fn mark_tail_kept(tail: &str, full_tokens: u32, what: &str, expand: Option<&str>) -> String {
+    match expand {
+        Some(cmd) => format!("(…{full_tokens}-token {what}, opening trimmed — {cmd}) {tail}"),
+        None => format!("(…{full_tokens}-token {what}, opening trimmed) {tail}"),
+    }
 }
 
-/// Sibling of [`mark_head_kept`] for a tail-keep: the marker LEADS, because the opening
-/// is what went missing and a citizen reading left-to-right must learn that first.
-pub fn mark_tail_kept(tail: &str, full_tokens: u32) -> String {
-    format!("(…{full_tokens}-token opening trimmed) {tail}")
+/// `text` whole when it fits `budget`, else the marker plus its END, the whole costing at most
+/// `budget`. `None` when the budget cannot carry the marker plus any of the end. The ONE
+/// tail-and-handle fit: sources never clip with their own char count, and never keep the head.
+pub fn fit_tail_with_handle(text: &str, budget: u32, what: &str, expand: Option<&str>) -> Option<String> {
+    let full = estimate_prompt_tokens(text);
+    if full <= budget {
+        return Some(text.to_string());
+    }
+    let marker = estimate_prompt_tokens(&mark_tail_kept("", full, what, expand));
+    let mut tail_budget = budget.checked_sub(marker)?;
+    while tail_budget > 0 {
+        let tail = tail_to_tokens(text, tail_budget);
+        if tail.is_empty() {
+            return None;
+        }
+        let shown = mark_tail_kept(&tail, full, what, expand);
+        if estimate_prompt_tokens(&shown) <= budget {
+            return Some(shown);
+        }
+        tail_budget -= 1; // the estimator rounds each piece up, so the sum can overshoot by one
+    }
+    None
 }
 
-/// Tokens to reserve for a trim marker BEFORE trimming, so the disclosure cannot itself
-/// push the message back over the budget that forced the trim.
-///
-/// A FUNCTION, not a `const`, for the same reason [`super::viewstate_rag`]'s floor is:
-/// `context_budget`'s de-hardcode guard scans `const`s whose name contains TOKEN for bare
-/// literals, and it is right to — a bare literal here is a prompt-size constant wearing a
-/// different hat.
-///
-/// DERIVED from the markers themselves at their widest (`u32::MAX`, ten digits) rather
-/// than from a measured sample, so editing either spelling cannot silently outgrow the
-/// reserve. Shipped first as a hand-measured `(…99999-token opening trimmed)` — five
-/// digits — and the accompanying test immediately caught it: a marker is only a
-/// guarantee if it fits for EVERY token count, not for the ones I happened to imagine.
-/// A too-small reserve puts the disclosure back over the budget that forced the trim,
-/// which is the bug this reserve exists to prevent.
-pub fn trim_marker_tokens() -> u32 {
-    estimate_prompt_tokens(mark_head_kept("", u32::MAX).trim())
-        .max(estimate_prompt_tokens(mark_tail_kept("", u32::MAX).trim()))
+/// The units that fit `budget`, in order, the NEWEST (last) end whole. `pinned` leading units
+/// are always kept (a headline that says what the rest is); of the rest the OLDEST are
+/// omitted, and a marker unit right after the pinned ones says how many and names `expand`.
+/// Order is the units' own order (time, or document order): the end is what is kept.
+/// When even the last unit does not fit alone it is delivered as its tail plus the
+/// opening-trimmed marker. `truncated` says anything was left out or cut.
+pub struct PackedUnits {
+    pub items: Vec<(String, u32)>,
+    pub truncated: bool,
+}
+
+pub fn pack_suffix_units(
+    units: &[String],
+    pinned: usize,
+    budget: u32,
+    what: &str,
+    expand: Option<&str>,
+) -> Option<PackedUnits> {
+    let pinned = pinned.min(units.len());
+    let (head, rest) = units.split_at(pinned);
+    let head_cost: u32 = head.iter().map(|u| estimate_prompt_tokens(u)).sum();
+    let notice = |omitted: usize| match expand {
+        Some(cmd) => format!("…{omitted} earlier {what}(s) not shown — {cmd}"),
+        None => format!("…{omitted} earlier {what}(s) not shown"),
+    };
+    // the most trailing units whose whole (with the notice when some are left out) fits
+    let mut keep = 0usize;
+    for k in (1..=rest.len()).rev() {
+        let omitted = rest.len() - k;
+        let tail_cost: u32 = rest[omitted..].iter().map(|u| estimate_prompt_tokens(u)).sum();
+        let notice_cost = if omitted > 0 { estimate_prompt_tokens(&notice(omitted)) } else { 0 };
+        if head_cost.saturating_add(tail_cost).saturating_add(notice_cost) <= budget {
+            keep = k;
+            break;
+        }
+    }
+    let mut items: Vec<(String, u32)> = head.iter().map(|u| (u.clone(), estimate_prompt_tokens(u))).collect();
+    if rest.is_empty() {
+        return (head_cost <= budget).then_some(PackedUnits { items, truncated: false });
+    }
+    if keep == 0 {
+        // not even the newest unit fits beside the pinned ones: its tail, marked
+        let room = budget.checked_sub(head_cost)?;
+        let last = rest.last()?;
+        let shown = fit_tail_with_handle(last, room, what, expand)?;
+        let cost = estimate_prompt_tokens(&shown);
+        items.push((shown, cost));
+        return Some(PackedUnits { items, truncated: true });
+    }
+    let omitted = rest.len() - keep;
+    if omitted > 0 {
+        let n = notice(omitted);
+        let cost = estimate_prompt_tokens(&n);
+        items.push((n, cost));
+    }
+    for u in &rest[omitted..] {
+        items.push((u.clone(), estimate_prompt_tokens(u)));
+    }
+    Some(PackedUnits { items, truncated: omitted > 0 })
+}
+
+/// The fair share each of `costs` may take of `budget`, when they do not all fit whole:
+/// the max-min ("water-filling") level L such that `sum(min(cost, L)) <= budget`. A
+/// small item keeps all of its cost; only an item bigger than the level collapses to
+/// it, and the level is derived from the measured costs, never a constant. `None` =
+/// everything fits whole, nothing collapses.
+pub fn fair_share_cap(costs: &[u32], budget: u32) -> Option<u32> {
+    let total: u64 = costs.iter().map(|&c| u64::from(c)).sum();
+    if total <= u64::from(budget) {
+        return None;
+    }
+    let mut sorted: Vec<u32> = costs.to_vec();
+    sorted.sort_unstable();
+    let mut remaining = u64::from(budget);
+    for (i, &c) in sorted.iter().enumerate() {
+        let left = (sorted.len() - i) as u64;
+        if u64::from(c) * left > remaining {
+            // `left` >= 1 here, so the division is defined
+            return Some((remaining / left) as u32);
+        }
+        remaining -= u64::from(c);
+    }
+    None // unreachable when total > budget; every cost fit its share
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // what this catches (card 3833b472): the two trim sites drifting apart again, and a
-    // marker that is not paid for. The head marker must TRAIL its text and the tail
-    // marker must LEAD it — a citizen reading a tail-keep has to meet the notice before
-    // the mid-sentence text, or it reads as a whole message that starts oddly. The
-    // reserve must also cover the widest marker either spelling can produce.
+    // what this catches (card 3833b472): an unmarked fragment, and a cut that keeps the HEAD.
+    // The marker must LEAD (the opening is what is missing), name the handle, and the END of
+    // the text must survive verbatim: what happened last is what she must not lose.
     #[test]
-    fn both_trim_spellings_disclose_and_the_reserve_covers_them() {
-        let head = mark_head_kept("the opening survives", 4321);
-        assert!(head.starts_with("the opening survives"), "{head}");
-        assert!(head.ends_with("(…4321-token message trimmed)"), "{head}");
+    fn a_trim_keeps_the_end_and_leads_with_a_marker_naming_the_handle() {
+        let tail = mark_tail_kept("the ending survives", 4321, "message", Some("`chat/history`"));
+        assert_eq!(tail, "(…4321-token message, opening trimmed — `chat/history`) the ending survives");
+        let text = format!("{}THE OUTCOME IS HERE", "background detail. ".repeat(200));
+        let shown = fit_tail_with_handle(&text, 60, "post", Some("persona/wall/list")).expect("fits");
+        assert!(shown.ends_with("THE OUTCOME IS HERE"), "the end is kept whole: {shown}");
+        assert!(shown.starts_with("(…") && shown.contains("persona/wall/list"), "{shown}");
+        assert!(estimate_prompt_tokens(&shown) <= 60, "{}", estimate_prompt_tokens(&shown));
+        assert_eq!(fit_tail_with_handle("short", 50, "post", None).as_deref(), Some("short"));
+        assert!(fit_tail_with_handle(&text, 3, "post", Some("persona/wall/list")).is_none());
+    }
 
-        let tail = mark_tail_kept("the ending survives", 4321);
-        assert!(tail.starts_with("(…4321-token opening trimmed)"), "{tail}");
-        assert!(tail.ends_with("the ending survives"), "{tail}");
+    // what this catches: the share being a constant again. The level must come from the
+    // measured costs: everything fits -> no collapse; one essay among short turns -> only
+    // the essay collapses and the short turns keep every token.
+    #[test]
+    fn fair_share_collapses_only_what_exceeds_its_share() {
+        assert_eq!(fair_share_cap(&[10, 20, 30], 60), None);
+        assert_eq!(fair_share_cap(&[10, 20, 500], 100), Some(70));
+        assert_eq!(fair_share_cap(&[400, 400], 100), Some(50));
+        assert_eq!(fair_share_cap(&[], 0), None);
+    }
 
-        // Neither spelling may cost more than the reserve set aside for it, at the
-        // widest token count a real message could carry.
-        let reserve = trim_marker_tokens();
-        for marker in [
-            mark_head_kept("", u32::MAX).trim().to_string(),
-            mark_tail_kept("", u32::MAX).trim().to_string(),
-        ] {
-            assert!(
-                estimate_prompt_tokens(&marker) <= reserve,
-                "marker {marker:?} costs {} > reserve {reserve}",
-                estimate_prompt_tokens(&marker)
-            );
-        }
+    // what this catches: a list clipped from the NEWEST end. Units that fit come back whole and
+    // in order; when they do not, the OLDEST go, the omitted count and the verb are named in a
+    // marker unit, the pinned headline stays first, and the newest unit survives a tight budget.
+    #[test]
+    fn suffix_packing_omits_the_oldest_and_names_them() {
+        let units: Vec<String> = (0..10).map(|i| format!("line number {i}")).collect();
+        let all = pack_suffix_units(&units, 0, 10_000, "line", None).expect("fits");
+        assert!(!all.truncated && all.items.len() == 10);
+
+        let some = pack_suffix_units(&units, 1, 30, "line", Some("code/tree")).expect("fits some");
+        assert!(some.truncated);
+        assert_eq!(some.items[0].0, "line number 0", "the pinned headline stays first");
+        assert!(some.items[1].0.contains("earlier line(s) not shown") && some.items[1].0.contains("code/tree"));
+        assert_eq!(some.items.last().map(|i| i.0.as_str()), Some("line number 9"), "the newest survives");
+        assert!(some.items.iter().map(|i| i.1).sum::<u32>() <= 30);
+
+        let big = vec!["old. ".repeat(300), format!("{}FINAL ANSWER", "x ".repeat(300))];
+        let cut = pack_suffix_units(&big, 0, 60, "para", Some("cmd")).expect("tail");
+        assert!(cut.items.last().expect("one").0.ends_with("FINAL ANSWER"));
     }
 
     // what this catches: the estimator drifting from the chars/4+1 unit the RAG

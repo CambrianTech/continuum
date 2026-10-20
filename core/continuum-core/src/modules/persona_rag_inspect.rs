@@ -112,10 +112,6 @@ pub struct RagInspectParams {
     #[ts(optional)]
     #[ts(optional, type = "number")]
     pub airc_max: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "number")]
-    pub airc_fetch_limit: Option<u32>,
     /// Optional absolute path for the JSONL capture trace. When set,
     /// the inspection records the full turn there so other AIs /
     /// mechanic shop can replay it.
@@ -442,9 +438,6 @@ pub(crate) async fn inspect_persona(
     }
     if let Some(max) = params.airc_max {
         request.airc_max = max;
-    }
-    if let Some(fetch) = params.airc_fetch_limit {
-        request.airc_fetch_limit = fetch as usize;
     }
     if let Some(p) = params.trace_path {
         request.trace_path = Some(PathBuf::from(p));
