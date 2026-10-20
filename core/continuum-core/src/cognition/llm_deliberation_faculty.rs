@@ -511,9 +511,6 @@ pub struct LlmDeliberationFaculty {
     /// the ceiling; deliberately NOT a process global, because that value feeds a
     /// decision and a global read inside a decision makes tests order-dependent.
     working_set: Option<super::working_set::WorkingSetRegistry>,
-    /// This node's measured prefill rate for a model (`prefill_rate::measured_rate_for`): the
-    /// time bound on what an act adds to her epoch. A seam so tests name the rate.
-    prefill_rate: fn(&str) -> crate::inference::prefill_rate::MeasuredRate,
     /// Her user-side view, held across acts: it only appends until it turns over.
     epoch: parking_lot::Mutex<epoch_view::EpochView>,
 }
@@ -550,7 +547,6 @@ impl LlmDeliberationFaculty {
             genome: empty_genome(),
             decoding: relaxed_decoding(),
             working_set: None,
-            prefill_rate: crate::inference::prefill_rate::measured_rate_for,
             epoch: parking_lot::Mutex::new(epoch_view::EpochView::default()),
         }
     }
@@ -558,13 +554,6 @@ impl LlmDeliberationFaculty {
     /// Share the registry this mind reports its turn demand into — the measurement
     /// `serving_plan` provisions the window from. Wired by the live spawn path; absent
     /// in tests, where there is no planner to inform.
-    /// Name the prefill rate the fresh-tail bound reads, instead of this box's measurements.
-    #[cfg(test)]
-    fn with_prefill_rate(mut self, rate: fn(&str) -> crate::inference::prefill_rate::MeasuredRate) -> Self {
-        self.prefill_rate = rate;
-        self
-    }
-
     pub fn with_working_set(mut self, registry: super::working_set::WorkingSetRegistry) -> Self {
         self.working_set = Some(registry);
         self
@@ -893,8 +882,17 @@ impl LlmDeliberationFaculty {
         specs
             .iter()
             .map(|spec| {
-                let serialized = serde_json::to_string(spec).unwrap_or_default();
-                est_tokens(&serialized) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
+                // Counted from its parts, which cannot fail: strings, and JSON values whose
+                // Display is their compact JSON. A failed serialize used to count as 0 tokens.
+                let schema = &spec.input_schema;
+                let text: String = [spec.name.as_str(), spec.description.as_str(), schema.schema_type.as_str()]
+                    .into_iter()
+                    .map(str::to_string)
+                    .chain([schema.properties.to_string()])
+                    .chain(schema.definitions.iter().map(serde_json::Value::to_string))
+                    .chain(schema.required.iter().flatten().cloned())
+                    .collect();
+                est_tokens(&text) + PER_TOOL_TEMPLATE_MARGIN_TOKENS
             })
             .sum()
     }
@@ -1528,7 +1526,7 @@ impl LlmDeliberationFaculty {
             // Greedy override (the eval window) wins over her lived warmth so the
             // reward metric is reproducible; `None` (live cognition) → her own
             // configured temperature. Wait-free read, like `genome` below.
-            temperature: Some((**self.decoding.load()).unwrap_or(self.temperature)),
+            temperature: Some((**self.decoding.load()).unwrap_or(self.temperature)), // None = live cognition: her own temperature
             // Generation is bounded to the room the prompt plan GRANTED it — the
             // reply's flex allocation, the same value `prompt_view` subtracts from the
             // served window. This is the ONE place the two must agree: the prompt is
@@ -1609,7 +1607,7 @@ impl LlmDeliberationFaculty {
             let native = resp.tool_calls.as_deref().filter(|original| {
                 matches!(resp.finish_reason, FinishReason::ToolUse)
                     && original.iter().map(|call| &call.id).eq(calls.iter().map(|call| &call.id))
-            }).unwrap_or_default();
+            }).unwrap_or_default(); // no matching native calls = an empty native set, by meaning
             // Every new action replaces pending provenance, including legacy/text
             // decisions after an executor-wide failure produced no receipt.
             memory.record_native_action_statement(
@@ -1631,7 +1629,7 @@ impl LlmDeliberationFaculty {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_string)
-            .unwrap_or_default();
+            .unwrap_or_default(); // absent reasoning = empty intent, never a fabricated one (above)
         Contribution::verdict(
             Decision::Act { calls, intent },
             0.9,
@@ -2481,53 +2479,16 @@ impl LlmDeliberationFaculty {
         );
 
         let protocol_error = all_messages.active_protocol_error();
-        // THE PREFILL-TIME BOUND IS ON WHAT THIS ACT ADDS. Her epoch's prefix is already on
-        // her slot; the act prefills only what follows it. Bounding the WHOLE prompt by time
-        // (credited with the engine's lagging reuse) turned the epoch over at 3-15k tokens of
-        // a 185,856-token window, 16 times in 25 acts, and reuse never came (the M5, #5210 at
-        // 9f97bc775). So: the window bounds the epoch; the time bound (this node's measured
-        // rate over the audience's time to first token) bounds the fresh tail.
-        let tail_bound = super::context_budget::ContextBudget::fresh_prefill_tokens(
-            (self.prefill_rate)(model),
-            context_window,
-            crate::cognition::audience::current(),
-        );
-        let fresh = all_messages.tokens().saturating_sub(epoch.cached_tokens());
-        let turnover = if fresh > tail_bound {
-            Some(epoch_view::Turnover::TailOverTimeBound)
-        } else if all_messages.tokens() > msg_budget {
-            Some(epoch_view::Turnover::Window)
-        } else {
-            None
-        };
-        let fit = if let Some(reason) = turnover {
-            let (len, pointers) = epoch.turn_over(
-                &mut all_messages.history,
-                all_messages.grounding_at,
-                &all_messages.body,
-                epoch_view::TurnoverCause { reason, fresh_tokens: fresh, tail_bound_tokens: tail_bound },
-                &self.persona_name,
-            );
-            all_messages.grounding_at = len;
-            all_messages.result_pointers = pointers;
-            // Only a turnover's fit frees room for the growth; within an epoch nothing drops.
-            all_messages.headroom = headroom;
-            // A new epoch holds no standing piece yet: all of them are appended after the fit.
-            all_messages.grounding_tokens = all_messages.grounding_tokens - standing_unsaid
-                + epoch.unsaid_tokens(&standing, Self::message_cost);
-            // A tail over the time bound turns over to the time bound, never below the required
-            // input, priced after the new epoch took its standing pieces back (tests: epoch.rs).
-            let budget = match reason {
-                epoch_view::Turnover::TailOverTimeBound => msg_budget.min(tail_bound.max(all_messages.required_tokens())),
-                _ => msg_budget,
-            };
-            let fit = self.fit_messages(all_messages, budget);
-            if let Ok(f) = &fit {
-                epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at));
+        let fit = match epoch.turnover_for(all_messages.tokens(), msg_budget) {
+            None => self.fit_messages(all_messages, msg_budget),
+            Some(cause) => {
+                all_messages.restart_epoch(&mut epoch, cause, &standing, standing_unsaid, headroom, &self.persona_name);
+                let fit = self.fit_messages(all_messages, msg_budget);
+                if let Ok(f) = &fit {
+                    epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at));
+                }
+                fit
             }
-            fit
-        } else {
-            self.fit_messages(all_messages, msg_budget)
         };
         let (mut fitted, capacity_error) = match fit {
             Ok(fitted) => (fitted, None),
@@ -3864,6 +3825,26 @@ impl PromptMessages {
         let unique: std::collections::HashSet<_> = calls.iter().copied().collect();
         (calls != results || unique.len() != calls.len() || calls.iter().any(|id| id.is_empty()))
             .then(|| "active tool receipt has missing, duplicate, or mismatched native call/result IDs; refusing an invalid continuation".to_string())
+    }
+
+    /// Her epoch turned over: the history's epoch part becomes the compacted view, the result
+    /// pointers the fit may substitute come with it, the growth room is freed, and the standing
+    /// pieces count again because a new epoch holds none of them yet.
+    fn restart_epoch(
+        &mut self,
+        epoch: &mut epoch_view::EpochView,
+        cause: epoch_view::TurnoverCause,
+        standing: &[epoch_view::Block],
+        standing_unsaid: usize,
+        headroom: usize,
+        persona: &str,
+    ) {
+        let (len, pointers) = epoch.turn_over(&mut self.history, self.grounding_at, &self.body, cause, persona);
+        self.grounding_at = len;
+        self.result_pointers = pointers;
+        self.headroom = headroom;
+        self.grounding_tokens = self.grounding_tokens - standing_unsaid
+            + epoch.unsaid_tokens(standing, LlmDeliberationFaculty::message_cost);
     }
 
     fn required_tokens(&self) -> usize {

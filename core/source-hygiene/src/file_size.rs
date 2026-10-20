@@ -52,7 +52,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 156,160 after the system head's context render moved to cognition/context_render.rs.
 // 155,945 after the epoch's contract tests moved to llm_deliberation_faculty/tests/verdicts/epoch.rs.
 // 155,830 measured on the merge with canary (canary's own cuts, 156,710, plus this branch's).
-const BASELINE_LINES_OVER: usize = 155_830;
+// 155,811 after the epoch stopped turning over on the prefill-time bound (its bound, branch and seam deleted).
+const BASELINE_LINES_OVER: usize = 155_811;
 
 pub struct FileSize;
 

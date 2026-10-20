@@ -27,21 +27,9 @@ fn epoch_faculty_with_memory(window: u32, acts: usize, reused: u32) -> (LlmDelib
     wm.set_served_window(window);
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
         .with_model_binding(model_binding(adapter.clone(), Some("epoch-model".into()), window))
-        .with_working_memory(Arc::clone(&wm))
-        .with_prefill_rate(rate_for_a_42k_tail);
+        .with_working_memory(Arc::clone(&wm));
     (faculty, adapter, wm)
 }
-
-/// The M5's measured bound on 2026-10-20 (`cognition.budget.prefill_bound`
-/// affordable_tokens=42152): a rate that prefills 42,000 tokens in an interactive
-/// time to first token.
-fn rate_for_a_42k_tail(model: &str) -> crate::inference::prefill_rate::MeasuredRate {
-    use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
-    assert_eq!(model, "epoch-model", "the bound reads the request's model, never current serving");
-    MeasuredRate { tps: Some(TAIL_BOUND as f64 / Audience::Interactive.ttft().as_secs_f64()), source: RateSource::Fresh }
-}
-
-const TAIL_BOUND: usize = 42_000;
 
 /// The body of the request act `n` sent (everything before the facts and the ask),
 /// bounded by the view rendered for it just before it was sent.
@@ -166,50 +154,14 @@ async fn small_tails_never_turn_the_epoch_over_before_the_window_is_reached() {
     assert!(turned.is_empty(), "small tails far from a full window turned the epoch over at acts {turned:?}");
 }
 
-// what this catches: one act whose tail is more than the lane prefills in her time to
-// first token kept whole (minutes of prefill), or a turnover that then fails to
-// shrink the request to what that time holds. The tail here is optional (a recall far
-// over the bound); her own act's result is required and stays whole, bound or not.
+// what this catches: an epoch turned over because one act's tail ran past the prefill-time
+// bound. A turnover re-prefills the whole new epoch, so it never makes an act cheaper than
+// its tail: on the M5 it took reuse from 0.92 to 0.35 (c30e660d9, 2026-10-20), and priced
+// short it refused Benchy's required input on 125 acts in an hour (c3e9616e6). A long tail,
+// required result and optional recall both, extends her epoch and reaches the model.
 #[tokio::test]
-async fn a_tail_over_the_time_bound_turns_over_to_what_the_time_holds() {
-    let (faculty, adapter, wm) = epoch_faculty_with_memory(185_856, 3, 0);
-    for i in 0..4 {
-        let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
-        wm.record_receipt_typed(&[], &format!("RESULT-{i} {}", "x".repeat(1_500)), None, custody);
-    }
-    let recall = |chars: usize| Contribution::context(FacultyId::Recall, format!("RECALL {}", "y".repeat(chars)), 0.6, "recall").trailing();
-    let mut ws = Workspace::new("continue the card");
-    let mut bodies = Vec::new();
-    for (act, chars) in [600, 3 * GUARD_CHARS_PER_TOKEN * TAIL_BOUND, 600].into_iter().enumerate() {
-        ws.broadcast = vec![recall(chars + act)];
-        let view = faculty.prompt_view(&ws);
-        assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
-        bodies.push(sent_body_of(&view, &adapter, act));
-    }
-    let seen = adapter.seen.lock().expect("recorded request lock");
-    let sent = LlmDeliberationFaculty::messages_cost(&seen[1].messages);
-    assert!(!bodies[1].starts_with(&bodies[0]), "the act over the time bound turned the epoch over");
-    assert!(sent <= TAIL_BOUND, "and its request holds what the time bound holds: {sent} tokens");
-    assert!(bodies[2].starts_with(&bodies[1]), "the next act extends the new epoch");
-}
-
-/// A node whose interactive time to first token holds [`SMALL_TAIL_BOUND`] tokens.
-fn rate_for_a_small_tail(_model: &str) -> crate::inference::prefill_rate::MeasuredRate {
-    use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
-    MeasuredRate { tps: Some(SMALL_TAIL_BOUND as f64 / Audience::Interactive.ttft().as_secs_f64()), source: RateSource::Fresh }
-}
-
-const SMALL_TAIL_BOUND: usize = 3_000;
-
-// what this catches: a turnover priced before the new epoch took back the standing pieces
-// the old epoch already held, so the fit refused her required input on every act and she
-// never reached the model (the M5 at c3e9616e6, 2026-10-20: Benchy, "requires 12548
-// tokens, but only 9867 are available", 125 acts in an hour). Act 0 fits, so her standing
-// pieces enter the epoch; act 1's required result plus those pieces outgrow the bound.
-#[tokio::test]
-async fn a_turnover_keeps_her_standing_pieces_even_past_the_time_bound() {
-    let (faculty, _adapter, wm) = epoch_faculty_with_memory(185_856, 2, u32::MAX);
-    let faculty = faculty.with_prefill_rate(rate_for_a_small_tail);
+async fn a_long_tail_extends_her_epoch_and_never_turns_it_over() {
+    let (faculty, adapter, wm) = epoch_faculty_with_memory(185_856, 3, u32::MAX);
     let save = |i: usize, text: &str| {
         let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
         wm.record_receipt_typed(&[], text, None, custody);
@@ -217,12 +169,21 @@ async fn a_turnover_keeps_her_standing_pieces_even_past_the_time_bound() {
     save(0, "RESULT-0");
     wm.pin_fact("hands", "your hands are rooted at the card's worktree");
     let mut ws = Workspace::new("[work turn] continue the card").self_initiated(true);
-    let first = faculty.contribute(&ws).await;
-    assert!(first.as_ref().is_some_and(|v| v.fault.is_none()), "act 0 fits the bound: {first:?}");
-    save(1, &format!("RESULT-1 {}", "r".repeat(GUARD_CHARS_PER_TOKEN * (SMALL_TAIL_BOUND - 100))));
-    ws.broadcast = vec![Contribution::context(FacultyId::Recall, format!("RECALL {}", "y".repeat(GUARD_CHARS_PER_TOKEN * 2 * SMALL_TAIL_BOUND)), 0.6, "recall").trailing()];
-    let second = faculty.contribute(&ws).await;
-    assert!(second.as_ref().is_some_and(|v| v.fault.is_none()), "act 1 turned over and reached the model: {second:?}");
+    let mut bodies = Vec::new();
+    for act in 0..3 {
+        if act == 1 {
+            save(1, &format!("RESULT-1 {}", "r".repeat(GUARD_CHARS_PER_TOKEN * 20_000)));
+            ws.broadcast = vec![Contribution::context(FacultyId::Recall, format!("RECALL {}", "y".repeat(GUARD_CHARS_PER_TOKEN * 40_000)), 0.6, "recall").trailing()];
+        }
+        let view = faculty.prompt_view(&ws);
+        let verdict = faculty.contribute(&ws).await;
+        assert!(verdict.as_ref().is_some_and(|v| v.fault.is_none()), "act {act} reached the model: {verdict:?}");
+        bodies.push(sent_body_of(&view, &adapter, act));
+    }
+    assert!(bodies[1].starts_with(&bodies[0]), "the long tail extended her epoch, never turned it over");
+    assert!(bodies[2].starts_with(&bodies[1]), "and the next act extends it again");
+    let seen = adapter.seen.lock().expect("recorded request lock");
+    assert!(seen[1].messages.iter().any(|m| m.content_text().contains("RESULT-1 rrrr")), "her required result was sent");
 }
 
 // what this catches: standing pieces re-sent after the body every act (the M5 at

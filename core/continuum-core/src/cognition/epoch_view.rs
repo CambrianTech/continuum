@@ -198,9 +198,6 @@ fn fingerprint(text: &str) -> u64 {
 pub(super) enum Turnover {
     /// The served window could not hold the epoch with this act appended.
     Window,
-    /// What this one act adds is more than the lane prefills in the audience's time to first
-    /// token; the epoch turns over to what that time holds.
-    TailOverTimeBound,
     /// She acts in another activity room: its conversation is not this epoch's.
     RoomChanged,
     /// The head's rendering changed (policy, identity, its grounding's content).
@@ -215,7 +212,6 @@ impl Turnover {
     fn as_str(self) -> &'static str {
         match self {
             Self::Window => "window",
-            Self::TailOverTimeBound => "tail_over_time_bound",
             Self::RoomChanged => "room_changed",
             Self::HeadChanged => "head_changed",
             Self::ToolsChanged => "tools_changed",
@@ -230,8 +226,6 @@ pub(super) struct TurnoverCause {
     pub reason: Turnover,
     /// Tokens after her epoch's cached prefix: what this act would prefill.
     pub fresh_tokens: usize,
-    /// What the lane prefills in the audience's time to first token at its measured rate.
-    pub tail_bound_tokens: usize,
 }
 
 /// The rendered system head and tool surface an epoch was opened with (Codex on #5210): the
@@ -440,6 +434,17 @@ impl EpochView {
         self.growth
     }
 
+    /// Whether this act's prompt still extends her epoch. Only the window turns it over: a
+    /// turnover re-prefills the whole new epoch, so it is never cheaper than sending a tail
+    /// (turning over on the prefill-time bound took reuse from 0.92 to 0.35 on the M5,
+    /// c30e660d9, 2026-10-20).
+    pub(super) fn turnover_for(&self, prompt_tokens: usize, window_tokens: usize) -> Option<TurnoverCause> {
+        (prompt_tokens > window_tokens).then(|| TurnoverCause {
+            reason: Turnover::Window,
+            fresh_tokens: prompt_tokens.saturating_sub(self.cached),
+        })
+    }
+
     /// The window cannot hold the epoch: compact it to each source's current rendering, in the
     /// order those renderings arrived, retiring each item `body` no longer offers. Replaces
     /// `history[..epoch_len]` and returns the compacted length with the saved results' compact
@@ -462,7 +467,6 @@ impl EpochView {
             epoch_chars = self.epoch.chars(),
             cached_tokens = self.cached,
             fresh_tokens = cause.fresh_tokens,
-            tail_bound_tokens = cause.tail_bound_tokens,
             "her view no longer fits: compacted to each source's latest version"
         );
         let offered: HashMap<&SourceId, Option<&String>> = body
@@ -585,7 +589,7 @@ mod tests {
     use super::*;
 
     fn cause() -> TurnoverCause {
-        TurnoverCause { reason: Turnover::Window, fresh_tokens: 0, tail_bound_tokens: 0 }
+        TurnoverCause { reason: Turnover::Window, fresh_tokens: 0 }
     }
 
     fn block(source: &str, text: &str) -> Block {
