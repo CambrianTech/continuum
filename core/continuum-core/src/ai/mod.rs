@@ -38,6 +38,7 @@ pub mod anthropic_adapter;
 pub mod heuristic_adapter;
 pub mod inference_error;
 pub mod json_in_prompt_tools;
+pub mod token_estimate;
 pub mod openai_adapter;
 pub mod openai_endpoints;
 pub(crate) mod slot_discovery;

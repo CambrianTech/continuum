@@ -20,15 +20,7 @@
 //! resident when you replay). When an exact count is needed against a specific
 //! model, that is the tokenizer's job at the inference seam, not this.
 
-/// Estimate the prompt-token cost of a piece of content. Char-based (handles
-/// multibyte text correctly), `/4` for the standard ~4-chars-per-token heuristic,
-/// `+1` so non-empty content is never costed at zero.
-pub fn estimate_prompt_tokens(content: &str) -> u32 {
-    if content.is_empty() {
-        return 0;
-    }
-    ((content.chars().count() / 4) as u32).saturating_add(1)
-}
+pub use crate::ai::token_estimate::estimate_prompt_tokens;
 
 /// Traverse structured textual payloads using the caller's existing pricing policy.
 /// Deliberation's conservative guard and RAG's relative estimate have different
