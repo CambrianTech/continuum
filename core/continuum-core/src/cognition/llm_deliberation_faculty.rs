@@ -2501,12 +2501,6 @@ impl LlmDeliberationFaculty {
             None
         };
         let fit = if let Some(reason) = turnover {
-            // Turn over to what fits: after a turnover the whole body is fresh, so a tail over
-            // the time bound fits the time bound (never below the required input).
-            let budget = match reason {
-                epoch_view::Turnover::TailOverTimeBound => msg_budget.min(tail_bound.max(required_tokens)),
-                _ => msg_budget,
-            };
             let (len, pointers) = epoch.turn_over(
                 &mut all_messages.history,
                 all_messages.grounding_at,
@@ -2521,6 +2515,12 @@ impl LlmDeliberationFaculty {
             // A new epoch holds no standing piece yet: all of them are appended after the fit.
             all_messages.grounding_tokens = all_messages.grounding_tokens - standing_unsaid
                 + epoch.unsaid_tokens(&standing, Self::message_cost);
+            // A tail over the time bound turns over to the time bound, never below the required
+            // input, priced after the new epoch took its standing pieces back (tests: epoch.rs).
+            let budget = match reason {
+                epoch_view::Turnover::TailOverTimeBound => msg_budget.min(tail_bound.max(all_messages.required_tokens())),
+                _ => msg_budget,
+            };
             let fit = self.fit_messages(all_messages, budget);
             if let Ok(f) = &fit {
                 epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at));

@@ -193,6 +193,38 @@ async fn a_tail_over_the_time_bound_turns_over_to_what_the_time_holds() {
     assert!(bodies[2].starts_with(&bodies[1]), "the next act extends the new epoch");
 }
 
+/// A node whose interactive time to first token holds [`SMALL_TAIL_BOUND`] tokens.
+fn rate_for_a_small_tail(_model: &str) -> crate::inference::prefill_rate::MeasuredRate {
+    use crate::inference::prefill_rate::{Audience, MeasuredRate, RateSource};
+    MeasuredRate { tps: Some(SMALL_TAIL_BOUND as f64 / Audience::Interactive.ttft().as_secs_f64()), source: RateSource::Fresh }
+}
+
+const SMALL_TAIL_BOUND: usize = 3_000;
+
+// what this catches: a turnover priced before the new epoch took back the standing pieces
+// the old epoch already held, so the fit refused her required input on every act and she
+// never reached the model (the M5 at c3e9616e6, 2026-10-20: Benchy, "requires 12548
+// tokens, but only 9867 are available", 125 acts in an hour). Act 0 fits, so her standing
+// pieces enter the epoch; act 1's required result plus those pieces outgrow the bound.
+#[tokio::test]
+async fn a_turnover_keeps_her_standing_pieces_even_past_the_time_bound() {
+    let (faculty, _adapter, wm) = epoch_faculty_with_memory(185_856, 2, u32::MAX);
+    let faculty = faculty.with_prefill_rate(rate_for_a_small_tail);
+    let save = |i: usize, text: &str| {
+        let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
+        wm.record_receipt_typed(&[], text, None, custody);
+    };
+    save(0, "RESULT-0");
+    wm.pin_fact("hands", "your hands are rooted at the card's worktree");
+    let mut ws = Workspace::new("[work turn] continue the card").self_initiated(true);
+    let first = faculty.contribute(&ws).await;
+    assert!(first.as_ref().is_some_and(|v| v.fault.is_none()), "act 0 fits the bound: {first:?}");
+    save(1, &format!("RESULT-1 {}", "r".repeat(GUARD_CHARS_PER_TOKEN * (SMALL_TAIL_BOUND - 100))));
+    ws.broadcast = vec![Contribution::context(FacultyId::Recall, format!("RECALL {}", "y".repeat(GUARD_CHARS_PER_TOKEN * 2 * SMALL_TAIL_BOUND)), 0.6, "recall").trailing()];
+    let second = faculty.contribute(&ws).await;
+    assert!(second.as_ref().is_some_and(|v| v.fault.is_none()), "act 1 turned over and reached the model: {second:?}");
+}
+
 // what this catches: standing pieces re-sent after the body every act (the M5 at
 // c9bc93951: ~11k tokens of own-time, work-turn, steps, open views and notices,
 // always fresh). Unchanged, they live in her epoch and the tail carries none of them.
