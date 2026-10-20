@@ -4374,25 +4374,6 @@ impl ServingDaemonModule {
                             *slot = None;
                         }
                         None
-                    } else if crate::cognition::serving_plan::solve_window_floor() > 0 {
-                        // SOLVE REGIME: the eyes yield (2026-08-29, "take every
-                        // architectural advantage"). While a pinned solve floor
-                        // stands the work is text-only by construction, and the
-                        // sidecar's ~9GB is exactly the budget that buys the
-                        // SECOND solve lane (measured: 84k×1 afforded, 40448×2
-                        // refused by a few GB). Drop it (RAII kills the child,
-                        // RAM freed, the next plan sees the room); it respawns
-                        // on the first plan after the floor clears — sight
-                        // returns with the idle era, like dreams.
-                        crate::probe!(
-                            class = "serving.vision.sidecar_yields_to_solves",
-                            "solve floor standing — vision sidecar yields its budget to a second solve lane"
-                        );
-                        let mut slot = sidecar_slot.lock().await;
-                        if current() {
-                            *slot = None;
-                        }
-                        None
                     } else {
                         use crate::inference::vision_sidecar as sidecar;
                         let candidate = sidecar_candidate;
@@ -7348,13 +7329,12 @@ impl ServiceModule for ServingDaemonModule {
                 instance = instance.as_str(),
                 needs_redispatch = true,
                 "benchmark run orphaned by a core restart — {instance} was NOT measured; \
-                 the benchmark-side boot resume rejoins its round and re-fires it",
+                 nothing re-fires it at boot; it is hers to pull again",
             );
         }
         // The ROUND half is now CONTINUITY (plan A5): a Working round SURVIVES the
-        // restart — the benchmark-side boot resume (modules::benchmark_resume, which
-        // owns re-firing per BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon)
-        // rejoins it. Only TTL-expired abandoned rounds are swept here.
+        // restart — residents pull from it as they choose
+        // (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon re-fires). Only TTL-expired abandoned rounds are swept here.
         for (benchmark, remaining) in crate::cognition::bench_round::reap_orphaned_rounds() {
             crate::probe!(
                 class = "bench.round.expired",
