@@ -236,10 +236,7 @@ impl hf_hub::api::tokio::Progress for PullProgress {
 /// and cognition/eval already use (`~/.continuum/progress/<kind>-<run_id>.json`), so one
 /// poller/`Positron` tail serves every long-running command instead of a per-command scheme.
 fn models_pull_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
-    let base = std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))?;
+    let base = crate::paths::continuum_home().ok()?;
     let dir = base.join("progress");
     let _ = std::fs::create_dir_all(&dir);
     Some(dir.join(format!("models-pull-{run_id}.json")))
