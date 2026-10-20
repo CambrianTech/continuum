@@ -35,6 +35,7 @@ pub mod command_inbound_pump;
 pub mod active_work_source;
 pub mod airc_runtime_registry;
 pub mod airc_source;
+pub mod airc_window;
 pub mod allocator;
 pub mod base_model_policy;
 pub mod cached_source;

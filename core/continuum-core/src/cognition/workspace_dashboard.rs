@@ -27,7 +27,7 @@ use serde::Serialize;
 use tokio::sync::watch;
 use uuid::Uuid;
 
-use super::workspace::{PartsOrder, Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace};
+use super::workspace::{Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace};
 
 /// The two concurrent barriers, as arithmetic: the turn waits on the SLOWEST
 /// faculty of each phase, not the sum — `max(perception) + max(deliberation)`.
@@ -212,7 +212,7 @@ mod tests {
             parts: Vec::new(),
             expand_command: None,
             source_truncated: false,
-            parts_order: PartsOrder::Ranked,
+            parts_order: crate::cognition::workspace::PartsOrder::Ranked,
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -237,7 +237,7 @@ mod tests {
             parts: Vec::new(),
             expand_command: None,
             source_truncated: false,
-            parts_order: PartsOrder::Ranked,
+            parts_order: crate::cognition::workspace::PartsOrder::Ranked,
         };
         let trace = WorkspaceTrace {
             cycle: crate::cognition::workspace::CycleId::UNSTAMPED,

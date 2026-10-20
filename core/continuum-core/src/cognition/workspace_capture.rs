@@ -24,7 +24,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use serde::Serialize;
 use uuid::Uuid;
 
-use super::workspace::{PartsOrder, Contribution, Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace};
+use super::workspace::{Contribution, Decision, FacultyTiming, WorkspaceCaptureSink, WorkspaceTrace};
 
 /// Bumped when the on-disk record shape changes (replay readers gate on it).
 /// v2 added per-faculty `timings` (the speed axis / dashboard feed).
@@ -258,7 +258,7 @@ mod tests {
             parts: Vec::new(),
             expand_command: None,
             source_truncated: false,
-            parts_order: PartsOrder::Ranked,
+            parts_order: crate::cognition::workspace::PartsOrder::Ranked,
         };
         let verdict = Contribution {
             faculty: FacultyId::Deliberation,
@@ -281,7 +281,7 @@ mod tests {
             parts: Vec::new(),
             expand_command: None,
             source_truncated: false,
-            parts_order: PartsOrder::Ranked,
+            parts_order: crate::cognition::workspace::PartsOrder::Ranked,
         };
         let trace = WorkspaceTrace {
             cycle: crate::cognition::workspace::CycleId::UNSTAMPED,
