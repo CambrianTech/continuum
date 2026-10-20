@@ -165,5 +165,18 @@ mod tests {
             outcome,
             "explicit grid node nonexistent-node-id is unknown"
         );
+        // Control commands interpret nodeId themselves; they must reach the
+        // local handler, including when the named node cannot be routed.
+        for command in [
+            crate::modules::grid::commands::TRUST,
+            crate::modules::grid::commands::SEND,
+            crate::modules::grid::commands::ROUTE,
+        ] {
+            let outcome = interceptor
+                .try_route(command, &serde_json::json!({"nodeId": "nonexistent-node-id"}), None)
+                .await
+                .expect("grid administration stays local");
+            assert!(matches!(outcome, InterceptorOutcome::Decline));
+        }
     }
 }

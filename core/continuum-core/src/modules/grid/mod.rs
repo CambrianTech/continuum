@@ -155,6 +155,12 @@ impl GridState {
         command: &str,
         params: &serde_json::Value,
     ) -> Result<Option<crate::runtime::CommandResult>, String> {
+        // Grid handlers own their nodeId operand (trust, send, route, etc.).
+        // Intercepting it as a destination would bypass local administration
+        // and make a blocked node impossible to trust.
+        if command.starts_with(commands::PREFIX) {
+            return Ok(None);
+        }
         match self.router.route(command, params, &self.registry) {
             RouteDecision::Refused(reason) => Err(reason.to_string()),
             RouteDecision::Local => Ok(None),
@@ -179,7 +185,7 @@ impl ServiceModule for GridModule {
         ModuleConfig {
             name: "grid",
             priority: ModulePriority::Normal,
-            command_prefixes: &["grid/"],
+            command_prefixes: &[commands::PREFIX],
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
