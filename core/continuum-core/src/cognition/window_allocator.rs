@@ -143,6 +143,15 @@ pub fn requirements_for(
         .collect()
 }
 
+/// What one turn needs of a lane: the sum of its budget claims' FLOORS (framing and tools,
+/// required input, grounding floor, her last move and its outcome, the reply floor), never
+/// what the budget granted. The flexbox grows a turn into whatever window it is given, so a
+/// grant measured on a 102k lane reads as a 48.6k "need" and refuses a second lane at 46k
+/// (the M5, 2026-10-18: four residents queued on one slot, 13% reuse, 600 s lane waits).
+pub fn turn_need(claims: &[crate::persona::rag_budget::RagSourceBudget]) -> u32 {
+    claims.iter().map(|c| c.floor_tokens).fold(0, u32::saturating_add)
+}
+
 /// The largest requirement this seat KNOWS — what an `Unknown` resolves to before the
 /// model's own trained window, and the window an undeclared grid role stands at. `None`
 /// = nothing measured anywhere on the seat.
@@ -297,6 +306,23 @@ pub fn allocate(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: a lane need learned from the GRANT, which the flexbox grows to any
+    // window, so the need tracked the window and refused every extra lane (the M5, 10-18).
+    #[test]
+    fn a_turns_need_is_its_floors_however_much_the_window_granted() {
+        use crate::persona::rag_budget::{flex_allocate, RagSourceBudget};
+        let claim = |id: &str, floor: u32, max: u32| RagSourceBudget {
+            source_id: id.into(), priority: 5, floor_tokens: floor, min_tokens: floor, max_tokens: max, required: false,
+        };
+        let claims = [claim("required", 9_000, 9_000), claim("history", 4_000, 60_000), claim("reply", 2_000, 16_000)];
+        assert_eq!(turn_need(&claims), 15_000);
+        for window in [20_000, 102_912] {
+            let granted: u32 = ["required", "history", "reply"].iter().map(|id| flex_allocate(window, &claims).granted(id)).sum();
+            assert!(granted >= turn_need(&claims), "a window that holds the floors grants at least them");
+        }
+        assert_eq!(turn_need(&[claim("a", u32::MAX, u32::MAX), claim("b", 1, 1)]), u32::MAX, "saturates, never wraps");
+    }
 
     const GB: u64 = 1 << 30;
 

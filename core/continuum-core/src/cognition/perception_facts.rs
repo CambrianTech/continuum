@@ -638,7 +638,6 @@ mod tests {
             result_scopes: Default::default(),
             handoff: None,
             evicted_pointers: Vec::new(),
-            evicted_pointer_scopes: Vec::new(),
             receipt_children: Default::default(),
             open_views: Vec::new(),
         });

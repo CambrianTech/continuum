@@ -314,8 +314,6 @@ pub struct WorkingMemory {
     /// pointer to a pointer buys nothing). Rendered as one byte-append-only-ish
     /// message ahead of the recent-results banner.
     evicted_pointers: Mutex<VecDeque<(String, String)>>,
-    /// Index-aligned with the existing pointer ring; unknown legacy roots remain None.
-    evicted_pointer_scopes: Mutex<VecDeque<Option<String>>>,
     /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
     /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
     /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
@@ -480,8 +478,6 @@ pub struct VolatileSnapshot {
     /// lost its only handle on restart). Empty on snapshots written before this field.
     #[serde(default)]
     pub evicted_pointers: Vec<(String, String)>,
-    #[serde(default)]
-    pub evicted_pointer_scopes: Vec<Option<String>>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.
@@ -523,6 +519,11 @@ impl VolatileSnapshot {
             }
         }
     }
+}
+
+/// "; workspace <dir>" for a result recorded under a root; empty for one recorded before.
+fn workspace_label(root: Option<&str>) -> String {
+    root.and_then(|r| std::path::Path::new(r).file_name()).map_or(String::new(), |n| format!("; workspace {}", n.to_string_lossy()))
 }
 
 /// Unknown provenance remains visible, matching the existing entry projection.
@@ -663,7 +664,6 @@ impl WorkingMemory {
             recent_results: Mutex::new(VecDeque::new()),
             result_scopes: Mutex::new(BTreeMap::new()),
             evicted_pointers: Mutex::new(VecDeque::new()),
-            evicted_pointer_scopes: Mutex::new(VecDeque::new()),
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
             open_views: Mutex::new(Default::default()),
@@ -1190,14 +1190,12 @@ impl WorkingMemory {
         };
         // Capture each result with its attribution under the same custody locks.
         // A concurrent collapse must not shift pointer indexes between these reads.
-        let (recent_results, result_scopes, evicted_pointers, evicted_pointer_scopes, last_action) = {
+        let (recent_results, result_scopes, evicted_pointers, last_action) = {
             let results = self.recent_results.lock();
             let scopes = self.result_scopes.lock();
             let pointers = self.evicted_pointers.lock();
-            let pointer_scopes = self.evicted_pointer_scopes.lock();
             (results.iter().cloned().collect(), scopes.clone(),
-                pointers.iter().cloned().collect(), pointer_scopes.iter().cloned().collect(),
-                self.last_action.lock().clone())
+                pointers.iter().cloned().collect(), self.last_action.lock().clone())
         };
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
@@ -1224,7 +1222,6 @@ impl WorkingMemory {
                 .map(|d| d.label.clone())
                 .collect(),
             evicted_pointers,
-            evicted_pointer_scopes,
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
         }
@@ -1299,10 +1296,6 @@ impl WorkingMemory {
             let mut ptrs = self.evicted_pointers.lock();
             ptrs.clear();
             ptrs.extend(snap.evicted_pointers);
-            let mut scopes = self.evicted_pointer_scopes.lock();
-            scopes.clear();
-            scopes.extend(snap.evicted_pointer_scopes);
-            scopes.resize(ptrs.len(), None);
         }
         *self.receipt_children.lock() = snap.receipt_children;
         *self.open_views.lock() = super::open_views::OpenViews::from_saved(snap.open_views);
@@ -1532,6 +1525,11 @@ impl WorkingMemory {
     /// conversational turn AFTER the mind already used it (#139 prefill / #165 stale
     /// replay). `last_action_full` stays the ungated accessor for callers that want the
     /// raw slot regardless of settlement (snapshotting, tests).
+    /// The unsettled last action's sequence, whatever workspace she is rooted in now.
+    fn in_flight_action_seq(&self) -> Option<u64> {
+        self.last_action.lock().as_ref().map(|(seq, _)| *seq).filter(|s| *s >= self.active_from_seq.load(Ordering::Relaxed))
+    }
+
     pub fn active_action_full(&self) -> Option<(u64, String)> {
         let _results = self.recent_results.lock();
         let action = self.last_action.lock().clone()?;
@@ -1653,17 +1651,14 @@ impl WorkingMemory {
         // message; holding it here too would spend its share twice. It joins the ring's
         // tail when the next act replaces it: an append at the frontier, so the prefix
         // ahead of it stays byte-stable.
-        let active = self.active_action_full().map(|(seq, _)| seq);
-        let scope = self.scope.lock().clone();
+        // One mind: every result is shown from every workspace, labelled with its own.
+        // The in-flight action is excluded by sequence, never by root: one prefix everywhere.
+        let active = self.in_flight_action_seq();
         let rr = self.recent_results.lock();
         let scopes = self.result_scopes.lock();
-        let eligible = |seq: &u64| Some(*seq) != active
-            && scope_visible(scopes.get(seq).map(String::as_str), scope.as_deref());
+        let eligible = |seq: &u64| Some(*seq) != active;
         let pointers = self.evicted_pointers.lock();
-        let pointer_scopes = self.evicted_pointer_scopes.lock();
-        let visible_pointers: Vec<_> = pointers.iter().enumerate()
-            .filter(|(index, _)| scope_visible(pointer_scopes.get(*index).and_then(|s| s.as_deref()), scope.as_deref()))
-            .map(|(_, (pointer, _))| pointer.as_str()).collect();
+        let visible_pointers: Vec<_> = pointers.iter().map(|(pointer, _)| pointer.as_str()).collect();
         if !rr.iter().any(|(seq, ..)| eligible(seq)) && visible_pointers.is_empty() {
             return Vec::new();
         }
@@ -1687,8 +1682,9 @@ impl WorkingMemory {
                 operation: Some(operation),
                 spill_handle: handle.as_deref(),
             };
-            let pointer = handle.as_ref().map(|_| format!("[result {attribution} — collapsed; query tool/output to expand]"));
-            (format!("[result {attribution}] {tail}"), pointer)
+            let workspace = workspace_label(scopes.get(seq).map(String::as_str));
+            let pointer = handle.as_ref().map(|_| format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"));
+            (format!("[result {attribution}{workspace}] {tail}"), pointer)
         }));
         // Collapsed-results index LAST — it CHANGES on every eviction, and
         // message order is MONOTONE IN STABILITY (the KV law this same night
@@ -1866,14 +1862,11 @@ impl WorkingMemory {
                 operation: Some(&elabel),
                 spill_handle: Some(handle),
             };
-            let result_scope = self.result_scopes.lock().get(&eseq).cloned();
+            let workspace = workspace_label(self.result_scopes.lock().get(&eseq).map(String::as_str));
             let mut ptrs = self.evicted_pointers.lock();
-            let mut pointer_scopes = self.evicted_pointer_scopes.lock();
-            pointer_scopes.push_back(result_scope);
-            ptrs.push_back((format!("[result {attribution} — collapsed]"), handle.to_owned()));
+            ptrs.push_back((format!("[result {attribution}{workspace} — collapsed]"), handle.to_owned()));
             while ptrs.len() > 12 {
                 ptrs.pop_front();
-                pointer_scopes.pop_front();
             }
         }
         *rr = survivors;
@@ -2386,7 +2379,7 @@ mod tests {
     // leaking into perception while she stands at another (the 9/5 "my context
     // is confused" opener), and coming back when she returns.
     #[test]
-    fn a_receipt_from_another_root_is_not_perceived_while_rooted_elsewhere() {
+    fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_workspace() {
         let wm = WorkingMemory::new(8);
         wm.set_scope(Some("/peers/x/workspace/swe/django-16899".into()));
         wm.record_receipt("[action #1] ls tests/ordering");
@@ -2417,12 +2410,11 @@ mod tests {
         assert_eq!(results.last_action_full(), original, "projection does not discard custody");
         results.record_receipt_typed(&[], "task-b-only", None, saved("scope-b-output"));
         for _ in 0..4 { results.record_fact("unrelated notice"); }
-        assert!(!results.recent_results_messages().join("\n").contains("task-a-only"));
+        let from_b = results.recent_results_messages().join("\n");
+        assert!(from_b.contains("scope-a-output; workspace task-a"), "one mind: task-a's result, labelled, from task-b: {from_b}");
+        assert!(!from_b.contains("task-b-only"), "the in-flight action renders at the tail, not in the ring");
         results.set_scope(Some("task-a".into()));
-        // body_a filled the whole share, so task-b's receipt collapsed it to its pointer at
-        // once (the share is enforced at every receipt); the pointer, like the body, is
-        // seen only from task-a.
-        assert!(results.recent_results_messages().join("\n").contains("scope-a-output"));
+        assert_eq!(results.recent_results_messages().join("\n"), from_b, "the ring is the same from either root");
         assert!(results.active_action_full().is_none(), "B stays stored but inactive in A");
         results.set_scope(Some("task-b".into()));
         results.record_settlement("reported", None);
@@ -2431,17 +2423,13 @@ mod tests {
         let mut encoded = serde_json::to_value(&snapshot).expect("snapshot serializes");
         let restored = WorkingMemory::new(2);
         restored.restore(serde_json::from_value(encoded.clone()).expect("snapshot round trip"));
-        restored.set_scope(Some("task-b".into()));
-        assert!(!restored.recent_results_messages().join("\n").contains("scope-a-output"));
-        restored.set_scope(Some("task-a".into()));
         let shown = restored.recent_results_messages().join("\n");
-        assert!(shown.contains("scope-a-output"), "returning restores expansion visibility");
-        assert!(!shown.contains("scope-b-output"));
-        assert_eq!(restored.snapshot().evicted_pointers, snapshot.evicted_pointers, "hidden pointers retain custody");
+        restored.set_scope(Some("task-b".into()));
+        assert!(shown.contains("scope-a-output") && restored.recent_results_messages().join("\n") == shown, "{shown}");
+        assert_eq!(restored.snapshot().evicted_pointers, snapshot.evicted_pointers, "pointers retain custody");
         // Pre-attribution snapshots stay explicitly unknown, not falsely assigned
         // to the restoring root or hidden based on missing bounded entry metadata.
         encoded.as_object_mut().unwrap().remove("result_scopes");
-        encoded.as_object_mut().unwrap().remove("evicted_pointer_scopes");
         let legacy = WorkingMemory::new(2);
         legacy.restore(serde_json::from_value(encoded).expect("legacy snapshot"));
         legacy.set_scope(Some("task-b".into()));
@@ -3028,7 +3016,6 @@ mod tests {
             result_scopes: Default::default(),
             handoff: None,
             evicted_pointers: Vec::new(),
-            evicted_pointer_scopes: Vec::new(),
             receipt_children: Default::default(),
             open_views: Vec::new(),
         });
