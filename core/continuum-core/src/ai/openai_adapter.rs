@@ -2665,11 +2665,10 @@ mod tests {
     // never a latch: the next request probes again.
     #[tokio::test]
     async fn a_props_transport_failure_is_a_named_miss_and_never_latches() {
-        let closed = std::net::TcpListener::bind("127.0.0.1:0").expect("test: bind");
-        let address = closed.local_addr().expect("test: addr");
-        drop(closed);
+        // Port 0 is never connectable, so the refusal is deterministic (no released port another
+        // test could rebind); the path keeps this root's directory entry its own.
         let mut adapter = test_adapter();
-        adapter.config.base_url = format!("http://{address}");
+        adapter.config.base_url = "http://127.0.0.1:0/slot-discovery-transport-miss".into();
         let Err(miss) = adapter.ensure_slot_pool(&adapter.endpoints()).await else { panic!("test: nothing listens, yet a pool came back") };
         assert_eq!(miss.as_str(), "transport", "{miss:?}");
         assert!(crate::inference::slots::directory().get(adapter.endpoints().root()).is_none(), "a transport error never latches");
