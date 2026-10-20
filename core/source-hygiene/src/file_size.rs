@@ -45,7 +45,8 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
 // 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
 // 154,999 after placement responsibilities split on current canary.
-const BASELINE_LINES_OVER: usize = 154_999;
+// 143,321 after llm_deliberation_faculty.rs (12,678 lines) was split by owner into llm_deliberation_faculty/ (#5232).
+const BASELINE_LINES_OVER: usize = 143_321;
 
 pub struct FileSize;
 
