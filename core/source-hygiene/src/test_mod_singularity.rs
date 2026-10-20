@@ -24,7 +24,7 @@ use super::{SourceFile, SourceRule, Violation};
 /// themes inside it are fine) lowers it; raising it to green a build is defeating
 /// the guard.
 #[cfg(test)]
-const BASELINE_EXCESS_TEST_MODS: usize = 19;
+const BASELINE_EXCESS_TEST_MODS: usize = 18;
 
 /// 1-indexed lines of `#[cfg(test)]` attributes that gate a `mod`.
 fn test_mod_lines(file: &SourceFile) -> Vec<usize> {
