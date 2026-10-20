@@ -190,11 +190,12 @@ pub(crate) async fn ask_the_act_question(
                                     [id8, inst]
                                 })
                                 .collect();
+                            let budget = crate::cognition::context_budget::ContextBudget::live();
                             crate::persona::work_burst::own_recent_thoughts_about(
                                 &rows,
                                 ctx.identity.peer_id.as_uuid(),
-                                4,
-                                400,
+                                budget.working_memory_steps(),
+                                budget.trail_head_chars(),
                                 &about,
                             )
                         }

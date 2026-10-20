@@ -376,7 +376,7 @@ pub async fn apply_act(
             status: ActStatus::Executed,
         };
         observation.push_str(&obs.render_recency(intent, &budget));
-        recall_observation.push_str(&obs.render_recall(intent));
+        recall_observation.push_str(&obs.render_recall(intent, &budget));
         // (The canvas feed publishes at the tool-executor seam, PRE-fold — a
         // flood-sized ObserveResult here is already a spilled preview that no
         // longer parses. See CommandToolExecutor::execute_native_batch.)

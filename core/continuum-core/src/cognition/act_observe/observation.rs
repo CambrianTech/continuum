@@ -294,7 +294,7 @@ impl Observation {
     /// The RECALL-channel rendering: the COLLAPSED reference the Episodic engram
     /// re-injects on later turns (#166 — a separate channel from recency). The
     /// Summary text may collapse; saved-result custody must remain recoverable.
-    pub fn render_recall(&self, intent: &str) -> String {
+    pub fn render_recall(&self, intent: &str, budget: &ContextBudget) -> String {
         let mut recall = render_act_for_recall(
             &self.call.name,
             &self.call.input,
@@ -310,6 +310,7 @@ impl Observation {
                 self.output.verdict
             },
             &self.body_text(),
+            budget,
         );
         if let Some(handle) = self.output.result.custody.handle() {
             recall.push_str(&format!(
@@ -555,14 +556,15 @@ mod tests {
             let content = format!("header\n{}END_OF_SAVED_RESULT", "source line\n".repeat(100));
             for verdict in [ToolVerdict::Succeeded, ToolVerdict::Failed, ToolVerdict::Running] {
                 let mut o = obs(ActVerdict::Declared(verdict), None, &content);
-                assert!(!o.render_recall("").contains("Saved result:"));
+                assert!(!o.render_recall("", &crate::cognition::context_budget::ContextBudget::from_window_unbounded(1024)).contains("Saved result:"));
                 for custody in [
                     ResultCustody::Whole { handle: handle.into() },
                     ResultCustody::Pointer { handle: handle.into() },
                 ] {
                     o.output.result.custody = custody;
-                    let recall = o.render_recall("");
-                    assert!(!recall.contains("END_OF_SAVED_RESULT"));
+                    let recall = o.render_recall("", &crate::cognition::context_budget::ContextBudget::from_window_unbounded(1024));
+                    // the END of the body survives (the newest line is never the one dropped); the middle collapses
+                    assert!(recall.contains("END_OF_SAVED_RESULT") && recall.contains("earlier lines omitted"));
                     assert!(recall.contains(&format!("`tool/output` {{\"outputId\":\"{handle}\"}}")));
                     assert_eq!(o.output.result.content, content);
                 }

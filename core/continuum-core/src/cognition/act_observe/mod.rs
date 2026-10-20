@@ -702,11 +702,11 @@ mod tests {
             "the hand's result rides the typed output"
         );
         // The recency rendering still names tool + intent + result (byte-stable).
-        assert!(obs.render_recall("check the math").contains("code/run"));
+        assert!(obs.render_recall("check the math", &crate::cognition::context_budget::ContextBudget::from_window_unbounded(4096)).contains("code/run"));
         assert!(obs
-            .render_recall("check the math")
+            .render_recall("check the math", &crate::cognition::context_budget::ContextBudget::from_window_unbounded(4096))
             .contains("check the math"));
-        assert!(obs.render_recall("check the math").contains('4'));
+        assert!(obs.render_recall("check the math", &crate::cognition::context_budget::ContextBudget::from_window_unbounded(4096)).contains('4'));
         assert_eq!(
             adm.engram_count(),
             1,

@@ -7,6 +7,40 @@
 
 use crate::cognition::context_budget::ContextBudget;
 
+/// A body shrunk to `max` chars keeping its END whole: errors, test summaries and outcomes sit
+/// at the end, and a cut that drops the newest line leaves her acting on a world where time
+/// never moved. The beginning collapses to its first line plus the count of what is omitted
+/// (the executor's `Saved result: tool/output` handle, appended by `Observation::render_recall`,
+/// opens it). Within `max` the body is returned unchanged.
+fn collapse_to_end(body: &str, max: usize) -> String {
+    let total = body.chars().count();
+    if total <= max {
+        return body.to_string();
+    }
+    let lines: Vec<&str> = body.lines().collect();
+    let mut kept = 0usize;
+    let mut used = 0usize;
+    for line in lines.iter().rev() {
+        let n = line.chars().count() + 1;
+        if kept > 0 && used + n > max {
+            break;
+        }
+        kept += 1;
+        used += n;
+    }
+    let tail = lines[lines.len() - kept..].join("\n");
+    let tail_len = tail.chars().count();
+    // One line longer than the share keeps its END chars.
+    let tail = if kept == 1 && tail_len > max { tail.chars().skip(tail_len - max).collect() } else { tail };
+    if kept >= lines.len() {
+        return format!("…{tail}");
+    }
+    let Some(first) = lines.first() else {
+        return tail;
+    };
+    format!("{first}\n[{} earlier lines omitted]\n{tail}", lines.len() - kept - 1)
+}
+
 fn truncate_chars(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
@@ -124,30 +158,31 @@ pub(super) fn summarize_args_for_recency(
             })
             .collect::<Vec<_>>()
             .join(", "),
-        other => truncate_chars(&other.to_string(), fold_at.min(4096)),
+        other => truncate_chars(&other.to_string(), fold_at),
     }
 }
 
 /// Collapse tool ARGS for the recall channel: a large string value (e.g. a whole file
 /// passed in `content`) becomes `<key>: N chars` — re-showing that file verbatim on every
 /// future turn is the dead weight that taxes context (measured: it drowned an unfamiliar
-/// 8B). Small args pass through compact.
-fn summarize_args_for_recall(args: &serde_json::Value) -> String {
+/// 8B). Small args pass through compact. "Large" is the window's echo share for one argument
+/// ([`ContextBudget::echoed_arg_chars`]), the same share the recency channel folds at.
+fn summarize_args_for_recall(args: &serde_json::Value, share: usize) -> String {
     match args {
         serde_json::Value::Object(map) => map
             .iter()
             .map(|(k, v)| match v {
-                serde_json::Value::String(s) if s.chars().count() > 80 => {
+                serde_json::Value::String(s) if s.chars().count() > share => {
                     format!("{k}: {} chars", s.chars().count())
                 }
                 other => format!(
                     "{k}={}",
-                    truncate_chars(other.to_string().trim_matches('"'), 60)
+                    truncate_chars(other.to_string().trim_matches('"'), share)
                 ),
             })
             .collect::<Vec<_>>()
             .join(", "),
-        other => truncate_chars(&other.to_string(), 120),
+        other => truncate_chars(&other.to_string(), share),
     }
 }
 
@@ -158,16 +193,19 @@ fn summarize_args_for_recall(args: &serde_json::Value) -> String {
 /// `tool/output` handle when the executor spilled it — the same handle a positron thumbnail
 /// would open); an ERROR is always shown in full (highlighted — never hide what broke). The
 /// RECENCY channel (working memory) still holds the whole latest result; this only slims
-/// what recall re-injects turn after turn.
+/// what recall re-injects turn after turn. Every cut is a share of the live window
+/// (`budget`), never a literal; the executor's `Saved result: tool/output` handle (appended by
+/// `Observation::render_recall` whenever the result was saved) is how the rest is reached.
 pub(super) fn render_act_for_recall(
     name: &str,
     args: &serde_json::Value,
     intent: &str,
     verdict: crate::sdk_codegen::ActVerdict,
     body: &str,
+    budget: &ContextBudget,
 ) -> String {
-    const RECALL_INLINE_MAX: usize = 280;
-    let args_summary = summarize_args_for_recall(args);
+    let inline_max = budget.echoed_arg_chars();
+    let args_summary = summarize_args_for_recall(args, inline_max);
     let is_err = verdict.failed();
     // THE COLLAPSED LINE MUST NOT SAY "ok" FOR WORK THAT DID NOT FINISH (Astra on
     // #4352). This channel is what the Episodic engram re-injects turn after turn —
@@ -181,14 +219,11 @@ pub(super) fn render_act_for_recall(
         _ => "ok —",
     };
     let outcome = if is_err {
-        format!("FAILED:\n{}", truncate_chars(body.trim(), 800))
-    } else if body.trim().chars().count() <= RECALL_INLINE_MAX {
+        format!("FAILED:\n{}", collapse_to_end(body.trim(), budget.trail_head_chars()))
+    } else if body.trim().chars().count() <= inline_max {
         body.trim().to_string()
     } else {
-        format!(
-            "{label} {}",
-            truncate_chars(body.trim().lines().next().unwrap_or(""), 140)
-        )
+        format!("{label}\n{}", collapse_to_end(body.trim(), inline_max))
     };
     let mark = if is_err {
         "⚠ "
@@ -219,6 +254,22 @@ mod tests {
     const FAIL_V: ActVerdict = ActVerdict::Declared(ToolVerdict::Failed);
 
     use super::*;
+
+    /// A small lane: its echo share is 48 chars (1024 tokens x 3 chars / 64), so the bodies
+    /// these tests use are over share without any fixture being a literal clip size.
+    fn lane() -> ContextBudget {
+        ContextBudget::from_window_unbounded(1024)
+    }
+
+    fn recall(
+        name: &str,
+        args: &serde_json::Value,
+        intent: &str,
+        verdict: ActVerdict,
+        body: &str,
+    ) -> String {
+        render_act_for_recall(name, args, intent, verdict, body, &lane())
+    }
 
     /// what this catches: card 0a4c0648 — the receipt renderer embedding the executor's
     /// serde-serialized JSON VERBATIM, so a code/read result reached her window as one
@@ -298,7 +349,7 @@ mod tests {
         let big = "fn main(){}\n".repeat(200); // a whole "file"
         let args = serde_json::json!({ "file_path": "x.rs", "content": big });
         let ref_ok =
-            render_act_for_recall("code/write", &args, "acting", OK_V, "{\"success\":true}");
+            recall("code/write", &args, "acting", OK_V, "{\"success\":true}");
         assert!(
             ref_ok.contains("content: "),
             "big content arg must collapse to a size"
@@ -310,7 +361,7 @@ mod tests {
         );
 
         // small success → inline
-        let small = render_act_for_recall(
+        let small = recall(
             "code/read",
             &serde_json::json!({"file_path":"a"}),
             "acting",
@@ -320,7 +371,7 @@ mod tests {
         assert!(small.contains("→ hello"), "small result stays inline");
 
         // error → highlighted + shown
-        let err = render_act_for_recall(
+        let err = recall(
             "code/shell",
             &serde_json::json!({"cmd":"x"}),
             "acting",
@@ -341,7 +392,7 @@ mod tests {
     #[test]
     fn empty_intent_renders_no_because_clause() {
         let args = serde_json::json!({"file_path": "a"});
-        let empty = render_act_for_recall("code/read", &args, "", OK_V, "hi");
+        let empty = recall("code/read", &args, "", OK_V, "hi");
         assert!(!empty.contains("because"), "no fabricated reason: {empty}");
         assert!(
             empty.contains("code/read("),
@@ -351,7 +402,7 @@ mod tests {
             !empty.contains("I ran"),
             "no imitable 'I ran' opener (#158): {empty}"
         );
-        let real = render_act_for_recall("code/read", &args, "checking the header", OK_V, "hi");
+        let real = recall("code/read", &args, "checking the header", OK_V, "hi");
         assert!(
             real.contains("because checking the header"),
             "a real intent still shows"
@@ -418,7 +469,7 @@ mod tests {
         let args = serde_json::json!({"command": "cargo test"});
         let long = "x".repeat(400);
 
-        let running = render_act_for_recall(
+        let running = recall(
             "code/shell",
             &args,
             "building",
@@ -433,7 +484,7 @@ mod tests {
         assert!(running.starts_with("⋯"), "and it carries its own mark: {running}");
 
         let unreadable =
-            render_act_for_recall("code/run", &args, "running", ActVerdict::Undecodable, &long);
+            recall("code/run", &args, "running", ActVerdict::Undecodable, &long);
         assert!(
             !unreadable.contains("ok —"),
             "a result nobody could decode must not be remembered as ok: {unreadable}"
@@ -441,13 +492,52 @@ mod tests {
         assert!(unreadable.contains("unreadable —"), "{unreadable}");
 
         // The unchanged paths stay unchanged.
-        let ok = render_act_for_recall("code/read", &args, "reading", OK_V, &long);
+        let ok = recall("code/read", &args, "reading", OK_V, &long);
         assert!(ok.contains("ok —"), "{ok}");
         let unprojected =
-            render_act_for_recall("code/read", &args, "reading", ActVerdict::Unprojected, &long);
+            recall("code/read", &args, "reading", ActVerdict::Unprojected, &long);
         assert!(
             unprojected.contains("ok —"),
             "a command that never opted in is byte-for-byte as before: {unprojected}"
         );
+    }
+
+    /// what this catches: the old literals (RECALL_INLINE_MAX 280, FAILED body 800, first line
+    /// 140, args 80/60) clipping on a window that can afford more. A body of 1,000 chars is
+    /// over the old 280 but inside a 128k lane's share, so it must ride inline whole; on the
+    /// small lane the same body collapses to a one-line summary (the executor's saved-result
+    /// handle is appended by `Observation::render_recall`).
+    #[test]
+    fn recall_shares_come_from_the_budget_not_literals() {
+        let args = serde_json::json!({"file_path": "a"});
+        let body = "y".repeat(1000);
+        let big = ContextBudget::from_window_unbounded(131_072);
+        let wide = render_act_for_recall("code/read", &args, "", OK_V, &body, &big);
+        assert!(wide.contains(&body), "a big share shows the whole body inline");
+        let narrow = recall("code/read", &args, "", OK_V, &body);
+        assert!(!narrow.contains(&body) && narrow.contains("ok —"), "{narrow}");
+
+        let failure = "e".repeat(1500);
+        let wide = render_act_for_recall("code/shell", &args, "", FAIL_V, &failure, &big);
+        assert!(wide.contains(&failure), "a failure over the old 800 clip shows fully on a big lane");
+        let narrow = recall("code/shell", &args, "", FAIL_V, &failure);
+        assert!(!narrow.contains(&failure), "and is cut to the small lane's share");
+    }
+
+    /// what this catches: a cut that keeps the head and drops the newest end (the old first-line
+    /// 140 / FAILED 800 clips). Errors and test summaries sit at the END of a body; under a tight
+    /// budget the end must survive whole and the beginning collapse to a first line plus a count.
+    #[test]
+    fn a_tight_budget_keeps_the_end_of_a_long_body() {
+        let args = serde_json::json!({"command": "cargo test"});
+        let body = format!("FIRST-LINE\n{}test result: FAILED. 1 failed", "compiling a module\n".repeat(200));
+        let ok = recall("code/shell", &args, "", OK_V, &body);
+        assert!(ok.contains("test result: FAILED. 1 failed"), "the newest end survives: {ok}");
+        assert!(ok.contains("FIRST-LINE") && ok.contains("earlier lines omitted"), "{ok}");
+        let failed = recall("code/shell", &args, "", FAIL_V, &body);
+        assert!(failed.contains("test result: FAILED. 1 failed"), "a failed act keeps its end: {failed}");
+        // one giant line keeps its END chars
+        let one = format!("{}THE-END", "z".repeat(5000));
+        assert!(recall("code/shell", &args, "", FAIL_V, &one).contains("THE-END"));
     }
 }

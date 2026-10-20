@@ -235,7 +235,15 @@ impl OpenViews {
         if note.is_empty() {
             return false;
         }
-        let note: String = note.chars().take(max_chars).collect();
+        // Cut to the share keeping its END (where her decision is), and say so: the rest of her
+        // reasoning stays with the act's own record, so the line must not read as the whole.
+        let total = note.chars().count();
+        let note = if total > max_chars {
+            let tail: String = note.chars().skip(total - max_chars).collect();
+            format!("…{}", tail.trim_start())
+        } else {
+            note
+        };
         let mut changed = false;
         for view in self.views.iter_mut().filter(|v| v.touched_seq == seq) {
             if view.note.as_deref() != Some(note.as_str()) {
@@ -357,4 +365,30 @@ fn unread_ranges(seen: &[(u32, u32)], total: u32) -> Vec<(u32, u32)> {
         gaps.push((next, total));
     }
     gaps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: a note cut that keeps her reasoning's head and drops its end, where
+    // the decision she reached sits (the newest thing she thought).
+    #[test]
+    fn an_over_share_note_keeps_the_end_of_her_reasoning() {
+        let mut open = OpenViews::default();
+        open.views.push(OpenView {
+            subject: ViewSubject::Output { handle: "h".into() },
+            label: "code/shell".into(),
+            total_lines: None,
+            seen: Vec::new(),
+            handle: None,
+            touched_seq: 7,
+            scope: None,
+            note: None,
+        });
+        let intent = format!("{} so the fix is in checks.py", "orienting myself ".repeat(30));
+        assert!(open.annotate(7, &intent, 40));
+        let note = open.views[0].note.clone().expect("annotated");
+        assert!(note.starts_with('…') && note.ends_with("so the fix is in checks.py"), "{note}");
+    }
 }

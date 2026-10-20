@@ -959,7 +959,7 @@ impl WorkingMemory {
                 .iter()
                 .map(|o| {
                     let args = o.call.input.to_string();
-                    let args: String = args.chars().take(48).collect();
+                    let args: String = args.chars().take(self.budget().echoed_arg_chars()).collect();
                     format!("{}({args})", o.call.name)
                 })
                 .collect();
@@ -2043,13 +2043,9 @@ impl Faculty for WorkingMemoryFaculty {
                     .collect();
             }
         }
-        // Per-entry head in a WORK turn: 1,500 chars — past that a work act's
-        // reasoning is history, not state.
-        let head = if ws.workspace_deliverable {
-            self.memory.budget().trail_head_chars().min(1_500)
-        } else {
-            self.memory.budget().trail_head_chars()
-        };
+        // Per-entry head: the window's trail share alone decides, in a work turn as in any
+        // other (a fixed 1,500-char cap here undercut a big window's share).
+        let head = self.memory.budget().trail_head_chars();
         // A THOUGHT keeps its end (its decision); a receipt or settlement keeps its
         // head, where its identity is (`[action #N]` and what was done).
         let clip = |e: &WmEntry| -> String {

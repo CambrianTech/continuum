@@ -96,6 +96,8 @@ pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], m
         rows.iter().filter(|r| r.sender == me && r.text.contains(ACT)).collect();
     mine.sort_by_key(|r| r.occurred_at_ms);
     let mut p = CardProgress::default();
+    // A receipt's object (a path, a command) is echoed back at the window's per-argument share.
+    let object_chars = crate::cognition::context_budget::ContextBudget::live().echoed_arg_chars();
     for row in mine {
         for seg in row.text.split(ACT).skip(1) {
             let seg = seg.trim();
@@ -112,7 +114,7 @@ pub(crate) fn card_progress(rows: &[crate::persona::durable_history::RoomRow], m
             if is_write_verb(verb) {
                 p.writes += 1;
             }
-            let obj: String = object.chars().take(72).collect();
+            let obj: String = object.chars().take(object_chars).collect();
             if ok && is_write_verb(verb) {
                 push_distinct(&mut p.wrote, format!("{verb} {obj}"));
             }
