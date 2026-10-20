@@ -229,15 +229,9 @@ impl SelfTaskGenerator {
                     .get("description")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                let truncated = if original_desc.len() > 200 {
-                    format!("{}...", &original_desc[..197])
-                } else {
-                    original_desc.to_string()
-                };
-
                 if let Some(task) = self.create_task(
                     "resume-work",
-                    &format!("[Self-Task] Resume unfinished work: {truncated}"),
+                    &resume_work_description(original_desc),
                     0.7,
                 ) {
                     resume_tasks.push(task);
@@ -428,9 +422,24 @@ fn parse_iso_to_epoch_ms(iso: &str) -> Option<u64> {
     Some(total_secs * 1000)
 }
 
+/// The task text for resuming stale work. The original description rides whole: the task
+/// renderer fits it to the window's share, so a clip here only hid the tail from every reader.
+fn resume_work_description(original_desc: &str) -> String {
+    format!("[Self-Task] Resume unfinished work: {original_desc}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the old `&desc[..197]` byte slice panicked when a multibyte char
+    // straddled the cut (an emoji/accent in a stale task description killed the generator).
+    #[test]
+    fn resume_description_carries_multibyte_text_whole() {
+        let desc = format!("{}é{}", "a".repeat(196), "😀 tail".repeat(40));
+        let out = resume_work_description(&desc);
+        assert!(out.ends_with(&desc), "the whole description rides, not a clipped head");
+    }
 
     #[test]
     fn test_parse_iso_to_epoch_ms() {

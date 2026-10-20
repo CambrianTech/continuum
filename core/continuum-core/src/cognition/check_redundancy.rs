@@ -355,7 +355,7 @@ fn snippet(s: &str) -> String {
     if s.len() <= MAX {
         s.to_string()
     } else {
-        format!("{}…", &s[..MAX])
+        format!("{}…", crate::logging::preview::truncate_at_char_boundary(s, MAX))
     }
 }
 
@@ -758,6 +758,13 @@ mod tests {
     /// What this catches: the error-context snippet is bounded so a
     /// megabyte of upstream garbage doesn't end up in a typed error +
     /// log line. Pins the 200-char limit + ellipsis marker.
+    // what this catches: `snippet` sliced `&s[..200]` and panicked on a multibyte char at the cut.
+    #[test]
+    fn snippet_cuts_on_a_char_boundary() {
+        let s = format!("{}é{}", "a".repeat(199), "tail");
+        assert!(snippet(&s).ends_with('…'));
+    }
+
     #[test]
     fn snippet_truncates_long_input() {
         let huge = "x".repeat(10_000);

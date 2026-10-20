@@ -394,7 +394,7 @@ fn preview(s: &str) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        format!("{}...", &s[..max])
+        format!("{}...", crate::logging::preview::truncate_at_char_boundary(s, max))
     }
 }
 
@@ -404,6 +404,16 @@ mod tests {
     use super::super::types::{AnalysisInput, RecentMessage};
     use super::*;
     use uuid::Uuid;
+
+    // what this catches: `preview` sliced `&s[..200]` and panicked when a multibyte char
+    // straddled byte 200 of a malformed model reply (the error path itself crashed).
+    #[test]
+    fn preview_cuts_on_a_char_boundary() {
+        let s = format!("{}é{}", "a".repeat(199), "tail");
+        let out = preview(&s);
+        assert!(out.ends_with("..."));
+        assert!(out.starts_with(&"a".repeat(199)));
+    }
 
     #[test]
     fn parse_clean_json_output() {
