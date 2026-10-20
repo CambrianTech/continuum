@@ -172,12 +172,14 @@ still exists and still has files in it, which reads as "working".
   moves the recursion toward its base case: what she just did, and what it returned, is the only
   thing that changes her next input. Keep the head and drop the end (`chars().take(N)`,
   `head_to_tokens`, first-line-only, `[..N]`, `.take(N)` over an oldest-first list) and her next
-  input equals her last: the same decision, the same call, the same clipped result, a fixed point
-  she cannot leave. Errors, test summaries and outcomes sit at the END of output. On the M5
+  input can equal her last: the same decision, the same call, the same clipped result, a fixed
+  point she cannot leave. A decisive line can sit anywhere in output (often the end: a test
+  summary, an exit status), so no fixed slice is safe. On the M5
   (2026-10-20), Benchy's required input was refused on every act and she repeated one act every
   18 s, 125 times in an hour. When anything must shrink: through the ONE budget, oldest first,
   collapsed to a handle she can expand (`Contribution::with_parts` + `grounding_plan` +
-  `expand_command`, or `tool_executor::spill`), keeping the newest end whole. One source that
+  `expand_command`, or `tool_executor::spill`), keeping the newest interaction whole and the full
+  result reachable through its handle. One source that
   shrinks itself by its own number breaks the budget for every other source. Guarded by
   `source-hygiene::head_cuts`; a cut that never reaches a prompt says `head-cut-ok: <why>`.
 - **DO NOT** silently substitute defaults when something fails. Surface typed errors. The operator decides policy. ([[no-fallbacks-ever]])
