@@ -547,7 +547,7 @@ mod tests {
     fn a_release_retires_only_the_footprint_sampled_during_the_work() {
         use super::super::lane_footprint::{retire_sampled_since, MeasuredCost};
         let bound_at = 1_000;
-        let reading = |last_ms| MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, anon_bytes: 20 << 30, last_ms };
+        let reading = |last_ms| MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, allocated_tokens: None, anon_bytes: 20 << 30, last_ms };
         let mut costs = std::collections::BTreeMap::new();
         costs.insert("during".to_string(), reading(bound_at + 60_000));
         costs.insert("before".to_string(), reading(bound_at - 1));
@@ -571,7 +571,7 @@ mod tests {
     #[test]
     fn a_sample_that_straddles_a_residency_change_is_never_published() {
         use super::super::lane_footprint::{begin_sample, publish_sample, MeasuredCost};
-        let reading = MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, anon_bytes: 20 << 30, last_ms: 5 };
+        let reading = MeasuredCost { per_token_bytes: 36_000, lanes: 1, window: 32_768, allocated_tokens: None, anon_bytes: 20 << 30, last_ms: 5 };
         let dir = tempfile::tempdir().expect("tempdir");
         let path = store_path(dir.path());
         let w = work(10, 25281, 1_000, 58058);
