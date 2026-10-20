@@ -34,7 +34,6 @@ on:
       - 'tools/scripts/tests/install-llama-server-slots.test.sh'
       - 'docker/**'
       - 'docker-compose*.yml'
-      - 'src/.dockerignore'
       - 'core/.dockerignore'
       - 'scripts/ci/carl-install-smoke.sh'
       - '.github/workflows/carl-install-smoke.yml'

@@ -108,6 +108,13 @@ pub struct LaneInvocation {
 }
 
 impl LaneInvocation {
+    /// A Metal lane runs ggml's tensor API (the M5 / A19 GPU matrix units), which our
+    /// engine build makes opt-in; the engine itself disables it before M5. An
+    /// operator-exported value wins.
+    pub(crate) fn use_metal_matrix_units(&mut self, inherited: bool) {
+        self.inherit_or_default_env("GGML_METAL_TENSOR_ENABLE", std::ffi::OsStr::new("1"), inherited);
+    }
+
     /// Preserve an operator's inherited override, otherwise assign the managed
     /// default. Resolution supplies presence; this pure owner never reads env.
     pub(crate) fn inherit_or_default_env(
@@ -121,13 +128,6 @@ impl LaneInvocation {
         } else {
             self.envs.push((key.to_string(), default.to_os_string()));
         }
-    }
-
-    /// Preserve the backend verdict's last-wins CPU constraint in the SAME
-    /// invocation that reaches Command, after the model's original placement.
-    pub(crate) fn constrain_to_cpu(&mut self) {
-        pair(&mut self.args, "--n-gpu-layers", "0");
-        self.no_repack_when_training_on_cpu(true);
     }
 
     /// A lane that can train (`--train-dir`) and keeps base weights on the CPU serves
@@ -598,6 +598,10 @@ impl LaneInvocation {
             push("4".into());
             push("--spec-draft-p-min".into());
             push("0.7".into());
+            // The draft's placement is TOLD, like the main model's below — left unset it
+            // was the engine's `auto` fit, which may keep draft layers on the CPU.
+            push("--spec-draft-ngl".into());
+            push(if opts.cpu_only { "0" } else { ALL_GPU_LAYERS }.into());
         }
         // Placement: CPU lanes pin every layer to RAM so they never contend for the GPU
         // VRAM a living lane already holds (the Metal decode-time OOM that muted the

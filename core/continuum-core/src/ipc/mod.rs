@@ -2150,8 +2150,8 @@ pub fn start_server(
     // first. Until this existed, a benchmark and a live call simply raced `malloc` — which is
     // exactly how staging OOMed this machine on 2026-08-19.
     resource_daemon.add_consumer(Arc::new(
-        crate::cognition::bench_staging::StagingConsumer::new(
-            crate::cognition::bench_staging::staging_area(),
+        crate::cognition::measurement_staging::StagingConsumer::new(
+            crate::cognition::measurement_staging::staging_area(),
         ),
     ));
     runtime.register(Arc::new(VoiceModule::new(voice_state)));
@@ -2536,12 +2536,6 @@ pub fn start_server(
         runtime.register(Arc::new(crate::modules::citizen_health::CitizenHealthModule::new()));
         // CARD CARRY: one owner keeps residents' committed card work on origin (2026-10-17).
         runtime.register(Arc::new(crate::modules::card_carry::CardCarryModule::new()));
-        // The STANDING ROUND — benchmarks dispatch themselves when none is
-        // working (the last hand-managed act, retired 2026-09-02). Off until
-        // `benchmark/standing --enabled true`; ticks on the runtime cadence.
-        runtime.register(Arc::new(
-            crate::modules::benchmark_standing::BenchmarkStandingModule::new(registry.clone()),
-        ));
         // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
         // Schedules the ChannelDigestRegion: per live persona it pre-stages the
         // persona's current-channel digest into the SHARED digest buffer

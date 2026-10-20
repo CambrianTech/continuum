@@ -19,12 +19,10 @@
 //! |------------------------------------------|--------------------------------------|
 //! | a GPU device line (`MTL0`, `CUDA0`, …)    | `Gpu { device }` — serve as planned   |
 //! | answered, no GPU device                  | `Refused` — quote its load errors     |
-//! | did not answer within the bound          | `ProbeHung` — CPU placement, say so   |
+//! | did not answer within the bound          | `Refused` — name the hang, relaunch   |
 //!
-//! Refusal, not a warning, for the answered-no-GPU case: a warning on a CUDA host is
-//! the CPU-forever outage that took 13 kills to notice. Degrade, not refusal, for the
-//! hung case: a box whose GPU cannot initialise still serves (the low-end contract),
-//! and the receipt names why it is on the CPU.
+//! Refusal in both cases: a GPU lane never falls back to the CPU. A host whose GPU
+//! cannot initialise is planned onto the CPU (`CpuByPlan`), never moved there by a timeout.
 
 /// One parsed `llama-server --list-devices` run (stdout + stderr, in one string).
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -90,9 +88,6 @@ pub enum BackendVerdict {
     /// The server answered and registers NO GPU device on a GPU host: a mis-installed
     /// binary (CPU-only build, or a backend DLL it cannot load). Refuse the lane.
     Refused { reason: String },
-    /// The device probe did not answer within its bound (backend init hangs): serve on
-    /// the CPU and say why — never block the launch, never pretend it is on the GPU.
-    ProbeHung,
     /// The host's serving plan places lanes on the CPU on purpose (an Intel-GPU Mac whose
     /// server is built with Metal OFF, #3729; Joel's ruling in persona/response.rs: CPU-only
     /// adapters serve their own personas). A GPU-less server is CORRECT here, never a
@@ -109,7 +104,6 @@ impl BackendVerdict {
             BackendVerdict::Gpu { device } if device.starts_with("CUDA") => "cuda",
             BackendVerdict::Gpu { .. } => "gpu",
             BackendVerdict::Refused { .. } => "refused",
-            BackendVerdict::ProbeHung => "cpu",
             BackendVerdict::CpuByPlan => "cpu",
         }
     }
@@ -127,7 +121,12 @@ pub fn backend_verdict(
         return BackendVerdict::CpuByPlan;
     }
     let Some(r) = receipt else {
-        return BackendVerdict::ProbeHung;
+        return BackendVerdict::Refused {
+            reason: format!(
+                "{bin} did not answer `--list-devices` within its bound: backend \
+                 initialisation hangs. A GPU lane never falls back to the CPU; refused."
+            ),
+        };
     };
     if let Some(device) = r.gpu_devices.first() {
         return BackendVerdict::Gpu {
@@ -178,15 +177,15 @@ mod tests {
         }
     }
 
-    // what this catches: a CUDA device line reads as cuda, and a hung probe is CPU
-    // placement, never a refusal and never a guess of "gpu".
+    // what this catches: a CUDA device line reads as cuda, and a hung probe on a GPU
+    // lane is a refusal — never a silent move to the CPU (M5 2026-10: 27B at 5.7 tok/s).
     #[test]
-    fn cuda_line_is_cuda_and_a_hung_probe_degrades_to_cpu() {
+    fn cuda_line_is_cuda_and_a_hung_probe_is_refused_never_cpu() {
         let r = parse_list_devices("Available devices:\n  CUDA0: NVIDIA GeForce RTX 5090 (32607 MiB, 31900 MiB free)\n");
         assert_eq!(backend_verdict("x", Some(&r), false).backend_label(), "cuda");
         let hung = backend_verdict("x", None, false);
-        assert_eq!(hung, BackendVerdict::ProbeHung);
-        assert_eq!(hung.backend_label(), "cpu");
+        assert!(matches!(hung, BackendVerdict::Refused { ref reason } if reason.contains("never falls back to the CPU")), "{hung:?}");
+        assert_eq!(backend_verdict("x", None, true), BackendVerdict::CpuByPlan, "a planned CPU lane is unaffected");
     }
 
     // what this catches: a timestamped device line still reads as a device.

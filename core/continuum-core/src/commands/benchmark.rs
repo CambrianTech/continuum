@@ -15,6 +15,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::cognition::bench_title::{bench_card_key, dispatch_card_title};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
 pub(crate) mod credit_recovery;
@@ -910,31 +911,6 @@ pub struct BenchmarkDispatchResult {
     pub kickoff_errors: Vec<String>,
 }
 
-/// The IDENTITY of a benchmark card: which task of which benchmark it is.
-///
-/// This is the ONE definition of "same task" on the board, and it is a strict
-/// prefix of the rendered title — so the key a dispatch computes and the key
-/// parsed back off a live card can never drift (pinned by
-/// `a_rendered_title_yields_back_its_own_key`). `dispatch_card_title` builds on
-/// it rather than re-forming the marker, per the compression rule: one logical
-/// decision, one place.
-pub(crate) fn dispatch_card_key(bench: &str, task_id: &str) -> String {
-    format!("[bench {bench}] {task_id}:")
-}
-
-/// Recover the identity key from a rendered card title, or `None` when the
-/// title is not a benchmark card at all (a hand-written card on the same board
-/// must never collide with a task key). Reads the prefix through the FIRST `:`
-/// after the `]` marker — a gist containing colons cannot widen the key.
-pub(crate) fn bench_card_key(title: &str) -> Option<&str> {
-    if !title.starts_with("[bench ") {
-        return None;
-    }
-    let marker_end = title.find("] ")? + 2;
-    let colon = title[marker_end..].find(':')? + marker_end;
-    Some(&title[..=colon])
-}
-
 /// Which of a task's duplicate cards to CLOSE, and whether the duplication is
 /// contended. Pure over the claim states so the rule is testable without a
 /// board — the caller maps the returned indices back to cards.
@@ -966,51 +942,6 @@ fn duplicates_to_close(holds: &[crate::persona::card_holder::Hold]) -> (Vec<usiz
         (0..holds.len()).filter(|i| !held.contains(i)).collect()
     };
     (to_close, held.len() > 1)
-}
-
-/// Compose the card TITLE for one benchmark task. `[bench <name>]` is the
-/// machine-findable marker the (future) grading sentinel keys on; the rest is
-/// for the citizen scanning the board.
-pub(crate) fn dispatch_card_title(bench: &str, task_id: &str, prompt: &str) -> String {
-    let gist: String = prompt.chars().take(60).collect();
-    let ellipsis = if prompt.chars().count() > 60 {
-        "…"
-    } else {
-        ""
-    };
-    format!("{} {gist}{ellipsis}", dispatch_card_key(bench, task_id))
-}
-
-/// Parse `[bench <name>] <task>: <gist>` — the exact shape [`dispatch_card_title`]
-/// writes — into `(bench_name, task_id)`. `None` for any non-bench title, so a normal
-/// work card is neither graded nor staged. ONE parser beside the ONE writer: the grade
-/// edge (`benchmark_grade`) and the on-claim staging (`card_staging`) both read this.
-pub(crate) fn parse_card_title(title: &str) -> Option<(String, String)> {
-    let rest = title.strip_prefix("[bench ")?;
-    let (bench, after) = rest.split_once("] ")?;
-    let task = after.split(':').next()?.trim();
-    if bench.trim().is_empty() || task.is_empty() {
-        return None;
-    }
-    Some((bench.trim().to_string(), task.to_string()))
-}
-
-/// A review card's title: `[review <parent8>] <instance>: …` — ONE writer
-/// ([`crate::modules::work::open_review_card`]), one parser, beside the bench one.
-pub(crate) fn review_card_title(parent: uuid::Uuid, instance: &str, owner: &str) -> String {
-    format!(
-        "[review {}] {instance}: review {owner}'s fix",
-        &parent.simple().to_string()[..8]
-    )
-}
-
-/// Parse a review card's title into the INSTANCE it reviews. `None` for any other
-/// title, so a normal work card is never mistaken for a review.
-pub(crate) fn parse_review_title(title: &str) -> Option<String> {
-    let rest = title.strip_prefix("[review ")?;
-    let (_, after) = rest.split_once("] ")?;
-    let instance = after.split(':').next()?.trim();
-    (!instance.is_empty()).then(|| instance.to_string())
 }
 
 /// Compose the card BODY: the full prompt plus a definition of done a citizen
@@ -2896,7 +2827,6 @@ mod tests {
         }
     }
 
-
     use super::*;
 
     fn citizen(name: &str) -> (String, uuid::Uuid) {
@@ -3135,6 +3065,7 @@ mod tests {
     // for 51 distinct tasks, sympy__sympy-24152 holding 15 of them).
     mod dispatch_identity {
         use super::*;
+        use crate::cognition::bench_title::dispatch_card_key;
 
         // what this catches: key/title drift. The key MUST be a prefix of the
         // rendered title, so a card on the board can be matched back to the task
@@ -3931,8 +3862,6 @@ mod swe_grade_tests {
     }
 
 }
-
-
 
 /// Resolve a solver to the ONE matching `citizens/peers/<uuid>/` directory. Accepts a
 /// citizen NAME (resolved through the live roster — the SAME `get_by_agent_name` identity
@@ -5437,12 +5366,7 @@ pub(crate) fn scan_run_cards(
     run_id_filter: Option<&str>,
     limit: usize,
 ) -> Result<RunScan, String> {
-    let base = std::env::var("CONTINUUM_HOME")
-        .map(std::path::PathBuf::from)
-        .ok()
-        .or_else(|| dirs::home_dir().map(|h| h.join(".continuum")))
-        .ok_or_else(|| "no home dir".to_string())?
-        .join("progress");
+    let base = crate::paths::continuum_home()?.join("progress");
     let now_ms = crate::time::EpochMs::now().millis();
     let mut cards: Vec<BenchRunCard> = Vec::new();
     let entries = std::fs::read_dir(&base).map_err(|e| format!("read {}: {e}", base.display()))?;
@@ -6074,7 +5998,7 @@ impl ActionCommand for BenchmarkFetch {
         const ROWS_PER_PAGE: u64 = 100;
         let estimated = u64::from(spec.tasks) * EST_BYTES_PER_ROW;
         let page_bytes = ROWS_PER_PAGE * EST_BYTES_PER_ROW;
-        let plan = crate::cognition::bench_staging::plan_against_governor(estimated, page_bytes);
+        let plan = crate::cognition::measurement_staging::plan_against_governor(estimated, page_bytes);
         if let Some(why) = plan.explain_refusal() {
             crate::probe!(
                 class = "benchmark.staging.refused",
@@ -6085,12 +6009,12 @@ impl ActionCommand for BenchmarkFetch {
             );
             return Err(CommandError::Denied(why));
         }
-        let staging = crate::cognition::bench_staging::staging_area();
+        let staging = crate::cognition::measurement_staging::staging_area();
         // Declare the plan's PEAK, not the suite size — for a streamed plan those differ by the
         // whole point of streaming, and reporting the suite would have the governor evicting a
         // peer to make room for bytes staging is never going to hold.
         staging.hold(plan.peak_bytes());
-        let streaming = matches!(plan, crate::cognition::bench_staging::StagingPlan::Streamed { .. });
+        let streaming = matches!(plan, crate::cognition::measurement_staging::StagingPlan::Streamed { .. });
         crate::probe!(
             class = "benchmark.staging.plan",
             benchmark = spec.name,

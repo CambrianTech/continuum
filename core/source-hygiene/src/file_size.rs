@@ -34,7 +34,17 @@ pub const READABLE_FILE_LINES: usize = 1_000;
 // 158,283 after card 573cc58a moved persona_workspace.rs's 1,995-line test module to
 // cognition/persona_workspace/tests.rs (#![cfg(test)]): persona_workspace.rs fell from 4,380 to 2,370 lines.
 // 158,255: both card 573cc58a splits measured together on canary 16a075c71.
-const BASELINE_LINES_OVER: usize = 158_255;
+// 158,221 after card 32d2abbb moved the training-job directory layout and its reader out of
+// modules/training_trigger.rs into genome/fine_tuning/job_dir.rs.
+// 157,971 (with #5185) after card 67af4fca moved the credit stamp (CreditRole, OutcomeStamp, CapturedCredit,
+// SettlementOutcome) out of persona/training_producer.rs into training_producer/stamp.rs.
+// 157,645 after card a0790c4b moved persona/viewstate_rag.rs's test module to
+// persona/viewstate_rag/tests.rs (#![cfg(test)]): #5015 had grown it to 1,458 lines and turned canary red.
+// 157,618 after consolidating the f32 cosine kernel into cognition/embedding/similarity.rs.
+// 157,412 after card a00ab1a6 deleted the standing benchmark autopilot (no harness).
+// 156,830 after card 5e3a3e75 deleted three hand copies of paths::continuum_home.
+// 156,825 after card 394017ed folded ensure_slot_pool's inline probes into one typed miss.
+const BASELINE_LINES_OVER: usize = 156_710;
 
 pub struct FileSize;
 

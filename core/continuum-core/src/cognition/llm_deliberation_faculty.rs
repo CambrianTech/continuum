@@ -534,6 +534,8 @@ pub struct LlmDeliberationFaculty {
     /// Credited from the engine's own count, the cap grows when reuse works and falls back
     /// to the latency target when it does not.
     cached_prefix_tokens: std::sync::atomic::AtomicUsize,
+    /// This resident's ring results collapsed to pointers (`ring_collapse`).
+    collapsed_results: parking_lot::Mutex<super::ring_collapse::StickyCollapse>,
 }
 
 impl LlmDeliberationFaculty {
@@ -569,6 +571,7 @@ impl LlmDeliberationFaculty {
             decoding: relaxed_decoding(),
             working_set: None,
             cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
+            collapsed_results: parking_lot::Mutex::new(super::ring_collapse::StickyCollapse::default()),
         }
     }
 
@@ -2715,11 +2718,10 @@ impl LlmDeliberationFaculty {
         let fixed_cost = claim(framing_tokens.saturating_add(selected.tokens));
         let required_cost = claim(required_tokens);
         let mut reply = reply;
-        // The reply never takes from required content: its floor is what the window
-        // leaves after framing, tools and the required input.
-        reply.floor_tokens = reply
-            .floor_tokens
-            .min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
+        // The reply never takes from required content: its floor is what the window leaves
+        // after framing, tools and the required input. Its UNCLIPPED floor is her need.
+        let reply_need = reply.floor_tokens;
+        reply.floor_tokens = reply_need.min(context_window.saturating_sub(fixed_cost.saturating_add(required_cost)));
         reply.min_tokens = reply.floor_tokens;
         let fixed_claim = |id: &str, tokens: u32| crate::persona::rag_budget::RagSourceBudget {
             source_id: id.to_owned(),
@@ -2761,6 +2763,7 @@ impl LlmDeliberationFaculty {
             reply,
         ];
         let plan = crate::persona::rag_budget::flex_allocate(context_window, &claims);
+        let budget_floor = super::window_allocator::turn_need(&claims).saturating_sub(claims[4].floor_tokens).saturating_add(reply_need);
         // Whatever no claim took is hers to write with, up to the runaway bound.
         let reply_grant = plan.granted(FLEX_REPLY);
         let completion_reserve = reply_grant
@@ -2936,15 +2939,13 @@ impl LlmDeliberationFaculty {
                 sample,
                 ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
             );
-            // HER NEED — the allocator's gate (card 70706a9e). Only a turn the fit HELD
-            // (the truthful minimum fitted, and something beyond the framing survived)
-            // measures what a lane must hold for her; a starved or emptied turn says
-            // nothing about her and is not recorded, so the need can never be a
-            // window's echo. The wish above stays the target the allocator grows toward.
+            // HER NEED, the allocator's gate (card 70706a9e): the BUDGETER'S FLOOR on a held
+            // turn, never its post-fit size, which the flexbox grows to any window (the M5,
+            // 10-18: ~48.6k on a 102k lane refused a second lane; 4 residents on 1 slot).
             let sent_tokens = sent.min(u32::MAX as usize) as u32;
             let framing = framing_tokens.min(u32::MAX as usize) as u32;
             let fit_ok = capacity_error.is_none();
-            match crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok) {
+            match crate::cognition::working_set::need_sample(sent_tokens, framing, fit_ok).map(|_| budget_floor) {
                 Some(need) => reg.record_need(
                     self.persona_id,
                     need,
@@ -3778,23 +3779,16 @@ impl LlmDeliberationFaculty {
             });
         }
         let history_budget = budget_tokens - required_tokens;
-        // 82416bb1: during an ongoing concern WM's ring only appends. Before
-        // dropping a result AND its expansion handle, price the source's compact
-        // alternative. No second store or mutation of WM: custody stays with the
-        // existing saved result, and only the fitted view changes. Unsaved results
-        // never supply an alternative. Ordinary eviction still bounds this view.
+        // 82416bb1: before dropping a saved result, price its pointer; custody stays with WM.
+        // Sticky and all at once: `ring_collapse` owns the rule and its receipt.
         let mut history_tokens = Self::messages_cost(&prompt.history);
-        for (index, pointer) in std::mem::take(&mut prompt.result_pointers) {
-            let Some(message) = prompt.history.get_mut(index) else { continue };
-            let old_cost = Self::message_cost(message);
-            let pointer_cost = Self::message_cost(&pointer);
-            if history_tokens > history_budget && pointer_cost < old_cost {
-                history_tokens = history_tokens.saturating_sub(old_cost - pointer_cost);
-                *message = pointer;
-            } else {
-                prompt.result_pointers.push((index, pointer));
-            }
-        }
+        prompt.result_pointers = self.collapsed_results.lock().apply(
+            &mut prompt.history,
+            std::mem::take(&mut prompt.result_pointers),
+            &mut history_tokens,
+            history_budget,
+            Self::message_cost,
+        );
         // Read BEFORE the history is borrowed for costing: what her own last move and its
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
@@ -8866,7 +8860,10 @@ mod tests {
             }
             let saved = crate::cognition::tool_executor::spill::resolve(persona, &handle).unwrap();
             assert_eq!(std::fs::read_to_string(saved).unwrap(), inventory);
-            // Fitting is a projection: a later roomy request still has the body.
+            // Sticky (ring_collapse): a later roomy fit keeps the pointer until forgotten.
+            let sticky = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
+            assert!(sticky.messages.iter().any(|m| m.content_text() == expected_pointer));
+            faculty.collapsed_results.lock().forget();
             let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
             assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
             // Exact-refusal correction reuses saved alternatives and keeps the

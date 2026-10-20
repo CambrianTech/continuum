@@ -1483,7 +1483,7 @@ fn run_artifact_dir(run_id: &str, capture_dir: Option<&str>) -> Option<std::path
 /// the (lanes+1)th solve WAITS for a permit instead of oversubscribing and killing the
 /// lane. The permit is held for the whole drive and released on drop — panic-safe, so a
 /// stalled or panicking solve can never leak a slot. Sized ONCE at first use from the live
-/// lane count (min 1); a later lane shrink is a v1 mismatch (rare, and quiesce_others still
+/// lane count (min 1); a later lane shrink is a v1 mismatch (rare, and lease_measured_work still
 /// protects the KV prefix). One place, both triggers respect it, because every solve —
 /// inline or detached, dispatch or claim — flows through `solve_body`.
 /// [[measured-work-gets-an-exclusive-warm-slot-quiesce-others]]
@@ -1592,11 +1592,11 @@ impl AgentSolve {
         let _quiesce_lease =
             crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global().map(
                 |reg| {
-                    let lease = reg.quiesce_others_than(&participants);
+                    let lease = reg.lease_measured_work_excluding(&participants);
                     crate::probe!(
                         class = "benchmark.solve.phase",
                         run_id = %run_id.as_deref().unwrap_or("-"), // unwrap_or: probe label only, "-" marks an unnamed run
-                        phase = "quiesce_others",
+                        phase = "lease_measured_work",
                         quiesced_peers = lease.count() as u64,
                         awake_participants = participants.len() as u64,
                         "measured solve holds an exclusive warm slot — non-participants quiesced so the KV prefix survives turn-to-turn"

@@ -751,13 +751,13 @@ pub struct WorkSubmitResult {
 ///   runs the grade (grade-on-done). The verdict posts to the room. The bench card's own text says
 ///   the same, so this must never contradict it (#4954: the first wording said "no state you set
 ///   triggers it", which is false here);
-/// - any other card is graded when a reviewer's verdict passes the submission.
+/// - any other card is ordinary work, never graded: it is done when a peer's review passes it.
 /// A `Failed` review sends either kind back. An oracle FAIL is not yet a WorkReview (card
 /// 2c756670), so for a bench card the room's grade line is named as the verdict to read.
 pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>) -> Option<String> {
     let submission = short8(latest?);
     Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
-        format!("Submission {submission} passed review: the grade fired. Nothing more to do on this card.")
+        format!("Submission {submission} passed review: the card is done. Nothing more to do on it.")
     } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
         format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
     } else if graded_at_submit {
@@ -768,8 +768,8 @@ pub(crate) fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work:
         )
     } else if let Some(review) = review {
         format!(
-            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the reviewer's verdict: a pass \
-             grades it; a send-back appears in its reviews. Do not submit again unless it is sent back."
+            "Submitted as {submission}. Review card {review} is available to its reviewer. Await the review: a pass \
+             completes it; a send-back appears in its reviews. Do not submit again unless it is sent back."
         )
     } else {
         format!("Submission {submission} is retained, but no review handoff is recorded. Retry work/submit with this same submission_id to establish review; do not publish a new candidate just to retry handoff.")
@@ -1666,13 +1666,13 @@ mod tests {
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
         let handoff = Some(airc_lib::WorkCardId::new());
         let reviewed = super::next_after_submission(Some(id), &[], false, handoff).expect("submitted");
-        assert!(reviewed.contains("reviewer's verdict") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
+        assert!(reviewed.contains("Await the review") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
         assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff), Some(reviewed.clone()), "an unknown verdict is still waiting");
         assert!(super::next_after_submission(Some(id), &[], false, None).unwrap().contains("no review handoff is recorded"));
         let back = super::next_after_submission(Some(id), &[Failed], true, None).expect("sent back");
         assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
         let done = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff).expect("passed");
-        assert!(done.contains("passed review") && done.contains("grade fired"), "a pass outranks an earlier send-back: {done}");
+        assert!(done.contains("passed review") && done.contains("card is done"), "a pass outranks an earlier send-back: {done}");
         assert_eq!(super::next_after_submission(None, &[], true, None), None, "nothing submitted, nothing to say");
     }
 

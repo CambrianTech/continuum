@@ -852,10 +852,7 @@ impl ActionCommand for WorkClaim {
                 // A claim you ALREADY HOLD is satisfied, not refused: the verb's goal
                 // ("this citizen owns this card") is already true, so report success
                 // with the live claim rather than inventing a rival. Deliberately does
-                // NOT re-fire `dispatch_staged_swe_solve` — `run_id` is deterministic
-                // (`claim-<card>`) with no in-flight guard, and a duplicate detached
-                // solve would contend for the exclusive warm slot. Recovering a claim
-                // whose session died is a separate, dedup-gated fix.
+                // NOT start anything: a claim starts no detached work.
                 if let Some(claim_id) = already_yours {
                     if origin == airc_work::ClaimOrigin::Explicit {
                         airc.select_work_claim(card_id, claim_id).await
@@ -915,8 +912,7 @@ impl ActionCommand for WorkClaim {
         record_held_claim(&airc, card_id, claim_id).await;
         {
             match card_in_subscribed_rooms(&airc, card_id).await {
-                Some((room, card)) => {
-                    use crate::cognition::bench_round::WorkDriver;
+                Some((_room, card)) => {
                     use crate::modules::card_staging::Staging;
                     let staging = match crate::paths::continuum_home() {
                         Ok(home) => {
@@ -932,53 +928,15 @@ impl ActionCommand for WorkClaim {
                             error: e.to_string(),
                         },
                     };
-                    let driver = crate::cognition::bench_round::driver_for_card(card_id.as_uuid());
-                    match (driver, &staging) {
-                        (WorkDriver::Citizen, _) => crate::probe!(
-                            class = "work.claim.held",
-                            card_id = %short8(card_id.as_uuid()),
-                            claimer = %short8(claimer_peer.as_uuid()),
-                            staging = ?staging,
-                            "citizen-driven round — the card is hers to work in her own \
-                             loop; nothing detached fires"
-                        ),
-                        (WorkDriver::DetachedSolve, Staging::Failed { stage, error }) => {
-                            crate::probe!(
-                                class = "work.claim.solve_withheld",
-                                card_id = %short8(card_id.as_uuid()),
-                                claimer = %short8(claimer_peer.as_uuid()),
-                                stage = stage,
-                                error = %error,
-                                "detached solve NOT fired on an unstaged workspace — the \
-                                 claim stands; a solve into a known wall is an env fault \
-                                 wearing a capability face"
-                            )
-                        }
-                        (WorkDriver::DetachedSolve, _) => {
-                            dispatch_staged_swe_solve(
-                                ctx,
-                                &airc,
-                                StagedSolveDispatch {
-                                    claimer: claimer_peer,
-                                    card: card_id,
-                                    room: room.channel,
-                                    // An organic claim REJOINS the card's recorded team
-                                    // (gap 3) — the round record is the continuity source.
-                                    teammates: crate::cognition::bench_round::card_activity(
-                                        card_id.as_uuid(),
-                                    )
-                                    .map(|act| {
-                                        act.teammates
-                                            .iter()
-                                            .map(|t| crate::identity::PeerId::from_uuid(*t))
-                                            .collect()
-                                    })
-                                    .unwrap_or_default(), // unwrap_or: card outside any round = solo
-                                },
-                            )
-                            .await;
-                        }
-                    }
+                    // A claim stages the claimer's workspace and nothing more: the
+                    // work is hers to do in her own loop; no runner starts it for her.
+                    crate::probe!(
+                        class = "work.claim.held",
+                        card_id = %short8(card_id.as_uuid()),
+                        claimer = %short8(claimer_peer.as_uuid()),
+                        staging = ?staging,
+                        "claim staged — the card is hers to work in her own loop; nothing detached fires"
+                    );
                 }
                 None => crate::probe!(
                     class = "work.claim.unplaceable_card",
@@ -1071,26 +1029,6 @@ pub(crate) struct StagedSolveDispatch {
     pub teammates: Vec<crate::identity::PeerId>,
 }
 
-/// The #346 claim→solve dispatch. Fires a detached [`crate::commands::agent::solve::AgentSolve`]
-/// for the claimer when the claimed card matches a checkout `benchmark/swe-setup` staged
-/// into HER workspace: one staged instance directory whose name appears in the card
-/// title. Task text = the card body (the real issue, gold held out). Model = the live
-/// served base (dynamic — never a hardcoded id). All outcomes on the
-/// `benchmark.dispatch` probe; silence is not an outcome.
-///
-/// Called from TWO triggers, both legitimate: (1) `work/claim` — a citizen claims a
-/// staged card off the board; (2) `benchmark/dispatch` directed at an assignee — dispatch
-/// already staged the repo into HER workspace and addressed the card to her, so it fires
-/// her solve DIRECTLY rather than depend on her re-deriving a `work/claim` from a chat
-/// kickoff (the fragile hop that stalls every run under warm-slot starvation — glass-boxed
-/// 2026-08-11: cards staged + assigned, zero claims, zero solves). The solve is her WHOLE
-/// cognition with an exclusive warm slot (`quiesce_others`), so nothing about "she does the
-/// work herself" changes — only the trigger moves off the chat turn.
-/// Pre-warm envs for every instance a WORKING round has staged — the resume-side
-/// twin of dispatch's pre-warm (a reboot mid-round otherwise re-discovers env
-/// walls one burned solve attempt at a time). The staged workspace dirs
-/// (`peers/<assignee>/workspace/swe/<instance>`) are the reliable card→instance
-/// map; instances resolve through the SAME dataset loader the grader uses.
 /// Instances whose env FAILED this boot's pre-warm — the dispatch gate reads
 /// this so a still-broken card idles (no attempt-burning loop) while a healed
 /// one re-fires automatically. Per-boot by construction: a restart re-walks.
@@ -1099,87 +1037,16 @@ pub fn env_broken_this_boot() -> &'static dashmap::DashSet<String> {
     SET.get_or_init(dashmap::DashSet::new)
 }
 
-pub fn spawn_env_prewarm_for_working_rounds() {
-    tokio::spawn(async move {
-        // WORKING ROUNDS' instances, from the round tracker — NOT the peers'
-        // workspace directory sweep this used to run. That sweep warmed every
-        // instance EVER staged on this box (measured 2026-09-01: pytest-5221/
-        // 5227/5413/5495/5787/7324/7432 + the whole scikit/astropy graveyard,
-        // serially, DURING boot — including known-red astropy envs re-running
-        // their multi-minute uv heal ladders to the same cc failure every
-        // reboot). Leftover cruft from prior runs is not a working round; the
-        // tracker knows what is. A card whose instance the tracker cannot
-        // name yet (pre-instance-recording rounds) simply isn't pre-warmed —
-        // its env still builds at dispatch, exactly as before pre-warm existed.
-        let mut names: std::collections::BTreeSet<String> = Default::default();
-        for round in crate::cognition::bench_round::live_rounds() {
-            for card in round.cards {
-                if !card.instance.is_empty()
-                    && !matches!(card.state.as_str(), s if crate::cognition::bench_round::is_terminal_card_state(s))
-                {
-                    names.insert(card.instance);
-                }
-            }
-        }
-        if names.is_empty() {
-            return;
-        }
-        // Resolve each staged name against every SWE dataset in the catalog —
-        // the same search the grade path performs (first dataset holding the
-        // instance wins), so this can never disagree with grading.
-        for name in names {
-            let mut resolved = None;
-            for spec in crate::commands::benchmark::known_benchmarks() {
-                let Some(dataset) = spec.swe_dataset() else {
-                    continue;
-                };
-                if let Ok(instances) = crate::cognition::swe_bench::load_dataset(dataset).await {
-                    if let Some(i) = instances.into_iter().find(|i| i.instance_id == name) {
-                        resolved = Some(i);
-                        break;
-                    }
-                }
-            }
-            let Some(inst) = resolved else { continue };
-            let checkout = match crate::cognition::swe_bench::ensure_grade_checkout(&inst).await {
-                Ok(dir) => dir,
-                Err(e) => {
-                    crate::probe!(
-                        class = "benchmark.env.prewarm_failed",
-                        instance = %inst.instance_id,
-                        stage = "checkout",
-                        error = %e,
-                        "resume-side env pre-warm could not stage a checkout — an ENV \
-                         failure, not a model result"
-                    );
-                    continue;
-                }
-            };
-            match crate::cognition::swe_bench::ensure_env(&inst, &checkout).await {
-                Ok(_) => {
-                    let healed = env_broken_this_boot().remove(&inst.instance_id).is_some();
-                    crate::probe!(
-                        class = "benchmark.env.prewarmed",
-                        instance = %inst.instance_id,
-                        healed,
-                        "resume-side env pre-warm: ready ahead of the driver"
-                    );
-                }
-                Err(e) => {
-                    env_broken_this_boot().insert(inst.instance_id.clone());
-                    crate::probe!(
-                        class = "benchmark.env.prewarm_failed",
-                        instance = %inst.instance_id,
-                        stage = "env",
-                        error = %e,
-                        "resume-side env pre-warm FAILED — an ENV failure, never a model result"
-                    );
-                }
-            }
-        }
-    });
-}
-
+/// The #346 claim→solve dispatch. Fires a detached [`crate::commands::agent::solve::AgentSolve`]
+/// for the claimer when the claimed card matches a checkout `benchmark/swe-setup` staged
+/// into HER workspace: one staged instance directory whose name appears in the card
+/// title. Task text = the card body (the real issue, gold held out). Model = the live
+/// served base (dynamic — never a hardcoded id). All outcomes on the
+/// `benchmark.dispatch` probe; silence is not an outcome.
+///
+/// No longer fired by `work/claim` (a claim starts nothing; card c4f4b8cd step 1). Its
+/// remaining callers are the round driver's edges in `benchmark/dispatch`, `agent/solve`,
+/// `benchmark/resume` and the settle edge in `benchmark_grade` — removed in step 2.
 pub(crate) async fn dispatch_staged_swe_solve(
     ctx: &Ctx,
     airc: &std::sync::Arc<airc_lib::Airc>,
@@ -2371,7 +2238,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
     let (room, card) = card_in_subscribed_rooms(airc, parent)
         .await
         .ok_or_else(|| "parent card is on no subscribed room's board".to_string())?;
-    let Some((_, instance)) = crate::commands::benchmark::parse_card_title(&card.title) else {
+    let Some((_, instance)) = crate::cognition::bench_title::parse_card_title(&card.title) else {
         // A room's own card (not a bench card): its review card comes from the parent
         // itself, under the room's policy (card fa4aaaaa). The bench branch below is
         // unchanged.
@@ -2385,7 +2252,7 @@ async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Result<WorkCa
                 .map(|rt| rt.agent_name().to_string())
         })
         .unwrap_or_else(|| "the owner".to_string()); // unwrap_or: owner not resident = a neutral name in the review body
-    let title = crate::commands::benchmark::review_card_title(parent.as_uuid(), &instance, &owner);
+    let title = crate::cognition::bench_title::review_card_title(parent.as_uuid(), &instance, &owner);
     let p8 = parent.as_uuid().simple().to_string()[..8].to_string();
     let body = format!(
         "Review {owner}'s fix for `{instance}` (card {p8}). You are the fresh pair of \

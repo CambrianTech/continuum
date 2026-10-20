@@ -1608,6 +1608,7 @@ mod tests {
             "capture-owner".into(),
             "review first card".into(),
             CapturedCredit {
+                task: crate::cognition::held_out::CardTask::NotATask,
                 card_id: card,
                 claim: None,
             },
@@ -1738,6 +1739,7 @@ mod tests {
             "capture-owner".into(),
             "another activity".into(),
             CapturedCredit {
+                task: crate::cognition::held_out::CardTask::NotATask,
                 card_id: other_card,
                 claim: None,
             },

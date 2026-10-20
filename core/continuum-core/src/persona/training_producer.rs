@@ -58,6 +58,8 @@ use crate::orm::OrmEntity;
 
 pub mod reviewed;
 pub mod graded;
+mod stamp;
+pub use stamp::{CapturedCredit, ClaimReceipt, CreditRole, OutcomeStamp, ServedProvenance, SettlementOutcome};
 
 /// The substrate-wired [`CommandExecutor`] (the one `start_server` builds with the
 /// `GridTrustAuthPolicy` + interceptors), installed once at boot via
@@ -83,238 +85,6 @@ static CLASSIFIER: OnceLock<DomainClassifier> = OnceLock::new();
 /// (≥100 chars → substance `0.7` → ≈ `0.485`, or ≥500 chars → ≈ `0.545`) clear it.
 /// `0.45` is the clean separator between "acknowledgement" and "real content."
 const MIN_TRAINING_QUALITY: f32 = 0.45;
-
-/// WHICH HAND a citizen had in the card the turn is credited to (card cc34ac0f).
-///
-/// The three are not interchangeable and must not collapse into one "contributor"
-/// bucket: writing the patch, judging someone else's patch, and naming the defect
-/// in the first place are different skills, and a curriculum that mixes them
-/// teaches none of them. The role is half the bucket key for exactly that reason.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum CreditRole {
-    /// Authored the submission — the submission's `publisher`.
-    Owner,
-    /// Moved the review card: judged another citizen's work.
-    Reviewer,
-    /// Named the defect the card exists for.
-    Finder,
-}
-
-impl CreditRole {
-    /// Stable wire/bucket spelling. Lowercase because it is concatenated into a
-    /// `traitKind` and read back by humans in probe rows.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            CreditRole::Owner => "owner",
-            CreditRole::Reviewer => "reviewer",
-            CreditRole::Finder => "finder",
-        }
-    }
-}
-
-/// A VERIFIED outcome attached to a turn: this turn helped produce card X, in role
-/// R, and the card's verdict was `passed`.
-///
-/// The card's own title is the argument for its existence — "a persona's curriculum
-/// carries verified outcomes instead of self-assessed noteworthiness". Without a
-/// stamp, [`score_interaction_quality`] is handed `task_outcome: None` and falls
-/// back to a NEUTRAL 0.5 `task_success`, so a turn that shipped a merged fix and a
-/// turn that produced nothing score identically on the factor that should separate
-/// them most. The stamp is what turns "the citizen wrote something substantive"
-/// into "the citizen wrote something that WORKED".
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct OutcomeStamp {
-    /// The card this turn is credited to.
-    pub card_id: Uuid,
-    /// Which hand the citizen had in it.
-    pub role: CreditRole,
-    /// The card's settled verdict. `true` = the grade passed.
-    pub outcome: bool,
-}
-
-/// WHAT ACTUALLY SERVED the generation — not what the profile asked for (card 0d51573a).
-///
-/// `TextGenerationResponse` carries `model`, `provider` and `request_id`; both
-/// producer call sites throw them away and pass `ctx.profile.model_id`, the
-/// CONFIGURED model. Those are two different facts and the bucket key
-/// `(persona_id, trait_kind, base_model)` wants the second one: any fallback,
-/// adapter route or lane substitution files the example under a base that did not
-/// generate it. **A curriculum bucketed by a base model that never produced its
-/// examples is worse than no bucket** — the genome loop pages a gene against a
-/// benchmark for weights it was not trained from. Same one-value-two-meanings
-/// shape as the rest of this class; the fix is to carry the served fact.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ServedProvenance {
-    /// `TextGenerationResponse::model` — what answered, not what was configured.
-    pub model: String,
-    /// `TextGenerationResponse::provider` — which adapter served it.
-    pub provider: String,
-    /// `TextGenerationResponse::request_id` — the join back to the generation.
-    pub request_id: String,
-}
-
-/// Credit CAPTURED AT SELECTION, before any verdict exists (card 0d51573a).
-///
-/// Taken from the projected winning `WorkCard` at `act_question` selection, so
-/// ownership is READ from the accepted claim rather than inferred from a time
-/// window — no event-store rescan, no `persona_id == peer_id` invariant load-bearing
-/// (that equality is prose at this module's line ~444, not a type).
-///
-/// **THERE IS DELIBERATELY NO OUTCOME FIELD, AND NO PLACEHOLDER FOR ONE.** The link
-/// ("this turn belongs to card X") and the verdict ("card X worked") are two facts
-/// at two different times, and collapsing them is exactly the defect this card
-/// exists to prevent: an ungraded work-in-progress trace treated as outcome-verified
-/// credit. Observed live 2026-09-08 — a citizen accumulating toward a training
-/// threshold on a card still in `Claimed` with no settlement. Such a turn must stay
-/// an ordinary UNSTAMPED example in the bare-domain bucket; capturing the link is
-/// never license to stamp.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CapturedCredit {
-    /// The card she was rooted at when this turn began. Its PRESENCE is what makes
-    /// the turn card-linked, and card-linked is what makes it STAGE.
-    pub card_id: Uuid,
-    /// The accepted claim, captured at the same instant as `card_id` — what makes
-    /// this attribution rather than a guess. `WorkCard::owner` and `claim_id` are
-    /// both `Option`, so a rooted turn on a claimless card yields `None` here.
-    ///
-    /// **A `None` NEVER falls through to an immediate unlinked submission, and is
-    /// NEVER filled in later from a global.** The turn is still card-linked (she
-    /// was rooted at that checkout; her edits landed there), so it stages — it
-    /// simply can never be stamped, and expires unsubmitted if nothing settles.
-    /// A later settlement cannot retroactively invent a selection receipt that was
-    /// not taken, and the type is shaped so it cannot try.
-    pub claim: Option<ClaimReceipt>,
-}
-
-/// The claim receipt captured AT SELECTION — the evidence that this citizen was
-/// accountable for this card at the moment the turn began.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ClaimReceipt {
-    /// `WorkCard::claim_id` as accepted.
-    pub claim_id: Uuid,
-    /// `WorkCard::owner` as the work store spells it: a typed peer, not a bare Uuid.
-    pub owner: airc_core::PeerId,
-    /// Which hand this citizen had in the card. A claim yields `Owner`; `Reviewer`
-    /// and `Finder` are NOT derivable from a claim alone and need their own seams.
-    pub role: CreditRole,
-}
-
-/// A REAL settlement verdict — the second fact, arriving later than [`CapturedCredit`].
-///
-/// **A TERMINAL CARD STATE IS NOT A VERDICT.** `is_terminal_card_state` accepts
-/// `closed | done | merged`; `merged` implies success but `closed` covers abandonment,
-/// so deriving the outcome from the state string would collapse "settled" into
-/// "succeeded" — the same conflation, one layer down. This type therefore carries a
-/// verdict a grader actually produced, and there is no constructor from a state name.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SettlementVerdict {
-    passed: bool,
-    /// The judge's normalized score, kept for the staged record.
-    score: f64,
-    /// WHY. `activity::Verdict` calls this "the receipt a citizen and a human both
-    /// read, and the text the curriculum keeps when the task failed" — so a
-    /// settlement that discards it throws away the only part a failure leaves behind.
-    reason: String,
-}
-
-impl SettlementVerdict {
-    /// The ONLY constructor, and it takes an activity's ACTUAL judgment.
-    ///
-    /// Deliberately not `from_graded(bool)`: a bool is something a caller asserts,
-    /// and "clean turn / Closed is not success proof" (Astra, 2026-09-08). A card
-    /// reaching a terminal state is not evidence that the work succeeded —
-    /// `is_terminal_card_state` accepts `closed | done | merged` and `closed` covers
-    /// abandonment. Requiring a [`crate::cognition::activity::Verdict`] means the
-    /// evidence is produced by an `ActivityAdapter::judge`, so "I settled it because
-    /// the board said Closed" is not expressible here.
-    pub fn from_activity(verdict: &crate::cognition::activity::Verdict) -> Self {
-        Self {
-            passed: verdict.passed,
-            score: verdict.score,
-            reason: verdict.reason.clone(),
-        }
-    }
-
-    pub fn passed(&self) -> bool {
-        self.passed
-    }
-
-    pub fn score(&self) -> f64 {
-        self.score
-    }
-
-    pub fn reason(&self) -> &str {
-        &self.reason
-    }
-}
-
-impl CapturedCredit {
-    /// The ONLY way to obtain an [`OutcomeStamp`]. Consuming a [`SettlementVerdict`]
-    /// is what makes "stamp a card that has not settled" not a bug you can write but
-    /// a value you cannot produce — the same move as making an illegal state
-    /// unrepresentable rather than guarding against it at every call site.
-    ///
-    /// A FAILED verdict still produces a stamp: the evidence floor in [`plan`] is
-    /// what refuses it for SFT, and failure experience persists through the ordinary
-    /// experience/engram path. Refusing to stamp a failure here would hide the
-    /// failure instead of merely declining to train on it.
-    ///
-    /// `None` when no [`ClaimReceipt`] was captured at selection. **This is the
-    /// only place that decision can be made, which is the point:** the receipt is
-    /// an input to construction, so no settlement — however well-verified — can
-    /// supply one after the fact. A staged turn with no receipt expires
-    /// unsubmitted rather than being credited on a later guess.
-    pub fn settle(self, verdict: SettlementVerdict) -> Option<OutcomeStamp> {
-        let claim = self.claim?;
-        Some(OutcomeStamp {
-            card_id: self.card_id,
-            role: claim.role,
-            outcome: verdict.passed(),
-        })
-    }
-
-    /// Derive the selection capture from the card a turn was rooted onto.
-    ///
-    /// **Pure, so it is testable with no cycle, no hands and no executor** — the same
-    /// judgment/effect split [`plan`] uses. The EFFECT (attaching this to the turn
-    /// before the rooting await in `root_at_held_card`) lands with the consumer that
-    /// reads it; this is the judgment half.
-    ///
-    /// `WorkCard::owner` and `claim_id` are both `Option` and travel together or not
-    /// at all: a card the work store never claimed yields `claim: None`, and NOTHING
-    /// may substitute a default — not the acting persona, not a nil claim. Such a
-    /// turn is still card-linked, so it stages; it simply can never be stamped, and
-    /// no later settlement may supply the receipt it never had.
-    pub fn from_selected_card(card: &airc_work::WorkCard) -> Self {
-        let claim = match (card.owner, card.claim_id) {
-            (Some(owner), Some(claim_id)) => Some(ClaimReceipt {
-                claim_id: claim_id.as_uuid(),
-                owner,
-                // A claim yields OWNER. Reviewer and Finder are different hands on
-                // the same card and are not derivable from a claim alone.
-                role: CreditRole::Owner,
-            }),
-            // Either half missing is no receipt. An owner without a claim is not an
-            // accepted claim, and a claim without an owner names nobody.
-            _ => None,
-        };
-        Self {
-            card_id: card.card_id.as_uuid(),
-            claim,
-        }
-    }
-
-    /// Card-linked turns STAGE; only truly unlinked conversation submits at
-    /// completion. Presence of the card — not of the claim — is the test, because
-    /// she was rooted at that checkout and her edits landed there regardless of
-    /// whether a claim receipt was recorded.
-    pub fn is_card_linked(&self) -> bool {
-        // Constructing this value at all means a card was captured at selection.
-        // Kept as a named predicate so the staging call site reads as a decision
-        // rather than as `Option::is_some` on something whose meaning is elsewhere.
-        !self.card_id.is_nil()
-    }
-}
 
 /// ONE dispatched generation, as a correlation ROW — the index that
 /// [`StagedCredit::receipts`] cannot carry (card 0d51573a).
@@ -459,10 +229,16 @@ pub struct StagedCredit {
     /// identity), when the card was a lesson; `None` for real work. Read from the round
     /// tracker when the turn stages, so a lesson turn is told from real work by DATA: the
     /// settle path keeps lesson verdicts out of gene-trial credit (ONE-RESIDENT §10.2: the
-    /// promotion gate judges real work only), and the containment diff and lift checks read
-    /// the same field. `default` reads a row staged before this field as real work.
+    /// promotion gate judges real work only). Which lesson it was is [`StagedCredit::task`].
+    /// `default` reads a row staged before this field as real work.
     #[serde(default)]
     pub coursework_set: Option<String>,
+    /// Which graded task this turn worked, captured with the card (goal 8). `None` only on a
+    /// row staged before tasks were recorded: its examples then read as unknown, so a gene
+    /// trained on it is never reported as judged on a known-clean held-out set.
+    #[entity(json)]
+    #[serde(default)]
+    pub task: Option<crate::cognition::held_out::CardTask>,
     /// When HER core observed a FAILED review of this row's card while the row was
     /// staged: her own clock, never the reviewer's (card ad4bfaeb). A row a review
     /// rejected is the behaviour the reviewer refused, so a later PASS on the same card
@@ -985,7 +761,7 @@ pub(crate) fn received_submission_params(
     let episode = crate::cognition::experience::ExperienceRecord::from_shared_lesson(record);
     let plan = plan_received(classifier, &episode.task.prompt, &episode.answer);
     let mut params =
-        build_submit_params(persona, persona_name, base_model, &plan, "received-lesson");
+        build_submit_params(persona, persona_name, base_model, &plan, RECEIVED_LESSON_SOURCE);
     params["submissionId"] = json!(received_submission_id(persona, base_model, &record.id));
     let metadata = &mut params["examples"][0]["metadata"];
     metadata["memoryRecordId"] = json!(record.id);
@@ -1020,6 +796,15 @@ pub(crate) fn received_submission_params(
 ///   scores below [`MIN_TRAINING_QUALITY`] by construction, and the chat score was
 ///   built for a different shape.
 pub const SPEECH_DISCIPLINE_TRAIT: &str = "speech-discipline";
+
+/// The `source` an example carries when no card produced it: a received lesson or a gated
+/// echo. ONE list, written by the producers below and read by the held-out judge
+/// (`cognition::held_out::trained`), where it is the explicit record that such an example
+/// worked no graded task (goal 8). It is the value already on the wire, so a replayed
+/// submission keeps its exact bytes.
+pub const RECEIVED_LESSON_SOURCE: &str = "received-lesson";
+pub const SPEECH_DISCIPLINE_SOURCE: &str = "speech-discipline";
+pub const UNLINKED_SOURCES: [&str; 2] = [RECEIVED_LESSON_SOURCE, SPEECH_DISCIPLINE_SOURCE];
 
 /// The silence token, exactly as [`crate::cognition::deliberation_parse`] reads it.
 pub const SILENCE_COMPLETION: &str = "PASS";
@@ -1067,7 +852,7 @@ pub fn produce_speech_discipline(
             base_model,
             executor,
             plan,
-            "speech-discipline",
+            SPEECH_DISCIPLINE_SOURCE,
         )
         .await;
     });
@@ -1102,7 +887,7 @@ pub fn produce_received(
             base_model,
             executor,
             plan,
-            "received-lesson",
+            RECEIVED_LESSON_SOURCE,
         )
         .await;
     });
@@ -1342,6 +1127,7 @@ async fn stage_credit<T: Transport>(
         lived,
         staged_at_ms: crate::time::EpochMs::now().millis(),
         coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
+        task: Some(credit.task.clone()),
         rejected_at_ms: None,
     };
 
@@ -1873,6 +1659,7 @@ fn staged_submission_params(
         params["examples"] = serde_json::to_value(&examples).map_err(|_| "lived examples could not be serialized")?; // training-trigger submit boundary: the params ARE the command's wire payload
     }
     params["submissionId"] = json!(row.id);
+    crate::cognition::held_out::stamp_examples(&mut params, row.task.as_ref());
     Ok(params)
 }
 
@@ -2360,6 +2147,7 @@ pub(crate) mod tests {
                 lived: None,
                 staged_at_ms: 1,
                 coursework_set: None,
+                task: None,
                 rejected_at_ms: None,
             }
         }
@@ -2418,6 +2206,29 @@ pub(crate) mod tests {
                 why.contains("provenance"),
                 "the unfixable case must name itself: {why}"
             );
+        }
+
+        /// what this catches (goal 8, card 67af4fca): the task captured with the card must
+        /// reach the examples a settled row becomes. Dropped on the way, every example reads
+        /// as unknown to `cognition::held_out::trained`, and no gene is ever judged on a
+        /// held-out set known to be clean.
+        #[test]
+        fn a_settled_row_carries_its_task_onto_its_examples() {
+            let me = Uuid::new_v4();
+            let mut r = row(Some(Uuid::new_v4()), Some(me), Some(CreditRole::Owner));
+            r.receipts = vec![served_receipt("settled-request", "served-model")];
+            r.prompt = "The parser drops the last token when the input ends without a newline.".into();
+            r.completion = "Fixed: the tokenizer now flushes its pending token at end of input, and a \
+                            regression test feeds it a file with no trailing newline."
+                .into();
+            let task = crate::cognition::held_out::CardTask::of_card_title("[bench coursework-0123456789ab] t2: fix");
+            r.task = Some(task);
+            let params = staged_submission_params(me, "Kimi", &r, true).expect("a passing, claimed, served row submits"); // JUSTIFIED: the test asserts the Ok arm
+            let examples: Vec<TrainingExample> =
+                serde_json::from_value(params["examples"].clone()).expect("the wire examples are training examples"); // JUSTIFIED: test fixture
+            let trained = crate::cognition::held_out::trained(&examples);
+            assert_eq!(trained.unknown(), 0, "every example names its task");
+            assert_eq!(trained.tasks().len(), 1);
         }
     }
 
@@ -2680,6 +2491,7 @@ pub(crate) mod tests {
         );
 
         let captured = CapturedCredit {
+            task: crate::cognition::held_out::CardTask::NotATask,
             card_id: Uuid::from_u128(0x0d51573a),
             claim: Some(ClaimReceipt {
                 claim_id: Uuid::from_u128(0x457b0d7d),
@@ -2691,7 +2503,7 @@ pub(crate) mod tests {
         // A PASSING verdict stamps and buckets on domain x role.
         let passed = captured
             .clone()
-            .settle(SettlementVerdict::from_activity(
+            .settle(SettlementOutcome::from_activity(
                 &crate::cognition::activity::Verdict::pass("tests pass on the staged checkout"),
             ))
             .expect("test: a captured claim receipt can be stamped");
@@ -2716,7 +2528,7 @@ pub(crate) mod tests {
         // must then be refused by the evidence floor. If `settle` hardcoded `true`,
         // this plans a bucket and the assertion below fails — that is the mutation.
         let failed = captured
-            .settle(SettlementVerdict::from_activity(
+            .settle(SettlementOutcome::from_activity(
                 &crate::cognition::activity::Verdict::fail("the patch did not apply"),
             ))
             .expect("test: a receipt stamps regardless of which way the verdict went");
@@ -2743,6 +2555,7 @@ pub(crate) mod tests {
         // not by any verdict. If `settle` ever defaulted the missing receipt to an
         // Owner role, both assertions below flip.
         let claimless = CapturedCredit {
+            task: crate::cognition::held_out::CardTask::NotATask,
             card_id: Uuid::from_u128(0x0d51573a),
             claim: None,
         };
@@ -2753,7 +2566,7 @@ pub(crate) mod tests {
         );
         assert!(
             claimless
-                .settle(SettlementVerdict::from_activity(
+                .settle(SettlementOutcome::from_activity(
                     &crate::cognition::activity::Verdict::pass("tests pass on the staged checkout")
                 ))
                 .is_none(),
@@ -3141,6 +2954,7 @@ pub(crate) mod tests {
         // consumes is the CREDIT, and a claimless card is the honest minimum — a card
         // with no accepted claim still stages, it simply can never be stamped.
         let credit = CapturedCredit {
+            task: crate::cognition::held_out::CardTask::NotATask,
             card_id: Uuid::new_v4(),
             claim: None,
         };
@@ -3372,6 +3186,7 @@ pub(crate) mod tests {
             lived,
             staged_at_ms: at,
             coursework_set: None,
+            task: None,
             rejected_at_ms: None,
         };
         let read = || call(Some(("code/read", json!({"path": "xarray/core/merge.py"}))));
@@ -3564,6 +3379,7 @@ pub(crate) mod tests {
             name.into(),
             "Inspect the Rust source and report the verified regression behavior.".into(),
             CapturedCredit {
+                task: crate::cognition::held_out::CardTask::NotATask,
                 card_id: card,
                 claim: Some(ClaimReceipt {
                     claim_id: Uuid::new_v4(),
@@ -3671,6 +3487,7 @@ pub(crate) mod tests {
             name.into(),
             "Inspect and repair the actual implementation, with evidence.".into(),
             CapturedCredit {
+                task: crate::cognition::held_out::CardTask::NotATask,
                 card_id: card.as_uuid(),
                 claim: Some(ClaimReceipt {
                     claim_id: claim.as_uuid(),
@@ -3836,6 +3653,7 @@ pub(crate) mod tests {
         );
         let later_revision = Uuid::new_v4();
         let another_claim = CapturedCredit {
+            task: crate::cognition::held_out::CardTask::NotATask,
             card_id: card.as_uuid(),
             claim: Some(ClaimReceipt {
                 claim_id: Uuid::new_v4(),
@@ -4907,6 +4725,7 @@ pub(crate) mod tests {
             },
         };
         let credit = CapturedCredit {
+            task: crate::cognition::held_out::CardTask::NotATask,
             card_id: Uuid::new_v4(),
             claim: Some(ClaimReceipt {
                 claim_id: Uuid::new_v4(),

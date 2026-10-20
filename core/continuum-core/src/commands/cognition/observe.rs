@@ -37,9 +37,10 @@ use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, Default)]
 #[ts(
     export,
-    export_to = "../../../protocol/typescript/cognition/BenchmarkProvenance.ts"
+    export_to = "../../../protocol/typescript/cognition/BenchmarkProvenance.ts",
+    rename = "BenchmarkProvenance"
 )]
-pub enum BenchmarkProvenance {
+pub enum MeasurementProvenance {
     Clean,
     Contended,
     #[default]
@@ -49,10 +50,11 @@ pub enum BenchmarkProvenance {
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[ts(
     export,
-    export_to = "../../../protocol/typescript/cognition/BenchmarkObserveParams.ts"
+    export_to = "../../../protocol/typescript/cognition/BenchmarkObserveParams.ts",
+    rename = "BenchmarkObserveParams"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct BenchmarkObserveParams {
+pub struct RunObserveParams {
     /// The examinee persona whose ledger holds the run history. Omit for live
     /// scoreboard only (no feed history).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -75,10 +77,11 @@ pub struct BenchmarkObserveParams {
 #[derive(Debug, Clone, Serialize, TS, Default)]
 #[ts(
     export,
-    export_to = "../../../protocol/typescript/cognition/BenchmarkObserveResult.ts"
+    export_to = "../../../protocol/typescript/cognition/BenchmarkObserveResult.ts",
+    rename = "BenchmarkObserveResult"
 )]
 #[serde(rename_all = "camelCase")]
-pub struct BenchmarkObserveResult {
+pub struct RunObserveResult {
     pub scoreboard: Scoreboard,
     pub central: Central,
     pub feed: Vec<FeedEvent>,
@@ -103,7 +106,7 @@ pub struct Scoreboard {
     /// `pass / done` live, or the ledger's final `passRate` when the run completed.
     pub pass_rate: f64,
     /// Is this number CLEAN or CONTENDED — surfaced, not inferred.
-    pub provenance: BenchmarkProvenance,
+    pub provenance: MeasurementProvenance,
     /// Live free VRAM (GB) at last grade — the resource axis. `null` when ungoverned.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -161,7 +164,7 @@ pub struct FeedEvent {
     #[ts(optional, type = "number")]
     pub pass_rate: Option<f64>,
     /// Was this run measured on a CLEAN (quiesced) GPU lane? The honesty chip per run.
-    pub provenance: BenchmarkProvenance,
+    pub provenance: MeasurementProvenance,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub note: Option<String>,
@@ -196,7 +199,7 @@ fn benchmark_name(note: Option<&str>, eval_set: Option<&str>) -> Option<String> 
 #[derive(Default)]
 pub struct CognitionObserve;
 
-impl BenchmarkObserveResult {
+impl RunObserveResult {
     /// Fold the live watch snapshot + the ledger into the three-region model. Pure
     /// (given the progress snapshot + ledger text) so it is unit-testable without
     /// the global watch or the filesystem.
@@ -227,7 +230,7 @@ impl BenchmarkObserveResult {
         }
         // Provenance is not stamped on the watch/ledger yet — honest Unknown until
         // the quiesce-verify fix stamps it (slice 2). Never fabricate Clean.
-        scoreboard.provenance = BenchmarkProvenance::Unknown;
+        scoreboard.provenance = MeasurementProvenance::Unknown;
 
         // Ledger: newest-first feed of completed runs, and (if a run_id is focused)
         // its final row → complete + final pass_rate.
@@ -241,9 +244,9 @@ impl BenchmarkObserveResult {
                 // The honesty stamp eval now writes: cleanLane=true → measured on a
                 // quiesced lane → CLEAN; absent/null → UNKNOWN (never falsely Clean).
                 let prov = if v.get("cleanLane").and_then(|x| x.as_bool()) == Some(true) {
-                    BenchmarkProvenance::Clean
+                    MeasurementProvenance::Clean
                 } else {
-                    BenchmarkProvenance::Unknown
+                    MeasurementProvenance::Unknown
                 };
                 if let Some(want) = run_id {
                     if row_run == Some(want) {
@@ -274,7 +277,7 @@ impl BenchmarkObserveResult {
         }
 
         let idle = progress.is_none() && !scoreboard.complete;
-        BenchmarkObserveResult {
+        RunObserveResult {
             scoreboard,
             central,
             feed,
@@ -293,14 +296,14 @@ impl ActionCommand for CognitionObserve {
          skill, and a proctor-persona all render. Reads the live progress watch + the \
          persona's progress ledger; replaces operator log-grep.";
 
-    type Params = BenchmarkObserveParams;
-    type Output = BenchmarkObserveResult;
+    type Params = RunObserveParams;
+    type Output = RunObserveResult;
 
     async fn run(
         &self,
         _ctx: &Ctx,
-        p: BenchmarkObserveParams,
-    ) -> Result<BenchmarkObserveResult, CommandError> {
+        p: RunObserveParams,
+    ) -> Result<RunObserveResult, CommandError> {
         let progress = subscribe_eval_progress().borrow().clone();
         let feed_limit = p.feed_limit.unwrap_or(10);
 
@@ -313,7 +316,7 @@ impl ActionCommand for CognitionObserve {
             std::fs::read_to_string(path).ok()
         });
 
-        Ok(BenchmarkObserveResult::assemble(
+        Ok(RunObserveResult::assemble(
             progress,
             ledger_text.as_deref(),
             p.run_id.as_deref(),
@@ -358,7 +361,7 @@ mod tests {
         let ledger = "{\"runId\":\"old\",\"evalSet\":\"humaneval-rs\",\"passRate\":0.25,\"note\":\"a\",\"capturedAtMs\":10}\n\
                       {\"runId\":\"r2\",\"evalSet\":\"hard-rs\",\"passRate\":0.375,\"note\":\"rebaseline\",\"capturedAtMs\":20,\"cleanLane\":true}";
 
-        let out = BenchmarkObserveResult::assemble(
+        let out = RunObserveResult::assemble(
             progress,
             Some(ledger),
             Some("r2"),
@@ -380,7 +383,7 @@ mod tests {
         );
         assert!((out.scoreboard.pass_rate - 0.375).abs() < 1e-9);
         // r2 was stamped cleanLane=true → the focused run's chip is CLEAN.
-        assert_eq!(out.scoreboard.provenance, BenchmarkProvenance::Clean);
+        assert_eq!(out.scoreboard.provenance, MeasurementProvenance::Clean);
         assert_eq!(out.scoreboard.vram_free_gb, Some(36));
         // central: current focus from the watch.
         assert_eq!(out.central.current_task.as_deref(), Some("lru_cache"));
@@ -391,13 +394,13 @@ mod tests {
         assert_eq!(out.feed[0].benchmark.as_deref(), Some("hard-rs"));
         assert_eq!(
             out.feed[0].provenance,
-            BenchmarkProvenance::Clean,
+            MeasurementProvenance::Clean,
             "r2 stamped clean"
         );
         assert_eq!(out.feed[1].run_id.as_deref(), Some("old"));
         assert_eq!(
             out.feed[1].provenance,
-            BenchmarkProvenance::Unknown,
+            MeasurementProvenance::Unknown,
             "unstamped row → unknown"
         );
         assert!(!out.meta.idle);
@@ -443,7 +446,7 @@ mod tests {
             vram_free_gb: None,
             run_id: None,
         });
-        let out = BenchmarkObserveResult::assemble(progress, None, None, None, 10);
+        let out = RunObserveResult::assemble(progress, None, None, None, 10);
         assert!(out.scoreboard.pass_finished);
         assert!(
             !out.scoreboard.complete,
@@ -455,7 +458,7 @@ mod tests {
     // zero-score board.
     #[test]
     fn assemble_reports_idle_when_nothing_is_happening() {
-        let out = BenchmarkObserveResult::assemble(None, None, None, None, 10);
+        let out = RunObserveResult::assemble(None, None, None, None, 10);
         assert!(out.meta.idle);
         assert!(!out.scoreboard.complete);
         assert!(out.feed.is_empty());

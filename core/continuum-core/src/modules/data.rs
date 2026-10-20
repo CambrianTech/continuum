@@ -110,19 +110,8 @@ fn require_public_collection(collection: &str) -> Result<(), String> {
 // Vector Search Types and Cache
 // ============================================================================
 
-/// Cached vector for in-memory similarity search
-struct CachedVector {
-    id: String,
-    embedding: Vec<f64>,
-}
-
-/// Collection vector cache with Arc for zero-copy sharing during concurrent searches
-struct VectorCache {
-    vectors: Arc<Vec<CachedVector>>,
-}
-
-/// Cache key: (db_path, collection)
-type VectorCacheKey = (String, String);
+mod vector_corpus;
+use vector_corpus::CachedVector;
 
 // ============================================================================
 // Paginated Query State
@@ -170,9 +159,8 @@ pub struct DataState {
     adapters: DashMap<String, Arc<dyn StorageAdapter>>,
     /// Mutex only used during adapter initialization (one-time setup)
     init_lock: Mutex<()>,
-    /// Vector cache: (db_path, collection) -> vectors
-    /// Uses RwLock for concurrent reads (no mutex contention during searches)
-    vector_cache: RwLock<HashMap<VectorCacheKey, VectorCache>>,
+    /// Each handle/collection owns a detachable, fallibly initialized corpus cell.
+    vector_cache: crate::runtime::shared_compute::SharedCompute,
     /// Paginated query state: queryId -> per-cursor mutex.
     ///
     /// Server-side cursor management for efficient pagination. The
@@ -229,7 +217,7 @@ impl DataState {
         Self {
             adapters: DashMap::new(),
             init_lock: Mutex::new(()),
-            vector_cache: RwLock::new(HashMap::new()),
+            vector_cache: crate::runtime::shared_compute::SharedCompute::new(),
             paginated_queries: DashMap::new(),
             context: RwLock::new(None),
             active_migration: Mutex::new(None),
@@ -1324,8 +1312,8 @@ impl DataState {
     /// First search loads from SQLite, subsequent searches are instant.
     ///
     /// Flow:
-    /// 1. Check cache (RwLock read - concurrent, no blocking)
-    /// 2. If miss, load from SQLite (serialized, but only once per collection)
+    /// 1. Clone the collection cell under a short map guard.
+    /// 2. Coalesce cold loads; errors are retryable and invalidation detaches old loads.
     /// 3. Parallel rayon search against cached vectors
     ///
     /// Cosine-similarity nearest-neighbour search over a collection's embeddings.
@@ -1344,85 +1332,7 @@ impl DataState {
         use std::time::Instant;
         let search_start = Instant::now();
 
-        let cache_key = (handle.to_string(), collection.to_string());
-
-        // Step 1: Try to get vectors from cache (RwLock read - concurrent)
-        let cached_vectors: Option<Arc<Vec<CachedVector>>> = {
-            let cache = self.vector_cache.read().unwrap_or_else(|e| e.into_inner());
-            cache.get(&cache_key).map(|c| c.vectors.clone())
-        };
-
-        let corpus: Arc<Vec<CachedVector>> = if let Some(vectors) = cached_vectors {
-            log_info!(
-                "data",
-                "vector/search",
-                "Cache HIT for {} ({} vectors)",
-                collection,
-                vectors.len()
-            );
-            vectors
-        } else {
-            // Cache MISS - load from SQLite
-            log_info!(
-                "data",
-                "vector/search",
-                "Cache MISS for {} - loading from SQLite",
-                collection
-            );
-            let load_start = Instant::now();
-
-            // Get adapter and load vectors
-            let adapter = self.get_adapter(handle).await?;
-
-            // Query all records with embeddings
-            let query = StorageQuery {
-                collection: collection.to_string(),
-                ..Default::default()
-            };
-
-            let result = adapter.query(query).await;
-            if !result.success {
-                return Err(result.error.unwrap_or_else(|| "Query failed".to_string()));
-            }
-
-            // Extract vectors from records
-            let mut vectors: Vec<CachedVector> = Vec::new();
-            for record in result.data.unwrap_or_default() {
-                if let Some(embedding) = record.data.get("embedding") {
-                    let vec = Self::parse_embedding(embedding);
-                    if !vec.is_empty() {
-                        vectors.push(CachedVector {
-                            id: record.id,
-                            embedding: vec,
-                        });
-                    }
-                }
-            }
-
-            let vectors_arc = Arc::new(vectors);
-            let count = vectors_arc.len();
-
-            // Store in cache
-            {
-                let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
-                cache.insert(
-                    cache_key,
-                    VectorCache {
-                        vectors: vectors_arc.clone(),
-                    },
-                );
-            }
-
-            log_info!(
-                "data",
-                "vector/search",
-                "Cached {} vectors for {} in {:?}",
-                count,
-                collection,
-                load_start.elapsed()
-            );
-            vectors_arc
-        };
+        let corpus = self.vector_corpus(handle, collection).await?;
 
         if corpus.is_empty() {
             return Ok(VectorSearchResults {
@@ -1586,11 +1496,7 @@ impl DataState {
         let result = adapter.update(collection, &id, update_data, false).await;
 
         // Invalidate vector cache for this collection since we modified an embedding
-        {
-            let cache_key = (handle.to_string(), collection.to_string());
-            let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
-            cache.remove(&cache_key);
-        }
+        self.vector_cache.invalidate(handle, collection);
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
@@ -1652,11 +1558,8 @@ impl DataState {
         }
 
         // Check cache status
-        let cache_key = (handle.to_string(), collection.to_string());
-        let cached_count = {
-            let cache = self.vector_cache.read().unwrap_or_else(|e| e.into_inner());
-            cache.get(&cache_key).map(|c| c.vectors.len()).unwrap_or(0)
-        };
+        let cached_count = self.vector_cache.get::<Vec<CachedVector>>(handle, collection)
+            .map_or(0, |vectors| vectors.len());
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
@@ -1688,11 +1591,7 @@ impl DataState {
         collection: &str,
     ) -> Result<VectorCacheInvalidation, String> {
         require_public_collection(collection)?;
-        let cache_key = (handle.to_string(), collection.to_string());
-        let removed = {
-            let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
-            cache.remove(&cache_key).is_some()
-        };
+        let removed = self.vector_cache.invalidate(handle, collection);
 
         log_info!(
             "data",
@@ -1849,11 +1748,7 @@ impl DataState {
         }
 
         // Invalidate vector cache since we modified embeddings
-        {
-            let cache_key = (handle.to_string(), collection.to_string());
-            let mut cache = self.vector_cache.write().unwrap_or_else(|e| e.into_inner());
-            cache.remove(&cache_key);
-        }
+        self.vector_cache.invalidate(handle, collection);
 
         let total_ms = start.elapsed().as_millis();
         log_info!(

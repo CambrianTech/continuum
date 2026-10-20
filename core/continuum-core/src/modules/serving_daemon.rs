@@ -1386,7 +1386,7 @@ impl ServingDaemonModule {
     /// [`Self::compute_plan`]; the next tick replans if it changes.
     pub fn set_lane_demand(&self, demand: u32) {
         // Register the demand state process-globally the first time boot sets it, so a
-        // measurement preemption lease (quiesce_all / quiesce_others) can drop the
+        // measurement preemption lease (quiesce_all / lease_measured_work) can drop the
         // warm-slot demand to the ACTIVE (non-quiesced) count for its duration and
         // release on drop — without threading a ServingDaemon handle into the persona
         // registry. Idempotent: `set` after the first call is a no-op.
@@ -1404,7 +1404,7 @@ impl ServingDaemonModule {
 /// The lane-demand authority: one BASE (the boot-wired persona floor) plus a registry of
 /// measurement OVERRIDES, with the effective value recomputed on every change — never a
 /// swap/restore pair. The naive swap/restore version had a real interleaving bug: with two
-/// overlapping leases (eval's `quiesce_all` + a solve's `quiesce_others`), the first drop
+/// overlapping leases (eval's `quiesce_all` + a solve's `lease_measured_work`), the first drop
 /// restored the pre-lease value OVER the still-held second lease, and the second drop then
 /// restored the FIRST lease's override — leaving the whole fleet's demand stuck at 1 with
 /// nobody quiesced until the (boot-only) `set_lane_demand` ever ran again. Order-independent
@@ -4374,25 +4374,6 @@ impl ServingDaemonModule {
                             *slot = None;
                         }
                         None
-                    } else if crate::cognition::serving_plan::solve_window_floor() > 0 {
-                        // SOLVE REGIME: the eyes yield (2026-08-29, "take every
-                        // architectural advantage"). While a pinned solve floor
-                        // stands the work is text-only by construction, and the
-                        // sidecar's ~9GB is exactly the budget that buys the
-                        // SECOND solve lane (measured: 84k×1 afforded, 40448×2
-                        // refused by a few GB). Drop it (RAII kills the child,
-                        // RAM freed, the next plan sees the room); it respawns
-                        // on the first plan after the floor clears — sight
-                        // returns with the idle era, like dreams.
-                        crate::probe!(
-                            class = "serving.vision.sidecar_yields_to_solves",
-                            "solve floor standing — vision sidecar yields its budget to a second solve lane"
-                        );
-                        let mut slot = sidecar_slot.lock().await;
-                        if current() {
-                            *slot = None;
-                        }
-                        None
                     } else {
                         use crate::inference::vision_sidecar as sidecar;
                         let candidate = sidecar_candidate;
@@ -7348,13 +7329,12 @@ impl ServiceModule for ServingDaemonModule {
                 instance = instance.as_str(),
                 needs_redispatch = true,
                 "benchmark run orphaned by a core restart — {instance} was NOT measured; \
-                 the benchmark-side boot resume rejoins its round and re-fires it",
+                 nothing re-fires it at boot; it is hers to pull again",
             );
         }
         // The ROUND half is now CONTINUITY (plan A5): a Working round SURVIVES the
-        // restart — the benchmark-side boot resume (modules::benchmark_resume, which
-        // owns re-firing per BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon)
-        // rejoins it. Only TTL-expired abandoned rounds are swept here.
+        // restart — residents pull from it as they choose
+        // (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon re-fires). Only TTL-expired abandoned rounds are swept here.
         for (benchmark, remaining) in crate::cognition::bench_round::reap_orphaned_rounds() {
             crate::probe!(
                 class = "bench.round.expired",
@@ -8391,7 +8371,7 @@ pub(crate) mod tests {
         );
 
         // Overlap: eval quiesce_all (active 0 → floored 1), then a solve's
-        // quiesce_others (active 1) while the first is still held.
+        // lease_measured_work (active 1) while the first is still held.
         let eval = state.acquire(0);
         assert_eq!(cell.load(Ordering::Relaxed), 1);
         let solve = state.acquire(1);

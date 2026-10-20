@@ -597,9 +597,9 @@ fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
 
 /// Boot reconciler — reap-or-ADOPT, and since plan A5 the answer is ADOPT
 /// ([[boot-owns-the-process-tree-reap-or-adopt-never-fight-yourself]],
-/// continuity-is-the-default). A `Working` round on disk is STILL WORKING: the
-/// boot resume (`modules::benchmark_resume`) rejoins it and re-fires its next
-/// unworked card through the ONE driver decision. The old behavior — deleting
+/// continuity-is-the-default). A `Working` round on disk is STILL WORKING: its
+/// room and cards are the durable state, and residents pull from them as they choose
+/// (no runner re-fires anything at boot). The old behavior — deleting
 /// every Working round at boot — destroyed exactly the state a resume needs
 /// (room, cards, assignees, per-card activity rooms) and made "benchmarks never
 /// start themselves" structural. What remains here is the eviction story this
@@ -609,8 +609,7 @@ fn load_rounds_in(dir: &Path) -> HashMap<Uuid, BenchRound> {
 pub fn reap_orphaned_rounds() -> Vec<(String, usize)> {
     let dir = rounds_state_dir();
     // TTL expiry only (see [`reap_orphaned_rounds_in`]): a Working round at boot
-    // SURVIVES — it is the durable state the boot resume (modules::benchmark_resume)
-    // rejoins. Expired files are also dropped from the loaded map so live_rounds()
+    // SURVIVES — it is the durable state residents pull from. Expired files are also dropped from the loaded map so live_rounds()
     // agrees this boot.
     let expired = reap_orphaned_rounds_in(&dir);
     if !expired.is_empty() {
@@ -1190,62 +1189,6 @@ pub fn any_working_round() -> bool {
         .expect("bench rounds mutex")
         .values()
         .any(|r| r.stage == RoundStage::Working)
-}
-
-/// A round is ABANDONED-STALE when it is Working but no unsettled card has
-/// produced a work artifact in [`STALE_ROUND_ABANDON_SECS`] — a wedged round
-/// whose citizens died without a task boundary (measured 2026-09-02: three
-/// rounds stuck ~18h, blocking the standing autopilot, un-clearable because
-/// round-stop's cancellation waits for a boundary the dead citizens never
-/// reach). The standing round treats these as NOT blocking, so a fresh cohort
-/// dispatches over the corpse. Takes the ledger facts the board already folds.
-pub const STALE_ROUND_ABANDON_SECS: u64 = 3600;
-
-pub fn only_stale_or_no_working_rounds(runs: &[CardRunFacts], now_ms: u64) -> bool {
-    let mut rounds = live_rounds();
-    enrich_rounds(&mut rounds, runs, now_ms);
-    no_healthy_working_round(&rounds)
-}
-
-/// How many cards across live rounds are `unstarted` — never worked, no run
-/// artifact, no held-work turn. The standing autopilot's BACKLOG guard: with a
-/// deep backlog, dispatching another round just deepens the pile (measured
-/// 2026-09-02: the autopilot reached 30+ rounds / 111 unstarted while 4 citizens
-/// worked). Complements the working-round gate — that holds while a round is
-/// being worked; this holds while there is unworked work already waiting.
-pub fn unworked_backlog(runs: &[CardRunFacts], now_ms: u64) -> usize {
-    let mut rounds = live_rounds();
-    enrich_rounds(&mut rounds, runs, now_ms);
-    pullable_backlog(&rounds)
-}
-
-/// PURE half of the backlog guard: unstarted cards a citizen can actually PULL —
-/// in a `working` round driven by citizens. A paused round's cards are not offered
-/// (the deck reads working rounds only), and a detached-solve round's cards are the
-/// solver's, never pulled. Measured 2026-09-17: the guard read a backlog of 120 —
-/// every unstarted card of every PAUSED round plus the paused detached control — against
-/// 16 citizens, while the one working round had one card left in review; the roster
-/// idled (`persona.work.gate no_held_work` × 60, `bench.round.pull_none` × 25, 0 acts
-/// in 30 minutes) and the autopilot held "until the backlog drains" — a backlog nobody
-/// could drain.
-pub fn pullable_backlog(rounds: &[RoundSnapshot]) -> usize {
-    rounds
-        .iter()
-        .filter(|r| r.stage == "working" && r.driver == "citizen")
-        .flat_map(|r| r.cards.iter())
-        .filter(|c| c.state == "unstarted")
-        .count()
-}
-
-/// PURE decision (testable without the ROUNDS global): true when no round is
-/// healthily grinding — every Working round is stalled/unstarted past the
-/// abandon window, or there are none. A round with a fresh act (idle under
-/// the window) blocks the autopilot; a wedged one does not.
-pub fn no_healthy_working_round(rounds: &[RoundSnapshot]) -> bool {
-    !rounds.iter().any(|r| {
-        r.stage == "working"
-            && matches!(r.idle_secs, Some(idle) if idle < STALE_ROUND_ABANDON_SECS)
-    })
 }
 
 fn live_run_ids() -> std::collections::HashSet<String> {
@@ -1868,12 +1811,6 @@ pub fn live_rounds() -> Vec<RoundSnapshot> {
 }
 
 
-/// A working round driven by citizens (a detached solve's cards are the solver's). The
-/// node-health receipt counts these for its "IDLE because …" line.
-pub(crate) fn is_working_citizen_round(round: &RoundSnapshot) -> bool {
-    round.stage.eq_ignore_ascii_case("working") && round.driver.to_ascii_lowercase().contains("citizen")
-}
-
 #[cfg(test)]
 mod tests {
     // what this catches: the sensor 2026-09-01 lacked — `working 0/8` was
@@ -2118,7 +2055,7 @@ mod tests {
 
     #[test]
     fn a_citizen_held_work_turn_makes_the_round_read_working() {
-        use super::{card_last_act_ms, enrich_rounds, no_healthy_working_round, record_card_worked, RoundCardSnapshot, RoundSnapshot};
+        use super::{card_last_act_ms, enrich_rounds, record_card_worked, RoundCardSnapshot, RoundSnapshot};
         let now_ms: u64 = 20_000_000_000;
         let card_uuid = Uuid::new_v4();
         // She drove a held-work turn 30s ago — no run-ledger fact exists.
@@ -2178,80 +2115,6 @@ mod tests {
             rounds[0].verdict, "grinding",
             "the round is visibly being worked"
         );
-        assert!(
-            !no_healthy_working_round(&rounds),
-            "a freshly held-worked round is a healthy working round — the autopilot HOLDS"
-        );
-    }
-
-    // what this catches: a wedged Working round (dead citizens, no task
-    // boundary) blocking the standing autopilot FOREVER — measured 2026-09-02,
-    // three rounds stuck ~18h while the claim-growth engine starved because it
-    // only fired when NO round was Working. The autopilot must dispatch over a
-    // round stale past the abandon window, but HOLD for a healthily grinding
-    // one. Regression pin for that exact bug.
-    use super::{no_healthy_working_round, RoundSnapshot, STALE_ROUND_ABANDON_SECS};
-    fn snap(stage: &str, idle: Option<u64>) -> RoundSnapshot {
-        RoundSnapshot {
-            opened_at_ms: 0,
-            round_id: Uuid::new_v4().to_string(),
-            run_room_name: String::new(),
-            benchmark: "swe-bench-verified".into(),
-            stage: stage.to_string(),
-            dispatched: 8,
-            settled: 0,
-            remaining: 8,
-            driver: "citizen".into(),
-            cards: Vec::new(),
-            verdict: String::new(),
-            idle_secs: idle,
-        }
-    }
-
-    // what this catches (2026-09-17): the backlog guard counted unstarted cards in
-    // PAUSED rounds and in the paused detached control — 120 cards no citizen could
-    // pull — and held the autopilot while the whole roster idled. Only cards a citizen
-    // can pull (working, citizen-driven) are backlog.
-    #[test]
-    fn the_backlog_counts_only_cards_a_citizen_can_pull() {
-        use super::{pullable_backlog, RoundCardSnapshot};
-        fn with_cards(mut r: RoundSnapshot, driver: &str, unstarted: usize) -> RoundSnapshot {
-            r.driver = driver.into();
-            r.cards = (0..unstarted)
-                .map(|_| RoundCardSnapshot {
-                    state: "unstarted".into(),
-                    ..Default::default()
-                })
-                .collect();
-            r
-        }
-        let rounds = vec![
-            with_cards(snap("paused", None), "citizen", 100),
-            with_cards(snap("working", None), "detached_solve", 8),
-            with_cards(snap("working", Some(30)), "citizen", 3),
-        ];
-        assert_eq!(pullable_backlog(&rounds), 3, "paused and detached cards are not a citizen's backlog");
-        assert_eq!(pullable_backlog(&[]), 0);
-    }
-
-    #[test]
-    fn stale_working_round_does_not_block_the_autopilot_but_a_fresh_one_does() {
-        // No rounds → clear to dispatch.
-        assert!(no_healthy_working_round(&[]));
-        // A round wedged past the abandon window → clear (the 18h-stall bug).
-        assert!(no_healthy_working_round(&[snap(
-            "working",
-            Some(STALE_ROUND_ABANDON_SECS + 60)
-        )]));
-        // A round with a fresh act → BLOCKS (never dispatch over live work).
-        assert!(!no_healthy_working_round(&[snap("working", Some(30))]));
-        // Mixed: one fresh among stale still blocks.
-        assert!(!no_healthy_working_round(&[
-            snap("working", Some(STALE_ROUND_ABANDON_SECS + 60)),
-            snap("working", Some(30)),
-        ]));
-        // Unstarted (idle None) is not "healthy grinding" → does not block.
-        assert!(no_healthy_working_round(&[snap("working", None)]));
     }
 
     // what this catches: the round advancing only by TIMEOUT, and the loop the
