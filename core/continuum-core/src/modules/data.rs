@@ -25,7 +25,6 @@ use crate::{log_error, log_info};
 use async_trait::async_trait;
 use chrono;
 use dashmap::DashMap;
-use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::any::Any;
@@ -110,7 +109,10 @@ fn require_public_collection(collection: &str) -> Result<(), String> {
 // Vector Search Types and Cache
 // ============================================================================
 
+mod adapters;
+mod mutations;
 mod vector_corpus;
+mod vector_search;
 use vector_corpus::CachedVector;
 
 // ============================================================================
@@ -159,7 +161,7 @@ pub struct DataState {
     adapters: DashMap<String, Arc<dyn StorageAdapter>>,
     /// Mutex only used during adapter initialization (one-time setup)
     init_lock: Mutex<()>,
-    /// Each handle/collection owns a detachable, fallibly initialized corpus cell.
+    /// Each resolved backend/collection owns a detachable corpus cell.
     vector_cache: crate::runtime::shared_compute::SharedCompute,
     /// Paginated query state: queryId -> per-cursor mutex.
     ///
@@ -410,75 +412,7 @@ impl DataState {
         ))
     }
 
-    /// Get or create adapter for the given caller handle.
-    ///
-    /// Two-step resolution:
-    ///   1. `resolve_handle(handle)` → opaque backend connection string
-    ///   2. Route connection string to concrete adapter (Postgres / SQLite /
-    ///      future). Adapters are cached keyed by connection string so two
-    ///      handles resolving to the same backend share one pool.
-    pub(crate) async fn get_adapter(
-        &self,
-        handle: &str,
-    ) -> Result<Arc<dyn StorageAdapter>, String> {
-        let connection_string = self.resolve_handle(handle)?;
 
-        // Check cache (keyed by resolved connection string, not by handle —
-        // different handles can point to the same backend).
-        if let Some(adapter) = self.adapters.get(&connection_string) {
-            return Ok(adapter.clone());
-        }
-
-        let _guard = self.init_lock.lock().await;
-
-        if let Some(adapter) = self.adapters.get(&connection_string) {
-            return Ok(adapter.clone());
-        }
-
-        // Scale pool size based on role. Main DB (full pool) vs per-persona
-        // (small pool). Detection is post-resolution, on the connection
-        // string, since that's where the backend shape is visible.
-        let is_main_db = connection_string.contains("database/main.db")
-            || connection_string.contains("database\\main.db")
-            || connection_string.starts_with("postgres://")
-            || connection_string.starts_with("postgresql://");
-        let max_connections = if is_main_db { 20 } else { 4 };
-
-        let config = AdapterConfig {
-            connection_string: connection_string.clone(),
-            namespace: None,
-            timeout_ms: 30_000,
-            max_connections,
-        };
-
-        let adapter: Arc<dyn StorageAdapter> = if connection_string.starts_with("postgres://")
-            || connection_string.starts_with("postgresql://")
-        {
-            log_info!(
-                "data",
-                "get_adapter",
-                "Creating PostgresAdapter for handle='{}' (resolved)",
-                handle
-            );
-            let mut pg = PostgresAdapter::new();
-            pg.initialize(config).await?;
-            Arc::new(pg)
-        } else {
-            log_info!(
-                "data",
-                "get_adapter",
-                "Creating SqliteAdapter for handle='{}' → {}",
-                handle,
-                connection_string
-            );
-            let mut sqlite = SqliteAdapter::new();
-            sqlite.initialize(config).await?;
-            Arc::new(sqlite)
-        };
-
-        self.adapters.insert(connection_string, adapter.clone());
-        Ok(adapter)
-    }
 }
 
 /// Phase 1 typed-IPC: deserialize raw IPC params into the typed struct
@@ -837,47 +771,6 @@ impl DataState {
         }
     }
 
-    /// Phase 1 typed-IPC scaffold: takes already-deserialized `CreateParams`.
-    /// Dispatch (handle_command) does the parse; handler body is pure logic.
-    /// Follow this shape for QW#3's other hot-handler conversions.
-    /// Create a record (single source for the typed `data/create` command).
-    /// `handle` names the storage; the persona-facing command defaults it to
-    /// "main". A missing `id` is minted. Publishes `<collection>:created` on
-    /// success. The body is unchanged from the legacy `handle_create` arm.
-    pub(crate) async fn create_record(
-        &self,
-        handle: &str,
-        collection: String,
-        id: Option<UUID>,
-        data: Value,
-    ) -> Result<StorageResult<DataRecord>, String> {
-        require_public_collection(&collection)?;
-        let start = std::time::Instant::now();
-
-        require_record_fields(&data)?;
-        let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let record = DataRecord {
-            id: id.clone(),
-            collection: collection.clone(),
-            data,
-            metadata: RecordMetadata::default(),
-        };
-
-        let adapter = self.get_adapter(handle).await?;
-        let result = adapter.create(record).await;
-        self.log_slow_query("create", &collection, start.elapsed().as_millis());
-
-        if result.success {
-            self.publish_event(
-                &collection,
-                "created",
-                json!({ "id": id, "collection": collection }),
-            );
-        }
-
-        Ok(result)
-    }
-
     /// Read a record by id (single source for the typed `data/read` command).
     pub(crate) async fn read_record(
         &self,
@@ -890,57 +783,6 @@ impl DataState {
         let adapter = self.get_adapter(handle).await?;
         let result = adapter.read(collection, id).await;
         self.log_slow_query("read", collection, start.elapsed().as_millis());
-        Ok(result)
-    }
-
-    /// Update a record by id (single source for the typed `data/update` command).
-    /// Publishes `<collection>:updated` on success.
-    pub(crate) async fn update_record(
-        &self,
-        handle: &str,
-        collection: String,
-        id: UUID,
-        data: Value,
-        increment_version: bool,
-    ) -> Result<StorageResult<DataRecord>, String> {
-        require_public_collection(&collection)?;
-        require_record_fields(&data)?;
-        let adapter = self.get_adapter(handle).await?;
-        let result = adapter
-            .update(&collection, &id, data, increment_version)
-            .await;
-
-        if result.success {
-            self.publish_event(
-                &collection,
-                "updated",
-                json!({ "id": id, "collection": collection }),
-            );
-        }
-
-        Ok(result)
-    }
-
-    /// Delete a record by id (single source for the typed `data/delete` command).
-    /// Publishes `<collection>:deleted` on success.
-    pub(crate) async fn delete_record(
-        &self,
-        handle: &str,
-        collection: String,
-        id: UUID,
-    ) -> Result<StorageResult<bool>, String> {
-        require_public_collection(&collection)?;
-        let adapter = self.get_adapter(handle).await?;
-        let result = adapter.delete(&collection, &id).await;
-
-        if result.success {
-            self.publish_event(
-                &collection,
-                "deleted",
-                json!({ "id": id, "collection": collection }),
-            );
-        }
-
         Ok(result)
     }
 
@@ -1172,39 +1014,6 @@ impl DataState {
         Ok(result)
     }
 
-    /// Apply a batch of create/update/delete operations atomically. Drives
-    /// `data/batch`.
-    pub(crate) async fn batch_operations(
-        &self,
-        handle: &str,
-        operations: Vec<BatchOperation>,
-    ) -> Result<StorageResult<Vec<Value>>, String> {
-        for operation in &operations {
-            require_public_collection(&operation.collection)?;
-            if let Some(data) = &operation.data {
-                require_record_fields(data)?;
-            }
-        }
-        let op_count = operations.len();
-
-        let adapter = self.get_adapter(handle).await?;
-        let result = adapter.batch(operations).await;
-
-        // Publish batch event on success
-        if result.success {
-            self.publish_event(
-                "batch",
-                "completed",
-                json!({
-                    "operationCount": op_count,
-                    "successCount": result.data.as_ref().map(|d| d.len()).unwrap_or(0)
-                }),
-            );
-        }
-
-        Ok(result)
-    }
-
     /// Phase 2 Step 3: ensure_schema pivot through resolve().
     /// Typed dispatch via deserialize_params! macro (Phase 1 primitive, m5).
     /// Schema content sourced from entity_schemas.json (build-time codegen
@@ -1269,27 +1078,6 @@ impl DataState {
         Ok(adapter.collection_stats(collection).await)
     }
 
-    /// Delete every record in one collection (keeps the schema). Drives
-    /// `data/truncate`.
-    pub(crate) async fn truncate_collection(
-        &self,
-        handle: &str,
-        collection: &str,
-    ) -> Result<StorageResult<bool>, String> {
-        require_public_collection(collection)?;
-        let adapter = self.get_adapter(handle).await?;
-        Ok(adapter.truncate(collection).await)
-    }
-
-    /// Wipe every collection in a store. Drives `data/clear-all`.
-    pub(crate) async fn clear_all_collections(
-        &self,
-        handle: &str,
-    ) -> Result<StorageResult<crate::orm::adapter::ClearAllResult>, String> {
-        let adapter = self.get_adapter(handle).await?;
-        Ok(adapter.clear_all().await)
-    }
-
     /// Adapter identity + full capability surface for a store. Drives the typed
     /// `adapter/info` command (which subsumes the old `adapter/capabilities` —
     /// capabilities are now a field on this one result, not a parallel command).
@@ -1305,113 +1093,6 @@ impl DataState {
     // =========================================================================
     // Vector Search (migrated from data-daemon-worker)
     // =========================================================================
-
-    /// Vector similarity search with in-memory caching
-    ///
-    /// OPTIMIZATION: Vectors are cached in memory per (dbPath, collection).
-    /// First search loads from SQLite, subsequent searches are instant.
-    ///
-    /// Flow:
-    /// 1. Clone the collection cell under a short map guard.
-    /// 2. Coalesce cold loads; errors are retryable and invalidation detaches old loads.
-    /// 3. Parallel rayon search against cached vectors
-    ///
-    /// Cosine-similarity nearest-neighbour search over a collection's embeddings.
-    /// Loads (and caches) the collection's vectors, scores them against the query
-    /// vector in parallel, and returns the top-`k` hits above `threshold`.
-    pub(crate) async fn vector_search(
-        &self,
-        handle: &str,
-        collection: &str,
-        query_vector: Vec<f64>,
-        k: usize,
-        threshold: f64,
-        include_data: bool,
-    ) -> Result<VectorSearchResults, String> {
-        require_public_collection(collection)?;
-        use std::time::Instant;
-        let search_start = Instant::now();
-
-        let corpus = self.vector_corpus(handle, collection).await?;
-
-        if corpus.is_empty() {
-            return Ok(VectorSearchResults {
-                results: Vec::new(),
-                count: 0,
-                corpus_size: 0,
-            });
-        }
-
-        let corpus_size = corpus.len();
-
-        // Step 2: Parallel cosine similarity with rayon
-        let query_vec = &query_vector;
-
-        let mut scored: Vec<(String, f64)> = corpus
-            .par_iter()
-            .filter_map(|cv| {
-                let score = Self::cosine_similarity(query_vec, &cv.embedding);
-                if score >= threshold {
-                    Some((cv.id.clone(), score))
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        // Sort by score descending
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-        let top_k: Vec<(String, f64)> = scored.into_iter().take(k).collect();
-        let count = top_k.len();
-
-        // Build results
-        let results: Vec<VectorHit> = if include_data {
-            // Fetch full records for top-k (need another query)
-            let adapter = self.get_adapter(handle).await?;
-            let mut full_results = Vec::new();
-
-            for (id, score) in &top_k {
-                let result = adapter.read(collection, id).await;
-                if result.success {
-                    if let Some(record) = result.data {
-                        full_results.push(VectorHit {
-                            id: id.clone(),
-                            score: *score,
-                            distance: 1.0 - score,
-                            data: Some(record.data),
-                        });
-                    }
-                }
-            }
-            full_results
-        } else {
-            top_k
-                .into_iter()
-                .map(|(id, score)| VectorHit {
-                    id,
-                    score,
-                    distance: 1.0 - score,
-                    data: None,
-                })
-                .collect()
-        };
-
-        log_info!(
-            "data",
-            "vector/search",
-            "Complete: {} results from {} vectors in {:?}",
-            count,
-            corpus_size,
-            search_start.elapsed()
-        );
-
-        Ok(VectorSearchResults {
-            results,
-            count,
-            corpus_size,
-        })
-    }
 
     /// Parse embedding from record data (supports BLOB and JSON array)
     fn parse_embedding(value: &Value) -> Vec<f64> {
@@ -1488,7 +1169,7 @@ impl DataState {
         use std::time::Instant;
         let start = Instant::now();
 
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
         // Update the record's embedding field
         let update_data = json!({ "embedding": embedding });
@@ -1496,7 +1177,7 @@ impl DataState {
         let result = adapter.update(collection, &id, update_data, false).await;
 
         // Invalidate vector cache for this collection since we modified an embedding
-        self.vector_cache.invalidate(handle, collection);
+        self.vector_cache.invalidate(&scope, collection);
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
@@ -1521,7 +1202,7 @@ impl DataState {
         use std::time::Instant;
         let start = Instant::now();
 
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
         // Get total record count
         let total_query = StorageQuery {
@@ -1558,7 +1239,7 @@ impl DataState {
         }
 
         // Check cache status
-        let cached_count = self.vector_cache.get::<Vec<CachedVector>>(handle, collection)
+        let cached_count = self.vector_cache.get::<Vec<CachedVector>>(&scope, collection)
             .map_or(0, |vectors| vectors.len());
 
         let total_ms = start.elapsed().as_millis();
@@ -1591,7 +1272,8 @@ impl DataState {
         collection: &str,
     ) -> Result<VectorCacheInvalidation, String> {
         require_public_collection(collection)?;
-        let removed = self.vector_cache.invalidate(handle, collection);
+        let scope = self.resolve_handle(handle)?;
+        let removed = self.vector_cache.invalidate(&scope, collection);
 
         log_info!(
             "data",
@@ -1652,7 +1334,7 @@ impl DataState {
             );
         }
 
-        let adapter = self.get_adapter(handle).await?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
         // Query all records from collection
         let query = StorageQuery {
@@ -1748,7 +1430,7 @@ impl DataState {
         }
 
         // Invalidate vector cache since we modified embeddings
-        self.vector_cache.invalidate(handle, collection);
+        self.vector_cache.invalidate(&scope, collection);
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
@@ -2743,287 +2425,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_vector_index_and_stats() {
-        let module = DataModule::new();
-        let (_tmp, db_path) = test_db_path("vector_index");
-
-        // Create schema with embedding field
-        let schema = CollectionSchema {
-            collection: "test_vectors".to_string(),
-            fields: vec![
-                crate::orm::types::SchemaField {
-                    name: "content".to_string(),
-                    field_type: crate::orm::types::FieldType::String,
-                    indexed: false,
-                    unique: false,
-                    nullable: true,
-                    max_length: None,
-                    foreign_key: None,
-                },
-                crate::orm::types::SchemaField {
-                    name: "embedding".to_string(),
-                    field_type: crate::orm::types::FieldType::Json,
-                    indexed: false,
-                    unique: false,
-                    nullable: true,
-                    max_length: None,
-                    foreign_key: None,
-                },
-            ],
-            indexes: vec![],
-        };
-
-        // Tests bypass the IPC surface (which now requires a REGISTERED
-        // entity collection per Phase 2 Step 3) — call the adapter directly
-        // with a synthetic test CollectionSchema.
-        let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
-
-        // Create a record
-        let create_result = create_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_vectors",
-                "data": { "content": "Hello world" }
-            }),
-        )
-        .await;
-
-        assert!(
-            create_result.is_ok(),
-            "create_result failed: {:?}",
-            create_result
-        );
-        let record_id = if let Ok(CommandResult::Json(result)) = &create_result {
-            result["data"]["id"].as_str().unwrap().to_string()
-        } else {
-            panic!("Create failed");
-        };
-
-        // Index a vector for this record
-        let test_embedding: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
-        let index_result = index_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_vectors",
-                "id": record_id,
-                "embedding": test_embedding
-            }),
-        )
-        .await;
-
-        assert!(index_result.is_ok());
-        if let Ok(CommandResult::Json(result)) = &index_result {
-            assert!(result["success"].as_bool().unwrap_or(false));
-        }
-
-        // Get vector stats — the typed VectorStats serializes at top level (no
-        // `data` envelope), the new contract the `vector/stats` command returns.
-        let stats_result = stats_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_vectors"
-            }),
-        )
-        .await;
-
-        assert!(stats_result.is_ok());
-        if let Ok(CommandResult::Json(stats)) = stats_result {
-            assert_eq!(stats["collection"], "test_vectors");
-            assert_eq!(stats["totalRecords"], 1);
-            assert_eq!(stats["recordsWithVectors"], 1);
-            assert_eq!(stats["vectorDimensions"], 384);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_vector_search_basic() {
-        let module = DataModule::new();
-        let (_tmp, db_path) = test_db_path("vector_search");
-
-        // Create schema
-        let schema = CollectionSchema {
-            collection: "test_search".to_string(),
-            fields: vec![
-                crate::orm::types::SchemaField {
-                    name: "content".to_string(),
-                    field_type: crate::orm::types::FieldType::String,
-                    indexed: false,
-                    unique: false,
-                    nullable: true,
-                    max_length: None,
-                    foreign_key: None,
-                },
-                crate::orm::types::SchemaField {
-                    name: "embedding".to_string(),
-                    field_type: crate::orm::types::FieldType::Json,
-                    indexed: false,
-                    unique: false,
-                    nullable: true,
-                    max_length: None,
-                    foreign_key: None,
-                },
-            ],
-            indexes: vec![],
-        };
-
-        // Tests bypass the IPC surface (which now requires a REGISTERED
-        // entity collection per Phase 2 Step 3) — call the adapter directly
-        // with a synthetic test CollectionSchema.
-        let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
-
-        // Create records with embeddings
-        let embeddings: Vec<Vec<f64>> = vec![
-            (0..384).map(|i| (i as f64) * 0.001).collect(),
-            (0..384).map(|i| (i as f64) * 0.002).collect(),
-            (0..384).map(|i| (i as f64) * 0.003).collect(),
-        ];
-
-        for (idx, emb) in embeddings.iter().enumerate() {
-            let _ = create_via_state(
-                &module,
-                json!({
-                    "dbPath": &db_path,
-                    "collection": "test_search",
-                    "data": {
-                        "content": format!("Document {}", idx),
-                        "embedding": emb
-                    }
-                }),
-            )
-            .await;
-        }
-
-        // Search for similar vectors
-        let query_vector: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
-        let search_result = search_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_search",
-                "queryVector": query_vector,
-                "k": 3,
-                "threshold": 0.0,
-                "includeData": true
-            }),
-        )
-        .await;
-
-        assert!(search_result.is_ok());
-        if let Ok(CommandResult::Json(result)) = search_result {
-            let results = result["results"].as_array().unwrap();
-            assert_eq!(results.len(), 3);
-            // First result should be most similar (score close to 1.0)
-            let first_score = results[0]["score"].as_f64().unwrap();
-            assert!(
-                first_score > 0.9,
-                "Expected high similarity, got {}",
-                first_score
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_vector_cache_invalidation() {
-        let module = DataModule::new();
-        let (_tmp, db_path) = test_db_path("vector_cache");
-
-        // Create schema
-        let schema = CollectionSchema {
-            collection: "test_cache".to_string(),
-            fields: vec![crate::orm::types::SchemaField {
-                name: "embedding".to_string(),
-                field_type: crate::orm::types::FieldType::Json,
-                indexed: false,
-                unique: false,
-                nullable: true,
-                max_length: None,
-                foreign_key: None,
-            }],
-            indexes: vec![],
-        };
-
-        // Tests bypass the IPC surface (which now requires a REGISTERED
-        // entity collection per Phase 2 Step 3) — call the adapter directly
-        // with a synthetic test CollectionSchema.
-        let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
-
-        // Create a record with embedding
-        let _ = create_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_cache",
-                "data": {
-                    "embedding": vec![1.0; 384]
-                }
-            }),
-        )
-        .await;
-
-        // First search populates cache
-        let query: Vec<f64> = vec![1.0; 384];
-        let _ = search_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_cache",
-                "queryVector": query,
-                "k": 1
-            }),
-        )
-        .await;
-
-        // Verify cache has vectors via stats (top-level VectorStats, new contract)
-        let stats_result = stats_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_cache"
-            }),
-        )
-        .await;
-
-        if let Ok(CommandResult::Json(stats)) = &stats_result {
-            assert!(stats["cachedVectors"].as_u64().unwrap() > 0);
-        }
-
-        // Invalidate cache — VectorCacheInvalidation carries `cacheInvalidated`
-        // (and the collection), the typed contract `vector/invalidate-cache` returns.
-        let invalidate_result = invalidate_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_cache"
-            }),
-        )
-        .await;
-
-        assert!(invalidate_result.is_ok());
-        if let Ok(CommandResult::Json(result)) = invalidate_result {
-            assert!(result["cacheInvalidated"].as_bool().unwrap_or(false));
-        }
-
-        // Verify cache is empty
-        let stats_after = stats_via_state(
-            &module,
-            json!({
-                "dbPath": &db_path,
-                "collection": "test_cache"
-            }),
-        )
-        .await;
-
-        if let Ok(CommandResult::Json(stats)) = stats_after {
-            assert_eq!(stats["cachedVectors"].as_u64().unwrap(), 0);
-        }
-    }
+    mod vector;
 
     #[tokio::test]
     async fn test_paginated_query() {

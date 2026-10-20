@@ -13,9 +13,10 @@ impl DataState {
         handle: &str,
         collection: &str,
     ) -> Result<Arc<Vec<CachedVector>>, String> {
+        let scope = self.resolve_handle(handle)?;
         self.vector_cache
-            .get_or_try_compute(handle, collection, async {
-                let adapter = self.get_adapter(handle).await?;
+            .get_or_try_compute(&scope, collection, async {
+                let adapter = self.adapter_for_backend(handle, scope.clone()).await?;
                 let result = adapter
                     .query(StorageQuery {
                         collection: collection.to_owned(),
