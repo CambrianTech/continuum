@@ -10,8 +10,7 @@
 //! the old machine. Three seams, plain git, no bundles, no new transport:
 //!
 //! 1. [`sync_after_act`] — at the end of every turn bound to a card claim's hands
-//!    (`persona_workspace::end_card_turn`, or `end_acting_context` for a fork that a card
-//!    rooted): a work-in-progress commit of whatever the act left, then
+//!    (`persona_workspace::end_card_turn`): a work-in-progress commit of whatever the act left, then
 //!    `git push -u origin <branch>`. The commit is made with plumbing
 //!    (`write-tree` / `commit-tree` / `update-ref`) so an autosave can never run the
 //!    repo's hooks — hooks belong to the reviewed commit she makes with `code/git/commit`.

@@ -628,13 +628,7 @@ pub(super) fn append_progress_ledger(
         return;
     }
     let path = dir.join(format!("{}.jsonl", result.persona_id));
-    // A cancelled run's terminal row says so — resume reads it as PAUSED, never done.
-    let cancelled = result
-        .run_id
-        .as_deref()
-        .is_some_and(eval_run_cancelled);
     let row = serde_json::json!({
-        "cancelled": cancelled,
         "capturedAtMs": EpochMs::now().millis(),
         "personaId": result.persona_id,
         "evalSet": eval_set,

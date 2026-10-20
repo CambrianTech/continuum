@@ -379,8 +379,6 @@ use super::*;
             let reacquired = crate::code::hands::HandsContext::for_claim(persona, card, Uuid::new_v4());
             assert_ne!(reacquired, context, "a re-acquired claim is new hands, never the old one's");
 
-            assert!(end_acting_context(&live).await.is_err(), "her default hands can't be ended");
-
             // A no-setup gym still needs bound hands. Previously its claim staged
             // Ordinary and the resolver searched only SWE checkouts, so valid
             // code/write and code/shell calls were refused as unrooted.

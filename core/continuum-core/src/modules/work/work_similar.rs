@@ -491,33 +491,14 @@ impl ServiceModule for WorkModule {
             Arc::new(WorkNote {
                 registry: self.registry.clone(),
             }),
-            // benchmark/dispatch lives in commands/benchmark.rs (benchmark
-            // domain) but is CONSTRUCTED here because it writes the board and
-            // therefore needs this module's airc registry — the same reason
-            // every work/* verb above does. Registering it from a module that
-            // holds the dependency is what keeps it OUT of the
-            // registered-but-unroutable class (#344 audit / #362).
-            Arc::new(crate::commands::benchmark::BenchmarkDispatch {
-                registry: self.registry.clone(),
-                executor_slot: self.executor_slot.clone(),
-            }),
-            // benchmark/pause + resume act on round state + fire the driver's
-            // dispatch — registered here beside dispatch for the same
-            // dep-ownership reason.
-            Arc::new(crate::commands::benchmark_pause::BenchmarkPause),
-            Arc::new(crate::commands::benchmark_pause::BenchmarkResume),
-            // The recipe-facing benchmark verbs (S4): import is pure, the two round-*
-            // verbs are the temporary tracker seam. Registered here beside dispatch so
-            // they are routable from the same module that owns the board.
+            // benchmark/import: task + oracle only, projected into card rows (no side
+            // effects). Registered here beside the work/* verbs whose board the cards land on.
             Arc::new(crate::commands::benchmark_import::BenchmarkImport),
-            Arc::new(crate::commands::benchmark_import::BenchmarkRoundOpen),
-            Arc::new(crate::commands::benchmark_import::BenchmarkRoundTrack),
             // coursework/import: the coursework/round recipe's card source (ONE-RESIDENT §10.4),
             // the same family as benchmark/import and routed from the same module.
             Arc::new(crate::commands::benchmark_import::CourseworkImport),
-            // persona/roster reads the SAME live registry benchmark/dispatch resolves its
-            // assignees against — constructed here for the same dep-ownership reason (#396
-            // live-roster verb; the observability side of "dispatch targets the live roster").
+            // persona/roster reads the live persona registry — constructed here for the
+            // same dep-ownership reason (#396 live-roster verb).
             Arc::new(crate::commands::persona_roster::PersonaRoster {
                 registry: self.registry.clone(),
             }),

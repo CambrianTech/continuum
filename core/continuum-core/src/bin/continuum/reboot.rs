@@ -249,27 +249,7 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
                 .join(",")
         ).into());
     }
-    // Benchmark guard — the same lease, one level up. A detached `benchmark/swe-solve` is a
-    // tokio task inside the core, so a swap kills it with no child process to notice and no
-    // partial result: minutes of a persona's drive, gone. Found the honest way the day it
-    // shipped — two reboots silently killed a run and its ledger simply never appeared.
-    let benches = continuum_core::cognition::swe_bench::in_flight_solve_runs();
-    if !benches.is_empty() && !force {
-        return Err(format!(
-            "benchmark run(s) in flight ({}) — a reboot kills them mid-drive. Stop them \
-             cleanly first: `continuum benchmark/round-stop --run_id <id>` cancels at the \
-             next task boundary and keeps every streamed grade (benchmark/pause is a HOLD \
-             and leaves them running). Or wait for them, or rerun with `continuum reboot \
-             --force` to take the restart-and-resume path (the boot resume re-fires each \
-             killed solve once serving + citizens are back).",
-            benches
-                .iter()
-                .map(|(run, inst)| format!("{run} on {inst}"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ).into());
-    }
-    // Eval-run guard — the third lease, same shape. cognition/eval runs had NO
+    // Eval-run guard — the second lease, same shape. cognition/eval runs had NO
     // on-disk in-flight signal until 2026-08-23 (the marker in each eval world),
     // so this guard named zero runs while a MirrorCode battery was mid-task and
     // a reboot killed it unasked. pid-checked here: a marker whose core died is
@@ -291,13 +271,6 @@ pub(super) async fn reboot(options: RebootOptions) -> Result<(), PublishedCoreEr
             "⚠ --force: rebooting over {} live eval run(s) — they die here; their worlds are \
              swept at the next provision",
             evals.len()
-        );
-    }
-    if !benches.is_empty() {
-        println!(
-            "⚠ --force: rebooting over {} live benchmark run(s) — they die here and the \
-             ledger will record killed-by-restart at next boot",
-            benches.len()
         );
     }
     if !trainers.is_empty() {

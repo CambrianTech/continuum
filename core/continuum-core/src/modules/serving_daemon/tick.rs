@@ -50,45 +50,6 @@ impl ServiceModule for ServingDaemonModule {
                 "boot lane-registry sweep",
             );
         }
-        // Same reclaim, one level up: a detached benchmark run is a tokio task INSIDE the core,
-        // so a restart kills it with no child process to find and no error to report. Any run
-        // still marked `running` belonged to the core we just replaced — journal it as
-        // killed-by-restart so a poller sees a cause instead of waiting forever on a file that
-        // will never appear (#137's train-job shape, applied to benchmarks).
-        // NAME THE INSTANCE, not just the run. A reap that reports only an opaque run id is
-        // unactionable: recovering the round means hand-opening ledger files to learn WHICH
-        // task needs re-measuring. Measured 2026-08-21 — 8 of 20 runs on this box carried
-        // `killed by a core restart`, 40% of every run ever attempted here, and the ledger
-        // knew each instance the whole time.
-        //
-        // THIS STILL DOES NOT RE-DISPATCH, and says so rather than implying it did. The
-        // instance goes back on the board through `benchmark/dispatch` — the ONE adapter into
-        // kanban — never from here: this is the SERVING daemon, and a serving daemon that
-        // posts work cards is the parallel-runner shape
-        // (docs/architecture/BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md). Auto-re-post belongs on
-        // the benchmark side, consuming this report.
-        for (run_id, instance) in crate::cognition::swe_bench::reap_orphaned_solve_runs() {
-            continuum_base::probe!(
-                target: "continuum_core::modules::serving_daemon", class = "benchmark.swe.orphan_reaped",
-                run_id = run_id.as_str(),
-                instance = instance.as_str(),
-                needs_redispatch = true,
-                "benchmark run orphaned by a core restart — {instance} was NOT measured; \
-                 nothing re-fires it at boot; it is hers to pull again",
-            );
-        }
-        // The ROUND half is now CONTINUITY (plan A5): a Working round SURVIVES the
-        // restart — residents pull from it as they choose
-        // (BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER; never this daemon re-fires). Only TTL-expired abandoned rounds are swept here.
-        for (benchmark, remaining) in crate::cognition::bench_round::reap_orphaned_rounds() {
-            continuum_base::probe!(
-                target: "continuum_core::modules::serving_daemon", class = "bench.round.expired",
-                benchmark = benchmark.as_str(),
-                remaining = remaining,
-                "benchmark round exceeded its TTL with {remaining} card(s) unworked — \
-                 expired, not resumed; a fresh benchmark/dispatch re-measures it",
-            );
-        }
         // Plan once at boot so the decision is published before the first tick,
         // then kick the first reconcile so the server comes up promptly rather
         // than waiting a full tick interval. The reconcile runs detached.

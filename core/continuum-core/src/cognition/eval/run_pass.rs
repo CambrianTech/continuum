@@ -38,19 +38,6 @@ pub(super) async fn run_pass(
     cycle.reset_working_memory();
     isolation.rewind();
     for t in tasks {
-        // Cancellation gate (task-boundary granularity): a cancelled run stops
-        // HERE — grades already streamed stay; the terminal row marks the pause.
-        if let Some(rid) = live_eval_run_id() {
-            if eval_run_cancelled(&rid) {
-                continuum_base::probe!(
-                    class = "eval.run.cancelled",
-                    run_id = %rid,
-                    graded = results.len() as u64,
-                    "run cancelled at task boundary — graded work kept, resume continues here"
-                );
-                break;
-            }
-        }
         // Task-start receipt: the health verdicts downstream (session gates, the
         // bench view) judge a running task against the round's OWN completed-task
         // latencies — which needs an exact start signal, not an inference from
