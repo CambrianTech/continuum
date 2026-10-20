@@ -31,7 +31,6 @@
 //!   the decision and its inputs whether or not a work turn follows. A gate whose
 //!   refusal is invisible is a gate nobody can debug.
 
-use continuum_base::time::EpochMs;
 use crate::persona::service_loop::{PersonaConversation, LIVE_MAX_ACTS};
 use crate::persona::supervisor::HostedPersona;
 
@@ -158,18 +157,6 @@ pub(crate) async fn ask_the_act_question(
             );
             {
                 if !held.is_empty() {
-                    // Stamp held-work freshness for EACH card she is about to work,
-                    // so the round verdict + the standing autopilot can see Citizen
-                    // progress (which leaves no detached-solve ledger entry). Without
-                    // this the round reads "unstarted" while she works and the
-                    // autopilot piles up duplicate rounds (A / #the-9-1-night-audit).
-                    let worked_at = EpochMs::now().millis();
-                    for c in &held {
-                        crate::cognition::bench_round::record_card_worked(
-                            c.card_id.as_uuid(),
-                            worked_at,
-                        );
-                    }
                     // Her own newest thoughts on this work lead the turn (see
                     // `held_work_burst`); paged from the durable store, the
                     // same page the catch-up reads. A failed page is a missing

@@ -110,7 +110,7 @@ use super::*;
         let other_round = Uuid::new_v4();
         let instance = format!("credit-{}", card);
         for (id, target) in [(round, card), (other_round, other_card)] {
-            crate::cognition::bench_round::open_round(id, "coder-write-eval", Default::default());
+            crate::cognition::bench_round::open_round(id, "coder-write-eval");
             crate::cognition::bench_round::add_card(id, target);
             crate::cognition::bench_round::seal_round(id);
         }

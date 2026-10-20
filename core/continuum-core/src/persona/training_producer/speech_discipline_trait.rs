@@ -354,7 +354,7 @@ pub(super) async fn stage_credit<T: Transport>(
         completion,
         lived,
         staged_at_ms: continuum_base::time::EpochMs::now().millis(),
-        coursework_set: crate::cognition::bench_round::coursework_set_of(credit.card_id).map(String::from),
+        coursework_set: credit.task.coursework_set().map(String::from),
         task: Some(credit.task.clone()),
         rejected_at_ms: None,
     };
