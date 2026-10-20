@@ -489,7 +489,7 @@ mod tests {
             crate::ai::types::ResultCustody::Whole { handle: "0123abcd".into() });
         wm.record_receipt("current result");
         let pointer = wm.recent_results_with_pointers().into_iter()
-            .find_map(|(_, pointer)| pointer).expect("the production WM projection emits a pointer");
+            .find_map(|(_, _, pointer)| pointer).expect("the production WM projection emits a pointer");
         diagnostic.messages.push(ChatMessage::text("user", pointer));
         diagnostic.messages.push(serde_json::from_value(serde_json::json!({
             "role":"assistant", "content":[{"type":"tool_use", "id":"native-call", "name":"read_file", "input":{"path":"task.rs"}}]

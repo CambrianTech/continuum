@@ -392,6 +392,10 @@ pub struct ConcernEmission {
     peak_tokens: u32,
 }
 
+/// Which part of the results ring a message is (the collapsed index changes per collapse).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RingPart { Banner, Result(u64), Collapsed }
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct VolatileSnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1641,18 +1645,16 @@ impl WorkingMemory {
     }
 
     pub fn recent_results_messages(&self) -> Vec<String> {
-        self.recent_results_with_pointers().into_iter().map(|(body, _)| body).collect()
+        self.recent_results_with_pointers().into_iter().map(|(_, body, _)| body).collect()
     }
 
     /// Source-owned alternatives for prompt fitting: only a saved result may
     /// collapse to its expansion handle. The live ring and its custody stay intact.
-    pub(crate) fn recent_results_with_pointers(&self) -> Vec<(String, Option<String>)> {
+    pub(crate) fn recent_results_with_pointers(&self) -> Vec<(RingPart, String, Option<String>)> {
         // The active result renders WHOLE as the "Full result of your most recent action"
-        // message; holding it here too would spend its share twice. It joins the ring's
-        // tail when the next act replaces it: an append at the frontier, so the prefix
-        // ahead of it stays byte-stable.
+        // message; holding it here too would spend its share twice. It joins the ring next act.
         // One mind: every result is shown from every workspace, labelled with its own.
-        // The in-flight action is excluded by sequence, never by root: one prefix everywhere.
+        // The in-flight action is excluded by sequence, never by root.
         let active = self.in_flight_action_seq();
         let rr = self.recent_results.lock();
         let scopes = self.result_scopes.lock();
@@ -1667,14 +1669,12 @@ impl WorkingMemory {
         // semantics on the first pop_front).
         let mut out = Vec::with_capacity(rr.len() + 2);
         out.push((
+            RingPart::Banner,
             "Recent results of your own actions (oldest first; #n matches the action ledger):"
                 .to_string(), None,
         ));
-        // Every eligible entry rides as a message of its own: the ring's SIZE is bounded at
-        // receipt by the window share (`collapse_results_over_cap`), never by a count here.
-        // A count fold ("newest 16 as messages, the rest as index lines", 2026-10-16) rotated
-        // the head on EVERY act, which on a KV that cannot shift re-prefilled everything
-        // after it; the chars cap with hysteresis rotates once per burst.
+        // Every eligible entry rides as a message of its own (a prompt view keys each by its
+        // seq); the ring's SIZE is bounded at receipt by the window share, never by a count.
         out.extend(rr.iter().filter(|(seq, ..)| eligible(seq)).map(|(seq, room, tail, operation, handle)| {
             let attribution = ResultAttribution {
                 seq: *seq,
@@ -1684,15 +1684,12 @@ impl WorkingMemory {
             };
             let workspace = workspace_label(scopes.get(seq).map(String::as_str));
             let pointer = handle.as_ref().map(|_| format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"));
-            (format!("[result {attribution}{workspace}] {tail}"), pointer)
+            (RingPart::Result(*seq), format!("[result {attribution}{workspace}] {tail}"), pointer)
         }));
-        // Collapsed-results index LAST — it CHANGES on every eviction, and
-        // message order is MONOTONE IN STABILITY (the KV law this same night
-        // established): the banner + surviving entries ahead of it stay a
-        // byte-stable prefix; only this one small message re-prefills.
+        // The collapsed-results index, which changes on every collapse.
         {
             if !visible_pointers.is_empty() {
-                out.push((format!(
+                out.push((RingPart::Collapsed, format!(
                     "Older results, collapsed to pointers (query to expand):\n{}",
                     visible_pointers.join("\n")
                 ), None));
@@ -1808,19 +1805,10 @@ impl WorkingMemory {
     /// Enforce the recent-results char cap by COLLAPSING oldest entries to queryable
     /// pointers (spill handle when the body is on disk; identity otherwise). Called at every
     /// RECEIPT and at settlement, against a known window only. Hysteresis: nothing moves
-    /// until the share is exceeded, then the oldest collapse down to HALF the share, so the
-    /// prompt head is byte-stable between two bursts (a pop_front per act rotated the head
-    /// and re-prefilled everything after it on a KV that cannot shift, 2026-08-24; a
+    /// until the share is exceeded, then the oldest collapse down to HALF the share, so a
+    /// prompt view sees one new collapsed-index version per burst, not one per act (a
     /// settlement-only cap let a coding turn hold 1.09M chars of results, 2026-10-16). The
-    /// newest result always stays; an unsaved result stays whole.
-    ///
-    /// COLLAPSE IN CHUNKS (2026-09-13, the KV divergence audit): over 55 consecutive
-    /// captured turns, the FIRST block to differ from the previous prompt was the oldest
-    /// surviving `[result #n]` in 28 of them — evicting one entry per settle rotated the
-    /// prompt's head by one entry EVERY turn. Collapsing to HALF the cap in one jump keeps
-    /// the surviving head byte-identical for ~cap/2 chars of new results; the prefix reuse
-    /// those turns get is worth more than the half-cap of oldest tails they briefly forgo
-    /// (the pointers keep them queryable). Same law as `fit_messages`' chunked window start.
+    /// newest result always stays; an unsaved result stays whole; pointers stay queryable.
     fn collapse_results_over_cap(&self) {
         // Against a KNOWN window only, for every caller (receipt, settlement, restore): an
         // unknown budget's results share is the MIN_SERVE_CTX floor (`recent_results_chars`),

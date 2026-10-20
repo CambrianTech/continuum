@@ -37,6 +37,8 @@ use uuid::Uuid;
 use super::deliberation_budget::{est_tokens, turn_message_line_addressed, GUARD_CHARS_PER_TOKEN};
 use super::deliberation_parse::decision_from_response;
 use super::deliberation_prompt;
+use super::epoch_view;
+use continuum_context::epoch::SourceId;
 use super::persona_tools;
 use super::workspace::{Contribution, Decision, Faculty, FacultyId, TurnAttention, TurnVoice, Workspace};
 use crate::ai::adapter::AIProviderAdapter;
@@ -534,8 +536,8 @@ pub struct LlmDeliberationFaculty {
     /// Credited from the engine's own count, the cap grows when reuse works and falls back
     /// to the latency target when it does not.
     cached_prefix_tokens: std::sync::atomic::AtomicUsize,
-    /// This resident's ring results collapsed to pointers (`ring_collapse`).
-    collapsed_results: parking_lot::Mutex<super::ring_collapse::StickyCollapse>,
+    /// Her user-side view, held across acts: it only appends until it turns over.
+    epoch: parking_lot::Mutex<epoch_view::EpochView>,
 }
 
 impl LlmDeliberationFaculty {
@@ -571,7 +573,7 @@ impl LlmDeliberationFaculty {
             decoding: relaxed_decoding(),
             working_set: None,
             cached_prefix_tokens: std::sync::atomic::AtomicUsize::new(0),
-            collapsed_results: parking_lot::Mutex::new(super::ring_collapse::StickyCollapse::default()),
+            epoch: parking_lot::Mutex::new(epoch_view::EpochView::default()),
         }
     }
 
@@ -2564,6 +2566,18 @@ impl LlmDeliberationFaculty {
             (!trailing_framing.is_empty()).then_some(trailing_framing.as_str()),
             visual,
         );
+        // Her body as an epoch: the last act's body, then this act's news. Everything below
+        // (the window's one allocation, the fit) prices what will actually be sent. Rendered
+        // on a copy: only a request the model answered becomes her epoch (`contribute`).
+        let mut epoch = self.epoch.lock().clone();
+        all_messages.grounding_at = epoch.materialize(
+            &mut all_messages.history,
+            &all_messages.body,
+            ws.activity_room_id,
+            &self.persona_name,
+        );
+        // A pointer only substitutes when the view turns over (`epoch.turn_over` supplies them).
+        all_messages.result_pointers.clear();
 
         // Price the untruncated trailing sources separately: messages_unfitted
         // leaves them borrowed until the same plan has reserved their exact units.
@@ -2889,7 +2903,27 @@ impl LlmDeliberationFaculty {
         );
 
         let protocol_error = all_messages.active_protocol_error();
-        let (mut fitted, capacity_error) = match self.fit_messages(all_messages, msg_budget) {
+        // The window's budget is the turnover's only budget trigger: while the epoch fits whole
+        // the fit drops nothing and the prefix only grows; when it does not, the epoch
+        // compacts and the fit's quantized front drop leaves it room to grow again.
+        let fit = if all_messages.tokens() <= msg_budget {
+            self.fit_messages(all_messages, msg_budget)
+        } else {
+            let (len, pointers) = epoch.turn_over(
+                &mut all_messages.history,
+                all_messages.grounding_at,
+                &all_messages.body,
+                &self.persona_name,
+            );
+            all_messages.grounding_at = len;
+            all_messages.result_pointers = pointers;
+            let fit = self.fit_messages(all_messages, msg_budget);
+            if let Ok(f) = &fit {
+                epoch.keep(f.receipt.dropped_messages, f.messages.iter().take(f.grounding_at));
+            }
+            fit
+        };
+        let (mut fitted, capacity_error) = match fit {
             Ok(fitted) => (fitted, None),
             Err(error) => (FittedMessages::default(), Some(error)),
         };
@@ -2974,7 +3008,9 @@ impl LlmDeliberationFaculty {
             grounding
                 .expand_within(after_framing.saturating_sub(Self::messages_cost(&fitted.messages)));
         }
-        let trailing_grounding = grounding.trailing_messages();
+        // Standing pieces are priced after the fit; their news joins the epoch's end. A
+        // refused view is never sent, so it leaves her epoch untouched.
+        let trailing_grounding = epoch.append(&grounding.trailing_blocks());
         fitted.refit.grounding_len = trailing_grounding.len();
         fitted.messages.splice(
             fitted.grounding_at..fitted.grounding_at,
@@ -3068,6 +3104,7 @@ impl LlmDeliberationFaculty {
             protocol_error,
             messages,
             segments,
+            epoch: Some(epoch),
         }
     }
 
@@ -3092,32 +3129,9 @@ impl LlmDeliberationFaculty {
             .collect()
     }
 
-    /// Build the role-attributed conversation thread from the workspace's
-    /// structured turns, fitted to `budget_tokens`. The persona's OWN posts become
-    /// `assistant` messages (her own voice — no name prefix, matching the
-    /// "do NOT prefix your message with your name" instruction); peers' posts become
-    /// `user` messages prefixed `{author}: ` so several speakers stay legible inside
-    /// one merged user turn. Consecutive same-role turns merge into a single message
-    /// (the chat-template shape models expect). Under budget pressure the OLDEST
-    /// turns drop first. This is the payoff of the structured-turns refactor: the
-    /// model sees WHO said WHAT with its own past messages attributed to `assistant`,
-    /// so it neither bleeds identity nor replays the transcript (the echo-loop root
-    /// cause — PERSONA-COGNITION-PIPELINE §7.5).
+    /// The canonical render before her epoch and the fit: what every source offers this act,
+    /// for tests that inspect the sources rather than what is sent.
     #[cfg(test)]
-    fn messages_within(&self, ws: &Workspace, budget_tokens: usize) -> Vec<ChatMessage> {
-        self.fit_messages(self.messages_unfitted(ws, None), budget_tokens)
-            .expect("test workspace must fit its complete current stimulus and action result")
-            .messages
-    }
-
-    /// The conversation as it stands BEFORE any budget is applied — every turn, every
-    /// perception fact, every trailing proprioception block, in final render order.
-    ///
-    /// Split out from the fitting step so a turn's TRUE conversational size is
-    /// knowable. Fitting is lossy by design (newest-first, oldest dropped), and once
-    /// it has run the question "how much did this turn actually want?" is
-    /// unanswerable — which is precisely why the served window had to be sized by a
-    /// constant instead of by demand. [`super::working_set`] measures this.
     fn messages_unfitted(&self, ws: &Workspace, trailing_framing: Option<&str>) -> PromptMessages {
         self.messages_with_visual_feedback(ws, trailing_framing, None)
     }
@@ -3171,7 +3185,7 @@ impl LlmDeliberationFaculty {
         // failed" can be near-identical, and a later identical statement can
         // report another change of state. Preserve that history for the citizen;
         // the existing fitter bounds it and perception facts describe repetition.
-        let mut groups: Vec<(&'static str, Vec<String>)> = Vec::new();
+        let mut groups: Vec<(&'static str, Vec<(SourceId, String)>)> = Vec::new();
         // Preserve the newest external SPEECH as activity context, even when an
         // own receipt or perception fact follows it. This says what was heard,
         // never what the citizen must obey. Keep the typed boundary before
@@ -3207,7 +3221,8 @@ impl LlmDeliberationFaculty {
         // (7,441 tokens) the turn a `[pattern]` notice landed (the M5, 2026-10-18 16:16Z).
         // They render with the facts, after every append-only block, before the ask.
         let mut perceived: Vec<String> = Vec::new();
-        for (index, turn) in ws.turns.iter().enumerate() {
+        let turn_sources = epoch_view::turn_sources(&ws.turns);
+        for ((index, turn), source) in ws.turns.iter().enumerate().zip(turn_sources) {
             let role = if turn.is_self { "assistant" } else { "user" };
             let line = turn_message_line_addressed(turn, &participants, &self.persona_name);
             if turn.voice == TurnVoice::Perception && Some(index) != stimulus_index {
@@ -3224,15 +3239,16 @@ impl LlmDeliberationFaculty {
                 continue;
             }
             match groups.last_mut() {
-                Some((r, lines)) if *r == role && !after_stimulus => lines.push(line),
-                _ => groups.push((role, vec![line])),
+                Some((r, lines)) if *r == role && !after_stimulus => lines.push((source, line)),
+                _ => groups.push((role, vec![(source, line)])),
             }
             after_stimulus = false;
         }
-        let mut messages: Vec<ChatMessage> = groups
-            .into_iter()
-            .map(|(role, lines)| ChatMessage::text(role, lines.join("\n")))
-            .collect();
+        // The body: every source that only grows or changes rarely, keyed so her epoch
+        // (`epoch_view`) appends only what is new. Conversation, then the results ring, then
+        // the trailing grounding; facts, the clock and the ask follow it every act.
+        let mut body: Vec<epoch_view::Block> =
+            groups.into_iter().map(|(role, items)| epoch_view::Block::turns(role, items)).collect();
 
         // PERCEPTION FACTS (docs/architecture/PERCEPTION-FACTS.md slice 2b):
         // own-repetition (#134), peer-echo (#152), [context] bounds (#152),
@@ -3280,134 +3296,52 @@ impl LlmDeliberationFaculty {
                 FactPlacement::Notice => notices.push(ChatMessage::text("user", fact.text)),
             }
         }
-        // MESSAGE ORDER IS MONOTONE IN STABILITY (2026-08-23, the byte-diff
-        // verdict). Consecutive-act prompt captures showed the flickering
-        // content — perception facts whose presence/wording changes per act,
-        // trailing grounding — rendering AHEAD of the append-only history
-        // block, so the 20k+ stable mass never extended the KV prefix and
-        // reuse pinned at the system head (~36%). The assembly below is
-        // explicit phases, replacing insert-before-ask arithmetic:
+        // The required tail (ask, pinned newest result) is assembled by the fit. Facts stay
+        // BEFORE the ask (the 2026-07-20 parrot-loop bisect); the pinned result stays nearest
+        // generation (#392); trailing grounding stays out of the system prefix (#205/#2415).
         //
-        //   old turns → history (append-only) → grounding (flickers)
-        //   → facts (flicker) → ASK → pinned newest result
-        //
-        // Every prior lesson is preserved by construction: facts stay BEFORE
-        // the ask and the ask stays after them (the 2026-07-20 parrot-loop
-        // bisect); the pinned result stays nearest generation (#392); trailing
-        // grounding stays out of the system prefix (#205/#2415). The ask is
-        // newest external Speech, retained as a typed stimulus before coalescing
-        // and attached after the churn. A later own receipt or perception cannot
-        // silently turn it into evictable history.
-
-        // TRAILING proprioception (#205): contributions marked [`Contribution::trailing`]
-        // — the working-memory reasoning trail, the FULL most-recent action result,
-        // dispatched background handles — render as the NEWEST user content, after the
-        // conversation AND the perception facts, so the full result sits nearest
-        // generation (most actionable) and every act's growth appends to the very end
-        // of the token stream. They are deliberately absent from the system message
-        // (see `render_assembled_context_within`), which is what keeps the cacheable
-        // system prefix byte-stable across a settle-act instead of re-prefilling the
-        // whole tail. Broadcast insertion order preserved (one trailing contributor
-        // today: the working-memory faculty).
-        // PINNED just-executed result (#392, run-18057-f1). The full result of the act
-        // she just ran is appended DIRECTLY from the shared working-memory buffer as the
-        // newest trailing turn — deliberately NOT routed as a faculty bid. As part of the
-        // working-memory contribution at `WORKING_MEMORY_SALIENCE` it competed in
-        // `arbiter.focus()` top-k and was evicted whole under capacity pressure, so the
-        // persona generated blind to her own grep/read output (the 0-byte SWE-bench patch).
-        // Reading it here puts no attention pass between the hands and the mind.
-        // Native images from this exact active receipt join its required text below.
-        // Text estimates are only a lower bound for these messages: the adapter's
-        // exact image quote admits the finalized body or returns capacity feedback.
-        // Trailing (#205): appended last, KV prefix stays stable. Settlement-gated
-        // by active_action_full so it stops re-prefilling after settlement (#139/#165).
-        // GROUNDING BEFORE THE RING (2026-08-24, wire-diffed on round 706215f4):
-        // with the ring append-only mid-settle (the 8/24 eviction fix), each new
-        // result APPENDED after grounding DISPLACED the byte-identical
-        // workspace-map behind it — four consecutive wire diffs showed the
-        // divergence at exactly that seam, re-prefilling the whole 75% tail on a
-        // model that cannot KV-shift. Reversed from the 8/23 cut deliberately:
-        // that A/B lost because the ring ALSO churned then (per-act eviction),
-        // so either order re-prefilled; with the ring extend-only, stable
-        // grounding ahead of it extends the prefix, and a grounding CHANGE costs
-        // one re-prefill instead of every act paying displacement.
-        // STABILITY-ORDERED TAIL, second wire-diff (2026-08-24 evening): the first
-        // reorder moved ALL trailing contributions ahead of the ring — including the
-        // working-memory TRAIL, which REWRITES itself every act (measured: an 11.5k
-        // interior-state block at msg[1] mutating per tick, prefix dead at 2-4%).
-        // Split by churn class: non-WM grounding (semi-stable) → append-only ring →
-        // the trail (churniest standing block) → facts/ask/pin. One rule, monotone
-        // in stability, same law as the system-side phases.
-        let render_trailing = |messages: &mut Vec<ChatMessage>, wm_trail: bool| {
-            // Canonical wire order (churn class, then name) — the same rule the standing
-            // grounding and the system's stable tier follow, so two trailing sources can
-            // never swap places between acts (`deliberation_prompt::stable_prefix_order`).
-            let mut pieces: Vec<&Contribution> = ws
-                .broadcast
+        // THE BODY IS AN EPOCH (docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md). The
+        // order inside it was flipped four times (2026-08-23, 08-24 twice, 10-18) chasing
+        // byte-stability between re-renders; each order moved the prefix somewhere else. The
+        // epoch appends this act's news after the last act's body instead, so the order here
+        // is only the order of a fresh epoch. Saved results carry their compact pointer for
+        // the fit; the active result is pinned below, not here.
+        if let Some(wm) = &self.working_memory {
+            body.extend(wm.recent_results_with_pointers().into_iter().map(epoch_view::Block::from));
+        }
+        // Trailing proprioception (#205) and trailing grounding: the working-memory trail
+        // last, as the churniest standing block.
+        let trailing = |wm_trail: bool| {
+            ws.broadcast
                 .iter()
                 .filter(|c| c.decision.is_none() && c.trailing && !c.standing_grounding)
-                .filter(|c| {
-                    (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID)
-                        == wm_trail
+                .filter(move |c| {
+                    (c.faculty.as_str() == crate::cognition::working_memory::WM_FACULTY_ID) == wm_trail
                 })
-                .collect();
-            pieces.sort_by(|a, b| {
-                deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str())
-            });
-            for c in pieces {
-                if !c.content.trim().is_empty() {
-                    // Same `[faculty]` banner the system block gives its sections —
-                    // grounding that moved here for KV reuse (volatile-content
-                    // sources, 2026-08-23) must stay as legible as it was in the
-                    // system prefix. One sized allocation, no intermediate format!.
-                    let mut body =
-                        String::with_capacity(c.faculty.as_str().len() + c.content.len() + 4);
-                    body.push('[');
-                    body.push_str(c.faculty.as_str());
-                    body.push_str("]\n");
-                    body.push_str(&c.content);
-                    messages.push(ChatMessage::text("user", body));
-                }
-            }
+                .filter(|c| !c.content.trim().is_empty())
+                .map(|c| (c.faculty.as_str(), c.content.as_str()))
         };
-        // THE RING BEFORE THE GROUNDING (the M5, 2026-10-18): the order below was grounding
-        // → ring, on the premise that grounding is the more stable. Measured, it is not: the
-        // grounding at the head of the messages carries recall (Turn churn) and the kanban
-        // (Claims churn), and every turn's `delib.segment.attribution` broke there — engine
-        // reuse stopped at 8-11.5k tokens of 50-64k-token prompts, re-prefilling the ~30k-token
-        // ring behind it at ~100 tokens/s. The ring is append-only (a new result lands at its
-        // end; collapse is a rare burst under the window), so it leads; the grounding follows
-        // in churn order, and a grounding change now re-prefills only what is behind it.
-        let mut result_pointers = Vec::new();
-        if let Some(wm) = &self.working_memory {
-            // The append-only results ring — its appends land at the growth
-            // frontier of the stable region, displacing nothing.
-            for (block, pointer) in wm.recent_results_with_pointers() {
-                if let Some(pointer) = pointer {
-                    result_pointers.push((messages.len(), ChatMessage::text("user", pointer)));
-                }
-                messages.push(ChatMessage::text("user", block));
-            }
-        }
-        let grounding_at = messages.len();
-        render_trailing(&mut messages, false);
-        render_trailing(&mut messages, true);
-
-        // Facts flicker per act — they render after every append-only block,
-        // immediately before the ask (parrot-fix order preserved).
+        body.extend(epoch_view::contribution_blocks(trailing(false)));
+        body.extend(epoch_view::contribution_blocks(trailing(true)));
+        let result_pointers = body
+            .iter()
+            .enumerate()
+            .filter_map(|(index, block)| block.alternative().map(|p| (index, ChatMessage::text("user", p))))
+            .collect();
+        let grounding_at = body.len();
+        let mut messages: Vec<ChatMessage> = body.iter().map(epoch_view::Block::message).collect();
+        // Facts flicker per act: after the body, immediately before the ask (parrot-fix
+        // order). The volatile framing (the [now] clock, the DIRECTED/SILENCE flip) is the
+        // same class: in the system message it invalidated the KV prefix on nearly every act
+        // (hit_rate 0.0, 2026-09-01).
         for fact in facts {
             messages.push(ChatMessage::text("user", fact));
         }
-        // The volatile framing (clock + own-time/presence flip) — same flicker
-        // class as the facts, so it rides HERE: before the ask (the parrot-fix
-        // order), after everything stable. It lived at the tail of the system
-        // message until 2026-09-01, where its per-act mutation (the [now]
-        // minute tick, DIRECTED↔SILENCE) invalidated the KV prefix behind it
-        // on nearly every act — hit_rate 0.0 with per-resident slots and a
-        // server whose reuse measured perfect the same hour.
         if let Some(framing) = trailing_framing {
             messages.push(ChatMessage::text("user", framing.to_string()));
         }
+        // PINNED just-executed result (#392): read straight from working memory, never a
+        // faculty bid that attention could evict (the 0-byte SWE-bench patch, run-18057-f1).
         // Use the actual received action payload. The old pinned block clipped
         // its head before this fitter clipped its tail: the two cuts could leave
         // only a truncation notice. Oversized output paging belongs to the
@@ -3509,6 +3443,7 @@ impl LlmDeliberationFaculty {
         PromptMessages {
             input_identity: input.finalize().into(),
             history: messages,
+            body,
             result_pointers,
             grounding_tokens: 0,
             grounding_at,
@@ -3730,30 +3665,16 @@ impl LlmDeliberationFaculty {
     /// The window-start advance QUANTUM divisor: when the conversation outgrows
     /// its budget, the front is dropped in chunks of `budget/8` (floored at 512
     /// tokens) rather than message-by-message. See [`Self::fit_messages`].
-    // context-budget-exempt: a stability/latency trade ratio, not a token budget — the actual chunk derives from the live budget at the call
+    // context-budget-exempt: an epoch-headroom ratio, not a token budget — the actual chunk derives from the live budget at the call
     const FRONT_DROP_QUANTUM_DIVISOR: usize = 8;
 
-    /// Fit an already-built conversation to `budget_tokens` — with a
-    /// QUANTIZED, whole-message front drop, because the fit's cut point is the
-    /// byte-stability of the entire conversation prefix.
-    ///
-    /// The old shape walked NEWEST-first, spending the budget backward: correct
-    /// per-act, and a KV catastrophe across acts — every act appends new tokens
-    /// at the tail, so the exact-fit cut point advanced the window START by a
-    /// few messages per act, and the straddling message was tail-trimmed to a
-    /// different byte offset each time. Measured 2026-09-01 (wire-capture
-    /// diffs): consecutive prompts diverging at ~1% depth on exactly this seam,
-    /// re-prefilling the other 99%.
-    ///
-    /// Now the drop is quantized: the minimum front mass that must go is
-    /// rounded UP to a chunk (`budget/8`, ≥512 tokens), whole messages only, so
-    /// the window start stays BYTE-IDENTICAL for ~a chunk's worth of new
-    /// conversation and then advances once, in one jump. The cost is a window
-    /// that runs up to one chunk under-full — a deliberate stability/capacity
-    /// trade, same law as the scratch slot: reuse of a 20-80k prefix is worth
-    /// vastly more than the last few k of oldest history
-    /// ([[collapse-dont-clip-condense-the-past-never-erode-it]] — and when the
-    /// jump does land, it drops whole turns, never a mid-message shear).
+    /// Fit an already-built conversation to `budget_tokens` with a QUANTIZED, whole-message
+    /// front drop. Within an epoch nothing is dropped (`epoch_view`); this drop runs when the
+    /// epoch turns over, and it frees at least one chunk (`budget/8`, ≥512 tokens) past the
+    /// minimum, rounded to chunks: the room the new epoch grows into before it turns over
+    /// again. An exact fit moved the front on every act (measured 2026-09-01 as consecutive
+    /// prompts diverging at ~1% depth on this seam). Whole turns only, never a mid-message shear
+    /// ([[collapse-dont-clip-condense-the-past-never-erode-it]]).
     fn fit_messages(
         &self,
         mut prompt: PromptMessages,
@@ -3779,16 +3700,27 @@ impl LlmDeliberationFaculty {
             });
         }
         let history_budget = budget_tokens - required_tokens;
-        // 82416bb1: before dropping a saved result, price its pointer; custody stays with WM.
-        // Sticky and all at once: `ring_collapse` owns the rule and its receipt.
+        // 82416bb1: during an ongoing concern WM's ring only appends. Before
+        // dropping a result AND its expansion handle, price the source's compact
+        // alternative. No second store or mutation of WM: custody stays with the
+        // existing saved result, and only the fitted view changes. Unsaved results
+        // never supply an alternative. Ordinary eviction still bounds this view.
+        // Collapsing and dropping both leave a quantum free: the room her next epoch grows
+        // into before it turns over again (an exact fit turned over on every act).
+        let quantum = (budget_tokens / Self::FRONT_DROP_QUANTUM_DIVISOR).max(512);
         let mut history_tokens = Self::messages_cost(&prompt.history);
-        prompt.result_pointers = self.collapsed_results.lock().apply(
-            &mut prompt.history,
-            std::mem::take(&mut prompt.result_pointers),
-            &mut history_tokens,
-            history_budget,
-            Self::message_cost,
-        );
+        let over = history_tokens > history_budget;
+        for (index, pointer) in std::mem::take(&mut prompt.result_pointers) {
+            let Some(message) = prompt.history.get_mut(index) else { continue };
+            let old_cost = Self::message_cost(message);
+            let pointer_cost = Self::message_cost(&pointer);
+            if over && history_tokens > history_budget.saturating_sub(quantum) && pointer_cost < old_cost {
+                history_tokens = history_tokens.saturating_sub(old_cost - pointer_cost);
+                *message = pointer;
+            } else {
+                prompt.result_pointers.push((index, pointer));
+            }
+        }
         // Read BEFORE the history is borrowed for costing: what her own last move and its
         // outcome cost, so the drop below can refuse to reach them.
         let evidence = prompt.recent_move_evidence();
@@ -3798,10 +3730,9 @@ impl LlmDeliberationFaculty {
         let costs: Vec<usize> = messages.iter().map(Self::message_cost).collect();
         let total: usize = costs.iter().sum();
         let mut start = 0usize;
-        let quantum = (budget_tokens / Self::FRONT_DROP_QUANTUM_DIVISOR).max(512);
         if total > history_budget {
             let min_drop = total - history_budget;
-            let drop_q = min_drop.div_ceil(quantum).saturating_mul(quantum);
+            let drop_q = (min_drop + quantum).div_ceil(quantum).saturating_mul(quantum);
             let mut dropped = 0usize;
             // Only optional history yields. Stimulus and action payload are typed
             // slots outside this eviction range, even when both render as user.
@@ -3998,6 +3929,7 @@ impl LlmDeliberationFaculty {
         let required = view.messages.split_off(view.refit.history_len);
         let frozen_grounding_tokens = Self::messages_cost(&grounding);
         let prompt = PromptMessages {
+            body: Vec::new(),
             input_identity: view.input_identity,
             history: view.messages,
             result_pointers: view.refit.result_pointers,
@@ -4024,6 +3956,7 @@ impl LlmDeliberationFaculty {
         view.estimated_prompt_tokens = estimate;
         view.segments = segment_map(&view.system, &view.messages);
         view.capacity_error = None;
+        view.epoch = None;
         Ok(view)
     }
 
@@ -4109,6 +4042,8 @@ impl SelectedSurface<'_> {
 struct PromptMessages {
     input_identity: [u8; 32],
     history: Vec<ChatMessage>,
+    /// The keyed sources `history[..grounding_at]` renders; her epoch appends their news.
+    body: Vec<epoch_view::Block>,
     /// Source-owned compact alternatives, indexed into history; never inferred from prose.
     result_pointers: Vec<(usize, ChatMessage)>,
     /// Kept before the append-only result ring even when older history yields.
@@ -4669,35 +4604,15 @@ impl<'a> GroundingPlan<'a> {
             }
     }
 
-    fn trailing_messages(&self) -> Vec<ChatMessage> {
-        // STABLE PREFIX FIRST (card c119ace7): these blocks ride the conversation tail
-        // in ONE canonical order — churn class, then name — never the broadcast order
-        // they arrived in. Broadcast order is the arbiter's per-turn salience, and the
-        // citizens' own captures (M5, 2026-09-20) showed `[workspace-map]` and
-        // `[active-work]` trading places turn to turn, re-prefilling every byte behind
-        // the swap with nothing in it changed. The plan's PIECE order is untouched (it
-        // is the shedding + expansion priority, `within_budget` / `expand_within`);
-        // only the wire order is canonical. See `deliberation_prompt::stable_prefix_order`.
-        let mut pieces: Vec<&GroundingPiece<'a>> =
-            self.pieces.iter().filter(|p| p.contribution.trailing).collect();
-        pieces.sort_by(|a, b| {
-            deliberation_prompt::stable_prefix_order(
-                a.contribution.faculty.as_str(),
-                b.contribution.faculty.as_str(),
-            )
-        });
-        pieces
-            .into_iter()
-            .map(|piece| {
-                let c = piece.contribution;
-                let mut body = String::with_capacity(piece.tokens * GUARD_CHARS_PER_TOKEN);
-                body.push('[');
-                body.push_str(c.faculty.as_str());
-                body.push_str("]\n");
-                piece.append_body(&mut body);
-                ChatMessage::text("user", body)
-            })
-            .collect()
+    /// The trailing standing pieces as keyed blocks for her epoch, in plan order: within an
+    /// epoch an unchanged piece is already said wherever it sits, so no wire order is needed
+    /// for stability (the `stable_prefix_order` sort that lived here, card c119ace7).
+    fn trailing_blocks(&self) -> Vec<epoch_view::Block> {
+        epoch_view::contribution_blocks(self.pieces.iter().filter(|p| p.contribution.trailing).map(|piece| {
+            let mut body = String::with_capacity(piece.tokens * GUARD_CHARS_PER_TOKEN);
+            piece.append_body(&mut body);
+            (piece.contribution.faculty.as_str(), body)
+        }))
     }
 }
 
@@ -4754,6 +4669,8 @@ pub struct DeliberationPromptView {
     /// Estimated tokens (chars/4 class), so attribution is segment-scale
     /// (thousands of tokens), never byte-exact — which is all promotion needs.
     pub segments: Vec<(&'static str, u32)>,
+    /// Her epoch with this view's body, committed only if the model answers this view.
+    epoch: Option<epoch_view::EpochView>,
 }
 
 impl DeliberationPromptView {
@@ -5231,6 +5148,11 @@ impl LlmDeliberationFaculty {
                         response.timing.as_ref().map_or(0, |t| t.cached_tokens),
                         fit_window,
                     );
+                    // What she was sent and answered is her epoch now. A refitted view
+                    // carries none: it is not her epoch, and the next act renders hers again.
+                    if let Some(epoch) = view.epoch.take() {
+                        *self.epoch.lock() = epoch;
+                    }
                     break (view, response);
                 }
             }
@@ -8392,33 +8314,6 @@ mod tests {
         // after it (~4000 tokens / ~30s of pure re-prefill — the eval-lane crawl). The
         // stable framing stays in the system message; the trailing proprioception does
         // not. regression for #205
-        // what this catches: churning grounding ahead of the append-only results ring. On the
-        // M5 (2026-10-18) recall (Turn churn) and the kanban (Claims churn) led the messages,
-        // every turn's reuse broke there, and the ~30k-token ring behind them re-prefilled at
-        // ~100 tokens/s. The ring leads; the grounding follows it.
-        #[test]
-        fn the_results_ring_renders_before_churning_grounding() {
-            let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(3));
-            wm.set_served_window(32_768);
-            let custody = |h: &str| crate::ai::types::ResultCustody::Whole { handle: h.into() };
-            wm.record_receipt_typed(&[], "RING-ENTRY older result", None, custody("1111111111111111"));
-            wm.record_receipt_typed(&[], "the newest result", None, custody("2222222222222222"));
-            let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
-            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
-                .with_context_window(32_768)
-                .with_working_memory(Arc::clone(&wm));
-            let mut ws = Workspace::new("continue the card");
-            ws.broadcast.push(
-                Contribution::context(FacultyId::Recall, "RECALL-BLOCK something I remembered", 0.6, "recall")
-                    .trailing(),
-            );
-            let view = faculty.prompt_view(&ws);
-            let at = |needle: &str| view.messages.iter().position(|m| m.content_text().contains(needle));
-            let (ring, recall) = (at("RING-ENTRY"), at("RECALL-BLOCK"));
-            assert!(ring.is_some() && recall.is_some(), "both render: ring {ring:?}, recall {recall:?}");
-            assert!(ring < recall, "the append-only ring leads, churning grounding follows: ring {ring:?}, recall {recall:?}");
-        }
-
         #[test]
         fn trailing_proprioception_renders_in_the_tail_not_the_system_prefix() {
             use crate::ai::types::MessageContent;
@@ -8860,10 +8755,6 @@ mod tests {
             }
             let saved = crate::cognition::tool_executor::spill::resolve(persona, &handle).unwrap();
             assert_eq!(std::fs::read_to_string(saved).unwrap(), inventory);
-            // Sticky (ring_collapse): a later roomy fit keeps the pointer until forgotten.
-            let sticky = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
-            assert!(sticky.messages.iter().any(|m| m.content_text() == expected_pointer));
-            faculty.collapsed_results.lock().forget();
             let roomy = faculty.fit_messages(faculty.messages_unfitted(&ws, None), full_cost).unwrap();
             assert!(roomy.messages.iter().any(|m| m.content_text().contains(inventory.trim())));
             // Exact-refusal correction reuses saved alternatives and keeps the
@@ -8873,7 +8764,7 @@ mod tests {
                 refit: roomy.refit, system: String::new(), input_identity: [0; 32],
                 estimated_prompt_tokens: estimate, completion_reserve: 0, history_tokens: 0,
                 capacity_error: None, protocol_error: None, segments: Vec::new(),
-                messages: roomy.messages,
+                messages: roomy.messages, epoch: None,
             };
             let corrected = faculty.refit_rejected_prompt(snapshot, estimate as u32 + 1, estimate as u32, 0).unwrap();
             assert!(corrected.estimated_prompt_tokens < estimate);
@@ -9489,6 +9380,7 @@ mod tests {
                 .collect();
             let stimulus = ChatMessage::text("user", "operator: do the thing ".repeat(40));
             let prompt = |history: Vec<ChatMessage>| PromptMessages {
+                body: Vec::new(),
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
@@ -9523,66 +9415,38 @@ mod tests {
                 "the stimulus itself is never optional");
         }
 
-        // what this catches: the fit's cut point IS the byte-stability of the
-        // whole conversation prefix (2026-09-01, wire-diffed: consecutive
-        // prompts diverging at ~1% depth because the exact-fit window start
-        // advanced every act). The front must stay byte-identical across small
-        // growth (a quantum of headroom), then advance in ONE whole-message
-        // jump — and the fitted suffix must always fit the budget.
+        // what this catches: a turnover fit that leaves her new epoch no room to grow (the
+        // next act turns over again, every act a cold prefill), shears a message, or opens
+        // on an answer without its question.
         #[test]
-        fn fit_front_advances_in_quanta_not_per_act() {
+        fn a_turnover_fit_frees_a_chunk_on_whole_messages_and_clean_clusters() {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let msgs: Vec<ChatMessage> = (0..40)
                 .map(|i| ChatMessage::text("user", format!("m{i} {}", "word ".repeat(95))))
                 .collect();
             let budget = 2000;
-            // Simulate 20 consecutive acts, each appending one ~160-token
-            // message. Old behavior: the exact-fit start advanced EVERY act
-            // (20 moves). Quantized: total growth ≈ 3.2k tokens ÷ the 512
-            // quantum ⇒ at most ~7 boundary crossings, so most acts keep a
-            // byte-identical front. (Counted, not position-pinned, so the
-            // assertion cannot land on a quantum edge as token estimates
-            // drift.)
-            let mut moves = 0usize;
-            let mut prev_first: Option<String> = None;
-            let mut last_fit: Vec<ChatMessage> = Vec::new();
-            for n in 20..=40 {
-                let fit = faculty
-                    .fit_messages(
-                        PromptMessages {
-                            result_pointers: Vec::new(),
-                            input_identity: [0; 32],
-                            grounding_tokens: 0,
-                            grounding_at: 0,
-                            history: msgs[..n].to_vec(),
-                            stimulus: None,
-                            latest_result: Vec::new(), action_statement: None,
-                            room_updates: Vec::new(), ledger: None, notices: Vec::new(),
-                        },
-                        budget,
-                    )
-                    .expect("whole history suffix fits")
-                    .messages;
-                assert!(!fit.is_empty());
-                let first = fit.first().map(|m| m.content_text());
-                if prev_first.is_some() && first != prev_first {
-                    moves += 1;
-                }
-                prev_first = first;
-                last_fit = fit;
-            }
+            let history = |history: Vec<ChatMessage>| PromptMessages {
+                body: Vec::new(),
+                result_pointers: Vec::new(),
+                input_identity: [0; 32],
+                grounding_tokens: 0,
+                grounding_at: 0,
+                history,
+                stimulus: None,
+                latest_result: Vec::new(), action_statement: None,
+                room_updates: Vec::new(), ledger: None, notices: Vec::new(),
+            };
+            let last_fit = faculty.fit_messages(history(msgs.clone()), budget).expect("a suffix fits").messages;
+            let chunk = (budget / LlmDeliberationFaculty::FRONT_DROP_QUANTUM_DIVISOR).max(512);
             assert!(
-                (1..=8).contains(&moves),
-                "front moved {moves} times across 20 acts — it must advance in \
-                 QUANTA (a handful of jumps), never per act, and must still \
-                 advance eventually (bounded memory)"
+                LlmDeliberationFaculty::messages_cost(&last_fit) + chunk <= budget,
+                "a turnover leaves a chunk free: {} of {budget}",
+                LlmDeliberationFaculty::messages_cost(&last_fit)
             );
-            // Whole messages only at the front: the first fitted message is one
-            // of the originals, never a mid-message shear.
-            let first = last_fit.first().unwrap().content_text();
+            let first = last_fit.first().map(|m| m.content_text());
             assert!(
-                msgs.iter().any(|m| m.content_text() == first),
+                msgs.iter().any(|m| Some(m.content_text()) == first),
                 "front message must be a whole original message"
             );
             // CLUSTER GRANULARITY (Joel 9/1): the window must open on a clean
@@ -9599,48 +9463,18 @@ mod tests {
                     format!("a{i} {}", "word ".repeat(60)),
                 ));
             }
-            let fit = faculty
-                .fit_messages(
-                    PromptMessages {
-                        result_pointers: Vec::new(),
-                        input_identity: [0; 32],
-                        grounding_tokens: 0,
-                        grounding_at: 0,
-                        history: clustered,
-                        stimulus: None,
-                        latest_result: Vec::new(), action_statement: None,
-                        room_updates: Vec::new(), ledger: None, notices: Vec::new(),
-                    },
-                    budget,
-                )
-                .expect("whole history suffix fits")
-                .messages;
+            let fit = faculty.fit_messages(history(clustered), budget).expect("a suffix fits").messages;
             assert_eq!(
                 fit.first().unwrap().role,
                 "user",
                 "the window must never open on an answer without its question"
             );
-            // The fitted suffix honors the budget.
-            assert!(
-                LlmDeliberationFaculty::messages_cost(&last_fit) <= budget,
-                "fitted cost {} exceeds budget {budget}",
-                LlmDeliberationFaculty::messages_cost(&last_fit)
-            );
             // A quantum larger than the optional history must not evict every
             // message on a quiet self-tick with no external stimulus or result.
-            let ambient = || PromptMessages {
-                result_pointers: Vec::new(),
-                input_identity: [0; 32],
-                grounding_tokens: 0,
-                grounding_at: 0,
-                history: vec![
-                    ChatMessage::text("user", "old situation ".repeat(30)),
-                    ChatMessage::text("user", "current situation ".repeat(20)),
-                ],
-                stimulus: None,
-                latest_result: Vec::new(), action_statement: None,
-                room_updates: Vec::new(), ledger: None, notices: Vec::new(),
-            };
+            let ambient = || history(vec![
+                ChatMessage::text("user", "old situation ".repeat(30)),
+                ChatMessage::text("user", "current situation ".repeat(20)),
+            ]);
             let ambient_cost =
                 LlmDeliberationFaculty::message_cost(ambient().history.last().unwrap());
             let fitted = faculty
@@ -9661,6 +9495,7 @@ mod tests {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let prompt = |result: bool| PromptMessages {
+                body: Vec::new(),
                 result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history: vec![ChatMessage::text("user", "[work turn] fix the bug")],
@@ -9695,6 +9530,7 @@ mod tests {
             ];
             let expected = LlmDeliberationFaculty::messages_cost(&history);
             let prompt = PromptMessages {
+                body: Vec::new(),
                 result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history, stimulus: None, latest_result: Vec::new(), action_statement: None, room_updates: Vec::new(), ledger: None, notices: Vec::new(),
@@ -9709,6 +9545,7 @@ mod tests {
             let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
             let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "T", "You are T.", adapter);
             let prompt = PromptMessages {
+                body: Vec::new(),
                 result_pointers: Vec::new(),
                 input_identity: [0; 32], grounding_tokens: 0, grounding_at: 0,
                 history: vec![
@@ -9800,6 +9637,7 @@ mod tests {
             history.push(ChatMessage::text("assistant", format!("calling code/write {}", "word ".repeat(40))));
             history.push(ChatMessage::text("user", format!("Full result of code/write {}", "word ".repeat(60))));
             let prompt = || PromptMessages {
+                body: Vec::new(),
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
@@ -9884,6 +9722,7 @@ mod tests {
         fn the_recent_move_protection_states_its_own_limits() {
             let msg = |role: &str, body: &str| ChatMessage::text(role, body.to_string());
             let of = |history: Vec<ChatMessage>| PromptMessages {
+                body: Vec::new(),
                 result_pointers: Vec::new(),
                 input_identity: [0; 32],
                 grounding_tokens: 0,
@@ -10220,9 +10059,9 @@ mod tests {
         //
         // The prompt cache reuses only a common PREFIX. These pin the whole-prompt
         // order at the live boundary (`prompt_view`): conversation first, then the
-        // standing grounding whose bytes mutate, in ONE canonical order; the clock and
-        // the presence framing in the volatile tail, after the conversation; nothing
-        // dated or counted in the system message.
+        // standing grounding, held in her epoch so a re-ranked bid moves nothing; the
+        // clock and the presence framing in the volatile tail, after the conversation;
+        // nothing dated or counted in the system message.
         mod stable_prefix_first {
             use super::*;
             use crate::cognition::workspace::Burst;
@@ -10238,15 +10077,13 @@ mod tests {
                     .unwrap_or_else(|| panic!("{needle} missing from:\n{:#?}", bodies(v)))
             }
 
-            // what this catches (card c119ace7): the standing grounding that rides the
-            // conversation tail rendered in BROADCAST order — the arbiter's per-turn
-            // salience — so `[workspace-map]`, `[active-work]` and `[room-kanban]` traded
-            // places turn to turn (both orders are in the M5's 2026-09-20 captures), and
-            // the prefix cache lost every byte behind the swap although none had changed.
-            // Same set in, same bytes out, whatever attention ranked and whatever order
-            // the faculties bid in; and the order is the churn order, standing → board.
+            // what this catches: volatile framing ahead of the conversation or inside the
+            // system message, where the [now] tick invalidated every byte behind it (hit_rate
+            // 0.0, 2026-09-01), and facts after the ask (the 2026-07-20 parrot loop). Whether a
+            // re-ranked grounding moves anything is her epoch's contract
+            // (`consecutive_acts_send_the_last_acts_body_as_their_prefix`).
             #[test]
-            fn standing_grounding_renders_in_one_canonical_order_and_the_clock_rides_last() {
+            fn standing_grounding_follows_history_and_the_clock_rides_last() {
                 let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
                 let faculty =
                     LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter)
@@ -10293,20 +10130,12 @@ mod tests {
                 };
 
                 let a = view_for([0, 1, 2, 3], [0.9, 0.5, 0.3, 0.7]);
-                // Re-ranked AND re-ordered arrival: the bytes must not move.
                 let b = view_for([3, 2, 0, 1], [0.3, 0.9, 0.7, 0.5]);
                 assert_eq!(a.system, b.system, "the system prefix is a function of the persona + ground");
-                assert_eq!(
-                    bodies(&a),
-                    bodies(&b),
-                    "a re-ranked, re-ordered standing grounding must emit IDENTICAL messages"
-                );
 
-                // The order, most stable first: the conversation (dated history) leads;
-                // then the standing grounding in churn order (STANDING map, then the
-                // BOARD's held card and wall, by name, then the kanban's CLAIMS, which
-                // change fastest of the three); then the per-turn facts;
-                // then the clock + presence framing; then the ask, last.
+                // The order: the conversation (dated history) leads; then the standing
+                // grounding; then the per-turn facts; then the clock + presence framing;
+                // then the ask, last.
                 assert!(
                     a.messages[0].content_text().starts_with("[occurred "),
                     "the conversation leads the message list — nothing volatile ahead of it:\n{:#?}",
@@ -10320,17 +10149,13 @@ mod tests {
                 let facts = at(&a, "[context]");
                 let clock = at(&a, "[now ");
                 let ask = at(&a, "[occurred 2023-11-14T22:15:20.000Z] Operator: what's next");
+                let grounding = [map, held, wall, board];
                 assert!(
-                    history_last < map
-                        && map < held
-                        && held < wall
-                        && wall < board
-                        && board < facts
+                    grounding.iter().all(|&g| history_last < g && g < facts)
                         && facts < clock
                         && clock < ask,
-                    "order must be history < map < active-work < wall < kanban < facts < clock \
-                     < ask, got {history_last} {map} {held} {wall} {board} {facts} {clock} \
-                     {ask}:\n{:#?}",
+                    "order must be history < grounding < facts < clock < ask, got \
+                     {history_last} {grounding:?} {facts} {clock} {ask}:\n{:#?}",
                     bodies(&a)
                 );
 
@@ -10503,6 +10328,93 @@ mod tests {
                     .pop_front()
                     .ok_or_else(|| "scripted adapter exhausted".to_string())
             }
+        }
+
+        /// A faculty at `window` whose model answers every act, reporting that it reused the
+        /// whole prompt it was sent (as a warm slot does); receipts are saved through `save`.
+        fn epoch_faculty(window: u32, acts: usize) -> (LlmDeliberationFaculty, Arc<ScriptedAdapter>, impl Fn(usize, &str)) {
+            let answered = || TextGenerationResponse {
+                usage: UsageMetrics { input_tokens: 1, ..Default::default() },
+                timing: Some(crate::ai::types::GenerationTiming { cached_tokens: u32::MAX, ..Default::default() }),
+                ..make_response(FinishReason::Stop, "PASS", None)
+            };
+            let adapter = Arc::new(ScriptedAdapter::new((0..acts).map(|_| answered()).collect()));
+            let wm = Arc::new(crate::cognition::working_memory::WorkingMemory::new(64));
+            wm.set_served_window(window);
+            let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
+                .with_model_binding(model_binding(adapter.clone(), Some("epoch-model".into()), window))
+                .with_working_memory(Arc::clone(&wm));
+            let save = move |i: usize, text: &str| {
+                let custody = crate::ai::types::ResultCustody::Whole { handle: format!("{i:016x}") };
+                wm.record_receipt_typed(&[], text, None, custody);
+            };
+            (faculty, adapter, save)
+        }
+
+        /// The body of the request act `n` sent (everything before the facts and the ask),
+        /// bounded by the view rendered for it just before it was sent.
+        fn sent_body_of(view: &DeliberationPromptView, adapter: &ScriptedAdapter, n: usize) -> Vec<(String, String)> {
+            let seen = adapter.seen.lock().expect("recorded request lock");
+            seen[n].messages[..view.refit.grounding_at + view.refit.grounding_len]
+                .iter()
+                .map(|m| (m.role.clone(), m.content_text()))
+                .collect()
+        }
+
+        // what this catches: an act whose request rewrites the last act's body. On the M5
+        // (2026-10-19, `delib.prompt.reuse_split`) the results ring sat mid-prompt and grew by
+        // one result per act, so everything behind it re-prefilled: 17-29k tokens per act.
+        #[tokio::test]
+        async fn consecutive_acts_send_the_last_acts_body_as_their_prefix() {
+            let (faculty, adapter, save) = epoch_faculty(32_768, 2);
+            save(0, "RESULT-1");
+            save(1, "RESULT-2");
+            let recall = |text: &str| Contribution::context(FacultyId::Recall, text, 0.6, "recall").trailing();
+            let mut ws = Workspace::new("continue the card");
+            ws.broadcast.push(recall("RECALL v1"));
+            let mut bodies = Vec::new();
+            for act in 0..2 {
+                let view = faculty.prompt_view(&ws);
+                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
+                bodies.push(sent_body_of(&view, &adapter, act));
+                if act == 0 {
+                    save(2, "RESULT-3");
+                    ws.broadcast = vec![recall("RECALL v2")];
+                }
+            }
+            let (first, second) = (&bodies[0], &bodies[1]);
+            assert!(!first.is_empty(), "the first act has a body");
+            assert_eq!(second[..first.len()], first[..], "the second request starts with the first's body");
+            let news: Vec<&str> = second[first.len()..].iter().map(|(_, t)| t.as_str()).collect();
+            assert!(news.iter().any(|t| t.contains("RESULT-2")), "the settled result appended: {news:?}");
+            assert!(news.iter().any(|t| t.contains("RECALL v2")), "the changed grounding appended: {news:?}");
+        }
+
+        // what this catches: an epoch that outgrows the window instead of turning over, or a
+        // turnover that leaves no room to grow (every act a cold prefill again).
+        #[tokio::test]
+        async fn the_window_turns_the_epoch_over_and_the_next_act_extends_it() {
+            const ACTS: usize = 80;
+            let (faculty, adapter, save) = epoch_faculty(16_384, ACTS);
+            let ws = Workspace::new("continue the card");
+            let mut turned = Vec::new();
+            let mut previous: Option<Vec<(String, String)>> = None;
+            for act in 0..ACTS {
+                save(act, &format!("RESULT-{act} {}", "x".repeat(900)));
+                let view = faculty.prompt_view(&ws);
+                assert!(view.capacity_error.is_none(), "act {act} fits its window");
+                assert!(faculty.contribute(&ws).await.is_some_and(|v| v.fault.is_none()), "act {act} answered");
+                let body = sent_body_of(&view, &adapter, act);
+                if previous.is_some_and(|p| !body.starts_with(&p)) {
+                    turned.push(act);
+                }
+                previous = Some(body);
+            }
+            assert!(!turned.is_empty(), "{ACTS} results of ~300 tokens outgrow a 16k window: the epoch turned over");
+            assert!(
+                turned.windows(2).all(|w| w[1] > w[0] + 1),
+                "after a turnover the next act extends the new epoch; turnovers at {turned:?}"
+            );
         }
 
         // what this catches: 2e2a92f6 — small reductions were ignored by the live
@@ -11131,10 +11043,12 @@ mod tests {
                 .with_context_window(window);
             let before = faculty.prompt_view(&ws);
             // precondition: the fit binds (history was trimmed to the window), or a refit
-            // has nothing to show and this test would pass for the wrong reason
+            // has nothing to show and this test would pass for the wrong reason. A trimmed fit
+            // leaves under two drop chunks free (`fit_messages`: one past the minimum, rounded).
+            let chunks = 2 * u64::from(window) / LlmDeliberationFaculty::FRONT_DROP_QUANTUM_DIVISOR as u64;
             assert!(
                 before.estimated_prompt_tokens as u64 + u64::from(before.completion_reserve)
-                    >= u64::from(window) * 9 / 10,
+                    >= u64::from(window) - chunks,
                 "fixture must fill its window: {} + {} of {window}",
                 before.estimated_prompt_tokens,
                 before.completion_reserve

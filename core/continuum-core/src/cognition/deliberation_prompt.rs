@@ -106,16 +106,16 @@ pub enum PromptScope {
 }
 
 /// HOW OFTEN A GROUNDING BLOCK'S BYTES CHANGE — the second key of the prefix order, for
-/// blocks that share a [`PromptScope`]. Declared per source, once, so every renderer that
-/// lays grounding into the prompt lays it in the same order (`stable_prefix_order`).
+/// blocks that share a [`PromptScope`]. Declared per source, once, so the system message lays
+/// its grounding in one order (`stable_prefix_order`).
 ///
 /// Measured on the M5 2026-09-20 (card c119ace7), from the citizens' own prompt captures:
 /// the trailing standing grounding rendered in BROADCAST order — the arbiter's per-turn
 /// salience — so `[workspace-map]` / `[active-work]` / `[room-kanban]` traded places turn
 /// to turn (map-first in one capture, active-work-first in the next), and the bytes after
 /// the swap were re-prefilled although nothing in them had changed. The system side had
-/// the same defect fixed in `40075d7ea` (canonical order in the stable tier); the message
-/// side kept salience order. One comparator now serves both.
+/// the same defect fixed in `40075d7ea` (canonical order in the stable tier). The message
+/// side is now an epoch, where an unchanged block never moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum PromptChurn {
     /// The room's standing ground: doctrine, roster, the checkout's layout, a mission,
@@ -195,13 +195,11 @@ pub(super) fn churn_of(faculty: &str) -> PromptChurn {
 /// 65-78% WITH THE SAME CONVERSATION BEHIND IT, which is only possible if the
 /// conversation is the more stable of the two.
 ///
-/// The whole-prompt order this comparator is one key of, most stable first:
-/// tools (substrate) → identity + turn contract (persona) → standing ground: doctrine,
-/// roster (system message ends) → the conversation → the standing grounding whose bytes
-/// mutate, in churn order: workspace-map → active-work → room-kanban → room-wall → the
-/// append-only results ring → the working-memory trail → perception facts → the clock +
-/// presence framing → the ask → this turn's room updates → the pinned result. The clock
-/// (`[now …]`) is in the volatile tail, never the system message (`volatile_blocks`).
+/// It orders the SYSTEM message's grounding: tools (substrate) → identity + turn contract
+/// (persona) → standing ground in churn order (doctrine, roster). Everything after the
+/// system message is her epoch (`epoch_view`), which appends news after the last act's
+/// body, so no order there is needed for stability. The clock (`[now …]`) is in the
+/// volatile tail, never the system message (`volatile_blocks`).
 pub(super) fn stable_prefix_order(a: &str, b: &str) -> std::cmp::Ordering {
     churn_of(a).cmp(&churn_of(b)).then_with(|| a.cmp(b))
 }

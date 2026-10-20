@@ -60,6 +60,7 @@ pub mod deferred_faculty;
 pub mod deliberation_budget;
 pub mod deliberation_parse;
 pub mod deliberation_prompt;
+mod epoch_view;
 pub mod dispatch_listener;
 pub mod activity_gate;
 pub mod turn_ingress;
@@ -90,7 +91,6 @@ pub mod open_views;
 pub mod parroted_perception;
 pub mod pass_intent;
 pub mod perception_facts;
-pub mod ring_collapse;
 pub mod persona_tools;
 pub mod persona_workspace;
 /// The handoff record: her state at the seam, written before a stop, read first on wake

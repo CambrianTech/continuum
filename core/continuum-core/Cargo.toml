@@ -47,6 +47,7 @@ path = "src/bin/forge_custodian.rs"
 
 [dependencies]
 continuum-tool-protocol = { path = "../continuum-tool-protocol" }
+continuum-context = { path = "../continuum-context" }
 tokio.workspace = true
 expert-pager-policy = { path = "../expert-pager-policy" }
 serde.workspace = true
