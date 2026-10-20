@@ -331,3 +331,49 @@ any size inherits. The compounding is multiplicative across repos × models
 lineage attestation on every layer (forge-alloy pointed at manifests) →
 impact telemetry → economy. Each stage ships value alone; none blocks the
 previous.
+
+## 17. The addendum: any agent learns from all of its user's work and GitHub (Joel, 2026-10-19)
+
+Joel: *"Adding continual learning and genomics to Hermes and opencode would be sought after"* and
+*"have it learn from all their work and GitHub."* The strategy is to be the addendum: ride the agents
+people already use (Joel grew apps on Pinterest pins and on Instagram's early history; second or
+fiftieth fiddle still gives inroads). §12 learns from the agents working THIS repo; this section
+opens the same rails to anyone's agent on anyone's repo.
+
+**The driver.** Hermes, opencode, Claude Code, or any OpenAI-speaking agent points at continuum and
+changes nothing else. It reaches two seams of the placement map (MODULE-ARCHITECTURE.md §9.2):
+Serving (our engine's speed on the user's own models) and Dreaming (learning). Drivers reach seams,
+not machines, so a laptop's agent can serve on a 5090 and dream on an M5 across the grid.
+
+**What it learns from: all of the user's work, in time order.**
+
+| Source | What becomes perception | Where the correction is |
+|---|---|---|
+| The agent's own sessions through the driver | every request, tool call, result and reply | the user's next message, a rejected edit, a reverted change |
+| The user's GitHub history | commits, diffs, PRs, reviews, issues, CI runs, in time order | review comments and the commit that answered them; a revert; a follow-up "fix" commit; a failed then passing CI run |
+| The team's history | every contributor's PRs and reviews on the shared repos | what reviewers kept repeating (the richest lesson: what agents and people forget) |
+
+This is the Matrix Dojo applied to every user: a repository's history replayed as perception, time
+order as the curriculum, the same learning verb the residents use (prediction error on what she
+perceives, weighted by her own relevance; never rows picked by a rule). Nothing new is invented for
+drivers: their sessions are captured by the existing recorder, GitHub history is imported through
+an adapter into the same perception stream, and genes are selected by what the mind is on.
+
+**Genomics.** What is learned is a gene: shareable, swappable and revocable. A user's agent wears the
+genes for the repos it works in; a team shares them across the grid; a public gene is published like
+§6 and spreads by usage. Revoking a gene removes the skill.
+
+**Scope and privacy, by default.** `.continuum/scope` (§1) decides what may be learned from, per repo.
+Private repositories and sessions train only on the user's own nodes unless the user publishes a
+gene. Credentials, secrets and anything the scope denies never enter perception, captures or genes.
+The importer reads GitHub with the user's own grant and nothing else.
+
+**The proof (the demo is the acceptance test, never a staged clip).** Point an agent at continuum
+with one command; correct it once; restart; give it an unseen related task: it succeeds, and the same
+task without the gene fails; share the gene with a teammate's agent and theirs succeeds. Scripted,
+reproducible by anyone. Not shown before the residents pass the same test.
+
+**Order (the plan's pipeline).** (1) serving fast, (2) modules cut by the placement map, (3) the
+learning acceptance test passes on our residents, (4) drivers learn. The GitHub importer and the
+driver's Serving seam can be built at (1); learning for drivers ships at (4). Our own dev agents are
+the first drivers: developing continuum through continuum is the first curriculum.
