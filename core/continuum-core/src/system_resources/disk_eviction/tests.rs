@@ -118,7 +118,20 @@
             let generation = custody::publish_static_inputs(out).unwrap();
             std::fs::write(out.parent().unwrap().join("output"), format!("{}{generation}\n", custody::METADATA)).unwrap();
         }
-        let mut child = std::process::Command::new(&sleeper).arg("30").spawn().expect("spawn the sleeper");
+        // The same fork window, on the image: `fs::copy` held `sleeper` open for write, and a
+        // spawn on another thread that cloned our fd table in that instant keeps the write
+        // fd until it execs, so exec of the image reads ETXTBSY (CI #5208, run
+        // 39362437168). Only that error is retried, within the same 1 s liveness bound.
+        let mut child = (0..200)
+            .find_map(|_| match std::process::Command::new(&sleeper).arg("30").spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+                other => Some(other),
+            })
+            .expect("the image stayed busy past the liveness bound")
+            .expect("spawn the sleeper");
         let pool = fixture_pool(tracked.clone(), 1);
         // Ask for more than the first two rungs hold, so the ladder reaches debug/.
         let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(100_000));
