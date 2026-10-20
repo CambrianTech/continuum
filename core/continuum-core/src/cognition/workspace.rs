@@ -401,6 +401,39 @@ pub struct Contribution {
     /// because the source did not report one ("whole or handle": a cut the reader
     /// cannot see is a silent clip, PERSONA-COGNITION-PIPELINE.md §3).
     pub source_truncated: bool,
+    /// How `parts` are ordered, which decides WHICH end a tight budget keeps.
+    pub parts_order: PartsOrder,
+}
+
+/// The order a source's `parts` are in, and so which of them survive when not all fit.
+/// A cut that keeps the head drops what happened last, and a prompt that ends before the
+/// latest message or result acts on a world where time never moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PartsOrder {
+    /// Ranked by the source, most relevant first (a board, a roster, recall): the LEADING
+    /// parts are kept and the tail omitted. The default, and what every list was before.
+    #[default]
+    Ranked,
+    /// Oldest to newest (a transcript, a log, a wall in publish order): the TRAILING parts
+    /// are kept and the OLDEST omitted, the notice leading the kept ones.
+    Chronological,
+}
+
+impl Contribution {
+    /// The `n` parts a cut to `n` units keeps, per [`PartsOrder`].
+    pub fn kept_parts(&self, n: usize) -> &[String] {
+        let n = n.min(self.parts.len());
+        match self.parts_order {
+            PartsOrder::Ranked => &self.parts[..n],
+            PartsOrder::Chronological => &self.parts[self.parts.len() - n..],
+        }
+    }
+
+    /// Declare the order of `parts` (see [`PartsOrder`]).
+    pub fn with_parts_order(mut self, order: PartsOrder) -> Self {
+        self.parts_order = order;
+        self
+    }
 }
 
 impl Contribution {
@@ -422,6 +455,7 @@ impl Contribution {
             parts: vec![content.clone()],
             expand_command: None,
             source_truncated: false,
+            parts_order: PartsOrder::Ranked,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -488,6 +522,7 @@ impl Contribution {
             parts: vec![content.clone()],
             expand_command: None,
             source_truncated: false,
+            parts_order: PartsOrder::Ranked,
             content,
             salience: salience.clamp(0.0, 1.0),
             reasoning: reasoning.into(),
@@ -520,6 +555,7 @@ impl Contribution {
             parts: vec![error.clone()],
             expand_command: None,
             source_truncated: false,
+            parts_order: PartsOrder::Ranked,
             content: error.clone(),
             salience: 1.0,
             reasoning: "deliberation inference failed".to_string(),

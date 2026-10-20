@@ -538,6 +538,14 @@ pub trait RagSource: Send + Sync {
     /// the same forcing function as [`super::room_board_source::RoomBoardReader::peer_names`].
     fn expand_command(&self) -> Option<&'static str>;
 
+    /// The order of the units this source delivers, which decides which end survives when
+    /// the prompt cannot hold them all. `Ranked` (the default: most relevant first) keeps
+    /// the leading units; a source whose items run oldest to newest (a transcript, a log)
+    /// declares `Chronological` so the OLDEST are omitted and the newest stay whole.
+    fn parts_order(&self) -> crate::cognition::workspace::PartsOrder {
+        crate::cognition::workspace::PartsOrder::Ranked
+    }
+
     /// The cost, in tokens, of the SMALLEST COMPLETE STATEMENT this source can
     /// make — its first atomic unit, not its comfortable size.
     ///

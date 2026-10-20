@@ -474,6 +474,11 @@ impl RagSource for ArcRagSource {
         self.0.expand_command()
     }
 
+    /// Delegates to the inner source — the order of its units is its to declare.
+    fn parts_order(&self) -> crate::cognition::workspace::PartsOrder {
+        self.0.parts_order()
+    }
+
     /// Delegates to the inner source — the floor is that source's to declare.
     fn floor_tokens(&self) -> u32 {
         self.0.floor_tokens()

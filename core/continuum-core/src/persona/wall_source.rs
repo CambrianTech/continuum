@@ -444,6 +444,10 @@ impl RagSource for WallSource {
         Some(EXPAND_COMMAND)
     }
 
+    fn parts_order(&self) -> crate::cognition::workspace::PartsOrder {
+        crate::cognition::workspace::PartsOrder::Chronological
+    }
+
     /// One wall post's title line. A pinned document's NAME is a complete
     /// statement — she knows the plan exists and can fetch it.
     fn floor_tokens(&self) -> u32 {

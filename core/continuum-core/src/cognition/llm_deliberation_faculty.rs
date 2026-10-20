@@ -2763,7 +2763,7 @@ impl LlmDeliberationFaculty {
             match piece.units {
                 None => field(&mut input, c.content.as_bytes()),
                 Some(units) => {
-                    for part in c.parts.iter().take(units) {
+                    for part in c.kept_parts(units) {
                         field(&mut input, part.as_bytes());
                     }
                 }

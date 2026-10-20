@@ -5,7 +5,7 @@
 use super::deliberation_budget::GUARD_CHARS_PER_TOKEN;
 use super::epoch_view;
 use super::llm_deliberation_faculty::LlmDeliberationFaculty;
-use super::workspace::{Contribution, Workspace};
+use super::workspace::{Contribution, PartsOrder, Workspace};
 
 /// A borrowed selection of whole source content or its declared atomic prefix.
 /// Reserving and expanding it never copies the source payload.
@@ -87,7 +87,7 @@ impl<'a> GroundingPiece<'a> {
         }
         let tokens = Self::cost(
             c,
-            c.parts[0].len() + 1 + Self::notice_bytes(c, c.parts.len() - 1),
+            c.kept_parts(1)[0].len() + 1 + Self::notice_bytes(c, c.parts.len() - 1),
         );
         if tokens >= whole.tokens {
             return whole;
@@ -104,7 +104,7 @@ impl<'a> GroundingPiece<'a> {
         match units.filter(|&n| n > 0 && n < c.parts.len()) {
             None => Self::whole(c),
             Some(n) => {
-                let bytes = c.parts[..n].iter().map(String::len).sum::<usize>() + n - 1;
+                let bytes = c.kept_parts(n).iter().map(String::len).sum::<usize>() + n - 1;
                 Self { contribution: c, units: Some(n), tokens: Self::cost(c, bytes + 1 + Self::notice_bytes(c, c.parts.len() - n)) }
             }
         }
@@ -115,17 +115,12 @@ impl<'a> GroundingPiece<'a> {
         if whole.tokens <= budget {
             return Some(whole);
         }
-        // Reserve the actual omission notice before accepting complete units.
-        let mut bytes = 0usize;
+        // Reserve the actual omission notice before accepting complete units. The units
+        // kept are the leading ones for a ranked source and the NEWEST for a chronological
+        // one (`Contribution::kept_parts`).
         let mut selected = None;
-        for (index, unit) in c
-            .parts
-            .iter()
-            .take(c.parts.len().saturating_sub(1))
-            .enumerate()
-        {
-            bytes += unit.len() + usize::from(index > 0);
-            let units = index + 1;
+        for units in 1..c.parts.len() {
+            let bytes = c.kept_parts(units).iter().map(String::len).sum::<usize>() + units - 1;
             let tokens = Self::cost(c, bytes + 1 + Self::notice_bytes(c, c.parts.len() - units));
             if tokens > budget {
                 break;
@@ -152,14 +147,23 @@ impl<'a> GroundingPiece<'a> {
                 }
             }
             Some(units) => {
-                for (index, unit) in c.parts[..units].iter().enumerate() {
+                // The notice leads when the OLDEST were omitted (the kept ones follow it,
+                // newest last) and trails when the tail of a ranked list was.
+                let chronological = c.parts_order == PartsOrder::Chronological;
+                if chronological {
+                    Self::append_notice(c, c.parts.len() - units, out);
+                    out.push('\n');
+                }
+                for (index, unit) in c.kept_parts(units).iter().enumerate() {
                     if index > 0 {
                         out.push('\n');
                     }
                     out.push_str(unit);
                 }
-                out.push('\n');
-                Self::append_notice(c, c.parts.len() - units, out);
+                if !chronological {
+                    out.push('\n');
+                    Self::append_notice(c, c.parts.len() - units, out);
+                }
             }
         }
     }
@@ -285,5 +289,51 @@ impl<'a> GroundingPlan<'a> {
             piece.append_body(&mut body);
             (piece.contribution.faculty.as_str(), body)
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cognition::workspace::FacultyId;
+
+    fn list(n: usize, order: PartsOrder) -> Contribution {
+        let parts: Vec<String> = (0..n).map(|i| format!("entry {i:02} {}", "detail ".repeat(8))).collect();
+        Contribution::context(FacultyId::Custom("log".into()), parts.join("\n"), 0.5, "test")
+            .with_parts(parts)
+            .with_expand_command(Some("log/list"))
+            .with_parts_order(order)
+    }
+
+    fn render(piece: &GroundingPiece<'_>) -> String {
+        let mut out = String::new();
+        piece.append_body(&mut out);
+        out
+    }
+
+    // what this catches: the packer cutting a time-ordered list from its NEWEST end, so the
+    // prompt ends before the latest entry. A tight budget on a chronological source must keep
+    // the LAST part, omit the oldest, and lead with a notice naming the omitted count and the
+    // expand command; a ranked source keeps its leading parts and trails the notice.
+    #[test]
+    fn a_tight_budget_keeps_the_newest_part_and_names_the_omitted_oldest() {
+        let log = list(20, PartsOrder::Chronological);
+        let whole = GroundingPiece::whole(&log).tokens;
+        let piece = GroundingPiece::within(&log, whole / 3).expect("some units fit");
+        let units = piece.units.expect("a partial piece");
+        assert!(units >= 1 && units < 20);
+        let body = render(&piece);
+        assert!(body.contains("entry 19"), "the newest part survives: {body}");
+        assert!(!body.contains("entry 00"), "the oldest is the one omitted: {body}");
+        let omitted = 20 - units;
+        assert!(body.starts_with(&format!("…{omitted} more not shown")), "the notice leads with the count: {body}");
+        assert!(body.contains("log/list"), "{body}");
+        assert!(piece.tokens <= whole / 3);
+
+        let ranked = list(20, PartsOrder::Ranked);
+        let piece = GroundingPiece::within(&ranked, whole / 3).expect("some units fit");
+        let body = render(&piece);
+        assert!(body.starts_with("entry 00") && !body.contains("entry 19"), "a ranked list keeps its leading parts: {body}");
+        assert!(body.contains("log/list"), "{body}");
     }
 }

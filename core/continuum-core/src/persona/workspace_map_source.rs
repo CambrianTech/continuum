@@ -344,6 +344,10 @@ impl RagSource for WorkspaceMapSource {
         Some("code/tree")
     }
 
+    fn parts_order(&self) -> crate::cognition::workspace::PartsOrder {
+        crate::cognition::workspace::PartsOrder::Chronological
+    }
+
     /// MEASURED 32 tokens: the root line naming the workspace and its top-level
     /// entry count — the unit that distinguishes "empty" from "I cannot see it".
     fn floor_tokens(&self) -> u32 {

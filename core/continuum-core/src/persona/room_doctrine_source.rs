@@ -320,6 +320,10 @@ impl RagSource for RoomDoctrineSource {
         None
     }
 
+    fn parts_order(&self) -> crate::cognition::workspace::PartsOrder {
+        crate::cognition::workspace::PartsOrder::Chronological
+    }
+
     /// Floorless by design (unchanged): doctrine is lightweight standing
     /// framing that takes leftover room rather than reserving any.
     fn floor_tokens(&self) -> u32 {

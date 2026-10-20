@@ -679,6 +679,10 @@ impl RagSource for AircRagSource {
         Some(EXPAND_COMMAND)
     }
 
+    fn parts_order(&self) -> crate::cognition::workspace::PartsOrder {
+        crate::cognition::workspace::PartsOrder::Chronological
+    }
+
     /// One conversation turn — a speaker and what they said. The recent-history
     /// appetite is much larger and is expressed as `min`, not as this floor;
     /// conflating the two is what made every source all-or-nothing.
