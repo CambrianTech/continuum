@@ -361,7 +361,7 @@ pub(super) async fn bind_held_card(
             .iter()
             .filter_map(|c| c.claim_id.map(|claim| crate::code::hands::HandsContext::for_claim(peer_id, c.card_id.as_uuid(), claim.as_uuid())))
             .collect();
-        close_ended_claims(&live, &held_contexts);
+        close_ended_claims(&live, &held_contexts, citizen.as_ref(), peer_id).await;
     }
     if held.is_empty() {
         return HeldCardTurn::unheld();
@@ -636,14 +636,57 @@ pub(crate) async fn end_card_turn(card: &CardHands, acts: usize) {
 /// merged, lapsed, re-acquired as a new claim). Each closes in the background, refusing new
 /// turns and waiting out admitted ones, then releases its engine and shells. A claim she
 /// still holds keeps its hands.
-pub(super) fn close_ended_claims(live: &ActingHands, held: &[crate::code::hands::HandsContext]) {
-    let ended: Vec<crate::code::hands::HandsContext> = ACTING_ROOTS
+/// PURE: has the claim behind `context` ENDED, by the card's own row? Closed hands never
+/// reopen (`code::hands`), so only an end may close them: the card moved on (a state a claim
+/// can't hold), the claim was released (the board clears `claim_id`), or the card's claim is
+/// now a different one (re-claimed, or another holder's). A lease that LAPSED keeps the same
+/// claim id and is renewed by her next heartbeat, so it is not an end, and neither is a row
+/// the board couldn't give. Closing on mere absence from her active claims locked Kimi out of
+/// 0c69aa07 for hours (2026-10-21: `persona.work.hands_closing` on the 5090 every turn while
+/// the board showed her claim live).
+pub(crate) fn claim_has_ended(
+    context: crate::code::hands::HandsContext,
+    card: Option<&airc_lib::WorkCard>,
+    her: uuid::Uuid,
+) -> bool {
+    let Some(card) = card else { return false };
+    if crate::persona::card_holder::refused_by_claim(card.state) {
+        return true;
+    }
+    match card.claim_id {
+        None => true,
+        Some(current) => crate::code::hands::HandsContext::for_claim(her, card.card_id.as_uuid(), current.as_uuid()) != context,
+    }
+}
+
+pub(super) async fn close_ended_claims(
+    live: &ActingHands,
+    held: &[crate::code::hands::HandsContext],
+    citizen: &dyn crate::persona::airc_citizen::AircCitizen,
+    her: uuid::Uuid,
+) {
+    let candidates: Vec<(crate::code::hands::HandsContext, uuid::Uuid)> = ACTING_ROOTS
         .lock()
         .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, same policy as every lock in this crate
         .iter()
-        .filter(|((persona, context), place)| *persona == live.persona_id && place.card.is_some() && context.is_some_and(|c| !held.contains(&c)))
-        .filter_map(|((_, context), _)| *context)
+        .filter(|((persona, context), _)| *persona == live.persona_id && context.is_some_and(|c| !held.contains(&c)))
+        .filter_map(|((_, context), place)| Some(((*context)?, place.card?)))
         .collect();
+    let mut ended = Vec::new();
+    for (context, card) in candidates {
+        let row = citizen.card(card).await;
+        if claim_has_ended(context, row.as_ref(), her) {
+            ended.push(context);
+        } else {
+            crate::probe!(
+                class = "persona.work.hands_kept",
+                peer = %her,
+                card = %card,
+                row_read = row.is_some(),
+                "a claim missing from her active claims has not ENDED (lapsed lease or unread row); its hands stay open"
+            );
+        }
+    }
     for context in ended {
         let Some(hands) = live.in_context(context) else { continue };
         tokio::spawn(async move {

@@ -83,6 +83,59 @@ use super::*;
         assert_eq!(claim_gone_verdict(&open, now, me), Some(ClaimGone::Lapsed { expired_at_ms: None }));
     }
 
+    // what this catches: Kimi locked out of 0c69aa07 for hours (2026-10-21). Her claim's hands
+    // were closed while the board still showed the claim hers. Closed hands never reopen, so
+    // only an END may close them: a released claim, a card that moved on, or a different claim
+    // on the card. A lease that LAPSED keeps her claim id and is renewed by her next
+    // heartbeat, and a row the board couldn't give says nothing; neither closes her hands.
+    #[test]
+    pub(super) fn a_claims_hands_close_only_when_the_claim_ended_never_on_a_lapsed_lease() {
+        use airc_core::PeerId;
+        use airc_work::{CardState, ClaimId, Priority, RepoId, WorkCard, WorkCardId};
+        let her = PeerId::new();
+        let me = her.as_uuid();
+        let card_id = WorkCardId::new();
+        let mine = ClaimId::from_uuid(Uuid::new_v4());
+        let context = crate::code::hands::HandsContext::for_claim(me, card_id.as_uuid(), mine.as_uuid());
+        let row = |owner: Option<PeerId>, claim: Option<ClaimId>, expires: Option<u64>, state: CardState| WorkCard {
+            card_id,
+            repo: RepoId::new("CambrianTech/continuum").expect("valid repo id in fixture"),
+            title: "a card".to_string(),
+            body: None,
+            priority: Priority::P1,
+            lane_id: None,
+            state,
+            owner,
+            claim_provenance: None,
+            claim_id: claim,
+            claim_expires_at_ms: expires,
+            last_heartbeat_at_ms: None,
+            pull_request: None,
+            created_by: PeerId::new(),
+            created_at_ms: 0,
+            updated_at_ms: 0,
+            reviews: None,
+            submissions: Vec::new(),
+            last_submission_rejection: None,
+        };
+        // Her lease lapsed: same claim id, renewable. NOT an end.
+        assert!(!claim_has_ended(context, Some(&row(Some(her), Some(mine), Some(1), CardState::InProgress)), me));
+        // Her live claim: not an end.
+        assert!(!claim_has_ended(context, Some(&row(Some(her), Some(mine), Some(u64::MAX), CardState::InProgress)), me));
+        // The board could not give the row: unknown, never an end.
+        assert!(!claim_has_ended(context, None, me));
+        // Released (the board clears claim_id): ended.
+        assert!(claim_has_ended(context, Some(&row(None, None, None, CardState::Open)), me));
+        // A different claim on the card, hers re-claimed or another holder's: this claim ended.
+        let other = ClaimId::from_uuid(Uuid::new_v4());
+        assert!(claim_has_ended(context, Some(&row(Some(her), Some(other), Some(u64::MAX), CardState::Claimed)), me));
+        assert!(claim_has_ended(context, Some(&row(Some(PeerId::new()), Some(other), Some(u64::MAX), CardState::Claimed)), me));
+        // The card moved on, even under her own claim id: ended.
+        for state in [CardState::Review, CardState::Merged, CardState::Closed] {
+            assert!(claim_has_ended(context, Some(&row(Some(her), Some(mine), Some(u64::MAX), state)), me), "{state:?}");
+        }
+    }
+
     // what this catches (Astra, #4315 round 2): a belief the board has not answered must
     // SURVIVE the next checkpoint. `snapshot()` writes `acting_card: None` and the writer
     // stamps the ambient root; with her hands unheld and the board unseen, that wrote None
