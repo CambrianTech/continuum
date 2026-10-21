@@ -775,14 +775,9 @@ impl GenomeTeach {
         let split_ratio = p.split_ratio.unwrap_or(0.8);
         let root = match p.output_dir {
             Some(d) => std::path::PathBuf::from(d),
-            None => {
-                let home = std::env::var("HOME").map_err(|_| {
-                    CommandError::Internal("HOME unset — cannot resolve datasets root".into())
-                })?;
-                std::path::PathBuf::from(home)
-                    .join(".continuum")
-                    .join("datasets")
-            }
+            None => crate::paths::continuum_home()
+                .map_err(|e| CommandError::Internal(format!("cannot resolve the datasets root: {e}")))?
+                .join("datasets"),
         };
         let dataset_dir = match candidate.as_ref() {
             Some(preparation) => preparation.dataset_dir()?,

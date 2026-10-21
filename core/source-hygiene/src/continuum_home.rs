@@ -27,7 +27,9 @@ const OWNER: &str = "paths/";
 // 79 -> 103, not new debt: production_half now blanks only the #[cfg(test)]-gated item, so
 // production code BELOW a mid-file test mod or gated helper is scanned (measured on canary
 // a85454889 + this change, 2026-10-20).
-pub const BASELINE_HAND_BUILT_HOMES: usize = 103;
+// 103 -> 98: genome's five derivable paths (cuda toolchain, mlx-q4 cache, engine footprints,
+// teach datasets and run ledgers) resolve through paths::continuum_home (card 26d0c110).
+pub const BASELINE_HAND_BUILT_HOMES: usize = 98;
 
 pub struct ContinuumHomeResolvedOnce;
 

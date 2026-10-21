@@ -138,9 +138,9 @@ impl FineTuningAdapter for MlxLoraFineTuner {
         // for a local trainable artifact. Without one, admission refuses an
         // unsized HF id before either tokenizer or trainer can launch.
         let train_base = {
-            let q4 = dirs::home_dir()
-                .unwrap_or_else(|| std::path::PathBuf::from("."))
-                .join(".continuum/genome/models/mlx-q4")
+            let q4 = crate::paths::continuum_home()
+                .unwrap_or_else(|_| std::path::PathBuf::from("."))
+                .join("genome/models/mlx-q4")
                 .join(train_base.replace('/', "_"));
             if q4.join("config.json").exists() {
                 continuum_base::probe!(

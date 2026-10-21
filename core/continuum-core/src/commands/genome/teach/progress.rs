@@ -56,13 +56,9 @@ fn set_teach_progress(p: TeachProgress) {
 /// the terminal RESULT, cross-process and surviving the run, so `genome/teach-status --run_id`
 /// resolves to complete+result (or a failed row) regardless of who's watching or when.
 fn teach_ledger_path(run_id: &str) -> Option<std::path::PathBuf> {
-    std::env::var("HOME").ok().map(|h| {
-        std::path::PathBuf::from(h)
-            .join(".continuum")
-            .join("progress")
-            .join("teach")
-            .join(format!("{run_id}.json"))
-    })
+    crate::paths::continuum_home()
+        .ok()
+        .map(|home| home.join("progress").join("teach").join(format!("{run_id}.json")))
 }
 
 /// Write the terminal row for a detached run — success carries the full result, failure

@@ -49,8 +49,8 @@ impl CudaLoraFineTuner {
             .map(PathBuf::from)
             .unwrap_or_else(|| {
                 // An absent explicit override selects the conventional local installation.
-                let home = dirs::home_dir().unwrap_or_default(); // Without a home, the relative candidate must still pass is_file before execution.
-                let root = home.join(".continuum/tools/cuda-training");
+                let home = crate::paths::continuum_home().unwrap_or_default(); // Without a home, the relative candidate must still pass is_file before execution.
+                let root = home.join("tools/cuda-training");
                 if cfg!(windows) {
                     root.join("Scripts/python.exe")
                 } else {
