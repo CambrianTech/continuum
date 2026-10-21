@@ -39,7 +39,7 @@ use crate::cognition::swe_bench::{self, SweVerdict};
 mod grader;
 pub use grader::*;
 mod benchmark_dispatch_params;
-pub use benchmark_dispatch_params::*;
+pub(crate) use benchmark_dispatch_params::*;
 mod prepare_gym_cards;
 pub(crate) use prepare_gym_cards::*;
 mod publish_citizen_deck;
