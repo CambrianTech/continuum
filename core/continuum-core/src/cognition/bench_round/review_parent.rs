@@ -100,5 +100,3 @@ pub fn observe_card_event(payload: &Value) {
     }
 }
 
-/// Every live round's room and its cards' activity rooms, as `(room, name)`, skipping
-/// rows with no name. The presence emitter merges these with the registry rooms.

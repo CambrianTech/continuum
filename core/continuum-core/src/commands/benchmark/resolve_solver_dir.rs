@@ -345,3 +345,5 @@ pub(super) mod swe_setup_tests {
     fn swe_setup_is_privileged_and_named() {
         assert_eq!(BenchmarkSweSetup::NAME, "benchmark/swe-setup");
         assert!(matches!(BenchmarkSweSetup::ACCESS, AccessLevel::Privileged));
+    }
+}
