@@ -102,7 +102,7 @@ impl FineTuningAdapter for MlxLoraFineTuner {
             // `classify_silicon`) names Apple Silicon; an Intel Mac's
             // Metal GPU does not qualify.
             requires: TrainerHardware::AppleSilicon,
-            trains_on_resident_weights: false,
+            place: crate::genome::fine_tuning::adapter::TrainingPlace::SeparateCopyHere,
         }
     }
 

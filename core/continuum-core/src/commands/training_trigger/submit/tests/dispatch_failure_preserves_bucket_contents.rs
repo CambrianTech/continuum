@@ -447,7 +447,7 @@ use super::*;
                     produces_local_artifact: true,
                     supported_base_model_prefixes: vec!["stress".to_string()],
                     requires: TrainerHardware::Any,
-                    trains_on_resident_weights: false,
+                    place: crate::genome::fine_tuning::adapter::TrainingPlace::SeparateCopyHere,
                 }
             }
 

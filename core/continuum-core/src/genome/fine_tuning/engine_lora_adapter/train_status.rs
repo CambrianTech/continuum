@@ -89,7 +89,59 @@ pub(super) struct TrainStatus {
 /// a record from before that field, which is unknown). One lookup decides both, so the
 /// training window can never come from a second source that disagrees with the lane
 /// (Cormac on #4498).
-pub(super) type LaneResolver = Box<dyn Fn(&str) -> Option<LaneChoice> + Send + Sync>;
+pub(super) type LaneResolver = Box<dyn LaneSource>;
+
+/// Where a run's lane comes from: the ONE difference between the in-engine trainers (this
+/// node's resident lane, a lane stood up for the run, a grid peer's lane). The training is
+/// the same `POST /train` against whatever lane this returns; no trainer is its own process.
+#[async_trait]
+pub(super) trait LaneSource: Send + Sync {
+    /// Whether a lane for `base` is available now; the coordinator asks before it ranks, so a
+    /// trainer is never chosen for a job it would refuse.
+    fn serves(&self, base: &str) -> bool;
+    /// A lane for `base`, alive for as long as the returned lease is held.
+    async fn acquire(&self, base: &str) -> Result<LaneLease, String>;
+}
+
+/// A lane a run trains in, and what keeps it alive: `hold` is `None` for a lane that outlives
+/// the run (the resident lane), and owns a lane stood up for this run until the run ends.
+pub(super) struct LaneLease {
+    pub(super) choice: LaneChoice,
+    pub(super) hold: Option<Box<dyn std::any::Any + Send + Sync>>,
+}
+
+/// The live lane serving the base on this node: training on the resident weights.
+pub(super) struct ResidentLane;
+
+#[async_trait]
+impl LaneSource for ResidentLane {
+    fn serves(&self, base: &str) -> bool {
+        live_lane_for(base).is_some()
+    }
+
+    async fn acquire(&self, base: &str) -> Result<LaneLease, String> {
+        let choice = live_lane_for(base).ok_or_else(|| {
+            format!("no live lane serves {base} on this node: in-engine training runs on the resident weights")
+        })?;
+        Ok(LaneLease { choice, hold: None })
+    }
+}
+
+/// A test's lane: one fixed choice for every base, held by nothing.
+#[cfg(test)]
+pub(super) struct FixedLane(pub(super) LaneChoice);
+
+#[cfg(test)]
+#[async_trait]
+impl LaneSource for FixedLane {
+    fn serves(&self, _base: &str) -> bool {
+        true
+    }
+
+    async fn acquire(&self, _base: &str) -> Result<LaneLease, String> {
+        Ok(LaneLease { choice: self.0.clone(), hold: None })
+    }
+}
 
 /// The lane a run will train in, as the ONE live-lane record names it.
 #[derive(Debug, Clone)]
@@ -176,7 +228,7 @@ impl EngineLoraFineTuner {
         Self {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
-            lane: Box::new(live_lane_for),
+            lane: Box::new(ResidentLane),
             train_dir: crate::inference::llama_server::engine_train_dir(),
             footprints: Footprints::at(footprints),
             admission: Admission::Governed,
@@ -218,7 +270,7 @@ impl EngineLoraFineTuner {
             jobs: NativeJobs::new(PROVIDER_ID),
             http: reqwest::Client::new(),
             // a lane launched at 256 per slot: the window every existing test asserts
-            lane: Box::new(move |_| Some(LaneChoice { url: lane_url.clone(), window: 256, engine: None, build: None })),
+            lane: Box::new(FixedLane(LaneChoice { url: lane_url, window: 256, engine: None, build: None })),
             train_dir: Some(train_dir),
             footprints: Footprints::at(footprints),
             admission: Admission::Ungoverned { vram_free: u64::MAX },
@@ -265,6 +317,8 @@ pub(super) struct EngineRun {
     /// when admission bound it (`None`: an ungoverned test run). Released only when the run's
     /// end is SETTLED: see [`EngineProbe::settled`].
     pub(super) residency: Option<(PathBuf, crate::inference::engine_residency::ResidentWork)>,
+    /// What keeps a lane stood up for this run alive ([`LaneLease::hold`]): dropped with the run.
+    pub(super) _lane_hold: Option<Box<dyn std::any::Any + Send + Sync>>,
     /// The governed lease, held for exactly as long as the engine may be running this job's
     /// training: `run` returns only once it has ended there, and the lease drops with `self`.
     pub(super) _lease: Option<crate::resources::LeaseGuard>,

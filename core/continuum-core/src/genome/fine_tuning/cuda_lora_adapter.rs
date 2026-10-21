@@ -74,7 +74,7 @@ impl FineTuningAdapter for CudaLoraFineTuner {
             produces_local_artifact: true,
             supported_base_model_prefixes: vec![],
             requires: TrainerHardware::Cuda,
-            trains_on_resident_weights: false,
+            place: crate::genome::fine_tuning::adapter::TrainingPlace::SeparateCopyHere,
         }
     }
 
