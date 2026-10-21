@@ -212,24 +212,28 @@ impl LlmDeliberationFaculty {
         // Split by churn class: non-WM grounding (semi-stable) → append-only ring →
         // the trail (churniest standing block) → facts/ask/pin. One rule, monotone
         // in stability, same law as the system-side phases.
-        // Standing grounding that rides the conversation (the workspace map, the board, the
-        // wall, the roster) as sources of her view, one block each, in the canonical wire
-        // order (churn class, then name) so two blocks never swap places between acts
-        // (`deliberation_prompt::stable_prefix_order`). Her working-memory bid is not one of
-        // them: its thoughts and her actions are their own streams.
+        // Every grounding block that rides the conversation (the workspace map, the board,
+        // the wall, the roster, standing or not) is a source of her view, one block each, in
+        // the canonical wire order (churn class, then name) so two blocks never swap places
+        // between acts (`deliberation_prompt::stable_prefix_order`). Outside the view a block
+        // sat behind it, and every act's append landed before it and re-sent it: on the M5
+        // (2026-10-21 19:56Z) Aris re-prefilled 49k chars from `[workspace-map]` on. Her
+        // working-memory bid is not one of them: her thoughts and actions are their own streams.
         let mut pieces: Vec<&Contribution> = ws
             .broadcast
             .iter()
-            .filter(|c| c.decision.is_none() && c.trailing && !c.standing_grounding)
+            .filter(|c| c.decision.is_none() && c.fault.is_none() && c.trailing)
             .filter(|c| c.faculty.as_str() != crate::cognition::working_memory::WM_FACULTY_ID)
             .filter(|c| !c.content.trim().is_empty())
             .collect();
         pieces.sort_by(|a, b| deliberation_prompt::stable_prefix_order(a.faculty.as_str(), b.faculty.as_str()));
         let blocks: Vec<crate::cognition::context_streams::blocks::Grounding> = pieces
             .into_iter()
-            .map(|c| crate::cognition::context_streams::blocks::Grounding {
-                faculty: c.faculty.as_str().to_owned(),
-                text: c.content.clone(),
+            .map(|c| {
+                // Rendered by the owner of a block's body, so it reads exactly as it did.
+                let mut text = String::new();
+                GroundingPiece::whole(c).append_body(&mut text);
+                crate::cognition::context_streams::blocks::Grounding { faculty: c.faculty.as_str().to_owned(), text }
             })
             .collect();
         let result_pointers = Vec::new();

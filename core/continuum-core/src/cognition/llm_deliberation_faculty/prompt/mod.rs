@@ -3,7 +3,6 @@ use super::*;
 mod types;
 pub use self::types::*;
 mod view;
-pub(super) use self::view::*;
 mod system;
 mod messages;
 mod epoch;

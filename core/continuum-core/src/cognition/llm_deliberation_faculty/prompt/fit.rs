@@ -535,13 +535,15 @@ pub(in super::super) enum Fitted<T> {
 
 impl<'a> GroundingPlan<'a> {
     /// The standing sources' truthful minimums, whatever the budget — the plan the
-    /// caller WANTS. Fitting it is [`GroundingPlan::within_budget`]'s job.
+    /// caller WANTS. Fitting it is [`GroundingPlan::within_budget`]'s job. Only the
+    /// system half: a block that rides the conversation is a source of her view
+    /// (`prompt/epoch.rs`), budgeted by its epoch.
     pub(in super::super) fn minimum(ws: &'a Workspace) -> Self {
         Self {
             pieces: ws
                 .broadcast
                 .iter()
-                .filter(|c| c.decision.is_none() && c.standing_grounding)
+                .filter(|c| c.decision.is_none() && c.standing_grounding && !c.trailing)
                 .map(GroundingPiece::minimum)
                 .collect(),
         }

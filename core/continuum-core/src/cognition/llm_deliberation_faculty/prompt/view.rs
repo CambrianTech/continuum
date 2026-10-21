@@ -188,12 +188,8 @@ impl LlmDeliberationFaculty {
         } else {
             calibration
         };
-        let unfitted_message_tokens = all_messages.tokens()
-            + ws.broadcast
-                .iter()
-                .filter(|c| c.decision.is_none() && c.trailing && c.standing_grounding)
-                .map(|c| GroundingPiece::whole(c).tokens)
-                .sum::<usize>();
+        // Her view already carries every block that rides the conversation.
+        let unfitted_message_tokens = all_messages.tokens();
         // KEEP THE OVERFLOW. This used to be one chained `saturating_sub` ending in
         // `- all_messages.required_tokens()`, and the saturation is where the diagnosis
         // died: "over by 31,000" and "exactly at the line" both arrive as `0`, so the one
