@@ -25,6 +25,47 @@
     }
     use super::*;
 
+    /// A build-cache pool whose every host input is the fixture's: no measured volume
+    /// (the explicit budget governs), an idle node, and its own empty serving custody.
+    /// `CargoTargetPool::new` wires the live ones — the disk monitor's published sample
+    /// of the runner's real volumes, the running core's citizens, and any pin another
+    /// test published — so a fixture built on it tests the machine, not the pool (card
+    /// c4d84be3: two of these failed on the M5 and passed on an idle box). A test that
+    /// is ABOUT one of those inputs sets that field after this.
+    fn fixture_pool(tracked: Arc<TrackedDir>, budget_bytes: u64) -> CargoTargetPool {
+        let mut pool = CargoTargetPool::new(tracked, budget_bytes);
+        pool.volume_sample = |_| None;
+        pool.citizen_quiescence = |_| Ok(());
+        pool.active_artifacts = Arc::new(ActiveArtifactSet::default());
+        pool
+    }
+
+    /// Run an eviction that is expected to cut, waiting out a cargo lock held only by a
+    /// spawn's fork window. On Linux `posix_spawn` is clone + exec, so every process this
+    /// test binary starts (any test, any thread) holds a copy of our fd table until it
+    /// execs — and with it any `.cargo-lock` description open at that instant, which
+    /// keeps the flock alive after this pool dropped it. The next eviction then reads
+    /// `BuildHoldsRootLock` on a tempdir nothing else owns (CI on #5200, run 39352761897:
+    /// `remaining ladder: decline=1`, passed on rerun). macOS spawns atomically, so it
+    /// never showed there. Only a lock decline that freed nothing is retried; any other
+    /// outcome — a cut, or a different decline — returns at once and is asserted.
+    fn past_spawn_windows<T>(pool: &CargoTargetPool, freed: impl Fn(&T) -> u64, mut op: impl FnMut() -> T) -> T {
+        use std::sync::atomic::Ordering::Relaxed;
+        let lock_held = [DeclinedEviction::BuildHoldsRootLock, DeclinedEviction::BuildHoldsDebugLock, DeclinedEviction::BuildHoldsReleaseLock]
+            .map(|d| d.discriminant());
+        // derived-or-floor: a liveness bound on a child's clone→exec window (microseconds
+        // to a few ms), never the assertion: 200 × 5 ms = 1 s before the real outcome stands.
+        for _ in 0..200 {
+            pool.last_decline.store(u8::MAX, Relaxed);
+            let out = op();
+            if freed(&out) > 0 || !lock_held.contains(&pool.last_decline.load(Relaxed)) {
+                return out;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        op()
+    }
+
     // what this catches (2026-09-18, the 5090 at 95 % with both cargo caches "within
     // budget"): a cache pool on a critical volume reads AT LEAST the volume's
     // pressure, so the broker's act line is crossed by the volume filling — not only
@@ -77,10 +118,23 @@
             let generation = custody::publish_static_inputs(out).unwrap();
             std::fs::write(out.parent().unwrap().join("output"), format!("{}{generation}\n", custody::METADATA)).unwrap();
         }
-        let mut child = std::process::Command::new(&sleeper).arg("30").spawn().expect("spawn the sleeper");
-        let pool = CargoTargetPool::new(tracked.clone(), 1);
+        // The same fork window, on the image: `fs::copy` held `sleeper` open for write, and a
+        // spawn on another thread that cloned our fd table in that instant keeps the write
+        // fd until it execs, so exec of the image reads ETXTBSY (CI #5208, run
+        // 39362437168). Only that error is retried, within the same 1 s liveness bound.
+        let mut child = (0..200)
+            .find_map(|_| match std::process::Command::new(&sleeper).arg("30").spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    None
+                }
+                other => Some(other),
+            })
+            .expect("the image stayed busy past the liveness bound")
+            .expect("spawn the sleeper");
+        let pool = fixture_pool(tracked.clone(), 1);
         // Ask for more than the first two rungs hold, so the ladder reaches debug/.
-        let freed = pool.evict_at_least(100_000);
+        let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(100_000));
         assert!(!tmp.path().join("debug/incremental").exists(), "the first rung still cuts");
         assert!(!tmp.path().join("tests").exists(), "the second rung still cuts");
         assert!(sleeper.exists(), "the executing image survives");
@@ -88,9 +142,8 @@
         assert_eq!(freed, if profile == "debug" { 6000 } else { 9000 }, "only safe rungs");
         child.kill().expect("stop the sleeper");
         let exited = child.wait();
-        // u8::MAX = no decline recorded, so the tag below is the SECOND call's alone.
-        pool.last_decline.store(u8::MAX, std::sync::atomic::Ordering::Relaxed);
-        let freed_after = pool.evict_at_least(100_000);
+        // The helper clears the decline tag per attempt, so the tag below is the SECOND call's alone.
+        let freed_after = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(100_000));
         // The failure names its cause (Ubuntu CI run 38829445559 failed here with no
         // reason, card e37a54db): what the wait reported, what the rung freed, which typed
         // decline it last recorded, and what the process scan sees under debug/ now.
@@ -110,13 +163,12 @@
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
         let usage_before = tracked.bytes();
-        let mut pool = CargoTargetPool::new(tracked.clone(), 1);
-        // This fixture owns its serving custody too: another serving test may publish
-        // an unresolved global pin, which correctly refuses every production candidate.
-        pool.active_artifacts = Arc::new(ActiveArtifactSet::default());
+        // The fixture owns its serving custody: another serving test may publish an
+        // unresolved global pin, which correctly refuses every production candidate.
+        let pool = fixture_pool(tracked.clone(), 1);
 
         // Small want: the incremental rung (4000 B) alone satisfies it.
-        let freed = pool.evict_at_least(1000);
+        let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(1000));
         assert_eq!(freed, 4000, "incremental rung is the first and only cut");
         assert!(!tmp.path().join("debug/incremental").exists());
         assert!(tmp.path().join("tests").exists(), "later rung untouched");
@@ -129,7 +181,7 @@
 
         // Large want: remaining rungs go (tests 2000 + debug 3000);
         // release survives regardless.
-        let freed = pool.evict_at_least(u64::MAX);
+        let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(u64::MAX));
         assert_eq!(freed, 5000, "remaining ladder: decline={} active_pin={}",
             pool.last_decline.load(std::sync::atomic::Ordering::Relaxed),
             pool.active_artifacts.protects(tmp.path()));
@@ -173,7 +225,7 @@
     fn held_cargo_lock_blocks_eviction_entirely() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let tracked = seeded_target(tmp.path());
-        let mut pool = CargoTargetPool::new(tracked, 1);
+        let mut pool = fixture_pool(tracked, 1);
 
         let build_holds_lock = try_exclusive_flock(&tmp.path().join(".cargo-lock"))
             .expect("test takes the lock first");
@@ -198,7 +250,7 @@
         assert_eq!(pool.evict_at_least(u64::MAX), 0);
         assert!(tmp.path().join("debug/incremental").exists());
         pool.citizen_quiescence = |_| Ok(());
-        assert!(pool.evict_at_least(1) > 0, "a later idle broker attempt reaches the existing derived rung");
+        assert!(past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(1)) > 0, "a later idle broker attempt reaches the existing derived rung");
         assert!(tmp.path().join(".cargo-lock").exists(), "lock inode retained");
     }
 
@@ -247,7 +299,7 @@
         let closure_bytes = dir_size_bytes(&certified) + std::fs::metadata(&cargo_output).unwrap().len();
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
         tracked.set_bytes(dir_size_bytes(tmp.path()));
-        let mut pool = CargoTargetPool::new(tracked.clone(), 1);
+        let mut pool = fixture_pool(tracked.clone(), 1);
         pool.volume_sample = critical_fixture_volume;
         let active = Arc::new(ActiveArtifactSet::default());
         pool.active_artifacts = active.clone();
@@ -274,7 +326,7 @@
             certified.join("build/input"), certified.join("build/input").components().collect::<Vec<_>>(),
             certified.join("build/input").canonicalize(), tracked.path().join("release"),
             tracked.path().join("release").components().collect::<Vec<_>>());
-        assert_eq!(broker.relieve().bytes_freed, 4096,
+        assert_eq!(past_spawn_windows(&pool, |f| *f, || broker.relieve().bytes_freed), 4096,
             "the existing broker reaches release-only incremental pressure: decline={}, pressure={}, incremental_exists={}, incremental_pinned={}, release_pinned={}",
             pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), pool.pressure(),
             release.join("incremental").exists(), active.protects(&tracked.path().join("release/incremental")),
@@ -287,7 +339,7 @@
         for output in outputs { assert_eq!(std::fs::read(release.join(output)).unwrap(), b"preserve installed inputs"); }
         active.release(&certified.join("build/input"));
         let remaining = tracked.bytes();
-        assert_eq!(broker.relieve().bytes_freed, closure_bytes,
+        assert_eq!(past_spawn_windows(&pool, |f| *f, || broker.relieve().bytes_freed), closure_bytes,
             "release-only intermediate pressure has a real eviction owner: decline={}, observation={}, release_observation={}, active_pin={}",
             pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), tracked.observation(),
             pool.release_observation.load(std::sync::atomic::Ordering::Relaxed), active.protects(&release));
@@ -305,7 +357,7 @@
         assert!(unknown.join("build/input").exists());
         tracked.set_bytes(dir_size_bytes(tmp.path()));
         let declared_bytes = dir_size_bytes(&unknown) + std::fs::metadata(unknown.parent().unwrap().join("output")).unwrap().len();
-        assert_eq!(broker.relieve().bytes_freed, declared_bytes, "only that producer's explicit declaration releases its own inputs");
+        assert_eq!(past_spawn_windows(&pool, |f| *f, || broker.relieve().bytes_freed), declared_bytes, "only that producer's explicit declaration releases its own inputs");
         assert!(!custody::declared_static_inputs(&unknown));
         assert_eq!(std::fs::read(release.join("continuum")).unwrap(), b"preserve installed inputs", "a completed warm-build receipt can still name the root binary");
         assert_eq!(pool.last_decline.load(std::sync::atomic::Ordering::Relaxed), DeclinedEviction::ReleaseInputsRetained { bytes: 1 }.discriminant());
@@ -337,7 +389,7 @@
             panic!("create redirected profile fixture: {error}");
         }
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
-        let pool = CargoTargetPool::new(tracked, 1);
+        let pool = fixture_pool(tracked, 1);
         assert_eq!(pool.evict_at_least(u64::MAX), 0);
         assert!(!outside.path().join(".cargo-lock").exists(), "refuse before creating custody through a redirect");
         #[cfg(unix)]
@@ -356,7 +408,7 @@
         std::fs::rename(&parent, tmp.path().join("parent-before")).unwrap();
         std::fs::create_dir_all(outside.path().join("cache/release/incremental")).unwrap();
         symlink(outside.path(), &parent).unwrap();
-        assert_eq!(CargoTargetPool::new(remembered, 1).evict_at_least(u64::MAX), 0,
+        assert_eq!(fixture_pool(remembered, 1).evict_at_least(u64::MAX), 0,
             "a formerly physical root cannot acquire a new destination through its ancestor");
         assert!(!outside.path().join("cache/.cargo-lock").exists());
     }
@@ -379,7 +431,8 @@
         std::fs::create_dir_all(tmp.path().join("debug/deps")).unwrap();
         std::fs::write(tmp.path().join("debug/deps/libwebrtc_sys.rlib"), vec![7u8; 4096]).unwrap();
         let tracked = TrackedDir::new("cargo-target", tmp.path().canonicalize().unwrap());
-        let freed = CargoTargetPool::new(tracked, 1).evict_at_least(u64::MAX);
+        let pool = fixture_pool(tracked, 1);
+        let freed = past_spawn_windows(&pool, |f| *f, || pool.evict_at_least(u64::MAX));
         assert!(freed >= 4096, "the real artifact beside the link is reclaimed: freed {freed}");
         assert!(!tmp.path().join("debug/deps/libwebrtc_sys.rlib").exists());
         assert!(include.join("peer_connection_factory.rs").symlink_metadata().is_err(), "the link itself is unlinked");
@@ -393,7 +446,7 @@
     #[test]
     fn pressure_is_budget_relative() {
         let tracked = TrackedDir::new("cargo-target", PathBuf::from("/tmp/none"));
-        let pool = CargoTargetPool::new(tracked.clone(), 50_000);
+        let pool = fixture_pool(tracked.clone(), 50_000);
         assert_eq!(pool.pressure(), 0.0, "unscanned = not under management");
 
         tracked.set_bytes(75_000); // scanner measured 1.5× the budget
@@ -431,15 +484,15 @@
         // Measured critical volume admits the broker independently of any
         // process-global monitor updates from concurrently running tests.
         let budget = tracked.bytes() / 2;
-        let mut pool = CargoTargetPool::new(tracked.clone(), budget);
+        let mut pool = fixture_pool(tracked.clone(), budget);
         pool.volume_sample = critical_fixture_volume;
         let pool = Arc::new(pool);
 
         let broker = PressureBroker::new(BrokerConfig::default());
-        broker.register(pool as Arc<dyn ResourcePool>);
+        broker.register(pool.clone() as Arc<dyn ResourcePool>);
 
         let disk_before = dir_size_bytes(tmp.path());
-        let report = broker.relieve();
+        let report = past_spawn_windows(&pool, |r: &crate::paging::broker::ReliefReport| r.bytes_freed, || broker.relieve());
 
         assert!(report.triggered, "over-budget pool must trigger relief");
         assert!(report.bytes_freed > 0, "relief must free real bytes");
@@ -746,8 +799,8 @@
             let shared = TrackedDir::new("cargo-target", tmp.path().join(&names[0]));
             let worktree = TrackedDir::new("cargo-target", tmp.path().join(&names[1]));
 
-            let a = CargoTargetPool::new(shared, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
-            let b = CargoTargetPool::new(worktree, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
+            let a = fixture_pool(shared, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
+            let b = fixture_pool(worktree, DEFAULT_CARGO_TARGET_BUDGET_BYTES);
 
             assert!(a.tier_name().starts_with("disk-cargo-target:"));
             assert!(b.tier_name().starts_with("disk-cargo-target:"));

@@ -135,7 +135,7 @@ fn emission_path(persona: Uuid) -> std::io::Result<std::path::PathBuf> {
 }
 
 /// One mind's observed demand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonaDemand {
     /// High-water mark, in tokens, of a full unclamped turn for this persona.
     pub peak_tokens: u32,
@@ -482,13 +482,8 @@ impl WorkingSetRegistry {
                     peak_tokens: demand_tokens,
                     last_tokens: demand_tokens,
                     last_seen_ms: now_ms,
-                    prev_seen_ms: 0,
                     turns: 1,
-                    sent_peak: 0,
-                    recent: [0; RECENT_TURNS],
-                    recent_next: 0,
-                    need_recent: [0; RECENT_TURNS],
-                    need_next: 0,
+                    ..PersonaDemand::default()
                 };
                 push_recent(&mut d, demand_tokens);
                 d
@@ -519,23 +514,19 @@ impl WorkingSetRegistry {
         if sent_tokens == 0 {
             return;
         }
-        let updated = *self
+        let updated = self.record_sent_in_memory(persona, sent_tokens, now_ms);
+        Self::save(persona, &updated);
+    }
+
+    /// The in-memory half of [`Self::record_sent`], without the disk write — the
+    /// sibling of [`Self::record_in_memory`], so a test stands up a sent sample
+    /// without writing into the operator's `~/.continuum/personas`.
+    pub(crate) fn record_sent_in_memory(&self, persona: Uuid, sent_tokens: u32, now_ms: u64) -> PersonaDemand {
+        *self
             .observed
             .entry(persona)
             .and_modify(|d| d.sent_peak = d.sent_peak.max(sent_tokens))
-            .or_insert(PersonaDemand {
-                peak_tokens: 0,
-                last_tokens: 0,
-                last_seen_ms: now_ms,
-                prev_seen_ms: 0,
-                turns: 0,
-                sent_peak: sent_tokens,
-                recent: [0; RECENT_TURNS],
-                recent_next: 0,
-                need_recent: [0; RECENT_TURNS],
-                need_next: 0,
-            });
-        Self::save(persona, &updated);
+            .or_insert(PersonaDemand { last_seen_ms: now_ms, sent_peak: sent_tokens, ..PersonaDemand::default() })
     }
 
     /// Record the post-fit size of a turn the fit HELD — her need (see
@@ -554,18 +545,7 @@ impl WorkingSetRegistry {
             .entry(persona)
             .and_modify(|d| push_need(d, need_tokens))
             .or_insert_with(|| {
-                let mut d = PersonaDemand {
-                    peak_tokens: 0,
-                    last_tokens: 0,
-                    last_seen_ms: now_ms,
-                    prev_seen_ms: 0,
-                    turns: 0,
-                    sent_peak: 0,
-                    recent: [0; RECENT_TURNS],
-                    recent_next: 0,
-                    need_recent: [0; RECENT_TURNS],
-                    need_next: 0,
-                };
+                let mut d = PersonaDemand { last_seen_ms: now_ms, ..PersonaDemand::default() };
                 push_need(&mut d, need_tokens);
                 d
             })
