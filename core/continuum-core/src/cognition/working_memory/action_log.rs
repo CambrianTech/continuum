@@ -15,7 +15,7 @@ use uuid::Uuid;
 /// bound the collapsed-pointer index already had; the ledger line outlives it.
 const POINTER_INDEX: usize = 12;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ActionRecord {
     pub seq: u64,
     /// The room the act was FOR; `None` for an unscoped or legacy receipt.
@@ -24,13 +24,18 @@ pub(crate) struct ActionRecord {
     pub scope: Option<String>,
     /// The typed call names in order, `unrecorded` for a legacy text receipt.
     pub operation: String,
-    /// The ledger line: `[action #n] name(args)`.
-    pub head: String,
+    /// The ledger line, `[action #n] name(args)`; `None` for an act restored from a
+    /// checkpoint that kept only its pointer (its line had left the ledger).
+    pub head: Option<String>,
     /// The whole result while retained; `None` once collapsed to its handle.
     pub result: Option<String>,
     /// The saved whole; `None` when the save failed, and then the result never collapses
     /// (nothing else holds its bytes).
     pub handle: Option<String>,
+    /// The pointer exactly as a build before the records wrote it, restored from its
+    /// checkpoint: its operation and workspace live only in that text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub written_pointer: Option<String>,
 }
 
 impl ActionRecord {
@@ -100,16 +105,16 @@ impl ActionLog {
     }
 
     /// The newest ledger lines that fit `archive_chars`, oldest first; at least the newest.
-    pub fn archive(&self, archive_chars: usize) -> Vec<&ActionRecord> {
+    pub fn archive(&self, archive_chars: usize) -> Vec<(&ActionRecord, &str)> {
         let mut used = 0usize;
-        let mut kept: Vec<&ActionRecord> = Vec::new();
-        for record in self.records.iter().rev() {
-            let cost = record.head.chars().count() + 1;
+        let mut kept: Vec<(&ActionRecord, &str)> = Vec::new();
+        for (record, head) in self.records.iter().rev().filter_map(|r| r.head.as_deref().map(|h| (r, h))) {
+            let cost = head.chars().count() + 1;
             if !kept.is_empty() && used + cost > archive_chars {
                 break;
             }
             used += cost;
-            kept.push(record);
+            kept.push((record, head));
         }
         kept.reverse();
         kept
@@ -150,6 +155,7 @@ impl ActionLog {
         let keep: HashSet<u64> = self
             .archive(archive_chars)
             .into_iter()
+            .map(|(record, _)| record)
             .chain(self.indexed_pointers())
             .map(|record| record.seq)
             .collect();

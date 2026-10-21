@@ -322,9 +322,10 @@ impl WorkingMemory {
                     room,
                     scope: scope.clone(),
                     operation: label,
-                    head: archive_head(seq, a, &acts, budget.trail_head_chars()),
+                    head: Some(archive_head(seq, a, &acts, budget.trail_head_chars())),
                     result: Some(tail),
                     handle,
+                    written_pointer: None,
                 },
                 budget.receipt_archive_chars(),
             );
@@ -381,7 +382,7 @@ impl WorkingMemory {
 
     pub fn receipt_archive(&self) -> Vec<(Option<Uuid>, String)> {
         let archive_chars = self.budget().receipt_archive_chars();
-        self.actions.lock().archive(archive_chars).into_iter().map(|record| (record.room, record.head.clone())).collect()
+        self.actions.lock().archive(archive_chars).into_iter().map(|(record, head)| (record.room, head.to_owned())).collect()
     }
 
     /// The TYPED acts still in the recency window, oldest → newest — the parallel

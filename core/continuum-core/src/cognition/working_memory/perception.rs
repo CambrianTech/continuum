@@ -191,9 +191,11 @@ impl WorkingMemory {
             .map(|record| {
                 let attribution = ResultAttribution::of(record);
                 let workspace = workspace_label(record.scope.as_deref());
-                let pointer = match record.handle {
-                    Some(_) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
-                    None => record.head.clone(),
+                let pointer = match (&record.handle, &record.head) {
+                    (Some(_), _) => format!("[result {attribution}{workspace} — collapsed; query tool/output to expand]"),
+                    (None, Some(head)) => head.clone(),
+                    // Unsaved and off the ledger: what it was, which never collapses anyway.
+                    (None, None) => format!("[action #{}] {}", record.seq, record.operation),
                 };
                 let full = match record.result.as_deref() {
                     Some(result) => format!("[result {attribution}{workspace}] {result}"),

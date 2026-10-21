@@ -156,7 +156,10 @@ impl<'a> ResultAttribution<'a> {
 
 /// The line a collapsed result leaves: what it was, and the handle that reopens it.
 fn collapsed_pointer(record: &action_log::ActionRecord) -> String {
-    format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref()))
+    match &record.written_pointer {
+        Some(pointer) => pointer.clone(),
+        None => format!("[result {}{} — collapsed]", ResultAttribution::of(record), workspace_label(record.scope.as_deref())),
+    }
 }
 
 /// Recognize ONLY the standalone pointer representation emitted by this owner.
@@ -440,11 +443,6 @@ pub struct VolatileSnapshot {
     /// (honest "unscoped", never a guessed room).
     #[serde(default)]
     pub receipt_head_rooms: Vec<Option<Uuid>>,
-    /// Action sequence numbers parallel to `receipt_heads`, index-aligned: what keys each
-    /// line to its act. Empty on snapshots written before it; restore then reads the `#n`
-    /// this owner wrote at the head of each line.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub receipt_head_seqs: Vec<u64>,
     /// Recent act result TAILS `(seq, room, tail)` — the cross-turn feedback
     /// channel (2026-08-16). Defaulted so pre-field snapshots deserialize;
     /// restore then starts the buffer fresh.
@@ -466,10 +464,11 @@ pub struct VolatileSnapshot {
     /// lost its only handle on restart). Empty on snapshots written before this field.
     #[serde(default)]
     pub evicted_pointers: Vec<(String, String)>,
-    /// Action sequence numbers parallel to `evicted_pointers`, index-aligned; empty on
-    /// snapshots written before it (restore then reads each pointer's `#n`).
+    /// Her actions, whole ([`action_log`]): what a restore reads. The ring, archive and
+    /// pointer fields above are the same acts in the shape the previous build reads, kept
+    /// so a rollback still restores her. Empty on snapshots written before it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub evicted_pointer_seqs: Vec<u64>,
+    pub(crate) actions: Vec<action_log::ActionRecord>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.
@@ -488,57 +487,66 @@ impl VolatileSnapshot {
     /// newly saved receipt's dependencies under its new key: from `seq:N` to its handle, or the
     /// next publish would prune them as belonging to no receipt (Codex on #4987).
     pub fn retain_handleless(&mut self, persona_id: Uuid) -> crate::cognition::tool_executor::spill::LivePin {
+        // One shape to save into: a checkpoint from before the records gets them here.
+        if self.actions.is_empty() {
+            self.actions = self.action_records();
+        }
         let unsaved = self.unsaved_receipts();
         let pin = crate::cognition::tool_executor::spill::retain_handleless(
             persona_id,
-            self.recent_results.iter_mut().map(|(_, _, text, _, handle)| (text.as_str(), handle)),
+            self.actions
+                .iter_mut()
+                .filter_map(|record| record.result.as_deref().map(|text| (text, &mut record.handle))),
         );
         self.refile_children(&unsaved);
         pin
     }
 
-    /// Her actions as records. The snapshot keeps the wire shape older builds read (a ring,
-    /// an archive, a pointer index) so a rollback still restores her; this is the one place
-    /// that shape is read back into records. A line or pointer from before the seq columns
-    /// is keyed by the `#n` this owner wrote at its head; one that has none is dropped and
-    /// counted.
+    /// Her actions as records: the records it carries, or, for a checkpoint written before
+    /// them, the ring, archive and pointer index read back into records. Those older lines
+    /// are keyed by the `#n` this owner wrote at their head (one with none is dropped and
+    /// counted), and an older pointer keeps the exact text it was written with, since its
+    /// operation and workspace are not stored apart from it.
     pub(crate) fn action_records(&self) -> Vec<action_log::ActionRecord> {
+        if !self.actions.is_empty() {
+            return self.actions.clone();
+        }
+        let blank = |seq: u64, room: Option<Uuid>| action_log::ActionRecord {
+            seq,
+            room,
+            scope: None,
+            operation: "unrecorded".into(),
+            head: None,
+            result: None,
+            handle: None,
+            written_pointer: None,
+        };
         let mut records: BTreeMap<u64, action_log::ActionRecord> = BTreeMap::new();
         let mut unkeyed = 0usize;
         for (seq, room, result, operation, handle) in &self.recent_results {
-            records.insert(*seq, action_log::ActionRecord {
-                seq: *seq,
-                room: *room,
-                scope: self.result_scopes.get(seq).cloned(),
-                operation: operation.clone(),
-                head: format!("[action #{seq}] {operation}"),
-                result: Some(result.clone()),
-                handle: handle.clone(),
-            });
+            let record = records.entry(*seq).or_insert_with(|| blank(*seq, *room));
+            record.scope = self.result_scopes.get(seq).cloned();
+            record.operation = operation.clone();
+            record.result = Some(result.clone());
+            record.handle = handle.clone();
         }
         let mut rooms = self.receipt_head_rooms.iter();
-        let mut seqs = self.receipt_head_seqs.iter();
         for head in &self.receipt_heads {
             let room = rooms.next().copied().flatten();
-            let Some(seq) = seqs.next().copied().or_else(|| written_seq(head, "[action #")) else {
+            let Some(seq) = written_seq(head, "[action #") else {
                 unkeyed += 1;
                 continue;
             };
-            let record = records.entry(seq).or_insert_with(|| action_log::ActionRecord {
-                seq, room, scope: None, operation: "unrecorded".into(), head: String::new(), result: None, handle: None,
-            });
-            record.head = head.clone();
+            records.entry(seq).or_insert_with(|| blank(seq, room)).head = Some(head.clone());
         }
-        let mut seqs = self.evicted_pointer_seqs.iter();
         for (pointer, handle) in &self.evicted_pointers {
-            let Some(seq) = seqs.next().copied().or_else(|| written_seq(pointer, "[result #")) else {
+            let Some(seq) = written_seq(pointer, "[result #") else {
                 unkeyed += 1;
                 continue;
             };
-            let record = records.entry(seq).or_insert_with(|| action_log::ActionRecord {
-                seq, room: None, scope: None, operation: "unrecorded".into(), head: pointer.clone(), result: None, handle: None,
-            });
+            let record = records.entry(seq).or_insert_with(|| blank(seq, None));
             record.handle.get_or_insert_with(|| handle.clone());
+            record.written_pointer = Some(pointer.clone());
         }
         if unkeyed > 0 {
             continuum_base::probe!(
@@ -558,14 +566,18 @@ impl VolatileSnapshot {
     }
 
     fn unsaved_receipts(&self) -> Vec<u64> {
-        self.recent_results.iter().filter(|(.., handle)| handle.is_none()).map(|(seq, ..)| *seq).collect()
+        self.actions
+            .iter()
+            .filter(|record| record.result.is_some() && record.handle.is_none())
+            .map(|record| record.seq)
+            .collect()
     }
 
     /// Move each of `unsaved`'s dependencies from its `seq:N` key to the handle it now has.
     fn refile_children(&mut self, unsaved: &[u64]) {
-        for (seq, .., handle) in &self.recent_results {
-            if let (true, Some(handle)) = (unsaved.contains(seq), handle) {
-                if let Some(children) = self.receipt_children.remove(&receipt_key(*seq, None)) {
+        for record in &self.actions {
+            if let (true, Some(handle)) = (unsaved.contains(&record.seq), &record.handle) {
+                if let Some(children) = self.receipt_children.remove(&receipt_key(record.seq, None)) {
                     self.receipt_children.insert(handle.clone(), children);
                 }
             }

@@ -144,10 +144,10 @@ impl WorkingMemory {
         // cannot move a record between the projections.
         let archive_chars = self.budget().receipt_archive_chars();
         let last_action = self.last_action.lock().clone();
-        let (archive, recent_results, result_scopes, pointers) = {
+        let (archive, recent_results, result_scopes, pointers, records) = {
             let actions = self.actions.lock();
-            let archive: Vec<(u64, Option<Uuid>, String)> =
-                actions.archive(archive_chars).into_iter().map(|r| (r.seq, r.room, r.head.clone())).collect();
+            let archive: Vec<(Option<Uuid>, String)> =
+                actions.archive(archive_chars).into_iter().map(|(r, head)| (r.room, head.to_owned())).collect();
             let recent_results: Vec<(u64, Option<Uuid>, String, String, Option<String>)> = actions
                 .retained()
                 .filter_map(|r| r.result.clone().map(|result| (r.seq, r.room, result, r.operation.clone(), r.handle.clone())))
@@ -156,12 +156,12 @@ impl WorkingMemory {
                 .retained()
                 .filter_map(|r| r.scope.clone().map(|scope| (r.seq, scope)))
                 .collect();
-            let pointers: Vec<(u64, String, String)> = actions
+            let pointers: Vec<(String, String)> = actions
                 .indexed_pointers()
                 .into_iter()
-                .filter_map(|r| r.handle.clone().map(|handle| (r.seq, super::collapsed_pointer(r), handle)))
+                .filter_map(|r| r.handle.clone().map(|handle| (super::collapsed_pointer(r), handle)))
                 .collect();
-            (archive, recent_results, result_scopes, pointers)
+            (archive, recent_results, result_scopes, pointers, actions.records().cloned().collect())
         };
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
@@ -169,9 +169,8 @@ impl WorkingMemory {
             action_statements,
             last_action,
             action_fps: self.action_fps.lock().iter().cloned().collect(),
-            receipt_heads: archive.iter().map(|(_, _, head)| head.clone()).collect(),
-            receipt_head_rooms: archive.iter().map(|(_, room, _)| *room).collect(),
-            receipt_head_seqs: archive.iter().map(|(seq, ..)| *seq).collect(),
+            receipt_heads: archive.iter().map(|(_, head)| head.clone()).collect(),
+            receipt_head_rooms: archive.iter().map(|(room, _)| *room).collect(),
             recent_results,
             result_scopes,
             next_action_seq: self.next_action_seq.load(Ordering::Relaxed),
@@ -188,8 +187,8 @@ impl WorkingMemory {
                 .filter(|d| d.status == DispatchStatus::Running)
                 .map(|d| d.label.clone())
                 .collect(),
-            evicted_pointers: pointers.iter().map(|(_, pointer, handle)| (pointer.clone(), handle.clone())).collect(),
-            evicted_pointer_seqs: pointers.iter().map(|(seq, ..)| *seq).collect(),
+            evicted_pointers: pointers,
+            actions: records,
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
         }
