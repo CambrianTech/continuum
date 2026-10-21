@@ -80,18 +80,16 @@ impl Drop for TimingGuard {
             )
         };
 
-        // The one file-logging sink every other macro writes to. This used to log only
-        // through the legacy FFI logger, which the native server never initializes, so
-        // every timing here was silently dropped.
-        // write_log_direct drops the line when no sink is running.
-        let level = if elapsed_ms > 500 {
-            "WARN" // Slow operation
+        // The same clog event every log_* macro emits, so ClogLayer routes the timing to
+        // its category file. This used to log only through the legacy FFI logger, which the
+        // native server never initialized, so every timing here was silently dropped.
+        if elapsed_ms > 500 {
+            crate::log_warn!(&self.category, "performance", "{message}"); // slow operation
         } else if elapsed_ms > 100 {
-            "INFO"
+            crate::log_info!(&self.category, "performance", "{message}");
         } else {
-            "DEBUG"
-        };
-        super::write_log_direct(&self.category, level, "performance", &message);
+            crate::log_debug!(&self.category, "performance", "{message}");
+        }
     }
 }
 
