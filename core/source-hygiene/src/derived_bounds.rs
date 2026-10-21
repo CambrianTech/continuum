@@ -111,19 +111,6 @@ const NUMERIC_TYPES: &[&str] = &[
     "u8", "u16", "u32", "usize", "u64", "i32", "i64", "f32", "f64",
 ];
 
-/// Const declaration prefixes, longest first so `pub const` is not read as `const`.
-/// `const ...` after any visibility: `pub`, `pub(crate)`, `pub(super)`, and the
-/// `pub(in crate::path)` a split by owner widens a moved constant to. A fixed list of
-/// prefixes missed that last form, and the scan lost a constant the day it moved.
-fn strip_const(line: &str) -> Option<&str> {
-    let rest = match line.strip_prefix("pub") {
-        Some(after) if after.starts_with('(') => after.split_once(')')?.1.trim_start(),
-        Some(after) if after.starts_with(' ') => after.trim_start(),
-        _ => line,
-    };
-    rest.strip_prefix("const ")
-}
-
 pub struct DerivedBounds;
 
 impl DerivedBounds {
@@ -193,7 +180,16 @@ impl DerivedBounds {
     /// `(name, type, value)` if this line declares a numeric constant.
     fn const_declaration<'a>(code: &'a str) -> Option<(&'a str, &'a str, &'a str)> {
         let trimmed = code.trim_start();
-        let rest = strip_const(trimmed)?;
+        // Visibility does not change whether a declaration is a numeric constant.
+        // Restricted visibility includes pub(in crate::owner), not only crate/super.
+        let declaration = if let Some(restricted) = trimmed.strip_prefix("pub(") {
+            restricted.split_once(')')?.1.trim_start()
+        } else if let Some(public) = trimmed.strip_prefix("pub ") {
+            public.trim_start()
+        } else {
+            trimmed
+        };
+        let rest = declaration.strip_prefix("const ")?;
         let (name, tail) = rest.split_once(':')?;
         let (ty, value) = tail.split_once('=')?;
         let ty = ty.trim();
@@ -413,6 +409,11 @@ mod tests {
         assert_eq!(DerivedBounds.check(&mk("let c = A_SECONDS * B_TOKENS_PER_S;")).len(), 1);
         // A live-path bound with a bare literal and nothing said about it.
         assert_eq!(DerivedBounds.check(&mk("const FILL_CAP_TOKENS: usize = 15_000;")).len(), 1);
+        // Regression for #5227: restricting visibility must not hide the same bound.
+        for visibility in ["pub", "pub(crate)", "pub(super)", "pub(self)", "pub(in crate::owner)"] {
+            let raw = format!("{visibility} const FILL_CAP_TOKENS: usize = 15_000;");
+            assert_eq!(DerivedBounds.check(&mk(&raw)).len(), 1, "{visibility}");
+        }
         // The same, derived from a measurement or another named bound: fine.
         assert!(DerivedBounds
             .check(&mk("const FILL_CAP_TOKENS: usize = BOOTSTRAP_WORKING_SET as usize;"))
