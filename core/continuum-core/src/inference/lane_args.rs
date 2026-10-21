@@ -379,6 +379,15 @@ pub fn base_invocation(
             // ctx) so a stale page can never restore into a mismatched slot.
             arg("--slot-save-path"),
             slot_save_dir.to_string_lossy().into_owned(),
+            // NO REQUEST DECODES PAST ONE WINDOW. llama-server's `-n` is both the default
+            // for a request that names no `max_tokens` and the per-slot ceiling on one that
+            // does. Unset, the default is -1 (infinite): with context shift, a request that
+            // reached the engine without a cap decoded on indefinitely and held its lane
+            // (the MacBookPro, 2026-10-21 13:50Z: n_predict -1, prompt 29,238, 27,854
+            // decoded and climbing, while three residents waited out their 496 s bound for
+            // the other lane; card 912e606d). One window is the most any turn can use.
+            arg("--n-predict"),
+            (total_ctx / lanes.max(1)).to_string(),
             // PREFILL THROUGHPUT (#139). Live personas are prefill-bound: a real turn
             // re-prefills ~4k tokens of fresh RAG context at ~109 tok/s → 30-110s turns
             // (decode is tiny and fast; the mind is NOT slow, the re-read is). The
