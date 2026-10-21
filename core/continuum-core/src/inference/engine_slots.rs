@@ -42,6 +42,9 @@ const PREVIOUS_FILE: &str = "previous";
 /// and demoting a good engine on one of those would silently run the node on the older one.
 const VERIFIED_FILE: &str = ".verified";
 
+#[cfg(test)]
+mod reservation_tests;
+
 /// The engine's stamp file inside a slot (`<commit>:<backend>`, written last by the installer
 /// after the binary verified).
 pub const STAMP_FILE: &str = ".llama-server.stamp";
@@ -228,10 +231,24 @@ pub fn idle_slot(
     live: &[Option<PathBuf>],
     populated: impl Fn(&str) -> bool,
 ) -> Result<&'static str, NotIdle> {
+    idle_slot_reserved(root, current, previous, live, &[], populated)
+}
+
+/// Installer custody is independent of lane lifetime and engine pointers.
+/// Reservations may only remove candidates; they never make a live slot idle.
+fn idle_slot_reserved(
+    root: &Path,
+    current: Option<&str>,
+    previous: Option<&str>,
+    live: &[Option<PathBuf>],
+    reserved: &[&str],
+    populated: impl Fn(&str) -> bool,
+) -> Result<&'static str, NotIdle> {
     let unknown_lane = live.iter().any(Option::is_none);
     let free: Vec<&'static str> = SLOTS
         .into_iter()
         .filter(|slot| Some(*slot) != current)
+        .filter(|slot| !reserved.contains(slot))
         .filter(|slot| !live.iter().flatten().any(|bin| slot_of(root, bin) == Some(*slot)))
         .filter(|slot| !(unknown_lane && populated(slot)))
         .collect();
@@ -344,11 +361,21 @@ pub fn run_verb(args: &[String]) -> Result<String, VerbError> {
     };
     match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["root"] => Ok(root.to_string_lossy().into_owned()),
-        ["idle-slot"] => {
+        ["idle-slot", exclusions @ ..] => {
+            let mut reserved = Vec::new();
+            for pair in exclusions.chunks(2) {
+                match pair {
+                    ["--exclude-slot", slot] if SLOTS.contains(slot) => reserved.push(*slot),
+                    _ => return Err(usage()),
+                }
+            }
             let live = live_lane_engines().map_err(VerbError::Failed)?;
-            let slot = idle_slot(&root, current_slot(&root), previous_slot(&root), &live, |s| {
-                slot_bin(&root, s).is_file()
-            })
+            let populated = |s: &str| slot_bin(&root, s).is_file();
+            let slot = if reserved.is_empty() {
+                idle_slot(&root, current_slot(&root), previous_slot(&root), &live, populated)
+            } else {
+                idle_slot_reserved(&root, current_slot(&root), previous_slot(&root), &live, &reserved, populated)
+            }
             .map_err(|NotIdle::AllInUse| VerbError::NoIdleSlot)?;
             Ok(root.join(slot).to_string_lossy().into_owned())
         }
