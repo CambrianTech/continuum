@@ -552,7 +552,7 @@ async fn stage_swe(workspace: &Path, instance: &crate::cognition::swe_bench::Swe
     let inst = instance.clone();
     tokio::spawn(async move {
         match swe_bench::ensure_env(&inst, &dir).await {
-            Ok(_) => crate::probe!(
+            Ok(_) => continuum_base::probe!(
                 class = "benchmark.env.prewarmed",
                 instance = %inst.instance_id,
                 "env ready behind the claim"

@@ -98,16 +98,16 @@ pub fn archive_once_in(continuum_home: &Path, archived_at_ms: u64) -> Result<Arc
 pub fn spawn_archive(rt: &tokio::runtime::Handle) {
     rt.spawn_blocking(|| {
         let outcome = crate::paths::continuum_home()
-            .and_then(|home| archive_once_in(&home, crate::time::EpochMs::now().millis()));
+            .and_then(|home| archive_once_in(&home, continuum_base::time::EpochMs::now().millis()));
         match outcome {
             Ok(ArchiveOutcome::AlreadyArchived) => {}
-            Ok(ArchiveOutcome::Moved(moved)) => crate::probe!(
+            Ok(ArchiveOutcome::Moved(moved)) => continuum_base::probe!(
                 class = "benchmark.harness.archive",
                 moved = moved.len() as u64,
                 paths = %moved.join(","),
                 "the retired benchmark harness's state was archived once, nothing deleted"
             ),
-            Err(error) => crate::probe!(
+            Err(error) => continuum_base::probe!(
                 class = "benchmark.harness.archive_failed",
                 error = %error,
                 "archiving the retired harness's state stopped; the next boot retries what is left"

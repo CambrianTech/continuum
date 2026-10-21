@@ -153,7 +153,7 @@ pub fn seal_round(round_id: Uuid) {
     if round.dispatched() == 0 {
         let benchmark = round.benchmark.clone();
         rounds.remove(&round_id);
-        crate::probe!(
+        continuum_base::probe!(
             class = "bench.round.done",
             round_id = %round_id,
             benchmark = %benchmark,
